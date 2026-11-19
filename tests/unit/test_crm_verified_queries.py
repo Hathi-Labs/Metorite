@@ -550,7 +550,6 @@ async def test_the_run_form_off_the_flag_reads_the_facts(monkeypatch) -> None:
     from acb_skills import crm_tools
     from acb_skills import org_facts_tools as oft
 
-    oft._VERIFIED_SEEN.set(False)
     sent: list[tuple[str, Any]] = []
 
     async def get(path: str, params: Any = None, **_kw: Any) -> Any:
@@ -568,9 +567,12 @@ async def test_the_run_form_off_the_flag_reads_the_facts(monkeypatch) -> None:
 
 
 async def test_flag_on_the_tool_matches_and_runs_with_the_mark(monkeypatch) -> None:
+    from acb_skills import crm_tools
     from acb_skills import org_facts_tools as oft
 
-    oft._VERIFIED_SEEN.set(False)
+    # The holder of one chat run: the mark lives on it.
+    reads = crm_tools.RunReads()
+    monkeypatch.setattr(oft, "_run_reads", lambda: reads)
     sent: list[tuple[str, Any]] = []
 
     async def get(path: str, params: Any = None, **_kw: Any) -> Any:
@@ -653,10 +655,17 @@ def test_a_repair_with_no_clear_winner_is_none() -> None:
     src = _invoices(cat.Field("Buyer", "Buyer", "lookup", target="Buyer_Clients"),
                     cat.Field("Net_Value_A", "Net Value A", "currency"),
                     cat.Field("Net_Value_B", "Net Value B", "currency"))
-    # Both share the SAME two words: the fill share breaks the tie.
+    # Both share the SAME two words, and differ elsewhere: no winner. The
+    # fill share never picks one, so the output cannot change in silence.
     src = cat.Source(**{**src.__dict__, "fills": {"Net_Value_A": 0.2, "Net_Value_B": 0.7}})
-    fixed = vq.repair(INLINE, {"Invoices": src}, {}, 9)
-    assert fixed is not None and fixed["query"]["fields"] == ["Net_Value_B"]
+    assert vq.repair(INLINE, {"Invoices": src}, {}, 9) is None
+    excl = _invoices(cat.Field("Buyer", "Buyer", "lookup", target="Buyer_Clients"),
+                     cat.Field("Net_Value_Excl_Tax", "Net Value Excl Tax", "currency"),
+                     cat.Field("Net_Value_Incl_Tax", "Net Value Incl Tax", "currency"))
+    assert vq.repair(INLINE, {"Invoices": excl}, {}, 9) is None
+    # One field whose words equal the gone key's words still wins.
+    exact = _invoices(*excl.fields, cat.Field("NetValue", "Net Value", "currency"))
+    assert vq.repair(INLINE, {"Invoices": exact}, {}, 9)["query"]["fields"] == ["NetValue"]
 
 
 def test_a_number_between_splits_and_checks_each_side() -> None:
@@ -786,9 +795,11 @@ def test_an_option_value_must_be_an_option_key() -> None:
     assert _code(exc) == "not_an_option" and exc.value.detail["options"] == ["Draft", "Sent"]
 
 
-def test_a_literal_replaces_a_whole_word_span_once() -> None:
-    """P3-4: "in" never hits "Invoices" and never hits a later "in"."""
-    assert vq._swap("Invoices of Pune in Pune", "Pune", "city") == "Invoices of {city} in Pune"
+def test_a_literal_replaces_each_whole_word_span() -> None:
+    """P3-4: "in" never hits "Invoices". Each copy of the value goes, so no
+    copy stays in the stored question."""
+    assert vq._swap("Invoices of Pune in Pune", "Pune", "city") == (
+        "Invoices of {city} in {city}")
     assert vq._swap("Net value in   Pune", "in", "x") == "Net value {x}   Pune"
     # build_item folds the spaces of the question, and _swap those of the literal.
     assert vq._swap("Net value for Acme Traders", "Acme   Traders", "c") == "Net value for {c}"
@@ -840,3 +851,133 @@ async def test_a_long_message_or_a_failed_match_keeps_the_facts(monkeypatch) -> 
     assert len(sent[0]["q"]) == oft.MATCH_WORDS_MAX
     assert out.startswith("Facts of this organization (fixed answers):")
     assert "Fact field:Invoices.Net_Value." in out and oft.RUN_LINE not in out
+
+
+# ── Review round 2 ───────────────────────────────────────────────────────────
+
+
+def _numbers(*types: str) -> dict[str, cat.Source]:
+    fields = [cat.Field("Buyer", "Buyer", "lookup", target="Buyer_Clients"),
+              cat.Field("Name", "Name", "text")]
+    fields += [cat.Field(f"F{i}", f"F{i}", t) for i, t in enumerate(types)]
+    return {"Invoices": _invoices(*fields)}
+
+
+def test_a_sum_of_two_fields_takes_currency_parts_only() -> None:
+    """Round 2, item 1: ``FieldScope._sum_of`` adds ``SUM_TYPES`` parts only."""
+    item = _two_field(query={**INLINE["query"], "fields": ["F0", "F1"]})
+    sources = _numbers("number", "decimal")
+    assert vq.stale_reason(item, sources, {}) is None
+    assert "not all of" in vq.runnable_problem(item, {}, sources)
+    with pytest.raises(HTTPException) as exc:
+        vq.build_item(vq.SaveIn(question="F sum for Acme", module="Invoices",
+                                aggregate="sum", fields=["F0", "F1"],
+                                where=[{"field": "Buyer", "op": "eq", "literal": "Acme",
+                                        "name": "customer"}]), sources, 2, {})
+    assert _code(exc) == "not_runnable"
+    # Two currency fields run, and a one-field sum of any number type runs.
+    assert vq.runnable_problem(item, {}, _numbers("currency", "currency")) is None
+    one = {**item, "query": {**item["query"], "fields": ["F0"]}}
+    assert vq.runnable_problem(one, {}, sources) is None
+
+
+async def test_the_matcher_never_offers_a_sum_that_cannot_run(monkeypatch) -> None:
+    crm_switch_on(monkeypatch, "*")
+    _flag(monkeypatch, "*")
+    item = _two_field(query={**INLINE["query"], "fields": ["F0", "F1"]})
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def state(_db: Any, _org: str) -> Any:
+        return _numbers("number", "decimal"), [item]
+
+    monkeypatch.setattr(vq, "_tenant_session", session)
+    monkeypatch.setattr(vq, "_state", state)
+    got = await vq.match_verified_queries(vq.MatchIn(q="net and gross for Asha"),
+                                          _user(admin=False))
+    assert got.matches == []
+
+
+def test_a_range_on_a_text_field_cannot_run() -> None:
+    item = {**INLINE, "key": "net_from_name", "question": "Net value from {name}",
+            "params": [{"name": "name", "kind": "text"}],
+            "query": {**INLINE["query"],
+                      "where": [{"field": "Name", "op": "gte", "param": "name"}]}}
+    assert vq.runnable_problem(item, {}, _sources()) == "a range on a text field"
+
+
+def test_a_number_value_is_finite_and_one_value_for_eq() -> None:
+    """Round 2, item 3."""
+    item = {**INLINE, "key": "net_at", "question": "Net value at {amount}",
+            "params": [{"name": "amount", "kind": "number"}],
+            "query": {**INLINE["query"],
+                      "where": [{"field": "Gross_Value", "op": "eq", "param": "amount"}]}}
+    for bad in ("nan", "inf", "-inf", "1e999", "1..5"):
+        with pytest.raises(HTTPException) as exc:
+            vq.lower(item, {"amount": bad}, {}, _sources())
+        assert _code(exc) == "bad_value", bad
+    assert vq.lower(item, {"amount": "12.5"}, {}, _sources()).pairs == (
+        ("Gross_Value", "12.5"),)
+
+
+async def test_a_run_with_no_holder_reads_the_facts_as_before(monkeypatch) -> None:
+    """Round 2, item 2: a batch run has no holder. Even after a facts read
+    that served a verified question, its run form makes the call of before."""
+    from acb_skills import org_facts_tools as oft
+
+    sent: list[Any] = []
+
+    async def get(path: str, params: Any = None, **_kw: Any) -> Any:
+        sent.append((path, params))
+        return {"facts": _rows("query:billed_for_customer")}
+
+    async def post(path: str, body: Any) -> Any:
+        return {"matches": []}
+
+    monkeypatch.setattr(oft, "_run_reads", lambda: None)
+    monkeypatch.setattr(oft, "_get", get)
+    monkeypatch.setattr(oft, "_post", post)
+    monkeypatch.setattr(oft, "_member_words", lambda: "")
+    await oft.org_facts("crm")
+    sent.clear()
+    await oft.org_facts("crm", "run:billed_for_customer customer=Asha")
+    assert sent == [(oft.ORG_FACTS_PATH,
+                     {"app": "crm", "q": "run:billed_for_customer customer=Asha"})]
+
+
+async def test_the_mark_never_leaks_into_the_next_run(monkeypatch) -> None:
+    """Round 2, item 2: two runs in one context. The first run marks its
+    own holder. The second run has a new holder, so it makes no call and
+    spends no read before the facts read of before."""
+    from acb_skills import crm_tools
+    from acb_skills import org_facts_tools as oft
+
+    sent: list[Any] = []
+    facts = {"rows": _rows("query:billed_for_customer")}
+
+    async def get(path: str, params: Any = None, **_kw: Any) -> Any:
+        sent.append((path, params))
+        return {"facts": facts["rows"]}
+
+    async def post(path: str, body: Any) -> Any:
+        return {"matches": []}
+
+    monkeypatch.setattr(oft, "_get", get)
+    monkeypatch.setattr(oft, "_post", post)
+    monkeypatch.setattr(oft, "_member_words", lambda: "")
+    first = crm_tools.RunReads()
+    monkeypatch.setattr(oft, "_run_reads", lambda: first)
+    await oft.org_facts("crm")
+    assert first.verified is True
+    # The second run: the flag is now off, and the holder is new.
+    second = crm_tools.RunReads()
+    facts["rows"] = []
+    monkeypatch.setattr(oft, "_run_reads", lambda: second)
+    monkeypatch.setattr(crm_tools, "_run_reads", lambda: second)
+    sent.clear()
+    await oft.org_facts("crm", "run:billed_for_customer customer=Asha")
+    assert sent == [(oft.ORG_FACTS_PATH,
+                     {"app": "crm", "q": "run:billed_for_customer customer=Asha"})]
+    assert (second.verified, second.total, second.aggregates) == (False, 0, 0)

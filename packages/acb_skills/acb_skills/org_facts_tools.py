@@ -19,7 +19,6 @@ Fences: ``tests/unit/test_org_facts.py`` and ``tests/unit/test_org_facts_r8.py``
 
 from __future__ import annotations
 
-import contextvars
 import re
 from typing import Any
 
@@ -148,20 +147,18 @@ _RUN_KEY = re.compile(r"[a-z][a-z0-9_]{0,39}")
 #: The most characters of the member's words that a match reads. It is the
 #: cap of ``MatchIn.q`` on the gateway, so a long message never gets a 422.
 MATCH_WORDS_MAX = 2000
-#: True once a facts read of this run served a verified question. Only an
-#: org on ``SEMANTIC_MODEL_ORGS`` gets one. Off the flag it stays False, so
-#: the run form makes no gateway call and spends no read before it falls
-#: back to the facts read of before.
-_VERIFIED_SEEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "org_facts_verified_seen", default=False)
 
 
 def _note_verified(rows: list[Any]) -> bool:
-    """Mark the run when *rows* hold a verified question fact."""
+    """Mark the run when *rows* hold a verified question fact.
+
+    The mark lives on the holder of the run (``RunReads.verified``), which
+    a run makes new and keeps across its tool calls. So a mark never leaks
+    into another run. Only an org on ``SEMANTIC_MODEL_ORGS`` gets such a
+    fact. A run with no holder (a batch run) keeps no mark."""
     seen = any(isinstance(r, dict) and str(r.get("subject") or "").startswith(QUERY_SUBJECT)
                for r in rows)
     if seen:
-        _VERIFIED_SEEN.set(True)
         reads = _run_reads()
         if reads is not None:
             # The holder of the run lives across its tool calls.
@@ -170,9 +167,11 @@ def _note_verified(rows: list[Any]) -> bool:
 
 
 def _verified_on() -> bool:
-    """True when a facts read of this run served a verified question."""
+    """True when a facts read of this run served a verified question. A
+    run with no holder gets False, so its run form makes the facts read of
+    before: the same calls, the same budget and the same text."""
     reads = _run_reads()
-    return bool(reads is not None and reads.verified) or _VERIFIED_SEEN.get()
+    return bool(reads is not None and reads.verified)
 
 
 def parse_run(text_: str) -> tuple[str, dict[str, str]]:

@@ -65,6 +65,7 @@ Fences: ``tests/unit/test_crm_verified_queries.py`` and
 from __future__ import annotations
 
 import calendar
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -78,6 +79,8 @@ from gateway.crm_sync import catalogue as cat
 from gateway.crm_sync import terms
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import _tenant_session, actor, router
+from gateway.routes.crm.field_sql import DATE_TYPES as _RANGE_DATES
+from gateway.routes.crm.field_sql import MEASURE_TYPES
 from gateway.routes.crm.flags import require_crm_mirror, semantic_model_allowed
 from gateway.routes.crm.mapping_plans import (
     SUGGEST_ACTOR,
@@ -113,8 +116,11 @@ GLUE_WORDS = frozenset({
 })
 #: The kinds of a parameter that name a time.
 DATE_KINDS = frozenset({"date", "month", "quarter", "year", "period"})
-#: The field types that hold a day or a time.
-DATE_TYPES = frozenset({"date", "datetime"})
+#: The field types that hold a day or a time (``field_sql.DATE_TYPES``).
+DATE_TYPES = frozenset(_RANGE_DATES)
+#: The field types that take a range (``.from`` and ``.to``): a date or a
+#: number, as ``field_sql._filter_value`` allows.
+RANGE_TYPES = frozenset({*_RANGE_DATES, *MEASURE_TYPES})
 #: The field types of a choice.
 OPTION_TYPES = frozenset({"select", "picklist", "multiselect", "boolean"})
 #: The month names, for the kind check of a match.
@@ -242,8 +248,8 @@ def _kind_of(found: cat.Field | None) -> str:
 
 
 def _swap(question: str, literal: str, name: str) -> str:
-    """*question* with the first whole-word span of *literal* (any case, the
-    spaces folded) as ``{name}``. A part of a word never matches, so the
+    """*question* with each whole-word span of *literal* (any case, the
+    spaces folded) as ``{name}``, so no copy of the value stays. A part of a word never matches, so the
     literal "in" never hits "Invoices". 422 ``literal_not_in_question``
     when the words do not hold it."""
     words = " ".join(literal.split())
@@ -251,7 +257,7 @@ def _swap(question: str, literal: str, name: str) -> str:
     if not words or not found.search(question):
         raise _refuse("literal_not_in_question",
                       "Each condition names words of the question that hold its value.")
-    return found.sub("{" + name + "}", question, count=1)
+    return found.sub("{" + name + "}", question)
 
 
 def _key_of(question: str, names: Sequence[str]) -> str:
@@ -447,10 +453,9 @@ def _check_value(name: str, kind: str, value: str) -> None:
     if kind == "number":
         # A range of numbers is "<from>..<to>": each side is a number.
         try:
-            parts = [p for p in value.split("..")]
-            good = len(parts) <= 2 and all(p.strip() for p in parts)
-            for part in parts:
-                float(part)
+            parts = value.split("..")
+            good = (len(parts) <= 2 and all(p.strip() for p in parts)
+                    and all(math.isfinite(float(p)) for p in parts))
         except ValueError:
             good = False
     elif kind in DATE_KINDS:
@@ -490,6 +495,12 @@ def _condition(src: cat.Source, cond: Mapping[str, Any], value: str) -> list[tup
     key, op = str(cond["field"]), str(cond["op"])
     found = src.field(key)
     dated = found is not None and found.type in DATE_TYPES
+    if op in ("gte", "lte", "between") and (found is None or found.type not in RANGE_TYPES):
+        # The aggregate takes a range on a date or a number field only.
+        raise _not_runnable(f"a range on a {found.type if found else 'missing'} field")
+    if not dated and op in ("eq", "gte", "lte") and ".." in value:
+        raise _refuse("bad_value", f"Give {cond['param']} as one value, not a range.",
+                      param=cond["param"])
     if op in ("eq", "on") and dated:
         span = period(value)
         if span is None:
@@ -532,6 +543,11 @@ def _measure_parts(src: cat.Source, aggregate: str, fields: Sequence[Any],
     elif len(keys) == 1:
         out = {"measure": aggregate, "field": keys[0]}
     elif aggregate == "sum" and src.kind == "module":
+        # ``FieldScope._sum_of`` adds the parts of ``catalogue.SUM_TYPES``
+        # only. A part of another number type is a 422 at run time.
+        types = [getattr(src.field(k), "type", None) for k in keys]
+        if not all(t in cat.SUM_TYPES for t in types):
+            raise _not_runnable(f"a sum of fields that are not all of {list(cat.SUM_TYPES)}")
         out = {"measure": "sum", "field": cat.SUM_KEY_JOIN.join(keys)}
     elif aggregate == "sum":
         raise _not_runnable("a sum of more than one field on a core entity")
@@ -669,9 +685,10 @@ def _closest(src: cat.Source, gone: str, types: frozenset[str] | None,
 
     1. A field whose key words or label words are the words of *gone*
        wins. Two such fields are a tie with no winner.
-    2. Else the most words in common, at least two. Each field at the top
-       must share the SAME words. Only then does the fill share break the
-       tie, then the key.
+    2. Else the ONE field with the most words in common, at least two. A
+       tie at the top has no winner, also when the tied fields share the
+       same words ("Net Value Excl Tax" and "Net Value Incl Tax"). The fill
+       share never picks a field, because the repair must keep the output.
     3. A field that shares one word, or no word, never stands: "Net Value"
        could be "Net Amount" or "Billed Value", and the repair must keep
        the output."""
@@ -685,26 +702,26 @@ def _closest(src: cat.Source, gone: str, types: frozenset[str] | None,
     scored = []
     for f in pool:
         common = frozenset(want & {*terms.words(f.key), *terms.words(f.label)})
-        fill = float((src.fills or {}).get(f.key) or 0.0)
-        scored.append((common, fill, f.key))
+        scored.append((common, f.key))
     if not scored:
         return None
     top = max(len(s[0]) for s in scored)
     if top < 2:
         return None
     best = [s for s in scored if len(s[0]) == top]
-    if len({s[0] for s in best}) > 1:
-        return None
-    best.sort(key=lambda s: (-s[1], s[2]))
-    return best[0][2]
+    return best[0][1] if len(best) == 1 else None
 
 
 def repair(item: Mapping[str, Any], by_module: Mapping[str, cat.Source],
            measures: Mapping[str, Mapping[str, Any]], version: int) -> dict[str, Any] | None:
     """ONE repaired version of a stale ``query`` item, or ``None``.
 
-    Only a dropped or retyped field of the query itself is repaired. A
-    dropped module or measure has no repair here. Each such field maps to
+    Only a dropped field of the query, or a retyped field of its sum, is
+    repaired. A dropped module or measure has no repair here. A retyped
+    condition field (``type:<field>`` from a ``where``) has no repair
+    either: the field is still there, so :func:`fix` keeps it, and the
+    repaired item stays stale. ``propose_repair`` then answers
+    ``no_repair``. Each such field maps to
     the closest remaining field of the module (:func:`_closest`). The
     parameters, the aggregate, the measure and the question stay, so the
     output stays. The repair is a pure function of the item and the
