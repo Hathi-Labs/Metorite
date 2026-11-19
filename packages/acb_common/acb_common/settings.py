@@ -1180,6 +1180,23 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_run_phase_event.py.
     chat_run_phase_orgs: str = ""
 
+    # ── No shrink before the seal (HRD-17e-1, chat_failure_modes.md §6) ─────
+    #
+    # Two comma lists of organization ids, or `*`. Each is empty by default,
+    # and then each chat save runs the upsert of before, byte for byte.
+    # CHAT_NO_SHRINK_SHADOW_ORGS only logs: the save is the save of before,
+    # and a client write that makes an agent row shorter before the fold
+    # seals it logs one `chat_no_shrink_shadow` line, with lengths and no
+    # text. CHAT_NO_SHRINK_ORGS enforces: such a write keeps the stored text,
+    # and logs `chat_no_shrink_refused`. An org in both lists enforces. The
+    # one reader is `gateway.chat_no_shrink.no_shrink_mode`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`, and the enforce flip waits for the shadow counts.
+    # Fences: tests/unit/test_chat_upsert_no_shrink.py and
+    # tests/unit/test_chat_upsert_no_shrink_r8.py.
+    chat_no_shrink_orgs: str = ""
+    chat_no_shrink_shadow_orgs: str = ""
+
     # ── A card checks that its object did not change (HRD-10a) ──────────────
     #
     # CHAT_CARD_PRECONDITION_ORGS: a comma list of organization ids, or `*`.

@@ -126,6 +126,25 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_NO_SHRINK_ORGS` turns on the guard of a chat save
+(`chat_failure_modes.md` §6 row HRD-17e-1). For each listed org, a client
+save that makes an agent row shorter before the fold seals it keeps the stored
+text. The save logs one `chat_no_shrink_refused` line, with lengths and no
+text. `*` lists every org, and the default is empty.
+
+Its one reader is `gateway.chat_no_shrink.no_shrink_mode`, and each save asks
+it. So a reload applies at the next save. A flip stays OWNER-GATE
+(`enforcement-flip`). Do not flip it before the owner reads the counts of
+`CHAT_NO_SHRINK_SHADOW_ORGS`.
+
+`CHAT_NO_SHRINK_SHADOW_ORGS` turns on the shadow of the same guard. For each
+listed org, the save is the save of before. A client save that makes an agent
+row shorter before the seal logs one `chat_no_shrink_shadow` line, with
+lengths and no text. An org in both lists enforces.
+
+`*` lists every org, and the default is empty. It has the same reader. A flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_PACKS_BATCH_ORGS` gives the member's own WhatsApp turn of each listed
 org the read tools of its packs (`chat_reach.md` G2, task 3494). The turn holds
 no write tool, and the specialist of each pack stays. It acts only where

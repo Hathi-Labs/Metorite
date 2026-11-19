@@ -85,6 +85,51 @@ _PARAM = re.compile(r"\{([^}]+)\}")
 #: the path. The builder refuses it, whatever the shape of the row (API-1).
 PATH_BREAKERS: tuple[str, ...] = ("/", "\\", "?", "#", "%", "\x00")
 
+#: The closed grammar of a shape of an API op (API-1). A shape is a run of
+#: tokens. A token is one character class of ASCII ranges, ``_`` or ``\-``,
+#: with a count in ASCII digits, or one literal ``A-Za-z0-9_-`` character. It
+#: has no ``.``, ``\w``, ``\d``, ``+``, ``*``, flag, group, alternation or
+#: negated class. The ``re.ASCII`` flag keeps each part of it to ASCII.
+_SHAPE_RANGE = r"(?:a-z|A-Z|0-9|[a-z]-[a-z]|[A-Z]-[A-Z]|[0-9]-[0-9]|_|\\-|[A-Za-z0-9])"
+_SHAPE_GRAMMAR = re.compile(
+    rf"(?:\[{_SHAPE_RANGE}+\]\{{[0-9]{{1,3}}(?:,[0-9]{{1,3}})?\}}|[A-Za-z0-9_]|\\-|-)+",
+    re.ASCII,
+)
+
+#: The look-alikes of the characters that break a path or a query.
+_LOOK_ALIKES: tuple[str, ...] = (
+    "\uff0f", "\u2215", "\u2044", "\uff1f", "\uff03", "\uff05", "\uff0e\uff0e",
+    "\u2024\u2024", "\uff06", "\uff1d", "\u0661",
+)
+
+#: Text that a path shape must never match. The grammar refuses each one
+#: already. These probes check the grammar itself.
+PATH_PROBES: tuple[str, ...] = (
+    "", "/", "a/b", "?", "a?b", "#", "a#b", "%", "%2f", "%2e%2e", "..", "a..b",
+    ".", "\\", "\x00", "a\x00b", " ", "\n", *_LOOK_ALIKES,
+)
+
+#: Text that a query shape must never match: a character that ends a value or
+#: starts a second key, a line end, a NUL and their look-alikes. The spec
+#: (``api_connections.md`` §2.1) names no need for ``, : + . @``, so these
+#: are probes too.
+QUERY_PROBES: tuple[str, ...] = (
+    "", "&", "a&b", "&x=1", "=", "a=b", "#", "a#b", "?", "%", "%26", "\n", "a\nb", "\r",
+    "\x00", "\\", " ", "a b", ".", "..", ",", ":", "+", "@", ";", "/", *_LOOK_ALIKES,
+)
+
+
+def shape_is_closed(pattern: object, probes: tuple[str, ...]) -> bool:
+    """True when *pattern* fits the closed shape grammar and matches none of
+    *probes*."""
+    if not isinstance(pattern, str) or not _SHAPE_GRAMMAR.fullmatch(pattern):
+        return False
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return False
+    return not any(compiled.fullmatch(p) for p in probes)
+
 #: The bytes that a path value keeps as they are: the unreserved set of
 #: RFC 3986. The builder percent-encodes each other byte.
 _UNRESERVED = frozenset(
@@ -246,7 +291,8 @@ class Route:
                 raise ValueError(f"{where}: {name!r} is not a key")
             if name in names:
                 raise ValueError(f"{where}: {name!r} is a path parameter, not a query key")
-            re.compile(pattern)
+            if not shape_is_closed(pattern, QUERY_PROBES):
+                raise ValueError(f"{where}: the query shape of {name!r} is not closed")
 
 
 @dataclass(frozen=True)
@@ -480,7 +526,8 @@ def _path_value(name: str, value: Any, shape: str) -> str:
         raise BadCall(name, "missing")
     if not re.fullmatch(shape, value):
         raise BadCall(name, "shape")
-    if ".." in value or any(c in value for c in PATH_BREAKERS):
+    # A value of dots only, such as ``.``, is a dot segment.
+    if not value.strip(".") or ".." in value or any(c in value for c in PATH_BREAKERS):
         raise BadCall(name, "shape")
     return percent_encode(value)
 
@@ -569,6 +616,8 @@ __all__ = [
     "METHODS",
     "OP_PATTERN",
     "PATH_BREAKERS",
+    "PATH_PROBES",
+    "QUERY_PROBES",
     "UUID_PATTERN",
     "VERSION_ARG",
     "App",
@@ -586,6 +635,7 @@ __all__ = [
     "percent_encode",
     "route_for",
     "scopes_of",
+    "shape_is_closed",
     "tool_class",
     "tools",
 ]
