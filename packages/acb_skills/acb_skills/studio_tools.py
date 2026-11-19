@@ -2371,7 +2371,7 @@ _SHARE_ASK_NOTE = ("Approve to ask a holder of studio:publish to share this vers
 _SHARE_END_NOTE = ("Approve to end the share. The other members stop loading this skill at their "
                    "next message. A waiting ask is withdrawn.")
 _SHARE_APPROVE_NOTE = ("Approve to share this version with each member of the organization. "
-                       "They load it from their next message.")
+                       "They load it once the skill is published. Publish it if it is a draft.")
 _SHARE_REJECT_NOTE = "Approve to refuse this ask. The skill stays as it is now."
 _SHARE_PENDING = ("The ask waits for a holder of studio:publish. You cannot approve your own "
                   "ask. Until a holder approves it, only you load this version.")
@@ -2385,7 +2385,8 @@ _SHARE_MAYBE = "The {act} may have worked. Read the share again before you try a
 _SHARE_NO_CARD = ("This chat shows no card, so the ask still waits. Approve or reject it in a "
                   "chat that shows cards.")
 _SHARE_DONE = {
-    "approve": "Shared. Each member of the organization loads version {v} from their next message.",
+    "approve": ("Shared. Each member of the organization loads version {v} once the skill is "
+                "published. If the skill is a draft, the owner publishes it."),
     "reject": "Rejected. The skill stays as it was. The owner may ask for a newer version.",
     "unshare": "The share ended. The skill is private, and only you load it.",
 }
@@ -2403,7 +2404,8 @@ _SHARE_SELF = ("The owner of this skill cannot approve its share. Another holder
 def _share_text(share: dict[str, Any]) -> str:
     """The share of a skill in plain words, for the result and the card."""
     if share.get("visibility") == "org" and share.get("shared_version"):
-        lines = [f"Each member of the organization loads version {share['shared_version']}."]
+        lines = [f"Each member of the organization loads version {share['shared_version']} once the "
+                 "skill is published. If the skill is a draft, the owner publishes it."]
     else:
         lines = ["The skill is private, so only its owner loads it."]
     state, asked = share.get("share_state"), share.get("share_version")
@@ -2458,9 +2460,18 @@ async def _share_send(method: str, path: str, act: str) -> _Reply:
     return await _send(method, path, None, act, miss=_SHARE_MAYBE.format(act=act))
 
 
+_SHARE_STATUS_404 = ("No skill of yours has this id, or AI Studio is not open for this "
+                     "organization. A holder of studio:publish who has a share ask for this "
+                     "skill uses approve or reject.")
+
+
 async def _share_status(sid: str) -> dict[str, Any]:
     reply = await _get(f"/studio/skills/{sid}/share")
-    return _share_result(reply.data) if reply.ok else _fail(reply)
+    if reply.ok:
+        return _share_result(reply.data)
+    if reply.status == 404:  # the read is owner-only: a holder meets 404 too
+        return _result(False, _sentence(_SHARE_STATUS_404), [], status=404)
+    return _fail(reply)
 
 
 async def _share_ask(sid: str, version: int) -> dict[str, Any]:

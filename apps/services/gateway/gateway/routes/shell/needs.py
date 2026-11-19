@@ -1236,9 +1236,11 @@ def skill_share_href(skill_id: str, version: Any) -> str:
 
     ``q`` puts words in the message box with no typed mark, and nothing
     sends by itself (``app/chat/page.tsx``). The words load the pack
-    ``studio-share`` by its words ("skill share"), and they name the skill
-    id and the version only."""
-    words = f"Show me the skill share that waits for me: skill {skill_id}, version {version}."
+    ``studio-share`` by its words ("skill share"). They name the act
+    (approve or reject) and the skill id and the version only, so the model
+    calls ``act=approve``, which shows the card with the whole text."""
+    words = (f"Review the skill share ask of skill {skill_id}, version {version}: "
+             "approve or reject.")
     return f"/chat?{urlencode({'do': 'new-chat', 'q': words})}"
 
 

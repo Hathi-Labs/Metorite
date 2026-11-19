@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
@@ -1315,8 +1316,13 @@ class TestTheStudioApprovalSource:
         query = parse_qs(href.query)
         assert query["do"] == ["new-chat"]
         [words] = query["q"]
-        assert words == (f"Show me the skill share that waits for me: skill {sid}, "
-                         "version 2.")
+        assert words == (f"Review the skill share ask of skill {sid}, version 2: "
+                         "approve or reject.")
+        # TOF-4b fence: the words name an act, and hold the ids and nothing else.
+        assert "approve" in words and "reject" in words
+        assert re.sub(r"[A-Za-z]+", "", words.replace(sid, "")).strip(" .:,-") == "2"
+        for secret in ("Skill ", "priya", "SECRET"):
+            assert secret not in words
         # The words load the share pack by its words, and no other Studio pack.
         from acb_skills import tool_packs as tp
         assert tp.matched_layer("studio-share", words) == "words"

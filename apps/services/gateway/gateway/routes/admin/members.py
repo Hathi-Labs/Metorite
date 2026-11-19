@@ -1044,7 +1044,9 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # WS-STU J2d (TOF-4b, the orchestrator's decision of 2026-11-19): the
     # skills of the member that the org shares. A holder approved a version,
     # and each member of the org loads it, so the skill stays with the org
-    # and keeps the address, as a shared view does. A holder may unshare it.
+    # and keeps the address, as a shared view does. Known limit: only the raw
+    # DELETE share route unshares it. No surface lists the id of an approved
+    # skill, and the chat unshare sends the owner-only read first (J2d).
     # The clause is the delete side's `studio_skills` with no `NOT`, so the
     # two split the member's skills with no overlap and no gap.
     _PersonRows("studio_shared_skills", "studio_skills",

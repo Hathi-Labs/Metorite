@@ -282,7 +282,8 @@ def test_the_owner_reads_the_share_in_words_and_nothing_is_written(world: World)
     _shared(world, 1)
     out = world.act(OWEN)
     assert out["ok"] is True and out["visibility"] == "org" and out["shared_version"] == 1
-    assert out["text"] == "Each member of the organization loads version 1."
+    assert out["text"] == ("Each member of the organization loads version 1 once the skill is "
+                           "published. If the skill is a draft, the owner publishes it.")
     assert world.card.shown == [] and world.wrote() == []
     assert ("GET", f"/studio/skills/{SID}/share") in world.requests
 
@@ -340,8 +341,30 @@ def test_an_ask_that_the_route_refuses_shows_no_card(
 def test_another_member_gets_the_404_text_and_no_card(world: World, act: str) -> None:
     _shared(world, 1)
     out = world.act(MEL, act=act)
-    assert out["ok"] is False and _message(out) == st._NOT_YOURS
+    want = st._SHARE_STATUS_404 if act == "status" else st._NOT_YOURS
+    assert out["ok"] is False and _message(out) == want
     assert world.card.shown == [] and world.wrote() == []
+
+
+def test_the_non_owner_status_text_points_to_approve_or_reject(world: World) -> None:
+    """TOF-4b fence: a holder is no owner, so the owner-only read gives 404. The
+    text must not say the skill is not theirs only: it names approve or reject."""
+    _shared(world, 1)
+    text = _message(world.act(MEL, act="status"))
+    assert "approve" in text and "reject" in text
+
+
+def test_no_result_text_says_a_member_loads_a_version_without_the_published_condition() -> None:
+    """TOF-4b fence: the loader needs state = 'published', and a new version makes a
+    draft. Each sentence that says a member loads a version carries the condition."""
+    import re
+    texts = [st._SHARE_APPROVE_NOTE, st._SHARE_DONE["approve"].format(v=1),
+             st._share_text({"visibility": "org", "shared_version": 1})]
+    src = (ROOT / "packages/acb_skills/acb_skills/studio_tools.py").read_text(encoding="utf-8")
+    for text in texts:
+        assert "published" in text, text
+    for m in re.finditer(r"loads? (?:it from|version)[^\n]*", src):
+        assert "published" in src[m.start():m.start() + 200], m.group(0)
 
 
 @pytest.mark.parametrize("act", ["status", "ask", "unshare", "approve", "reject"])
@@ -458,7 +481,7 @@ def test_the_owner_unshares_on_one_card(world: World) -> None:
     assert out["shared_version"] is None and out["note"] == st._SHARE_DONE["unshare"]
     [card] = world.card.shown
     assert card["title"] == "End the share of «Quotes»?"
-    assert "Now: Each member of the organization loads version 1." in card["context"]
+    assert "Now: Each member of the organization loads version 1 once the skill" in card["context"]
     assert world.wrote() == ["UPDATE"]
 
 
@@ -563,7 +586,7 @@ def test_the_pack_holds_the_one_tool_and_stays_dark() -> None:
 
 
 @pytest.mark.parametrize("words", [
-    "Share my skill Quotes with the team", "Show me the skill share that waits for me",
+    "Share my skill Quotes with the team", "Review the skill share ask of skill s1, version 2: approve or reject",
     "unshare the skill"])
 def test_the_words_load_the_pack_and_no_other_studio_pack(words: str) -> None:
     assert tp.matched_layer("studio-share", words) == "words"

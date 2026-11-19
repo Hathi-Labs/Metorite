@@ -24,15 +24,19 @@ Gate: AGENT-SAFE. Dark behind `STUDIO_ORGS`. The chat tool is in its own pack, `
 
 **The Needs row.** The needs source `studio` gives a holder one row for each pending skill ask of another member. The provider calls `skills.list_skill_shares` and writes no SQL. It drops each ask of the holder, because the store refuses that approve. The row reuses the kind `approval` with app `studio`. It holds the skill name, the version and who asked, and no body and no hash.
 
-**Where the row opens.** The row has no act, because an approval never runs in one click. It opens a new chat with a drafted message (`/chat?do=new-chat&q=...`). The member reads the words, then sends them. The words name the skill id and the version, and no member text.
+**Where the row opens.** The row has no act, because an approval never runs in one click. It opens a new chat with a drafted message (`/chat?do=new-chat&q=...`). The member reads the words, then sends them. The words name the act (approve or reject), the skill id and the version, and no member text. The model then calls `act=approve`, which shows the card with the whole text. The holder approves or rejects on the card.
 
 **The flags of the source.** `STUDIO_ORGS` off gives `absent`, as before, so the needs answer is the same byte for byte. `PACKAGE_HOST_ORGS` now gates the app rows only, because a skill share needs no install (J2c). This changes the J2b-4a row.
 
-**The member purge** (the orchestrator's decision, 2026-11-19). A skill that is shared with the org stays with the org when its owner leaves. Shared means `visibility = 'org' AND shared_version IS NOT NULL`. The skill keeps `owner_email`, as a shared saved view does, and a holder may unshare it. The purge deletes each other skill of the member, as before: a private skill, and a skill with only a pending or a rejected ask.
+**The member purge** (the orchestrator's decision, 2026-11-19). A skill that is shared with the org stays with the org when its owner leaves. Shared means `visibility = 'org' AND shared_version IS NOT NULL`. The skill keeps `owner_email`, as a shared saved view does, and the owner left it with the org. The purge deletes each other skill of the member, as before: a private skill, and a skill with only a pending or a rejected ask.
 
 **The two clauses.** The clauses of `routes/admin/members.py` split the member's skills of the bound org with no overlap and no gap. The answer counts the kept rows as `studio_shared_skills`.
 
 **Known limits.**
+
+- **Unshare of a kept skill.** A holder may unshare a kept skill only through the raw `DELETE /studio/skills/{id}/share` route. No surface lists the id of an approved skill. The chat `unshare` first sends the owner-only read, so it gives a holder the 404 text. Nobody can pause or publish a kept skill whose owner left. Follow-up, not built: a holder list of approved shares and a holder unshare act.
+- **Open owner decision.** Keep a shared skill when its owner is purged, or delete it. The purge keeps it for now.
+- **Loads once published.** The loader needs `state = 'published'`, and a new saved version moves a skill to draft. So the tool text says that members load the version once the skill is published. The tool cannot read the state.
 
 - A kept skill keeps each version, also each version after `shared_version`. No other member loads them.
 - After a holder unshares a kept skill, the skill is private. No member can reach it, and no purge deletes it.
