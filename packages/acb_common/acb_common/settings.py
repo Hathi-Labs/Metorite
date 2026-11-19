@@ -1206,14 +1206,12 @@ class Settings(BaseSettings):
     # waited gets a 412, the tool writes nothing, and the tool answers with
     # the HRD-7 text "Changed since the card" and the old and new values
     # (owner decision A, 2026-11-16). HRD-10c: the CRM `crm_update_record`
-    # does the same for a deal. HRD-10d-1: the email `edit_draft` sends the
-    # digest of its draft read as `expect_digest` on `PUT /email/drafts`. The
-    # one reader is `acb_skills.ask_tools.card_precondition_on`. It reads the
-    # org from the run binding and fails closed. A SIGHUP reload applies a
-    # change (`gateway/flag_reload.py`). It calls no model.
+    # does the same for a deal. The one reader is
+    # `acb_skills.ask_tools.card_precondition_on`. It reads the org from the
+    # run binding and fails closed. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
     # Fences: tests/unit/test_card_precondition.py,
-    # tests/unit/test_crm_card_precondition.py,
-    # tests/unit/test_email_card_precondition.py.
+    # tests/unit/test_crm_card_precondition.py.
     chat_card_precondition_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
