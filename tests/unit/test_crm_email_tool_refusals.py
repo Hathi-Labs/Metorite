@@ -474,11 +474,9 @@ def test_the_docstring_names_a_number_range() -> None:
 
 def test_the_docstring_says_the_group_is_optional() -> None:
     """The model reads the docstring. It must not say "Give group_by or
-    group_field" as a rule any more. CRM-Q34-10 cut "The group is optional"
-    to pay for the tokens of group_field2. The sentence that says what no
-    group gives says the same."""
+    group_field" as a rule any more."""
     doc = " ".join((_T.crm_aggregate.__doc__ or "").split())
-    assert "With no group_by and no group_field you get one total" in doc
+    assert "The group is optional" in doc
     assert "Give group_by or group_field." not in doc
 
 

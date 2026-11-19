@@ -72,8 +72,8 @@ largest value first, then by each key. That order is a total order, so two
 pages never share a group. The answer adds ``group_count``, ``group_page``
 and ``group_pages``. ``total`` and ``records`` stay the answer over every
 group. It is dark behind ``CRM_MODULE_FIND_ORGS`` (``module_find_allowed``).
-Off the list, ``group_field2`` and a ``group_page`` past 1 are a 422 that
-names the way without them. Every other call is the answer of today.
+Off the list, ``group_field2`` is a 422 that names the way without it, and
+the page parameters are ignored, so every other call is the answer of today.
 
 **One zone for each month** (CRM-Q25b). ``created_month``, ``updated_month``
 and a ``datetime`` bucket take the month on the clock of the CRM zone,
@@ -172,6 +172,9 @@ from gateway.routes.crm.field_sql import (
     day_sql,
     field_hint,
     field_pairs,
+    find_near,
+    find_where,
+    find_words,
     from_source,
     group_sql,
     lookup_ids,
@@ -285,11 +288,14 @@ MAX_GROUPS = 50
 
 #: CRM-Q34-10: the most groups on one page of a paged answer.
 GROUP_PAGE_MAX = 200
+#: CRM-Q34-10: the highest page number. ``page * size`` stays far inside a
+#: bigint, so a huge page is a 422 and never a 500.
+GROUP_PAGES_MAX = 1_000_000
 
 #: CRM-Q34-10: what an org off ``CRM_MODULE_FIND_ORGS`` reads for a second
-#: group field or a page of groups past 1.
+#: group field.
 TWO_GROUP_OFF = (
-    "Two group fields and pages of groups are not on for this organization. "
+    "A second group field is not on for this organization. "
     "Group by one field, and filter by the other: group_field=<a> with "
     "field.<b>=<value>."
 )
@@ -523,6 +529,13 @@ class AggregateResponse(BaseModel):
     #: ``sentence``. Absent with none.
     findings: list[dict[str, Any]] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-7: no record holds each word of ``q``, so the total counts
+    #: the records that hold one of these stored names, near spellings of a
+    #: word. Absent when the exact words matched.
+    near: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-7: ``q`` counted no record. At most 3 stored names nearest to
+    #: ``q``, for the next call. Absent otherwise.
+    nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     #: CRM-Q34-10: the second group field, its label and its stored type.
     #: Absent with one group field.
     group_field2: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -853,6 +866,10 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: CRM-Q34-7: the stored names that the near pass of ``q`` counted, and
+    #: the nearest stored names of a ``q`` that counted no record.
+    near: list[str] | None = None
+    nearest: list[str] | None = None
     #: CRM-Q34-11: each text field that the read took as a number, with its
     #: counts (``field_sql.admit_text_numbers``).
     text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
@@ -954,15 +971,19 @@ async def _read(
     field_measure = measure
     text_numbers: dict[str, TextNumbers] = {}
     if module is not None:
-        (scope, field_measure, field, zone, where, matched,
-         text_numbers) = await _module_filters(
+        mod = await _module_filters(
             db, module, measure=measure, field=field, pairs=pairs, params=params,
             status_group=status_group, fields=fields)
-        table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
-        source = where.source
+        scope, field_measure, field, zone = mod.scope, mod.field_measure, mod.field, mod.zone
+        matched, text_numbers, words = mod.matched, mod.text_numbers, mod.words
+        table, where_sql, bound = MODULE_TABLE, mod.where.sql, dict(mod.where.params)
+        source = mod.where.source
+        # CRM-Q34-7: the near pass reads under the filters of the call, with no q.
+        plain = (where_sql, dict(bound))
+        where_sql, source = _with_words(scope, words, where_sql, bound, source)
     else:
         assert found is not None
-        matched = {}
+        matched, words, plain = {}, [], ("", {})
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -1056,6 +1077,11 @@ async def _read(
                                  deadline=deadline)
     else:
         values = await fetch(where_sql, bound)
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    if words and scope is not None and not sum(acc.rows for acc in values.values()):
+        values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch,
+                                                  values)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
@@ -1067,25 +1093,73 @@ async def _read(
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
-                 text_numbers=text_numbers)
+                 near=near, nearest=nearest, text_numbers=text_numbers)
+
+
+def _with_words(scope: FieldScope, words: list[str], where_sql: str,
+                bound: dict[str, Any], source: str) -> tuple[str, str]:
+    """CRM-Q34-7: *where_sql* AND the predicate of ``q`` across the module
+    (``field_sql.find_where``), with its keys in *bound*, and the FROM text.
+    With no word, both stay as they are."""
+    if not words:
+        return where_sql, source
+    found = find_where(scope, words)
+    bound.update(found.params)
+    return f"{where_sql} AND {found.sql}", from_source(source, found.source)
+
+
+async def _near_pass(
+    db: Any, scope: FieldScope, words: list[str], plain: tuple[str, dict[str, Any]],
+    bound: dict[str, Any], fetch: Any, exact: dict[str | None, _Acc],
+) -> tuple[dict[str | None, _Acc], list[str] | None, list[str] | None]:
+    """CRM-Q34-7: no row holds each word of ``q``, so the near pass of
+    ``name_match`` (``field_sql.find_near``) reads under *plain*, the filters
+    with no ``q``. With near names, ONE more read of the same statement
+    counts their rows. The groups, the near names counted, and the nearest
+    names when still no row matches. *exact* is the answer of the exact
+    pass, which counted no row."""
+    hit = await find_near(db, scope, words, *plain)
+    if hit.near:
+        again = find_where(scope, words, hit.near)
+        values = await fetch(f"{plain[0]} AND {again.sql}", {**bound, **again.params})
+        if sum(acc.rows for acc in values.values()):
+            return values, hit.names(), None
+    return exact, None, list(hit.nearest)
+
+
+@dataclass
+class _ModuleRead:
+    """What :func:`_module_filters` gives: the scope, the field measure and
+    field, the zone, the WHERE, the matched text values, the text fields
+    read as numbers, and the words of ``q``."""
+
+    scope: FieldScope
+    field_measure: str
+    field: str | None
+    zone: str
+    where: Any
+    matched: dict[str, list[str]]
+    text_numbers: dict[str, TextNumbers]
+    words: list[str]
 
 
 async def _module_filters(
     db: Any, module: str, *, measure: str, field: str | None,
     pairs: list[tuple[str, str]], params: ListParams, status_group: bool,
     fields: str | None = None,
-) -> tuple[FieldScope, str, str | None, str, Any, dict[str, list[str]],
-           dict[str, TextNumbers]]:
-    """The scope, the field measure, the field, the zone, the WHERE, the
-    matched text values and the text fields read as numbers of ONE module
-    read. The one place that builds the
-    filters of a module total, so :func:`_read` and :func:`_read_pages`
-    count the same records (CRM-Q34-10)."""
+) -> _ModuleRead:
+    """The steps of ONE module read. The one place that builds the filters
+    of a module total, so :func:`_read` and :func:`_read_pages` count the
+    same records (CRM-Q34-10). The caller adds the words of ``q``
+    (:func:`_with_words`)."""
     _require_module(await mirrored_modules(db), module)
     scope = await module_scope(db, module)
     # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
-    if params.q is not None:
+    # CRM-Q34-7: an org on CRM_MODULE_FIND_ORGS finds `q` across the module.
+    finding = module_find_allowed(current_tenant())
+    if params.q is not None and not finding:
         raise q_refusal(scope)
+    words = find_words(params.q if finding else None)
     # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
     if status_group:
         status_field(scope)
@@ -1104,7 +1178,8 @@ async def _module_filters(
     where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
     matched = {pairs[i][0]: list(found) for i, found in matches.items()}
     await _seed_aliases(db, module, pairs, matches)
-    return scope, field_measure, field, zone, where, matched, text_numbers
+    return _ModuleRead(scope, field_measure, field, zone, where, matched, text_numbers,
+                       words)
 
 
 # ── Two group fields, and pages of groups (CRM-Q34-10) ─────────────────────
@@ -1165,20 +1240,25 @@ async def _read_pages(
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
     deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
-    (scope, field_measure, field, zone, where, matched,
-     text_numbers) = await _module_filters(
+    mod = await _module_filters(
         db, module, measure=measure, field=field, pairs=pairs, params=params,
         status_group=status_group)
+    scope, field_measure, field, zone = mod.scope, mod.field_measure, mod.field, mod.zone
+    matched, text_numbers = mod.matched, mod.text_numbers
     measured = check_measure(scope, field) if field else None
     if group_field2 is None:
         grouped, grouped2 = check_group(scope, group_field, bucket), None
     else:
         grouped, grouped2 = check_groups(scope, group_field, group_field2, bucket)
-    bound = dict(where.params)
+    bound = dict(mod.where.params)
+    # CRM-Q34-7: `q` filters by its exact words. A paged answer runs no near
+    # pass, so a `q` that counts nothing gives no group.
+    where_sql, where_source = _with_words(scope, mod.words, mod.where.sql, bound,
+                                          mod.where.source)
     first = group_sql(scope, grouped, bucket if grouped.type in DATE_TYPES else None,
                       zone=zone)
     bound.update(first.params)
-    sources = [where.source, first.source]
+    sources = [where_source, first.source]
     key2_sql, label2_sql, group_by_sql = "NULL", "NULL", " GROUP BY 1"
     if grouped2 is not None:
         second = group_sql(scope, grouped2,
@@ -1199,7 +1279,7 @@ async def _read_pages(
         f"SELECT {first.key} AS key, {first.label} AS label, {key2_sql} AS key2, "
         f"{label2_sql} AS label2, {value_sql} AS value, {sum_sql} AS s, "
         f"{count_sql} AS n, count(*) AS c "
-        f"FROM {MODULE_TABLE}{from_source(*sources)}{where.sql}{group_by_sql}"
+        f"FROM {MODULE_TABLE}{from_source(*sources)}{where_sql}{group_by_sql}"
     )
     whole = _WHOLE.get(field_measure, "sum(value)")
     await _keep_deadline(db, deadline)
@@ -1219,30 +1299,35 @@ def _paging(
     group_field2: str | None, group_page: int | None, group_page_size: int | None,
 ) -> tuple[int, int] | None:
     """CRM-Q34-10: the page and its size for a paged answer, None for the
-    answer of today, or a 422. Off ``CRM_MODULE_FIND_ORGS``, a call with no
-    second field and no page past 1 is the call of today."""
+    answer of today, or a 422.
+
+    ``group_field2`` is new, so a core entity and an org off
+    ``CRM_MODULE_FIND_ORGS`` refuse it. With no ``group_field2``, a core
+    entity and an org off the list IGNORE ``group_page`` and
+    ``group_page_size``: the call is the call of today, page 2 too. On the
+    list, a module call with ``group_field`` and a page parameter is paged."""
     if group_field2 is None and group_page is None and group_page_size is None:
         return None
-    if group_page is not None and group_page < 1:
-        raise _refuse("group_page counts from 1.")
-    needs = group_field2 is not None or (group_page or 1) > 1
-    if module is None:
-        if needs:
-            raise _refuse("group_field2 and group_page take a module entity: "
-                          "'module:<ApiName>'.")
-        return None
-    if not module_find_allowed(current_tenant()):
-        if needs:
-            raise _refuse(TWO_GROUP_OFF)
+    if group_field2 is not None and module is None:
+        raise _refuse("group_field2 takes a module entity: 'module:<ApiName>'.")
+    on = module is not None and module_find_allowed(current_tenant())
+    if group_field2 is not None and not on:
+        raise _refuse(TWO_GROUP_OFF)
+    if not on:
         return None
     if group_field is None:
-        raise _refuse("group_field2 and group_page go with group_field.")
+        if group_field2 is not None or (group_page or 1) > 1:
+            raise _refuse("group_field2 and group_page go with group_field.")
+        return None
     if fields:
         raise _refuse("A split takes one group field and no page. Give field=<key>.")
+    page = 1 if group_page is None else group_page
+    if not 1 <= page <= GROUP_PAGES_MAX:
+        raise _refuse(f"group_page is 1 to {GROUP_PAGES_MAX:,}.")
     size = MAX_GROUPS if group_page_size is None else group_page_size
     if not 1 <= size <= GROUP_PAGE_MAX:
         raise _refuse(f"group_page_size is 1 to {GROUP_PAGE_MAX}.")
-    return group_page or 1, size
+    return page, size
 
 
 async def _compute_pages(
@@ -1709,6 +1794,8 @@ async def _compute(
         ),
         overlay=read.overlay,
         matched=read.matched or None,
+        near=read.near,
+        nearest=read.nearest,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
         text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(
