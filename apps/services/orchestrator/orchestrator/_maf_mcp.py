@@ -201,6 +201,10 @@ class McpServer:
     #: IN-8c (D98): the admin that an OAuth connection acts as, from the
     #: ``connected_by`` of its row. Empty for a header server.
     acts_as: str = ""
+    #: CSY-1: the registry label and the admin's description, for the brief of
+    #: the server (``acb_skills.server_brief``). Data, never an instruction.
+    label: str = ""
+    description: str = ""
 
 
 #: An open server: the tool and the client that the run must close.
@@ -226,6 +230,20 @@ def maf_mcp_org_allowed(organization_id: str | None) -> bool:
     if not org:
         return False
     orgs = maf_mcp_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def connected_systems_orgs() -> frozenset[str]:
+    """The organization ids in ``CONNECTED_SYSTEMS_ORGS`` (CSY-1). Empty means none."""
+    return _parse_orgs(str(getattr(get_settings(), "connected_systems_orgs", "") or ""))
+
+
+def connected_systems_org_allowed(organization_id: str | None) -> bool:
+    """True when ``CONNECTED_SYSTEMS_ORGS`` allows *organization_id*. No org is false."""
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    orgs = connected_systems_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -903,8 +921,14 @@ async def attach_mcp_tools(
     agent: Any, servers: list[McpServer], opened: Opened,
     *, member_present: bool = False,
     on_unauthorized: Callable[[McpServer], Awaitable[Any]] | None = None,
+    failures: dict[str, str] | None = None,
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
+
+    CSY-5: a caller may pass *failures*, an empty dict. The call writes
+    ``{server name: "unreachable" | "reconnect"}`` for each server that did not
+    attach for that reason (a refusal, a failed or timed out connect, an OAuth 401).
+    The return value is unchanged: the names that attached.
 
     Returns the names of the servers that the agent got. Each one goes into
     *opened*, and the run closes it. A server that fails is left out.
@@ -957,10 +981,14 @@ async def attach_mcp_tools(
             client = await outbound_guard.mcp_client(server.url)
         except outbound_guard.OutboundRefused as exc:
             _log.warning("mcp.refused", name=server.name, host=exc.host, reason=exc.reason)
+            if failures is not None:
+                failures[server.name] = "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
         except Exception as exc:  # a lookup fault is a refusal too
             _log.warning("mcp.refused", name=server.name, host=host, reason=_reason(exc))
+            if failures is not None:
+                failures[server.name] = "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
         # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
@@ -999,11 +1027,15 @@ async def attach_mcp_tools(
             if server.oauth and 401 in codes:
                 # Rule 9. The name only: no host, no reason, no header.
                 _log.warning("mcp.oauth_unauthorized", name=server.name)
+                if failures is not None:
+                    failures[server.name] = "reconnect"
                 await _close_one(tool, client, client_first=True)
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
+            if failures is not None:
+                failures[server.name] = "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue
