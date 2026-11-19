@@ -58,8 +58,10 @@ approve (403). A version that nobody asked for, another org and no such
 skill get 404. A decided ask is 409 ``share_conflict``. ``DELETE
 /skills/{id}/share`` unshares: the owner always, another member only with the
 right. No route takes a visibility from a request, so no route can set
-``group`` or ``system``. The chat tool that asks (TOF-4b) and the page are
-later slices.
+``group`` or ``system``. ``GET /skills/{id}/share`` gives the owner the share
+of one skill (J2d), with the 404 of each other caller. The chat tool
+``studio_skill_share`` (J2d, ``acb_skills.studio_tools``) sends these routes,
+and the page is a later slice.
 
 **Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
 move waits for the first to commit, then reads the new state, and
@@ -610,6 +612,25 @@ async def request_skill_share(
         if found is None:
             raise HTTPException(status_code=404, detail=NOT_FOUND)
     _log.info("studio.skills.share_asked", skill_id=sid, version=v)
+    return _share_out(found)
+
+
+@router.get("/skills/{skill_id}/share")
+async def get_skill_share(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner reads the share of one skill (J2d): the visibility, the
+    shared version and the newest ask. It reads no right and writes nothing.
+    Another member, another org and no such skill get 404."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            found = await store.get_share(db, user.email, sid)
+    if found is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
     return _share_out(found)
 
 

@@ -383,9 +383,10 @@ class TestAScriptedSessionOnTheRealGateway:
         client = _client(world, t, name)
         run_id = await release_session(client, t, task)
         assert client.tool_calls == RELEASE_TOOL_LOG
-        # The run is released, once. The task keeps its lane and its assignee.
+        # The run is released, once. The assignee stays. Task 3648: the task
+        # was claimed from To do and nobody started it, so it goes back there.
         assert _runs(world, task) == [(run_id, "released")]
-        assert _task_status(world, task) == t.s.doing
+        assert _task_status(world, task) == t.s.todo
         assert (t.member,) in _row_all(
             world, "SELECT assignee FROM pm_task_assignees WHERE task_id = CAST(:t AS uuid)",
             t=task)

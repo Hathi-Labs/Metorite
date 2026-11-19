@@ -508,6 +508,97 @@ def test_needs_input_survives_a_restart(flag_on, ask_db, liveness, monkeypatch):
     assert [r["threadId"] for r in _list(_user(_CAROL, _ORG_B))] == ["t-carol"]
 
 
+# RESUME-3b (`chat_run_continuity.md` §4.12.4 item 5): a parked row names the
+# run of its newest question, so the open chat reads the run of case A as the
+# SAME run. Both resume flags must name the org. Else the row is as above.
+
+def _resume_flags(monkeypatch, *, resume: str, late: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", resume)
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", late)
+
+
+def _seed_parked_rows(db: _AskDb, org: str, tid: str, actor: str) -> None:
+    """Two questions wait in one thread. The newer one names run r-new."""
+    for run_id, asked_at in (("r-old", "2026-10-10T00:00:00+00:00"),
+                             ("r-new", "2026-10-10T00:05:00+00:00")):
+        rid = uuid.uuid4().hex
+        db.insert_ask(org, {
+            "request_id": rid, "thread_id": tid, "actor_email": actor, "run_id": run_id,
+            "kind": "confirmation", "question": _QUESTION, "payload": {"request_id": rid},
+        })
+        db.rows[(org, rid)]["asked_at"] = asked_at
+
+
+def test_a_parked_row_names_the_run_of_its_newest_question(flag_on, ask_db, liveness, monkeypatch):
+    import acb_graph
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _Chats({_ORG_A: ["t-park"]}).session)
+    _resume_flags(monkeypatch, resume=_ORG_A, late=_ORG_A)
+    _seed_parked_rows(ask_db, _ORG_A, "t-park", _ALICE)
+    rows = _list(_user(_ALICE, _ORG_A))
+    assert rows == [{
+        "threadId": "t-park", "agentName": "orchestrator", "title": "a chat",
+        "startedAt": None, "state": "needs_input", "askKind": "confirmation",
+        "live": False, "runId": None, "parkedRunId": "r-new", "lastStep": None,
+    }]
+
+
+@pytest.mark.parametrize(("resume", "late"), [("", ""), (_ORG_A, ""), ("", _ORG_A), (_ORG_B, _ORG_B)])
+def test_a_flag_off_for_the_org_sends_no_parked_run(flag_on, ask_db, liveness, monkeypatch, resume, late):
+    """With either flag off for the caller's org, the row is the row of
+    before, byte for byte: no ``parkedRunId`` key at all."""
+    import acb_graph
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _Chats({_ORG_A: ["t-park"]}).session)
+    _resume_flags(monkeypatch, resume=resume, late=late)
+    _seed_parked_rows(ask_db, _ORG_A, "t-park", _ALICE)
+    (row,) = _list(_user(_ALICE, _ORG_A))
+    assert "parkedRunId" not in row
+    assert row["state"] == "needs_input" and row["live"] is False
+
+
+def test_a_live_question_sends_no_parked_run(flag_on, ask_db, liveness, db_down, monkeypatch):
+    """A question that a live run waits on is not parked, so its row names
+    no parked run."""
+    _resume_flags(monkeypatch, resume="*", late="*")
+    asyncio.run(stream_relay.mark_active("t-live", reset=True, actor=_ALICE))
+    asyncio.run(stream_relay.register_live_run(
+        "t-live", organization_id=_ORG_A, actor=_ALICE, token="tok-t-live",
+    ))
+    _seed_parked_rows(ask_db, _ORG_A, "t-live", _ALICE)
+    rows = _list(_user(_ALICE, _ORG_A))
+    assert [r["threadId"] for r in rows] == ["t-live"]
+    assert rows[0]["live"] is True and "parkedRunId" not in rows[0]
+
+
+def test_a_colleague_s_newer_question_in_a_shared_room_never_names_the_run(
+    flag_on, ask_db, liveness, monkeypatch,
+):
+    """Review of 2026-11-19, P2-2. Alice and Bob each wait on a question in
+    one shared room, and the list shows the room to both. Bob's question is
+    the newest of the thread. Alice's row still names the run of HER newest
+    question, and Bob's row names his. A list that read every member's
+    question would give Alice Bob's run."""
+    import acb_graph
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _Chats({_ORG_A: ["t-room"]}).session)
+    _resume_flags(monkeypatch, resume=_ORG_A, late=_ORG_A)
+    _seed_parked_rows(ask_db, _ORG_A, "t-room", _ALICE)
+    rid = uuid.uuid4().hex
+    ask_db.insert_ask(_ORG_A, {
+        "request_id": rid, "thread_id": "t-room", "actor_email": _BOB, "run_id": "r-bob",
+        "kind": "confirmation", "question": _QUESTION, "payload": {"request_id": rid},
+    })
+    ask_db.rows[(_ORG_A, rid)]["asked_at"] = "2026-10-10T00:10:00+00:00"
+    (alice,) = _list(_user(_ALICE, _ORG_A))
+    assert alice["threadId"] == "t-room" and alice["live"] is False
+    assert alice["parkedRunId"] == "r-new"
+    (bob,) = _list(_user(_BOB, _ORG_A))
+    assert bob["parkedRunId"] == "r-bob"
+
+
 def test_a_deleted_chat_s_question_is_never_listed(flag_on, ask_db, liveness, monkeypatch):
     """Review of #813: no live run and no chat row is a deleted chat."""
     import acb_graph

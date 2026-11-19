@@ -207,6 +207,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # measure, join and query, and org_facts serves them. It changes what the
     # chat reads for the org, so only the operator writes it.
     "SEMANTIC_MODEL_ORGS",
+    # semantic_model.md SEM-12: the orgs that may write and read the semantic
+    # model of a connection. It changes what the chat may read for the org,
+    # so only the operator writes it.
+    "CONNECTION_MODEL_ORGS",
     # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.

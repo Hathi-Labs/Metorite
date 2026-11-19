@@ -408,6 +408,38 @@ describe("the run id (re-review of #1171)", () => {
   });
 });
 
+describe("the parked run id (RESUME-3b)", () => {
+  const parked = { threadId: "t1", agentName: "orchestrator", state: "needs_input", live: false };
+
+  it("parses parkedRunId, keeps no empty or non-text one, and a changed id is a changed list", async () => {
+    payload = [{ ...parked, parkedRunId: "run-1" }];
+    let heard = 0;
+    const off = subscribeLiveRuns(() => { heard += 1; });
+    await flush();
+    expect(getLiveRuns()[0].parkedRunId).toBe("run-1");
+    payload = [{ ...parked, parkedRunId: "run-2" }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()[0].parkedRunId).toBe("run-2");
+    expect(heard).toBe(2);
+    for (const bad of ["", 7, null]) {
+      payload = [{ ...parked, parkedRunId: bad }];
+      await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+      await flush();
+      expect("parkedRunId" in getLiveRuns()[0]).toBe(false);
+    }
+    off();
+  });
+
+  it("a row with no parkedRunId keeps no such key", async () => {
+    payload = [parked];
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    expect("parkedRunId" in getLiveRuns()[0]).toBe(false);
+    off();
+  });
+});
+
 describe("no surface polls the run list on its own", () => {
   // The structural half: a new loop anywhere in the app fails here.
   const SRC = fileURLToPath(new URL("..", import.meta.url));
