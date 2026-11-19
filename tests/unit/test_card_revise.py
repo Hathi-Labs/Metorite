@@ -1750,3 +1750,30 @@ async def test_the_gateway_read_takes_no_draft_of_another_mailbox(
         {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "New."}, object(),
         thread=THREAD, member=MEMBER, org=ORG, replaces="d9", upsert=upsert)
     assert saved.outcome == cr.CREATED and [c.draft_id for c in calls] == [None]
+
+
+# ── 14. After the merge of task 3605 (Markdown mail) ────────────────────────
+
+
+async def test_each_chat_save_carries_body_markdown(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """The create and the in-place update both carry ``body_markdown``."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    await _save(RAVI, "Rates", "Hi **Ravi**.")
+    assert [c.get("draft_id") for c in tool.calls] == [None, "d0001"]
+    assert all(c.get("body_markdown") is True for c in tool.calls)
+
+
+async def test_the_card_saves_carry_body_markdown_on_update(gw_drafts: Any) -> None:
+    """The new-mail card and the held form card send ``body_markdown`` on the
+    update of the named draft too."""
+    await gw_drafts.seed([F.KNOWN], "Rates", "Old text.")
+    card = await NM._card(card_thread_id=CHAT, replaces=D9, cc=[])
+    await NM._act(card["card_id"], NM._answer(action="save", body="New.", cc=()))
+    held = await NM._held(card_thread_id=CHAT, replaces=gw_drafts.saves[-1].draft_id)
+    await NM._held_act(held["card_id"], NM._answer(action="save", cc=()))
+    assert [s.draft_id for s in gw_drafts.saves] == [D9, D9]
+    assert all(s.body_markdown is True for s in gw_drafts.saves)
