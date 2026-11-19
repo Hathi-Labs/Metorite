@@ -399,7 +399,7 @@ def _fold(text: Any) -> str:
     text = unicodedata.normalize("NFC", text.lower())
     return "".join(ch for ch in text
                    if ch.isalnum()
-                   or (unicodedata.category(ch).startswith("M") and not "︀" <= ch <= "️"))
+                   or (unicodedata.category(ch).startswith("M") and not 0xFE00 <= ord(ch) <= 0xFE0F))
 
 
 def _own_term(word: str) -> bool:
