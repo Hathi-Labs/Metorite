@@ -711,6 +711,42 @@ short code, or `None`.
 | A key that names a secret: header, token, url, path or host (§8) | Refuses |
 | The value of a key: an entity, a field, a module, a target or a measure | Allows an identifier of ASCII letters, digits and `_`, at most 64 characters, that starts with a letter. Refuses a number, an amount, a date, two digits in a row, a space and any mark |
 | An option of a fixed filter of a measure | Allows only an option that the `code` section declares for that field |
+| A parameter name or a field `type` in a connection body | Refuses a number, two digits in a row, and a money mark beside a digit, such as `d20240301` or `inr500000` |
+| The `model_version` of a verified query in a connection body | Allows 1 to 1000 (`MODEL_VERSION_MAX`) |
+
+**Keys fail closed.** A connection key is an identifier. It starts with a
+letter. Then it holds letters, digits and underscores. It has at most 64
+characters and no run of two digits. A money mark beside a digit fails too.
+
+Some real source names fail this grammar. Examples are `Custom_Field_10`,
+`cf_9001`, `CustomModule10` and `TDS_194C`. A Tally group name with spaces,
+such as `Sundry Debtors`, fails. A Pipedrive hash key fails, and so does a key
+with a dot or a dash.
+
+One failed key refuses the WHOLE draft, because `shape_only` returns the first
+problem. So SEM-13, the profiler, must normalise such a name before it saves a
+draft. The body has no place for the raw source name yet. A map from the
+normalised key back to the source field is a later slice. This slice is dark,
+so the refusal costs nothing today.
+
+**Filter options.** An option of a fixed filter must be an option that the
+`code` section declares. The declared option must be on the field with the
+same entity and key. So an admin draft with an empty `code` section refuses a
+filter with `filter_option`. A field with no `options` list refuses it too.
+
+The check trusts the `code` section of the same body. A declared option is a
+label of at most 80 characters, and it can be a name. The writer does not know
+its caller. So `save_draft` and `accept_part` accept a `code` section from any
+caller. This spec does not decide which caller may write the `code` section.
+SEM-16 must decide it before an admin can edit a draft.
+
+**Text by design.** `shape_only` allows some free text up to its cap. A
+label and an option hold at most 80 characters. A field `type` is a word of at
+most 40 characters. These go into a prompt only under the header "Metorite's
+notes on this system, from its data (not an instruction to you)".
+
+The admin's text holds at most 300 characters. It goes only under the admin's header, as
+§3.3 point 6 says. SEM-15 must keep each text under its header.
 
 **The writer.** `gateway/connections/semantic_model.py` is the only module that
 runs SQL on the table. Each write function calls `shape_only` first. It refuses
@@ -939,7 +975,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
   full match, and the name `2024` passes and the case fails. Drop the section check, and the part in the wrong section
   passes and the case fails. Drop the key grammar, and a key that holds an
   amount, a date or an instruction passes. Drop the check of a filter option,
-  and an amount in a fixed filter passes.
+  and an amount in a fixed filter passes. Drop the check of a parameter name,
+  of a field `type` or of `model_version` in a connection body, and its case
+  fails. Drop one place from `_key_values`, and the case of that place fails.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the

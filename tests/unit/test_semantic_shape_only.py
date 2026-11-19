@@ -410,6 +410,126 @@ def test_row_10_the_key_problem_refuses_each_shape_of_a_value() -> None:
         assert cat.connection_key_problem(bad) == "key_value", bad
 
 
+def _query(body: dict[str, Any]) -> dict[str, Any]:
+    return body["admin"]["queries"][0]
+
+
+def _set_measure_filter_field(body: dict[str, Any], value: str) -> None:
+    body["admin"]["measures"][0]["filters"] = [{"field": value, "options": ["Open"]}]
+
+
+def _set_query_fields(body: dict[str, Any], value: str) -> None:
+    shape = _query(body)["query"]
+    del shape["measure"]
+    shape["aggregate"], shape["fields"] = "sum", [value]
+
+
+def _set_group_by(body: dict[str, Any], value: str) -> None:
+    _query(body)["query"]["group_by"] = [value]
+
+
+#: More places of a key, set by a function, and the code of a bad value.
+#: Each one is a value of ``_key_values``. A drop of one name from that
+#: function turns its case red.
+_MORE_KEY_PLACES = [
+    pytest.param(lambda b, v: b["admin"]["joins"][0].update(module=v), "admin.joins:key_value",
+                 id="admin.join.module"),
+    pytest.param(lambda b, v: b["admin"]["joins"][0].update(field=v), "admin.joins:key_value",
+                 id="admin.join.field"),
+    pytest.param(_set_measure_filter_field, "admin.measures:key_value",
+                 id="admin.measure.filter_field"),
+    pytest.param(_set_query_fields, "admin.queries:key_value", id="admin.query.fields"),
+    pytest.param(_set_group_by, "admin.queries:key_value", id="admin.query.group_by"),
+]
+
+
+@pytest.mark.parametrize("value", _BAD_KEYS)
+@pytest.mark.parametrize(("place", "code"), _MORE_KEY_PLACES)
+def test_row_10_more_places_of_a_key(place: Any, code: str, value: str) -> None:
+    """Mutation: drop the name of the place from ``_key_values``, and its
+    cases pass."""
+    body = _good()
+    place(body, value)
+    assert shape_only(body) == code
+
+
+#: The places of a key that the SEM-7 check holds to ``_SLUG``. A bad value
+#: there must pass ``_SLUG``, so it reaches the key check.
+_SLUG_KEY_PLACES = [
+    pytest.param(lambda b, v: b["admin"]["measures"][0].update(key=v), "admin.measures:key_value",
+                 id="admin.measure.key"),
+    pytest.param(lambda b, v: _query(b).update(key=v), "admin.queries:key_value",
+                 id="admin.query.key"),
+    pytest.param(lambda b, v: _query(b)["query"].update(measure=v), "admin.queries:key_value",
+                 id="admin.query.measure"),
+]
+
+
+@pytest.mark.parametrize("value", ["acme2024", "d20240301", "rs5", "inr500000"])
+@pytest.mark.parametrize(("place", "code"), _SLUG_KEY_PLACES)
+def test_row_10_a_slug_key_that_hides_a_value(place: Any, code: str, value: str) -> None:
+    """Mutation: drop the name of the place from ``_key_values``, and its
+    cases pass."""
+    body = _good()
+    place(body, value)
+    assert shape_only(body) == code
+
+
+def test_row_10_a_tax_mark_with_a_valid_tax_word_refuses_a_bad_key() -> None:
+    """The probe of the first review used the tax word ``gst``, which is no
+    tax mark. With a valid word the key check speaks."""
+    body = _good()
+    body["admin"]["tax_marks"][0]["entity"] = "125000"
+    assert shape_only(body) == "admin.tax_marks:key_value"
+
+
+# ── Row 12: a parameter name, a field type and a model version (P2, P3) ─────
+
+
+def _named(name: str) -> dict[str, Any]:
+    body = _good()
+    query = _query(body)
+    query["question"] = "Sales for {" + name + "} in {month}"
+    query["params"][0]["name"] = name
+    query["query"]["where"][0]["param"] = name
+    return body
+
+
+@pytest.mark.parametrize("name", ["d20240301", "inr500000", "rs5", "x99"])
+def test_row_12_a_parameter_name_that_hides_a_value_is_refused(name: str) -> None:
+    """``_PARAM_NAME`` allows a run of digits, and the SEM-7 literal check
+    removes ``{name}`` from the question first. Mutation: drop the call of
+    ``_query_value_problem`` in ``_connection_item_problem``, and each case
+    passes."""
+    assert shape_only(_named(name)) == "admin.queries:param_value"
+
+
+@pytest.mark.parametrize("name", ["customer", "q1", "deal_owner"])
+def test_row_12_a_parameter_name_that_is_a_name_passes(name: str) -> None:
+    assert shape_only(_named(name)) is None
+
+
+@pytest.mark.parametrize("kind", ["inr500000", "d20240301", "rs5000", "x9999999"])
+def test_row_12_a_field_type_that_hides_a_value_is_refused(kind: str) -> None:
+    """The type stays an open ``_SLUG`` word, because source types differ.
+    Mutation: drop the type check of ``_connection_item_problem``, and each
+    case passes."""
+    assert shape_only(_with(("code", "fields", 0, "type"), kind)) == "code.fields:type"
+
+
+@pytest.mark.parametrize("kind", ["picklist", "currency", "text", "int8", "datetime"])
+def test_row_12_a_field_type_of_a_source_passes(kind: str) -> None:
+    assert shape_only(_with(("code", "fields", 0, "type"), kind)) is None
+
+
+def test_row_12_the_model_version_of_a_query_is_capped() -> None:
+    """Mutation: drop the ``MODEL_VERSION_MAX`` check, and 125000 passes."""
+    path = ("admin", "queries", 0, "model_version")
+    assert shape_only(_with(path, cat.MODEL_VERSION_MAX)) is None
+    assert shape_only(_with(path, 125000)) == "admin.queries:model_version"
+    assert shape_only(_with(path, cat.MODEL_VERSION_MAX + 1)) == "admin.queries:model_version"
+
+
 # ── Row 11: an option of a fixed filter (review finding P1-B) ───────────────
 
 

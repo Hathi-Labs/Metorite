@@ -1595,14 +1595,52 @@ def _targets(body: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(found)
 
 
+#: The largest ``model_version`` of a verified query in a connection body.
+#: The writer sets no cap on a version, so this is a bound that no real
+#: model reaches.
+MODEL_VERSION_MAX = 1000
+
+
+def _value_in_word(value: Any) -> bool:
+    """True when a word of closed shape (a parameter name, a field type)
+    hides a value: a number, an amount, or a run of two digits such as a
+    date in ``d20240301``."""
+    return (not isinstance(value, str) or number_like(value)
+            or _MONEY.search(value) is not None or _has_literal(value))
+
+
+def _param_names(item: Mapping[str, Any]) -> Iterable[Any]:
+    """Each parameter name of a verified query: in ``params`` and in each
+    condition of ``query.where``."""
+    yield from (p.get("name") for p in item.get("params") or [])
+    shape = item.get("query") or {}
+    yield from (w.get("param") for w in shape.get("where") or [] if "param" in w)
+
+
+def _query_value_problem(item: Mapping[str, Any]) -> str | None:
+    """The connection checks of a verified query. A parameter name is
+    copied into the question as ``{name}``, and the SEM-7 literal check
+    removes placeholders first. So a name never hides a value here."""
+    if any(_value_in_word(name) for name in _param_names(item)):
+        return "param_value"
+    version = item.get("model_version")
+    return "model_version" if isinstance(version, int) and version > MODEL_VERSION_MAX else None
+
+
 def _connection_item_problem(part: str, item: Mapping[str, Any],
                              options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
     """The checks of a connection model that run after the item check: the
-    value of each key, and the options of each fixed filter of a measure."""
+    value of each key, a field type, the parameter names and version of a
+    query, and the options of each fixed filter of a measure. The CRM path
+    (SEM-7) does not run them."""
     for value in _key_values(part, item):
         found = connection_key_problem(value)
         if found is not None:
             return found
+    if part == "fields" and "type" in item and _value_in_word(item["type"]):
+        return "type"
+    if part == "queries":
+        return _query_value_problem(item)
     return _filter_option_problem(item, options) if part == "measures" else None
 
 
@@ -1707,6 +1745,7 @@ __all__ = [
     "LOOKUPS",
     "MODEL_SECTIONS",
     "MODEL_V",
+    "MODEL_VERSION_MAX",
     "MODULE_PARTS",
     "MONEY_PURPOSES",
     "NUMBER_TYPES",
