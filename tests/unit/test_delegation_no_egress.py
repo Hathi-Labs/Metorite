@@ -146,6 +146,8 @@ def _no_database(monkeypatch):
     # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
     # of a lit org (the dark case is in test_attachment_analyze_image.py).
     monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
+    # SBX-19: compute_run is per org too. The covered run pins a lit org.
+    monkeypatch.setattr(_ti_vox, "_compute_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -570,8 +572,11 @@ def _egress_in(body: dict[str, Any]) -> list[str]:
 
 def _blocked(result: str) -> bool:
     """A call that ran nothing: refused by the H-236 middleware, or not found
-    because the run does not hold the tool."""
-    return "off in this run" in result or "not found" in result
+    because the run does not hold the tool. HRD-1b (task 3230): a delegated
+    run answers a name that it does not hold with the HRD-1 text, which
+    starts "Not run". Its model never reads MAF's own "not found" text."""
+    return ("off in this run" in result or "not found" in result
+            or result.startswith("Not run"))
 
 
 def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # noqa: F811

@@ -18,7 +18,7 @@ named values for ``extra=``. This module never copies a name by a pattern.
   SDK adds ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself
   (``copilot/client.py`` ``_start_cli_server``).
 * ``docker_env()`` adds the names that tell the ``docker`` CLI where the
-  daemon is.
+  daemon is. Its ``extra=`` takes those names only (SBX-15).
 
 This module holds no I/O. The fence is ``tests/unit/test_child_env_seam.py``
 (BH-F1), an AST scan of ``apps/`` and ``packages/``. The stub CLI test is
@@ -268,6 +268,21 @@ def copilot_env() -> dict[str, str]:
     return env
 
 
-def docker_env() -> dict[str, str]:
-    """The env of a ``docker`` CLI child: the base, and ``DOCKER_NAMES``."""
-    return child_env(extra=env_values(*DOCKER_NAMES))
+def docker_env(*, extra: Mapping[str, str | None] | None = None) -> dict[str, str]:
+    """The env of a ``docker`` CLI child: the base, and ``DOCKER_NAMES``.
+
+    *extra* sets a name of ``DOCKER_NAMES`` by value, and a ``None`` value
+    leaves the name out. It takes no other name, so a ``docker`` child never
+    gets more than the daemon names. The sandbox broker passes
+    ``DOCKER_HOST`` here on its ``docker-remote`` backend (SBX-15), so only
+    its own ``docker`` child reaches the remote daemon.
+    """
+    names: dict[str, str | None] = dict(env_values(*DOCKER_NAMES))
+    if extra:
+        if extra is os.environ:
+            raise TypeError("docker_env(extra=os.environ) gives the child every secret")
+        unknown = sorted(set(extra) - set(DOCKER_NAMES))
+        if unknown:
+            raise TypeError(f"docker_env extra takes only the daemon names, not {unknown}")
+        names.update(extra)
+    return child_env(extra=names)
