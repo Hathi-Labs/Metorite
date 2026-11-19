@@ -3927,19 +3927,16 @@ async def _modules_answer(page: int | None) -> str:
 @_read_tool
 async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
-    field_filters: dict[str, str] | None = None,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
     with their ids. q matches the record name. When the module search is
     on, q also finds words in a lookup name or text value, and marks a near
-    spelling. It searches the first 40 text fields. field_filters work as in
-    crm_aggregate."""
+    spelling. It searches the first 40 text fields."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
-    params: dict[str, Any] = {"q": q, "page": number, "page_size": size}
-    for key, value in (field_filters or {}).items():
-        params[f"field.{key}"] = value
-    data = await _get(f"/crm/modules/{mod}/records", params) or {}
+    data = await _get(f"/crm/modules/{mod}/records", {
+        "q": q, "page": number, "page_size": size,
+    }) or {}
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     found = find_line(data)
