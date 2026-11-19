@@ -1598,6 +1598,305 @@ def module_where(
                     source=from_source(*sources))
 
 
+# ── q across a module (CRM-Q34-7, crm_platform.md §18.17) ───────────────────
+#
+# For an org on CRM_MODULE_FIND_ORGS, ``q`` on the module list AND on a module
+# total is ONE predicate, :func:`find_where`. Both routes call it, so a total
+# counts exactly the rows that the list shows for the same ``q``. Fence:
+# ``tests/unit/test_crm_module_find.py``.
+#
+# * **Where it looks.** The record name, the name of each lookup value and
+#   each text value, in ONE ``concat_ws`` of each row over the detoasted copy
+#   (:data:`DETOAST_JOIN`). The fields are the ones of :data:`FIND_TYPES` in
+#   the field definitions of the module, by position, at most
+#   :data:`FIND_KEYS_MAX`. A field past the cap is not searched.
+# * **Word by word.** Each word of ``q`` must be in the row, in any case:
+#   ``ILIKE ALL`` over one pattern for each word, so the row text is built
+#   once. The words are the ones of ``core.search_words``, the splitter of
+#   the core lists. ``%``, ``_`` and ``\`` in ``q`` are literal:
+#   :func:`like_pattern` escapes them (the core lists do not,
+#   ``core.search_where``).
+# * **The near pass.** Only when the exact pass counts no row. ONE bounded
+#   read takes the stored names (the record name and each lookup name) under
+#   the same filters, and ``acb_common.name_match`` judges them in Python.
+#   A word then also matches a row that holds a near name. With no row, the
+#   answer names at most :data:`NEAREST_MAX` stored names nearest to ``q``.
+# * Every key and word is bound. The column ``name`` is the one constant.
+
+#: The stored types whose value ``q`` reads. A lookup reads its name.
+FIND_TYPES: tuple[str, ...] = (*TEXT_TYPES, "lookup")
+#: The most field keys that ``q`` reads. ``concat_ws`` takes the separator,
+#: the name and each key, and Postgres takes at most 100 arguments.
+FIND_KEYS_MAX = 40
+#: The most distinct stored names that one near read takes, the most
+#: frequent first, then by name.
+NEAR_NAMES_SCAN = 2000
+#: The most near names that one word of ``q`` adds to the near pass.
+NEAR_NAMES_MAX = 10
+#: The most stored names that a zero answer names.
+NEAREST_MAX = 3
+#: The longest stored name that an answer gives. Each is org text.
+FIND_NAME_CHARS = HINT_CHARS
+
+_FIND_KEY = "agf_fk"
+_FIND_WORDS = "agf_fw"
+_FIND_NEAR = "agf_fn"
+_FIND_SCAN = "agf_fs"
+
+
+def find_words(q: str | None) -> list[str]:
+    """The words of ``q`` for :func:`find_where`, or ``[]`` for no ``q``.
+
+    The words are the ones of ``core.search_words``, the ONE splitter of the
+    core lists: a word holds a letter or a digit, so ``&``, ``/`` and ``-``
+    alone are no word. A ``q`` of more than ``core.MAX_SEARCH_WORDS`` words
+    is one phrase. A ``q`` of more than ``core.MAX_Q_CHARS`` characters is
+    the 422 of ``search_words``, and a NUL is the 422 of
+    ``records.refuse_nul``. A ``q`` with no letter and no digit is no ``q``."""
+    from gateway.routes.crm.core import search_words
+    from gateway.routes.crm.records import refuse_nul
+
+    phrase = (q or "").strip()
+    if not phrase:
+        return []
+    refuse_nul([("q", phrase)])
+    words = search_words(phrase)
+    if not any(ch.isalnum() for ch in phrase):
+        return []
+    return words
+
+
+def like_pattern(word: str) -> str:
+    """*word* as an ``ILIKE`` pattern that finds it anywhere. ``\\``, ``%``
+    and ``_`` are escaped with ``\\``, the default escape of ``LIKE``, so
+    each is a literal character."""
+    escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def find_keys(scope: FieldScope) -> tuple[FieldRef, ...]:
+    """The fields that ``q`` reads: each field of :data:`FIND_TYPES` of the
+    module, in the order of the field definitions (their position), at most
+    :data:`FIND_KEYS_MAX`. A key word and a sum are no stored field."""
+    refs = [ref for key, ref in scope.fields.items()
+            if key not in KEY_WORDS and not ref.parts and ref.type in FIND_TYPES]
+    return tuple(refs[:FIND_KEYS_MAX])
+
+
+def _lookup_name(column: str, p: str) -> str:
+    """The name of a lookup value ``{id, name}``, or the text of a string.
+    An array, a number and each other value give NULL, so the JSON text of
+    a value never reaches the row text (fix round, F4)."""
+    return (
+        f"(CASE jsonb_typeof({column} -> :{p}) "
+        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' "
+        f"WHEN 'string' THEN {column} ->> :{p} END)"
+    )
+
+
+def _text_value(column: str, p: str) -> str:
+    """The text of a text field: a string or a number as it is, the name of
+    an object (a Zoho type that the mapping keeps as ``text``), and NULL for
+    an array or any other value. So ``q="id"`` never matches the JSON text
+    of an object (fix round, P2-2)."""
+    return (
+        f"(CASE jsonb_typeof({column} -> :{p}) "
+        f"WHEN 'string' THEN {column} ->> :{p} "
+        f"WHEN 'number' THEN {column} ->> :{p} "
+        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' END)"
+    )
+
+
+def _find_parts(scope: FieldScope) -> tuple[str, str, dict[str, Any]]:
+    """The text of a row (``concat_ws`` of the name and each value), the
+    array of its stored names (the name and each lookup name), and the
+    bound keys. Each expression reads the detoasted copy."""
+    column = _reads(scope.column)
+    values, names = ["name"], ["name"]
+    params: dict[str, Any] = {}
+    for i, ref in enumerate(find_keys(scope)):
+        p = f"{_FIND_KEY}{i}"
+        params[p] = ref.key
+        if ref.type == "lookup":
+            values.append(_lookup_name(column, p))
+            names.append(_lookup_name(column, p))
+        else:
+            values.append(_text_value(column, p))
+    return (f"concat_ws(' ', {', '.join(values)})",
+            f"ARRAY[{', '.join(names)}]", params)
+
+
+def find_where(scope: FieldScope, words: Sequence[str],
+               near: Mapping[int, Sequence[str]] | None = None) -> WhereSql:
+    """THE predicate of ``q`` across a module (CRM-Q34-7). The aggregate
+    (``aggregate._read``) and the module list (``modules.list_module_records``)
+    both call it, so they count the same rows.
+
+    With no *near*: every word is in the text of the row, in any case
+    (``ILIKE ALL``, one text of each row). With *near* (word index → stored
+    names of :func:`find_near`): a word with near names also matches a row
+    whose name or lookup name is one of them. The FROM text is
+    :data:`DETOAST_JOIN`."""
+    doc, names, params = _find_parts(scope)
+    patterns = [like_pattern(w) for w in words]
+    if not near:
+        params[_FIND_WORDS] = patterns
+        return WhereSql(sql=f"{doc} ILIKE ALL (CAST(:{_FIND_WORDS} AS text[]))",
+                        params=params, source=_source_of(scope.column))
+    arms = []
+    for i, pattern in enumerate(patterns):
+        w = f"{_FIND_WORDS}{i}"
+        params[w] = pattern
+        arm = f"{doc} ILIKE :{w}"
+        if near.get(i):
+            n = f"{_FIND_NEAR}{i}"
+            params[n] = list(near[i])
+            arm = f"({arm} OR {names} && CAST(:{n} AS text[]))"
+        arms.append(arm)
+    return WhereSql(sql=f"({' AND '.join(arms)})", params=params,
+                    source=_source_of(scope.column))
+
+
+def stored_name(name: Any) -> str:
+    """A stored name for an answer: one line, at most :data:`FIND_NAME_CHARS`
+    characters. It is org text, and a tool quotes it."""
+    return " ".join(str(name).split())[:FIND_NAME_CHARS]
+
+
+@dataclass(frozen=True)
+class FindNear:
+    """What the near pass of :func:`find_near` found. ``near`` maps a word
+    index to its near stored names. ``nearest`` holds at most
+    :data:`NEAREST_MAX` stored names nearest to the whole ``q``, for an
+    answer with no row."""
+
+    near: dict[int, tuple[str, ...]]
+    nearest: tuple[str, ...]
+
+    def names(self) -> list[str]:
+        """Each near name once, in word order, for the answer. Each is org
+        text, so :func:`stored_name` cuts it."""
+        out: list[str] = []
+        for i in sorted(self.near):
+            for name in self.near[i]:
+                shown = stored_name(name)
+                if shown not in out:
+                    out.append(shown)
+        return out
+
+
+def _near_names_sql(names: str, where: str) -> str:
+    """The ONE bounded read of the stored names under *where*, the most
+    frequent first. *names* comes from :func:`_find_parts`, and *where* is
+    the WHERE text of the caller (``module_where`` or the list contract)."""
+    base = where if where.strip() else " WHERE true"
+    return (
+        f"SELECT agf_u.agf_n AS n, count(*) AS c FROM crm_module_records{DETOAST_JOIN} "
+        f"CROSS JOIN LATERAL unnest({names}) AS agf_u(agf_n){base} "
+        "AND agf_u.agf_n IS NOT NULL AND btrim(agf_u.agf_n) <> '' "
+        f"GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT :{_FIND_SCAN}"
+    )
+
+
+def _holds_word(word: str, name: str) -> bool:
+    """True when *name* holds *word* itself, or its plural
+    (``name_match.same_word``). Such a name is no near spelling."""
+    from acb_common import name_match
+
+    asked = name_match.words(word)
+    parts = name_match.words(name)
+    return bool(asked) and all(
+        any(name_match.same_word(a, part) for part in parts) for a in asked)
+
+
+def rank_near(words: Sequence[str], names: Sequence[str], *,
+              deadline: float | None = None) -> FindNear:
+    """Pure: the near names of each word, and the nearest names of ``q``.
+
+    The near words are ``core.near_words`` of ``q``: at most
+    ``name_match.NEAR_MAX_WORDS`` (3) words, and each word with 4 letters or
+    more. A ``q`` that ``search_words`` read as one phrase has more words,
+    so it gets none. A name is near at ``name_match.NEAR_SCORE``, and a name
+    that holds the word itself is left out (:func:`_holds_word`). At most
+    :data:`NEAR_NAMES_MAX` for each word, the nearest first. ``nearest``
+    takes the names whose ``name_score`` against the whole ``q`` reaches
+    ``NEAR_CANDIDATE_SIMILARITY``, at most :data:`NEAREST_MAX`, each cut by
+    :func:`stored_name`. Past *deadline* (``time.monotonic()``), the scoring
+    stops and gives what it found, as HRD-18b does."""
+    import time
+
+    from acb_common import name_match
+    from gateway.routes.crm.core import near_words
+
+    def late(i: int) -> bool:
+        return deadline is not None and i % 256 == 0 and time.monotonic() > deadline
+
+    near: dict[int, tuple[str, ...]] = {}
+    for i, word in near_words(" ".join(words)):
+        scored: list[tuple[float, str]] = []
+        for k, n in enumerate(names):
+            if late(k):
+                break
+            score = name_match.name_score(word, n)
+            if score >= name_match.NEAR_SCORE and not _holds_word(word, n):
+                scored.append((score, n))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        if scored:
+            near[i] = tuple(n for _s, n in scored[:NEAR_NAMES_MAX])
+    phrase = " ".join(words)
+    ranked: list[tuple[float, str]] = []
+    for k, n in enumerate(names):
+        if late(k):
+            break
+        ranked.append((name_match.name_score(phrase, n), n))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    nearest: list[str] = []
+    for score, name in ranked:
+        if score < name_match.NEAR_CANDIDATE_SIMILARITY or len(nearest) == NEAREST_MAX:
+            break
+        shown = stored_name(name)
+        if shown and shown not in nearest:
+            nearest.append(shown)
+    return FindNear(near=near, nearest=tuple(nearest))
+
+
+async def find_near(db: Any, scope: FieldScope, words: Sequence[str], where: str,
+                    params: Mapping[str, Any]) -> FindNear:
+    """The near pass of ``q`` (CRM-Q34-7): ONE bounded read of the stored
+    names of the rows under *where* and *params* (the filters of the call,
+    with no ``q``), in the caller's tenant session, so RLS keeps it in the
+    org. Then :func:`rank_near` judges them in a thread, off the event loop,
+    with ``name_match.scoring_deadline()``, the pattern of
+    ``records.near_names`` (HRD-18b). The caller runs it only when the exact
+    pass counted no row."""
+    import asyncio
+
+    from acb_common import name_match
+
+    _doc, names, keys = _find_parts(scope)
+    rows = (await db.execute(text(_near_names_sql(names, where)), {
+        **params, **keys, _FIND_SCAN: NEAR_NAMES_SCAN,
+    })).fetchall()
+    return await asyncio.to_thread(rank_near, list(words), [str(r.n) for r in rows],
+                                   deadline=name_match.scoring_deadline())
+
+
+def row_near_name(scope: FieldScope, name: Any, fields: Mapping[str, Any],
+                  hit: FindNear) -> str | None:
+    """The stored name of one row that the near pass matched: the record
+    name, else the first lookup name of :func:`find_keys` that is near."""
+    wanted = {n for found in hit.near.values() for n in found}
+    candidates = [name] + [
+        (fields.get(ref.key) or {}).get("name") if isinstance(fields.get(ref.key), dict)
+        else fields.get(ref.key)
+        for ref in find_keys(scope) if ref.type == "lookup"
+    ]
+    for value in candidates:
+        if value is not None and str(value) in wanted:
+            return stored_name(value)
+    return None
+
+
 # ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
 
 #: The list filters of a core entity that an overlay does not take. Each
@@ -1984,6 +2283,10 @@ __all__ = [
     "day_sql",
     "day_start",
     "field_pairs",
+    "find_keys",
+    "find_near",
+    "find_where",
+    "find_words",
     "from_source",
     "group_sql",
     "gst_check",
