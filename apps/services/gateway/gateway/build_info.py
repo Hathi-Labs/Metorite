@@ -37,11 +37,17 @@ writes only when the whole apply finished.
 
 Nothing here touches the database. A version endpoint that needs a query fails
 in precisely the situation where you most want to know what is running.
+
+⚠️ **One function runs a process: `build_committed_at`** (WS-TOF TOF-2e). It
+runs `git show` for the failure sync job, never for a request. Every other
+function here reads files only.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -150,6 +156,55 @@ def build_sha() -> str | None:
 
 
 _SHA_CHARS = frozenset("0123456789abcdef")
+
+#: The seconds that one ``git show`` of :func:`build_committed_at` may take.
+COMMIT_TIME_TIMEOUT_S = 5.0
+#: The commit times that :func:`build_committed_at` read, by SHA. A read with
+#: no answer is not kept, so the next call tries again. A git that cannot read
+#: the checkout today can read it after a repair.
+_COMMITTED_AT: dict[str, datetime] = {}
+
+
+def build_committed_at(sha: str | None) -> datetime | None:
+    """The commit time of *sha* (UTC), or None when git gives no answer.
+
+    WS-TOF TOF-2e (``tool_failure_log.md`` §7.4, "holds the fix"). It runs
+    ``git show -s --format=%ct <sha>`` once for each SHA, with a timeout of
+    :data:`COMMIT_TIME_TIMEOUT_S`, and keeps each commit time that it reads.
+
+    ⚠️ **Only the failure sync job calls it, never a request handler.** A
+    request handler must not spawn a process (:func:`_sha_from_git_dir`). The
+    job calls it through ``asyncio.to_thread``.
+
+    A value that is not 7 to 40 lower-case hex characters gets None with no
+    spawn, so no caller can put an option or a ref name on the command line.
+    The child gets the one allowlisted env (``acb_common.child_env``).
+    """
+    value = sha.strip() if isinstance(sha, str) else ""
+    if not 7 <= len(value) <= 40 or not set(value) <= _SHA_CHARS:
+        return None
+    known = _COMMITTED_AT.get(value)
+    if known is not None:
+        return known
+    root = _repo_root()
+    if root is None:
+        return None
+    from acb_common.child_env import child_env
+
+    try:
+        done = subprocess.run(  # a fixed argv, no shell
+            ["git", "-C", str(root), "show", "-s", "--format=%ct", value],
+            capture_output=True, text=True, timeout=COMMIT_TIME_TIMEOUT_S,
+            check=False, env=child_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (done.stdout or "").strip().splitlines()
+    if done.returncode != 0 or not out or not out[-1].isdigit():
+        return None
+    at = datetime.fromtimestamp(int(out[-1]), tz=UTC)
+    _COMMITTED_AT[value] = at
+    return at
 
 
 def _marker_path() -> Path | None:

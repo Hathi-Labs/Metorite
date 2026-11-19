@@ -549,8 +549,9 @@ SQL_NAMES = re.compile(
     r"\b(failure_events|failure_org_days|failure_fingerprints|failure_daily|failure_config"
     r"|failure_reports|failure_tally|failure_org_band|failure_due|failure_set"
     r"|failure_prune_daily)\b")
-#: The modules that may name one. TOF-2e adds the sync job.
-SQL_OWNERS = {"packages/acb_common/acb_common/failure_log.py"}
+#: The modules that may name one: the writer and the sync job (TOF-2e).
+SQL_OWNERS = {"packages/acb_common/acb_common/failure_log.py",
+              "apps/services/gateway/gateway/failures/sync.py"}
 
 
 def _sources(word: re.Pattern[str] | str) -> Iterator[tuple[str, ast.Module]]:

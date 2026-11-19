@@ -69,6 +69,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
         pass
 
+    # The release of each failure row of this process (TOF-2e,
+    # tool_failure_log.md §6 "The release"): the SHA that build_sha() cached
+    # at start. With no SHA, a row holds NULL.
+    try:
+        from acb_common import failure_log as _failure_log
+        _failure_log.set_release(build_sha())
+    except Exception:  # a row with no release only
+        pass
+
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
     # shells).  Point VIRTUAL_ENV at this venv and put its bin first on PATH, so
     # a child finds the venv's python and tools.  Agent dependency installs do
@@ -576,6 +585,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.graph_jobs_skipped", error=str(exc))
     try:
+        # The failure sync kind, its seed hook and its prune hook register at
+        # import (WS-TOF TOF-2e, gateway/failures/sync.py). Dark: each needs
+        # TOOL_FAILURE_TASKS and the three ids. Its own try, for the reason above.
+        from gateway.failures import sync as _failure_sync  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.failure_jobs_skipped", error=type(exc).__name__)
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:
@@ -767,6 +783,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway.jobs.worker import stop_job_worker
         await stop_job_worker()
     except Exception:
+        pass
+
+    # Stop the drain of the failure log, and write the records that wait
+    # (TOF-2e, acb_common/failure_log.py). It never raises.
+    try:
+        from acb_common import failure_log as _failure_log
+        await _failure_log.stop_drain()
+    except Exception:  # a lost record is a lower count only
         pass
 
     # Stop the Knowledge embed sweep and wait for a tick in progress.

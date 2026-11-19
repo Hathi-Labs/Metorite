@@ -604,6 +604,83 @@ def test_the_app_role_prunes_its_own_tenant_rows_only(world) -> None:
     assert _admin(world, "SELECT organization_id::text FROM failure_events") == [(world.b,)]
 
 
+def test_p9_the_prune_hook_keeps_each_retention_in_each_org(world, monkeypatch) -> None:
+    """P9 (TOF-2e, §5.4). The prune hook of ``gateway/failures/sync.py`` runs
+    in the session of each org, as the app role. ``failure_events`` older than
+    30 days and ``failure_org_days`` older than 90 days go, in that org only.
+    In the internal org it also takes ``failure_daily`` older than 400 days.
+
+    Mutations: an event bound of 40 days, an org day bound of 100 days, no
+    org term on a delete as the owner role (RLS still binds the app role),
+    and no daily prune. Each bound and the daily prune turn this test red."""
+    from datetime import timedelta
+
+    from acb_common import get_settings
+    from gateway.failures import sync
+
+    s = get_settings()
+    for name, value in (("tool_failure_tasks", True), ("tool_failure_org_id", world.a),
+                        ("tool_failure_project_id", str(uuid.uuid4())),
+                        ("tool_failure_run_as", "tool-failures@tof2e.test")):
+        monkeypatch.setattr(s, name, value)
+    _internal(world, world.a)
+    args = _args()
+    fp = args["fp"]
+    _tally(world.app, world.a, args)
+    today = _admin(world, "SELECT (now() AT TIME ZONE 'UTC')::date")[0][0]
+    with world.p.admin_engine.begin() as c:
+        for org in (world.a, world.b, world.c):
+            for age, mark in (("31 days", "old"), ("29 days", "new")):
+                c.execute(text(
+                    "INSERT INTO failure_events (organization_id, occurred_at, fingerprint, "
+                    "source, surface, error_code, tool, exc_type, code_site, run_id) VALUES "
+                    "(CAST(:o AS uuid), now() - CAST(:age AS interval), :fp, 'chat_tool', "
+                    "'chat', 'exception', :t, :e, :s, :m)"),
+                    {"o": org, "age": age, "fp": fp, "t": args["tool"], "e": args["exc"],
+                     "s": args["site"], "m": mark})
+            for days in (91, 89):
+                c.execute(text(
+                    "INSERT INTO failure_org_days (organization_id, fingerprint, day) "
+                    "VALUES (CAST(:o AS uuid), :fp, :d) ON CONFLICT DO NOTHING"),
+                    {"o": org, "fp": fp, "d": today - timedelta(days=days)})
+        for days in (401, 399):
+            c.execute(text("INSERT INTO failure_daily (fingerprint, day, occurrences) "
+                           "VALUES (:fp, :d, 1)"), {"fp": fp, "d": today - timedelta(days=days)})
+
+    def prune(org: str) -> None:
+        async def go() -> None:
+            from acb_common.db import tenant_session
+
+            url = world.p.app_url.render_as_string(hide_password=False)
+            async with tenant_engine_scope(url), tenant_session(org) as db:
+                await sync.prune_hook(db, today)
+        asyncio.run(go())
+
+    def left(org: str) -> tuple[list[Any], list[Any]]:
+        events = sorted(r[0] for r in _admin(
+            world, "SELECT run_id FROM failure_events "
+                   "WHERE organization_id = CAST(:o AS uuid) AND run_id IS NOT NULL", o=org))
+        days = sorted((today - r[0]).days for r in _admin(
+            world, "SELECT day FROM failure_org_days WHERE organization_id = CAST(:o AS uuid) "
+                   "AND day < :t - 30", o=org, t=today))
+        return events, days
+
+    def daily() -> list[int]:
+        return sorted((today - r[0]).days for r in _admin(
+            world, "SELECT day FROM failure_daily WHERE fingerprint = :f AND day < :t - 300",
+            f=fp, t=today))
+
+    prune(world.b)
+    assert left(world.b) == (["new"], [89])
+    assert left(world.a) == (["new", "old"], [89, 91])  # another org: untouched
+    assert daily() == [399, 401]  # org B is not the internal org
+    prune(world.a)
+    prune(world.c)
+    for org in (world.a, world.b, world.c):
+        assert left(org) == (["new"], [89]), org
+    assert daily() == [399]
+
+
 
 def test_both_tenant_tables_force_row_level_security(world) -> None:
     """The mutation: drop FORCE from the migration. The suite role does not own
