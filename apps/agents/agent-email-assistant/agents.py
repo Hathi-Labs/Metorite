@@ -133,6 +133,72 @@ def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, lookalike_warning(clean)
 
 
+# ── The body of a chat mail is Markdown (task 3605) ─────────────────────────
+#
+# The gateway makes the text part and the HTML part of a sent mail from the
+# Markdown (``gateway/routes/email/markdown_mail.py``). The card shows the
+# Markdown, and an edit on the card keeps it. A draft and a held run (a
+# ``no_egress`` run, H-236) keep the text only. These helpers only add words
+# for the member and the model.
+
+#: The card line of a body with a Markdown mark.
+_FORMATTED_NOTICE = ("This text is Markdown. The sent email shows its headings, lists, "
+                     "bold and links.")
+#: The line of a draft save of a body whose formatting did not go into it.
+#: ``send_draft`` sends the draft text as typed, marks and all.
+_DRAFT_TEXT_ONLY = (" The draft holds the Markdown text as typed, because a draft holds "
+                    "text only. send_draft sends it with its marks. send_email and "
+                    "compose_reply send the formatting.")
+#: The same line in a held run, which sends text only.
+_DRAFT_TEXT_ONLY_HELD = (" The draft holds the Markdown text as typed, because a draft "
+                         "holds text only. A send of it sends that text with its marks.")
+#: One line of a paragraph: a line break that is not a blank line.
+_SAME_PARAGRAPH = r"(?:[^\n]|\n(?![ \t]*\n))"
+#: The real structure of ``markdown_mail._has_structure``, in the source. It
+#: decides only the card line. The agent cannot import the gateway, so a test
+#: holds the two to the same answer on a list of bodies
+#: (``test_email_markdown_mail.test_the_card_line_and_the_converter_agree``).
+#: Blocks: a heading, a rule, a list item, a quote, a code fence, a table.
+#: Inline: code, a ``[words](address)`` link that the parser takes, and bold,
+#: italics or strikethrough with its marks at word edges. An autolink, an
+#: image, ``__x__`` and a mark inside a word are not structure.
+#: The gateway turns indented code off, so a block starts at any indent.
+_MARKDOWN_MARK = re.compile(
+    r"(?m)^[ \t]*#{1,6}(?:[ \t]|$)"
+    r"|^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    r"|^[ \t]*[-*+][ \t]+\S|^[ \t]*1[.)][ \t]+\S"
+    r"|(?:\A|\n[ \t]*\n)[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)"
+    r"|^[ \t]*>|^[ \t]*(?:`{3,}|~{3,})"
+    r"|^[^\n]*\|[^\n]*\n[ \t]*(?=[^\n]*\|)\|?[ \t]*:?-+:?[ \t]*"
+    r"(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"
+    r"|(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)\1(?!`)"
+    r"|(?<![!\\])\[" + _SAME_PARAGRAPH.replace("[^\\n]", "[^\\[\\]\\n]") + r"*\]\([ \t]*"
+    r"(?!(?i:javascript|vbscript|file):|(?i:data):(?!(?i:image/(?:gif|png|jpeg|webp));))"
+    r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'))?[ \t]*\)"
+    r"|(?<![\w*\\])\*{1,3}(?=[^\s*])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^*\\n]")
+    + r"*?(?<=[^\s*\\])\*{1,3}(?![\w*])"
+    r"|(?<![\w_\\])_(?=[^\s_])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^_\\n]")
+    + r"*?(?<=[^\s_\\])_(?![\w_])"
+    r"|(?<![\w~\\])~~(?=[^\s~])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^~\\n]")
+    + r"*?(?<=[^\s~\\])~~(?![\w~])")
+
+
+def _formatted_notice(body: str) -> str:
+    """:data:`_FORMATTED_NOTICE` for a body that the gateway sends with HTML
+    (:data:`_MARKDOWN_MARK`), else ""."""
+    return _FORMATTED_NOTICE if _MARKDOWN_MARK.search(body or "") else ""
+
+
+def _draft_text_note(res: Any) -> str:
+    """The line for a saved draft that lost the formatting of its text
+    (``formatting: "text_only"``), else "". A held run sends text only, so
+    its line does not say that a send keeps the formatting."""
+    lost = isinstance(res, dict) and res.get("formatting") == "text_only"
+    if not lost:
+        return ""
+    return _DRAFT_TEXT_ONLY_HELD if _egress_held() else _DRAFT_TEXT_ONLY
+
+
 def _egress_held_answer(act: str) -> str:
     """The answer of a rule tool that refuses its outward part in a held run.
     It starts "Nothing changed.", so the chat card draws an act that did not
@@ -1028,17 +1094,15 @@ def _fmt_recipients(lst: Any) -> str:
 async def read_email(
     email_id: str, full: bool = False, offset: int = 0, timeline: bool = False,
 ) -> str:
-    """Fetch one email by id — sender, To/Cc, subject, attachments, and body.
+    """Fetch one email by id: sender, To/Cc, subject, attachments and body.
 
-    The normal read gives the NEW text of the body: the quoted earlier
-    messages, the signature and any legal footer are cut (read_thread reads
-    the earlier messages of the thread, and a forwarded email comes back
-    whole). Set ``full=true`` to pull the COMPLETE body straight from the
-    provider — use it when the normal read shows a
-    cut-off body (long emails are capped in local storage), or when you need
-    the signature, the quoted text or the footer, to summarize, answer a
-    detailed question, or draft an accurate reply. A cut body says so, and
-    ``offset`` (characters, with full=true) reads the next part.
+    The normal read gives the NEW text of the body, without the quoted
+    earlier messages, the signature and any legal footer (read_thread reads
+    the earlier messages, and a forwarded email comes back whole). Set
+    ``full=true`` for the COMPLETE body from the provider: when the normal
+    read shows a cut body, or when you need the signature, the quoted text or
+    the footer. A cut body says so, and ``offset`` (characters, with
+    full=true) reads the next part.
 
     ``timeline=true`` gives instead what the automation did to this email:
     when it arrived, and each rule that matched, acted, failed or skipped it.
@@ -1706,23 +1770,20 @@ async def query_inbox(
     limit: int = 25,
     offset: int = 0,
 ) -> str:
-    """Search and filter the inbox to answer questions spanning MANY emails.
-
-    Use this for inbox-wide questions — "sales-related emails in the last month",
-    "unread mail from Acme", "marketing emails this week", "starred emails with
-    attachments". Combine any of the filters:
-      query: full-text over subject/body/sender (e.g. "sales", "invoice")
-      days: only mail received in the last N days (use 30 for "last month")
-      sender_category: the sender's category — one of Newsletter, Marketing,
-        Receipt, Calendar, Notification, Cold Email, Personal, Support
-      from_email: substring of the sender's address
+    """Search and filter the inbox to answer a question over MANY emails.
+    For example "unread mail from Acme" or "sales emails of the last month".
+    Combine any of the filters:
+      query: full-text over subject, body and sender
+      days: only mail of the last N days (30 for "last month")
+      sender_category: one of Newsletter, Marketing, Receipt, Calendar,
+        Notification, Cold Email, Personal, Support
+      from_email: part of the sender's address
       unread_only / starred_only / has_attachments / importance (high|normal|low)
       sort: newest | oldest | importance
       limit / offset: a page of results (limit at most 100)
-    account_id: one mailbox. With none, it reads All inboxes (each mailbox
-      that the member keeps in the pool), and each line carries
-      [label · address] of its mailbox.
-    Returns matching emails with ids; call read_email for an id's full content.
+    account_id: one mailbox. With none, it reads All inboxes, and each line
+      names its mailbox as [label · address].
+    Returns the emails with ids. Call read_email for the full text of one.
     """
     start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
@@ -2027,36 +2088,21 @@ async def _important_one(account_id: str, days: int = 30, offset: int = 0) -> st
 
 @_annotate_risk(open_world=False)
 async def present_email_groups(groups_json: str) -> str:
-    """Render an INTERACTIVE, CATEGORIZED board of emails in the chat — use this
-    whenever you're presenting emails split into named categories (e.g. HR,
-    Finance, R&D; or Urgent / This-week / FYI; or per-project / per-sender).
-
-    This is the categorized counterpart to the flat list card: instead of one
-    undifferentiated list, the UI shows each group as its own titled, collapsible
-    section whose rows are fully interactive (open, archive, mark-read,
-    categorize). It lets YOU decide the categories and which emails go in each,
-    so the interactive board matches the breakdown you're describing in prose.
+    """Show an interactive board of emails, split into named groups, in the chat.
+    Use it each time you show emails in groups (HR / Finance, Urgent / FYI, or
+    one group per project or sender). Each group is a titled section, and each
+    row can be opened, archived, marked read or categorized.
 
     Pass ``groups_json``: a JSON array of groups, each an object with:
-      • ``title``     (str, required) — the category name, e.g. "Finance"
-      • ``email_ids`` (list[str], required) — the message ids in this group
-        (the ``id=…`` values from find_priority / query_inbox results)
+      • ``title``     (str, required) — the group name, e.g. "Finance"
+      • ``email_ids`` (list[str], required) — the ``id=…`` values from
+        find_priority or query_inbox
       • ``note``      (str, optional) — a short caption for the group
 
-    Example::
-
-        present_email_groups('[
-          {"title": "HR", "email_ids": ["a1b2", "c3d4"],
-           "note": "onboarding + leave requests"},
-          {"title": "Finance", "email_ids": ["e5f6"]},
-          {"title": "R&D", "email_ids": ["g7h8", "i9j0"]}
-        ]')
-
-    Gather the ids first (find_priority / query_inbox),
-    decide the categories, then call this ONCE with every group. An id may appear
-    in only one group; ids you don't own are skipped. Keep your prose summary
-    short — this board carries the categorized list, so don't also print it as a
-    markdown table."""
+    Get the ids first, decide the groups, then call this ONCE with every
+    group. An id goes in one group only, and an id that you do not own is
+    skipped. Keep your text summary short: the board carries the list, so do
+    not also print it as a markdown table."""
     try:
         parsed = json.loads(groups_json)
     except (json.JSONDecodeError, TypeError) as exc:
@@ -2228,24 +2274,21 @@ async def manage_inbox(
     add_labels: list[str] | None = None,
     remove_labels: list[str] | None = None,
 ) -> str:
-    """Apply an action to one or more messages — the single "act on messages"
-    tool (state, folder, and labels).
+    """Act on one or more messages: their state, folder or labels.
 
     Each message acts in its own mailbox, so you name no mailbox. The ids can
-    come from two mailboxes (§11.3 rule 1, EM-T8e-2).
+    come from two mailboxes.
 
     Args:
         action: archive | trash | read | unread | star | unstar | move | label
-            | spam. ``spam`` (alias ``junk``) moves the messages to the
-            provider's Spam/Junk folder, the same move as the MARK_SPAM rule
-            action. It is NOT Trash: use ``trash`` only to delete.
-            | flag | unflag — the follow-up flag of Outlook (Gmail has none,
-            so use star there).
+            | spam | flag | unflag. ``spam`` (alias ``junk``) moves the
+            messages to the provider's Spam/Junk folder. It is NOT Trash: use
+            ``trash`` only to delete. ``flag`` / ``unflag`` set the follow-up
+            flag of Outlook (Gmail has none, so use star there).
         message_ids: ids of the messages to act on
-        folder: destination for ``action="move"`` (an existing folder/label —
-            e.g. "Archive" or a custom folder; create it with create_label).
-        add_labels / remove_labels: label NAMES to add/remove for
-            ``action="label"`` (syncs to the provider).
+        folder: destination for ``action="move"``, an existing folder or
+            label ("Archive"). Make a new one with create_label.
+        add_labels / remove_labels: label NAMES for ``action="label"``.
     """
     if action in ("spam", "junk"):
         # One folder key for every provider: the gateway reads "junk" as
@@ -2317,25 +2360,23 @@ async def manage_inbox(
 async def draft_reply(
     email_id: str, account_id: str, save: bool = True, instruction: str = "",
 ) -> str:
-    """Draft a context-aware reply to an email, and save it in the user's
-    Drafts folder. Nothing is sent.
+    """Draft a reply to an email and save it in Drafts. Nothing is sent.
 
-    A second chat draft of the same email updates the first one. A draft
-    that the member wrote or edited is never written over: the new text
-    then goes beside it, and the answer says so. The member can finish the
-    draft in the chat, with edit_draft and send_draft (owner, 2026-10-22). Set
-    save=false only to show a text in the chat and leave Drafts unchanged.
+    A second chat draft of the same email updates the first. A draft that the
+    member wrote or edited is never written over: the new text goes beside
+    it, and the answer says so. The member can finish the draft in the chat
+    with edit_draft and send_draft. Set save=false only to show a text in the
+    chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
-    member's words ("accept, but move it to Friday", "shorter"). Always pass
-    it when the member said anything about the content, or the drafter
-    writes from the email alone. To save or send a text that you and the
+    member's words ("accept, but move it to Friday"). Always pass it when the
+    member said anything about the content. To save or send a text that the
     member already agreed, use ``compose_reply`` with ``draft``: this tool
-    writes a new text. The draft is always made in the mailbox that received
-    the email, whatever ``account_id`` says.
+    writes a new text. The mailbox that received the email makes the draft,
+    whatever ``account_id`` says.
 
-    The draft goes to everyone when others are on the mail (Reply all), and
-    to the sender alone when nobody else is. Say which one in the answer."""
+    The draft goes to everyone on the mail (Reply all), or to the sender
+    alone when nobody else is on it. Say which one in the answer."""
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -2847,26 +2888,23 @@ async def compose_reply(
     instruction: str = "", cc: list[str] | None = None, bcc: list[str] | None = None,
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
-    member ONE card: the email it answers, every person who can get the
-    reply with a tick box, the text to edit, and Send, Save to Drafts and
-    Discard. The member decides on the card, and the tool then does it and
-    returns what happened. The card is the question, so do not ask in text
-    first. When the member says "send it", call this tool at once.
+    member ONE card: the email, each person who can get the reply with a tick
+    box, the text to edit, and Send, Save to Drafts and Discard. The tool then
+    does what the member chose and returns what happened. The card is the
+    question, so do not ask in text first. When the member says "send it",
+    call this tool at once.
 
-    The text of each card also goes to the member's Drafts. A new card for
-    the same email updates the chat's own draft, and never a draft that the
-    member wrote or edited. So the member can also finish the reply later,
-    in the chat with edit_draft and send_draft. The
-    member's Discard trashes the card's draft, unless the member edited it
-    there.
+    The text of each card also goes to Drafts. A new card for the same email
+    updates the chat's own draft, never a draft that the member wrote or
+    edited. The member can finish the reply later in the chat with edit_draft
+    and send_draft. Discard trashes the card's draft, unless the member
+    edited it there.
 
-    The card lists every person on the email, To and Cc, and each one
-    starts ticked. Leave ``reply_all`` out. Pass ``reply_all=false`` only
-    when the text is for the sender alone, or when the member says "just to
-    him": then only the sender starts ticked. The member ticks or unticks
-    each person on the card. The reply always goes from the mailbox that
-    received the email, whatever ``account_id`` says. The server derives the
-    people of the email.
+    Each person on the email, To and Cc, starts ticked. Leave ``reply_all``
+    out. Pass ``reply_all=false`` only when the text is for the sender alone,
+    or the member says "just to him": then only the sender starts ticked. The
+    reply goes from the mailbox that received the email, whatever
+    ``account_id`` says.
 
     ``cc`` holds each person that the member asks to copy ("copy Kiran and
     Veena"), as full addresses from find_contact. Put them ALL in this one
@@ -2875,22 +2913,22 @@ async def compose_reply(
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
-    with its greeting and sign-off. The card then shows that text, and not
-    a new one. Leave ``draft`` empty only when no text exists yet, and the
+    with its greeting and sign-off.
+    The body is Markdown. HTML tags show as text.
+    The card then shows that text, and not a new one. Leave ``draft`` empty only when no text exists yet, and the
     server then writes one from the email. Then put what the member wants the
     reply to say in ``instruction``, in the member's words ("accept, but move
     it to Friday"), so the server's text follows it. The card shows the text in full,
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
-    ``bcc`` holds each person that the member asks to copy in secret ("Bcc
-    Veena"), as full addresses from find_contact. The card shows them as
-    "Bcc (hidden from the others)", and a Bcc of the thread's draft shows
-    there too. The member can also type a Bcc on the card.
+    ``bcc`` holds each person that the member asks to copy in secret, as
+    full addresses from find_contact. The card shows them as "Bcc (hidden
+    from the others)".
 
-    Each person on the card has a tick box, and the reply goes only to the
-    people that the member leaves ticked. The draft in Drafts names the same
-    people. Never tell the member to open the Email app for it."""
+    The reply goes only to the people that the member leaves ticked, and the
+    draft in Drafts names the same people. Never tell the member to open the
+    Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -2953,6 +2991,9 @@ async def compose_reply(
         return refusal
     if warning:
         _add_card_notice(form, warning)
+    if not _egress_held() and _formatted_notice(form["body"]):
+        # Task 3605: a held chat sends the text only, so it gets no such line.
+        _add_card_notice(form, _FORMATTED_NOTICE)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     card_id = str(prep.get("card_id") or "")
     gone = _left_out_text(form)
@@ -3011,7 +3052,7 @@ async def compose_reply(
     ref = f" (draft_id {did})" if did else ""
     line = _draft_line(did, res.get("subject") or form["subject"])
     return (f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
-            + (f"\n{line}" if line else ""))
+            + _draft_text_note(res) + (f"\n{line}" if line else ""))
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -6442,27 +6483,24 @@ async def send_email(
     attachments: list[str] | None = None,
     reply_all: bool = False,
 ) -> str:
-    """Send an email immediately — a new message OR a reply. Outward-facing.
-    The tool shows the member its own card with the recipients and the body,
-    and sends only after Send. So do not ask in text first. For a new message
-    in the chat, the member can edit the subject and the text on the card,
-    untick a person, and press Send, Save draft or Discard. The answer of the
-    tool says what went. When it says that the member changed the text, use
-    that text from then on, never your first one.
+    """Send an email now: a new message or a reply.
+    The tool shows the member a card with the recipients and the body, and
+    sends only after Send, so do not ask in text first. On a new message the
+    member can edit the subject and the text, untick a person, and press
+    Send, Save draft or Discard. When the answer says that the member changed
+    the text, use that text from then on.
 
-    To REPLY to an email, pass ``reply_to_email_id`` (the original's local id);
-    the recipient and 'Re:' subject are derived from it automatically (and it's
-    threaded), so you can omit ``to`` and ``subject``. To send a NEW message,
-    pass ``to`` and ``subject``. (To leave a reply in Drafts instead of sending,
-    use draft_reply.)
+    To reply, pass ``reply_to_email_id``: the tool takes the recipients and
+    the 'Re:' subject from the original, and threads it. For a new message,
+    pass ``to`` and ``subject``. To keep a reply in Drafts, use draft_reply.
 
-    Which mailbox sends (§11.3, EM-T8e-2, D-EM-20, D-EM-23):
+    The mailbox that sends:
 
-    * A reply goes out from the mailbox that received the original. Leave
-      ``account_id`` out, or pass that mailbox. If ``account_id`` names
-      another mailbox, the tool sends nothing and names the right one.
-    * A new message goes out from ``account_id`` when you pass it. Pass it
-      when the user named a mailbox, or when one mailbox is in scope.
+    * A reply goes from the mailbox that received the original, so leave
+      ``account_id`` out. If it names another mailbox, the tool sends nothing
+      and names the right one.
+    * A new message goes from ``account_id``. Pass it when the member named a
+      mailbox, or when one mailbox is in scope.
     * A new message with no ``account_id``: the only mailbox sends. With two
       or more, the mailbox that last wrote to the first recipient sends. If
       no mailbox wrote to that recipient, the tool asks "Send from which
@@ -6471,26 +6509,22 @@ async def send_email(
     The confirmation card names the From mailbox as "label · address".
 
     Args:
-        body: plain-text body.
+        body: the text. The body is Markdown. HTML tags show as text.
         to: recipient address(es) — required for a new message; derived from the
             original for a reply if omitted.
         subject: subject line — derived as 'Re: …' for a reply if omitted.
         cc / bcc: optional carbon-copy recipients.
-        reply_to_email_id: local id of a message this is a reply to (threads it,
-            and derives to/subject when those are omitted). The server derives
-            the recipients as the reply card does: Reply-To first, and the To
-            of a mail the member sent.
+        reply_to_email_id: local id of the original. The server takes the
+            recipients as the reply card does: Reply-To first, and the To of
+            a mail the member sent.
         reply_all: with ``reply_to_email_id`` and no ``to``, also reply to
             each To and Cc of the original. Your ``cc`` adds to that list.
-        attachments: files to attach. A path of your own workspace, e.g.
-            ``"outputs/file.pdf"`` (a file you made with write_artifact). Or
-            a Metorite file that the member can see (H-392):
-            ``"artifact:<agent>:<path>"`` (a file of the member's workspace
-            of that agent, as list_artifacts names it),
-            ``"knowledge:<page id>"`` (a Knowledge page, as its Markdown), or
-            ``"task-file:<attachment id>"`` (a file on a task). The server
-            checks that the member can see each one, and the card names each
-            file with its size.
+        attachments: files to attach. A path of your workspace
+            (``"outputs/file.pdf"`` from write_artifact), or a Metorite file
+            that the member can see: ``"artifact:<agent>:<path>"`` (as
+            list_artifacts names it), ``"knowledge:<page id>"`` (a Knowledge
+            page) or ``"task-file:<attachment id>"`` (a file on a task). The
+            server checks that the member can see each one.
     """
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
@@ -6545,6 +6579,8 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    if _formatted_notice(body):  # task 3605: the card shows the Markdown
+        reply_notices.append(_FORMATTED_NOTICE)
     # Task 2491: each workspace file resolves BEFORE either card, through the
     # resolver of the send. A file that the send would refuse shows no card,
     # so it costs the member no approval. A Metorite file resolves before
@@ -6567,6 +6603,8 @@ async def send_email(
         "to": to,
         "subject": subject,
         "body_text": body,
+        # Task 3605: the gateway makes the text and the HTML of the mail.
+        "body_markdown": True,
     }
     if cc:
         payload["cc"] = cc
@@ -6787,6 +6825,23 @@ def _noted(out: Any, came_back: bool) -> Any:
     return f"{_REVISE_UNREAD}\n\n{out}"
 
 
+async def _revise_forward_card(card_id: str, thread: str) -> None:
+    """Spend the forward card that a chat message closed, and link the next card
+    to it (HRD-8b-2). It is best effort: the link is a label, and the member's
+    answer to the card is already "closed by your message". A fault only logs,
+    so the model still reads the text of the forward and nothing is lost."""
+    try:
+        await _revise_card(card_id, thread)
+    except GatewayError as exc:
+        if exc.status == 404:
+            # The org does not hold the edit card, or the card has no thread. Normal.
+            _log.info("email.forward_revise_skipped")
+        else:
+            _log.warning("email.forward_revise_failed", error=type(exc).__name__)
+    except Exception as exc:  # the class only: the card stays until its TTL
+        _log.warning("email.forward_revise_failed", error=type(exc).__name__)
+
+
 async def _revise_card(card_id: str, thread: str) -> Any:
     """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
 
@@ -6931,7 +6986,8 @@ def _new_mail_result(res: dict[str, Any], sender: str, usual: str = "") -> str:
         did = str(res.get("draft_id") or "")
         ref = f" (draft_id {did})" if did else ""
         return (f"Saved in Drafts of {sender}{note}, to {_new_mail_people(res)}{ref}. "
-                f"Nothing was sent.{_new_mail_left(res)}{_new_mail_text_line(res)}")
+                f"Nothing was sent.{_new_mail_left(res)}{_draft_text_note(res)}"
+                f"{_new_mail_text_line(res)}")
     tail = f" {usual}" if usual else ""
     return (f"Sent email to {_new_mail_people(res)} from {sender}{note} "
             f"(id={res.get('id', '')}).{_new_mail_left(res)}{tail}{_new_mail_text_line(res)}")
@@ -7071,7 +7127,8 @@ async def _held_new_mail(
         # No "Draft:" line, as in ``_new_mail_result``.
         did = str(res.get("draft_id") or "")
         return (_held_sent_text(res, f"Saved in Drafts{note}, nothing was sent")
-                + (f" (draft_id {did})." if did else "") + _new_mail_text_line(res))
+                + (f" (draft_id {did})." if did else "") + _draft_text_note(res)
+                + _new_mail_text_line(res))
     return (_held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
             + _new_mail_text_line(res))
 
@@ -7193,27 +7250,25 @@ async def forward_email(
     account_id: str | None = None,
     files: list[str] | None = None,
 ) -> str:
-    """Forward an email to new people, WITH its original files (a PDF, a sheet).
+    """Forward an email to new people, WITH its files (a PDF, a sheet).
 
-    Use this, not ``send_email``, when the user says "forward", or asks to pass
-    an email and its files to someone who was not on it. ``send_email`` cannot
-    attach the files of an email. Use ``send_email`` with
-    ``reply_to_email_id`` to answer the people already on the email.
+    Use this, not ``send_email``, when the member says "forward", or asks to
+    pass an email and its files to someone who was not on it. ``send_email``
+    cannot attach the files of an email. To answer the people already on the
+    email, use ``send_email`` with ``reply_to_email_id``.
 
-    The forward goes out from the mailbox that holds the email. Leave
-    ``account_id`` out, or pass that mailbox. It shows the user a card that
-    names the recipients and each file, and it sends nothing on a "no".
+    The forward goes from the mailbox that holds the email: leave
+    ``account_id`` out, or pass that mailbox. A card names the recipients and
+    each file, and a "no" sends nothing.
 
     Args:
-        email_id: the id of the email to forward.
+        email_id: the email to forward.
         to: the new recipients.
-        cc / bcc: optional carbon-copy recipients.
-        note: your words above the forwarded email, in the user's voice.
-        include_attachments: carry every file of the email (the default).
-            Set false to forward the text only.
-        account_id: the mailbox that holds the email, or leave it out.
-        files: forward ONLY these files of the email, each named by its
-            file name or its attachment_id from read_email ("only the PDF").
+        cc / bcc: optional copy recipients.
+        note: your words above the forwarded email, in the member's voice.
+        include_attachments: false forwards the text only.
+        files: forward ONLY these files, each by its file name or its
+            attachment_id from read_email ("only the PDF").
     """
     mid = _canonical_id(email_id)
     if mid is None:
@@ -7490,7 +7545,10 @@ async def _held_card(
     # §18.11: only a card to edit names the run's chat thread, so a rows card
     # (a WhatsApp run) takes no snapshot and no revise.
     edit = form and _edit_card_open()
-    thread = _run_thread() if edit else ""
+    # HRD-8b-2: a forward card is a rows card, and it still names the chat thread,
+    # so a message that closes it can spend it and link the next card.
+    forward = body.get("kind") == "forward" and _edit_card_open()
+    thread = _run_thread() if (edit or forward) else ""
     try:
         prep = await _post("/email/held-card",
                            {**body, "card_thread_id": thread} if thread else body) or {}
@@ -7510,6 +7568,8 @@ async def _held_card(
         close_on_steer=True,
     )
     if _revised(answer):
+        if forward and thread and prep.get("card_id"):
+            await _revise_forward_card(str(prep["card_id"]), thread)
         return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
         return _unapproved_line() or _not_done(act)
@@ -8039,11 +8099,14 @@ async def edit_draft(
             "subject": new_subject, "body": text,
             "keep_html": keep_body, "keep_body": keep_body,
             "from_chat": True,
+            # Task 3605: a new text is Markdown, and the draft keeps its text.
+            **({} if keep_body else {"body_markdown": True}),
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
+    lost += _draft_text_note(res)
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
@@ -8124,14 +8187,14 @@ async def _new_draft(
         res = await _put("/email/drafts", {
             "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
             "bcc": lists["bcc"], "subject": subject or "", "body": body,
-            "from_chat": True,
+            "from_chat": True, "body_markdown": True,  # task 3605
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     line = _draft_line(res.get("id"), subject)
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
             "Nothing was sent. Send it with send_draft when the member asks."
-            + (f"\n{line}" if line else ""))
+            + _draft_text_note(res) + (f"\n{line}" if line else ""))
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:

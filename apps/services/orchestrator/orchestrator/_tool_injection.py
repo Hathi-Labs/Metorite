@@ -23,6 +23,7 @@ import contextlib
 import dataclasses
 import functools
 import os
+import threading
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -2997,6 +2998,9 @@ def _inject_agent_tools(
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
+    # HRD-13: the orchestrator's run gets the claim check, in shadow. It reads
+    # the whole run at its end and changes nothing. Off for the org, nothing.
+    _apply_claim_check(agents, agent_name)
     # HRD-5: after 3 empty or refused answers from one read tool in a turn, its
     # next call gets a stop line. Dark behind TOOL_TURN_BUDGET_ORGS. It runs
     # before the notice, so a stopped call starts no timer.
@@ -3037,6 +3041,48 @@ def _apply_resume_call_id(agents: list[Any]) -> None:
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [CallIdProvider()])
+
+
+def _apply_claim_check(agents: list[Any], agent_name: str | None) -> None:
+    """The claim check of the orchestrator's answer on ONE run (HRD-13, task 2992).
+
+    It replaces the native MAF ``Agent`` of the agent ``orchestrator`` with a
+    per-run view that carries ONE ``acb_skills.answer_claims.ClaimCheckProvider``,
+    as :func:`_apply_progress_notice` does. The provider reads the whole run in
+    ``after_run`` and logs one line. It never changes the answer (D-HRD-6).
+    With ``CHAT_CLAIM_CHECK_ORGS`` off for the run's org it changes nothing.
+    The org is the run binding's (:func:`_run_org`), never request input. The
+    names of the agent's delegation tools go to the provider, because the
+    calls of a sub-run stay inside the delegation. Any other agent, a Copilot
+    SDK agent and a plain object stay as they are. Fence:
+    ``tests/unit/test_answer_claims.py``.
+    """
+    from acb_skills.answer_claims import CHECKED_AGENT, claim_check_on
+
+    if str(agent_name or "") != CHECKED_AGENT or not agents:
+        return
+    if not claim_check_on(_run_org()):
+        return
+    try:
+        from acb_skills.answer_claims import ClaimCheckProvider
+        from acb_skills.egress import is_delegation_tool
+        from agent_framework import Agent
+    except ImportError as exc:  # pragma: no cover — ships with the platform
+        _log.warning("executor.claim_check_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    agent = agents[0]
+    if not isinstance(agent, Agent):
+        return
+    delegations = frozenset(
+        _tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool
+        if _delegates_to(t) or is_delegation_tool(t)
+    )
+    # P1-a: the answer of a pack tool outside its run is a not-acted head.
+    # It lives in this module, and acb_skills never imports the orchestrator.
+    agents[0] = agent_with_providers(agent, [ClaimCheckProvider(
+        CHECKED_AGENT, delegations, not_acted=(PACK_CALL_REFUSED,))])
 
 
 def _apply_progress_notice(agents: list[Any]) -> None:
@@ -3340,6 +3386,10 @@ PACK_CALL_REFUSED = (
 
 #: The module of each pack owner, imported once for this process.
 _PACK_OWNER_MODULES: dict[str, Any] = {}
+#: TOF-1e. ONE lock for the two cold paths of the loader below. The catalog
+#: warm-up (``gateway.studio.chat_tool_actions.warm``) runs on a thread, so
+#: it and a run on the event loop must not import one owner twice.
+_PACK_LOAD_LOCK = threading.RLock()
 
 #: How long the loader keeps a failed import of an owner, in seconds. A build
 #: in that time gets no module and imports nothing. After it, the next build
@@ -3386,16 +3436,19 @@ def _pack_owner_module(owner: str) -> Any | None:
     """
     if owner in _PACK_OWNER_MODULES:
         return _PACK_OWNER_MODULES[owner]
-    failed_at = _PACK_OWNER_FAILED.get(owner)
-    if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
-        return None
-    module = _import_pack_owner(owner)
-    if module is None:
-        _PACK_OWNER_FAILED[owner] = _pack_clock()
-    else:
-        _PACK_OWNER_MODULES[owner] = module
-        _PACK_OWNER_FAILED.pop(owner, None)
-    return module
+    with _PACK_LOAD_LOCK:
+        if owner in _PACK_OWNER_MODULES:
+            return _PACK_OWNER_MODULES[owner]
+        failed_at = _PACK_OWNER_FAILED.get(owner)
+        if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
+            return None
+        module = _import_pack_owner(owner)
+        if module is None:
+            _PACK_OWNER_FAILED[owner] = _pack_clock()
+        else:
+            _PACK_OWNER_MODULES[owner] = module
+            _PACK_OWNER_FAILED.pop(owner, None)
+        return module
 
 
 def _import_pack_owner(owner: str) -> Any | None:
@@ -3751,13 +3804,31 @@ def _owner_pack_tools(slug: str, owner: str, source: Any) -> list[Any]:
     if callable(getattr(source, "_narrow_tool", None)):
         return tool_packs.owner_tools(slug, source)
     builder = getattr(source, "_agent_tools", None)
+    hit = _cached_pack_tools(slug, owner, source)
+    if hit is not None:  # TOF-1e: a cache hit takes no lock, so a run never waits on the warm-up
+        return hit
+    with _PACK_LOAD_LOCK:  # a miss: the warm-up thread and a run share the dicts
+        entry = _PACK_OWNER_TOOLS.get(owner)
+        if entry is None or entry[0] is not source or entry[1] is not builder:
+            entry = (source, builder, {})
+            _PACK_OWNER_TOOLS[owner] = entry
+        if slug not in entry[2]:
+            entry[2][slug] = tool_packs.owner_tools(slug, source)
+        return list(entry[2][slug])
+
+
+def _cached_pack_tools(slug: str, owner: str, source: Any = None) -> list[Any] | None:
+    """The tools of pack *slug* already built for *owner*, or None. Never builds
+    and never takes the lock. With no *source*, it uses the loaded module of the
+    owner. An owner with ``_narrow_tool`` keeps no cache, so it gives None."""
+    source = source if source is not None else _PACK_OWNER_MODULES.get(owner)
+    if source is None or callable(getattr(source, "_narrow_tool", None)):
+        return None
     entry = _PACK_OWNER_TOOLS.get(owner)
-    if entry is None or entry[0] is not source or entry[1] is not builder:
-        entry = (source, builder, {})
-        _PACK_OWNER_TOOLS[owner] = entry
-    if slug not in entry[2]:
-        entry[2][slug] = tool_packs.owner_tools(slug, source)
-    return list(entry[2][slug])
+    if entry is None or entry[0] is not source or entry[1] is not getattr(source, "_agent_tools", None):
+        return None
+    built = entry[2].get(slug)
+    return list(built) if built is not None else None
 
 
 def _pack_func(fn: Any) -> Any:

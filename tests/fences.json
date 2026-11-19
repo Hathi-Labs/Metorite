@@ -14,6 +14,7 @@
     "safety": [
       "tests/unit/test_agent_config_runtime.py",
       "tests/unit/test_agent_edge_deploy.py",
+      "tests/unit/test_answer_claims.py",
       "tests/unit/test_byok_disabled.py",
       "tests/unit/test_caddy_auth_gate.py",
       "tests/unit/test_card_record.py",
@@ -52,6 +53,7 @@
       "tests/unit/test_email_attachment_download.py",
       "tests/unit/test_email_cleanup_apply_cap.py",
       "tests/unit/test_email_follow_up_scan.py",
+      "tests/unit/test_email_markdown_mail.py",
       "tests/unit/test_email_owner_scope_fence.py",
       "tests/unit/test_email_retry_and_uncategorized.py",
       "tests/unit/test_email_self_reader_tenant_fence.py",

@@ -63,6 +63,17 @@ later turn of the chat then gets one line for each of the last 5 sent mails,
 in its run context. The run asks the flag at the start of each turn, so a
 reload applies at the next turn.
 
+`CHAT_CLAIM_CHECK_ORGS` turns on the claim check of an answer
+(`chat_failure_modes.md` §6 row HRD-13). For each listed org, the run of the
+orchestrator logs one line, `answer_claims.checked`, at its end. The line
+counts the claims of acts and promises that no tool outcome of the run backs.
+The check is shadow only, and it never changes the answer (D-HRD-6).
+
+`*` lists every org, and the default is empty. Its one reader is
+`acb_skills.answer_claims.claim_check_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
@@ -119,8 +130,11 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
 card guards. RESUME-2a: a late Approve of such a card then runs that call
-once, in a new reply, with no member turn. `*` lists every org, and the
-default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
+once, in a new reply, with no member turn. RESUME-4a-2: a late decline
+(`declined: true`) of such a card starts a short reply that runs no tool. The
+model then says that nothing was done. This part is server only: no client
+sends that request until RESUME-7. `*` lists every org, and the default is
+empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call
@@ -190,6 +204,17 @@ default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
 and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
+`CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
+(`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
+module list and on a module total. It finds each word in the record name, a
+lookup name or a text value, and it marks a near spelling. `*` lists every org, and the
+default is empty. Empty keeps the 422 of `q` on a module total, and the list
+matches the record name only, byte for byte.
+
+Its one reader is `gateway.routes.crm.flags.module_find_allowed`, and each
+module read asks it. A reload applies a change. A name in the list spends
+nothing, so the flip is `enforcement-flip`.
 
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and

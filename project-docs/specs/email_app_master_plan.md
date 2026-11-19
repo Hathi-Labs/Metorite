@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
+
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
 
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
@@ -21179,7 +21181,7 @@ in step.
 
 **Status:** ✅ BUILT and MERGED on `main` (#1785, task 1650), dark behind
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
-1533, slice 3 of 4. The link covers a new mail only. HRD-8b (§21.9, item 11) extends it.
+1533, slice 3 of 4. The link covered a new mail only. HRD-8b-1 and HRD-8b-2 (task 3459, task 3650) extend it: the link keeps the act kind and the Cc, and a held forward card joins the revise. A reply card joins in HRD-8b-3 (task 3651).
 
 **Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
 new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
@@ -21592,6 +21594,104 @@ Fix round 6 adds a card that came back with no kept edits, and a change of tab o
   - `npx vitest run src/components/redraftCard.test.ts src/components/newMailCard.test.ts src/lib/cardTabs.test.ts src/lib/confirmationQueue.test.ts src/lib/chatCardConformance.test.ts`
   - the focused strict tsc on the changed files
   - `npx playwright test e2e/email-redraft.spec.ts e2e/approval-stack.spec.ts --project=chromium`
+
+### 18.12 A chat mail is Markdown (2026-11-17, owner)
+
+**Status:** built, not merged. Metorite task 3605 (RC-CHAT). No flag and no migration. It
+ships ahead of the rich composer (epic 2640, WS-RC), and it adds no toolbar.
+
+**Origin.** Owner, 2026-11-17: a mail that the chat writes must go out with its formatting,
+such as headings of different sizes, bullet lists, bold and italics. A chat mail went out as
+plain text, with `- ` and `1.` lines.
+
+**The rule.** The email assistant writes the body of a mail in Markdown. The tool text of
+`send_email` and of `compose_reply` says it in the same words: "The body is Markdown. HTML
+tags show as text." `gateway/routes/email/markdown_mail.py` is the one converter. It makes the
+text part and the HTML part of the mail.
+
+- The parser is `markdown-it-py`, which the gateway already holds for the PDF seam. Raw HTML,
+  character references, Setext headings, indented code and link reference definitions are off.
+- The HTML holds only tags that the mail allowlist keeps, and each tag has an inline style.
+  The block tags are `h1` to `h3`, `p`, `ul`, `ol`, `li`, `table`, `thead`, `tbody`, `tr`,
+  `th`, `td`, `hr`, `br` and `div`. The inline tags are `strong`, `em`, `s`, `a` and `span`.
+  A quote and a code block are a `div`, and inline code is a `span`. A heading of level 4 to
+  6 is a level 3 heading.
+- The HTML goes through `signature.clean_signature_html`, the one mail sanitizer (D-EM-70).
+  Each link asks it first. An `https:`, `mailto:` or `tel:` link stays a link. Any other link
+  shows its words and its address as text. A Markdown image shows its alt text and loads
+  nothing.
+- **The link rule.** The clickable text of a link is always its real address. The words of
+  the link show beside it. So `[Pay the invoice](https://pay.test/x)` shows as "Pay the
+  invoice (https://pay.test/x)", and only the address is clickable. The address is the
+  parser's own, so a host with letters outside ASCII shows as its punycode.
+  - When the words are the address, one link shows the address alone. The compare drops the
+    scheme, `www.`, an end slash and the case, and it reads each percent escape. An autolink
+    (`<https://x.test>`) is this case.
+  - This binds every chat, by construction. The words of a link, and the text beside it, do
+    not change the clickable text. A long address, such as a file in a drive, shows whole.
+- **The text part rule.** The text part is the Markdown as written, and it never loses a
+  character. Only the bidi controls U+202A to U+202E and U+2066 to U+2069 go, from both
+  parts. A held run and a draft send or hold this same text.
+- **The HTML rule.** A body gets HTML only when it holds real structure. A block structure is
+  a heading, a list, a table, a quote, a code block or a rule. An inline structure is inline
+  code, a `[words](address)` link, or bold, italics or strikethrough with its marks at word
+  edges. Any other body gets no HTML, so it sends byte for byte as before. These bodies go
+  as text alone: `2*3*4`, `a*b*c`, `__init__`, `snake_case`, `Jane <jane@x.test>`,
+  `<https://x.test>`, `a | b`, `Re: [JIRA-1] x` and `[1]`. Beside real structure, a mark
+  inside a word and `__` show as typed in the HTML.
+- **The depth rule.** The parser stops a block at 20 levels, and it drops the rest of that
+  block. So a body with a block token at level 19 or deeper gets no HTML. A list nested 9
+  deep, or a quote nested 18 deep, reaches that level.
+- **The table rule.** The parser keeps as many cells in a row as the header row has, and it
+  drops the rest. So a body gets no HTML when a body row of a table has more cells than its
+  header row. The count reads each row line as typed, after the quote marks, the indent and
+  a list marker. It drops one outer `|` at each end, and it counts each `|` with no
+  backslash before it. A `|` in backticks counts, as in GFM. A row with fewer cells keeps
+  its HTML.
+- A fault of the converter sends the text alone, and `POST /email/send` never answers 500
+  for it.
+- `signature.build_signed_bodies` adds the signature once to each part. A Markdown send holds
+  no quoted thread: the model writes the new text, and the provider adds the thread. So the
+  send passes `quoted_thread=False`, and the signature goes at the end of both parts. A
+  Markdown quote, such as a reply that quotes the sender, stays above it.
+
+**Where the HTML goes.**
+
+- `POST /email/send` takes `body_markdown`. The plain card of `send_email`, the act of the
+  new-mail card and the act of the reply card set it. A request with `body_markdown` and
+  `body_html` gets 422.
+- A held run sends the text part only, with no HTML. Each link then shows its address. Held
+  means a `no_egress` run (H-236). It is not each chat that read outside mail: a top-level
+  chat binds `no_egress` false, also when it read mail (`acb_skills.egress`). The act of the
+  reply card sends HTML only when the record of the card says `held: false`.
+- A draft holds text only. A save from the chat keeps the text part, the Markdown as written.
+  This includes the Save of each card and a new text of `edit_draft`. The save answers
+  `formatting: "text_only"` for a body with real structure, and the tool tells the member.
+  A send of the draft (`send_draft`, send later, the Email app) sends the Markdown as typed,
+  with its marks. In a held run, the answer names no send that keeps the formatting.
+- The card shows the Markdown, and the member edits the Markdown. So an edit on the card keeps
+  the formatting. The card says so in one line when the gateway sends HTML for the body. The
+  agent cannot import the gateway, so its own pattern decides the line. A test holds the
+  pattern and the converter to one answer on a list of bodies.
+
+**Not done.**
+
+- A capture of a sent mail in Gmail and in Outlook web. It needs a real mailbox, and outbound
+  mail is off on the dev stack. A golden test holds the HTML of a fixed sample instead.
+- A formatted preview on the card, and a toolbar. Epic 2640 owns both.
+- A draft that keeps its formatting. A draft holds text only until the composer holds HTML.
+  The composer shows no note about it. Only the answer of the tool says it.
+- The tool text of `edit_draft` and of `draft_reply` does not change. `draft_reply` has no
+  body, because the server drafter writes the text.
+- The server drafter and the rewriter still ask for plain text, with Markdown links only
+  (`automation/drafting.py`, the two prompt lines "Plain text only"). This is by design: a
+  reply card with no `draft` shows the text of the server drafter, and that text stays plain.
+- A flag for each org. The slice has no flag. With a flag off, the send would go as text
+  alone. The owner decides whether to add one.
+
+**Fence:** `tests/unit/test_email_markdown_mail.py`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_markdown_mail.py -q`
 
 ## 19. Send later (2026-10-21)
 

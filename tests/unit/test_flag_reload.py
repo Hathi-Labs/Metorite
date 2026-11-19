@@ -255,6 +255,20 @@ def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert core_events_allowed("acme")
     assert not core_events_allowed("globex")
 
+
+def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q34-7, crm_platform.md §18.17. The reload list holds the key,
+    and the one reader of `q` across a module sees a change with no restart."""
+    assert fr.reloadable("CRM_MODULE_FIND_ORGS")
+    monkeypatch.setenv("CRM_MODULE_FIND_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.module_find_allowed("acme")
+    env(**{**_START, "CRM_MODULE_FIND_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MODULE_FIND_ORGS",)
+    assert crm_flags.module_find_allowed("acme")
+    assert not crm_flags.module_find_allowed("globex")
+
+
 def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
     the one reader of the search switch sees a change with no restart."""
