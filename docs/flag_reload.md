@@ -253,6 +253,16 @@ The reaper asks it too, so a flip to off stops a running compute container at
 the next tick. In production the broker also needs a remote gVisor backend. A
 reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
 
+`CONNECTED_SYSTEMS_ORGS` turns on the "Connected systems" block of the chat
+(`chat_connected_systems.md` §3.2, CSY-1). For each listed org, a chat that
+attached an MCP server gets one block at the end of the per-turn context: the
+brief of each attached server and the standing rule. `*` lists every org, and
+the default is empty. Empty means the context keeps its bytes. Its one reader
+is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
+`executor._connected_systems_block` asks on each turn, on the run's org. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -408,6 +418,16 @@ admins must never get our vendor alerts. Its one reader is
 source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
+
+`SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
+(`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
+kinds `measure`, `join` and `query`, and `org_facts` serves the approved
+ones. `*` lists every org, and the default is empty. Empty keeps each item of
+these kinds as an unknown kind, and serves none.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
+plan write and each facts read ask it. A reload applies a change. The flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
