@@ -23,6 +23,16 @@ SQL and the row level security are ``test_pending_ask_store.py`` (R8).
 5. An answer from another org finds no row and resumes nothing.
 6. ``GET /chat/pending-asks`` lists the card to draw again, only for a member
    who may send in the room.
+7. RESUME-5 (``chat_run_continuity.md`` §4.12.5, task 3265): the stop parks a
+   waiting card IN ITS OWN TASK, where both resume flags name the org. The
+   row is ``parked``, the stream ends with the parked ``RUN_FINISHED``, no
+   ``run_interrupted`` mark lands, and the count reads the run as running
+   while the park runs. With a flag off, for another org, and for a card that
+   opens after the stop call, nothing parks and the wait goes on. A refused
+   park and an answer that comes first both keep the run going. Mutations:
+   call ``park`` from the route task (the HRD-22 offer reads no card), drop
+   ``parking_threads`` from the count, or make the wake a sticky flag (a late
+   card parks).
 
 Run::
 
@@ -963,3 +973,229 @@ def test_a_late_answer_with_no_option_label_records_nothing(
     res = _late_answer(monkeypatch, tid, rid, answer="IP")  # a key, not a label
     assert res.status_code == 409, res.text
     assert crm_late.store == {}
+
+
+# ---------------------------------------------------------------------------
+# 7. RESUME-5: the stop parks a waiting card (chat_run_continuity.md §4.12.5)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def stop_world(flag_on, ask_db, liveness, monkeypatch):
+    """Both resume flags name org A, the park window is far away, and the
+    HRD-22 records go to a fake store. Returns ``(fake Redis, store)``."""
+    from acb_common import get_settings
+    from acb_skills import late_approve
+
+    from tests.unit.test_late_approve_grant import _Store
+
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", _ORG_A)
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 30.0)
+    store = _Store()
+    monkeypatch.setattr(late_approve, "_redis", lambda: store)
+    return liveness, store
+
+
+async def _waiting_card(r, ask_db: _AskDb, tid: str, *, org: str = _ORG_A,
+                        out: dict[str, Any] | None = None) -> tuple[asyncio.Task, str]:
+    """A run on *tid* whose plain confirmation card waits: the real
+    ``request_confirmation``, in a task that is the thread's detached run.
+    Returns once the card's row is written and the wait has begun."""
+    from acb_skills.ask_tools import request_confirmation
+
+    r.store[f"cc:runactor:{tid}"] = _ALICE
+    result = out if out is not None else {}
+
+    async def _the_run() -> None:
+        executor._stream_relay_thread_id.set(tid)
+        _bind(org)
+        result["approved"] = await request_confirmation(_QUESTION, "To billing@acme.test")
+
+    run = asyncio.create_task(_the_run())
+    stream_relay._DETACHED_TASKS[tid] = run
+    rid = ""
+    for _ in range(500):
+        cards = [e for e in _events(r, tid) if e.get("name") == "confirmation_requested"]
+        rid = cards[-1]["value"]["request_id"] if cards else ""
+        if rid and (org, rid) in ask_db.rows:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("the card never showed")
+    # The insert ends with the My Day bump, whose first import is slow on a
+    # dev PC. A park awaits the insert, so wait for it here.
+    await pending_ask._insert_org(rid, pop=False)
+    await asyncio.sleep(0.05)  # the wait begins after the card goes out
+    assert not run.done()
+    return run, rid
+
+
+def test_the_stop_parks_a_waiting_card_in_its_own_task(stop_world, ask_db, monkeypatch):
+    """The production case of RESUME-5. Mutation: call ``park`` from the
+    route task -> the park runs in another task -> red (the HRD-22 offer and
+    the "Not done" line read the run's ContextVars, and
+    ``test_resume_continuation.py`` holds the offer). Drop
+    ``parking_threads`` from the count -> ``during`` reads ``(0, 1)``."""
+    from gateway.routes import drain
+
+    r, _store = stop_world
+    tid = "t-stop"
+    seen: dict[str, Any] = {}
+    real_move = ask_db.move_ask
+    real_park = pending_ask.park
+
+    def _move(org, rid, *, to, from_states, answer=None):
+        if to == "parked":
+            # In the middle of the park: the Future still waits.
+            seen["during"] = drain._chat_runs()
+        return real_move(org, rid, to=to, from_states=from_states, answer=answer)
+
+    async def _park(request_id, thread_id, fut=None):
+        seen["park_task"] = asyncio.current_task()
+        return await real_park(request_id, thread_id, fut)
+
+    monkeypatch.setattr(pending_ask, "move_ask", _move)
+    monkeypatch.setattr(pending_ask, "park", _park)
+
+    async def go() -> str:
+        run, rid = await _waiting_card(r, ask_db, tid)
+        assert rid in pending_ask._STOP_WAITS
+        seen["run"] = run
+        seen["before"] = drain._chat_runs()
+        seen["answer"] = await drain.drain_park()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=5)
+        return rid
+
+    rid = asyncio.run(go())
+    assert seen["park_task"] is seen["run"], "the park ran outside the run's own task"
+    assert seen["before"] == (0, 1), "a waiting run is not counted"
+    assert seen["during"] == (1, 0), "a park in flight is a running run"
+    assert seen["answer"] == {"tried": 1, "parked": 1}
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
+    events = _events(r, tid)
+    assert events[-1] == {"type": "RUN_FINISHED", "threadId": tid, "parked": True}
+    assert not [e for e in events if e.get("name") == "run_interrupted"]
+    assert not [e for e in events if e.get("name") == "confirmation_resolved"]
+    assert pending_ask.was_parked(rid) and rid not in executor._pending_user_input
+    assert pending_ask._STOP_WAITS == {}
+
+
+@pytest.mark.parametrize("flag", ["chat_resume_orgs", "chat_late_approve_orgs"])
+def test_with_a_flag_off_the_stop_parks_nothing(flag, stop_world, ask_db, monkeypatch):
+    """Off, no wait takes an entry, the route wakes nothing, and the run
+    waits and takes its answer as before."""
+    from acb_common import get_settings
+    from gateway.routes import drain
+
+    monkeypatch.setattr(get_settings(), flag, "")
+    r, _store = stop_world
+    tid = f"t-stop-off-{flag}"
+    out: dict[str, Any] = {}
+
+    async def go() -> str:
+        run, rid = await _waiting_card(r, ask_db, tid, out=out)
+        assert pending_ask._STOP_WAITS == {}
+        assert await drain.drain_park() == {"tried": 0, "parked": 0}
+        await asyncio.sleep(0.05)
+        assert not run.done() and ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+        executor._pending_user_input[rid].set_result({"answer": "APPROVE"})
+        await asyncio.wait_for(run, timeout=5)
+        return rid
+
+    rid = asyncio.run(go())
+    assert out["approved"] is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert not any(e.get("parked") for e in _events(r, tid))
+
+
+def test_a_run_of_another_org_does_not_park_at_the_stop(stop_world, ask_db, monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", _ORG_B)
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_B)
+    r, _store = stop_world
+
+    async def go() -> None:
+        run, rid = await _waiting_card(r, ask_db, "t-stop-org")
+        assert await pending_ask.park_at_stop() == {"tried": 0, "parked": 0}
+        assert ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+        executor._pending_user_input[rid].set_result({"answer": "APPROVE"})
+        await asyncio.wait_for(run, timeout=5)
+
+    asyncio.run(go())
+
+
+def test_a_card_that_opens_after_the_stop_call_does_not_park(stop_world, ask_db):
+    """The owner's decision of 2026-11-19: the stop wakes only the waits
+    that exist when it runs. Mutation: a sticky flag in place of the one
+    wake -> the late card parks -> red."""
+    from gateway.routes import drain
+
+    r, _store = stop_world
+    tid = "t-stop-late-card"
+    out: dict[str, Any] = {}
+
+    async def go() -> str:
+        assert await drain.drain_park() == {"tried": 0, "parked": 0}
+        run, rid = await _waiting_card(r, ask_db, tid, out=out)
+        await asyncio.sleep(0.1)
+        assert not run.done(), "a card that opened after the stop call parked"
+        assert ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+        assert drain._chat_runs() == (0, 1), "it waits on a person, as before"
+        executor._pending_user_input[rid].set_result({"answer": "APPROVE"})
+        await asyncio.wait_for(run, timeout=5)
+        return rid
+
+    rid = asyncio.run(go())
+    assert out["approved"] is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert pending_ask._STOP_WAITS == {}
+
+
+def test_a_refused_park_at_the_stop_keeps_the_wait(stop_world, ask_db, monkeypatch):
+    """A flag reload between the card and the stop: the park checks the
+    flags again with the row's org, refuses, and the run goes on waiting.
+    The route reads the outcome at once, and the count reads a waiting run."""
+    from acb_common import get_settings
+    from gateway.routes import drain
+
+    r, _store = stop_world
+    tid = "t-stop-refused"
+    out: dict[str, Any] = {}
+
+    async def go() -> str:
+        run, rid = await _waiting_card(r, ask_db, tid, out=out)
+        assert rid in pending_ask._STOP_WAITS
+        monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
+        assert await drain.drain_park() == {"tried": 1, "parked": 0}
+        await asyncio.sleep(0.05)
+        assert not run.done() and ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+        assert drain._chat_runs() == (0, 1)
+        executor._pending_user_input[rid].set_result({"answer": "APPROVE"})
+        await asyncio.wait_for(run, timeout=5)
+        return rid
+
+    rid = asyncio.run(go())
+    assert out["approved"] is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+
+
+def test_an_answer_that_comes_first_wins_over_the_stop(stop_world, ask_db):
+    """The member answers, and the stop wakes the wait in the same step. The
+    wait takes the answer, nothing parks, and the route reads False."""
+    r, _store = stop_world
+    tid = "t-stop-answer"
+    out: dict[str, Any] = {}
+
+    async def go() -> str:
+        run, rid = await _waiting_card(r, ask_db, tid, out=out)
+        executor._pending_user_input[rid].set_result({"answer": "APPROVE"})
+        assert await pending_ask.park_at_stop() == {"tried": 1, "parked": 0}
+        await asyncio.wait_for(run, timeout=5)
+        return rid
+
+    rid = asyncio.run(go())
+    assert out["approved"] is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert not any(e.get("parked") for e in _events(r, tid))
