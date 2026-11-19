@@ -328,9 +328,11 @@ async def new_mail_card_act(
     if bcc:
         out["bcc"] = bcc
     if choice.action == "send":
+        # Task 3605: the text of the card is Markdown, as the chat wrote it and
+        # the member edited it. The send makes the text part and the HTML part.
         res = await send_email(SendEmailRequest(
             account_id=account_id, to=to, cc=cc or None, bcc=bcc or None, subject=subject,
-            body_text=body, artifacts=artifacts or None,
+            body_text=body, body_markdown=True, artifacts=artifacts or None,
             metorite_files=[MetoriteFileRef(**m) for m in metorite] or None,
         ), background, user)
         # A person that the mail server refused got nothing (review P1 of §21.15).
@@ -347,9 +349,13 @@ async def new_mail_card_act(
     saved = await save_chat_draft(dict(
         account_id=account_id, to=to, cc=cc, bcc=bcc, subject=subject, body=body,
         artifacts=artifacts, attachments=await _metorite_attachments(user, metorite),
-        from_chat=True,
+        from_chat=True, body_markdown=True,
     ), user, thread=str(rec.get("thread") or ""), member=owner, org=org,
         replaces=str(rec.get("replaces") or ""), act="new_mail")
     _log.info("email.new_mail_card_saved", edited=edited, left_out=left_out)
-    return {**out, "action": "save", "draft_id": str(saved.result.get("id") or ""),
-            **replace_fields(saved, rec)}
+    # Task 3605: a draft holds text only, so the answer says when the
+    # Markdown formatting of the text did not go into the draft.
+    res = saved.result
+    kept = {"formatting": res["formatting"]} if res.get("formatting") else {}
+    return {**out, "action": "save", "draft_id": str(res.get("id") or ""),
+            **replace_fields(saved, rec), **kept}
