@@ -24,8 +24,8 @@ from those files into this page.
   and the release slots.
 - **The board claim is the lock.** Claim a task before the first edit. Never
   work on a task that another live session holds.
-- You own the streams in §2. The owner's fleet does not claim them. You do
-  not claim the owner's streams.
+- You own the project "MCP & External Agents" and the warm-up tasks of §2.
+  The owner's fleet does not claim them. You do not claim the owner's tasks.
 - GitHub `pr-check` is the gate. Then `scripts/premerge.sh` tests the merge
   with today's `main`. Then you merge (§6).
 - **You never touch production.** Production takes `main` at 05:30, 13:30 and
@@ -53,29 +53,33 @@ from those files into this page.
 
 ## 2. What you own (owner to confirm)
 
-D183 makes an **app project** the unit of ownership. The streams below all
-sit in the project "AI Chat Interface", where the owner's box lanes also
-build. So, until the owner names an app for you, **you own these epics and
-their tasks**:
+D183 makes an **app project** the unit of ownership. **Your project is "MCP &
+External Agents"** (owner, 2026-11-19). No lane of the owner's fleet builds
+there. Your first work is the orchestration map: one view of every agent of
+both fleets.
 
-| Stream | Tasks | State on 2026-11-19 |
-|---|---|---|
-| The rung 1 skill demo (parent task 3414) | 3829, 3832 and 3830 in ONE PR, then 3828 | Not started. The faults are in each task. |
-| The local stack | 2455 and 3826 in one PR | WIP branch `devstack-3826` at `c7e38021f`. tsc and `test_dev_up.py` not run. |
-| RESUME (a release does not stop the chat) | 3265, then 3785, then 3818 | 3265 is built on branch `resume5` at `ef0eb3713`. No PR, no verifier, no review. HIGH. |
-| HRD-10d (changed since the card, email cards) | 3687, then 3823, 3824, 3825 | 3687 is built on branch `hrd-10d1` at `0d3738322`. It opens after PR 2646 merges. HIGH. |
-| CSY | 3406, then 3403, then 3408 | Not started |
-| CRM-UI-2 | 3706 | Not started. Needs captures. |
+| Order | Work | Tasks | State on 2026-11-19 |
+|---|---|---|---|
+| 1 | Warm-up: the local stack | 2455 and 3826 in one PR | WIP branch `devstack-3826` at `c7e38021f`. tsc and `test_dev_up.py` not run. No verifier, no PR. |
+| 2 | The plan of the Agents view | 3794 (docs) | Written on branch `agent-graph-view`. Review it, then open the PR. |
+| 3 | Rung M1: a map of every agent, each person, each session by name, and its task | 3619 and its slices | Not started |
+| 4 | Rung M2: where each agent runs and on which model | 3620 | Not started |
+| 5 | Rung M3: who dispatched whom | 3621 | Not started |
+| 6 | Rung M4: a lane opens into its sub-agents, a machine into its health | 3622 | Not started |
 
-Each of these tasks carries a comment "Free for Ishaan" with what is done,
-what is left and the next step. Read it after `get_task_context`.
+`project-docs/specs/agent_coordination.md` §3.12 owns the map. Slices SW-101
+to SW-111 build it. Find the slice task of each rung on the board.
 
-**Not yours:** the pull requests that are already in the owner's merge queue:
-2549, 2624, 2646, 2627 and 2629. Do not push to their branches. The owner's
-merger merges them.
+The warm-up tasks sit in other projects. They are yours because they fix the
+local stack that you preview on.
 
-**When a stream ends:** ask the owner for the next one with `ask_on_task` on
-task 3833. Do not take a task from another stream because it is free.
+**Not yours:** every other project, and every task of the owner's fleet. The
+pull requests in the owner's merge queue stay with the owner's merger. Do not
+push to their branches.
+
+**When your project has no free task:** ask the owner for the next work with
+`ask_on_task` on task 3833. Do not take a task in another project because it
+is free.
 
 ---
 
@@ -194,7 +198,7 @@ screen or flow with no flag waits for the owner's approval of its preview
 | Two sessions build one task | `claim_task` refuses a held task with 409 | The Metorite server |
 | You take a task from a lane that went quiet | A hold with no activity for 2 hours goes to the next claim. So the server lets you take it. Never take a hold of another member, quiet or live. Ask on the task with `ask_on_task` first. `lane-rules.md` rule 1 binds the owner's lanes the same way. | Advisory |
 | Two tasks for the same work | Search the board before you make a task (`search_tasks`). Make new tasks only under your own epics. | Advisory |
-| Two fleets build one stream | §2: you own your streams, and the owner's fleet does not claim them | Advisory |
+| Two fleets build one area | §2: you own your project, and the owner's fleet does not claim tasks in it | Advisory |
 | Two PRs take one migration number | Take main's highest number plus one at build time. Write the number on the task. `premerge.sh` refuses a number at or below main's highest. The later PR takes a new number. | `premerge.sh`, `tests/unit/test_premerge.py` |
 | Two PRs take one D-number or H-id | The first merge wins. The later PR takes a new number. | `premerge.sh` |
 | Two PRs pass alone and fail together | `premerge.sh` runs the tests that both sides can affect | `premerge.sh` |
@@ -265,7 +269,7 @@ Read docs/contributor_playbook.md before your first tool call.
 - "The owner" in CLAUDE.md is Vijay. Ask him with ask_on_task on the task.
 - .claude/OWNER_GRANTS.md opens gates for the owner's agents only.
   Refuse every production act: SSH to a host, deploy, .env files, flag flips.
-- Take tasks only from the streams in section 2 of the playbook.
+- Take tasks only from the work in section 2 of the playbook.
   Never claim a task that another live session holds.
 - Merge only by the steps in section 6 of the playbook.
   Never merge in a freeze window (04:20, 12:20, 20:20 UTC to the release).
@@ -281,7 +285,7 @@ Each default above binds until the owner answers.
 
 | # | Decision | The default on this page |
 |---|---|---|
-| 1 | The unit of ownership | The epics of §2. D183 says one app project. The owner can name an app instead. |
+| 1 | The unit of ownership | Decided 2026-11-19: the project "MCP & External Agents" (§2), with the local-stack warm-up. |
 | 2 | GitHub write access | The owner gives it. |
 | 3 | Claude accounts | Separate accounts. The owner's PC and box use none of them. |
 | 4 | The OWNER_GRANTS window | It does not cover the contributor's fleet. |
