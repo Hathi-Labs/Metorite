@@ -2206,8 +2206,12 @@ async def load_row(
     )).fetchone()
 
 
-async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
-    row = await load_row(db, table, record_id)
+async def require_row(
+    db: Any, table: str, record_id: str, what: str, *, lock: bool = False,
+) -> Any:
+    """One row by id, or 404. ``lock=True`` reads it ``FOR UPDATE``
+    (:func:`load_row`)."""
+    row = await load_row(db, table, record_id, lock=lock)
     if row is None:
         raise HTTPException(status_code=404, detail=f"{what} not found")
     return row
