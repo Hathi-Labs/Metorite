@@ -82,6 +82,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from acb_common.settings import get_settings
 from fastapi import Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
@@ -98,6 +99,13 @@ SIGNAL_ID_PATTERN = r"^[a-z_]+:[^\s]{1,200}$"
 STATE_FP_PATTERN = r"^[0-9a-f]{8,64}$"
 KIND_PATTERN = r"^[a-z_]{1,40}$"
 Action = Literal["seen", "snooze", "dismiss", "not_useful", "acted", "restore"]
+
+#: The acts of the act record (``personalization.md`` §19.4) that a card action
+#: makes. A `seen` and a `restore` make none.
+MEMBER_ACTS: dict[str, str] = {
+    "acted": "card_acted", "snooze": "card_snooze", "dismiss": "card_dismiss",
+    "not_useful": "card_not_useful",
+}
 Until = Literal["later_today", "tomorrow", "next_week", "on_change"]
 
 #: Two sightings within this time are one visit (§6.2).
@@ -945,6 +953,21 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
                    cacheable=taught.ok)
 
 
+async def record_card_acts(db: Any, user: UserContext, items: list[StateItem],
+                           written: dict[str, Any]) -> None:
+    """WS-PZ MM-1c: what the member did with a card is an act in the act record
+    (``personalization.md`` §19.4). A `seen` and a `restore` are not one, and a
+    card whose write changed nothing is not one (*written* holds the rows that
+    changed). The row holds the card id and its kind, never its text. Dark
+    behind MEMBER_ACTIONS_ORGS, it never fails the write, and a long batch
+    records its first 20."""
+    for item in [i for i in items if i.action in MEMBER_ACTS and i.signal_id in written][:20]:
+        await member_actions.record_act(
+            db, org=member_actions.org_of(user), member=user.email or "", app="my_day",
+            act=MEMBER_ACTS[item.action], via="app", item_kind="signal",
+            item_id=item.signal_id, features={"signal_kind": item.kind})
+
+
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:
     """Write each item for the session's member, in one transaction."""
     from sqlalchemy import text
@@ -976,6 +999,7 @@ async def write_state(user: UserContext, items: list[StateItem], now: datetime) 
             await db.execute(text(_UPSERT_SQL), [
                 {"member": member, "signal_id": sid, **{c: new[c] for c in COLUMNS}}
                 for sid, new in sorted(final.items())])
+            await record_card_acts(db, user, items, final)
     return written
 
 

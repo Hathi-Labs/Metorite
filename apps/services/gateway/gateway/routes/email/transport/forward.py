@@ -72,6 +72,7 @@ import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import member_actions
 from fastapi import Depends, HTTPException
+from gateway.routes.email import act_features
 from gateway.routes.email.core import (
     _log,
     _tenant_session,
@@ -374,8 +375,8 @@ async def _record_forward(
         db, org=member_actions.org_of(user), member=user.email or "",
         app="email", act="forward", via="app", item_kind="email",
         item_id=str(row.id), mailbox_id=str(row.account_id),
-        features={"sender_domain": member_actions.domain_of(row.from_address)},
-        targets=[a for a in req.to if a and a.strip()])
+        features=act_features.of_address(row.from_address),
+        targets=[a for a in [*req.to, *(req.cc or []), *(req.bcc or [])] if a and "@" in a])
 
 
 async def _fetch_files(

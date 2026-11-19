@@ -15,12 +15,14 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway import decide_features, outbound_guard
 from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _host_is_public,
     _is_safe_external_url,
 )
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
@@ -463,10 +465,21 @@ async def bulk_action(
             f"""UPDATE email_messages SET {_BULK_DB_UPDATE[req.action]},
                        updated_at = now()
                  WHERE id IN (SELECT em.id FROM email_messages em WHERE {where_sql})
-             RETURNING id, provider_message_id, account_id"""
+             RETURNING id, provider_message_id, account_id, from_address"""
         ), params)).fetchall()
         if not rows:
             return {"affected": 0}
+
+        # WS-PZ MM-1c: an archive of mail that the member NAMED is an act on each
+        # mail. A sweep by sender, folder or age is not one choice per mail, so
+        # it records nothing, and a long list records its first 20 only.
+        if req.action == "archive" and req.message_ids:
+            for r in rows[:20]:
+                await member_actions.record_act(
+                    db, org=member_actions.org_of(user), member=user.email or "",
+                    app="email", act="archive", via="app", item_kind="email",
+                    item_id=str(r.id), mailbox_id=str(r.account_id),
+                    features=act_features.of_address(r.from_address))
 
         # Group provider message ids per account for background reconciliation.
         per_account: dict[str, list[str]] = {}
