@@ -744,7 +744,8 @@ dropped names and the skipped names. A slug that is no pack gives None.
   form. It names no other assistant. It does not say that the web is off,
   because the orchestrator's own web tools stay on behind the card.
   The `email` rules name `artifact:orchestrator:<path>` for a file of the
-  chat, because a bare path names a file of the email assistant.
+  chat. `send_email` also writes a bare path of a chat folder as its
+  `artifact:` ref (task 3598). A held run takes no such file.
 - **The marks.** Each pack tool carries `__cc_gated__`, so
   `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the
   owner. `_inject_mcp_servers` gives no registry MCP server to a run that
