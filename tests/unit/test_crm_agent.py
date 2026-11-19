@@ -45,6 +45,7 @@ import ast
 import inspect
 import json
 import re
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1189,6 +1190,70 @@ async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) 
     assert calls == []
 
 
+# ── SEM-1b-2: crm_aggregate takes `query` (semantic_model.md §5.1) ─────────
+
+_QUERY = [{"field": "Grand_Total", "op": "gte", "value": 100},
+          {"any": [{"field": "Status", "op": "eq", "value": "Paid"},
+                   {"field": "Status", "op": "eq", "value": "Sent"}]}]
+
+
+async def test_the_query_goes_to_the_route_as_its_json_text(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total",
+                           field_filters={"Subject": "Rent"}, query=_QUERY)
+    params = calls[0]["params"]
+    assert calls[0]["path"] == "/crm/aggregate"
+    assert json.loads(params["query"]) == _QUERY
+    # The old arguments go as before, beside it.
+    assert params["field.Subject"] == "Rent"
+    assert (params["entity"], params["measure"], params["field"]) == (
+        "module:Invoices", "sum", "Grand_Total")
+
+
+@pytest.mark.parametrize("absent", [None, []])
+async def test_no_query_changes_no_byte_of_the_request(monkeypatch, absent) -> None:
+    """The argument absent (or empty) sends the request of before."""
+    before = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total",
+                           field_filters={"Grand_Total.from": "100"})
+    after = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_aggregate("module:Invoices", measure="sum", field="Grand_Total",
+                           field_filters={"Grand_Total.from": "100"}, query=absent)
+    assert [(c["path"], c["params"]) for c in after] == [
+        (c["path"], c["params"]) for c in before]
+    assert "query" not in after[0]["params"]
+
+
+@pytest.mark.parametrize("bad", [
+    [{"field": "Grand_Total", "op": "gte", "value": float("nan")}],
+    [{"field": "Grand_Total", "op": "gte", "value": {1, 2}}],
+    [{"field": "Paid_On", "op": "eq", "value": date(2026, 11, 1)}],
+])
+async def test_a_query_that_is_no_json_is_a_plain_refusal(monkeypatch, bad) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    out = await _T.crm_aggregate("module:Invoices", query=bad)
+    assert out.startswith("Refused:")
+    assert '{"field": <key>, "op": <op>, "value": <value>}' in out
+    assert calls == []
+
+
+@pytest.mark.parametrize(("code", "message", "step"), [
+    ("query_off", "This CRM takes no query yet. Give the filters as field_filters of "
+                  "crm_aggregate: field.<key>=<value>, field.<key>.from and field.<key>.to.",
+     "field_filters"),
+    ("query_op_not_allowed", "Field `Status`: the op is not one that this store takes. "
+                             "Use eq, in, gte, lte, gt, lt.", "eq, in, gte, lte, gt, lt"),
+])
+async def test_a_refusal_of_the_query_reaches_the_model_with_a_working_step(
+        monkeypatch, code: str, message: str, step: str) -> None:
+    fake_gateway(_T, monkeypatch, None,
+                 client_class=_refusing(422, {"code": code, "message": message}))
+    out = await _T.crm_aggregate("module:Invoices", query=[
+        {"field": "Status", "op": "eq", "value": "Paid"}])
+    assert out.startswith("Refused:"), out
+    assert step in out
+
+
 def _aggregate_answer(measure: str, field_type: str | None, values: list) -> Any:
     def _answer(_call: dict) -> Any:
         return {
@@ -1253,7 +1318,10 @@ async def test_the_field_list_reads_a_module_and_names_each_use(monkeypatch) -> 
     assert "(key Unit_Price, currency) [measure: sum, avg, min, max]" in out
     assert "(key Category, select) [group by value]: Hardware" in out
     assert "(key Sales_Start, date) [group by month, quarter or year]" in out
-    assert "(key Description, text)" in out and "Description, text) [" not in out
+    # CRM-Q34-11: a text field of a module takes sums and ranges when it holds
+    # numbers, so its use is named now. Before, it had no bracket.
+    assert ("(key Description, text) [sums and ranges if it holds numbers, the answer "
+            "counts the rest]") in out
 
 
 async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatch) -> None:

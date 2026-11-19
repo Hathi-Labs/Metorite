@@ -59,8 +59,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -118,6 +118,50 @@ _COLUMNS = (CORE_COLUMN, MODULE_COLUMN)
 #: A number that arrives as a string. Bound into no statement: it is a literal.
 #: The digits are bounded, so no string can overflow ``numeric``.
 _NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
+
+#: CRM-Q34-11: the strict shape of a number in a TEXT field. Strict, never a
+#: guess: a value is a number only when its whole shape is clearly one.
+#:
+#: * ASCII digits only, ``[0-9]``. Never ``\d``: it can take a digit of
+#:   another script, and then the cast would fail the whole read.
+#: * An optional minus, only as the first character, before any currency
+#:   mark: ``-₹500`` and ``-Rs 500`` are -500. A minus after a mark
+#:   (``Rs-5``, ``RS-485``, ``₹-500``) or before a space (``- 5``) is no
+#:   number, because a code such as ``RS-232`` has that shape.
+#: * No leading zero: ``0`` and ``0.5`` are numbers, and ``007`` is a code.
+#: * Commas only in a Western (``1,234,567``) or an Indian (``12,34,567``)
+#:   grouping. ``1,5``, ``12,34`` and ``1,2,3`` are not numbers.
+#: * An optional ``.`` and 1 to 30 digits. At most 30 digits before it.
+#: * One currency mark (``₹``, ``Rs``, ``Rs.``, ``INR``, in any case) before
+#:   OR after the number, never both. Or a ``%`` after it.
+#: * Spaces and tabs only between a mark and the number, never ``\s``.
+#:
+#: ``NaN`` and ``Infinity`` never match: the cast of ``numeric`` takes them.
+#: The two capture groups are the minus and the number with its commas.
+#: ``regexp_match`` gives both, and ``array_to_string`` joins them, so the
+#: cast gets the sign and the digits, or NULL. The pattern is a BOUND value
+#: (:data:`TEXT_NUMBER_PARAM`): its ``(?:`` would read as a bind name in the
+#: SQL text.
+_MONEY_MARK = r"(?:₹|rs\.?|inr)"
+_TEXT_NUMBER_DIGITS = (
+    r"(?:0|[1-9][0-9]{0,2}(?:,[0-9]{3}){1,9}"
+    r"|[1-9][0-9]?(?:,[0-9]{2}){0,12},[0-9]{3}"
+    r"|[1-9][0-9]{0,29})(?:\.[0-9]{1,30})?"
+)
+TEXT_NUMBER_PATTERN = (
+    r"(?i)^(-)?(?!" + _MONEY_MARK + r".*[^0-9]$)"
+    r"(?:" + _MONEY_MARK + r"[ \t]*)?"
+    r"(" + _TEXT_NUMBER_DIGITS + r")"
+    r"(?:[ \t]*(?:" + _MONEY_MARK + r"|%))?$"
+)
+#: The bound name of :data:`TEXT_NUMBER_PATTERN`. One value in each statement.
+TEXT_NUMBER_PARAM = "agf_tn_re"
+#: The longest trimmed value that the pattern reads. A longer one is no
+#: number, and the regex never runs on it.
+TEXT_NUMBER_MAX_CHARS = 32
+#: The characters that a text value trims: white space, and the no-break
+#: space U+00A0 (``chr(160)``).
+_TEXT_TRIM = "E' \\t\\r\\n\\f\\x0b' || chr(160)"
 
 #: A value that starts with the shape of a calendar date. A datetime starts
 #: with one too. The year starts at 1000, so ``make_date`` takes every year
@@ -199,6 +243,11 @@ class FieldRef:
     #: Task 3128: the module that a ``lookup`` field points at, from
     #: ``crm_field_defs.options.lookup_module``. None for every other type.
     lookup_module: str | None = None
+    #: CRM-Q34-11: True for a text field of a module that holds numbers
+    #: (:func:`admit_text_numbers`). Its type stays ``text``, so a text
+    #: filter on it stays a text filter. Only a measure and a range read it
+    #: as a number, through :data:`TEXT_NUMBER_PATTERN`.
+    text_number: bool = False
 
 
 @dataclass(frozen=True)
@@ -662,7 +711,8 @@ def status_field(scope: FieldScope) -> str:
 def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
     """The field of a ``sum``, ``avg``, ``min`` or ``max``, or a 422."""
     ref = scope.ref(key)
-    if ref.type not in MEASURE_TYPES:
+    # CRM-Q34-11: a text field that holds numbers (`admit_text_numbers`).
+    if ref.type not in MEASURE_TYPES and not ref.text_number:
         raise _refuse(
             f"'{ref.key}' is a {ref.type} field. A measure takes a field of "
             f"type {_type_words(MEASURE_TYPES)}. The number fields of "
@@ -706,9 +756,32 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
 # ── The expressions. Every key and value is a bound parameter. ──────────────
 
 
-def _number(column: str, p: str) -> str:
+def _trimmed(column: str, p: str) -> str:
+    """The text of the field, with its outer white space and no-break
+    spaces trimmed (CRM-Q34-11)."""
+    return f"btrim({column} ->> :{p}, {_TEXT_TRIM})"
+
+
+def _number(column: str, p: str, text_number: bool = False) -> str:
     """The field as a number, or NULL. A JSON number casts. A string casts
-    only when it is a plain decimal, so no cast error can reach the route."""
+    only when it is a plain decimal, so no cast error can reach the route.
+
+    CRM-Q34-11: with *text_number*, a string is a number only in the strict
+    shape of :data:`TEXT_NUMBER_PATTERN`. ``regexp_match`` gives the minus
+    and the number, or NULL, and ``array_to_string`` joins them. So the
+    regex runs once and the cast only ever gets a captured number. The
+    length bound runs first, and the cast stays inside the CASE. Without
+    *text_number* the SQL text is the text of before."""
+    if text_number:
+        t = _trimmed(column, p)
+        return (
+            f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'number' "
+            f"THEN CAST({column} ->> :{p} AS numeric) "
+            f"WHEN jsonb_typeof({column} -> :{p}) = 'string' "
+            f"AND length({t}) <= {TEXT_NUMBER_MAX_CHARS} "
+            f"THEN CAST(replace(array_to_string(regexp_match({t}, "
+            f":{TEXT_NUMBER_PARAM}), ''), ',', '') AS numeric) END)"
+        )
     return (
         f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'number' "
         f"THEN CAST({column} ->> :{p} AS numeric) "
@@ -722,12 +795,16 @@ def _numbers(column: str, ref: FieldRef, prefix: str) -> list[tuple[str, dict[st
     """Each part of *ref* as a guarded number, with its bound key. A plain
     field is one part. Each bound name is ``{prefix}_{i}``: a separator, so
     ``agf_k1`` and part ``0`` never give ``agf_k10``, the key of filter 10
-    (CRM-Q32-9). No key reaches the SQL text."""
+    (CRM-Q32-9). No key reaches the SQL text. A text number (CRM-Q34-11)
+    binds its pattern too, under :data:`TEXT_NUMBER_PARAM`."""
     parts = ref.parts or (ref,)
     out = []
     for i, part in enumerate(parts):
         p = f"{prefix}_{i}"
-        out.append((_number(column, p), {p: part.key}))
+        bound: dict[str, Any] = {p: part.key}
+        if part.text_number:
+            bound[TEXT_NUMBER_PARAM] = TEXT_NUMBER_PATTERN
+        out.append((_number(column, p, part.text_number), bound))
     return out
 
 
@@ -922,6 +999,280 @@ def split_sql(scope: FieldScope, refs: Sequence[FieldRef], measure: str) -> list
             for i, ref in enumerate(refs, start=1)]
 
 
+# ── A text field that holds numbers (CRM-Q34-11) ────────────────────────────
+
+#: The stored type that may hold numbers. Only this one, and only on a module.
+TEXT_NUMBER_TYPE = "text"
+#: A measure or a range reads a text field as numbers only when at least
+#: this percent of its filled values are numbers. A value with no value
+#: (:data:`NO_VALUE_WORDS`) is not filled. Below it, the field is a code or
+#: free text, and the read is a 422.
+TEXT_NUMBER_MIN_SHARE_PCT = 50
+#: The trimmed values, in lower case, that hold no value. A blank value
+#: and a JSON null or a missing key hold no value too. Zero is a number.
+NO_VALUE_WORDS: tuple[str, ...] = ("", "-", "—", "na", "n/a", "nil", "none", "null")
+#: The most shapes of the values that are not numbers that one answer names.
+SHAPES_MAX = 2
+#: The longest shape. A shape is the structure of a value, never its text.
+SHAPE_CHARS = 24
+#: The prefix of the bound keys of the one read, and the bound names.
+_TEXT_KEY = "agf_n"
+_NO_VALUE = "agf_nv"
+#: The longest value that a shape reads, so a long value costs little.
+_SHAPE_READ = 64
+
+
+@dataclass(frozen=True)
+class TextNumbers:
+    """The values of one text field over the whole module (CRM-Q34-11):
+    the count of numbers, of values with no value, and of the values that
+    are not numbers. ``shapes`` holds the most common shapes of the values
+    that are not numbers, each with its count."""
+
+    numbers: int
+    no_value: int
+    not_numbers: int
+    shapes: tuple[tuple[str, int], ...] = ()
+
+    def wire(self) -> dict[str, Any]:
+        """The entry of ``text_numbers`` in the answer of the route."""
+        return {
+            "numbers": self.numbers, "no_value": self.no_value,
+            "not_numbers": self.not_numbers,
+            "shapes": [{"shape": shape, "words": shape_words(shape), "count": count}
+                       for shape, count in self.shapes],
+        }
+
+
+def text_number_keys(measure: str, field_key: str | None, fields: str | None,
+                     pairs: Sequence[tuple[str, str]]) -> list[str]:
+    """The keys that a module aggregate reads as a number: the field of a
+    ``sum``, ``avg``, ``min`` or ``max``, each key of a split, and the key of
+    each range filter (``.from`` or ``.to``). Each key comes once, in order.
+    An equality filter is never here: it stays a text filter. Pure, so the
+    hermetic tests call it."""
+    keys: list[str] = []
+    if field_key and measure in FIELD_MEASURES:
+        keys.append(field_key)
+    if fields:
+        keys.extend(k.strip() for k in str(fields).split(SPLIT_JOIN) if k.strip())
+    for name, _value in pairs:
+        for end in RANGE_ENDS:
+            if name.endswith(end) and name[: -len(end)]:
+                keys.append(name[: -len(end)])
+    return list(dict.fromkeys(keys))
+
+
+def _no_value(column: str, p: str) -> str:
+    """True when the field holds no value: a missing key, a JSON null, or a
+    string that trims to one of :data:`NO_VALUE_WORDS` in any case."""
+    return (
+        f"(jsonb_typeof({column} -> :{p}) IS NULL "
+        f"OR jsonb_typeof({column} -> :{p}) = 'null' "
+        f"OR (jsonb_typeof({column} -> :{p}) = 'string' "
+        f"AND lower({_trimmed(column, p)}) = ANY(CAST(:{_NO_VALUE} AS text[]))))"
+    )
+
+
+def _shape(column: str, p: str) -> str:
+    """The shape of a value that is not a number: each run of digits is
+    ``9``, each run of letters is ``a``, and each other character that is
+    not plain punctuation is ``?``. So the shape never carries the text or
+    the digits of the value. A JSON list, object or boolean gives its type
+    in brackets. At most :data:`SHAPE_CHARS` characters. Each colon of the
+    class ``[:alpha:]`` has a backslash, or ``text()`` reads ``:alph`` as a
+    bind name. ``text()`` takes the backslash off."""
+    digits = f"regexp_replace(left({_trimmed(column, p)}, {_SHAPE_READ}), '[0-9]+', '9', 'g')"
+    letters = f"regexp_replace({digits}, '[[\\:alpha\\:]]+', 'a', 'g')"
+    other = f"regexp_replace({letters}, '[^9a ./,%()_+#&₹-]+', '?', 'g')"
+    return (
+        f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'string' "
+        f"THEN left({other}, {SHAPE_CHARS}) "
+        f"ELSE '(' || jsonb_typeof({column} -> :{p}) || ')' END)"
+    )
+
+
+def _text_part(key: str, prefix: str) -> tuple[str, str, dict[str, Any]]:
+    """The guarded number of the text field *key* (through :func:`_amount`,
+    the one builder), its bound key name and its bound values."""
+    ref = FieldRef(key=key, type=TEXT_NUMBER_TYPE, label=key, text_number=True)
+    number, bound, _source = _amount(MODULE_COLUMN, ref, prefix)
+    (p,) = (name for name in bound if name != TEXT_NUMBER_PARAM)
+    return number, p, bound
+
+
+def text_numbers_sql(keys: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    """ONE statement and ONE scan of the whole module for every key: the
+    count of numbers, of values with no value and of values that are not
+    numbers, and the :data:`SHAPES_MAX` most common shapes of the last.
+
+    The scan reads each record once (:data:`DETOAST_JOIN`). A LATERAL
+    VALUES list gives one row for each record and key, with the guarded
+    number test and the no-value test. The shape runs only on a value that
+    is not a number. The rows are MATERIALIZED, so the counts and the
+    shapes read them and not the table. Each key, the pattern, the words,
+    the org and the module are bound. Only the shape leaves the database.
+
+    A row for each key and shape, in the order of the key and the rank:
+    ``(k, numbers, no_value, not_numbers, shape, count)``. A key with no
+    shape has one row with a NULL shape. An empty module gives no row."""
+    params: dict[str, Any] = {_NO_VALUE: list(NO_VALUE_WORDS)}
+    rows, shapes = [], []
+    for i, key in enumerate(keys):
+        number, p, bound = _text_part(key, f"{_TEXT_KEY}{i}")
+        params.update(bound)
+        rows.append(f"({i}, {number} IS NOT NULL, "
+                    f"coalesce({_no_value(DETOAST_COLUMN, p)}, false))")
+        shapes.append(f"WHEN {i} THEN {_shape(DETOAST_COLUMN, p)}")
+    sql = (
+        "WITH agf_tv AS MATERIALIZED (SELECT agf_x.k, agf_x.num, agf_x.nv, "
+        f"CASE WHEN NOT agf_x.num AND NOT agf_x.nv THEN CASE agf_x.k {' '.join(shapes)} "
+        "END END AS shape "
+        f"FROM crm_module_records{DETOAST_JOIN} "
+        f"CROSS JOIN LATERAL (VALUES {', '.join(rows)}) AS agf_x(k, num, nv) "
+        f"WHERE organization_id = CAST(:agf_org AS uuid) AND module = :{_MODULE}), "
+        "agf_tc AS (SELECT k, count(*) FILTER (WHERE num) AS numbers, "
+        "count(*) FILTER (WHERE nv) AS no_value, "
+        "count(*) FILTER (WHERE NOT num AND NOT nv) AS not_numbers "
+        "FROM agf_tv GROUP BY k), "
+        "agf_ts AS (SELECT k, shape, count(*) AS n, row_number() OVER "
+        "(PARTITION BY k ORDER BY count(*) DESC, shape) AS agf_r "
+        "FROM agf_tv WHERE shape IS NOT NULL GROUP BY k, shape) "
+        "SELECT agf_tc.k, agf_tc.numbers, agf_tc.no_value, agf_tc.not_numbers, "
+        "agf_ts.shape, agf_ts.n FROM agf_tc LEFT JOIN agf_ts "
+        f"ON agf_ts.k = agf_tc.k AND agf_ts.agf_r <= {SHAPES_MAX} "
+        "ORDER BY agf_tc.k, agf_ts.agf_r"
+    )
+    return sql, params
+
+
+def text_number_fits(found: TextNumbers) -> bool:
+    """True when at least one value is a number, and the numbers are at
+    least :data:`TEXT_NUMBER_MIN_SHARE_PCT` percent of the filled values (the
+    numbers and the values that are not numbers). Integers only."""
+    filled = found.numbers + found.not_numbers
+    return found.numbers >= 1 and found.numbers * 100 >= filled * TEXT_NUMBER_MIN_SHARE_PCT
+
+
+#: Each shape of a value that is not a number → its words, for the answer
+#: and the 422. The first match wins. Any other shape is quoted as it is.
+_SHAPE_WORDS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern), words) for pattern, words in (
+        (r"^\(array\)$", "a JSON list"),
+        (r"^\(object\)$", "a JSON object"),
+        (r"^\(boolean\)$", "true or false"),
+        (r"^-?9([.,]9)*( ?a)+\.?$", "a number with a unit word"),
+        (r"^a( a)*\.?$", "words only"),
+        (r"^9 ?- ?9$", "a range"),
+        (r"^9[-/.]9[-/.]9$", "a date or a code"),
+        (r"^-?9 9$", "two numbers"),
+        (r"^-?9(\.9)?$", "digits with a leading zero, or too many digits"),
+        (r"^-?9(,9)+(\.9)?$", "a comma that is no thousands group"),
+        (r"^\(.*9.*\)$", "a number in brackets"),
+        (r"^-?9a9$", "an exponent or a code"),
+        (r"^a.*9", "a code"),
+    )
+)
+
+
+def shape_words(shape: str) -> str:
+    """The words of one shape (:data:`_SHAPE_WORDS`), or the shape in
+    quotes. A shape holds no text of the value, so it can be quoted."""
+    for pattern, words in _SHAPE_WORDS:
+        if pattern.search(shape):
+            return words
+    return f"the shape '{shape}'"
+
+
+def text_counts_words(found: TextNumbers) -> str:
+    """The three counts of one field, and its most common shapes, in words.
+    The tool writes the same words from ``text_numbers`` of the answer."""
+    out = (f"In this module: {found.numbers:,} "
+           f"{'number' if found.numbers == 1 else 'numbers'}, "
+           f"{found.no_value:,} with no value, {found.not_numbers:,} not "
+           f"{'a number' if found.not_numbers == 1 else 'numbers'}.")
+    if found.shapes:
+        shown = ", ".join(f"{shape_words(shape)} ({count:,})" for shape, count in found.shapes)
+        out += f" Most common of these: {shown}."
+    return out
+
+
+def _text_refusal(scope: FieldScope, key: str, found: TextNumbers,
+                  measured: bool) -> HTTPException:
+    """The 422 of a text field that does not hold numbers, with its counts.
+    A measure names the number fields. A range keeps the words of the range
+    422 of before (CRM-Q34-2 item 4): the date and number fields, and the
+    equality filter."""
+    why = ("no value of it is a number" if found.numbers == 0 else
+           "fewer than half of its filled values are numbers, so it looks like a "
+           "code or free text")
+    head = f"'{key}' is a text field, and {why}. {text_counts_words(found)}"
+    if measured:
+        return _refuse(
+            f"{head} A measure takes a field of type {_type_words(MEASURE_TYPES)}, or a "
+            "text field that holds numbers. The number fields of "
+            f"{scope.owner} are: {scope.choices(MEASURE_TYPES)}.",
+        )
+    return _refuse(
+        f"{head} A range takes a date or a number field. The date and number fields of "
+        f"{scope.owner} are: {scope.choices(DATE_TYPES + MEASURE_TYPES)}. "
+        f"To match one value, give {scope.filter_word(key)}=<value>.",
+    )
+
+
+async def admit_text_numbers(
+    db: Any, scope: FieldScope, keys: Sequence[str],
+    measured: Collection[str] | None = None,
+) -> tuple[FieldScope, dict[str, TextNumbers]]:
+    """*scope* with each text field of *keys* that holds numbers marked
+    ``text_number``, and the counts of each such field (CRM-Q34-11).
+
+    Only a module scope, and only a field of type :data:`TEXT_NUMBER_TYPE`,
+    never a key word or a sum. An unknown key and every other type come back
+    unchanged, so the checks after this give their 422 of before. With no
+    text key, no statement runs.
+
+    ONE statement and ONE scan (:func:`text_numbers_sql`) read the counts of
+    every key over the whole module and the most common shapes of its
+    values that are not numbers. It runs in the caller's tenant session,
+    with the org in the predicate and RLS under it. An empty module counts
+    0 for each key. A field that fits (:func:`text_number_fits`) keeps
+    its type ``text`` and gets ``text_number``, so a measure and a range
+    read it as a number, and a text filter stays a text filter. A field that
+    does not fit is a 422 with its counts and its shapes. *measured* holds
+    the keys of a measure or a split, and None means every key. The 422 of
+    any other key, a range, keeps the words of a range."""
+    if scope.column != MODULE_COLUMN:
+        return scope, {}
+    texts = [
+        k for k in keys
+        if k not in KEY_WORDS and (ref := scope.fields.get(k)) is not None
+        and ref.type == TEXT_NUMBER_TYPE and not ref.parts
+    ]
+    if not texts:
+        return scope, {}
+    from gateway.routes.crm.core import current_tenant
+
+    where = {"agf_org": str(current_tenant()), _MODULE: scope.owner[len(MODULE_OWNER):]}
+    sql, params = text_numbers_sql(texts)
+    rows = (await db.execute(text(sql), {**params, **where})).fetchall()
+    counts: dict[str, TextNumbers] = {}
+    for i, key in enumerate(texts):
+        mine = [r for r in rows if int(r[0]) == i]
+        head = mine[0] if mine else (i, 0, 0, 0, None, None)
+        counts[key] = TextNumbers(
+            numbers=int(head[1] or 0), no_value=int(head[2] or 0),
+            not_numbers=int(head[3] or 0),
+            shapes=tuple((str(r[4]), int(r[5])) for r in mine if r[4] is not None))
+    for key in texts:
+        if not text_number_fits(counts[key]):
+            raise _text_refusal(scope, key, counts[key],
+                                measured is None or key in measured)
+    fields = {**scope.fields, **{
+        k: replace(scope.fields[k], text_number=True) for k in texts}}
+    return replace(scope, fields=fields), counts
+
+
 def group_sql(
     scope: FieldScope, ref: FieldRef, bucket: str | None, *, zone: str,
 ) -> GroupSql:
@@ -1009,11 +1360,18 @@ def field_pairs(query_params: Any) -> list[tuple[str, str]]:
     ]
 
 
-def _iso_date(name: str, value: str) -> date:
+def _iso_date(name: str, value: str, said: str | None = None) -> date:
+    """The day of a date filter value, or a 422. *said* names the value in
+    the 422: ``'field.<name>'`` by default, a query leaf (SEM-1b-2)."""
     try:
         return date.fromisoformat(value.strip()[:10])
     except ValueError:
-        raise _refuse(f"'field.{name}' must be an ISO date (YYYY-MM-DD).") from None
+        raise _refuse(f"{said or _said(name)} must be an ISO date (YYYY-MM-DD).") from None
+
+
+def _said(name: str) -> str:
+    """The name of an old parameter in a 422 of its value: ``'field.<name>'``."""
+    return f"'{FIELD_PREFIX}{name}'"
 
 
 def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
@@ -1030,15 +1388,20 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
             value: str, also: Sequence[str] = (),
-            ext: tuple[str, str] | None = None) -> tuple[str, Any, dict[str, Any], str]:
+            ext: tuple[str, str] | None = None,
+            said: str | None = None) -> tuple[str, Any, dict[str, Any], str]:
     """One filter clause, its bound value, its bound keys and its FROM text.
     *also* holds the stored values that a text filter counts too
     (§18.16 part 6, :func:`text_matches`). *ext* is ``(bound name, Zoho
     id)`` of a lookup filter whose value is a Metorite id (task 3128,
-    :func:`lookup_ids`)."""
+    :func:`lookup_ids`). *said* names the value in a 422 of the value. None
+    names the old parameter ``'field.<key>'`` (SEM-1b-2: a query leaf names
+    itself)."""
     x = ext[0] if ext is not None and ref.type == "lookup" and end is None else None
-    clause, bound = _filter_value(scope, ref, end, k, v, value, also, x)
-    if ref.type in MEASURE_TYPES:
+    clause, bound = _filter_value(scope, ref, end, k, v, value, also, x, said)
+    # CRM-Q34-11: a range on a text field that holds numbers reads the same
+    # guarded number. Its `=` stays a text filter, as before.
+    if ref.type in MEASURE_TYPES or (ref.text_number and end is not None):
         # Task 3690: a range compares the same guarded number as `=`. A value
         # that is no number is NULL, so no end of a range takes it.
         number, keys, source = _amount(scope.column, ref, k)
@@ -1050,19 +1413,21 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
     return clause, bound, keys, _source_of(scope.column)
 
 
-def _decimal(name: str, value: str) -> str:
+def _decimal(name: str, value: str, said: str | None = None) -> str:
     """The bound text of a number filter value, or a 422 (``field.<name>``).
     The one guard of the value of ``=``, ``.from`` and ``.to``: a finite
-    number of at most :data:`MAX_DIGITS` digits, below 10^:data:`MAX_EXPONENT`."""
+    number of at most :data:`MAX_DIGITS` digits, below 10^:data:`MAX_EXPONENT`.
+    *said* names the value in the 422 (SEM-1b-2: a query leaf names itself)."""
+    said = said or _said(name)
     try:
         number = Decimal(value.strip())
     except InvalidOperation:
-        raise _refuse(f"'field.{name}' must be a number.") from None
+        raise _refuse(f"{said} must be a number.") from None
     if (not number.is_finite()
             or len(number.as_tuple().digits) > MAX_DIGITS
             or abs(number.adjusted()) > MAX_EXPONENT):
         raise _refuse(
-            f"'field.{name}' must be a number of at most {MAX_DIGITS} "
+            f"{said} must be a number of at most {MAX_DIGITS} "
             f"digits, below 10^{MAX_EXPONENT}.",
         )
     return str(number)
@@ -1070,14 +1435,14 @@ def _decimal(name: str, value: str) -> str:
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
                   value: str, also: Sequence[str] = (),
-                  x: str | None = None) -> tuple[str, Any]:
+                  x: str | None = None, said: str | None = None) -> tuple[str, Any]:
     """One filter clause and its bound value. A number gives only the right
     side of its clause: :func:`_filter` puts the number of :func:`_amount`
     on the left. A module filter reads the detoasted copy (task 3127)."""
     column = _reads(scope.column)
-    if end is not None and ref.type in MEASURE_TYPES:
+    if end is not None and (ref.type in MEASURE_TYPES or ref.text_number):
         # Task 3690: a number range. :func:`_filter` puts the number on the left.
-        return f"CAST(:{v} AS numeric)", _decimal(ref.key + end, value)
+        return f"CAST(:{v} AS numeric)", _decimal(ref.key + end, value, said)
     if end is not None:
         if ref.type not in DATE_TYPES:
             raise _refuse(
@@ -1089,16 +1454,17 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (
             f"{_calendar_day(column, ref, k)} {_OPERATORS[end]} CAST(:{v} AS date)",
-            _iso_date(ref.key + end, value),
+            _iso_date(ref.key + end, value, said),
         )
     if ref.type in DATE_TYPES:
-        return f"left({column} ->> :{k}, 10) = :{v}", _iso_date(ref.key, value).isoformat()
+        return (f"left({column} ->> :{k}, 10) = :{v}",
+                _iso_date(ref.key, value, said).isoformat())
     if ref.type in MEASURE_TYPES:
-        return f"CAST(:{v} AS numeric)", _decimal(ref.key, value)
+        return f"CAST(:{v} AS numeric)", _decimal(ref.key, value, said)
     if ref.type == "boolean":
         word = value.strip().lower()
         if word not in ("true", "false"):
-            raise _refuse(f"'field.{ref.key}' must be true or false.")
+            raise _refuse(f"{said or _said(ref.key)} must be true or false.")
         return f"{column} ->> :{k} = :{v}", word
     if ref.type == "lookup":
         # Task 3128: a Metorite id of the target record also matches the
@@ -1274,6 +1640,11 @@ async def module_field_where(
 
     org = str(current_tenant())
     scope = await module_scope(db, module)
+    # CRM-Q34-11 with CRM-Q34-4: a range on a text field that holds numbers
+    # reads the strict number here too, so the list and the total of the
+    # same filters hold the same records. No statement runs with no range.
+    scope, _counts = await admit_text_numbers(
+        db, scope, text_number_keys("count", None, None, pairs), measured=())
     zone = await crm_zone(db, current_tenant())
     matches = await text_matches(db, org, scope, module, pairs)
     ids = await lookup_ids(db, org, scope, pairs)
@@ -1330,14 +1701,42 @@ _QUERY_VALUE = "agf_qv"
 _QUERY_EXT = "agf_qx"
 
 
+#: SEM-1b-2: THE switch of ``eq <day>`` on a datetime field in a native
+#: query leaf (owner decision pending, recommended ``native_zone``).
+#:
+#: * ``native_zone``: the day in the CRM zone (:func:`_calendar_day`), so the
+#:   leaf is exactly ``gte <day>`` AND ``lte <day>``.
+#: * ``stored_prefix``: the clause of the old ``field.<key>=<day>``, the
+#:   first 10 characters of the stored UTC text.
+#:
+#: A lowered leaf (:func:`lower_pair`) always keeps the old clause, so no
+#: old total changes. :func:`_leaf_ends` is the one reader.
+DATETIME_EQ = "native_zone"
+DATETIME_EQ_RULES: tuple[str, ...] = ("native_zone", "stored_prefix")
+
+
 @dataclass(frozen=True)
 class QueryLeaf:
     """One leaf of a checked query: the key as the caller wrote it, the op
-    (never ``in``, which expands), and the JSON value."""
+    (never ``in``, which expands), and the JSON value. *lowered* is True
+    for a leaf of an old ``field.<key>`` parameter (:func:`lower_pair`): it
+    keeps the clause and the 422 words of the old parameter."""
 
     key: str
     op: str
     value: Any
+    lowered: bool = False
+
+
+def lower_pair(name: str, value: str) -> QueryLeaf:
+    """The leaf of one old pair ``field.<name>=<value>`` (:data:`LOWERED`):
+    ``.from`` is ``gte``, ``.to`` is ``lte``, and each other name is ``eq``.
+    The leaf is marked ``lowered``, so it builds the clause of the old
+    parameter. Pure."""
+    for end, op in LOWERED.items():
+        if end is not None and name.endswith(end) and name[: -len(end)]:
+            return QueryLeaf(name[: -len(end)], op, value, lowered=True)
+    return QueryLeaf(name, LOWERED[None], value, lowered=True)
 
 
 #: A node of a checked query: its leaves, joined by OR. The nodes of a
@@ -1460,16 +1859,56 @@ def _leaf_text(ref: FieldRef, leaf: QueryLeaf) -> str:
     return str(value)
 
 
+def _leaf_ends(ref: FieldRef | None, leaf: QueryLeaf) -> tuple[str | None, ...]:
+    """The range ends that *leaf* builds, each one call of :func:`_filter`:
+    one end, or ``None`` for ``eq``. A native ``eq`` on a datetime field
+    under the rule ``native_zone`` of :data:`DATETIME_EQ` is the two ends
+    ``.from`` and ``.to`` of the same day, the day in the CRM zone. A
+    lowered leaf keeps the one end of its old parameter. *ref* None is a
+    key that is not resolved yet: it gives the plain end."""
+    if (leaf.op == "eq" and not leaf.lowered and ref is not None
+            and ref.type == "datetime" and DATETIME_EQ == "native_zone"):
+        return (".from", ".to")
+    return (_QUERY_ENDS[leaf.op],)
+
+
+def _leaf_said(leaf: QueryLeaf) -> str | None:
+    """The name of the value of *leaf* in a 422 of its value. A native leaf
+    names its field and its op. A lowered leaf names the old parameter, so
+    its words do not change (None)."""
+    return None if leaf.lowered else f"The value of `{_shown(leaf.key)}` {leaf.op}"
+
+
 def _query_leaves(scope: FieldScope, nodes: Sequence[QueryNode],
                   ) -> list[list[tuple[QueryLeaf, FieldRef, str | None, str]]]:
-    """Each leaf of *nodes* with its field, its range end and its value
-    text. An unknown key is the 422 of :meth:`FieldScope.ref`, which names
-    the legal fields and the near ones."""
+    """Each leaf of *nodes* with its field, its first range end and its
+    value text. An unknown key is the 422 of :meth:`FieldScope.ref`, which
+    names the legal fields and the near ones."""
     return [
-        [(leaf, ref, _QUERY_ENDS[leaf.op], _leaf_text(ref, leaf))
+        [(leaf, ref, _leaf_ends(ref, leaf)[0], _leaf_text(ref, leaf))
          for leaf in node for ref in (scope.ref(leaf.key),)]
         for node in nodes
     ]
+
+
+def query_ranges(scope: FieldScope | None,
+                 nodes: Sequence[QueryNode] | None) -> list[tuple[str, str]]:
+    """Each range of *nodes* in the pair form ``(<key>.from or <key>.to,
+    value)`` that the pair readers take: :func:`text_number_keys`,
+    :func:`day_field` and the day check of the aggregate (SEM-1b-2). So a
+    range in ``query`` admits a text field that holds numbers, and picks
+    the day field, as ``field.<key>.from`` and ``.to`` do. ``gt`` reads as
+    ``.from``, ``lt`` as ``.to``, and a native datetime ``eq`` as both
+    (:func:`_leaf_ends`). An ``eq`` gives nothing. Pure."""
+    out: list[tuple[str, str]] = []
+    for node in nodes or ():
+        for leaf in node:
+            ref = scope.fields.get(leaf.key) if scope is not None else None
+            for end in _leaf_ends(ref, leaf):
+                if end is not None:
+                    side = ".from" if end in (".from", ".gt") else ".to"
+                    out.append((leaf.key + side, str(leaf.value)))
+    return out
 
 
 def _probe(resolved: list[list[tuple[QueryLeaf, FieldRef, str | None, str]]],
@@ -1500,27 +1939,46 @@ def query_sql(
     index = 0
     for n, node in enumerate(_query_leaves(scope, nodes)):
         ors: list[str] = []
-        for j, (_leaf, ref, end, value) in enumerate(node):
+        for j, (leaf, ref, _end, value) in enumerate(node):
             k, v = f"{_QUERY_KEY}{n}_{j}", f"{_QUERY_VALUE}{n}_{j}"
             ext = (f"{_QUERY_EXT}{n}_{j}", ids[index]) if ids and index in ids else None
-            clause, bound, keys, source = _filter(scope, ref, end, k, v, value,
-                                                  (matches or {}).get(index, ()), ext)
-            ors.append(clause)
-            params.update(keys)
-            params[v] = bound
-            sources.append(source)
+            # SEM-1b-2: a native datetime `eq` is two ends of one day
+            # (:data:`DATETIME_EQ`). The second end binds its own value.
+            ands: list[str] = []
+            for e, end in enumerate(_leaf_ends(ref, leaf)):
+                ve = v if e == 0 else f"{v}_{e}"
+                clause, bound, keys, source = _filter(
+                    scope, ref, end, k, ve, value, (matches or {}).get(index, ()), ext,
+                    _leaf_said(leaf))
+                ands.append(clause)
+                params.update(keys)
+                params[ve] = bound
+                sources.append(source)
+            ors.append(ands[0] if len(ands) == 1 else "(" + " AND ".join(ands) + ")")
             index += 1
         clauses.append(ors[0] if len(ors) == 1 else
                        "(" + " OR ".join(f"({clause})" for clause in ors) + ")")
     return WhereSql(sql=" AND ".join(clauses), params=params, source=from_source(*sources))
 
 
+@dataclass(frozen=True)
+class QueryWhere:
+    """The answer of :func:`query_where`: the clause, the stored values that
+    each text leaf counts by key (the ``matched`` of the answer), and the
+    pair form of the leaves with the matches by index, which the alias seed
+    of the aggregate reads as it reads the old pairs (SEM-1b-2)."""
+
+    where: WhereSql
+    matched: dict[str, list[str]]
+    pairs: list[tuple[str, str]]
+    matches: dict[int, list[str]]
+
+
 async def query_where(
     db: Any, org: str, scope: FieldScope, module: str, nodes: Sequence[QueryNode], *,
     zone: str,
-) -> tuple[WhereSql, dict[str, list[str]]]:
-    """The clause of *nodes* on a module total, and the stored values that
-    each text leaf counts, by key (the ``matched`` of the answer).
+) -> QueryWhere:
+    """The clause of *nodes* on a module total, with its matched values.
 
     The same calls as the old filters (``aggregate._read`` and
     :func:`module_field_where`): the text matches, the lookup ids, then
@@ -1531,7 +1989,8 @@ async def query_where(
     matches = await text_matches(db, org, scope, module, probe)
     ids = await lookup_ids(db, org, scope, probe)
     matched = {probe[i][0]: list(found) for i, found in matches.items()}
-    return query_sql(scope, nodes, zone=zone, matches=matches, ids=ids), matched
+    return QueryWhere(query_sql(scope, nodes, zone=zone, matches=matches, ids=ids),
+                      matched, probe, matches)
 
 
 # ── q across a module (CRM-Q34-7, crm_platform.md §18.17) ───────────────────
@@ -2180,6 +2639,8 @@ __all__ = [
     "AMOUNT_WORD",
     "BUCKETS",
     "CHOICES_MAX",
+    "DATETIME_EQ",
+    "DATETIME_EQ_RULES",
     "DATE_TYPES",
     "DATE_WORD",
     "DEFAULT_ZONE",
@@ -2192,6 +2653,7 @@ __all__ = [
     "LOWERED",
     "MEASURE_TYPES",
     "MODULE_MEASURES",
+    "NO_VALUE_WORDS",
     "OVERLAY_REFUSED",
     "QUERY_CHARS_MAX",
     "QUERY_LEAVES_MAX",
@@ -2200,6 +2662,10 @@ __all__ = [
     "SPLIT_MAX",
     "SPLIT_MIN",
     "SUM_CHECK_ROWS",
+    "TEXT_NUMBER_MAX_CHARS",
+    "TEXT_NUMBER_MIN_SHARE_PCT",
+    "TEXT_NUMBER_PARAM",
+    "TEXT_NUMBER_PATTERN",
     "VALUE_GROUP_TYPES",
     "ZONE_PARAM",
     "FieldRef",
@@ -2208,8 +2674,11 @@ __all__ = [
     "MeasureSql",
     "QueryLeaf",
     "QueryNode",
+    "QueryWhere",
     "SumCheck",
+    "TextNumbers",
     "WhereSql",
+    "admit_text_numbers",
     "check_group",
     "check_measure",
     "check_split",
@@ -2231,6 +2700,7 @@ __all__ = [
     "key_words",
     "lookup_ids",
     "lookup_targets",
+    "lower_pair",
     "measure_sql",
     "module_field_where",
     "module_measure",
@@ -2247,13 +2717,19 @@ __all__ = [
     "parse_query",
     "query_core_refusal",
     "query_off_refusal",
+    "query_ranges",
     "query_refusal",
     "query_sql",
     "query_where",
+    "shape_words",
     "split_sql",
     "sum_check",
     "sum_check_sql",
+    "text_counts_words",
     "text_matches",
+    "text_number_fits",
+    "text_number_keys",
+    "text_numbers_sql",
     "used_keys",
     "value_counts",
     "zoned",

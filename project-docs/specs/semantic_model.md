@@ -3,10 +3,19 @@
 **Status: PROPOSED (2026-11-17, owner ask). SEM-1b-1 is BUILT dark
 (2026-11-18, task 3736, flag `SEMANTIC_MODEL_ORGS`, fences
 `test_crm_query_grammar.py` and `test_crm_query_grammar_r8.py`). No other
-slice is built.** The owner
+slice is built in full.** The owner
 must answer D-SEM-1 first (`building_blocks.md` §6.1 step 4). No code slice of
 rung 3 starts before that answer. Verified against `origin/main` at `a4cfeedc7`
 (2026-11-17).
+
+**SEM-1b-2 is BUILT dark in part** (2026-11-18, task 3736, flag
+`SEMANTIC_MODEL_ORGS`). `crm_aggregate` takes the `query` argument. A range
+leaf on a text field reads the strict number of CRM-Q34-11. A query range picks
+the day field of the findings. A refused leaf value names the leaf.
+
+A datetime `eq` uses the recommended rule `native_zone` of `field_sql.DATETIME_EQ`, an
+open owner decision. The lowering of `custom.<key>` and the ops `ne`,
+`is_empty`, `contains` and `matches` are not built.
 
 **Names.** The workstream is **WS-SEM**, and its slice prefix is **SEM-n**.
 Neither name occurred on `main` before this spec (R2). This spec takes no
@@ -536,7 +545,7 @@ D-SEM-7.
 | 1 | A member asks for the billed total of one customer for one month, and the amount still due. The chat sends one total per module, with the customer's name in a clause. The server finds the customer, and the answer gives the totals with "How I read this". No refusal reaches the member. The scripted replay of the four refusal classes passes | SEM-0, SEM-1a, SEM-2 to SEM-6 |
 | 2 | An admin opens "Needs you" and sees three proposals from chats: a synonym, a rule and a verified question. The admin accepts two. A member asks the same question in other words in a new chat, and gets "a verified question" with the same total. The admin presses Undo on one, and the next chat drops it | SEM-1b, SEM-7 to SEM-11 |
 | 3 | An admin connects a test company through the local link to Tally, or a test MCP server. Within 5 minutes the panel shows what Metorite learned: the groups, the ledger count of each group, the voucher types, and the first and last voucher date. The admin accepts. A member asks for last quarter's sales. The chat calls the system's read tool, names the system, and says how it read the data | SEM-12 to SEM-17 |
-| 4 | One line: books of account. Zoho Books after IN-3 (task 3176), and totals that respect the tax ledgers. Needs D-SEM-8 | later |
+| 4 | One line: books of account. Zoho Books after IN-3 (task 3176), and totals that respect the tax ledgers. Needs D-SEM-8. `api_connections.md` D-API-5 asks the owner to drop the wait for IN-3 on the gateway path. This line holds until the owner answers | later |
 | 5 | One line: AI Studio builds starters and skills from a model (I2, TOF-5a) | later |
 | 6 | One line: suggestions from use (after NUM-7), and the guarded tune of the profiler prompt (task 3649) | later |
 
@@ -557,7 +566,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-4** | 1 | A refusal lists the legal fields (the 8 most filled) and the legal operators. One repair. One `semantic.refusal` line and a daily counter | `tool_refusals.py`, `crm_tools.py`, `aggregate.py` | STANDARD · AGENT-SAFE | none: text only | `test_crm_refusal_next.py`, `test_semantic_refusal_counter.py` (new) | none |
 | **SEM-5** | 1 | The text of `crm_aggregate` says that a word is fine and the server finds the field, and that a module takes `q` | `crm_tools.py` | STANDARD · AGENT-SAFE | none: text only | `test_tool_schema_diet.py` | SEM-1a, SEM-2 |
 | **SEM-6** | 1 | A scripted replay of the four refusal classes, and a fixed set of 20 questions with synthetic data | `evals/semantic/` (new) | LOW · AGENT-SAFE | none | `test_semantic_eval_scripted.py` (new) | SEM-1a to SEM-5 |
-| **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
+| **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments. **BUILT dark (task 3736):** SEM-1b-1, and SEM-1b-2 except `custom.<key>` and the ops `ne`, `is_empty`, `contains` and `matches` | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
 | **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
 | **SEM-8** | 2 | Verified queries: save with parameters, match, run, the "verified" mark, stale on a shape change, one repair | `routes/crm/` (a new module), `crm_tools.py` | HIGH · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_verified_queries.py` and `_r8` (new) | SEM-7 |
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
@@ -650,7 +659,10 @@ the owner answers D-SEM-1.
    ledger). Books arrive as connections: Tally through the local link, then
    Zoho Books after IN-3. Name the spec that owns the books connectors.
    Recommendation: a books section in `crm_connectors.md` (WS-MIR) or a new
-   connector spec. The owner picks.
+   connector spec. The owner picks. *(2026-11-18: D-API-5 of
+   `api_connections.md` puts Zoho Books first, as D122.1 decided. It drops the
+   wait for IN-3 on the gateway path. This text holds until the owner
+   answers.)*
 9. **D-SEM-9. No learning across orgs.** Only counts cross tenants. The
    profiler's global prompt changes only through task 3649. Recommendation:
    yes, as D187 point 4.

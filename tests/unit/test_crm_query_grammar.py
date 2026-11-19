@@ -13,6 +13,11 @@ This file holds the rules that need no database: the shape, the caps, the
 op refusals, the lowering table, the expansion of ``in``, the refusals of a
 core entity and of an org off the flag, the AST fences, and the Studio
 bytes. ``test_crm_query_grammar_r8.py`` runs the SQL on a real Postgres.
+
+SEM-1b-2 (section 7): a range leaf on a text field that holds numbers
+reads the ONE strict number of CRM-Q34-11. A range leaf picks the day field
+of the findings. A refusal of a leaf value names the leaf. A native ``eq``
+on a datetime is the day in the CRM zone (:data:`field_sql.DATETIME_EQ`).
 """
 
 from __future__ import annotations
@@ -45,9 +50,13 @@ from gateway.routes.crm.field_sql import (
     FieldRef,
     FieldScope,
     QueryLeaf,
+    day_field,
+    lower_pair,
     module_where,
     parse_query,
+    query_ranges,
     query_sql,
+    text_number_keys,
 )
 
 from tests.unit.test_crm_aggregate import _field_sql_offenders
@@ -273,14 +282,18 @@ def _normal(sql: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 def test_a_lowered_pair_compiles_to_the_clause_of_the_old_parameter(name: str, value: str) -> None:
     """``field.<key>=v`` is ``eq``, ``.from`` is ``gte`` and ``.to`` is
     ``lte``. The query leaf builds the SAME clause through the same
-    ``_filter``, so the lowering changes no total."""
+    ``_filter``, so the lowering changes no total. SEM-1b-2: the leaf of an
+    old pair is marked ``lowered`` (``lower_pair``), so a datetime ``=``
+    keeps its old clause too."""
     end = next((e for e in RANGE_ENDS if name.endswith(e)), None)
     key = name[: -len(end)] if end else name
+    leaf = lower_pair(name, value)
+    assert leaf == QueryLeaf(key, LOWERED[end], value, lowered=True)
     old = module_where(_SCOPE, "Invoices", [(name, value)], zone=_ZONE)
     prefix = " WHERE module = :agf_module AND "
     assert old.sql.startswith(prefix)
     old_params = {k: v for k, v in old.params.items() if k not in ("agf_module",)}
-    new = query_sql(_SCOPE, ((QueryLeaf(key, LOWERED[end], value),),), zone=_ZONE)
+    new = query_sql(_SCOPE, ((leaf,),), zone=_ZONE)
     sql, params = _normal(new.sql, new.params)
     assert sql == old.sql[len(prefix):]
     assert params == old_params
@@ -483,3 +496,223 @@ def test_the_studio_parse_does_not_call_the_store_check() -> None:
     tree = ast.parse(Path(studio_query.__file__).read_text(encoding="utf-8"))
     for function in ("parse_query", "check_shape", "parse_aggregate", "check_aggregate_shape"):
         assert "check_store_shape" not in _calls(tree, function)
+
+
+# ── 7. SEM-1b-2: text numbers, the day field, the leaf words, datetime eq ────
+
+#: A module scope with a text field that holds numbers, marked as
+#: ``field_sql.admit_text_numbers`` marks it (CRM-Q34-11).
+_TEXT_NUMBER = FieldRef("Ref_Amount", "text", "Ref Amount", text_number=True)
+_TN_SCOPE = FieldScope(
+    column=field_sql.MODULE_COLUMN, owner="module:Bills",
+    fields={**_FIELDS, "Ref_Amount": _TEXT_NUMBER},
+)
+
+
+@pytest.mark.parametrize(("op", "end"), [("gte", ".from"), ("lte", ".to")])
+def test_a_range_leaf_on_a_text_number_builds_the_strict_clause_of_the_old_range(
+        op: str, end: str) -> None:
+    """B: the query leaf and ``field.<key>.from``/``.to`` build the SAME
+    clause, with the ONE strict pattern of CRM-Q34-11 bound."""
+    old = module_where(_TN_SCOPE, "Bills", [(f"Ref_Amount{end}", "10")], zone=_ZONE)
+    prefix = " WHERE module = :agf_module AND "
+    new = query_sql(_TN_SCOPE, ((QueryLeaf("Ref_Amount", op, 10),),), zone=_ZONE)
+    sql, params = _normal(new.sql, new.params)
+    assert sql == old.sql[len(prefix):]
+    assert params == {k: v for k, v in old.params.items() if k != "agf_module"}
+    assert params[field_sql.TEXT_NUMBER_PARAM] == field_sql.TEXT_NUMBER_PATTERN
+    assert "regexp_match(" in new.sql
+
+
+@pytest.mark.parametrize(("op", "sign"), [("gt", ">"), ("lt", "<")])
+def test_a_strict_leaf_on_a_text_number_reads_the_strict_number(op: str, sign: str) -> None:
+    where = query_sql(_TN_SCOPE, ((QueryLeaf("Ref_Amount", op, 5),),), zone=_ZONE)
+    assert f" {sign} CAST(:agf_qv0_0 AS numeric)" in where.sql
+    assert where.params[field_sql.TEXT_NUMBER_PARAM] == field_sql.TEXT_NUMBER_PATTERN
+
+
+def test_an_eq_leaf_on_a_text_number_stays_the_text_filter_of_the_old_eq() -> None:
+    """SPELLING (semantic_model.md §5.1): ``eq`` on text keeps the variant
+    count, as ``field.<key>=`` does after CRM-Q34-11. So the lowering of
+    ``=`` changes no total, and no ``eq`` admits a text field."""
+    old = module_where(_TN_SCOPE, "Bills", [("Ref_Amount", "12")], zone=_ZONE)
+    new = query_sql(_TN_SCOPE, ((QueryLeaf("Ref_Amount", "eq", 12),),), zone=_ZONE)
+    assert _normal(new.sql, new.params)[0] == old.sql[len(" WHERE module = :agf_module AND "):]
+    assert field_sql.TEXT_NUMBER_PARAM not in new.params
+
+
+@pytest.mark.parametrize(("op", "keys"), [
+    ("gte", ["Ref_Amount"]), ("lte", ["Ref_Amount"]), ("gt", ["Ref_Amount"]),
+    ("lt", ["Ref_Amount"]), ("eq", []), ("in", []),
+])
+def test_a_range_leaf_admits_its_text_field_as_a_range_pair_does(op: str, keys: list) -> None:
+    """B: ``query_ranges`` gives each range leaf in the pair form, so
+    ``text_number_keys`` admits its field as it admits ``.from``/``.to``."""
+    value: Any = [1, 2] if op == "in" else 1
+    nodes = parse_query(_q(_leaf("Ref_Amount", op, value)))
+    assert text_number_keys("count", None, None, query_ranges(_TN_SCOPE, nodes)) == keys
+    if keys:
+        old = [("Ref_Amount.from", "1")]
+        assert text_number_keys("count", None, None, old) == keys
+
+
+def _calls_any(tree: ast.AST, function: str) -> set[str]:
+    """Each name that *function* calls, as a name or as an attribute."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == function:
+            return {
+                n.func.id if isinstance(n.func, ast.Name) else n.func.attr
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name | ast.Attribute)
+            }
+    raise AssertionError(f"no function {function}")
+
+
+def _functions_holding(tree: ast.AST, needle: str) -> list[str]:
+    """The innermost functions whose string constants hold *needle*."""
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        inner = [n for n in ast.walk(node) if n is not node
+                 and isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+        skip = {id(m) for f in inner for m in ast.walk(f)}
+        if any(isinstance(n, ast.Constant) and isinstance(n.value, str) and needle in n.value
+               and id(n) not in skip for n in ast.walk(node)):
+            found.append(node.name)
+    return found
+
+
+def test_there_is_one_strict_number_expression() -> None:
+    """B, the fence: the query path reads a text number through the ONE
+    expression of CRM-Q34-11 (``_number`` with ``text_number``, reached by
+    ``_amount``). A second number expression anywhere in the CRM routes
+    fails here."""
+    trees = {path.name: ast.parse(path.read_text(encoding="utf-8"))
+             for path in sorted(_CRM.glob("*.py"))}
+    holders = {name: _functions_holding(tree, "regexp_match(") for name, tree in trees.items()}
+    assert {k: v for k, v in holders.items() if v} == {"field_sql.py": ["_number"]}
+    # The pattern is bound in one place, and only the text-number builder
+    # names it.
+    binders = {name: _functions_holding(tree, "array_to_string(") for name, tree in trees.items()}
+    assert {k: v for k, v in binders.items() if v} == {"field_sql.py": ["_number"]}
+    fs = trees["field_sql.py"]
+    assert "_filter" in _calls_any(fs, "query_sql")
+    assert "_amount" in _calls_any(fs, "_filter")
+    assert "_numbers" in _calls_any(fs, "_amount")
+    assert "_number" in _calls_any(fs, "_numbers")
+    # The total admits the text fields of the query ranges.
+    agg = trees["aggregate.py"]
+    assert {"query_ranges", "text_number_keys", "admit_text_numbers"} <= _calls_any(agg, "_read")
+    # The list and the total admit text numbers the same way (CRM-Q34-4).
+    assert {"admit_text_numbers", "text_number_keys"} <= _calls_any(fs, "module_field_where")
+
+
+def test_a_range_leaf_picks_the_day_field_as_a_range_pair_does() -> None:
+    """C: the day of the findings is the field of the first date range of
+    the old pairs or of the query, the same field both ways."""
+    old = [("Invoice_Date.from", "2026-10-01"), ("Invoice_Date.to", "2026-10-31")]
+    nodes = parse_query(_q(_leaf("Invoice_Date", "gte", "2026-10-01"),
+                           _leaf("Invoice_Date", "lte", "2026-10-31")))
+    by_query = day_field(_SCOPE, None, query_ranges(_SCOPE, nodes))
+    assert by_query is not None and by_query == day_field(_SCOPE, None, old)
+    assert by_query.key == "Invoice_Date"
+    strict = parse_query(_q(_leaf("Paid_On", "gt", "2026-10-01")))
+    assert day_field(_SCOPE, None, query_ranges(_SCOPE, strict)).key == "Paid_On"
+    # An eq on a date is no range, as `field.<key>=<day>` is none.
+    assert query_ranges(_SCOPE, parse_query(_q(_leaf("Invoice_Date", "eq", "2026-10-01")))) == []
+
+
+def test_the_total_reads_the_query_ranges_for_the_day_and_the_aliases() -> None:
+    """C: ``_read`` gives the day check the ranges of the pairs AND the
+    query, and ``_with_query`` seeds the alias sets of the query leaves."""
+    tree = ast.parse((_CRM / "aggregate.py").read_text(encoding="utf-8"))
+    read = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == "_read")
+    day_calls = [n for n in ast.walk(read) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_day_of"]
+    assert len(day_calls) == 1
+    assert isinstance(day_calls[0].args[3], ast.Name) and day_calls[0].args[3].id == "ranges"
+    assert "_seed_aliases" in _calls(tree, "_with_query")
+
+
+@pytest.mark.parametrize(("op", "value", "words"), [
+    ("gte", "abc", "The value of `Grand_Total` gte must be a number."),
+    ("lte", "1" * 61, "The value of `Grand_Total` lte must be a number of at most 60 digits"),
+    ("eq", "x", "The value of `Grand_Total` eq must be a number."),
+])
+def test_a_bad_number_in_a_query_leaf_names_the_leaf(op: str, value: str, words: str) -> None:
+    """D: the 422 names the field and the op of the leaf, never an old
+    parameter that the caller did not send."""
+    with pytest.raises(HTTPException) as caught:
+        query_sql(_SCOPE, ((QueryLeaf("Grand_Total", op, value),),), zone=_ZONE)
+    message = caught.value.detail["message"]
+    assert message.startswith(words), message
+    assert "field." not in message
+
+
+@pytest.mark.parametrize(("name", "words"), [
+    ("Grand_Total.from", "'field.Grand_Total.from' must be a number."),
+    ("Grand_Total", "'field.Grand_Total' must be a number."),
+])
+def test_a_bad_number_in_an_old_parameter_keeps_its_words(name: str, words: str) -> None:
+    for build in (lambda: module_where(_SCOPE, "Invoices", [(name, "abc")], zone=_ZONE),
+                  lambda: query_sql(_SCOPE, ((lower_pair(name, "abc"),),), zone=_ZONE)):
+        with pytest.raises(HTTPException) as caught:
+            build()
+        assert caught.value.detail["message"] == words
+
+
+def test_a_bad_day_or_bool_in_a_query_leaf_names_the_leaf() -> None:
+    with pytest.raises(HTTPException) as caught:
+        query_sql(_SCOPE, ((QueryLeaf("Invoice_Date", "gte", "soon"),),), zone=_ZONE)
+    assert caught.value.detail["message"].startswith("The value of `Invoice_Date` gte must be")
+    with pytest.raises(HTTPException) as caught:
+        query_sql(_SCOPE, ((QueryLeaf("Taxable", "eq", "maybe"),),), zone=_ZONE)
+    assert caught.value.detail["message"] == "The value of `Taxable` eq must be true or false."
+
+
+def test_a_native_datetime_eq_is_the_day_in_the_crm_zone() -> None:
+    """E, the rule ``native_zone``: a native ``eq <day>`` on a datetime is
+    exactly ``gte <day>`` AND ``lte <day>``, the day in the CRM zone."""
+    assert field_sql.DATETIME_EQ == "native_zone"
+    assert field_sql.DATETIME_EQ in field_sql.DATETIME_EQ_RULES
+    eq = query_sql(_SCOPE, ((QueryLeaf("Paid_On", "eq", "2026-11-01"),),), zone=_ZONE)
+    both = query_sql(_SCOPE, ((QueryLeaf("Paid_On", "gte", "2026-11-01"),),
+                              (QueryLeaf("Paid_On", "lte", "2026-11-01"),)), zone=_ZONE)
+    assert eq.sql.startswith("(") and " AND " in eq.sql
+    assert ">= CAST(:agf_qv0_0 AS date)" in eq.sql
+    assert "<= CAST(:agf_qv0_0_1 AS date)" in eq.sql
+    assert "left(" not in eq.sql
+    # The same two clauses as the two range leaves, by bound names only.
+    gte, lte = both.sql.split(" AND ", 1)
+    assert eq.sql == "(" + gte + " AND " + lte.replace("agf_qk1_0", "agf_qk0_0").replace(
+        "agf_qv1_0", "agf_qv0_0_1") + ")"
+    assert eq.params["agf_qv0_0"] == eq.params["agf_qv0_0_1"] == both.params["agf_qv0_0"]
+    # A date field keeps its stored day: a date has no time.
+    date_eq = query_sql(_SCOPE, ((QueryLeaf("Invoice_Date", "eq", "2026-11-01"),),), zone=_ZONE)
+    assert "left(" in date_eq.sql
+
+
+def test_a_lowered_datetime_eq_keeps_its_old_clause() -> None:
+    old = module_where(_SCOPE, "Invoices", [("Paid_On", "2026-11-01")], zone=_ZONE)
+    new = query_sql(_SCOPE, ((lower_pair("Paid_On", "2026-11-01"),),), zone=_ZONE)
+    assert _normal(new.sql, new.params)[0] == old.sql[len(" WHERE module = :agf_module AND "):]
+    assert "left(" in new.sql
+
+
+def test_the_datetime_eq_switch_is_one_place(monkeypatch) -> None:
+    """E: the other rule changes in ONE constant, and the native leaf then
+    builds the old clause."""
+    monkeypatch.setattr(field_sql, "DATETIME_EQ", "stored_prefix")
+    native = query_sql(_SCOPE, ((QueryLeaf("Paid_On", "eq", "2026-11-01"),),), zone=_ZONE)
+    lowered = query_sql(_SCOPE, ((lower_pair("Paid_On", "2026-11-01"),),), zone=_ZONE)
+    assert native == lowered
+    assert query_ranges(_SCOPE, ((QueryLeaf("Paid_On", "eq", "2026-11-01"),),)) == []
+
+
+def test_a_native_datetime_eq_is_a_range_for_the_day_field() -> None:
+    nodes = ((QueryLeaf("Paid_On", "eq", "2026-11-01"),),)
+    assert query_ranges(_SCOPE, nodes) == [("Paid_On.from", "2026-11-01"),
+                                           ("Paid_On.to", "2026-11-01")]
+    assert query_ranges(_SCOPE, ((lower_pair("Paid_On", "2026-11-01"),),)) == []

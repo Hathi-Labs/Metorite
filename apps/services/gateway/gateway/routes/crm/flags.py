@@ -39,8 +39,10 @@ gateway reads them.
   text value (WS-53 CRM-Q34-7, ``crm_platform.md`` §18.17). The grammar is
   the one of ``CRM_ORGS``. An empty list allows no organization: ``q`` on a
   module total is the 422 of CRM-Q34-2, and the module list matches the
-  record name only, as before. :func:`module_find_allowed` is the one check.
-  A name in the list spends nothing, so its flip is gate ``enforcement-flip``.
+  record name only, as before. The same flag also holds CRM-Q34-6: the
+  bullet of ``CRM_MODULE_FIND_ORGS`` below. :func:`module_find_allowed` is
+  the one check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``.
 * ``CRM_NOTE_SEARCH_ORGS`` — the organization ids that get search of note
   text by meaning (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). The grammar
   is the one of ``CRM_ORGS``. An empty list allows no organization: the sync
@@ -98,6 +100,14 @@ gateway reads them.
   :func:`cutover_allowed` is the one check, and it needs
   :func:`crm_mirror_allowed` too. 🔴 A name in the list on a production box
   is the owner's production run (CRM-Z10-run).
+* ``CRM_MODULE_FIND_ORGS`` (the same flag as CRM-Q34-7 above) — the
+  organization ids whose chat may find a field by its words, in one module or in each mirrored module (WS-53
+  CRM-Q34-6, task 3699). The grammar is the one of ``CRM_ORGS``. An empty
+  list allows no organization: ``GET /crm/fields-search`` answers 404
+  ``module_find_off`` and sends no SQL, and ``crm_list_fields`` ignores its
+  ``query`` and answers as before. :func:`module_find_allowed` is the one
+  check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``. Fence: ``tests/unit/test_crm_fields_search.py``.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -246,13 +256,16 @@ def fill_rank_allowed(organization_id: str | None) -> bool:
 
 def crm_module_find_orgs() -> frozenset[str]:
     """The organization ids whose module reads take ``q`` across a module
-    (CRM-Q34-7). Empty means none."""
+    (CRM-Q34-7), and whose chat may find a field by its words (CRM-Q34-6).
+    Empty means none."""
     return _parse_orgs(str(get_settings().crm_module_find_orgs or ""))
 
 
 def module_find_allowed(organization_id: str | None) -> bool:
     """True when ``q`` on a module list and a module total finds across the
-    module for this org (CRM-Q34-7, ``crm_platform.md`` §18.17).
+    module for this org (CRM-Q34-7, ``crm_platform.md`` §18.17), and when the
+    field search may serve this org (CRM-Q34-6, task 3699). ONE flag holds
+    both: the two slices named the same flag, and this is its one check.
 
     It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
     a place on ``CRM_MODULE_FIND_ORGS``, or ``*`` there. It reads the

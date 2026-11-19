@@ -67,6 +67,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # optional argument, so no call breaks.
     # WS-53 CRM-Q25e part 2: `fields`, 2 to 5 number fields in ONE statement.
     # A new optional argument, so no call breaks.
+    # WS-SEM SEM-1b-2 (task 3736, 2026-11-18): `query`, the one query grammar
+    # of a module total (semantic_model.md §5.1). Optional, so no call breaks.
     'crm_aggregate': {'params': {'bucket': 'string',
                                  'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
@@ -77,7 +79,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                                  'measure': 'string',
                                  'owner': 'string', 'page': 'integer',
                                  'pipeline_id': 'string',
-                                 'q': 'string', 'status': 'string', 'term': 'string',
+                                 'q': 'string', 'query': 'array',
+                                 'status': 'string', 'term': 'string',
                                  'updated_from': 'string', 'updated_to': 'string'},
                       'required': ['entity']},
     'crm_deal_contacts': {'params': {'deal_id': 'string', 'page': 'integer'},
@@ -87,8 +90,13 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                               'required': ['module', 'record_id']},
     'crm_get_record': {'params': {'entity': 'string', 'record_id': 'string'},
                        'required': ['entity', 'record_id']},
-    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer'},
-                        'required': ['entity']},
+    # WS-53 CRM-Q34-6 (task 3699, 2026-11-18): `query` finds a field by its
+    # words, in one module or in each mirrored module. So `entity` is no
+    # longer required. A new optional argument, so no call breaks. With
+    # CRM_MODULE_FIND_ORGS empty, the tool ignores `query`.
+    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer',
+                                   'query': 'string'},
+                        'required': []},
     # CRM-Q34-4 added field_filters and fields.
     'crm_list_module_records': {'params': {'module': 'string', 'page': 'integer',
                                            'page_size': 'integer', 'q': 'string',

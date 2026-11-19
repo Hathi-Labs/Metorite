@@ -157,6 +157,8 @@ from gateway.routes.crm.field_sql import (
     FieldRef,
     FieldScope,
     QueryNode,
+    TextNumbers,
+    admit_text_numbers,
     check_group,
     check_measure,
     check_split,
@@ -188,10 +190,12 @@ from gateway.routes.crm.field_sql import (
     q_refusal,
     query_core_refusal,
     query_off_refusal,
+    query_ranges,
     query_where,
     split_sql,
     status_field,
     text_matches,
+    text_number_keys,
     used_keys,
     zoned,
 )
@@ -499,6 +503,13 @@ class AggregateResponse(BaseModel):
     #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
     #: first one is also ``field`` and ``total``. Absent with no split.
     split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-11: each text field of a module that the call read as
+    #: numbers → its counts over the whole module (``numbers``, ``no_value``
+    #: and ``not_numbers``) and the most common ``shapes`` of the values that
+    #: are not numbers (``field_sql.TextNumbers.wire``). Absent when the call
+    #: read no text field, so the wire is the one of before.
+    text_numbers: dict[str, dict[str, Any]] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: CRM-Q25e part 4: what the reader must know before the total
     #: (``acb_common.number_sense``), for example one day that holds most
     #: records. Each has ``kind``, ``key``, ``records``, ``share`` and one
@@ -834,6 +845,9 @@ class _Read:
     #: the nearest stored names of a ``q`` that counted no record.
     near: list[str] | None = None
     nearest: list[str] | None = None
+    #: CRM-Q34-11: each text field that the read took as a number, with its
+    #: counts (``field_sql.admit_text_numbers``).
+    text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -931,6 +945,7 @@ async def _read(
     scope: FieldScope | None = None
     zone = ""
     field_measure = measure
+    text_numbers: dict[str, TextNumbers] = {}
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
@@ -944,6 +959,14 @@ async def _read(
         if status_group:
             status_field(scope)
         field_measure, field = module_measure(measure, field)
+        # SEM-1b-2: each range of `query` in the pair form, so the pair
+        # readers below (the text numbers, the day check) read it too.
+        ranges = [*pairs, *query_ranges(scope, nodes)]
+        # CRM-Q34-11: a measure or a range on a text field that holds
+        # numbers reads them. With no text field named, no statement runs.
+        scope, text_numbers = await admit_text_numbers(
+            db, scope, text_number_keys(field_measure, field, fields, ranges),
+            measured=text_number_keys(field_measure, field, fields, []))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
         # §18.16 part 6: a text filter counts each case and short form.
@@ -963,7 +986,7 @@ async def _read(
         where_sql, source = _with_words(scope, words, where_sql, bound, source)
     else:
         assert found is not None
-        matched, words, plain = {}, [], ("", {})
+        matched, words, plain, ranges = {}, [], ("", {}), pairs
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -1015,7 +1038,7 @@ async def _read(
     # a second grouping set. A module only, never a money read of deals, and
     # only when the statement reads the detoasted copy already: a count with
     # no field read never pays for a detoast of each row.
-    day, day_key, day_source = _day_of(scope, module, grouped, pairs, zone, bound,
+    day, day_key, day_source = _day_of(scope, module, grouped, ranges, zone, bound,
                                        reads=bool(source))
     source = from_source(source, day_source)
     days: list[tuple[Any, Any, int]] = []
@@ -1074,7 +1097,7 @@ async def _read(
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
-                 near=near, nearest=nearest)
+                 near=near, nearest=nearest, text_numbers=text_numbers)
 
 
 async def _with_query(
@@ -1088,12 +1111,13 @@ async def _with_query(
     they are, so an answer with no query does not change."""
     if not nodes:
         return where_sql, source
-    found, counted = await query_where(db, str(current_tenant()), scope, module, nodes,
-                                       zone=zone)
-    bound.update(found.params)
-    for key, values in counted.items():
+    found = await query_where(db, str(current_tenant()), scope, module, nodes, zone=zone)
+    bound.update(found.where.params)
+    for key, values in found.matched.items():
         matched.setdefault(key, values)
-    return f"{where_sql} AND {found.sql}", from_source(source, found.source)
+    # SEM-1b-2: an alias set of a text leaf is the org's fact, as for a pair.
+    await _seed_aliases(db, module, found.pairs, found.matches)
+    return f"{where_sql} AND {found.where.sql}", from_source(source, found.where.source)
 
 
 def _with_words(scope: FieldScope, words: list[str], where_sql: str,
@@ -1512,6 +1536,7 @@ async def _compute(
         near=read.near,
         nearest=read.nearest,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
+        text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),

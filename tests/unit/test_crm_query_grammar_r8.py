@@ -20,6 +20,18 @@ the superuser.
 (h) A ``query`` on a core entity, and from an org off the flag, each give a
     422 that names a working step.
 
+SEM-1b-2 (task 3736), on the same database:
+
+(i) A text field that holds numbers ("12", " 12 ", "1,200", "NA", "-", "")
+    compared by ``gte``/``lte`` in ``query`` gives the total and the count of
+    the old ``field.<key>.from``/``.to`` through CRM-Q34-11. "NA", "-" and ""
+    count as no value, and no value is a cast error.
+(j) A date range in ``query`` gives the findings of the same range as old
+    pairs (the batch on one day), not only the same total.
+(k) A native ``eq <day>`` on a datetime counts the day in the CRM zone. The
+    old ``field.<key>=<day>`` keeps its old answer.
+(l) A bad number in a query leaf names the leaf, not an old parameter.
+
 A hermetic fake agrees with any SQL it is handed, so none of these is proved
 without the database.
 """
@@ -65,6 +77,13 @@ _INVOICE_DEFS = [
     ("Account", "lookup", {"lookup_module": "Vendors"}, False, False),
 ]
 
+#: SEM-1b-2: a module whose text field holds numbers, and a date for the
+#: findings. Its records are seeded by the tests that read it.
+_BILL_DEFS = [
+    ("Ref_Amount", "text", None, False, False),
+    ("Bill_Date", "date", None, False, False),
+]
+
 _ACME = {"id": "z-a1", "name": "Acme"}
 _BETA = {"id": "z-a2", "name": "Beta"}
 
@@ -102,8 +121,9 @@ def sem(ns, monkeypatch):
 
     a, b = ns.org_a, ns.org_b
     for org in (a, b):
-        _mirror_org(ns, org, [_module("Invoices"), _module("Vendors")])
+        _mirror_org(ns, org, [_module("Invoices"), _module("Vendors"), _module("Bills")])
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
+        _defs(ns, org, "module:Bills", _BILL_DEFS)
         _set_zone(ns, org, _ZONE)
     with ns.admin_engine.begin() as c:
         for ext_id, fields in _INVOICES:
@@ -346,3 +366,138 @@ async def test_h_a_query_off_the_flag_names_field_filters(sem, app_engine) -> No
     assert "field_filters" in detail["message"]
     # Off the flag, a total with no query answers as before.
     assert await _sum(sem, sem.org_a, **{"field.Status": "Paid"}) == (350.5, 2, 2)
+
+
+# ── SEM-1b-2 ──────────────────────────────────────────────────────────────────
+
+
+async def _bills(p: Any, org: str, **query: Any) -> dict[str, Any]:
+    """The answer of a sum of ``Ref_Amount`` on Bills."""
+    res = await _call(p, _admin(org), "GET", _path(
+        entity="module:Bills", measure="sum", field="Ref_Amount", **query))
+    assert res.status_code == 200, (query, res.text)
+    return res.json()
+
+
+def _seed_bills(p: Any, org: str, rows: list[dict[str, Any]]) -> None:
+    with p.admin_engine.begin() as c:
+        for i, fields in enumerate(rows):
+            _record(c, org, "Bills", f"bill{i}", f"bill{i}", fields)
+
+
+#: (i) The text values, each on its own day of October. "approx 5" is a
+#: value that is no number, so the field still fits (4 of 5 filled).
+_TEXT_VALUES = ["12", " 12 ", "1,200", "NA", "-", "", "approx 5"]
+
+
+@pytest.mark.parametrize(("old", "query", "want"), [
+    ({"field.Ref_Amount.from": "10"}, [_leaf("Ref_Amount", "gte", 10)], (1224.0, 3, 3)),
+    ({"field.Ref_Amount.to": "12"}, [_leaf("Ref_Amount", "lte", "12")], (24.0, 2, 2)),
+    ({"field.Ref_Amount.from": "12", "field.Ref_Amount.to": "1200"},
+     [_leaf("Ref_Amount", "gte", 12), _leaf("Ref_Amount", "lte", 1200)], (1224.0, 3, 3)),
+    ({"field.Ref_Amount.from": "-1000"}, [_leaf("Ref_Amount", "gte", -1000)], (1224.0, 3, 3)),
+])
+async def test_i_a_text_number_range_in_query_equals_the_old_range(
+        sem, app_engine, old: dict, query: list, want: tuple) -> None:
+    a = sem.org_a
+    _seed_bills(sem, a, [{"Ref_Amount": v, "Bill_Date": f"2026-10-{i + 1:02d}"}
+                         for i, v in enumerate(_TEXT_VALUES)])
+    by_old = await _bills(sem, a, **old)
+    sem.flag(a)
+    by_query = await _bills(sem, a, query=json.dumps(query))
+    shape = (by_query["total"], by_query["records"], by_query["values"])
+    assert shape == (by_old["total"], by_old["records"], by_old["values"]) == want
+    # The counts of CRM-Q34-11 come with both answers: "NA", "-" and "" are
+    # no value, "approx 5" is no number.
+    assert by_query["text_numbers"] == by_old["text_numbers"]
+    counts = by_query["text_numbers"]["Ref_Amount"]
+    assert (counts["numbers"], counts["no_value"], counts["not_numbers"]) == (3, 3, 1)
+
+
+async def test_i_a_strict_range_and_a_group_on_a_text_number(sem, app_engine) -> None:
+    a = sem.org_a
+    _seed_bills(sem, a, [{"Ref_Amount": v} for v in _TEXT_VALUES])
+    sem.flag(a)
+    strict = await _bills(sem, a, query=json.dumps([_leaf("Ref_Amount", "gt", 12)]))
+    assert (strict["total"], strict["records"]) == (1200.0, 1)
+    either = await _bills(sem, a, query=json.dumps([{"any": [
+        _leaf("Ref_Amount", "lt", 13), _leaf("Ref_Amount", "gt", 1000)]}]))
+    assert (either["total"], either["records"]) == (1224.0, 3)
+
+
+async def test_i_an_eq_on_a_text_number_stays_the_old_text_filter(sem, app_engine) -> None:
+    """SPELLING: ``eq`` on text counts the stored variants of the value
+    (``text_matches``), as ``field.<key>=`` does, so the lowering of ``=``
+    changes no total. The variant count is the old rule, not a number test."""
+    a = sem.org_a
+    _seed_bills(sem, a, [{"Ref_Amount": v} for v in _TEXT_VALUES])
+    olds = {v: await _bills(sem, a, **{"field.Ref_Amount": v}) for v in ("12", "1200", "NA")}
+    sem.flag(a)
+    for value, old in olds.items():
+        asked: Any = value if value == "NA" else int(value)
+        new = await _bills(sem, a, query=json.dumps([_leaf("Ref_Amount", "eq", asked)]))
+        assert (new["total"], new["records"], new["values"]) == (
+            old["total"], old["records"], old["values"]), value
+
+
+async def test_i_a_text_field_with_no_numbers_is_the_q34_11_refusal(sem, app_engine) -> None:
+    a = sem.org_a
+    _seed_bills(sem, a, [{"Ref_Amount": v} for v in ("open", "closed", "NA")])
+    sem.flag(a)
+    detail = await _refusal(sem, a, entity="module:Bills",
+                            query=json.dumps([_leaf("Ref_Amount", "gte", 1)]))
+    assert "no value of it is a number" in detail["message"]
+    assert "A range takes a date or a number field." in detail["message"]
+
+
+async def test_j_a_date_range_in_query_gives_the_findings_of_the_old_range(
+        sem, app_engine) -> None:
+    """The batch on one day: 60 of 70 bills on 17 October. The query range
+    names the day field, so its findings equal the findings of the pairs."""
+    a = sem.org_a
+    rows = [{"Ref_Amount": "10", "Bill_Date": "2026-10-17"} for _ in range(60)]
+    rows += [{"Ref_Amount": "10", "Bill_Date": f"2026-10-{d:02d}"} for d in range(1, 11)]
+    _seed_bills(sem, a, rows)
+    old = await _bills(sem, a, **{"field.Bill_Date.from": "2026-10-01",
+                                  "field.Bill_Date.to": "2026-10-31"})
+    sem.flag(a)
+    new = await _bills(sem, a, query=json.dumps([
+        _leaf("Bill_Date", "gte", "2026-10-01"), _leaf("Bill_Date", "lte", "2026-10-31")]))
+    assert (new["total"], new["records"]) == (old["total"], old["records"]) == (700.0, 70)
+    assert old["findings"], old
+    assert new["findings"] == old["findings"]
+    [found] = new["findings"]
+    assert (found["kind"], found["key"], found["records"]) == ("concentration", "2026-10-17", 60)
+    strict = await _bills(sem, a, query=json.dumps([
+        _leaf("Bill_Date", "gt", "2026-09-30"), _leaf("Bill_Date", "lt", "2026-11-01")]))
+    assert strict["findings"] == old["findings"]
+
+
+async def test_k_a_native_datetime_eq_counts_the_day_in_the_crm_zone(sem, app_engine) -> None:
+    """i4 is stored 2026-10-31T20:00:00Z, 1 November 01:30 in Asia/Kolkata.
+    The query ``eq 2026-11-01`` counts it, as ``gte`` AND ``lte`` do. The old
+    ``field.Paid_On=2026-11-01`` keeps its answer: the stored text i1 only."""
+    a = sem.org_a
+    old_off = await _sum(sem, a, **{"field.Paid_On": "2026-11-01"})
+    sem.flag(a)
+    old_on = await _sum(sem, a, **{"field.Paid_On": "2026-11-01"})
+    assert old_off == old_on == (100.0, 1, 1)
+    eq = await _sum(sem, a, query=json.dumps([_leaf("Paid_On", "eq", "2026-11-01")]))
+    day = await _sum(sem, a, query=json.dumps([
+        _leaf("Paid_On", "gte", "2026-11-01"), _leaf("Paid_On", "lte", "2026-11-01")]))
+    assert eq == day == (140.0, 2, 2)
+    # `in` expands to the same eq leaves.
+    assert await _sum(sem, a, query=json.dumps(
+        [_leaf("Paid_On", "in", ["2026-11-01", "2026-11-02"])])) == (140.0, 3, 2)
+
+
+async def test_l_a_bad_number_in_a_query_leaf_names_the_leaf(sem, app_engine) -> None:
+    a = sem.org_a
+    sem.flag(a)
+    detail = await _refusal(sem, a, entity="module:Invoices",
+                            query=json.dumps([_leaf("Grand_Total", "gte", "1" * 61)]))
+    assert detail["message"].startswith(
+        "The value of `Grand_Total` gte must be a number of at most 60 digits")
+    old = await _refusal(sem, a, entity="module:Invoices",
+                         **{"field.Grand_Total.from": "1" * 61})
+    assert old["message"].startswith("'field.Grand_Total.from' must be a number")
