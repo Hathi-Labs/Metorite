@@ -295,7 +295,12 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
     if only == "approval" and "approvals" in failed:
         # The one source this view needs did not answer: no false "none".
         raise RuntimeError("the approvals source failed")
-    items = [i for i in feed.get("items") or [] if only is None or i.get("kind") == only]
+    # Only the kinds this view has a section for. A reminder or an AI vendor
+    # alert (AO-2) has none, and a list of only such rows had no section to
+    # draw, so `_list` raised IndexError. The app shows those rows.
+    known = dict(_KINDS)
+    items = [i for i in feed.get("items") or []
+             if i.get("kind") in known and (only is None or i.get("kind") == only)]
     now = _now()
     head = "*Approvals*" if only == "approval" else "*My day*"
     note = (f"\n_{', '.join(failed).capitalize()} did not answer in time, so this may "

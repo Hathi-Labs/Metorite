@@ -132,15 +132,22 @@ def _days(days_left: str | None) -> str | None:
     return f"about {days_left} {'day' if days_left == '1' else 'days'} left"
 
 
-def words(state: str, label: str, days_left: str | None = None) -> tuple[str, str | None]:
+def words(state: str, label: str, days_left: str | None = None,
+          was: str | None = None) -> tuple[str, str | None]:
     """The title and the detail of one alert. Operator-facing, so it names the
-    vendor by its display name. Every word is ours."""
+    vendor by its display name. Every word is ours.
+
+    A recovery names what ended: "serves again" after ``out``, and "has credit
+    again" after ``low``, because a vendor that was low never stopped serving.
+    """
     if state == "out":
         return (f"{label} is out of credit.",
                 f"The chat now uses the next model in the chain. Top up the {label} account.")
     if state == "low":
         days = _days(days_left)
         return (f"{label} credit is low: {days}." if days else f"{label} credit is low.", None)
+    if was == "low":
+        return f"{label} has credit again.", None
     return f"{label} serves again.", None
 
 
@@ -156,10 +163,12 @@ class Alert:
     state: str
     days_left: str | None
     at: str
+    #: For an ``ok`` alert, the state it ended (``out`` or ``low``).
+    was: str | None = None
 
     def entry(self) -> dict[str, Any]:
         return {"label": self.label, "state": self.state,
-                "days_left": self.days_left, "at": self.at}
+                "days_left": self.days_left, "at": self.at, "was": self.was}
 
 
 def decide(last: dict[str, Any] | None, signal: str) -> str | None:
@@ -213,18 +222,30 @@ async def run_pass(org: str, rows: list[dict[str, Any]], now: datetime) -> list[
 
     Returns the alerts sent. The order is the point:
 
-    1. Read the remembered map, and find the vendors whose signal changed.
-    2. Read the admins, strictly. A read fault raises here, before any state
-       moves, so the next bucket tries the whole pass again.
-    3. Claim the hourly slot of each alert, then write the map.
-    4. Deliver. A crash here never sends that alert twice.
+    1. Read the remembered map. Drop each vendor that the answer no longer
+       holds: its credential was revoked, so its bell row must go. That sends
+       nothing.
+    2. Find the vendors whose signal changed.
+    3. Read the admins, strictly. A read fault raises here, before any slot
+       or alert state moves, so the next bucket tries the whole pass again.
+    4. Claim the hourly slot of each alert, then write the map.
+    5. Deliver. A crash here never sends that alert twice.
+
+    *rows* is a whole Console answer. An empty answer is an answer: no live
+    platform credential, so every remembered vendor goes.
     """
     at = now.astimezone(UTC).isoformat()
     with organization_scope(org):
         sent = _parse_sent(await tenant_redis.get_tenant_redis().get(_sent_key()))
+    answered = {str(row["provider"]) for row in rows}
+    gone = sorted(p for p in sent if p not in answered)
+    for provider in gone:
+        del sent[provider]
     due = [(row, state) for row in rows
            if (state := decide(sent.get(str(row["provider"])), str(row["signal"]))) is not None]
     if not due:
+        if gone:
+            await _drop(org, sent, gone)
         return []
     admins = await recipients(org)
     fired: list[Alert] = []
@@ -236,15 +257,37 @@ async def run_pass(org: str, rows: list[dict[str, Any]], now: datetime) -> list[
             if not claimed:
                 _log.info("provider_alerts.held", provider=provider, state=state)
                 continue
+            prev = (sent.get(provider) or {}).get("state")
             alert = Alert(provider=provider, label=str(row["label"]), state=state,
-                          days_left=row.get("days_left") if state == "low" else None, at=at)
+                          days_left=row.get("days_left") if state == "low" else None, at=at,
+                          was=prev if state == "ok" else None)
             sent[provider] = alert.entry()
             fired.append(alert)
-        if fired:
+        if fired or gone:
             await redis.set(_sent_key(), json.dumps(sent, sort_keys=True))
+    if gone:
+        _log.info("provider_alerts.dropped", providers=len(gone))
     if fired:
         await _deliver(org, fired, admins)
+    elif gone:
+        await _bump(org)
     return fired
+
+
+async def _drop(org: str, sent: dict[str, dict[str, Any]], gone: list[str]) -> None:
+    """Write the map without the vendors that left the answer. Sends nothing,
+    and moves the bell, so their rows go."""
+    with organization_scope(org):
+        await tenant_redis.get_tenant_redis().set(_sent_key(), json.dumps(sent, sort_keys=True))
+    _log.info("provider_alerts.dropped", providers=len(gone))
+    await _bump(org)
+
+
+async def _bump(org: str) -> None:
+    """Move the feed's org version, so the bell reads the map again."""
+    from gateway.routes.shell import cache
+
+    await cache.bump_org_safe(org)
 
 
 # ── The recipients and the delivery ─────────────────────────────────────────
@@ -283,7 +326,7 @@ def push_message(alert: Alert) -> Any:
     it, and one tag for each vendor, so a newer alert replaces an older one."""
     from gateway.push.sender import PushMessage
 
-    title, body = words(alert.state, alert.label, alert.days_left)
+    title, body = words(alert.state, alert.label, alert.days_left, alert.was)
     return PushMessage(title=title, body=body, url=PUSH_URL,
                        tag=f"provider-{alert.provider}",
                        urgency="high" if alert.state == "out" else "normal",
@@ -315,9 +358,7 @@ async def _push(org: str, alerts: list[Alert], admins: list[str]) -> int:
 async def _deliver(org: str, alerts: list[Alert], admins: list[str]) -> None:
     """Tell the admins. The bell reads the remembered map, so this moves the
     feed's org version and sends the push."""
-    from gateway.routes.shell import cache
-
-    await cache.bump_org_safe(org)
+    await _bump(org)
     pushed = await _push(org, alerts, admins)
     for alert in alerts:
         _log.warning("provider_alerts.sent", provider=alert.provider, state=alert.state,
@@ -341,7 +382,8 @@ async def bell_rows(org: str, now: datetime) -> list[Alert]:
         if state == "ok" and now - at > RECOVERED_SHOWN:
             continue
         rows.append(Alert(provider=provider, label=str(entry.get("label") or provider),
-                          state=state, days_left=entry.get("days_left"), at=at.isoformat()))
+                          state=state, days_left=entry.get("days_left"), at=at.isoformat(),
+                          was=entry.get("was")))
     return sorted(rows, key=lambda a: a.at, reverse=True)
 
 
@@ -387,7 +429,11 @@ async def check(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
         else:
             try:
                 await run_pass(org, rows, now)
-            except Exception as exc:  # the admins read failed: no state moved
+            except Exception as exc:
+                # Most often the strict admins read, before any slot or alert
+                # state moved. A Redis fault after a slot claim can leave that
+                # slot taken with the map unwritten. Then the alert goes when
+                # the slot ends, at most an hour late.
                 _log.warning("provider_alerts.pass_failed", error=type(exc).__name__)
     await _settle(org, claim, _now())
 

@@ -11373,14 +11373,18 @@ Console calls no box.
 - **A restart.** The last alert sent for each vendor stays in the tenant Redis
   of the org, `key("provider_alerts", "sent")`, with no TTL. A new process
   reads it and finds no change.
+- **A vendor that leaves the answer.** When the Console stops listing a vendor
+  (its credential was revoked), the next pass drops it from the stored state
+  and sends nothing. Its bell row goes. An empty answer drops every vendor.
 - **Who hears it.** The active members of the listed org who pass the shell's
   admin test (`admin:members:read`). The `owner`, `admin` and `manager` roles
   hold it. The member list is `kb_access.resolve.load_members` in
   `tenant_session(org)`. Each grant comes from `resolve_access_in_org` in
   strict mode. The org comes from the flag and the job worker, never from
   request input. `OPERATOR_ORG_ID` is not read: the flag is the one config.
-- **A read fault.** The job reads the admins before it moves any state. A
-  fault stops the pass with no state moved, so the next bucket tries again.
+- **A read fault.** The job reads the admins before it claims a slot or
+  writes a state. A fault there stops the pass, and the next bucket tries
+  again. A Redis fault after a slot claim can delay that alert by an hour.
   The worker gives each job one try (`max_attempts=1`), because the job sends.
 - **The bell.** The needs source `providers` (`routes/shell/needs.py`, kind
   `provider_alert`) reads the stored state. It shows each vendor that is `out`
@@ -11391,10 +11395,14 @@ Console calls no box.
   because the sender takes an app path only.
 - **The words.** "Anthropic is out of credit." with "The chat now uses the
   next model in the chain. Top up the Anthropic account." Then "DeepSeek
-  credit is low: about 2.5 days left." and "Anthropic serves again."
+  credit is low: about 2.5 days left." A recovery from `out` says "Anthropic
+  serves again." A recovery from `low` says "DeepSeek has credit again.",
+  because a vendor that was low never stopped serving.
 
 **The flag.** `PROVIDER_ALERT_ORGS` lists the org ids whose admins hear the
-alert. Empty is the default, and it sends nothing. The reader refuses `*`. A SIGHUP
+alert. Empty is the default, and it sends nothing. The reader refuses `*`, and
+`env_guard.PLATFORM_ENV_PREFIXES` names `PROVIDER_ALERT_`, so a tenant cannot set
+it. A SIGHUP
 reload applies a change. To turn it on, the box needs `JOB_QUEUE` on, and its
 deployment key needs `serve`.
 

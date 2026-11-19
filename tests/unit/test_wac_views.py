@@ -239,6 +239,33 @@ async def test_an_empty_day_says_so_with_buttons(reads: dict) -> None:
     assert "Nothing needs you" in buttons.interactive["body"]["text"]
 
 
+@pytest.mark.parametrize("kind", ["provider_alert", "reminder_due"])
+async def test_a_feed_of_only_kinds_with_no_section_is_quiet(reads: dict, kind: str) -> None:
+    """AO-2 review: a feed of only rows with no section (an AI vendor alert, a
+    fired reminder) raised IndexError in `_list`. Mutation: drop the `_KINDS`
+    filter in `view_my_day`, and this raises."""
+    reads["feed"] = {"items": [
+        {"kind": kind, "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    (buttons,) = v.ui
+    assert "Nothing needs you" in buttons.interactive["body"]["text"]
+
+
+async def test_a_row_with_no_section_is_left_out_beside_known_rows(reads: dict) -> None:
+    """AO-2 review: the known rows draw, and the count names only them."""
+    reads["feed"] = {"items": [
+        {"kind": "provider_alert", "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()},
+        {"kind": "due_today", "title": "Send the quote", "detail": "P",
+         "at": (NOW + timedelta(hours=1)).isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    assert v.text.startswith("*My day* — 1 due today")
+    (lst,) = v.ui
+    titles = [r["title"] for r in lst.interactive["action"]["sections"][0]["rows"]]
+    assert titles == ["Send the quote"]
+
+
 async def test_more_than_ten_rows_adds_a_link(reads: dict) -> None:
     reads["feed"]["items"] = [
         {"kind": "due_today", "title": f"Task {i}", "detail": "P",

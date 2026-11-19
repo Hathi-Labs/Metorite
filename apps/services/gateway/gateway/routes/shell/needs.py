@@ -1053,7 +1053,8 @@ async def _provider_alerts(user: UserContext) -> Found:
         raise SourceAbsent("PROVIDER_ALERT_ORGS does not list the org")
     items: list[Item] = []
     for alert in await provider_alerts.bell_rows(org, _now()):
-        title, detail = provider_alerts.words(alert.state, alert.label, alert.days_left)
+        title, detail = provider_alerts.words(alert.state, alert.label, alert.days_left,
+                                              alert.was)
         items.append(_item(id=f"providers:{alert.provider}", app="providers",
                            kind="provider_alert", title=title, detail=detail,
                            href=provider_alerts.PROVIDER_PAGE, at=alert.at))

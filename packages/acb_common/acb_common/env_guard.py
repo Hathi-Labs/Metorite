@@ -517,6 +517,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",
+    # AO-2: PROVIDER_ALERT_ORGS names the org whose admins hear our AI vendor
+    # alerts. A tenant that set it could send them to its own admins.
+    "PROVIDER_ALERT_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a

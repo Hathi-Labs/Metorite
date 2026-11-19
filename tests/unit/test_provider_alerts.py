@@ -269,6 +269,8 @@ class TestDecide:
         assert pa.words("low", "DeepSeek", "1") == ("DeepSeek credit is low: about 1 day left.", None)
         assert pa.words("low", "DeepSeek") == ("DeepSeek credit is low.", None)
         assert pa.words("ok", "Anthropic") == ("Anthropic serves again.", None)
+        assert pa.words("ok", "Anthropic", was="out") == ("Anthropic serves again.", None)
+        assert pa.words("ok", "DeepSeek", was="low") == ("DeepSeek has credit again.", None)
 
 
 # ── Done-when 1: one bell row and one push for each admin ───────────────────
@@ -402,6 +404,60 @@ class TestServesAgain:
         (r,) = bell(user(ANA, OPERATOR), T0 + timedelta(hours=2))
         assert r["title"] == "Anthropic is out of credit."
 
+    def test_low_then_serving_says_credit_again(self, world):
+        """AO-2 review: a vendor that was low never stopped serving, so its
+        recovery does not say "serves again"."""
+        judge(world, row("low", "deepseek", "DeepSeek", "2.5"))
+        before = len(world.pushes)
+        fired = judge(world, row("serving", "deepseek", "DeepSeek"),
+                      at=T0 + timedelta(minutes=30))
+        assert [(a.state, a.was) for a in fired] == [("ok", "low")]
+        assert [m.title for _, _, m in world.pushes[before:]] == ["DeepSeek has credit again."] * 2
+        (r,) = bell(user(ANA, OPERATOR), T0 + timedelta(hours=1))
+        assert r["title"] == "DeepSeek has credit again."
+
+
+# ── A vendor that leaves the Console answer (AO-2 review) ───────────────────
+
+
+class TestAVendorThatLeavesTheAnswer:
+    """A credential revoked while `out` or `low` drops the vendor from the
+    answer. The map has no TTL, so without the drop its bell row stayed
+    for ever. Mutation: skip the drop in `run_pass`, and these fail."""
+
+    def test_its_bell_row_goes_and_nothing_is_sent(self, world):
+        judge(world, row("out"), row("low", "deepseek", "DeepSeek", "2.5"))
+        sent = len(world.pushes)
+        bumps = len(world.bumps)
+        assert judge(world, row("low", "deepseek", "DeepSeek", "2.5"),
+                     at=T0 + timedelta(minutes=15)) == []
+        assert len(world.pushes) == sent
+        assert len(world.bumps) == bumps + 1  # the bell reads the map again
+        rows = bell(user(ANA, OPERATOR), T0 + timedelta(minutes=15))
+        assert [r["id"] for r in rows] == ["providers:deepseek"]
+        assert "provider_alerts.dropped" in world.log.events()
+
+    def test_an_empty_answer_drops_every_vendor(self, world):
+        judge(world, row("out"))
+        assert judge(world, at=T0 + timedelta(minutes=15)) == []
+        assert bell(user(ANA, OPERATOR), T0 + timedelta(minutes=15)) == []
+        assert json.loads(world.redis.store[f"cc:{OPERATOR}:provider_alerts:sent"][0]) == {}
+
+    def test_the_drop_rides_along_with_a_new_alert(self, world):
+        judge(world, row("out"))
+        fired = judge(world, row("low", "deepseek", "DeepSeek", "1.5"),
+                      at=T0 + timedelta(minutes=15))
+        assert [a.provider for a in fired] == ["deepseek"]
+        rows = bell(user(ANA, OPERATOR), T0 + timedelta(minutes=15))
+        assert [r["id"] for r in rows] == ["providers:deepseek"]
+
+    def test_a_vendor_that_comes_back_alerts_again_after_its_hour(self, world):
+        judge(world, row("out"))
+        judge(world, at=T0 + timedelta(minutes=15))
+        assert judge(world, row("out"), at=T0 + timedelta(minutes=30)) == []  # its hour holds
+        fired = judge(world, row("out"), at=T0 + timedelta(minutes=61))
+        assert [a.state for a in fired] == ["out"]
+
 
 # ── Done-when 4: the flag ───────────────────────────────────────────────────
 
@@ -455,6 +511,14 @@ class TestTheFlag:
         monkeypatch.setattr(get_settings(), "provider_alert_orgs", "*")
         assert pa.alert_orgs() == frozenset()
         assert not pa.alert_allowed(CUSTOMER)
+
+    def test_a_tenant_cannot_set_the_flag(self):
+        """AO-2 review: the flag is a platform key, so the env guard refuses it
+        from a tenant (layer B). Mutation: drop `PROVIDER_ALERT_` from
+        `PLATFORM_ENV_PREFIXES`, and this fails."""
+        from acb_common import env_guard
+
+        assert env_guard.is_platform_env("PROVIDER_ALERT_ORGS")
 
     def test_a_change_applies_on_the_next_read(self, monkeypatch):
         """The reload rule: each call reads the settings again."""
