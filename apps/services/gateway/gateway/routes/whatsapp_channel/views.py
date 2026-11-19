@@ -297,15 +297,21 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
         raise RuntimeError("the approvals source failed")
     # Only the kinds this view has a section for. A reminder or an AI vendor
     # alert (AO-2) has none, and a list of only such rows had no section to
-    # draw, so `_list` raised IndexError. The app shows those rows.
+    # draw, so `_list` raised IndexError. The app shows those rows, so this
+    # view counts them as `hidden` and links to My Day: never an all-clear.
     known = dict(_KINDS)
-    items = [i for i in feed.get("items") or []
-             if i.get("kind") in known and (only is None or i.get("kind") == only)]
+    wanted = [i for i in feed.get("items") or [] if only is None or i.get("kind") == only]
+    items = [i for i in wanted if i.get("kind") in known]
+    hidden = len(wanted) - len(items)
     now = _now()
     head = "*Approvals*" if only == "approval" else "*My day*"
     note = (f"\n_{', '.join(failed).capitalize()} did not answer in time, so this may "
             "not be all._") if failed and only is None else ""
     if not items:
+        if hidden:
+            el = await _link("Open My Day to see them.", "Open My Day", "/")
+            return View(only or "my_day",
+                        f"{head} — {_plural(hidden, 'item')} in Metorite.{note}", [el])
         if failed and only is None:
             el = await _link("Open My Day to see the rest.", "Open My Day", "/")
             return View("my_day", f"{head} — nothing so far.{note}", [el])
@@ -331,7 +337,9 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
                      _DUE_WORDS.get(kind) or _when(i.get("at"), now))
                 for i in items if i.get("kind") == kind]
         sections.append((label, rows))
-    total = len(items) + (1 if capped else 0)
+    # The hidden rows count in "N more in Metorite.", because only the app
+    # shows them.
+    total = len(items) + hidden + (1 if capped else 0)
     ui = await _list("Tap one to ask about it.", "View", sections, total, "/", "Open My Day")
     return View(only or "my_day", f"{head} — {summary}{note}", ui)
 
