@@ -582,7 +582,7 @@ D-SEM-7.
 | 1 | A member asks for the billed total of one customer for one month, and the amount still due. The chat sends one total per module, with the customer's name in a clause. The server finds the customer, and the answer gives the totals with "How I read this". No refusal reaches the member. The scripted replay of the four refusal classes passes | SEM-0, SEM-1a, SEM-2 to SEM-6 |
 | 2 | An admin opens "Needs you" and sees three proposals from chats: a synonym, a rule and a verified question. The admin accepts two. A member asks the same question in other words in a new chat, and gets "a verified question" with the same total. The admin presses Undo on one, and the next chat drops it | SEM-1b, SEM-7 to SEM-11 |
 | 3 | An admin connects a test company through the local link to Tally, or a test MCP server. Within 5 minutes the panel shows what Metorite learned: the groups, the ledger count of each group, the voucher types, and the first and last voucher date. The admin accepts. A member asks for last quarter's sales. The chat calls the system's read tool, names the system, and says how it read the data. **Review gap 4:** after a read through the local link, the first follow-up meets the card of task 3714 (§4.3). The demo shows it, and the owner decides the card | SEM-12 to SEM-17 |
-| 4 | One line: books of account. Zoho Books after IN-3 (task 3176), and totals that respect the tax ledgers. Needs D-SEM-8. `api_connections.md` D-API-5 asks the owner to drop the wait for IN-3 on the gateway path. This line holds until the owner answers | later |
+| 4 | One line: books of account. Zoho Books after IN-3 (task 3176), and totals that respect the tax ledgers. Needs D-SEM-8. `api_connections.md` D-API-5 (accepted, D228) drops the wait for IN-3 on the gateway path. Zoho Books is first (owner, 2026-11-19) | later |
 | 5 | One line: AI Studio builds starters and skills from a model (I2, TOF-5a) | later |
 | 6 | One line: suggestions from use (after NUM-7), and the guarded tune of the profiler prompt (task 3649) | later |
 
@@ -891,13 +891,14 @@ ends with its answer.
    **Answer (2026-11-18, owner in chat): accepted as recommended (counts and shapes only).**
 8. **D-SEM-8. Books of account.** Keep `ai_studio.md` non-goal 8 (no general
    ledger). Books arrive as connections: Tally through the local link, then
-   Zoho Books after IN-3. Name the spec that owns the books connectors.
+   Zoho Books first, with no wait for IN-3 (D-API-5, D228). Name the spec that owns the books connectors.
    Recommendation: a books section in `crm_connectors.md` (WS-MIR) or a new
    connector spec. The owner picks.
    **Answer (2026-11-18, owner in chat): a new connector spec owns the books connectors (Tally, then Zoho Books). The spec is a new slice, and no section of `crm_connectors.md` takes it.**
    *(2026-11-18: D-API-5 of
    `api_connections.md` puts Zoho Books first, as D122.1 decided. It drops the
-   wait for IN-3 on the gateway path. The owner has not answered D-API-5.)*
+   wait for IN-3 on the gateway path. The owner accepted D-API-5 on 2026-11-19
+   (D228).)*
 9. **D-SEM-9. No learning across orgs.** Only counts cross tenants. The
    profiler's global prompt changes only through task 3649. Recommendation:
    yes, as D187 point 4.
