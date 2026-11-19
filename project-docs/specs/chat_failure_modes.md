@@ -460,7 +460,8 @@ answer of 8 lines or more is one block, and the model asks again.
 
 HRD-22 pays
 for it: a late approve of a card with many rows can need a second tap. HRD-14b
-tests HRD-22 with the flag on and records the result. Q-HRD-14-11 asks whether
+records, with the flag on, that a card question of 3 or more lines makes the
+late-approve message a block. Q-HRD-14-11 asks whether
 a gated card answer may skip the split later.
 
 **Which text the middleware frames.**
@@ -909,7 +910,7 @@ D-HRD-5 (D217) stays as decided.
 | **Q-HRD-14-8** | In a shared room, an earlier turn has no author, so another member's earlier typed order reads as the run member's order. Build an author label, or accept the gap? | Accept it as a residual gap for the flip of HRD-14e. The log line of HRD-14b counts the runs in a shared room, so the owner sees its size. HRD-14g (task 3673) builds the label if the owner asks for it. HRD-14d already reads no earlier turn and no text of another member |
 | **Q-HRD-14-9** | Does a lead that holds no words of the member, only a line such as `Hi,`, count as no lead? | This is a part of Q-HRD-14-2, not a build step. With the lead of one line, a lead of `Hi,` holds no order, so the default is no change. HRD-14a adds no check for a verb. If the owner answers yes, HRD-14a changes the rows of corpus A that start with `Hi,` before it merges |
 | **Q-HRD-14-10** | Which stored mail does HRD-14d match? | Only INBOUND mail from another sender. Sent copies do not count. Both sides drop quoted lines before the hash: each `>` line and each block from `On … wrote:` on. The stored body keeps quoted history (`email_ingestion/persist.py` ~:225), so without the drop a reply that quotes the member's own paragraph would match. A match needs at least 80 characters of one normalised paragraph. Stock lines do not count: a signature, a disclaimer or a greeting. Costs: the sender controls the floor, so `Hi,`, `Send me the Q3 bank details today.` and `Thanks` match nothing. Without the floor and the drops, a member's own mail pasted back would mark the chat for 400 days. HRD-14d has its own flag, `CHAT_PASTE_MAIL_MATCH_ORGS`, owner-only, and its own arm in the eval |
-| **Q-HRD-14-11** | May a card answer that the route gated skip the split? | No, for now. The run never receives the gated `card_answer` event, and a skip by the text alone is the forgery of a pasted envelope. So a card answer of 8 lines or more is one block, and the model asks again. A late approve of HRD-22 with many rows can then need a second tap. A yes needs the route to pass its gate result to the run, in a later slice with no task yet |
+| **Q-HRD-14-11** | May a card answer that the route gated skip the split? | No, for now. The run never receives the gated `card_answer` event, and a skip by the text alone is the forgery of a pasted envelope. So a card answer of 8 lines or more is one block, and the model asks again. A late approve of HRD-22 with a card question of 3 or more lines can then need a second tap: the envelope adds 4 lines and the late-approve note adds one, so the message reaches 8 lines (the HRD-14b record, a structural test with no grant code). A yes needs the route to pass its gate result to the run, in a later slice with no task yet |
 | **Q-HRD-14-12** | Do the act rule, the reference rule, the value rule, the token for each run and the words of the paste note in §4.7b stand as written? | Yes. The owner confirms them, or changes the words, before HRD-14a merges. HRD-14a builds the note from these words |
 
 **D-HRD-17-1 is PROPOSED** (HRD-17, 2026-11-16). The owner has not decided it.

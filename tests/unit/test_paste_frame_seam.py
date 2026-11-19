@@ -557,36 +557,53 @@ def test_no_frame_code_reads_member_sent():
             "MEMBER_SENT", "sent_words", "typed_words"}
 
 
-def _card_outcome(question: str, answer: str) -> str:
-    """What the model meets for one card answer: no frame, so the grant acts
-    once, or one block, so the model asks again (Q-HRD-14-11)."""
-    from gateway.chat_recovery import compose_card_answer
+#: Done-when (18): a late approve with a card question of this many lines or
+#: more already reaches 8 lines, so it becomes a block and the model asks
+#: again. The envelope adds 4 lines that are not blank, and the late-approve
+#: note adds one more (Q-HRD-14-11).
+LATE_APPROVE_QUESTION_LINES_TO_A_BLOCK = 3
 
-    text = compose_card_answer(question, answer)
+
+def _late_approve_text(question: str, answer: str) -> str:
+    """The message of a late approve, as the gateway builds it after it wrote
+    a grant: ``with_late_approve_note(card_resend(...)).message``."""
+    from gateway.chat_recovery import card_resend, with_late_approve_note
+
+    resend = card_resend("confirmation", None, question, answer, "req-hrd22")
+    return with_late_approve_note(resend).message
+
+
+def _card_outcome(question: str, answer: str) -> str:
+    """What the model meets for one late approve: no frame, so the grant acts
+    once, or one block, so the model asks again (Q-HRD-14-11)."""
+    text = _late_approve_text(question, answer)
     turn = Message("user", [text])
     out = _request(_middleware((text,), current=turn), [turn])
     return "asks again" if OPEN in out[0].text else "acts once"
 
 
 def test_hrd22_with_the_flag_on():
-    """Done-when (18), STRUCTURAL ONLY: the card answer of a late approve goes
-    through the split. No late-approve grant runs here. The record says what
-    the model meets: a short card acts once, and a card answer of 8 lines or
-    more asks again. It also records how many lines of the question an
-    envelope holds before it becomes a block, for Q-HRD-14-11."""
-    rows = "\n".join(f"Row {i}: set the owner of task {i} to Ravi" for i in range(9))
+    """Done-when (18), STRUCTURAL ONLY. No HRD-22 grant code runs here: no
+    offer, no grant and no card gate. The test builds the message that a late
+    approve sends (the envelope and ``LATE_APPROVE_NOTE``) and puts it through
+    the seam. The record: a short card acts once. A card question of
+    :data:`LATE_APPROVE_QUESTION_LINES_TO_A_BLOCK` lines or more makes 8 lines,
+    so it is one block and the model asks again."""
+    rows = "
+".join(f"Row {i}: set the owner of task {i} to Ravi" for i in range(9))
     record = {
         "short_card": _card_outcome("Approve the change of the task?", "APPROVE"),
-        "card_of_9_rows": _card_outcome(f"Approve these rows?\n{rows}", "APPROVE row-1 row-2"),
+        "card_of_9_rows": _card_outcome(f"Approve these rows?
+{rows}", "APPROVE"),
     }
     first_block = next(
         n for n in range(1, 20)
-        if _card_outcome("\n".join(f"Row {i}: approve" for i in range(n)), "APPROVE")
+        if _card_outcome("
+".join(f"Row {i}: approve" for i in range(n)), "APPROVE")
         == "asks again")
     record["question_lines_to_a_block"] = first_block
-    assert record["short_card"] == "acts once"
-    assert record["card_of_9_rows"] == "asks again"
-    assert 1 <= first_block <= pf.MIN_LINES, record
+    assert record == {"short_card": "acts once", "card_of_9_rows": "asks again",
+                      "question_lines_to_a_block": LATE_APPROVE_QUESTION_LINES_TO_A_BLOCK}
 
 
 def test_the_seam_fails_closed():
