@@ -23,6 +23,15 @@
  *   send the admin to the wrong origin. A gateway reply that does not fit
  *   becomes `/crm?connect_error=<code>` from a fixed list.
  *
+ * **Zoho Books (API-2, `api_connections.md` §2.11).** Zoho knows ONE redirect
+ * URI for Metorite's client, this one. A Books consent sends a state that
+ * starts with the public mark `zb.`. This route sends such a state to the
+ * gateway's `/integrations/api/zoho/callback`, and every other state to the
+ * CRM callback. The mark proves nothing: the gateway checks the MAC of the
+ * Books purpose, so a forged mark only changes where the state goes. A Books
+ * reply may name `/integrations` with one of three parameters, and nothing
+ * else.
+ *
  * Fence: `route.test.ts`.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -42,6 +51,18 @@ const KNOWN_ERRORS = new Set([
   "zoho_not_configured",
 ]);
 
+/** The public mark of a Zoho Books state (`connections/api/connect.py`). */
+const BOOKS_STATE_MARK = "zb.";
+
+/** The refusal codes of the Books callback that the console may name. */
+const BOOKS_KNOWN_ERRORS = new Set([
+  "access_denied",
+  "invalid_state",
+  "untrusted_host",
+  "zoho_not_configured",
+  "pending_unavailable",
+]);
+
 const CALLBACK_TIMEOUT_MS = 30_000;
 
 function relativeRedirect(location: string): NextResponse {
@@ -51,6 +72,45 @@ function relativeRedirect(location: string): NextResponse {
 function failed(code: string): NextResponse {
   const safe = KNOWN_ERRORS.has(code) ? code : "failed";
   return relativeRedirect(`/crm?connect_error=${safe}`);
+}
+
+function booksFailed(code: string): NextResponse {
+  const safe = BOOKS_KNOWN_ERRORS.has(code) ? code : "failed";
+  return relativeRedirect(`/integrations?api_connect_error=${safe}`);
+}
+
+/** Split a relative Location into its path and its one query pair. */
+function onePair(raw: string): { path: string; name: string; value: string } | null {
+  // Only a path may follow. An absolute URL is never the gateway's shape.
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+  let target: URL;
+  try {
+    target = new URL(raw, "http://placeholder.invalid");
+  } catch {
+    return null;
+  }
+  if (target.origin !== "http://placeholder.invalid") return null;
+  const names = [...target.searchParams.keys()];
+  if (names.length !== 1) return null;
+  const [name] = names;
+  return { path: target.pathname, name, value: target.searchParams.get(name) ?? "" };
+}
+
+/** Is this one of the three Location shapes of the Books callback? */
+function allowedBooksLocation(raw: string): string | null {
+  const pair = onePair(raw);
+  if (!pair || pair.path !== "/integrations") return null;
+  const { name, value } = pair;
+  if (name === "api_connected" && value === "zoho_books") {
+    return "/integrations?api_connected=zoho_books";
+  }
+  if (name === "api_connect_error" && /^[a-z0-9_]{1,40}$/.test(value)) {
+    return `/integrations?api_connect_error=${value}`;
+  }
+  if (name === "api_pick" && /^[A-Za-z0-9_-]{16,64}$/.test(value)) {
+    return `/integrations?api_pick=${value}`;
+  }
+  return null;
 }
 
 /** Is this the one Location shape the gateway callback sends? */
@@ -97,7 +157,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (value) forwarded.set(name, value);
   }
   const qs = forwarded.toString();
-  const upstream = `${GATEWAY_URL}/crm/oauth/zoho/callback` + (qs ? `?${qs}` : "");
+  const books = (req.nextUrl.searchParams.get("state") ?? "").startsWith(BOOKS_STATE_MARK);
+  const path = books ? "/integrations/api/zoho/callback" : "/crm/oauth/zoho/callback";
+  const upstream = `${GATEWAY_URL}${path}` + (qs ? `?${qs}` : "");
+  const fail = books ? booksFailed : failed;
 
   let res: Response;
   try {
@@ -117,15 +180,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       { retry: false },
     );
   } catch {
-    return failed("failed");
+    return fail("failed");
   }
 
   if (res.status >= 300 && res.status < 400) {
     const location = res.headers.get("location");
-    const safe = location ? allowedLocation(location) : null;
-    return safe ? relativeRedirect(safe) : failed("failed");
+    const allow = books ? allowedBooksLocation : allowedLocation;
+    const safe = location ? allow(location) : null;
+    return safe ? relativeRedirect(safe) : fail("failed");
   }
   // A 400 (`invalid_state`, `untrusted_host`), a 403, a 404 or a 409
   // (`mode_is_native`): the page shows words for the code, or a generic line.
-  return failed(await refusalCode(res));
+  return fail(await refusalCode(res));
 }

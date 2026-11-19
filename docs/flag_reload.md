@@ -47,7 +47,9 @@ sends the `updated_at` of the read that the card shows as `If-Match`. A task
 that changed while the card waited gets a 412, and the tool writes nothing. The
 tool then answers "Changed since the card", with the old and new values of the
 fields on the card. For a deal, the CRM tool `crm_update_record` does the
-same (HRD-10c). `*` lists every org, and the default is empty.
+same (HRD-10c). The email tool `edit_draft` sends the digest of its read of
+the draft as `expect_digest`, and a changed draft gets no save (HRD-10d-1).
+`*` lists every org, and the default is empty.
 
 Empty gives the PATCH of before, with no `If-Match`. Its one reader is
 `acb_skills.ask_tools.card_precondition_on`. It reads the org from the run
@@ -190,6 +192,12 @@ RESUME-2b: when the parked turn is the last turn, the call goes on in the
 same reply. For an org on both lists, a park keeps the stream of the run 24
 hours (D-RES-7). The same flag turns on this case A, so it has two more
 preconditions.
+
+RESUME-5: the stop of a release parks each run that waits on a card
+(`POST /internal/drain/park`). It parks only the runs of an org on both
+lists, with `CHAT_DURABLE_ASKS` on. A wait reads the two lists when it starts, and
+the park reads them again. So a reload applies to the next card, and a
+removal also applies to a card that waits now.
 
 ⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
 
