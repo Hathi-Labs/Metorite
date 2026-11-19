@@ -9,8 +9,9 @@ Hermetic half (R7). The R8 half, against a real Postgres, is
    calls as ``aggregate._read``. A second builder is a defect.
 2. An org off ``CRM_MODULE_FIND_ORGS`` gets a 422 for ``field.<key>`` on a list,
    never a list that dropped the filter.
-3. The tool sends ``field.<key>`` and shows at most 5 keys on each row. With no
-   new argument its request is the request of before.
+3. The tool sends ``field.<key>``. With no new argument its request is the
+   request of before. The ``fields`` argument (5 keys on each row) is a
+   follow-up: its tokens do not fit the Studio budget (CRM-Q34-4 PR body).
 """
 
 from __future__ import annotations
@@ -92,30 +93,7 @@ def _rows(_call: dict) -> dict:
     }
 
 
-async def test_fields_show_each_value_under_its_key_cut_at_80(monkeypatch) -> None:
-    _fake_gateway(monkeypatch, _rows)
-    out = await _T.crm_list_module_records("Invoices", fields=["Customer", "Amount", "Notes"])
-    line = next(ln for ln in out.splitlines() if ln.startswith("- INV-1"))
-    assert "Customer: Acme Ltd" in line and "Amount: 100" in line
-    assert "Notes: " + "x" * 80 in line and "x" * 81 not in line
-    assert "Status" not in line
-
-
 async def test_no_fields_argument_prints_the_row_of_before(monkeypatch) -> None:
     _fake_gateway(monkeypatch, _rows)
     out = await _T.crm_list_module_records("Invoices")
     assert f"- INV-1 (id={_ID})" in out
-
-
-async def test_an_unknown_key_is_named_not_dropped(monkeypatch) -> None:
-    _fake_gateway(monkeypatch, _rows)
-    out = await _T.crm_list_module_records("Invoices", fields=["Nope"])
-    assert "Unknown field key 'Nope'" in out
-
-
-@pytest.mark.parametrize("fields", [[], ["a", "b", "c", "d", "e", "f"], ["a", "a"], ["a", " "]])
-async def test_fields_takes_one_to_five_distinct_keys(monkeypatch, fields) -> None:
-    calls = _fake_gateway(monkeypatch, _rows)
-    out = await _T.crm_list_module_records("Invoices", fields=fields)
-    assert "fields takes 1 to 5 distinct field keys" in out
-    assert calls == []

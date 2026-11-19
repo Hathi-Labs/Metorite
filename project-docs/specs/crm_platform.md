@@ -8614,13 +8614,13 @@ merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
   answer inside the 10 s timeout.
 
 **CRM-Q34-4 · One filter builder for a module list and a module total.**
-Status: built dark 2026-11-18 on `crm-q34-4-mt-3697` (task 3697), stacked on
-CRM-Q34-7 and not merged. Flag `CRM_MODULE_FIND_ORGS`, the flag of CRM-Q34-7.
+Status: built dark 2026-11-19 on `crm-q34-4-v2-mt-3697` (task 3697), on
+main after CRM-Q34-7, and not merged. Flag `CRM_MODULE_FIND_ORGS`.
 
 - **Outcome.** `GET /crm/modules/{module}/records` takes `field.<key>` and its
   `.from` and `.to` ends. A list and a total with the same filters hold the
-  same records. `crm_list_module_records` takes `field_filters`, and `fields`
-  (1 to 5 distinct keys) shows each value on each row, cut at 80 characters.
+  same records. `crm_list_module_records` takes `field_filters`. The `fields`
+  argument is a follow-up (CRM-Q34-4c below).
 - **One builder.** The list calls `field_sql.module_field_where`. It makes the
   same three calls as the total: `text_matches`, `lookup_ids` and
   `module_where`. `custom.<key>` stays for the UI in this slice. A later slice
@@ -8631,12 +8631,17 @@ CRM-Q34-7 and not merged. Flag `CRM_MODULE_FIND_ORGS`, the flag of CRM-Q34-7.
 - **Token budget.** The Studio chat at the pack cap fits its found tools in
   30,000 schema tokens. Each CRM tool text counts about three times, because
   the request holds the CRM tools more than once. The texts of `crm_aggregate`
-  and `crm_list_module_records` are cut to pay for the new arguments.
+  and `crm_list_module_records` are cut to pay for `field_filters`.
 - **Fences.** `tests/unit/test_crm_module_list_filters.py` holds the AST fence
   on the one builder and the tool. `tests/unit/test_crm_module_list_filters_r8.py`
   proves that a list and a total count the same records, that an unknown field
   is a 422 on both, and that org B stays out.
-  `tests/unit/test_tool_schema_diet.py` pins the two new parameters.
+  `tests/unit/test_tool_schema_diet.py` pins the new parameter.
+- **CRM-Q34-4c (follow-up row, not built).** `crm_list_module_records` takes
+  `fields`, 1 to 5 distinct keys, and shows each value on each row, cut at 80
+  characters. Its schema costs about 90 tokens of the Studio budget, and the
+  room is thin. The owner choice is to raise `FIND_SCHEMA_TOKENS` by about
+  50. Without that, another tool text must free the tokens.
 
 ## 19. The daily-use UX (2026-10-12)
 
