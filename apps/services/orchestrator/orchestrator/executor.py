@@ -2427,6 +2427,24 @@ def _pack_left_block(agent_name: str) -> str:
         return ""
 
 
+def _connected_systems_block() -> str:
+    """CSY-1 (``chat_connected_systems.md`` §3.2): the "Connected systems" block of
+    the servers that THIS run attached, or "". Only for an org in
+    ``CONNECTED_SYSTEMS_ORGS``. The org comes from the run binding, never the
+    payload (R5). With no server or the flag off it is "", so the context keeps
+    its bytes. Never raises."""
+    try:
+        from acb_skills.server_brief import attached_block
+
+        from orchestrator._maf_mcp import connected_systems_org_allowed
+
+        if not connected_systems_org_allowed(_current_run_org()):
+            return ""
+        return attached_block()
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -7341,6 +7359,15 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
     return None
 
 
+def _same_reply_run(resume_call: dict[str, Any] | None) -> bool:
+    """True when *resume_call*, the server's kwarg of :func:`run_agent_stream`,
+    names a SAME-reply run (RESUME-2b, case A). Only JSON ``true`` counts.
+    A late decline (RESUME-4a-2) is never one. Never a key of the event
+    payload (R11)."""
+    return (isinstance(resume_call, dict) and resume_call.get("same_reply") is True
+            and resume_call.get("declined") is not True)
+
+
 def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
     """The tool name of the stored call in *resume_call*, the server's kwarg
     of :func:`run_agent_stream`, or "". Never a key of the event payload
@@ -7929,7 +7956,15 @@ async def run_agent_stream(
         _thread_emit_seq[thread_id] = 0
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        # RESUME-2b (review round 2, P2-a): the start of a SAME-reply run
+        # (case A) carries `resumed`. It goes on in the parked run's stream
+        # with the SAME run id, so only the mark tells part one's start from
+        # a continuation's start (`stream_relay.parked_end_of`,
+        # `chat_fold.same_reply_events`). A case B run starts a stream of its
+        # own, so it is not marked. The flag comes from the server's kwarg
+        # only (R11). Any other run sends the bytes of before.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                    **({"resumed": True} if _same_reply_run(resume_call) else {})})
         _laps.lap("start")
         # CS-3a: the setup starts now, so the first phase goes, before the
         # load, the tier wait, the session load and the compose. The run's org
@@ -12376,6 +12411,9 @@ def _context_preamble_parts(
     # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
     # so each block above keeps its place and its bytes.
     parts.extend(filter(None, [_sent_acts_block(agent_name)]))
+    # CSY-1: the connected systems of this run, LAST (after the sent-acts block of task 3594): after every stable part,
+    # so the cache keeps its prefix. The same attached set gives the same bytes.
+    parts.extend(filter(None, [_connected_systems_block()]))
     return parts
 
 

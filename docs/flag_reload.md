@@ -168,6 +168,19 @@ model then says that nothing was done. This part is server only: no client
 sends that request until RESUME-7. `*` lists every org, and the default is
 empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
+RESUME-2b: when the parked turn is the last turn, the call goes on in the
+same reply. For an org on both lists, a park keeps the stream of the run 24
+hours (D-RES-7). The same flag turns on this case A, so it has two more
+preconditions.
+
+⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
+
+1. RESUME-3b (task 3475), the chat side of the same reply.
+2. RESUME-2d, the reconnect replay that obeys the history waterline and the
+   label (`chat_run_continuity.md` §4.12.7). Before it,
+   `GET /agent/run/{thread_id}/reconnect` replays a parked stream from `0-0`
+   for 24 hours. It checks no waterline and no caps of the reader.
+
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call
 of a twin card from writing twice. Since task 3467, either flag writes that
@@ -184,8 +197,9 @@ write its act a second time.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late
-answer route asks it at each late Approve. So a reload applies to the next
-card and the next Approve, and the call id applies from the next run.
+answer route asks it at each late Approve, and the park asks it at each park.
+So a reload applies to the next card, park and Approve. The call id applies
+from the next run.
 
 `CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
 (`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a
@@ -248,6 +262,16 @@ The one reader is `orchestrator.sandbox_broker.compute_enabled`.
 The reaper asks it too, so a flip to off stops a running compute container at
 the next tick. In production the broker also needs a remote gVisor backend. A
 reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`CONNECTED_SYSTEMS_ORGS` turns on the "Connected systems" block of the chat
+(`chat_connected_systems.md` §3.2, CSY-1). For each listed org, a chat that
+attached an MCP server gets one block at the end of the per-turn context: the
+brief of each attached server and the standing rule. `*` lists every org, and
+the default is empty. Empty means the context keeps its bytes. Its one reader
+is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
+`executor._connected_systems_block` asks on each turn, on the run's org. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
@@ -404,6 +428,16 @@ admins must never get our vendor alerts. Its one reader is
 source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
+
+`SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
+(`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
+kinds `measure`, `join` and `query`, and `org_facts` serves the approved
+ones. `*` lists every org, and the default is empty. Empty keeps each item of
+these kinds as an unknown kind, and serves none.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
+plan write and each facts read ask it. A reload applies a change. The flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
