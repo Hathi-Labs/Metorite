@@ -430,7 +430,11 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
     write leaves the old file as it was. The rename replaces a link at the
     target, and never follows it. The temp file is removed on any failure.
     """
-    replace_stream(root, rel, lambda fh: fh.write(data))
+
+    def fill(tmp_rel: str) -> None:
+        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=False)
+
+    _replace_via_temp(root, rel, fill)
 
 
 def replace_stream(root: Path, rel: str, write: Callable[[BinaryIO], object]) -> None:
@@ -440,6 +444,24 @@ def replace_stream(root: Path, rel: str, write: Callable[[BinaryIO], object]) ->
     from *write* propagates, and the old file stays as it was. The sandbox
     broker writes each file of a remote copy with it (SBX-15).
     """
+
+    def fill(tmp_rel: str) -> None:
+        parts = split_rel(tmp_rel)
+        fd = _open_for_write(root, parts, exclusive=True, make_parents=False)
+        with os.fdopen(fd, "wb") as fh:
+            write(fh)
+            fh.flush()
+
+    _replace_via_temp(root, rel, fill)
+
+
+def _replace_via_temp(root: Path, rel: str, fill: Callable[[str], None]) -> None:
+    """The one rename of :func:`replace_bytes` and :func:`replace_stream`.
+
+    *fill* makes the temp file at the relative name it gets, with an
+    exclusive create. Then the temp file goes over ``root/rel`` through the
+    dir descriptor. The temp file is removed on any failure.
+    """
     import secrets
 
     parts = split_rel(rel)
@@ -448,12 +470,7 @@ def replace_stream(root: Path, rel: str, write: Callable[[BinaryIO], object]) ->
     tmp_name = f".{parts[-1]}.tmp-{secrets.token_hex(8)}"
     tmp_rel = "/".join([*parts[:-1], tmp_name])
     try:
-        fd = _open_for_write(
-            root, [*parts[:-1], tmp_name], exclusive=True, make_parents=False,
-        )
-        with os.fdopen(fd, "wb") as fh:
-            write(fh)
-            fh.flush()
+        fill(tmp_rel)
         if _FD_WALK:
             with _dir_fd(root, parts[:-1]) as fd:
                 os.replace(tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd)
