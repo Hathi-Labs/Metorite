@@ -62,6 +62,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -120,7 +121,35 @@ APP_BUILDER_AGENT = "app-builder"
 APP_BUILDER_TARGET = "app_builder"
 PROJECTS_AGENT = "projects-assistant"
 PROJECTS_TARGET = "projects"
-MAF_CODING_TARGETS = frozenset({"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET})
+COMPUTE_TARGET = "compute"
+MAF_CODING_TARGETS = frozenset(
+    {"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET, COMPUTE_TARGET}
+)
+
+#: The ``compute`` target (SBX-18, ``agent_sandbox.md`` section 0c, rung 6a').
+#: It runs Python over data the chat already holds: no network, no secret, no
+#: mount, no write to Metorite and no saved tool. It passes the ONE scope seam:
+#: ``compute:<org>`` in ``MAF_CODING_SCOPE`` (the sealed gate, a restart) AND
+#: the org in ``compute_run_orgs`` (a ``*_orgs`` flag, so a SIGHUP reloads it,
+#: the hot kill switch). Fence SBX-F26,
+#: ``tests/unit/test_sandbox_broker_compute.py``.
+COMPUTE_AGENT = "compute"
+#: The tmpfs is owned by the run's uid, or the non-root user cannot write it.
+COMPUTE_WORKSPACE_TMPFS = "/workspace:rw,nosuid,size=64m"
+COMPUTE_OUT_TARGET = "/workspace/out"
+COMPUTE_CPUS = "1"
+COMPUTE_MEMORY = "1g"
+COMPUTE_PIDS = 64
+COMPUTE_MIN_TIMEOUT_S = 1
+COMPUTE_MAX_TIMEOUT_S = 60
+COMPUTE_STREAM_CAP = 256 * 1024
+COMPUTE_MAX_FILES = 5
+COMPUTE_MAX_FILE_BYTES = 1024 * 1024
+COMPUTE_MAX_TOTAL_BYTES = 3 * 1024 * 1024
+COMPUTE_MAX_INPUT_BYTES = 8 * 1024 * 1024
+COMPUTE_OUT_SUFFIXES = frozenset({"csv", "png", "json", "txt"})
+_COMPUTE_INPUT_NAME = re.compile(r"^(main\.py|inputs/tr_[0-9a-f]{8}\.txt)$")
+_COMPUTE_OUT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 #: The container runtimes (SBX-8). ``runc`` adds no flag, so a default start
 #: keeps the argv of before. ``runsc`` is gVisor.
@@ -254,7 +283,8 @@ class SandboxUnavailable(SandboxError):
 def parse_maf_coding_scope(raw: str) -> frozenset[tuple[str, str]]:
     """``{(target, org)}`` from a comma list of ``<target>:<org>`` entries.
 
-    A target is ``code_task``, ``app_builder`` or ``projects`` (D86, §16.3).
+    A target is ``code_task``, ``app_builder``, ``projects`` (D86, §16.3) or
+    ``compute`` (SBX-18).
     An org is one organization id, or ``*`` for every organization. Raises
     :class:`ValueError` on an unknown target or an entry with no org, so a
     typo never turns on a target that nobody named.
@@ -294,7 +324,11 @@ def maf_coding_scope_allows(target: str, org: str) -> bool:
 
 def target_for_agent(agent: str) -> str:
     """``app_builder`` for app-builder, ``projects`` for projects-assistant,
-    and ``code_task`` for every other agent."""
+    ``compute`` for the broker's own ``compute`` name, and ``code_task`` for
+    every other agent. ``compute`` is in no scope, so a real agent that bears
+    that name gets no container from :meth:`SandboxBroker.acquire`."""
+    if agent == COMPUTE_AGENT:
+        return COMPUTE_TARGET
     if agent == APP_BUILDER_AGENT:
         return APP_BUILDER_TARGET
     if agent == PROJECTS_AGENT:
@@ -476,15 +510,19 @@ def _scrub(text: str) -> str:
     out = text.replace(raw, redact_docker_host(raw))
     try:
         parts = urlsplit(raw)
-        user, port = parts.username, parts.port
+        user, port, host = parts.username, parts.port, parts.hostname
     except ValueError:
-        user, port = None, None
+        user, port, host = None, None, None
     if user:
         out = out.replace(f"{user}@", "")
         out = re.sub(rf"(-l\s+){re.escape(user)}(?=\s|$)", r"\1(user)", out)
     if port:
         out = re.sub(rf"(-p\s+){port}(?=\s|$)", r"\1(port)", out)
-        out = out.replace(f":{port}", "")
+        if host:
+            # Only the port of the host token. A bare `:22` elsewhere (a
+            # time, a line number) stays as it is (review P3).
+            for token in (f"[{host}]:{port}", f"{host}:{port}"):
+                out = out.replace(token, token.rsplit(":", 1)[0])
     return out
 
 
@@ -752,6 +790,75 @@ def read_run_binding() -> RunBinding:
     )
 
 
+def read_compute_binding() -> RunBinding:
+    """The bound run as a ``compute`` binding (SBX-18). Raises SandboxRefused.
+
+    The org, the member and the thread come from the run binding alone (R5).
+    The agent becomes ``compute``, so the target, the container name and the
+    labels derive from (org, ``compute``, thread).
+    """
+    from dataclasses import replace
+
+    return replace(read_run_binding(), agent=COMPUTE_AGENT)
+
+
+def compute_enabled(org: str | None) -> bool:
+    """True when ``MAF_CODING_SCOPE`` holds ``compute:<org>`` (or ``compute:*``)
+    AND ``compute_run_orgs`` names *org*, or ``*``.
+
+    The scope is the sealed gate and does not reload. The flag is the kill
+    switch. ``""`` is off for all. The value is a comma or space list. A missing or
+    empty *org* is never enabled. Reads the setting on each call, so a SIGHUP
+    reload needs no restart.
+    """
+    who = str(org or "").strip()
+    if not who or who == "*":
+        return False
+    if not maf_coding_scope_allows(COMPUTE_TARGET, who):
+        return False
+    settings = get_settings()
+    raw = str(getattr(settings, "compute_run_orgs", "") or "")
+    items = {item for item in re.split(r"[,\s]+", raw) if item}
+    if str(getattr(settings, "self_serve_signup_enabled", "") or "").strip().lower() == "true":
+        # Anyone can sign up, so a wildcard would give compute to a stranger.
+        try:
+            scope = parse_maf_coding_scope(str(getattr(settings, "maf_coding_scope", "") or ""))
+        except ValueError:
+            return False
+        if "*" in items or (COMPUTE_TARGET, "*") in scope:
+            return False
+    return "*" in items or who in items
+
+
+def _production_mode(settings: Any) -> bool:
+    """True outside dev: staging counts as production. The one rule is
+    :func:`production_mode` (SBX-15), and this name stays for SBX-18."""
+    return production_mode(settings)
+
+
+def _compute_production_guard(settings: Any) -> None:
+    """Refuse in production unless the settings name a remote gVisor backend.
+
+    This is the early check. The real one is in ``_compute_start``, which
+    checks the argv it is about to run and the org admit of that start. It
+    reads the backend and the runtime through the SBX-15 readers, so a bad
+    value refuses too.
+    """
+    if not _production_mode(settings):
+        return
+    try:
+        backend = sandbox_backend(settings)
+        runtime = sandbox_runtime(settings, backend)
+    except SandboxError as exc:
+        raise SandboxRefused(
+            "Compute runs in production only on a remote gVisor backend."
+        ) from exc
+    if backend != BACKEND_REMOTE or runtime != RUNTIME_RUNSC:
+        raise SandboxRefused(
+            "Compute runs in production only on a remote gVisor backend."
+        )
+
+
 # ── The mounts (§7.1 rule 5) ─────────────────────────────────────────────────
 
 
@@ -985,6 +1092,8 @@ def mount_list(
       :meth:`SandboxBroker.app_builder_mounts` (WS-43h). A source with
       ``.git`` at any depth is refused.
     """
+    if binding.target == COMPUTE_TARGET:
+        return []  # SBX-18: the compute target mounts nothing.
     ws = binding.workspace
     _check_source_text(ws)
     if not ws.is_dir() or _is_link(ws) or ws.resolve() != ws:
@@ -1060,6 +1169,35 @@ def sandbox_env(thread_hash: str) -> dict[str, str]:
     }
 
 
+def _check_run_inputs(
+    *,
+    binding: RunBinding,
+    mounts: Sequence[Mount],
+    uid: int,
+    gid: int,
+    start_id: str,
+    runtime: str,
+    workspace_tmpfs_mb: int | None,
+) -> None:
+    """Refuse the inputs of :func:`build_run_argv` that no start may use."""
+    if uid == 0 or gid == 0:
+        raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
+    if not re.fullmatch(r"[0-9a-f]{32}", start_id):
+        raise SandboxRefused("The start id is not valid.")
+    if runtime not in RUNTIMES:
+        raise SandboxRefused("The sandbox runtime is not known, so no sandbox starts.")
+    if workspace_tmpfs_mb is not None and (mounts or workspace_tmpfs_mb <= 0):
+        raise SandboxRefused(
+            "A remote sandbox takes no bind mount and needs a workspace size."
+        )
+    if binding.target == COMPUTE_TARGET:
+        if mounts:
+            raise SandboxRefused("A compute container takes no mount.")
+        if workspace_tmpfs_mb is not None:
+            # A compute container has its own /workspace tmpfs. Two would clash.
+            raise SandboxRefused("A compute container takes no second workspace.")
+
+
 def build_run_argv(
     *,
     binding: RunBinding,
@@ -1082,16 +1220,13 @@ def build_run_argv(
     backend (SBX-15): ``/workspace`` is a tmpfs of that size, owned by the
     container's user, and no bind mount may come with it.
     """
-    if uid == 0 or gid == 0:
-        raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
-    if not re.fullmatch(r"[0-9a-f]{32}", start_id):
-        raise SandboxRefused("The start id is not valid.")
-    if runtime not in RUNTIMES:
-        raise SandboxRefused("The sandbox runtime is not known, so no sandbox starts.")
-    if workspace_tmpfs_mb is not None and (mounts or workspace_tmpfs_mb <= 0):
-        raise SandboxRefused(
-            "A remote sandbox takes no bind mount and needs a workspace size."
-        )
+    _check_run_inputs(
+        binding=binding, mounts=mounts, uid=uid, gid=gid, start_id=start_id,
+        runtime=runtime, workspace_tmpfs_mb=workspace_tmpfs_mb,
+    )
+    compute = binding.target == COMPUTE_TARGET
+    if compute:
+        limits = Limits(COMPUTE_CPUS, COMPUTE_MEMORY, COMPUTE_PIDS, limits.tmpfs_mb)
     argv = ["run", "-d", "--rm", "--name", binding.name]
     for key, value in {**binding.labels(), LABEL_START: start_id}.items():
         argv += ["--label", f"{key}={value}"]
@@ -1101,6 +1236,10 @@ def build_run_argv(
         "--network", "none",
         "--read-only",
         "--tmpfs", f"/tmp:rw,nosuid,nodev,size={limits.tmpfs_mb}m",
+        *(
+            ["--tmpfs", f"{COMPUTE_WORKSPACE_TMPFS},uid={uid},gid={gid},mode=0700"]
+            if compute else []
+        ),
         "--user", f"{uid}:{gid}",
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
@@ -1122,6 +1261,16 @@ def build_run_argv(
     for mount in mounts:
         argv += mount.args()
     env = sandbox_env(binding.thread_hash)
+    if compute:
+        # No user site, no pip, no `.local`: the only code is the stdlib and
+        # the image's own packages. No secret is here.
+        env = {
+            "HOME": "/tmp",
+            "PATH": SYSTEM_PATH,
+            "MPLBACKEND": "Agg",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
     if binding.target == PROJECTS_TARGET:
         # Every thread of one organization mounts the same working dir, so
         # another thread could plant a package in this thread's `.local`
@@ -1224,6 +1373,15 @@ class StreamResult:
     truncated: bool
     stderr: str
     host_timed_out: bool
+
+
+@dataclass(frozen=True)
+class CollectResult:
+    rc: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+    truncated: bool
 
 
 class CappedOutput:
@@ -1330,11 +1488,13 @@ class DockerCLI:
         with contextlib.suppress(BaseException):
             await asyncio.shield(proc.wait())
 
-    async def run(self, args: Sequence[str], *, timeout: float) -> DockerResult:
-        """Run one short docker command to its end."""
-        proc = await self._spawn(args)
+    async def run(
+        self, args: Sequence[str], *, timeout: float, stdin: bytes | None = None,
+    ) -> DockerResult:
+        """Run one short docker command to its end. *stdin* feeds ``exec -i``."""
+        proc = await (self._spawn(args) if stdin is None else self._spawn(args, stdin))
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)
         except TimeoutError:
             await self._kill(proc)
             return DockerResult(-1, "", f"docker {args[0] if args else ''} timed out")
@@ -1345,6 +1505,47 @@ class DockerCLI:
             proc.returncode if proc.returncode is not None else -1,
             out.decode("utf-8", errors="replace"),
             _scrub(err.decode("utf-8", errors="replace")),
+        )
+
+    async def collect(
+        self, args: Sequence[str], *, timeout: float, cap: int,
+    ) -> CollectResult:
+        """Run a docker command and keep up to *cap* raw bytes of each stream.
+
+        The memory it holds is bounded. A stream past the cap reads on and
+        drops the rest, and ``truncated`` says so. SBX-18 uses it.
+        """
+        proc = await self._spawn(args)
+        out, err = bytearray(), bytearray()
+        total = [0, 0]
+
+        async def pump(reader: asyncio.StreamReader | None, sink: bytearray, idx: int) -> None:
+            if reader is None:
+                return
+            while chunk := await reader.read(_READ_CHUNK):
+                total[idx] += len(chunk)
+                room = cap - len(sink)
+                if room > 0:
+                    sink.extend(chunk[:room])
+
+        timed_out = False
+        rc: int | None
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(pump(proc.stdout, out, 0), pump(proc.stderr, err, 1)),
+                timeout=timeout,
+            )
+            rc = await proc.wait()
+        except TimeoutError:
+            timed_out = True
+            await self._kill(proc)
+            rc = None
+        except BaseException:
+            await self._kill(proc)
+            raise
+        return CollectResult(
+            rc=rc, stdout=bytes(out), stderr=bytes(err), timed_out=timed_out,
+            truncated=total[0] > cap or total[1] > cap,
         )
 
     async def stream(
@@ -2000,6 +2201,98 @@ def check_not_nested(source: Path, sandbox_dirs: Iterable[Path]) -> None:
             )
 
 
+@dataclass(frozen=True)
+class ComputeResult:
+    """What :func:`run_compute` gives back (SBX-18).
+
+    ``exit_code`` is ``None`` when the run timed out or a kill ended it.
+    ``stdout`` and ``stderr`` are raw text, capped by the broker at 256 KB.
+    ``files`` are the validated outputs of ``/workspace/out``: flat name to bytes.
+    """
+
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    files: dict[str, bytes]
+    duration_ms: int
+
+
+def build_compute_tar(files: dict[str, bytes]) -> bytes:
+    """The in-memory tar of the inputs, with ``inputs/`` and ``out/`` dirs.
+
+    Raises :class:`SandboxRefused` for a name outside ``main.py`` and
+    ``inputs/tr_<8 hex>.txt``, or for an input past the size cap.
+    """
+    total = 0
+    for name, data in files.items():
+        if not isinstance(name, str) or not _COMPUTE_INPUT_NAME.fullmatch(name):
+            raise SandboxRefused("A compute input name is not allowed.")
+        if not isinstance(data, bytes):
+            raise SandboxRefused("A compute input must be bytes.")
+        total += len(data)
+    if total > COMPUTE_MAX_INPUT_BYTES:
+        raise SandboxRefused("The compute inputs are too large.")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for dirname in ("inputs", "out"):
+            info = tarfile.TarInfo(dirname)
+            info.type, info.mode = tarfile.DIRTYPE, 0o755
+            tar.addfile(info)
+        for name in sorted(files):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(files[name]), 0o644
+            tar.addfile(info, io.BytesIO(files[name]))
+    return buf.getvalue()
+
+
+def parse_compute_tar(raw: bytes) -> dict[str, bytes]:
+    """The valid outputs of a ``tar -c`` stream, read in memory. Never extracts.
+
+    Keeps a regular file with a flat name and a suffix of csv, png, json or
+    txt. Skips every other member: a link, a dir, a nested name, ``..``, an
+    absolute name. Keeps at most 5 files, 1 MB each and 3 MB in all. A stream
+    that does not parse gives no file.
+    """
+    files: dict[str, bytes] = {}
+    total = 0
+    skipped = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            for member in tar:
+                name = member.name[2:] if member.name.startswith("./") else member.name
+                if name in ("", "."):
+                    continue
+                suffix = name.rpartition(".")[2].lower() if "." in name else ""
+                if (
+                    not member.isreg()
+                    or not _COMPUTE_OUT_NAME.fullmatch(name)
+                    or ".." in name
+                    or suffix not in COMPUTE_OUT_SUFFIXES
+                    or member.size > COMPUTE_MAX_FILE_BYTES
+                    or len(files) >= COMPUTE_MAX_FILES
+                    or total + member.size > COMPUTE_MAX_TOTAL_BYTES
+                    or name in files
+                ):
+                    skipped += 1
+                    continue
+                handle = tar.extractfile(member)
+                if handle is None:
+                    skipped += 1
+                    continue
+                data = handle.read(COMPUTE_MAX_FILE_BYTES + 1)
+                if len(data) != member.size:
+                    skipped += 1
+                    continue
+                files[name] = data
+                total += len(data)
+    except (tarfile.TarError, EOFError, OSError, ValueError):
+        _log.warning("sandbox_broker.compute_tar_unreadable", kept=len(files))
+    if skipped:
+        _log.info("sandbox_broker.compute_outputs_skipped", count=skipped)
+    return files
+
+
 def _oldest_idle(handles: Iterable[SandboxHandle]) -> SandboxHandle | None:
     idle = [
         h for h in handles
@@ -2022,6 +2315,9 @@ class SandboxBroker:
         self._docker = docker or DockerCLI()
         self._clock = clock
         self._live: dict[str, SandboxHandle] = {}
+        #: The ``compute`` containers (SBX-18). A separate registry, so the
+        #: compute caps and the ``sandbox_max_*`` caps never share a count.
+        self._compute_live: dict[str, SandboxHandle] = {}
         self._registry_lock = asyncio.Lock()
         self._dir_locks: dict[Path, asyncio.Lock] = {}
         self._dirs: set[Path] | None = None
@@ -2452,6 +2748,8 @@ class SandboxBroker:
         one. No handle stays ``starting`` and no slot of a cap stays taken.
         """
         binding = read_run_binding()
+        if binding.target == COMPUTE_TARGET:
+            raise SandboxRefused("The compute target starts only through run_compute.")
         if not maf_coding_scope_allows(target_for_agent(binding.agent), binding.org):
             raise SandboxRefused(
                 "MAF_CODING_SCOPE does not name this target for this organization, "
@@ -2578,9 +2876,10 @@ class SandboxBroker:
         decision and the change of the registry.
         """
         async with self._registry_lock:
-            if remote and any(h.remote and h.org != binding.org for h in self._live.values()):
-                # SBX-15: one organization per remote box, decided under the
-                # lock. `_remote_org_admit` in `_start` reads the daemon too.
+            if remote and self._other_org_on_box(binding.org):
+                # SBX-15: one organization per remote box, across every
+                # registry, decided under the lock. `_remote_org_admit` in
+                # `_start` reads the daemon too.
                 raise SandboxBusy(ONE_ORG_BUSY)
             victims: list[SandboxHandle] = []
             held = self._live.get(binding.name)
@@ -2962,17 +3261,19 @@ class SandboxBroker:
         """
         return self._remote_start_lock if remote else contextlib.nullcontext()
 
-    def _registered_handles(self) -> list[Any]:
-        """The handles of every registry of this broker, for the one-org rule.
+    def _registered_handles(self) -> list[SandboxHandle]:
+        """The handles of every registry of this broker: the mounted targets
+        (``_live``) and the compute target of SBX-18 (``_compute_live``)."""
+        return [*self._live.values(), *self._compute_live.values()]
 
-        A later target keeps its own registry (SBX-18, ``_compute_live``), so
-        it is read by name when it exists.
+    def _other_org_on_box(self, org: str) -> bool:
+        """True when a registry holds a remote container of an org that is not *org*.
+
+        Each claim asks it under the registry lock, and the admit asks it
+        again. A handle is remote from its claim (``_claim``,
+        ``_compute_claim``), so a start in flight counts.
         """
-        handles: list[Any] = list(self._live.values())
-        other = getattr(self, "_compute_live", None)
-        if isinstance(other, dict):
-            handles += list(other.values())
-        return handles
+        return any(h.remote and h.org != org for h in self._registered_handles())
 
     async def _remote_org_admit(self, org: str) -> None:
         """One organization per remote box (SBX-15). Raises :class:`SandboxBusy`.
@@ -2993,10 +3294,7 @@ class SandboxBroker:
         """
         if sandbox_backend(self._settings()) != BACKEND_REMOTE:
             return
-        if any(
-            getattr(h, "remote", True) and getattr(h, "org", None) != org
-            for h in self._registered_handles()
-        ):
+        if self._other_org_on_box(org):
             raise SandboxBusy(ONE_ORG_BUSY)
         found = await self._docker.run(
             ["ps", "-a", "--filter", f"label={LABEL_SANDBOX}=1",
@@ -3117,49 +3415,45 @@ class SandboxBroker:
             self._ensure_reaper()
 
     async def _reap_remote_orphans(self) -> int:
-        """Remove each sandbox container on the remote daemon that no registry holds.
+        """Remove ONLY the containers that a failed removal of this broker left.
 
-        It holds the start gate, so no start runs between its read and its
-        removal. A container counts as live when a registered handle names
-        its start label or its id. Never raises.
+        Each entry of ``_remote_orphans`` is a container id, or
+        ``start:<start id>`` when even the lookup by start label failed. No
+        other container is touched (review P2 of round 2): a daemon that
+        another deployment shares holds live containers that no registry of
+        this process knows, and only the startup sweep removes every labelled
+        container. An entry that a removal took leaves the set, and a failed
+        one stays for the next tick. Never raises.
         """
-        try:
-            async with self._remote_start_lock:
-                found = await self._docker.run(
-                    ["ps", "-a", "--filter", f"label={LABEL_SANDBOX}=1",
-                     "--format", '{{.ID}}|{{.Label "' + LABEL_START + '"}}'],
-                    timeout=_SMALL_TIMEOUT_SECONDS,
-                )
-                if found.rc != 0:
-                    _log.warning("sandbox_broker.orphan_read_failed", error=found.stderr[-300:])
-                    return 0
-                handles = self._registered_handles()
-                starts = {str(getattr(h, "start_id", "") or "") for h in handles} - {""}
-                cids = {str(getattr(h, "container_id", "") or "") for h in handles} - {""}
-                orphans = []
-                for line in found.stdout.splitlines():
-                    cid, _sep, start = line.strip().partition("|")
-                    if not cid or start.strip() in starts:
+        removed = 0
+        for entry in sorted(self._remote_orphans):
+            try:
+                if entry.startswith("start:"):
+                    found = await self._docker.run(
+                        ["ps", "-aq", "--filter", f"label={LABEL_START}={entry[6:]}"],
+                        timeout=_SMALL_TIMEOUT_SECONDS,
+                    )
+                    if found.rc != 0:
                         continue
-                    if any(full.startswith(cid) for full in cids):
-                        continue
-                    orphans.append(cid)
-                if orphans:
+                    ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
+                else:
+                    ids = [entry]
+                if ids:
                     result = await self._docker.run(
-                        ["rm", "-f", *orphans], timeout=_RUN_TIMEOUT_SECONDS,
+                        ["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS,
                     )
                     if result.rc != 0 and "No such container" not in result.stderr:
                         _log.warning(
-                            "sandbox_broker.orphan_remove_failed", count=len(orphans),
-                            error=result.stderr[-300:],
+                            "sandbox_broker.orphan_remove_failed", error=result.stderr[-300:],
                         )
-                        return 0
-                    _log.info("sandbox_broker.orphans_removed", count=len(orphans))
-                self._remote_orphans.clear()
-                return len(orphans)
-        except (SandboxError, OSError) as exc:
-            _log.warning("sandbox_broker.orphan_reap_failed", error=str(exc)[:300])
-            return 0
+                        continue
+                    removed += len(ids)
+                self._remote_orphans.discard(entry)
+            except (SandboxError, OSError) as exc:
+                _log.warning("sandbox_broker.orphan_reap_failed", error=str(exc)[:300])
+        if removed:
+            _log.info("sandbox_broker.orphans_removed", count=removed)
+        return removed
 
     async def _remove(self, handle: SandboxHandle) -> None:
         await self._remove_container(handle.container_id, handle.start_id)
@@ -3385,6 +3679,145 @@ class SandboxBroker:
             self._require_live(handle)
             yield handle
 
+    # ── the compute target (SBX-18) ─────────────────────────────────────────
+
+    async def _compute_claim(self, binding: RunBinding) -> SandboxHandle:
+        """Reserve a compute slot, or raise :class:`SandboxBusy`. No await inside."""
+        settings = self._settings()
+        per_org = int(getattr(settings, "compute_max_per_org", 1))
+        total = int(getattr(settings, "compute_max_total", 1))
+        remote = self._backend() == BACKEND_REMOTE
+        async with self._registry_lock:
+            if remote and self._other_org_on_box(binding.org):
+                # SBX-15: one org per remote box, across every target.
+                raise SandboxBusy(ONE_ORG_BUSY)
+            mine = [h for h in self._compute_live.values() if h.org == binding.org]
+            if binding.name in self._compute_live or len(mine) >= per_org:
+                raise SandboxBusy("This organization runs its share of compute. Try again soon.")
+            if len(self._compute_live) >= total:
+                raise SandboxBusy("The box runs its maximum of compute runs. Try again soon.")
+            # `remote` is set under the lock, so every one-org check sees it.
+            handle = SandboxHandle(
+                binding=binding, lock=asyncio.Lock(), leases=1, last_used=self._clock(),
+                remote=remote,
+            )
+            self._compute_live[binding.name] = handle
+            return handle
+
+    def _compute_drop(self, handle: SandboxHandle) -> None:
+        handle.removed = True
+        if self._compute_live.get(handle.name) is handle:
+            del self._compute_live[handle.name]
+
+    async def _compute_start(self, handle: SandboxHandle) -> None:
+        settings = self._settings()
+        image = pinned_image(settings)
+        limits = Limits.from_settings(settings)
+        backend = sandbox_backend(settings)
+        runtime = sandbox_runtime(settings, backend)
+        remote = backend == BACKEND_REMOTE
+        uid, gid = _process_ids()
+        handle.start_id, handle.container_id = uuid.uuid4().hex, ""
+        handle.remote = remote
+        argv = build_run_argv(
+            binding=handle.binding, mounts=[], uid=uid, gid=gid,
+            image=image, limits=limits, start_id=handle.start_id, runtime=runtime,
+        )
+        # SBX-15: the org admit and `docker run` hold ONE gate, as every
+        # start of this broker does. The admit raises SandboxBusy or
+        # SandboxUnavailable to refuse.
+        async with self._start_gate(remote):
+            await self._remote_org_admit(handle.org)
+            admitted = True
+            if _production_mode(settings) and (
+                not remote or "--runtime=runsc" not in argv or not admitted
+            ):
+                raise SandboxRefused(
+                    "Compute starts in production only under runsc, on the remote "
+                    "backend, after the org admit."
+                )
+            await self._run_container(handle, argv)
+        if not compute_enabled(handle.org):
+            raise SandboxRefused("Compute was switched off for this organization.")
+        handle.started_at = handle.last_used = self._clock()
+        handle.starting = False
+        handle.ready.set()
+        _log.info("sandbox_broker.compute_started", name=handle.name, org=handle.org)
+
+    @staticmethod
+    def _compute_alive(handle: SandboxHandle) -> None:
+        """Refuse when the reaper or the kill switch dropped this container."""
+        if handle.removed:
+            raise SandboxRefused("This compute run was stopped.")
+
+    async def run_compute(
+        self, files: dict[str, bytes], *, timeout_s: int,
+    ) -> ComputeResult:
+        """Run ``python main.py`` over *files* in a fresh, closed container.
+
+        The org, the member and the thread come from the run binding only. The
+        container never serves a second run (D187.1): it is removed at the
+        end, on an error and on a timeout too. Raises :class:`SandboxRefused`,
+        :class:`SandboxBusy` and :class:`SandboxUnavailable`. Nothing runs on
+        the host.
+        """
+        binding = read_compute_binding()
+        tar_in = build_compute_tar(files)
+        if not compute_enabled(binding.org):
+            raise SandboxRefused("Compute is not enabled for this organization.")
+        _compute_production_guard(self._settings())
+        try:
+            seconds = int(timeout_s)
+        except (TypeError, ValueError):
+            seconds = COMPUTE_MAX_TIMEOUT_S
+        seconds = max(COMPUTE_MIN_TIMEOUT_S, min(seconds, COMPUTE_MAX_TIMEOUT_S))
+        await self._await_startup()
+        handle = await self._compute_claim(binding)
+        self._ensure_reaper()
+        began = self._clock()
+        try:
+            await self._compute_start(handle)
+            self._compute_alive(handle)
+            put = await self._docker.run(
+                ["exec", "-i", handle.name, "tar", "-x", "-C", WORKSPACE_TARGET],
+                timeout=_SMALL_TIMEOUT_SECONDS, stdin=tar_in,
+            )
+            if put.rc != 0:
+                _log.warning("sandbox_broker.compute_put_failed", name=handle.name,
+                             error=put.stderr[-300:])
+                raise SandboxUnavailable("The compute container did not take its inputs.")
+            self._compute_alive(handle)
+            exec_began = self._clock()
+            ran = await self._docker.collect(
+                ["exec", "--workdir", WORKSPACE_TARGET, handle.name,
+                 "timeout", "-s", "KILL", str(seconds), "python", "main.py"],
+                timeout=seconds + _HOST_GRACE_SECONDS, cap=COMPUTE_STREAM_CAP,
+            )
+            elapsed = self._clock() - exec_began
+            killed = ran.rc == 137
+            timed_out = ran.timed_out or (killed and elapsed >= seconds)
+            out_files: dict[str, bytes] = {}
+            if not ran.timed_out:
+                self._compute_alive(handle)
+                got = await self._docker.collect(
+                    ["exec", handle.name, "tar", "-c", "-C", COMPUTE_OUT_TARGET, "."],
+                    timeout=_SMALL_TIMEOUT_SECONDS,
+                    cap=COMPUTE_MAX_TOTAL_BYTES + 1024 * 1024,
+                )
+                if got.rc == 0 and not got.truncated and not got.timed_out:
+                    out_files = parse_compute_tar(got.stdout)
+        finally:
+            self._compute_drop(handle)
+            await asyncio.shield(self._spawn_background(self._remove(handle)))
+        return ComputeResult(
+            exit_code=None if (timed_out or killed or ran.rc is None) else ran.rc,
+            stdout=ran.stdout.decode("utf-8", errors="replace"),
+            stderr=ran.stderr.decode("utf-8", errors="replace"),
+            timed_out=timed_out,
+            files=out_files,
+            duration_ms=int((self._clock() - began) * 1000),
+        )
+
     # ── reaping and sweeping (§7.1 rules 12 and 13) ─────────────────────────
 
     async def reap_once(self) -> int:
@@ -3414,6 +3847,19 @@ class SandboxBroker:
             ]
             for victim in victims:
                 self._drop(victim)
+            # SBX-18: a compute container stops when its org left the flag, and
+            # when it outlives the longest run plus the grace (a crashed run).
+            stale = [
+                h for h in self._compute_live.values()
+                if not h.starting and (
+                    not compute_enabled(h.org)
+                    or now - h.started_at
+                    > COMPUTE_MAX_TIMEOUT_S + 2 * _HOST_GRACE_SECONDS + _SMALL_TIMEOUT_SECONDS
+                )
+            ]
+            for victim in stale:
+                self._compute_drop(victim)
+            victims += stale
         await self._remove_all(victims)
         if victims:
             _log.info("sandbox_broker.reaped", count=len(victims))
@@ -3432,7 +3878,7 @@ class SandboxBroker:
 
     async def _reap_loop(self) -> None:
         interval = self._reaper_interval()
-        while self._live or self._remote_orphans:
+        while self._live or self._compute_live or self._remote_orphans:
             await asyncio.sleep(interval)
             try:
                 await self.reap_once()
@@ -3465,6 +3911,8 @@ class SandboxBroker:
         async with self._registry_lock:
             for handle in list(self._live.values()):
                 self._drop(handle)
+            for handle in list(self._compute_live.values()):
+                self._compute_drop(handle)
         return len(ids)
 
     async def startup(self) -> None:
@@ -3581,6 +4029,15 @@ async def delivery_guard(workspace: Path) -> AsyncIterator[bool]:
         return
     async with broker.host_dir_of(workspace) as source:
         yield bool(broker.writes_refused(source))
+
+
+async def run_compute(files: dict[str, bytes], *, timeout_s: int) -> ComputeResult:
+    """Run ``python main.py`` over *files* in a closed compute container (SBX-18).
+
+    Input names are ``main.py`` or ``inputs/tr_<8 hex>.txt``. The tenant comes
+    from the run binding only. See :meth:`SandboxBroker.run_compute`.
+    """
+    return await get_broker().run_compute(files, timeout_s=timeout_s)
 
 
 def covers(agent: str, org: str) -> bool:

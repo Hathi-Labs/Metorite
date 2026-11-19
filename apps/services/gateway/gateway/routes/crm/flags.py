@@ -34,6 +34,13 @@ gateway reads them.
   §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
   organization: the sync does no fill work, and the routes serve no fill
   numbers and no labels. :func:`fill_rank_allowed` is the one check.
+* ``CRM_MODULE_FIND_ORGS`` — the organization ids whose module list and
+  module total take ``q`` across the record name, each lookup name and each
+  text value (WS-53 CRM-Q34-7, ``crm_platform.md`` §18.17). The grammar is
+  the one of ``CRM_ORGS``. An empty list allows no organization: ``q`` on a
+  module total is the 422 of CRM-Q34-2, and the module list matches the
+  record name only, as before. :func:`module_find_allowed` is the one check.
+  A name in the list spends nothing, so its flip is gate ``enforcement-flip``.
 * ``CRM_NOTE_SEARCH_ORGS`` — the organization ids that get search of note
   text by meaning (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). The grammar
   is the one of ``CRM_ORGS``. An empty list allows no organization: the sync

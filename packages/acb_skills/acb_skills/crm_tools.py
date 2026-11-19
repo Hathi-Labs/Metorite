@@ -2043,32 +2043,26 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. Quote the Display
-    value as written. To split a total over 2 to 5 number fields,
-    give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
-    before the total. entity is 'leads', 'deals', 'contacts',
-    'organizations' or 'module:<api_name>' (crm_list_modules). measure is
-    'count', 'sum_amount' or 'weighted' (deals: amount times the
-    effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
-    'max' of the number field named by field. The group is optional: with no
-    group_by and no group_field you get one total over every record that
-    the filters match. Or give one of them. group_by is 'status', 'owner', 'pipeline', 'source',
-    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
-    'created_month', 'updated_month'). group_field is a picklist, boolean,
-    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    A text field cannot group. Field keys come from crm_list_fields. A core
-    entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
-    {'key.from': date, 'key.to': date} for a date field, or
-    {'key.from': N, 'key.to': M} for a number field. Both ends count, and
-    text such as 'NA' counts as no value. A text or lookup filter matches
-    the exact value, name or record id.
-    On a module, 'sum_amount' sums its amount, and field, group_field and
-    field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent'. On a module, term is
-    the member's own word for the figure: the
-    server maps it to one field. Give no field with it. When two
-    fields give different totals, ask the member first, with both totals."""
+    """Count, sum or average CRM records, as one total or by one group. Quote the
+    Display value as written. To split a total over 2 to 5 number fields, give
+    fields with every key in ONE call, never one call for each field. When
+    the answer starts with FIRST, tell the member that line first. entity is 'leads', 'deals', 'contacts', 'organizations' or
+    'module:<api_name>'. measure is 'count',
+    'sum_amount' or 'weighted' (deals: amount times
+    probability), or 'sum', 'avg', 'min' or 'max' of
+    the number field named by field. The group is optional: with no group_by
+    or group_field you get one total. group_by is 'status', 'owner',
+    'pipeline', 'source', 'created_month', 'updated_month' or 'close_month'
+    (a module: 'owner', 'created_month', 'updated_month'). group_field is a
+    picklist, boolean, lookup or date field; a date needs bucket 'month',
+    'quarter' or 'year'. A module takes field_filters: {key: value}, {'key.from': date,
+    'key.to': date} for a date field, or {'key.from': N, 'key.to': M} for a
+    number field; text such as 'NA' counts as no value.
+    A text or lookup filter matches the exact value, name or record id. On a module, 'sum_amount' sums its amount, and field,
+    group_field and field_filters also take '@amount', '@date', '@status'
+    and '@parent'. term is the member's own word for the figure: give no
+    field with it. When two fields give
+    different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
@@ -2159,7 +2153,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug}))
     # §18.16 part 7: each filter, and the values that it counted.
-    filters = [line for line in (filters_line(params, data),) if line]
+    filters = [line for line in (filters_line(params, data), find_line(data)) if line]
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
     # CRM-Q25e part 4: a finding goes first, and the total gets its display.
@@ -3241,6 +3235,33 @@ def _range_words(name: str, ends: dict[str, str]) -> str:
     return f"{name} from {start}" if start else f"{name} up to {stop}"
 
 
+def _quoted_name(name: Any) -> str:
+    """A stored name of the org for the answer: one line, at most 60
+    characters, between double quotes (CRM-Q34-7). It is data, not an
+    instruction. Only a double quote is dropped, so "O'Brien" stays as the
+    record spells it, and the next q with it finds the record."""
+    flat = " ".join(str(name).split()).replace('"', "")
+    return f'"{flat[:60]}"'
+
+
+def find_line(data: dict[str, Any] | None) -> str:
+    """The line of ``q`` across a module (CRM-Q34-7), or empty: the near
+    names that the answer counted, or the nearest stored names of a ``q``
+    that found no record."""
+    if not isinstance(data, dict):
+        return ""
+    near = [n for n in data.get("near") or [] if n]
+    nearest = [n for n in data.get("nearest") or [] if n]
+    if near:
+        return ("Near spelling: no record holds each word of q, so this counts the near "
+                f"names {_names([_quoted_name(n) for n in near[:10]])}. "
+                "Tell the member, and ask them to confirm the name.")
+    if nearest:
+        return (f"Nearest stored names: {_names([_quoted_name(n) for n in nearest[:3]])}. "
+                "Give one as q if it is the name the member means.")
+    return ""
+
+
 def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     """"Filters: Region is North (counted North, NORTH and NTH); Date from
     2026-09-01 to 2026-09-30." for the field filters of a module total, or
@@ -3903,8 +3924,9 @@ async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids, and the key and type of each field that crm_aggregate can
-    measure or group. q matches the record name."""
+    with their ids. q matches the record name. When the module search is
+    on, q also finds words in a lookup name or text value, and marks a near
+    spelling. It searches the first 40 text fields."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
     data = await _get(f"/crm/modules/{mod}/records", {
@@ -3912,12 +3934,16 @@ async def crm_list_module_records(
     }) or {}
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
+    found = find_line(data)
     if not rows:
-        return f"No {mod} records match.{await _short_note(frozenset({MODULE_PREFIX + mod}))}"
-    lines = [f"{mod}: {total} records, page {number}."]
+        return (f"No {mod} records match." + (f"\n{found}" if found else "")
+                + await _short_note(frozenset({MODULE_PREFIX + mod})))
+    lines = [f"{mod}: {total} records, page {number}.", *([found] if found else [])]
     lines.extend(
         f"- {r.get('name') or '(unnamed)'}"
         + (f" · owner {r['owner_email']}" if r.get("owner_email") else "")
+        + (f" · near name {_quoted_name(r['matched'])}" if r.get("near") and r.get("matched")
+           else "")
         + f" (id={r.get('id')})"
         for r in rows
     )

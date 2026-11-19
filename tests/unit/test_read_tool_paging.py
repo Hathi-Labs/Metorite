@@ -100,6 +100,12 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::near[:10]":
+        "Names, not rows: the line names at most 10 near spellings that a q counted. "
+        "The list under it holds every row, with its total (CRM-Q34-7).",
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::nearest[:3]":
+        "Names, not rows: a zero offers its 3 nearest stored names as a hint. "
+        "No row is behind a zero (CRM-Q34-7).",
     'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
         "No notice is lost: the card shows four (clean_reply_form refuses more), "
         "and _reply_form puts notices[4:] into the card's note. Removing the cut "
@@ -321,7 +327,7 @@ ALLOWED: dict[str, str] = {
 #: delete card names ten tables and counts the rest, and the delete takes every
 #: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
 #: says 'and N more' (89).
-ALLOWED_CEILING = 88
+ALLOWED_CEILING = 90
 
 
 def _stringy(node: ast.AST) -> bool:

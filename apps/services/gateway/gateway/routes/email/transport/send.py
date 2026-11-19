@@ -71,6 +71,10 @@ class SendEmailRequest(BaseModel):
     subject: str
     body_text: str
     body_html: str | None = None
+    # Task 3605: True when ``body_text`` is Markdown, as the email assistant
+    # writes it. The send then makes the text part and the HTML part with
+    # ``markdown_mail.mail_bodies``. A request with ``body_html`` too gets 422.
+    body_markdown: bool = False
     cc: list[str] | None = None
     bcc: list[str] | None = None
     reply_to_message_id: str | None = None
@@ -283,6 +287,8 @@ async def send_email(
     the provider id here, so a chat reply threads (MB-5).
     """
     owner = user.email or "anonymous"
+    # Task 3605: a Markdown body becomes the two parts here, before any read.
+    body_text, body_html = _bodies_of(req)
     async with _tenant_session() as db:
         reply_pmid, reply_thread_id = await _reply_target(
             db, req.account_id, req.reply_to_message_id, owner)
@@ -341,9 +347,12 @@ async def send_email(
             )
             signature = await resolve_signature_for_send(
                 db, req.account_id, "reply" if req.reply_to_message_id else "new",
-                req.body_text)
+                body_text)
+            # Task 3605: a Markdown body holds no quoted thread, so the
+            # signature goes at the end of both parts.
             send_text, send_html = build_signed_bodies(
-                signature, req.body_text, req.body_html)
+                signature, body_text, body_html,
+                quoted_thread=not req.body_markdown)
 
             # ``_reply_target`` resolved the conversation id of the message
             # being replied to, so the provider threads the reply. Gmail needs
@@ -372,7 +381,7 @@ async def send_email(
         # Commit the rotated-cred persist the session wrote on clean exit.
 
         # If this was a reply, learn from how the user edited the AI's draft.
-        if req.reply_to_message_id and req.body_text and reply_thread_id:
+        if req.reply_to_message_id and body_text and reply_thread_id:
             try:
                 from gateway.routes.email.automation import (
                     _cleanup_thread_drafts,
@@ -386,13 +395,13 @@ async def send_email(
                     _cleanup_thread_drafts, req.account_id, reply_thread_id)
                 background.add_task(
                     _learn_from_sent, req.account_id, reply_thread_id,
-                    req.body_text)
+                    body_text)
                 # Move the thread out of "Reply" → Awaiting Reply /
                 # Done. Pass the just-sent reply so the AI judges the
                 # thread WITH it (the send isn't mirrored locally yet).
                 background.add_task(
                     _mark_thread_replied, req.account_id, reply_thread_id,
-                    req.body_text, req.subject)
+                    body_text, req.subject)
             except Exception:
                 pass
 
@@ -408,6 +417,38 @@ REPLY_NOT_IN_MAILBOX = (
     "The mail this reply answers is not in the sending mailbox. "
     "Reply from the mailbox that received it."
 )
+
+
+#: The 422 of a send that names a Markdown body and an HTML body (task 3605).
+MARKDOWN_AND_HTML = "Send a Markdown body or an HTML body, not both."
+
+
+def _bodies_of(req: SendEmailRequest) -> tuple[str, str | None]:
+    """The text part and the HTML part of a send, before the signature.
+
+    Task 3605: with ``body_markdown`` the one converter
+    (``markdown_mail.mail_bodies``) makes both parts from ``body_text``. A
+    body with no real structure keeps its text and gets no HTML, so it sends
+    as before. ``build_signed_bodies`` then adds the signature once to each
+    part. Without the flag, the request's own parts go as they are.
+
+    A fault of the converter, an import fault too, sends the text alone, as
+    before task 3605. A card act has spent its answer and its record when it
+    calls this, so a 500 here would lose the member's mail."""
+    if not req.body_markdown:
+        return req.body_text, req.body_html
+    if req.body_html is not None:
+        raise HTTPException(status_code=422, detail=MARKDOWN_AND_HTML)
+    try:
+        from gateway.routes.email.markdown_mail import mail_bodies
+
+        return mail_bodies(req.body_text)
+    except Exception as exc:  # the mail goes as text, never a 500
+        from acb_common import get_logger
+
+        get_logger("gateway.email.send").warning(
+            "email.markdown_failed", error=type(exc).__name__)
+        return req.body_text, None
 
 
 def _as_uuid(value: str) -> str | None:

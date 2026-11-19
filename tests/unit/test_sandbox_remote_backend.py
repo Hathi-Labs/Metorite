@@ -362,7 +362,7 @@ class _Proc:
         self.stdout = None
         self.stderr = None
 
-    async def communicate(self) -> tuple[bytes, bytes]:
+    async def communicate(self, stdin: bytes | None = None) -> tuple[bytes, bytes]:
         return b"", self._stderr
 
     async def wait(self) -> int:
@@ -859,6 +859,17 @@ async def test_the_ssh_command_line_loses_its_user_and_port(
     assert "-l (user)" in result.stderr and "-p (port)" in result.stderr
 
 
+def test_a_bare_port_number_elsewhere_stays(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 2, P3: with port 22, a time such as 12:22:01 keeps its
+    digits. Only the port of the host token and of ``-p`` goes."""
+    monkeypatch.setattr(env["settings"], "sandbox_docker_host", "ssh://sandbox@10.20.30.40:22")
+    text = "12:22:01 ssh -l sandbox -p 22 -- 10.20.30.40:22 failed at line 7:22"
+    out = sb._scrub(text)
+    assert out == "12:22:01 ssh -l (user) -p (port) -- 10.20.30.40 failed at line 7:22"
+
+
 # ── review P2: a failed remote removal never locks the box ──────────────────
 
 
@@ -886,13 +897,26 @@ async def test_a_failed_removal_is_reaped_and_frees_the_box(
     await broker.stop()
 
 
-async def test_the_orphan_reap_keeps_each_live_container(
+async def test_a_reaper_tick_removes_only_the_recorded_orphans(
     broker: sb.SandboxBroker, docker: RemoteFakeDocker,
 ) -> None:
+    """Review round 2, P2. A daemon that another deployment shares holds a
+    labelled container that no registry here knows. A tick never removes it:
+    only the ids that a failed removal recorded go. The startup sweep stays
+    the one full scan."""
     with bound_run(ORG, thread="t-live"):
         handle = await broker.acquire()
-    removed = await broker._reap_remote_orphans()
-    assert removed == 0 and handle.container_id in docker.box
+    docker.box["cid-other-deployment"] = ORG
+    docker.starts["cid-other-deployment"] = "f" * 32
+    calls = len(docker.calls)
+    await broker.reap_once()
+    assert "cid-other-deployment" in docker.box
+    assert handle.container_id in docker.box
+    assert docker.calls[calls:] == [], "a tick with no orphan sends no docker call"
+    broker._remote_orphans.add("cid-gone")
+    await broker.reap_once()
+    assert ["rm", "-f", "cid-gone"] in docker.calls[calls:]
+    assert "cid-other-deployment" in docker.box and not broker._remote_orphans
     await broker.stop()
 
 
@@ -945,15 +969,15 @@ def _call_name(func: Any) -> str:
     return ""
 
 
-def _is_start(call: Any) -> bool:
-    """A call that starts a container: ``_run_container``, ``build_run_argv``,
-    or a docker call whose argv is ``["run", ...]`` or ``build_run_argv(...)``."""
+def _is_run(call: Any) -> bool:
+    """A call that runs a container: ``_run_container``, or a docker call
+    whose argv is ``["run", ...]`` or ``build_run_argv(...)``."""
     import ast
 
     name = _call_name(call.func)
-    if name in {"_run_container", "build_run_argv"}:
+    if name == "_run_container":
         return True
-    if name in {"run", "stream", "transfer"} and call.args:
+    if name in {"run", "stream", "transfer", "collect"} and call.args:
         first = call.args[0]
         if isinstance(first, ast.List | ast.Tuple) and first.elts:
             head = first.elts[0]
@@ -966,10 +990,11 @@ def _is_start(call: Any) -> bool:
 def starts_without_admit(source: str) -> tuple[list[str], list[str]]:
     """``(starters, offenders)`` of *source*.
 
-    A starter is a function that starts a container. It is an offender
-    unless it awaits ``_remote_org_admit`` inside
-    ``async with self._start_gate(...)``, the lock that holds the admit and
-    the run together.
+    A starter is a function that runs a container or builds its argv. It is
+    an offender unless EACH of its runs lies in the body of one
+    ``async with self._start_gate(...)`` whose same body awaits
+    ``_remote_org_admit`` (review round 2, P3). A starter that builds an
+    argv and runs nothing is an offender too.
     """
     import ast
 
@@ -979,31 +1004,31 @@ def starts_without_admit(source: str) -> tuple[list[str], list[str]]:
         if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
             continue
         calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
-        if not any(_is_start(c) for c in calls):
+        runs = [c for c in calls if _is_run(c)]
+        builds = [c for c in calls if _call_name(c.func) == "build_run_argv"]
+        if not runs and not builds:
             continue
         starters.append(node.name)
-        gated = False
+        gated: set[int] = set()
         for item in ast.walk(node):
-            if not isinstance(item, ast.AsyncWith):
-                continue
-            if not any(
+            if not isinstance(item, ast.AsyncWith) or not any(
                 isinstance(w.context_expr, ast.Call)
                 and _call_name(w.context_expr.func) == "_start_gate"
                 for w in item.items
             ):
                 continue
-            if any(
-                isinstance(c, ast.Call) and _call_name(c.func) == "_remote_org_admit"
-                for b in item.body for c in ast.walk(b)
-            ):
-                gated = True
-        if not gated:
+            body = [c for b in item.body for c in ast.walk(b) if isinstance(c, ast.Call)]
+            if any(_call_name(c.func) == "_remote_org_admit" for c in body):
+                gated |= {id(c) for c in body if _is_run(c)}
+        if not runs or any(id(r) not in gated for r in runs):
             offenders.append(node.name)
     return starters, offenders
 
 
 def test_every_start_in_the_broker_passes_the_admit_under_the_gate() -> None:
-    """A start path must await ``_remote_org_admit`` inside the start gate.
+    """Each start path awaits ``_remote_org_admit`` and runs the container
+    in the body of ONE start gate, ``_start`` and SBX-18's ``_compute_start``
+    too.
 
     The gate holds the admit and ``docker run`` together (review P2), so two
     starts of two orgs never both pass the admit.
@@ -1011,7 +1036,9 @@ def test_every_start_in_the_broker_passes_the_admit_under_the_gate() -> None:
     import inspect
 
     starters, offenders = starts_without_admit(inspect.getsource(sb))
-    assert "_start" in starters, "the detector cannot see the one start path it guards"
+    assert {"_start", "_compute_start"} <= set(starters), (
+        f"the detector cannot see the start paths it guards: {starters}"
+    )
     assert offenders == [], f"these start a container with no gated admit: {offenders}"
 
 
@@ -1024,6 +1051,21 @@ def test_the_admit_detector_sees_each_shape_of_a_start() -> None:
         "async def d(self, h, argv):\n    async with self._start_gate(True):\n"
         "        pass\n    await self._remote_org_admit(h.org)\n"
         "    await self._run_container(h, argv)\n",
+        # The admit under the gate, the run after it.
+        "async def g(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await self._remote_org_admit(h.org)\n"
+        "    await self._run_container(h, argv)\n",
+        # The admit and the run in two different gates.
+        "async def h(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await self._remote_org_admit(h.org)\n"
+        "    async with self._start_gate(True):\n"
+        "        await self._run_container(h, argv)\n",
+        # The getattr form of SBX-18 before the merge: no call name to match.
+        "async def i(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await getattr(self, '_remote_org_admit')(h.org)\n"
+        "        await self._run_container(h, argv)\n",
+        # An argv that is built and never run under a gate.
+        "def j(b):\n    return build_run_argv(binding=b)\n",
     ]
     for source in bad:
         assert starts_without_admit(source)[1], source
@@ -1065,18 +1107,95 @@ async def test_two_starts_of_two_orgs_never_both_pass_the_admit(
     assert set(docker.box.values()) == {ORG}
 
 
-async def test_the_admit_reads_a_second_registry_by_name(
+async def test_the_admit_reads_the_compute_registry(
     broker: sb.SandboxBroker, docker: RemoteFakeDocker,
 ) -> None:
-    """A later target keeps its own registry (SBX-18). The admit reads it."""
+    """SBX-18 keeps its own registry. The admit reads it, and a remote
+    compute handle of another org holds the box."""
     from types import SimpleNamespace
 
-    other = SimpleNamespace(org="22222222-0000-0000-0000-000000000002")
-    broker._compute_live = {"c1": other}  # type: ignore[attr-defined]
+    other = "22222222-0000-0000-0000-000000000002"
+    broker._compute_live = {"c1": SimpleNamespace(org=other, remote=True)}  # type: ignore[assignment]
     with pytest.raises(sb.SandboxBusy):
         await broker._remote_org_admit(ORG)
-    broker._compute_live = {"c1": SimpleNamespace(org=ORG)}  # type: ignore[attr-defined]
+    broker._compute_live = {"c1": SimpleNamespace(org=ORG, remote=True)}  # type: ignore[assignment]
     await broker._remote_org_admit(ORG)
+
+
+# ── the merge with SBX-18: the org lock binds the compute target too ────────
+
+ORG_B = "22222222-0000-0000-0000-000000000002"
+
+
+@pytest.fixture
+def compute_on(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    s = env["settings"]
+    monkeypatch.setattr(s, "maf_coding_scope", "code_task:*,compute:*")
+    monkeypatch.setattr(s, "compute_run_orgs", f"{ORG},{ORG_B}")
+    monkeypatch.setattr(s, "self_serve_signup_enabled", "")
+
+
+async def _compute_started(broker: sb.SandboxBroker, org: str, thread: str) -> sb.SandboxHandle:
+    with bound_run(org, thread=thread):
+        handle = await broker._compute_claim(sb.read_compute_binding())
+        await broker._compute_start(handle)
+    return handle
+
+
+async def test_a_compute_start_is_busy_while_a_code_task_of_another_org_lives(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, compute_on: None,
+) -> None:
+    with bound_run(ORG, thread="t-code"):
+        await broker.acquire()
+    with bound_run(ORG_B, thread="t-compute"), pytest.raises(sb.SandboxBusy, match="one organization"):
+        await broker._compute_claim(sb.read_compute_binding())
+    assert len(docker.runs()) == 1
+
+
+async def test_a_code_task_start_is_busy_while_a_compute_of_another_org_lives(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, compute_on: None,
+) -> None:
+    handle = await _compute_started(broker, ORG, "t-compute")
+    assert handle.remote, "a compute handle on docker-remote is remote"
+    assert "--runtime=runsc" in docker.runs()[-1]
+    with bound_run(ORG_B, thread="t-code"), pytest.raises(sb.SandboxBusy, match="one organization"):
+        await broker.acquire()
+    assert len(docker.runs()) == 1
+
+
+async def test_a_compute_start_reads_the_daemon_under_the_gate(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, compute_on: None,
+) -> None:
+    """A container that no registry knows still holds the box for compute."""
+    docker.unknown_orgs = [ORG]
+    with bound_run(ORG_B, thread="t-compute"):
+        handle = await broker._compute_claim(sb.read_compute_binding())
+        with pytest.raises(sb.SandboxBusy, match="one organization"):
+            await broker._compute_start(handle)
+    assert docker.runs() == []
+
+
+async def test_two_starts_at_once_of_compute_and_code_task_give_one_run(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, compute_on: None,
+) -> None:
+    gate = asyncio.Event()
+    docker.block_run = gate
+
+    async def code_task() -> Any:
+        with bound_run(ORG, thread="t-code"):
+            return await broker.acquire()
+
+    async def compute() -> Any:
+        return await _compute_started(broker, ORG_B, "t-compute")
+
+    tasks = [asyncio.create_task(code_task()), asyncio.create_task(compute())]
+    await asyncio.sleep(0.1)
+    gate.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    busy = [r for r in results if isinstance(r, sb.SandboxBusy)]
+    assert len(busy) == 1, results
+    assert len(docker.runs()) == 1
+    assert len(set(docker.box.values())) == 1
 
 
 # ── SBX-15: no tenant data outlives its run on the box ──────────────────────
