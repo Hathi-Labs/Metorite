@@ -7359,6 +7359,15 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
     return None
 
 
+def _same_reply_run(resume_call: dict[str, Any] | None) -> bool:
+    """True when *resume_call*, the server's kwarg of :func:`run_agent_stream`,
+    names a SAME-reply run (RESUME-2b, case A). Only JSON ``true`` counts.
+    A late decline (RESUME-4a-2) is never one. Never a key of the event
+    payload (R11)."""
+    return (isinstance(resume_call, dict) and resume_call.get("same_reply") is True
+            and resume_call.get("declined") is not True)
+
+
 def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
     """The tool name of the stored call in *resume_call*, the server's kwarg
     of :func:`run_agent_stream`, or "". Never a key of the event payload
@@ -7947,7 +7956,15 @@ async def run_agent_stream(
         _thread_emit_seq[thread_id] = 0
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        # RESUME-2b (review round 2, P2-a): the start of a SAME-reply run
+        # (case A) carries `resumed`. It goes on in the parked run's stream
+        # with the SAME run id, so only the mark tells part one's start from
+        # a continuation's start (`stream_relay.parked_end_of`,
+        # `chat_fold.same_reply_events`). A case B run starts a stream of its
+        # own, so it is not marked. The flag comes from the server's kwarg
+        # only (R11). Any other run sends the bytes of before.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                    **({"resumed": True} if _same_reply_run(resume_call) else {})})
         _laps.lap("start")
         # CS-3a: the setup starts now, so the first phase goes, before the
         # load, the tier wait, the session load and the compose. The run's org
