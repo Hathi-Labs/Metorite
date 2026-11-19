@@ -118,6 +118,119 @@ def test_maf_servers_carry_the_label_and_the_description() -> None:
     assert out.label == "S App" and out.description == "Holds S data"
 
 
+# ── CSY-5: a turn that cannot reach a server says why ───────────────────────
+
+
+def _rows() -> list[Any]:
+    return [SimpleNamespace(name="ok", label="Ok App", description="d", transport="http-sse",
+                            url="https://ok.example/mcp", agent_scope="all", headers={}),
+            SimpleNamespace(name="refused", label="Secret App", description="d", transport="http-sse",
+                            url="https://r.example/mcp", agent_scope="all", headers={})]
+
+
+async def test_a_mail_run_names_the_servers_it_could_use_and_never_a_refused_one(monkeypatch) -> None:
+    import gateway.connections.mcp as registry
+
+    calls: list[str] = []
+
+    async def enabled_meta(org: str) -> list[Any]:
+        calls.append(org)
+        return _rows()
+
+    monkeypatch.setattr(registry, "enabled_meta", enabled_meta)
+    monkeypatch.setattr(_maf_mcp, "is_native_maf_agent", lambda a: True)
+    monkeypatch.setattr(_maf_mcp, "maf_mcp_org_allowed", lambda o: True)
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda o: True)
+    monkeypatch.setattr(_tool_injection, "_keep_mcp_server", lambda s, a: True)
+    await _tool_injection._note_mail_skipped(
+        object(), "orchestrator", "org-a", lambda svc: svc != "mcp-refused")
+    text = sb.attached_block()
+    assert calls == ["org-a"]
+    assert "Ok App (ok): " + sb.REASON_TEXT["mail"] in text
+    assert "refused" not in text and "Secret App" not in text
+    assert sb.STANDING_RULE not in text
+
+
+async def test_a_mail_run_reads_nothing_with_the_flag_off(monkeypatch) -> None:
+    import gateway.connections.mcp as registry
+
+    async def boom(org: str) -> list[Any]:
+        raise AssertionError("the registry was read with the flag off")
+
+    monkeypatch.setattr(registry, "enabled_meta", boom)
+    monkeypatch.setattr(_maf_mcp, "is_native_maf_agent", lambda a: True)
+    monkeypatch.setattr(_maf_mcp, "maf_mcp_org_allowed", lambda o: True)
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda o: False)
+    await _tool_injection._note_mail_skipped(object(), "orchestrator", "org-a", None)
+    assert sb.attached_block() == ""
+
+
+def _server(name: str, **kw: Any) -> Any:
+    return _maf_mcp.McpServer(name=name, url="https://x.example/mcp", label=name.title(), **kw)
+
+
+def _tool(name: str, hints: dict | None) -> Any:
+    t = type("T", (), {})()
+    t.name = name
+    t.__dict__["_ws8c_tool_meta"] = {"op": _maf_mcp.ToolMeta(hints=hints, description="")}
+    return t
+
+
+async def test_the_reasons_cover_unreachable_reconnect_no_card_and_asks_each_call(monkeypatch) -> None:
+    import acb_skills.egress as egress
+
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda o: True)
+
+    async def marked() -> bool:
+        return True
+
+    monkeypatch.setattr(egress, "session_is_marked", marked)
+    servers = [_server("reads"), _server("writes")]
+    tools = [_tool("reads", {"readOnlyHint": True}), _tool("writes", {"destructiveHint": True})]
+    out = await _tool_injection._mcp_reasons(
+        "org-a", servers, ["reads", "writes"], {"dead": "unreachable", "oauth": "reconnect", "x": "weird"},
+        tools, member_present=True)
+    # The chat read mail. Since MCP-NC1 a member's run needs no card for a tool that does not
+    # change data, so the mark is what makes the read-only tool ask one. A destructive tool asks a
+    # card anyway, so the mark adds nothing there.
+    assert out == {"dead": "unreachable", "oauth": "reconnect", "reads": "asks_each_call"}
+    assert set(out.values()) <= set(sb.REASONS)
+
+    async def clean() -> bool:
+        return False
+
+    monkeypatch.setattr(egress, "session_is_marked", clean)
+    out = await _tool_injection._mcp_reasons("org-a", servers, ["reads", "writes"], {}, tools, member_present=False)
+    assert out == {"writes": "no_card"}  # the read-only tool still runs with no member
+
+
+async def test_the_reasons_read_nothing_with_the_flag_off(monkeypatch) -> None:
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda o: False)
+    assert await _tool_injection._mcp_reasons("o", [], [], {"a": "unreachable"}, None, True) == {}
+
+
+def test_a_note_line_follows_the_briefs_and_a_refused_server_is_not_in_the_rows() -> None:
+    rows = [SimpleNamespace(name="ok", label="Ok", description="d"),
+            SimpleNamespace(name="down", label="Down", description="d")]
+    tool = _tool("ok", {"readOnlyHint": True})
+    _tool_injection._note_mcp_briefs(rows, ["ok"], [tool], {"down": "unreachable"})
+    text = sb.attached_block()
+    assert text.index("- Ok (ok)") < text.index("- Down (down): ") < text.index(sb.STANDING_RULE[:20])
+
+
+async def test_attach_reports_a_refused_server_as_unreachable(monkeypatch) -> None:
+    from gateway import outbound_guard
+
+    async def refuse(url: str) -> Any:
+        raise outbound_guard.OutboundRefused("x.example", "blocked")
+
+    monkeypatch.setattr(outbound_guard, "mcp_client", refuse)
+    failures: dict[str, str] = {}
+    agent = SimpleNamespace(mcp_tools=[], middleware=[])
+    got = await _maf_mcp.attach_mcp_tools(agent, [_server("down")], [], failures=failures)
+    assert got == [] and failures == {"down": "unreachable"}
+
+
 def test_a_delegated_run_does_not_read_the_parents_briefs(monkeypatch) -> None:
     """A delegated run copies its parent's context and holds no MCP tool (review of PR 2497)."""
     _flag(monkeypatch, True)

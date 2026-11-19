@@ -5251,6 +5251,8 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # CSY-5: the model learns WHY the system is off (reason `mail`).
+        await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
 
     org = organization_id or _run_org_or_none()
@@ -5279,15 +5281,19 @@ async def _inject_mcp_servers(
         maf_servers = _maf_servers(servers, is_authorized)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
+            failures: dict[str, str] = {}
             attached = await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                failures=failures,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
-            _note_mcp_briefs(servers, attached, getattr(agent, "mcp_tools", None))
+            tools = getattr(agent, "mcp_tools", None)
+            reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
+            _note_mcp_briefs(servers, attached, tools, reasons)
         return
 
     for srv in servers:
@@ -5318,11 +5324,93 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
 
 
-def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any) -> None:
+async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str | None,
+                             is_authorized: Any) -> None:
+    """CSY-5, reason ``mail``: a run that holds an email pack reads no server, so the
+    registry read never ran. When the flag is on, one metadata read (``enabled_meta``:
+    no header, no token refresh, inside the org binding) names the servers that this
+    run could have used, and each gets the fixed ``mail`` line. A server that the
+    member's grant refuses gets no line. A fault never blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        from orchestrator import _maf_mcp
+
+        org = organization_id or _run_org_or_none()
+        if (not org or not _maf_mcp.is_native_maf_agent(agent)
+                or not _maf_mcp.maf_mcp_org_allowed(org)
+                or not _maf_mcp.connected_systems_org_allowed(org)):
+            return
+        from gateway.connections import mcp as mcp_registry
+
+        rows = await mcp_registry.enabled_meta(str(org))
+        notes = []
+        for srv in rows:
+            if not _keep_mcp_server(srv, agent_name):
+                continue
+            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+                continue
+            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+                continue
+            notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
+        server_brief.set_attached([], notes)
+    except Exception as exc:
+        _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _mcp_reasons(org: str, maf_servers: list[Any], attached: Any, failures: dict[str, str],
+                       tools: Any, member_present: bool) -> dict[str, str]:
+    """CSY-5: ``{server name: reason}`` for each server of this run that is out of reach or
+    asks a card, from the closed list of ``server_brief.REASONS``. Only for an org with
+    ``CONNECTED_SYSTEMS_ORGS`` on. A server that the grant refused never reached here
+    (:func:`_maf_servers` dropped it), so it gets no line. Never raises."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return {}
+        out = {str(n): r for n, r in failures.items() if r in ("unreachable", "reconnect")}
+        names = {str(n) for n in (attached or [])}
+        from acb_skills.egress import session_is_marked
+        from acb_skills.permission_policy import MCP_READ_ONLY, MCP_READ_ONLY_KEY, decide
+
+        marked = bool(await session_is_marked())
+        by_name = {str(getattr(t, "name", "")): t for t in tools or []}
+        for srv in maf_servers:
+            if str(srv.name) not in names:
+                continue
+            meta = getattr(by_name.get(str(srv.name)), "__dict__", {}).get("_ws8c_tool_meta") or {}
+            if not meta:
+                continue
+
+            def needs_card(hints: Any, after_mark: bool) -> bool:
+                _ok, code, _ = decide({
+                    "tool_name": f"{srv.name}_x", "mcp_tool": True, "mcp_annotations": hints,
+                    "mcp_always_confirm": srv.always_confirm, "mcp_read_only_key": srv.read_only_key,
+                    # MCP-NC1: a member's run needs no card, so the same fact as the gate.
+                    "mcp_member_present": bool(member_present),
+                    "after_untrusted_answer": after_mark,
+                })
+                return code not in (MCP_READ_ONLY, MCP_READ_ONLY_KEY)
+
+            hints = [getattr(m, "hints", None) for m in meta.values()]
+            if not member_present and all(needs_card(h, marked) for h in hints):
+                out[str(srv.name)] = "no_card"
+            elif marked and any(needs_card(h, True) and not needs_card(h, False) for h in hints):
+                out[str(srv.name)] = "asks_each_call"
+        return out
+    except Exception as exc:
+        _log.warning("mcp.reasons_unavailable", error=type(exc).__name__)
+        return {}
+
+
+def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any, reasons: dict[str, str] | None = None) -> None:
     """CSY-1: record the brief of each server that attached (*attached* is what
     ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
     (``acb_skills.server_brief``). It reuses the rows that the read gave. The
-    remote tool names come from the tool's own record. A fault never blocks the run."""
+    remote tool names come from the tool's own record. CSY-5: *reasons* adds one
+    fixed line for a server that is out of reach or asks a card. A fault never
+    blocks the run."""
     try:
         from acb_skills import server_brief
 
@@ -5331,12 +5419,17 @@ def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any) -> None:
         for tool in tools or []:
             meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
             remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
-        server_brief.set_attached(
+        briefs = [
             (str(s.name), server_brief.server_brief(
                 str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
                 remote.get(str(s.name), [])))
             for s in servers if s.name and str(s.name) in names
-        )
+        ]
+        notes = [
+            (str(s.name), server_brief.reason_line(str(s.label or s.name), str(s.name), reasons[str(s.name)]))
+            for s in servers if s.name and reasons and str(s.name) in reasons
+        ]
+        server_brief.set_attached(briefs, notes)
     except Exception as exc:
         _log.warning("mcp.briefs_unavailable", error=type(exc).__name__)
 

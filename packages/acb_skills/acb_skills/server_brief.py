@@ -74,20 +74,56 @@ def server_brief(label: str, name: str, description: str = "", tools: Iterable[s
     return "\n".join(lines)
 
 
-def block(briefs: Sequence[tuple[str, str]]) -> str:
-    """The per-turn block, from ``(server name, brief)`` pairs. Empty for none.
+#: CSY-5 (§3.6): why a server is not in reach, or asks a card for each call. A CLOSED
+#: list. The text names no mail item and no tenant. ``mail`` is the only text that
+#: says "mail", and it says it in one fixed sentence.
+REASON_TEXT: dict[str, str] = {
+    "mail": ("This system is off in this message, because this chat reads mail. "
+             "Tell the member to ask about it in a message that does not need mail."),
+    "unreachable": "This system did not answer in this message. Say so, and do not guess its data.",
+    "reconnect": "This system needs an admin to reconnect it. Say so.",
+    "no_card": ("Each tool of this system needs the approval of a member, and no member can "
+                "answer in this message. Say so."),
+    "asks_each_call": ("Each call of this system asks the member's approval, because this chat "
+                       "read mail. A new chat asks none."),
+}
+REASONS = tuple(REASON_TEXT)
 
-    The briefs go in name order, so the same set gives the same bytes."""
-    if not briefs:
+
+def reason_line(label: str, name: str, reason: str) -> str:
+    """One line for a server that is out of reach: its label and the fixed text of
+    its reason. An unknown reason gives no line."""
+    text = REASON_TEXT.get(reason)
+    if text is None:
         return ""
-    ordered = [text for _name, text in sorted(briefs, key=lambda b: b[0])]
-    return "\n".join([BLOCK_HEADER, *ordered, STANDING_RULE])
+    shown = escape(" ".join(str(label or name or "").split())) or escape(name)
+    return f"- {shown} ({escape(name)}): {text}"
+
+
+def block(briefs: Sequence[tuple[str, str]], notes: Sequence[tuple[str, str]] = ()) -> str:
+    """The per-turn block, from ``(server name, brief)`` pairs and ``(server name,
+    reason line)`` pairs. Empty for none.
+
+    The briefs and the notes go in name order, so the same set gives the same bytes.
+    The standing rule comes only when a system is in reach."""
+    if not briefs and not notes:
+        return ""
+    lines = [BLOCK_HEADER]
+    lines += [text for _name, text in sorted(briefs, key=lambda b: b[0])]
+    lines += [text for _name, text in sorted(notes, key=lambda b: b[0]) if text]
+    if briefs:
+        lines.append(STANDING_RULE)
+    return "\n".join(lines)
 
 
 #: The ``(name, brief)`` pairs of the servers that THIS run attached. The injection
 #: replaces it in each run, so no brief of an older run stays.
 _ATTACHED: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.ContextVar(
     "acb_mcp_briefs", default=(),
+)
+#: CSY-5: the ``(name, reason line)`` pairs of the servers out of reach in THIS run.
+_NOTES: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.ContextVar(
+    "acb_mcp_notes", default=(),
 )
 
 
@@ -106,9 +142,10 @@ def _run_id() -> str:
         return ""
 
 
-def set_attached(briefs: Iterable[tuple[str, str]]) -> None:
-    """Replace the briefs of this run."""
+def set_attached(briefs: Iterable[tuple[str, str]], notes: Iterable[tuple[str, str]] = ()) -> None:
+    """Replace the briefs and the reason lines of this run."""
     _ATTACHED.set(tuple((str(n), str(b)) for n, b in briefs))
+    _NOTES.set(tuple((str(n), str(b)) for n, b in notes))
     _RUN.set(_run_id())
 
 
@@ -120,4 +157,4 @@ def attached_block() -> str:
     owner, now = _RUN.get(), _run_id()
     if owner and now and owner != now:
         return ""
-    return block(_ATTACHED.get())
+    return block(_ATTACHED.get(), _NOTES.get())
