@@ -16,6 +16,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import honorifics
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
+from acb_skills.card_revise import draft_digest
 from acb_skills.untrusted import UntrustedFrame
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.persist import TRUNCATION_MARKER
@@ -3708,6 +3709,48 @@ class DraftUpsertRequest(BaseModel):
     # controls. The answer says ``formatting: "text_only"`` when the body had
     # real structure that the draft does not show.
     body_markdown: bool = False
+    # HRD-10d-1 (``chat_failure_modes.md`` §6): the email assistant's
+    # ``edit_draft`` sends ``acb_skills.card_revise.draft_digest`` of the read
+    # that its card showed. Only an update by ``draft_id`` reads it. A draft
+    # whose digest differs now gets 412 and no write. None, the default, is
+    # the save of before, so the Email app's composer does not change.
+    expect_digest: str | None = Field(default=None, max_length=64)
+
+
+#: HRD-10d-1: the most characters of the text in the ``current`` of a 412.
+PRECONDITION_TEXT_MAX = 500
+
+
+async def _refuse_changed_draft(db: Any, req: DraftUpsertRequest) -> None:
+    """Answer 412 when the draft changed after the read of ``expect_digest``.
+
+    HRD-10d-1 (``chat_failure_modes.md`` §6). The chat's ``edit_draft`` takes
+    ``draft_digest`` of its ``GET /email/messages/{id}`` read before the card.
+    Here the route reads the row through :func:`_fetch_message_dict`, the same
+    ``_row_to_message`` shape, and folds it with the same function. A row of
+    another mailbox, or a row that is not a draft, gets the 404 of the update,
+    so no 412 shows a message of another mailbox (D-EM-4). The read runs
+    before any provider call, and a 412 writes nothing. It takes no ``FOR
+    UPDATE``, because the route keeps its session open across the provider
+    call. ``current`` holds the subject, the three address lists and the
+    first :data:`PRECONDITION_TEXT_MAX` characters of the text."""
+    row = await _fetch_message_dict(db, str(req.draft_id))
+    if (not row or str(row.get("account_id") or "") != str(req.account_id)
+            or str(row.get("folder") or "").lower() not in ("drafts", "draft")):
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft_digest(row) == req.expect_digest:
+        return
+    raise HTTPException(status_code=412, detail={
+        "error": "precondition_failed",
+        "message": "This draft changed since the chat read it.",
+        "current": {
+            "subject": str(row.get("subject") or ""),
+            "to": _draft_addresses(row.get("to_addresses") or []),
+            "cc": _draft_addresses(row.get("cc_addresses") or []),
+            "bcc": _draft_addresses(row.get("bcc_addresses") or []),
+            "text": str(row.get("body_text") or "")[:PRECONDITION_TEXT_MAX],
+        },
+    })
 
 
 #: The ``formatting`` key of the answer of a save of a Markdown body that had
@@ -3844,6 +3887,10 @@ async def upsert_draft(
     req, formatting = _markdown_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
+        if req.draft_id and req.expect_digest:
+            # HRD-10d-1: before the provider session opens. With no
+            # ``expect_digest`` the route runs the statements of before.
+            await _refuse_changed_draft(db, req)
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
