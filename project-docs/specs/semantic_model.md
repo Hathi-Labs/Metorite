@@ -942,14 +942,20 @@ input schemas, and the scope calls a tool only with no required argument. But
 list does not get to the profiler through `fresh_tool_list`.
 
 SEM-13a does NOT change what `clean_tools` returns. It does not change what
-`tool_text_hash` or the model prompt reads. A change there would make each
-stored `text_hash` fail, and it would change the prompt.
+`tool_text_hash` or the model prompt reads. A change to `tool_text_hash` would
+make each stored `text_hash` fail. A change to `clean_tools` would not change a
+stored hash, because `tool_text_hash` reads no schema. But it would change the
+cache, the prompt and `test_a_cached_tool_holds_three_fields_only`.
 
 The minimal seam is ONE new function in `mcp_tools.py` beside
-`fresh_tool_list`. It always reads a live list, because the cache holds no
-schema. It calls `load()` and refuses a changed server with `LIVE_CHANGED`,
-as `fresh_tool_list` does. It shares the ONE raw read of `_list_stored`, so
-one `(lister or _sdk_list)(stored)` call gives both outputs.
+`fresh_tool_list`, `live_tool_schemas`. It always reads a live list, because
+the cache holds no schema. It calls `load()` and refuses a changed server with
+`LIVE_CHANGED`, as `fresh_tool_list` does. It shares the ONE raw read of
+`_list_stored`, so one `(lister or _sdk_list)(stored)` call gives both outputs.
+
+It gives `_list_stored` a lister closure, `_keep_raw`, in place of the lister.
+The closure calls `(lister or _sdk_list)(stored)` once, keeps the raw items,
+and returns them. So `_list_stored` keeps its signature and its return type.
 
 It gives the `ToolList` of `clean_tools`, and a map from each tool name to the
 raw `inputSchema` of that tool only. A name that occurs two times in the raw
@@ -1233,8 +1239,10 @@ names the mutation that must turn it red.
     rows. **Mutation:** drop the scope check, and
     `test_r8_a_denied_grant_or_no_agent_scope_makes_no_call` fails.
   - `test_studio_mcp_approvals_r8.py` (R8) holds the stored approvals.
-    **Mutation:** drop the approval check, and
-    `test_r8_the_live_read_refuses_a_changed_tool` fails.
+    **Mutation:** drop the `tool_changed` check in `_class_a_item`, and
+    `test_r8_the_live_read_refuses_a_changed_tool` fails. A drop of only the
+    pre-check in `call_read_tool` keeps it green, because `_class_a_item`
+    still refuses.
 - New cases of `test_connection_profiler.py` from the repair of 2026-11-19,
   with their mutations:
   - The org window: `test_a_profile_call_counts_against_the_org_window`.
