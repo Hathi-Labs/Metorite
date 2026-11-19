@@ -79,6 +79,22 @@ export function listSkills(): Promise<Reply<{ skills: Skill[] }>> {
   return send(() => fetch("/api/studio/skills", { cache: "no-store" }));
 }
 
+/**
+ * True when a skill of the member matches the *words* of a turn (task 3830).
+ * The gateway runs the matcher of the turn itself. It reads the org and the
+ * member from the session.
+ */
+export function matchSkill(words: string): Promise<Reply<{ matched: boolean }>> {
+  return send(() =>
+    fetch("/api/studio/skills/match", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ words }),
+      cache: "no-store",
+    }),
+  );
+}
+
 export function getSkill(id: string): Promise<Reply<{ skill: Skill; version: SkillVersion | null }>> {
   const key = encodeURIComponent(id);
   return send(() => fetch(`/api/studio/skills/${key}`, { cache: "no-store" }));
