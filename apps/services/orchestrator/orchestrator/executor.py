@@ -2427,6 +2427,24 @@ def _pack_left_block(agent_name: str) -> str:
         return ""
 
 
+def _connected_systems_block() -> str:
+    """CSY-1 (``chat_connected_systems.md`` §3.2): the "Connected systems" block of
+    the servers that THIS run attached, or "". Only for an org in
+    ``CONNECTED_SYSTEMS_ORGS``. The org comes from the run binding, never the
+    payload (R5). With no server or the flag off it is "", so the context keeps
+    its bytes. Never raises."""
+    try:
+        from acb_skills.server_brief import attached_block
+
+        from orchestrator._maf_mcp import connected_systems_org_allowed
+
+        if not connected_systems_org_allowed(_current_run_org()):
+            return ""
+        return attached_block()
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -12312,6 +12330,9 @@ def _context_preamble_parts(
     # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
     # so each block above keeps its place and its bytes.
     parts.extend(filter(None, [_sent_acts_block(agent_name)]))
+    # CSY-1: the connected systems of this run, LAST (after the sent-acts block of task 3594): after every stable part,
+    # so the cache keeps its prefix. The same attached set gives the same bytes.
+    parts.extend(filter(None, [_connected_systems_block()]))
     return parts
 
 
