@@ -57,11 +57,16 @@ DECLARE
   --   user_identity         filtered to the members of the kept organizations
   --   agent_client          emptied: OAuth client registrations of outside agents
   --   auth_email_otp_token  emptied: one-time sign-in codes
+  --   failure_fingerprints, failure_daily, failure_config  emptied: the cross-tenant
+  --                         tool failure counts and the internal org id (TOF-2b,
+  --                         tool_failure_log.md §5.2). Staging holds no count of
+  --                         another org.
   --   email_detached_purges emptied: purge records of deleted organizations,
   --                         with the email address of each mailbox owner
   global_ok text[] := ARRAY['organization', 'schema_migrations', 'feature_catalog',
                             'user_identity', 'agent_client', 'auth_email_otp_token',
-                            'email_detached_purges'];
+                            'email_detached_purges', 'failure_fingerprints',
+                            'failure_daily', 'failure_config'];
 BEGIN
   IF slugs IS NULL OR cardinality(slugs) = 0 OR slugs = ARRAY[''] THEN
     RAISE EXCEPTION 'keep_slugs is empty: refusing to export';
@@ -109,7 +114,8 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM public.app_user u WHERE lower(u.email) = lower(ui.email));
 
   -- 5. Credentials, in the kept organizations too.
-  TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges;
+  TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges,
+           public.failure_fingerprints, public.failure_daily, public.failure_config;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
   -- A push subscription is a device credential. Staging must not push to a real phone (WS-66 RE-9b).
