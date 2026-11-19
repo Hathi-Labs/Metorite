@@ -165,6 +165,15 @@ COMMIT_TIME_TIMEOUT_S = 5.0
 _COMMITTED_AT: dict[str, datetime] = {}
 
 
+def _log_failed(error: str, **kw: object) -> None:
+    """One warning for a git read with no answer. The class or a code only,
+    never the output of git."""
+    from acb_common import get_logger
+
+    get_logger("gateway.build_info").warning("build_info.commit_time_failed",
+                                              error=error, **kw)
+
+
 def build_committed_at(sha: str | None) -> datetime | None:
     """The commit time of *sha* (UTC), or None when git gives no answer.
 
@@ -197,10 +206,12 @@ def build_committed_at(sha: str | None) -> datetime | None:
             capture_output=True, text=True, timeout=COMMIT_TIME_TIMEOUT_S,
             check=False, env=child_env(),
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log_failed(type(exc).__name__)
         return None
     out = (done.stdout or "").strip().splitlines()
     if done.returncode != 0 or not out or not out[-1].isdigit():
+        _log_failed("GitAnswer", returncode=done.returncode)
         return None
     at = datetime.fromtimestamp(int(out[-1]), tz=UTC)
     _COMMITTED_AT[value] = at

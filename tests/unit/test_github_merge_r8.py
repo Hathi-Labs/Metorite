@@ -26,7 +26,8 @@ real ``apply_status_transition``. Each item below is a test:
 * **D12** a person's later move through the chat (``chat:projects-assistant``)
   keeps the task.
 * **D13** a task of the project ``TOOL_FAILURE_PROJECT_ID`` does not move
-  (WS-TOF TOF-2e, ``tool_failure_log.md`` §7.5). D13-M1: drop step 1a.
+  while ``TOOL_FAILURE_TASKS`` is on (WS-TOF TOF-2e, ``tool_failure_log.md``
+  §7.5). D13-M1: drop step 1a. D13-M2: the skip ignores the flag.
 
 R7, the mutations. Each one turns a test here red (run 2026-10-18):
 
@@ -427,17 +428,23 @@ async def test_d6_a_closed_held_or_archived_task_does_not_move(world) -> None:
 async def test_d13_a_task_of_the_tool_failures_project_does_not_move(
         world, monkeypatch) -> None:
     """``tool_failure_log.md`` §7.5: the failure sync job is the one closer of
-    the project ``TOOL_FAILURE_PROJECT_ID``. A merge moves no task there, and
-    a task of another project still moves. Mutation D13-M1: drop step 1a of
-    ``_rule_for_task``. This test goes red."""
+    the project ``TOOL_FAILURE_PROJECT_ID`` in the org ``TOOL_FAILURE_ORG_ID``,
+    while ``TOOL_FAILURE_TASKS`` is on. A merge moves no task there. A task of
+    another project still moves, and so does a task of the project while the
+    job is off. Mutation D13-M1: drop step 1a of ``_rule_for_task``. D13-M2:
+    the skip ignores the flag. Each turns this test red."""
     from acb_common import get_settings
 
     w = world
+    s = get_settings()
+    for name, value in (("tool_failure_tasks", True), ("tool_failure_org_id", w.p.org_a),
+                        ("tool_failure_project_id", w.project),
+                        ("tool_failure_run_as", "tool-failures@gh6-r8.test")):
+        monkeypatch.setattr(s, name, value)
     failure_task = _task(w)
     other_project, other_lanes = g.seed_project(w.p, w.p.org_a, EMAIL)
     other_task = g.seed_task(w.p, w.p.org_a, EMAIL, project=other_project,
                              lanes=other_lanes, category="in_progress")
-    monkeypatch.setattr(get_settings(), "tool_failure_project_id", w.project)
     for number, task in ((71, failure_task), (72, other_task)):
         _run(w, task)
         _ref(w, task, number)
@@ -445,6 +452,13 @@ async def test_d13_a_task_of_the_tool_failures_project_does_not_move(
     assert _category(w, failure_task) == "in_progress"
     assert _moves(w, failure_task) == []
     assert _category(w, other_task) == "done"
+    # The job is off: nothing else closes the task, so GH-6 keeps its rule.
+    monkeypatch.setattr(s, "tool_failure_tasks", False)
+    off_task = _task(w)
+    _run(w, off_task)
+    _ref(w, off_task, 73)
+    await _close(w, 73)
+    assert _category(w, off_task) == "done"
 
 
 # ── D7, D8, D9, D10 ─────────────────────────────────────────────────────────

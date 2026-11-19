@@ -5,15 +5,16 @@ Code: ``acb_common.failure_log`` (the write seam) and
 ``gateway/failures/sync.py`` (the task seam).
 
 A real database (R8): the promoted phase-4 catalog, as the role
-``acb_app_h3rls``, which RLS binds. Org B is a customer. Its failures carry
-marker strings in the exception message, the arguments of the failing
-function, the tool name, the MCP server name and a path parameter of the
-route. Org B's own id is a marker too. The write seam records them, and the
+``acb_app_h3rls``, which RLS binds. Org B is a customer, and org A is the
+internal org. The failures of each org carry its own marker strings in the
+exception message, the arguments of the failing function, the tool name, the
+MCP server name and a path parameter of the route. Each org id is a marker
+too. The write seam records them, and the
 sync job of the internal org A makes the tasks. Then no marker is in a
 column of a platform table, in a task or in a comment of the job.
 
-The test proves that it can see: each tenant marker IS in the tenant row
-``failure_events.tool_name`` of org B, where §5.1 allows it.
+The test proves that it can see: each tool and server marker IS in the
+tenant column ``failure_events.tool_name`` of its org, where §5.1 allows it.
 
 Run (a private ladder database, one R8 suite at a time)::
 
@@ -61,14 +62,36 @@ from tests.unit.test_tool_failure_tasks_r8 import RUN_AS, seed_failure_project
 
 pytestmark = _DB_GATE
 
-TAG = uuid.uuid4().hex[:10]
-#: One marker for each place that §9 P1 names.
-MSG, ARG, TOOL_NAME, SERVER, PATH = (f"{k}{TAG}" for k in (
-    "msgmark", "argmark", "toolmark", "servermark", "pathmark"))
+def _markers() -> dict[str, str]:
+    """One marker for each place that §9 P1 names, unique to one org."""
+    tag = uuid.uuid4().hex[:10]
+    return {k: f"{k}mark{tag}" for k in ("msg", "arg", "tool", "server", "path")}
 
 
-def _crm_get_record(record: str = ARG) -> None:
-    raise KeyError(f"Amount for {MSG} in {record}")
+def _crm_get_record(msg: str, record: str) -> None:
+    raise KeyError(f"Amount for {msg} in {record}")
+
+
+def _record(m: dict[str, str]) -> None:
+    """Four failures of the bound org, each with its markers."""
+    try:
+        _crm_get_record(m["msg"], m["arg"])
+    except KeyError as exc:  # a chat tool, a code of ours
+        fl.record_tool_failure(exc, source="chat_tool", error_code="exception",
+                               tool="crm_get_record", surface="chat")
+        fl.record_tool_failure(exc, source="chat_tool", error_code="exception",
+                               tool=m["tool"], surface="chat")
+    try:
+        raise TimeoutError(m["msg"])
+    except TimeoutError as exc:  # an outside MCP server
+        fl.record_tool_failure(exc, source="mcp_call", error_code="mcp_timeout",
+                               tool=f"{m['server']}.{m['tool']}", kind="mcp", surface="chat")
+    try:
+        _crm_get_record(m["msg"], m["arg"])
+    except KeyError as exc:  # a door 5xx on a concrete path
+        fl.record_tool_failure(exc, source="door_5xx", error_code="unhandled_500",
+                               tool=f"GET /items/{m['path']}", kind="route",
+                               route_paths={"/items/{item_id}"}, surface="app")
 
 
 def test_p1_no_marker_reaches_a_platform_row_or_a_task(promoted, app_engine,  # noqa: F811
@@ -79,7 +102,11 @@ def test_p1_no_marker_reaches_a_platform_row_or_a_task(promoted, app_engine,  # 
         cur.execute(body)
     project, _ = seed_failure_project(p, p.org_a)
     s = get_settings()
-    for name, value in (("tool_failure_log_orgs", p.org_b), ("tool_failure_tasks", True),
+    # Org B is a customer. Org A is the internal org, and its own failures
+    # carry markers too (review F4): the job reads them as counts only.
+    marks = {p.org_b: _markers(), p.org_a: _markers()}
+    for name, value in (("tool_failure_log_orgs", f"{p.org_b},{p.org_a}"),
+                        ("tool_failure_tasks", True),
                         ("tool_failure_org_id", p.org_a), ("tool_failure_project_id", project),
                         ("tool_failure_run_as", RUN_AS)):
         monkeypatch.setattr(s, name, value)
@@ -102,30 +129,13 @@ def test_p1_no_marker_reaches_a_platform_row_or_a_task(promoted, app_engine,  # 
 
     async def go() -> None:
         async with tenant_engine_scope(g.app_dsn(p)):
-            token = bind_tenant(p.org_b)
-            try:
+            for org, m in marks.items():
+                token = bind_tenant(org)
                 try:
-                    _crm_get_record()
-                except KeyError as exc:  # a chat tool, a code of ours
-                    fl.record_tool_failure(exc, source="chat_tool", error_code="exception",
-                                           tool="crm_get_record", surface="chat")
-                    fl.record_tool_failure(exc, source="chat_tool", error_code="exception",
-                                           tool=TOOL_NAME, surface="chat")
-                try:
-                    raise TimeoutError(MSG)
-                except TimeoutError as exc:  # an outside MCP server
-                    fl.record_tool_failure(exc, source="mcp_call", error_code="mcp_timeout",
-                                           tool=f"{SERVER}.{TOOL_NAME}", kind="mcp",
-                                           surface="chat")
-                try:
-                    _crm_get_record()
-                except KeyError as exc:  # a door 5xx on a concrete path
-                    fl.record_tool_failure(exc, source="door_5xx", error_code="unhandled_500",
-                                           tool=f"GET /items/{PATH}", kind="route",
-                                           route_paths={"/items/{item_id}"}, surface="app")
-            finally:
-                release_tenant(token)
-            assert await fl.flush() == 4
+                    _record(m)
+                finally:
+                    release_tenant(token)
+            assert await fl.flush() == 8
             await fl.stop_drain()
             await sync.sync(cfg, now=datetime.now(UTC), running=None)
 
@@ -135,12 +145,14 @@ def test_p1_no_marker_reaches_a_platform_row_or_a_task(promoted, app_engine,  # 
         fl._reset_for_tests()
         fl.set_builtin_names(saved)
 
-    markers = (MSG, ARG, TOOL_NAME, SERVER, PATH, p.org_b)
-    # The fence can see: the tenant row of org B holds the names, as §5.1 allows.
-    names = " ".join(str(r[0]) for r in g.rows(
-        p, "SELECT tool_name FROM failure_events WHERE organization_id = CAST(:o AS uuid)",
-        o=p.org_b))
-    assert TOOL_NAME in names and SERVER in names
+    markers = [v for m in marks.values() for v in m.values()] + [p.org_b, p.org_a]
+    # The fence can see: the tenant rows of each org hold its names, as §5.1
+    # allows.
+    for org, m in marks.items():
+        names = " ".join(str(r[0]) for r in g.rows(
+            p, "SELECT tool_name FROM failure_events "
+               "WHERE organization_id = CAST(:o AS uuid)", o=org))
+        assert m["tool"] in names and m["server"] in names, org
     platform = " ".join(str(r[0]) for t in ("failure_fingerprints", "failure_daily")
                         for r in g.rows(p, f"SELECT row_to_json(x)::text FROM {t} x"))
     assert "crm_get_record" in platform and "route:other" in platform

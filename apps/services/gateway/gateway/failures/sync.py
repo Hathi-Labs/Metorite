@@ -46,9 +46,14 @@ calls ``failure_prune_daily`` for the rows older than 400 days. It runs in a
 savepoint, and it logs and swallows a failure, so the delete of the ``jobs``
 rows of that prune stays.
 
-``TOOL_FAILURE_TASKS`` (default off) gates the seed, the job and the prune.
-:func:`tasks_enabled` and :func:`config` are the readers of the flag and the
-five settings.
+``TOOL_FAILURE_TASKS`` (default off) gates the seed, the job, the prune and
+the GH-6 skip (:func:`is_failure_task`). :func:`tasks_enabled` and
+:func:`config` are the readers of the flag and the five settings.
+
+**The order of a run.** ``failure_due`` gives the watched rows first, then
+the rows with new counts, then the muted rows. A row that waits or is muted
+writes its total as seen. The rows with no task run before any git read,
+and the git reads of one run stop at :data:`GIT_BUDGET_S`.
 """
 
 from __future__ import annotations
@@ -85,6 +90,8 @@ ACTOR = "system:tool-failures"
 DUE_LIMIT = 200
 #: The commit times that one run reads from git, at most.
 MAX_RELEASES = 64
+#: The seconds of git reads in one run, at most. The handler has 240 s.
+GIT_BUDGET_S = 30.0
 #: A release holds the fix when its commit time is at or after
 #: ``fix_merged_at`` minus this (§7.4).
 FIX_TOLERANCE = timedelta(seconds=10)
@@ -166,8 +173,7 @@ def tasks_enabled() -> bool:
 
 
 def failure_project_id() -> str:
-    """``TOOL_FAILURE_PROJECT_ID`` as a lower-case UUID, or ``""``. GH-6 reads
-    it to skip the tasks of the project (§7.5)."""
+    """``TOOL_FAILURE_PROJECT_ID`` as a lower-case UUID, or ``""``."""
     return _uuid(getattr(get_settings(), "tool_failure_project_id", ""))
 
 
@@ -185,6 +191,16 @@ def config() -> Config | None:
         external_min=max(1, int(getattr(s, "tool_failure_external_min", 20) or 20)),
         close_days=max(1, int(getattr(s, "tool_failure_close_days", 7) or 7)),
     )
+
+
+def is_failure_task(org: object, project: object) -> bool:
+    """True for a task of the project "Tool failures": ``TOOL_FAILURE_TASKS``
+    is on, and the task is in ``TOOL_FAILURE_PROJECT_ID`` of the org
+    ``TOOL_FAILURE_ORG_ID``. GH-6 then skips it (§7.5). With the job off,
+    GH-6 keeps its rule, because nothing else would close the task."""
+    cfg = config()
+    return (tasks_enabled() and cfg is not None and _uuid(org) == cfg.org
+            and _uuid(project) == cfg.project)
 
 
 def _now() -> datetime:
@@ -218,6 +234,9 @@ class Due:
     last_seen_at: datetime
     first_release: str | None
     last_release: str | None
+    #: The hour of the newest count that named a release. A NULL-release
+    #: count never moves it.
+    last_release_at: datetime | None
     total: int
     state: str
     task_id: str | None
@@ -247,7 +266,8 @@ class Due:
             code_site=str(row.code_site), sources=tuple(row.sources or ()),
             surfaces=tuple(row.surfaces or ()), first_seen_at=_aware(row.first_seen_at),
             last_seen_at=_aware(row.last_seen_at), first_release=row.first_release,
-            last_release=row.last_release, total=int(row.total), state=str(row.state),
+            last_release=row.last_release, last_release_at=_aware(row.last_release_at),
+            total=int(row.total), state=str(row.state),
             task_id=str(row.task_id) if row.task_id else None,
             fix_merged_at=_aware(row.fix_merged_at), fix_live_at=_aware(row.fix_live_at),
             closed_at=_aware(row.closed_at), fix_release=row.fix_release,
@@ -321,14 +341,16 @@ def repeat_after_fix(due: Due, st: State, times: dict[str, datetime]) -> bool:
     """§7.4, ``fix_live``: a count of a release that holds the fix, in an
     hour after the hour of ``fix_live_at``.
 
-    The platform row keeps the hour of the last count and the last release.
-    A day after the day of ``fix_live_at`` is wholly after that hour, so each
-    release of such a day counts too."""
+    Only a count that named a release counts. ``last_release_at`` is the hour
+    of the newest such count, and a NULL-release count never moves it, so it
+    never reads as a count of ``last_release``. ``last_seen_at`` moves for
+    every count, so the rule never reads it. A day after the day of
+    ``fix_live_at`` is wholly after that hour, so each release of such a day
+    counts too: ``failure_daily.releases`` holds named releases only."""
     if st.fix_live_at is None or st.fix_merged_at is None:
         return False
-    if due.last_seen_at <= _hour(st.fix_live_at):
-        return False
-    if holds_fix(due.last_release, st.fix_merged_at, times):
+    if (due.last_release_at is not None and due.last_release_at > _hour(st.fix_live_at)
+            and holds_fix(due.last_release, st.fix_merged_at, times)):
         return True
     live_day = st.fix_live_at.astimezone(UTC).date()
     return any(holds_fix(r, st.fix_merged_at, times)
@@ -341,6 +363,9 @@ def repeat_after_close(due: Due, st: State, times: dict[str, datetime]) -> bool:
     holds the fix reopened the task in ``fix_live`` already."""
     if st.closed_at is None or st.fix_merged_at is None or due.total <= st.shown_total:
         return False
+    if (due.last_release_at is not None and due.last_release_at > _hour(st.closed_at)
+            and holds_fix(due.last_release, st.fix_merged_at, times)):
+        return True
     close_day = st.closed_at.astimezone(UTC).date()
     return any(holds_fix(r, st.fix_merged_at, times)
                for d in due.days if d.day >= close_day for r in d.releases)
@@ -360,12 +385,53 @@ def title(due: Due) -> str:
     return f"Tool failure · {due.tool} · {due.error_code} · {due.fingerprint}"
 
 
+#: The headings of the two blocks that the job rewrites (§7.3). Every other
+#: block keeps the text that a person may have edited.
+COUNTS_HEAD, SEEN_HEAD = "**Counts**", "**Seen**"
+
+
+def _counts_block(due: Due, band: str | None) -> str:
+    orgs = band if band is not None else "unknown"
+    return "\n".join([
+        COUNTS_HEAD,
+        f"- Total: {_code(due.total)}",
+        f"- Today (UTC): {_code(due.n_1d)}. 7 days: {_code(due.n_7d)}. "
+        f"30 days: {_code(due.n_30d)}",
+        f"- Organizations in 30 days: {_code(orgs)}",
+    ])
+
+
+def _seen_block(due: Due) -> str:
+    return "\n".join([
+        SEEN_HEAD,
+        f"- First: {_code(due.first_seen_at.astimezone(UTC).date())}, release "
+        f"{_code(due.first_release or '-')}",
+        f"- Last: {_code(due.last_seen_at.astimezone(UTC).date())}, release "
+        f"{_code(due.last_release or '-')}",
+    ])
+
+
+def with_new_counts(text_now: str | None, due: Due, band: str | None) -> str:
+    """*text_now* with only its Counts and Seen blocks replaced (§7.3).
+
+    A block runs from its heading line to the next blank line. Each other
+    block stays as it is, so an edit of a person there stays. A block that a
+    person removed comes back at the end."""
+    blocks = (text_now or "").split("\n\n")
+    for head, new in ((COUNTS_HEAD, _counts_block(due, band)), (SEEN_HEAD, _seen_block(due))):
+        at = next((i for i, b in enumerate(blocks) if b.strip().startswith(head)), None)
+        if at is None:
+            blocks.append(new)
+        else:
+            blocks[at] = new
+    return "\n\n".join(b for b in blocks if b.strip())
+
+
 def description(due: Due, band: str | None, close_days: int) -> str:
     """The five blocks of §7.3, from platform fields only."""
     where = [f"- Sources: {', '.join(_code(s) for s in sorted(due.sources)) or _code('-')}"]
     if band_at_least_3(band):
         where.append(f"- Surfaces: {', '.join(_code(s) for s in sorted(due.surfaces))}")
-    orgs = band if band is not None else "unknown"
     return "\n".join([
         "**What failed**",
         f"- Tool: {_code(due.tool)}",
@@ -376,17 +442,9 @@ def description(due: Due, band: str | None, close_days: int) -> str:
         "**Where**",
         *where,
         "",
-        "**Counts**",
-        f"- Total: {_code(due.total)}",
-        f"- Today (UTC): {_code(due.n_1d)}. 7 days: {_code(due.n_7d)}. "
-        f"30 days: {_code(due.n_30d)}",
-        f"- Organizations in 30 days: {_code(orgs)}",
+        _counts_block(due, band),
         "",
-        "**Seen**",
-        f"- First: {_code(due.first_seen_at.astimezone(UTC).date())}, release "
-        f"{_code(due.first_release or '-')}",
-        f"- Last: {_code(due.last_seen_at.astimezone(UTC).date())}, release "
-        f"{_code(due.last_release or '-')}",
+        _seen_block(due),
         "",
         "**The rule**",
         "Fix the cause at the code site. Move this task to Review when the pull "
@@ -473,11 +531,12 @@ async def _create(db: Any, cfg: Config, due: Due, band: str | None, lane: str) -
     return str(created.row.id)
 
 
-async def _rewrite(db: Any, task_id: str, due: Due, band: str | None, close_days: int) -> None:
+async def _rewrite(db: Any, task: Any, due: Due, band: str | None) -> None:
+    """Replace the Counts and Seen blocks of the task, and nothing else."""
     from gateway.routes.projects.core import update_row
 
-    await update_row(db, "pm_tasks", task_id,
-                     {"description": description(due, band, close_days)})
+    await update_row(db, "pm_tasks", str(task.id),
+                     {"description": with_new_counts(task.description, due, band)})
 
 
 async def _set(db: Any, fp: str, st: State) -> None:
@@ -517,8 +576,14 @@ class _Run:
 
 async def _sync_new(db: Any, cfg: Config, due: Due, band: str | None, lanes: Lanes,
                     st: State) -> str:
-    """§7.2: make the one task of a ``new`` fingerprint, when its rule holds."""
+    """§7.2: make the one task of a ``new`` fingerprint, when its rule holds.
+
+    A row that waits under the limit writes its total as seen, so it leaves
+    ``failure_due`` until a new count comes (TOF-2e review, F1)."""
     if not wants_task(due, band, cfg):
+        if st.shown_total != due.total:
+            st.shown_total = due.total
+            await _set(db, due.fingerprint, st)
         return "waiting"
     lane = _lane(lanes, OPEN)
     if lane is None:
@@ -584,24 +649,26 @@ async def _sync_one(db: Any, cfg: Config, due: Due, lanes: Lanes,
     if st.state == "new":
         return await _sync_new(db, cfg, due, band, lanes, st)
     task = await _task(db, st.task_id) if st.task_id else None
-    if _gone(task, lanes):
-        if st.state != "muted":
-            st.state = "muted"
+    before = _copy(st)
+    if _gone(task, lanes) or (st.state == "muted"
+                              and str(task.status_id) != lanes.get(OPEN)):
+        # Muted: no write to the task. The counts go on, and the row writes its
+        # total as seen, so it sorts after the rows with new counts (F1).
+        st.state, st.shown_total = "muted", due.total
+        if st != before:
             await _set(db, due.fingerprint, st)
         return "muted"
-    before = _copy(st)
-    if st.state == "muted":
-        if str(task.status_id) != lanes.get(OPEN):
-            return "muted"
+    woke = st.state == "muted"
+    if woke:
         st.state = "open"  # a person moved it back to Open: write again
     run = _Run(db, cfg, due, lanes, times, now, st, task)
     missing = await _watch(run, running)
     if missing:
         return missing
     changed = st != before or run.moved
-    if due.total != st.shown_total and (
-            changed or _aware(run.task.updated_at) <= now - COUNTS_EVERY):
-        await _rewrite(db, st.task_id, due, band, cfg.close_days)
+    if woke or (due.total != st.shown_total and (
+            changed or _aware(run.task.updated_at) <= now - COUNTS_EVERY)):
+        await _rewrite(db, run.task, due, band)
         st.shown_total = due.total
     for note in run.notes:
         await _comment(db, st.task_id, note)
@@ -635,10 +702,23 @@ def _releases(dues: list[Due], running: str | None) -> list[str]:
 
 
 async def _commit_times(shas: list[str]) -> dict[str, datetime]:
-    """The commit time of each SHA, from git, with no session open."""
+    """The commit time of each SHA, from git, with no session open.
+
+    The reads of one run take at most :data:`GIT_BUDGET_S`, plus one call of
+    ``build_info.COMMIT_TIME_TIMEOUT_S``. A SHA past the budget gets no time,
+    and its state does not move on this run (§7.4)."""
     times: dict[str, datetime] = {}
-    for sha in shas:
-        at = await asyncio.to_thread(build_info.build_committed_at, sha)
+    loop = asyncio.get_running_loop()
+    stop = loop.time() + GIT_BUDGET_S
+    for i, sha in enumerate(shas):
+        if loop.time() >= stop:
+            _log.warning("failure_sync.git_budget_spent", left=len(shas) - i)
+            break
+        try:
+            at = await asyncio.to_thread(build_info.build_committed_at, sha)
+        except Exception as exc:  # no time: the state does not move
+            _log.warning("failure_sync.git_failed", error=type(exc).__name__)
+            continue
         if at is not None:
             times[sha] = at
     return times
@@ -662,8 +742,22 @@ async def sync(cfg: Config, *, now: datetime | None = None,
         dues = [Due.of(r) for r in (await db.execute(
             text(_DUE_SQL), {"n": DUE_LIMIT})).fetchall()]
         lanes = await _lanes(db, cfg.project) if dues else Lanes()
-    times = await _commit_times(_releases(dues, running))
     counts: dict[str, int] = {}
+    # A row that has no task needs no commit time. It goes first, so no wait
+    # on git can delay a new task (TOF-2e review, P2d).
+    await _rows(cfg, [d for d in dues if d.state == "new"], lanes, {}, running, now, counts)
+    rest = [d for d in dues if d.state != "new"]
+    times = await _commit_times(_releases(rest, running)) if rest else {}
+    await _rows(cfg, rest, lanes, times, running, now, counts)
+    if counts:
+        _log.info("failure_sync.ran", **counts)
+    return counts
+
+
+async def _rows(cfg: Config, dues: list[Due], lanes: Lanes, times: dict[str, datetime],
+                running: str | None, now: datetime, counts: dict[str, int]) -> None:
+    """Each fingerprint of *dues* in its own transaction. A fingerprint that
+    fails is logged with the class only, and left for the next run."""
     for due in dues:
         try:
             async with tenant_session(cfg.org) as db:
@@ -674,9 +768,6 @@ async def sync(cfg: Config, *, now: datetime | None = None,
                          status=getattr(exc, "status_code", None))
             outcome = "failed"
         counts[outcome] = counts.get(outcome, 0) + 1
-    if counts:
-        _log.info("failure_sync.ran", **counts)
-    return counts
 
 
 async def run_job(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
@@ -707,37 +798,48 @@ async def seed(org: str, now: datetime) -> None:
 
 
 async def prune(db: Any, today: date) -> dict[str, int]:
-    """Delete the old failure rows of the bound org. In the internal org it
-    also deletes the old platform day rows. Raises on a failure."""
+    """Delete the old failure rows of the bound org. Raises on a failure."""
     start = datetime.combine(today, time(), UTC)
     events = await db.execute(text(_PRUNE_EVENTS_SQL), {
         "before": start - timedelta(days=EVENTS_DAYS)})
     org_days = await db.execute(text(_PRUNE_ORG_DAYS_SQL), {
         "before": today - timedelta(days=ORG_DAYS_DAYS)})
-    out = {"events": int(events.rowcount or 0), "org_days": int(org_days.rowcount or 0)}
+    return {"events": int(events.rowcount or 0), "org_days": int(org_days.rowcount or 0)}
+
+
+async def prune_daily(db: Any, today: date) -> int | None:
+    """In the internal org only, delete the platform day rows older than
+    :data:`DAILY_DAYS`. None in any other org. Raises on a failure."""
     cfg = config()
     # The tenant that the session binds, never a value from the caller.
     bound = str((await db.execute(text(f"SELECT CAST({_BOUND_ORG} AS text)"))).scalar()
                 or "").lower()
-    if cfg is not None and bound == cfg.org:
-        out["daily"] = int((await db.execute(text(_PRUNE_DAILY_SQL), {
-            "before": today - timedelta(days=DAILY_DAYS)})).scalar() or 0)
-    return out
+    if cfg is None or bound != cfg.org:
+        return None
+    return int((await db.execute(text(_PRUNE_DAILY_SQL), {
+        "before": today - timedelta(days=DAILY_DAYS)})).scalar() or 0)
 
 
 async def prune_hook(db: Any, today: date) -> None:
     """The ``worker.prune_hooks`` hook, under ``TOOL_FAILURE_TASKS``. It never
     raises: a hook that raises fails the whole prune of the org, and rolls
-    back the delete of its ``jobs`` rows. A savepoint keeps the transaction
-    of the prune usable after a failure, and the log names the class only."""
+    back the delete of its ``jobs`` rows. Each step runs in its own savepoint,
+    so a failed step keeps the transaction of the prune usable and does not
+    undo the other step. The log names the class only."""
     if not tasks_enabled():
         return
-    try:
-        async with db.begin_nested():
-            gone = await prune(db, today)
-    except Exception as exc:  # the class only: a DB message can echo a value
-        _log.warning("failure_sync.prune_failed", error=type(exc).__name__)
-        return
+    gone: dict[str, int] = {}
+    for step, name in ((prune, "tenant"), (prune_daily, "daily")):
+        try:
+            async with db.begin_nested():
+                out = await step(db, today)
+        except Exception as exc:  # the class only: a DB message can echo a value
+            _log.warning("failure_sync.prune_failed", step=name, error=type(exc).__name__)
+            continue
+        if isinstance(out, dict):
+            gone.update(out)
+        elif out is not None:
+            gone["daily"] = out
     if any(gone.values()):
         _log.info("failure_sync.pruned", **gone)
 

@@ -55,6 +55,23 @@ tries a second task stays green: the database is the last guard.
 * M8. ``prune_hook`` drops ``db.begin_nested()`` -> ``test_g_a_failed_prune_hook_keeps_the_jobs_rows_deleted``.
 * M9. ``_gone`` reads no cancelled lane -> ``test_h_a_cancelled_task_mutes_and_open_writes_again``.
 * M10. ``seed`` drops the org check -> ``test_the_seed_returns_for_each_org_but_the_internal_org``.
+
+Review round 1 (2026-11-19), each one red when run:
+
+* F1-M1. ``failure_due`` sorts the rows with new counts first again ->
+  ``test_f1_waiting_rows_never_starve_a_watched_task``.
+* F1-M2. ``_sync_new`` writes no total for a waiting row -> the same test.
+* F2-M1. ``repeat_after_fix`` reads ``last_seen_at`` again ->
+  ``test_f2_a_null_release_after_a_fix_count_in_the_live_hour_never_reopens``
+  and ``test_a_null_release_count_never_reopens``.
+* F3-M1. ``run_job`` drops the ``tasks_enabled`` check ->
+  ``test_f3_with_the_flag_off_the_job_and_the_prune_do_nothing``.
+* P2a-M1. ``_rewrite`` writes the whole description ->
+  ``test_b_a_repeat_updates_the_counts_once_an_hour``.
+* P2b-M1. ``prune_daily`` runs inside the savepoint of ``prune`` ->
+  ``test_p2b_a_failed_tenant_prune_still_prunes_the_daily_rows``.
+* P2d-M1. ``sync`` reads git before the new rows ->
+  ``test_p2d_a_new_task_never_waits_on_git``.
 """
 
 from __future__ import annotations
@@ -111,7 +128,8 @@ def _due(**kw: Any) -> sync.Due:
         "fingerprint": _fp(TOOL, "exception", "builtins.KeyError", SITE), "tool": TOOL,
         "error_code": "exception", "exc_type": "builtins.KeyError", "code_site": SITE,
         "sources": ("chat_tool",), "surfaces": ("chat",), "first_seen_at": now,
-        "last_seen_at": now, "first_release": R_OLD, "last_release": R_OLD, "total": 3,
+        "last_seen_at": now, "first_release": R_OLD, "last_release": R_OLD,
+        "last_release_at": now, "total": 3,
         "state": "new", "task_id": None, "fix_merged_at": None, "fix_live_at": None,
         "closed_at": None, "fix_release": None, "reopened": 0, "shown_total": 0,
         "n_1d": 3, "n_7d": 3, "n_30d": 3, "days": ()}
@@ -234,6 +252,86 @@ def test_build_committed_at_reads_git_and_refuses_a_value_that_is_not_a_sha(monk
     assert calls == []
     assert build_info.build_committed_at(head) is not None  # kept: no second spawn
     assert calls == []
+
+
+def test_a_rewrite_replaces_the_counts_and_seen_blocks_only() -> None:
+    """P2a (§7.3): the job rewrites its own blocks. An edit of a person in any
+    other block stays, and a removed Counts block comes back."""
+    old = _due(total=3)
+    edited = sync.description(old, "<3", 7).replace(
+        "Fix the cause at the code site.", "Fix the cause at the code site. See PR 12.")
+    edited += "\n\n**Notes**\nA person wrote this."
+    new = sync.with_new_counts(edited, _due(total=9, n_1d=9, last_release=R_NEW), "4")
+    assert "- Total: `9`" in new and "- Total: `3`" not in new
+    assert "`4`" in new and f"`{R_NEW}`" in new
+    assert "See PR 12." in new and "A person wrote this." in new
+    assert new.count("**Counts**") == 1 and new.count("**Seen**") == 1
+    assert "Surfaces" not in new  # the Where block keeps its first text
+    gone = sync.with_new_counts("**Notes**\nOnly this.", _due(total=2), None)
+    assert gone.startswith("**Notes**\nOnly this.") and "- Total: `2`" in gone
+
+
+def test_a_null_release_count_never_reopens(monkeypatch) -> None:
+    """F2: ``last_release`` keeps the last named release, so only
+    ``last_release_at`` (moved by a named count only) can read a repeat."""
+    live = datetime(2026, 11, 19, 8, 5, tzinfo=UTC)
+    merged = live - timedelta(minutes=30)
+    times = {R_NEW: merged}
+    st = sync.State("fix_live", "t", merged, live, None, R_NEW, 3, 0)
+    # The fix release counted in the hour of fix_live, then a NULL count later.
+    due = _due(last_release=R_NEW, last_release_at=live.replace(minute=0),
+               last_seen_at=live + timedelta(hours=2))
+    assert not sync.repeat_after_fix(due, st, times)
+    later = _due(last_release=R_NEW, last_release_at=live + timedelta(hours=1))
+    assert sync.repeat_after_fix(later, st, times)
+
+
+def test_the_git_reads_of_a_run_stop_at_the_budget(monkeypatch) -> None:
+    import time as _time
+
+    calls: list[str] = []
+
+    def slow(sha: str) -> datetime:
+        calls.append(sha)
+        _time.sleep(0.2)
+        return datetime.now(UTC)
+
+    monkeypatch.setattr(build_info, "build_committed_at", slow)
+    monkeypatch.setattr(sync, "GIT_BUDGET_S", 0.3)
+    shas = [f"{i:07x}" for i in range(10)]
+    times = asyncio.run(sync._commit_times(shas))
+    assert 1 <= len(calls) <= 3 and len(times) == len(calls)
+
+    def broken(sha: str) -> datetime:
+        raise RuntimeError("git is gone")
+
+    monkeypatch.setattr(build_info, "build_committed_at", broken)
+    assert asyncio.run(sync._commit_times(shas[:2])) == {}
+
+
+def test_build_committed_at_logs_a_failed_read_by_class(monkeypatch) -> None:
+    import subprocess
+
+    logged: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(build_info, "_log_failed", lambda e, **kw: logged.append((e, kw)))
+
+    def timeout(*a: Any, **k: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+    monkeypatch.setattr(build_info.subprocess, "run", timeout)
+    assert build_info.build_committed_at("d" * 40) is None
+    assert logged == [("TimeoutExpired", {})]
+
+
+def test_the_gh6_skip_needs_the_flag_and_the_internal_org(monkeypatch) -> None:
+    cfg = _cfg()
+    monkeypatch.setattr(sync, "config", lambda: cfg)
+    monkeypatch.setattr(sync, "tasks_enabled", lambda: True)
+    assert sync.is_failure_task(cfg.org, cfg.project)
+    assert not sync.is_failure_task(str(uuid.uuid4()), cfg.project)
+    assert not sync.is_failure_task(cfg.org, str(uuid.uuid4()))
+    monkeypatch.setattr(sync, "tasks_enabled", lambda: False)
+    assert not sync.is_failure_task(cfg.org, cfg.project)
 
 
 # ══ R8: the world ═══════════════════════════════════════════════════════════
@@ -433,8 +531,13 @@ def test_b_a_repeat_updates_the_counts_once_an_hour(world) -> None:
     _sync(w, now + timedelta(minutes=10))
     assert "- Total: `1`" in _task(w, task_id).description
     assert _fprow(w, fp).shown_total == 1
+    with w.p.admin_engine.begin() as c:  # a person adds a note (P2a)
+        c.execute(text("UPDATE pm_tasks SET description = description || :n "
+                       "WHERE id = CAST(:t AS uuid)"),
+                  {"n": "\n\n**Notes**\nKeep me.", "t": str(task_id)})
     _sync(w, now + timedelta(hours=2))
     assert "- Total: `5`" in _task(w, task_id).description
+    assert "**Notes**\nKeep me." in _task(w, task_id).description
     assert _fprow(w, fp).shown_total == 5
     assert len(_tasks(w)) == 1
 
@@ -644,7 +747,8 @@ def test_h_a_cancelled_task_mutes_and_open_writes_again(world) -> None:
     _tally(w, 9)
     _sync(w, now + timedelta(hours=2))
     assert "- Total: `1`" in _task(w, task_id).description  # no write while muted
-    assert _fprow(w, fp).total == 10  # the counts go on
+    row = _fprow(w, fp)
+    assert (row.total, row.shown_total) == (10, 10)  # the counts go on, seen (F1)
     _lane(w, task_id, "Open")
     _sync(w, now + timedelta(hours=3))
     assert _fprow(w, fp).state == "open"
@@ -676,3 +780,169 @@ def test_h_a_renamed_lane_moves_no_task_and_names_the_lane(world, monkeypatch) -
     assert _sync(w, now + timedelta(minutes=1)) == {"lane_missing": 1}
     assert _task(w, task_id).lane == "Done"
     assert ("failure_sync.lane_missing", {"name": "Review"}) in logged
+
+
+# ── Review round 1 (2026-11-19): F1, F2, F3 and P2d ─────────────────────────
+
+
+@_DB_GATE
+def test_f1_waiting_rows_never_starve_a_watched_task(world, monkeypatch) -> None:
+    """F1, the probe of the verifier: ``DUE_LIMIT = 1``, task A has a merged
+    pull request, and one count of another code waits under its limit. A
+    must reach ``fix_merged``, and the waiting row writes its total as seen,
+    so it leaves ``failure_due`` until a new count comes."""
+    w = world
+    fp_a = _tally(w)
+    _sync(w, _now())
+    task_a = _fprow(w, fp_a).task_id
+    _merge(w, task_a, _now() - timedelta(minutes=5))
+    fp_b = _tally(w, tool="mcp", code="mcp_timeout", exc="-", site="-")
+    monkeypatch.setattr(sync, "DUE_LIMIT", 1)
+    _sync(w, _now())
+    assert _fprow(w, fp_a).state == "fix_merged"
+    monkeypatch.setattr(sync, "DUE_LIMIT", 200)
+    _sync(w, _now())
+    row_b = _fprow(w, fp_b)
+    assert (row_b.state, row_b.shown_total, row_b.task_id) == ("new", 1, None)
+    due = _run(w, lambda: _due_rows(w))
+    assert fp_b not in due  # seen, no new count
+    _tally(w, tool="mcp", code="mcp_timeout", exc="-", site="-")
+    assert fp_b in _run(w, lambda: _due_rows(w))
+
+
+async def _due_rows(w: W) -> list[str]:
+    async with tenant_session(w.a) as db:
+        return [r.fingerprint for r in (await db.execute(
+            text("SELECT fingerprint FROM failure_due(100)"))).fetchall()]
+
+
+@_DB_GATE
+def test_f2_a_null_release_after_a_fix_count_in_the_live_hour_never_reopens(world) -> None:
+    """F2, the probe of the verifier. The fix release counts in the hour of
+    ``fix_live_at``, which is no repeat. Then a count with no release comes
+    in a later hour. ``last_release`` still names the fix release, and the
+    task must stay in ``fix_live``."""
+    w = world
+    base = _now()
+    live_at = base - timedelta(hours=2)
+    fp, task_id, _ = _to_fix_live(w, live_at)
+    _tally(w, release=R_NEW)
+    with w.p.admin_engine.begin() as c:  # that count fell in the live hour
+        c.execute(text(
+            "UPDATE failure_fingerprints SET last_release_at = date_trunc('hour', "
+            "CAST(:at AS timestamptz)) WHERE fingerprint = :f"), {"at": live_at, "f": fp})
+        c.execute(text(
+            "UPDATE failure_daily SET releases = array_remove(releases, :r) "
+            "WHERE fingerprint = :f AND day > CAST(:d AS date)"),
+            {"r": R_NEW, "f": fp, "d": live_at.date()})
+    _sync(w, base, running=R_NEW)
+    assert _fprow(w, fp).state == "fix_live"
+    _tally(w, release=None)
+    _sync(w, base + timedelta(minutes=1), running=R_NEW)
+    row = _fprow(w, fp)
+    assert (row.state, row.reopened, row.last_release) == ("fix_live", 0, R_NEW)
+    assert row.last_seen_at > row.last_release_at  # the NULL count moved only this
+    assert _task(w, task_id).lane == "Open"
+
+
+@_DB_GATE
+def test_f3_with_the_flag_off_the_job_and_the_prune_do_nothing(world, monkeypatch) -> None:
+    w = world
+    _tally(w)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO failure_events (organization_id, occurred_at, fingerprint, source, "
+            "surface, error_code, tool, exc_type, code_site) VALUES (CAST(:o AS uuid), "
+            "now() - interval '40 days', :fp, 'chat_tool', 'chat', 'exception', :t, "
+            "'builtins.KeyError', :s)"),
+            {"o": w.b, "fp": _fp(TOOL, "exception", "builtins.KeyError", SITE), "t": TOOL,
+             "s": SITE})
+    monkeypatch.setattr(get_settings(), "tool_failure_tasks", False)
+    monkeypatch.setattr(sync, "running_release", lambda: None)
+    t0 = _now()
+
+    async def go() -> Any:
+        async with tenant_session(w.a) as db:
+            await queue.enqueue(db, sync.KIND, {}, dedupe_key="failure_sync:off", now=t0)
+        outcome = await worker.run_one(w.a, t0)
+        async with tenant_session(w.b) as db:
+            await sync.prune_hook(db, t0.date())
+        await sync.seed(w.a, t0)
+        return outcome
+
+    assert _run(w, go) == "done"
+    assert _tasks(w) == []
+    assert len(g.rows(w.p, "SELECT id FROM failure_events WHERE organization_id = "
+                           "CAST(:o AS uuid)", o=w.b)) == 1
+    assert len(g.rows(w.p, "SELECT id FROM jobs WHERE kind = :k", k=sync.KIND)) == 1
+
+
+@_DB_GATE
+def test_p2d_a_new_task_never_waits_on_git(world, monkeypatch) -> None:
+    """P2d: the rows with no task run before any git read, and a broken git
+    moves no state of a watched row."""
+    w = world
+    base = _now()
+    fp_old = _tally(w, release=R_OLD)
+    _sync(w, base - timedelta(hours=1))
+    _merge(w, _fprow(w, fp_old).task_id, base - timedelta(minutes=30))
+    order: list[str] = []
+    real_create = sync._create
+
+    async def create(*a: Any, **k: Any) -> str:
+        order.append("create")
+        return await real_create(*a, **k)
+
+    def git(sha: str) -> datetime:
+        order.append("git")
+        raise RuntimeError("git is gone")
+
+    monkeypatch.setattr(sync, "_create", create)
+    monkeypatch.setattr(build_info, "build_committed_at", git)
+    _tally(w, tool="crm_list_records", site="acb_skills.crm_tools:crm_list_records")
+    _sync(w, base, running=R_NEW)
+    assert order[0] == "create" and "git" in order
+    assert len(_tasks(w)) == 2
+    assert _fprow(w, fp_old).state == "fix_merged"  # no commit time: no move
+
+
+@_DB_GATE
+def test_p2b_a_failed_tenant_prune_still_prunes_the_daily_rows(world, monkeypatch) -> None:
+    """P2b: ``failure_prune_daily`` runs in its own savepoint. A failed tenant
+    delete in the internal org does not undo it, and the reverse holds too."""
+    w = world
+    fp = _tally(w)
+    today = _now().date()
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("INSERT INTO failure_daily (fingerprint, day, occurrences) "
+                       "VALUES (:f, :d, 1)"), {"f": fp, "d": today - timedelta(days=401)})
+        c.execute(text(
+            "INSERT INTO failure_events (organization_id, occurred_at, fingerprint, source, "
+            "surface, error_code, tool, exc_type, code_site) VALUES (CAST(:o AS uuid), "
+            "now() - interval '40 days', :fp, 'chat_tool', 'chat', 'exception', :t, "
+            "'builtins.KeyError', :s)"), {"o": w.a, "fp": fp, "t": TOOL, "s": SITE})
+
+    def old_daily() -> int:
+        return len(g.rows(w.p, "SELECT day FROM failure_daily WHERE fingerprint = :f "
+                               "AND day < :d", f=fp, d=today - timedelta(days=400)))
+
+    def old_events() -> int:
+        return len(g.rows(w.p, "SELECT id FROM failure_events WHERE organization_id = "
+                               "CAST(:o AS uuid) AND occurred_at < now() - interval "
+                               "'30 days'", o=w.a))
+
+    async def prune() -> None:
+        async with tenant_session(w.a) as db:
+            await sync.prune_hook(db, today)
+
+    with monkeypatch.context() as m:
+        m.setattr(sync, "_PRUNE_ORG_DAYS_SQL", "SELECT 1 / 0")
+        _run(w, prune)
+    assert (old_daily(), old_events()) == (0, 1)
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("INSERT INTO failure_daily (fingerprint, day, occurrences) "
+                       "VALUES (:f, :d, 1)"), {"f": fp, "d": today - timedelta(days=401)})
+    with monkeypatch.context() as m:
+        m.setattr(sync, "_PRUNE_DAILY_SQL", "SELECT 1 / 0")
+        _run(w, prune)
+    assert (old_daily(), old_events()) == (1, 0)

@@ -12,8 +12,9 @@ pull request:
 
 1. skip a task that is archived, or whose status category is ``done``,
    ``cancelled`` or ``triage``. Skip a task of the project
-   ``TOOL_FAILURE_PROJECT_ID``, because the failure sync job is the one closer
-   there (``tool_failure_log.md`` §7.5);
+   ``TOOL_FAILURE_PROJECT_ID`` in the org ``TOOL_FAILURE_ORG_ID`` while
+   ``TOOL_FAILURE_TASKS`` is on, because the failure sync job is the one
+   closer there (``tool_failure_log.md`` §7.5);
 2. skip a task that people run: ``agent_worked.reason`` is ``None``;
 3. skip a task that a person took back: its newest ``status_change`` row has
    no ``mcp:`` or ``github`` via, was not written by a ``system:`` actor, and
@@ -141,13 +142,13 @@ async def _person_took_it_back(db: Any, task_id: str, work: agent_worked.AgentWo
 
 
 def _is_failure_task(task: Any) -> bool:
-    """True for a task of ``TOOL_FAILURE_PROJECT_ID`` (§12.3 step 1a).
+    """True for a task of the project "Tool failures" while its sync job is
+    on (§12.3 step 1a, ``failures.sync.is_failure_task``).
 
     Imported here, because the sync module imports the task routes."""
-    from gateway.failures.sync import failure_project_id
+    from gateway.failures.sync import is_failure_task
 
-    project = failure_project_id()
-    return bool(project) and str(task.project_id).lower() == project
+    return is_failure_task(task.organization_id, task.project_id)
 
 
 def _repo_and_number(ref: str) -> tuple[str, int | None]:
