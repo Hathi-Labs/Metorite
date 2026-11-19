@@ -59,6 +59,14 @@ on 2026-11-18, and the named test failed:
 * ``record_tool_failure`` sets no request mark      -> test_a_studio_live_read_that_times_out_writes_one_mcp_timeout
 * the surface reads the whole header                -> test_the_door_surface_reads_the_prefix_only
 
+The review of TOF-2d (2026-11-19) found two faults. Each new test was red
+first, on the code before the repair:
+
+* the route set reads only the top nodes of ``app.routes`` -> test_the_route_set_of_the_real_gateway_holds_its_router_routes, test_a_route_of_an_included_router_names_its_template
+* the template is ``scope["route"].path`` of the router    -> test_a_route_of_a_nested_include_names_its_whole_template
+* the walk stops at a node that raises                     -> test_the_route_set_survives_a_node_it_does_not_know
+* a refused record marks the request                       -> test_only_an_accepted_record_marks_the_request
+
 Run: ``uv run pytest tests/unit/test_failure_capture_sites.py -q``.
 """
 
@@ -615,6 +623,10 @@ def test_p6_no_module_but_the_writer_names_a_failure_table() -> None:
 REFUSAL = ("(EMAXCONNSESSION) max clients reached in session mode - max clients are"
            " limited to pool_size: 15")
 SERVER = "acme-erp"
+#: The real gateway counted 953 templates on 2026-11-19 (see the route set test).
+GATEWAY_ROUTES_MIN = 800
+KNOWN_GATEWAY_ROUTES = frozenset({"/crm/deals/{record_id}", "/projects/tasks/{task_id}",
+                                  "/studio/mcp/{server}/refresh", "/agent/run"})
 
 
 def _db_refusal() -> BaseException:
@@ -796,6 +808,101 @@ def test_a_studio_live_read_that_times_out_writes_one_mcp_timeout(monkeypatch) -
     [rec] = records()
     assert (rec.source, rec.error_code, rec.surface, rec.tool, rec.tool_name) == (
         "mcp_call", "mcp_timeout", "studio", "mcp", SERVER)
+
+
+def _router_client() -> Any:
+    """An app whose routes sit in included routers, as the gateway's do: a
+    prefix of the router, and a prefix of each include, two levels deep."""
+    from fastapi import APIRouter, Depends, FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from gateway import main as gw
+
+    async def bind_org() -> None:
+        bind_tenant(ORG)
+
+    app = FastAPI(dependencies=[Depends(bind_org)])
+    app.add_exception_handler(Exception, gw._db_unavailable)
+    app.add_middleware(gw.TenantScopeMiddleware)
+    flat = APIRouter(prefix="/p")
+
+    @flat.get("/{item}")
+    async def item(item: str) -> None:
+        raise HTTPException(status_code=500, detail="no")
+
+    outer, inner = APIRouter(), APIRouter()
+
+    @inner.get("/{z}")
+    async def deep(z: str) -> None:
+        raise HTTPException(status_code=502, detail="no")
+
+    outer.include_router(inner, prefix="/i")
+    app.include_router(flat)
+    app.include_router(outer, prefix="/o")
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_a_route_of_an_included_router_names_its_template() -> None:
+    client = _router_client()
+    assert client.get("/p/acme-77").status_code == 500
+    [rec] = records()
+    assert (rec.error_code, rec.tool) == ("route_500", "route:GET /p/{item}")
+    assert "acme" not in repr(rec)
+
+
+def test_a_route_of_a_nested_include_names_its_whole_template() -> None:
+    client = _router_client()
+    assert client.get("/o/i/acme-77").status_code == 502
+    [rec] = records()
+    assert (rec.error_code, rec.tool) == ("route_upstream", "route:GET /o/i/{z}")
+
+
+def test_the_route_set_of_the_real_gateway_holds_its_router_routes() -> None:
+    """FastAPI keeps an included router as one node with no ``.path``. The
+    set must walk it, or each route of the gateway reads ``route:other``."""
+    from gateway import main as gw
+
+    paths = gw._route_paths(gw.app)
+    assert len(paths) >= GATEWAY_ROUTES_MIN, len(paths)
+    assert paths >= KNOWN_GATEWAY_ROUTES, sorted(KNOWN_GATEWAY_ROUTES - paths)
+
+
+def test_the_route_set_survives_a_node_it_does_not_know() -> None:
+    from gateway import main as gw
+
+    class Strange:
+        @property
+        def path(self) -> str:
+            raise RuntimeError("no path")
+
+        def effective_candidates(self) -> list[Any]:
+            raise RuntimeError("no candidates")
+
+    app = SimpleNamespace(routes=[Strange(), SimpleNamespace(path="/ok"), object()])
+    assert gw._route_paths(app) == frozenset({"/ok"})
+
+
+def test_only_an_accepted_record_marks_the_request(monkeypatch) -> None:
+    """A site call that the writer refuses (no tenant, the org off the flag,
+    a code off the list) leaves the mark clear, so D2 still writes the
+    answer of the request."""
+
+    def marked(org: str | None, **kw: Any) -> bool:
+        mark, token = fl.open_request_mark()
+        try:
+            with run(org=org):
+                fl.record_tool_failure(None, **{"source": "mcp_call", "error_code": "mcp_timeout",
+                                                "tool": SERVER, "kind": "mcp",
+                                                "surface": "studio", **kw})
+        finally:
+            fl.close_request_mark(token)
+        return mark.recorded
+
+    assert marked(None) is False
+    assert marked(ORG, error_code="not_a_code") is False
+    assert marked(ORG, source="not_a_source") is False
+    assert marked(ORG) is True
+    monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", "")
+    assert marked(ORG) is False
 
 
 def test_the_gateway_runs_the_door() -> None:

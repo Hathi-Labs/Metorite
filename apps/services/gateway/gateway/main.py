@@ -1256,6 +1256,7 @@ async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
 # the query or the body. The org comes from the tenant seam only (R5).
 # Fence: tests/unit/test_failure_capture_sites.py.
 import weakref  # noqa: E402
+from contextlib import suppress  # noqa: E402
 
 from acb_common import failure_log  # noqa: E402
 
@@ -1264,19 +1265,84 @@ _DOOR_CODES = {500: "route_500", 502: "route_upstream", 504: "route_upstream"}
 _ROUTE_PATHS: weakref.WeakKeyDictionary[Any, frozenset[str]] = weakref.WeakKeyDictionary()
 
 
+#: The deepest level of included routers that the walk reads.
+_ROUTE_WALK_DEPTH = 32
+
+
+def _node_paths(node: Any) -> list[str]:
+    """The template of one route node. A plain route has `.path`. A route of
+    an included router is an effective context of FastAPI, whose `.path`
+    holds the whole template with each prefix. Its other routes keep the
+    template on `.starlette_route`. Never raises."""
+    out = []
+    for holder in (node, getattr(node, "starlette_route", None)):
+        try:
+            path = getattr(holder, "path", None)
+        except Exception:  # a node that cannot say its path names none
+            continue
+        if isinstance(path, str) and path.startswith("/"):
+            out.append(path)
+    return out
+
+
+def _walk_routes(nodes: Any, out: set[str], depth: int = 0) -> None:
+    """Add the template of each route under *nodes* to *out*.
+
+    FastAPI keeps an included router as ONE node with no `.path`
+    (`fastapi.routing._IncludedRouter`). Its `effective_candidates()` gives
+    the routes and the nested routers, and `effective_low_priority_routes()`
+    gives the rest. A node of an unknown kind is left out, and the walk goes
+    on. Never raises."""
+    if depth > _ROUTE_WALK_DEPTH:
+        return
+    try:
+        items = list(nodes or ())
+    except Exception:  # nodes that cannot be read add nothing
+        return
+    for node in items:
+        out.update(_node_paths(node))
+        for reader in ("effective_candidates", "effective_low_priority_routes"):
+            try:
+                read = getattr(node, reader, None)
+                children = read() if callable(read) else None
+            except Exception:  # an unknown node: keep going
+                continue
+            if children:
+                _walk_routes(children, out, depth + 1)
+
+
 def _route_paths(app_obj: Any) -> frozenset[str]:
-    """The `.path` of each route of the app, read once and kept (§3.2 rule
-    1). Only a template in this set names a route. Any other gives
-    `route:other`."""
+    """The template of each route of the app, read once and kept for each
+    app (§3.2 rule 1). It walks each included router. Only a template in
+    this set names a route. Any other gives `route:other`. Never raises."""
     try:
         found = _ROUTE_PATHS.get(app_obj)
-        if found is None:
-            found = frozenset(p for r in getattr(app_obj, "routes", None) or ()
-                              if isinstance(p := getattr(r, "path", None), str))
-            _ROUTE_PATHS[app_obj] = found
+    except TypeError:  # an app that takes no weak reference: no cache
+        found = None
+    if found is not None:
         return found
-    except TypeError:  # an app that takes no weak reference names no route
-        return frozenset()
+    paths: set[str] = set()
+    with suppress(Exception):  # the walk never fails the door
+        _walk_routes(getattr(app_obj, "routes", None), paths)
+    found = frozenset(paths)
+    with suppress(TypeError):  # an app that takes no weak reference: no cache
+        _ROUTE_PATHS[app_obj] = found
+    return found
+
+
+def _route_template(scope: Any) -> str | None:
+    """The template of the route that answered. FastAPI puts the effective
+    context of a route of an included router in `scope["fastapi"]`, and its
+    `.path` holds the whole template. `scope["route"].path` holds only the
+    part of the router, so it is the second choice. Never the concrete
+    path."""
+    fastapi_scope = scope.get("fastapi")
+    context = fastapi_scope.get("effective_route_context") if isinstance(fastapi_scope, dict) else None
+    paths = _node_paths(context) if context is not None else []
+    if paths:
+        return paths[0]
+    path = getattr(scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
 
 
 def _door_record(scope: Any, app_obj: Any, exc: BaseException | None, code: str) -> None:
@@ -1285,8 +1351,7 @@ def _door_record(scope: Any, app_obj: Any, exc: BaseException | None, code: str)
     try:
         if exc is not None and db_busy.is_db_unavailable(exc):
             return
-        route = scope.get("route")
-        template = getattr(route, "path", None)
+        template = _route_template(scope)
         method = scope.get("method")
         tool = f"{method} {template}" if isinstance(template, str) and isinstance(method, str) else ""
         actor = next((v for k, v in scope.get("headers") or () if k == b"x-actor-via"), b"")

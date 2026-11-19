@@ -479,13 +479,14 @@ def record_tool_failure(
     *route_paths* is the set of declared route templates, read once at start
     by the door site (TOF-2d). With none, a route reads ``route:other``.
 
-    Each call marks the request scope of the gateway, when one is open
-    (:class:`RequestMark`). So the door site D2 writes no second record for
-    the answer of that request (§4.2, one writer for each request).
+    A record that the writer accepts marks the request scope of the
+    gateway, when one is open (:class:`RequestMark`). So the door site D2
+    writes no second record for the answer of that request (§4.2, one
+    writer for each request). A refused call (no tenant, the org off the
+    flag, a value off its list) marks nothing, so D2 still writes.
     """
     global _DROPPED
     try:
-        _mark_request()
         from acb_common.db import current_tenant
 
         org = current_tenant()
@@ -522,6 +523,7 @@ def record_tool_failure(
             request_id=_text(request_id),
             model=_text(model),
         )
+        _mark_request()  # accepted: D2 writes no second record
         with _LOCK:
             if len(_PENDING) >= QUEUE_MAX:
                 _DROPPED += 1
