@@ -69,7 +69,16 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Before an `app_builder` start, `ensure_app_git` makes the app's `.git` and refuses a `.git` that is a link or a file, so the cover always covers it. After each command, the sweep removes each link in the app dir.
    - `code_session.coding_harness_agent` is the one call of `create_harness_agent` (CA-14). `code_task` and app-builder both build their agent there.
    - `copilot_sandbox.py` and `mutation.py` still run `docker`, on a legacy list that only shrinks.
-   - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
+   - SBX-8 and SBX-15 (spec `agent_sandbox.md` §4.3 and §4.6) ship dark. `sandbox_runtime` is `runc` or `runsc`, and any other value refuses.
+   - `sandbox_backend=docker-remote` sends each `docker` call to `sandbox_docker_host`. `DockerCLI._spawn` is the one place that puts it in `DOCKER_HOST`, through `docker_env(extra=...)`. A bad value never falls back to the local daemon. Outside dev, a loopback host refuses, and `tcp://` needs `sandbox_docker_cert_path` (TLS with a client certificate).
+   - A remote container has no mount. `/workspace` is a tmpfs. Each exec sends the working dir in as a tar on the stdin of `docker exec -i`, and reads it back after. Both tars use the GNU format. Do not use `docker cp`, because it cannot write a read-only root or read a tmpfs. `DockerCLI.transfer` moves the bytes of the copy.
+   - The copy out writes each file through `safe_open.replace_stream`, in chunks. Some names do not come back as themselves: a name with a backslash, or with a byte that is not UTF-8. The copy never sends or deletes such a name. The model hears which names stayed behind.
+   - On `docker-remote`, a start outside dev refuses `runc`. Of the mounted targets only `code_task` runs, and the `compute` target of SBX-18 runs too.
+   - One org holds the remote box at a time, across every target. `_claim` and `_compute_claim` check every registry under the registry lock, and each marks its handle `remote` there.
+   - Every start path (`_start`, `_compute_start`) awaits `_remote_org_admit` and runs `docker run` in the body of ONE `async with self._start_gate(remote)`. The admit reads every registry and the org labels on the daemon. Fence: `test_every_start_in_the_broker_passes_the_admit_under_the_gate`.
+   - A failed remote `docker rm -f` goes to `_remote_orphans`. Each reaper tick removes only those recorded ids (`_reap_remote_orphans`), because a shared daemon holds containers of other deployments. Only the startup sweep removes every labelled container.
+   - `sandbox_max_per_org` is the one per-org cap. A start refuses when it is above `sandbox_max_total`.
+   - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_sandbox_remote_backend.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
 15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
    - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both.
    - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
