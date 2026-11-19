@@ -57,10 +57,17 @@ tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
 writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
 the column out, so no browser read returns it. :func:`read_stored_call` is the
 one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
+:func:`claim_declined_call` is the claim of a late decline (RESUME-4a-2).
 :func:`restore_stored_call` gives a claim back when its run never started. A move to
 ``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
 each row is as before.
+
+**The same reply** (RESUME-2b, §4.12.4 item 2, case A). :func:`_record` adds
+the id of the run's reply row to the stored call (``message_id``), from the
+run's ``run_liveness`` record. :func:`park` keeps the stream of the parked run
+for 24 hours (D-RES-7, ``stream_relay.keep_parked_stream``) when both resume
+flags name the org. So a late Approve can go on in the same reply.
 
 **Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
 reader takes a row past ``expires_at``, and no move changes one. So
@@ -380,6 +387,52 @@ def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
         return _row(r) if r is not None else None
 
 
+#: The second witness of the late approve (HRD-22b item 2). A confirmation row
+#: of the member, in ANY thread, with the same visible card, answered APPROVE
+#: after the row was asked. An APPROVE with edits (``APPROVE {...}``, the edit
+#: card of EAC-1) is an APPROVE too: the act ran with the edited values. The org predicate stands beside RLS, as in
+#: ``move_ask``.
+_TWIN_APPROVED_SQL = (
+    "SELECT 1 FROM chat_pending_ask "
+    "WHERE organization_id = CAST(:org AS uuid) AND actor_email = :actor "
+    "  AND kind = 'confirmation' AND state = 'answered' "
+    "  AND (upper(btrim(coalesce(answer, ''))) = 'APPROVE' "
+    "       OR upper(coalesce(answer, '')) LIKE 'APPROVE %') "
+    "  AND answered_at > CAST(:asked AS timestamptz) AND request_id <> :rid "
+    "  AND coalesce(payload->>'title', '') = :title "
+    "  AND coalesce(payload->>'detail', '') = :detail "
+    "  AND coalesce(payload->>'context', '') = :context "
+    "LIMIT 1"
+)
+
+
+def twin_approved_since(organization_id: str, member: str, row: dict[str, Any]) -> bool:
+    """True when a twin of *row* (the same member, the same title, detail and
+    context) moved to ``answered`` with ``APPROVE`` after *row* was asked, in
+    any thread. It is also True when *row* cannot be compared (no card text
+    or no ``asked_at``), the fail-closed side: the grant then waits for the
+    normal card. Sync: callers run it in a thread. R8 fence:
+    ``tests/unit/test_late_approve_twin_r8.py``."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    payload = row.get("payload")
+    asked = row.get("asked_at")
+    if not isinstance(payload, dict) or payload.get("truncated") or not asked:
+        return True
+    title = str(payload.get("title") or "")
+    if not title:
+        return True
+    params = {
+        "org": organization_id, "actor": (member or "").strip().lower(),
+        "asked": str(asked), "rid": str(row.get("request_id") or ""),
+        "title": title, "detail": str(payload.get("detail") or ""),
+        "context": str(payload.get("context") or ""),
+    }
+    with tenant_session(organization_id) as s:
+        return s.execute(text(_TWIN_APPROVED_SQL), params).first() is not None
+
+
 def waiting_asks(
     organization_id: str,
     *,
@@ -453,7 +506,7 @@ def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | 
 #: RETURNING, so the CTE is the one way to read the old value in the move.
 #: The org predicate stands beside RLS (R5). A row of another member, another
 #: thread, a row that expired, and a row with no stored call never move.
-_CLAIM_SQL = (
+_CLAIM_OLD = (
     "WITH old AS ("
     "  SELECT organization_id, request_id, stored_call FROM chat_pending_ask "
     "  WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
@@ -462,8 +515,25 @@ _CLAIM_SQL = (
     "    AND stored_call IS NOT NULL "
     "  FOR UPDATE"
     ") "
+)
+_CLAIM_SQL = _CLAIM_OLD + (
     "UPDATE chat_pending_ask AS p SET state = 'answered', answered_at = now(), "
     "  answer = :answer, stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: RESUME-4a-2 (task 3478, D-RES-9): the claim of a late decline, in ONE
+#: statement. The same CTE as :data:`_CLAIM_SQL` locks the row and keeps its
+#: stored call, under the same predicates. The UPDATE moves the row to
+#: ``closed`` (a decline is no answer, as ``move_ask(to="closed")``), sets
+#: the column to NULL, and gives back the old stored call. No tool runs it:
+#: the continuation only tells the model that nothing was done.
+_CLAIM_DECLINED_SQL = _CLAIM_OLD + (
+    "UPDATE chat_pending_ask AS p SET state = 'closed', "
+    "  answered_at = COALESCE(p.answered_at, now()), stored_call = NULL "
     "FROM old "
     "WHERE p.organization_id = old.organization_id "
     "  AND p.request_id = old.request_id "
@@ -506,6 +576,36 @@ def claim_stored_call(
     timeout give None: no claim. It adds no state: ``answered`` is one of the
     four states of ``chat_pending_ask_state_known``.
     """
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_SQL, extra={"answer": (answer or "")[:_ANSWER_CHARS]})
+
+
+def claim_declined_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row for a late DECLINE, ONCE.
+
+    RESUME-4a-2 (task 3478, D-RES-9). ``gateway.routes.agent._resume_from_row``
+    is the one caller. One statement (:data:`_CLAIM_DECLINED_SQL`) moves the
+    row from ``parked`` or ``open`` to ``closed`` and gives back the stored
+    call that it held. Nothing runs the call: the continuation only tells
+    the model that nothing was done. The predicates are those of
+    :func:`claim_stored_call`, and so are the "no claim" codes. It adds no
+    state: ``closed`` is one of the four states."""
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_DECLINED_SQL, extra={})
+
+
+def _claim(
+    organization_id: str, request_id: str, *, member: str, thread_id: str,
+    sql: str, extra: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Run ONE claim statement (:data:`_CLAIM_SQL` or
+    :data:`_CLAIM_DECLINED_SQL`), and give back the old stored call."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
@@ -518,11 +618,11 @@ def claim_stored_call(
         with tenant_session(organization_id) as s:
             s.execute(text(f"SET LOCAL lock_timeout = '{_CLAIM_LOCK_TIMEOUT}'"))
             r = s.execute(
-                text(_CLAIM_SQL),
+                text(sql),
                 {
                     "org": organization_id, "rid": request_id,
                     "waiting": list(WAITING), "member": who, "tid": thread_id,
-                    "answer": (answer or "")[:_ANSWER_CHARS],
+                    **extra,
                 },
             ).first()
     except DBAPIError as exc:
@@ -545,7 +645,9 @@ def claim_stored_call(
 #: stored call that the claim took. The WHERE is the claim's own: the org
 #: beside RLS, the request id, the member, the thread, a row that has not
 #: expired, and a column that the claim set to NULL. No run waits on the card
-#: (the thread was at rest), so ``parked`` is its true state.
+#: (the thread was at rest), so ``parked`` is its true state. A declined
+#: claim (:func:`claim_declined_call`) is never given back: its ``closed``
+#: row never matches (review of RESUME-4a-2, P2-1).
 _RESTORE_SQL = (
     "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
     "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
@@ -765,14 +867,19 @@ def _remember_parked(request_id: str) -> None:
         _PARKED.pop(next(iter(_PARKED)))
 
 
-async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None, str]:
-    """``(org, run_id, agent, actor)`` of the run on *thread_id*, server side."""
+async def _run_facts(
+    thread_id: str,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
+    """``(org, run_id, agent, actor, message_id)`` of the run on *thread_id*,
+    server side. ``message_id`` is the id of the run's reply row, from the
+    ``run_liveness`` record of the run (RESUME-2b). :func:`_record` reads the
+    first four by position, so a stand-in that gives four still works."""
     org: str | None = None
     with contextlib.suppress(Exception):
         from acb_common.db import current_tenant
 
         org = current_tenant()
-    run_id = agent = None
+    run_id = agent = message_id = None
     with contextlib.suppress(Exception):
         from orchestrator import run_liveness, stream_relay
 
@@ -783,21 +890,29 @@ async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None
             org = org or (str(rec.get("org")) if rec.get("org") else None)
             run_id = str(rec.get("runId") or "") or None
             agent = str(rec.get("agent") or "") or None
+            message_id = str(rec.get("messageId") or "") or None
     actor = ""
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import get_run_actor
 
         actor = (await get_run_actor(thread_id) or "").strip().lower()
-    return org, run_id, agent, actor
+    return org, run_id, agent, actor, message_id
 
 
 async def _record(thread_id: str, ask: CardAsk,
                   stored: dict[str, Any] | None = None) -> str | None:
-    org, run_id, agent, actor = await _run_facts(thread_id)
+    facts = await _run_facts(thread_id)
+    org, run_id, agent, actor = facts[:4]
     if not org:
         # No tenant, so no row: the fail-closed answer (a run with no org has
         # no tenant to be listed under, as in ``register_live_run``).
         return None
+    message_id = facts[4] if len(facts) > 4 else None
+    if stored is not None and message_id:
+        # RESUME-2b: the stored call names the reply row of the card, from
+        # the run's own record, never from an event field. The key is
+        # additive: version 1 stays, and each reader allows a call with none.
+        stored = {**stored, "message_id": message_id}
     row = {
         "request_id": ask.request_id, "thread_id": thread_id, "run_id": run_id,
         "actor_email": actor, "agent_name": agent, "kind": ask.kind,
@@ -915,8 +1030,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.
@@ -1043,6 +1160,16 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })
+    # D-RES-7 (RESUME-2b): the park ends the stream here, so the stream lives
+    # 24 hours from now. Only where a late Approve can go on in the same
+    # reply: CHAT_RESUME_ORGS and CHAT_LATE_APPROVE_ORGS both name the org.
+    # Off, the stream keeps the life of before. It never raises.
+    with contextlib.suppress(Exception):
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        if chat_resume_on(org) and late_approve_on(org):
+            await stream_relay.keep_parked_stream(thread_id)
     _log.info("pending_ask.parked", request_id=request_id[:12], thread_id=thread_id[:12])
     # The drain's finally saves the reply so far (on_complete), marks the run
     # inactive and clears its live-run entry. That save is the checkpoint.

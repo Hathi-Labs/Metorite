@@ -62,10 +62,12 @@ from acb_common.card_body import CARD_CLIP, CUT_MARK, card_body, cut_refusal, is
 from acb_common.paging import bounds, page_line
 from acb_common.tool_refusals import (
     GatewayRefusal,
+    data,
     refusals_as_text,
     response_body,
     route_template,
     safe_detail,
+    strip_kind_prefix,
 )
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
@@ -214,6 +216,33 @@ def _mirror_message(exc: _MirrorBlocked) -> str:
     return f"Nothing was changed. {exc} {_MIRROR_ADVICE}"
 
 
+class _PreconditionFailed(GatewayRefusal):
+    """A 412 of ``projects.core.require_precondition`` on a CRM route: the
+    record changed since the read that gave the ``If-Match`` token (HRD-10c).
+
+    The same shape as ``skill_projects.client.PreconditionFailed`` (HRD-10a).
+    ``current`` is the route's ``detail.current``, the record as it is now, or
+    ``{}``. Its values can hold words of other people, mail-fed text too, so a
+    caller fences each value that it shows."""
+
+    def __init__(self, message: str, *, current: dict[str, Any], **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.current = current
+
+
+def _changed_since(status: int, body: Any) -> dict[str, Any] | None:
+    """The record of a precondition 412 (``detail.error`` is
+    ``precondition_failed``), ``{}`` when it has no record, or None for each
+    other response. Any other 412 or 428 keeps its own path."""
+    if status != 412 or not isinstance(body, dict):
+        return None
+    raw = body.get("detail")
+    if not isinstance(raw, dict) or raw.get("error") != "precondition_failed":
+        return None
+    current = raw.get("current")
+    return dict(current) if isinstance(current, dict) else {}
+
+
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     """Turn a 4xx/5xx into a :class:`GatewayRefusal` with the route's safe
     detail. ``build_agents`` wraps each tool in ``refusals_as_text``, so the
@@ -224,13 +253,20 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     detail = ""
     try:
         body = resp.json()
+        current = _changed_since(resp.status_code, body)
+        if current is not None:
+            # HRD-10c. The message names no value of the record.
+            raise _PreconditionFailed(
+                f"CRM {method} {path} failed (412): the record changed.",
+                current=current, status=412, route=route_template(path),
+            )
         if resp.status_code == 409 and isinstance(body, dict):
             blocked = body.get("detail")
             if isinstance(blocked, dict) and blocked.get("code") in _MIRROR_CODES:
                 raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."))
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("error") or "")
-    except _MirrorBlocked:
+    except (_MirrorBlocked, _PreconditionFailed):
         raise
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
@@ -247,13 +283,17 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
 
 
 async def _request(
-    method: str, path: str, *, timeout: float = 30.0, **kwargs: Any,
+    method: str, path: str, *, timeout: float = 30.0, if_match: str = "",
+    **kwargs: Any,
 ) -> httpx.Response:
     """Single gateway round-trip: URL + auth headers, fire, normalize errors.
 
     Refuses any verb outside :data:`_ALLOWED_METHODS` before the request is
     built, so the verb doctrine cannot be broken by a caller passing a
     different method — including one this module grows later.
+
+    *if_match* (HRD-10c) adds the ``If-Match`` header. Empty adds nothing, so
+    the headers are the headers of before.
     """
     if method.upper() not in _ALLOWED_METHODS:
         raise RuntimeError(
@@ -261,9 +301,12 @@ async def _request(
             f"are {sorted(_ALLOWED_METHODS)}. Deleting or replacing a CRM "
             "record is not something this agent can do."
         )
+    headers = _headers()
+    if if_match:
+        headers["If-Match"] = if_match
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
-            method, f"{_gateway_url()}{path}", headers=_headers(), **kwargs
+            method, f"{_gateway_url()}{path}", headers=headers, **kwargs
         )
         _raise_if_error(resp, method, path)
         return resp
@@ -283,8 +326,8 @@ async def _post(path: str, payload: dict[str, Any] | None = None) -> Any:
     return (await _request("POST", path, json=payload or {})).json()
 
 
-async def _patch(path: str, payload: dict[str, Any]) -> Any:
-    return (await _request("PATCH", path, json=payload)).json()
+async def _patch(path: str, payload: dict[str, Any], *, if_match: str = "") -> Any:
+    return (await _request("PATCH", path, json=payload, if_match=if_match)).json()
 
 
 # ── The four record types ────────────────────────────────────────────────────
@@ -373,12 +416,18 @@ def _record_uuid(record_id: str) -> str:
     normalises every one of them to 36 characters that cannot hold a path
     separator or a dot segment.
     """
+    # HRD-2: `search_company` prints `deal:<id>`. A CRM kind is cut. Another
+    # kind (`task:`, `email:`) is refused with its name.
+    cut = strip_kind_prefix(
+        record_id, "lead", "deal", "contact", "company", read_tool="search_crm or get_pipeline"
+    )
     try:
-        return str(UUID(str(record_id).strip()))
+        return str(UUID(cut))
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use the "
-            "id returned by search_crm or get_pipeline, not a name or a code."
+            "id returned by search_crm or get_pipeline, not a name or a code. "
+            "A task's activity_id comes from get_timeline."
         ) from None
 
 
@@ -728,6 +777,8 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20,
         out.append(
             f"• {when}{inherited} — {act.get('type') or entry.get('kind')}: "
             f"{act.get('subject') or '(no subject)'}"
+            # HRD-2: the id that crm_update_task takes.
+            + (f" (activity id {act['id']})" if act.get("id") else "")
             + (f" — {body[:160]}" if body else "")
             + (f" (by {act['created_by']})" if act.get("created_by") else "")
         )
@@ -1629,6 +1680,153 @@ async def _company_name(company_id: Any) -> str:
     return name or "(unnamed company)"
 
 
+# ── HRD-10c: changed since the card ─────────────────────────────────────────
+#
+# `chat_failure_modes.md` §4 class C3, §6 row HRD-10c. Behind
+# `CHAT_CARD_PRECONDITION_ORGS` (`ask_tools.card_precondition_on`, the flag of
+# HRD-10a), `crm_update_record` sends the `updated_at` of the read that the
+# card shows as `If-Match`. A record that changed while the card waited is a
+# 412, and the route writes nothing. Owner decision A (2026-11-16): the tool
+# answers with text, and no new card shows unless the member asks.
+
+#: The record types whose PATCH route reads ``If-Match`` (HRD-10c). Only a
+#: deal in this slice. The other three send the PATCH of before.
+_PRECONDITION_SLUGS: frozenset[str] = frozenset({"deals"})
+
+#: The most characters of one value in the changed-since text. The same cap
+#: as HRD-10a (``skill_projects.writes._DETAIL_NAME_MAX``).
+_CHANGED_MAX = 120
+
+
+def _card_version(slug: str, row: dict[str, Any]) -> str:
+    """The ``If-Match`` token of *row*: its ``updated_at``. ``""`` when the
+    route of *slug* reads no ``If-Match``, when the flag is off for the run's
+    org, or when the row has no stamp. The org comes from the run binding
+    inside the reader, never from an argument (R5)."""
+    if slug not in _PRECONDITION_SLUGS:
+        return ""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if not card_precondition_on():
+        return ""
+    return str(row.get("updated_at") or "").strip()
+
+
+def _bind_card_facts(**facts: Any) -> None:
+    """Bind facts that the next card does not show (WS-47 WAC-4, HRD-22).
+
+    ``acb_skills.whatsapp_acts.card_facts``: the facts go into the text that a
+    late approve and a stored call match on, so a replay of a card whose
+    record changed gets no grant. The card that the member sees never changes.
+    """
+    try:
+        from acb_skills.whatsapp_acts import card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    card_facts(**facts)
+
+
+def _bind_card_version(version: str) -> None:
+    """Put *version* into the facts of the next card (HRD-10c), or nothing
+    when it is ``""``.
+
+    The text of a late approve (HRD-22) or a stored call (RESUME-2a) then
+    holds it. A replay meets a changed record as a card with another text,
+    and the grant does not match. Flag off: no fact, the card of before."""
+    if version:
+        _bind_card_facts(record_version=version)
+
+
+def _changed_value(value: Any) -> str:
+    """One value of the changed-since text. A CRM value can hold the words of
+    a stranger (mail feeds the CRM), so it goes into a « » fence on one line
+    (``tool_refusals.data``) and is capped at :data:`_CHANGED_MAX`."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value is None or value == "" or value == [] or value == {}:
+        return "(empty)"
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = " ".join(str(value).split())
+    if len(text) > _CHANGED_MAX:
+        text = f"{text[:_CHANGED_MAX - 1]}…"
+    return data(text)
+
+
+async def _changed_since_card(
+    slug: str, record: str, target: str, before: dict[str, Any],
+    columns: list[str], customs: list[str], now: dict[str, Any],
+) -> str:
+    """The answer of ``crm_update_record`` to a 412 (HRD-10c). Nothing was
+    written.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``). Then one
+    line for each field on the card that another writer changed: the value of
+    the read that the card showed (*before*), then the value of the 412 row
+    (*now*, ``detail.current``). Only the fields on the card. The rest of the
+    record is never shown."""
+    from acb_skills.ask_tools import CARD_CHANGED_SINCE, card_outcome_text
+
+    label = ENTITY_LABELS[slug].lower()
+    lines = [card_outcome_text(
+        CARD_CHANGED_SINCE, f"The {label} {_changed_value(target)} was not changed.")]
+    if not now:
+        lines.append("The new values could not be read.")
+        lines.append(f"  id: {record}")
+        return "\n".join(lines)
+    rows: list[str] = []
+    for key in columns:
+        old, new = before.get(key), now.get(key)
+        if _shown(old) == _shown(new):
+            continue
+        if key == "company_id":
+            # A company shows by its name, never by its id.
+            old = await _company_name(old) if old not in (None, "") else None
+            new = await _company_name(new) if new not in (None, "") else None
+        rows.append(f"  {_human(key)}: {_changed_value(old)} → {_changed_value(new)}")
+    held = before.get("custom") if isinstance(before.get("custom"), dict) else {}
+    fresh = now.get("custom") if isinstance(now.get("custom"), dict) else {}
+    for key in customs:
+        old, new = held.get(key), fresh.get(key)
+        if _shown(old) != _shown(new):
+            rows.append(
+                f"  field {_changed_value(key)}: {_changed_value(old)} → {_changed_value(new)}")
+    if rows:
+        lines.append("These fields on the card changed (on the card → now):")
+        lines.extend(rows)
+    else:
+        lines.append(f"No field on the card changed. Another part of the {label} changed.")
+    lines.append(f"  id: {record}")
+    return "\n".join(lines)
+
+
+def _record_diff(
+    asked: dict[str, Any], asked_custom: dict[str, Any], current: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, tuple[str, str]]]:
+    """The columns and the custom keys of an edit that differ from *current*,
+    and their old and new values for the card. Only the fields that differ go
+    on the card and on the wire."""
+    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
+    changed: dict[str, Any] = {}
+    changed_custom: dict[str, Any] = {}
+    shown: dict[str, tuple[str, str]] = {}
+    for name, new in asked.items():
+        old = current.get(name)
+        if _shown(old) != _shown(new):
+            changed[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    for name, new in asked_custom.items():
+        old = held.get(name)
+        if _shown(old) != _shown(new):
+            changed_custom[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    return changed, changed_custom, shown
+
+
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def crm_update_record(
     entity: str, record_id: str, fields: dict[str, Any],
@@ -1663,21 +1861,10 @@ async def crm_update_record(
     # Read first: the card shows the old value beside the new one.
     row = await _get(f"/crm/{slug}/{record}")
     current = row if isinstance(row, dict) else {}
-    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
-    # Only the fields that differ go on the card and on the wire.
-    changed: dict[str, Any] = {}
-    changed_custom: dict[str, Any] = {}
-    shown: dict[str, tuple[str, str]] = {}
-    for name, new in asked.items():
-        old = current.get(name)
-        if _shown(old) != _shown(new):
-            changed[name] = new
-            shown[name] = (_shown(old), _shown(new))
-    for name, new in asked_custom.items():
-        old = held.get(name)
-        if _shown(old) != _shown(new):
-            changed_custom[name] = new
-            shown[name] = (_shown(old), _shown(new))
+    # HRD-10c: the version of the read that the card shows. Taken BEFORE the
+    # card, from the same read, so a change while the card waits is a 412.
+    version = _card_version(slug, current)
+    changed, changed_custom, shown = _record_diff(asked, asked_custom, current)
     if not shown:
         return "Those fields already hold those values, so nothing was changed."
     if "company_id" in shown:
@@ -1691,6 +1878,13 @@ async def crm_update_record(
 
     target = _row_title(slug, current)
     label = ENTITY_LABELS[slug].lower()
+    context = await _held_fields_block({
+        label: target,
+        # `field <Name>` is the card's key for a field it has no line for.
+        **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
+    })
+    # HRD-10c: bound after the body, so a refused cut body leaves no fact.
+    _bind_card_version(version)
     from acb_skills.ask_tools import request_confirmation
     answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card, nothing is
@@ -1698,11 +1892,7 @@ async def crm_update_record(
         close_on_steer=True,
         title=f"Change this {label}?",
         detail=f"{target} · " + ", ".join(_human(k) for k in shown),
-        context=await _held_fields_block({
-            label: target,
-            # `field <Name>` is the card's key for a field it has no line for.
-            **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
-        }),
+        context=context,
     )
     if not answer:
         return _not_written(
@@ -1710,9 +1900,17 @@ async def crm_update_record(
             unchanged=f"{target} was not changed.",
         )
     try:
-        await _patch(f"/crm/{slug}/{record}", payload)
+        # With no version (the flag is off, or the route reads no If-Match)
+        # `_request` adds no header: the request of before, byte for byte.
+        await _patch(f"/crm/{slug}/{record}", payload, if_match=version)
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
+    except _PreconditionFailed as stale:
+        # HRD-10c: a 412 wrote nothing. Each other refusal keeps its own path.
+        return await _changed_since_card(
+            slug, record, target, current, list(changed), list(changed_custom),
+            stale.current,
+        )
     return f"Changed {target}: " + "; ".join(
         f"{_human(k)} {o} → {n}" for k, (o, n) in shown.items()
     ) + "."

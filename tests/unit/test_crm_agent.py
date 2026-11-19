@@ -1253,7 +1253,10 @@ async def test_the_field_list_reads_a_module_and_names_each_use(monkeypatch) -> 
     assert "(key Unit_Price, currency) [measure: sum, avg, min, max]" in out
     assert "(key Category, select) [group by value]: Hardware" in out
     assert "(key Sales_Start, date) [group by month, quarter or year]" in out
-    assert "(key Description, text)" in out and "Description, text) [" not in out
+    # CRM-Q34-11: a text field of a module takes sums and ranges when it holds
+    # numbers, so its use is named now. Before, it had no bracket.
+    assert ("(key Description, text) [sums and ranges if it holds numbers, the answer "
+            "counts the rest]") in out
 
 
 async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatch) -> None:
@@ -1383,6 +1386,25 @@ async def test_a_bad_module_name_never_reaches_the_gateway(bad, monkeypatch) -> 
     assert out.startswith("Refused:") and "Invalid module name" in out
     out = await _T.crm_report("../../admin")
     assert out.startswith("Refused:") and "Unknown report" in out
+    assert calls == []
+
+
+@pytest.mark.parametrize("given", ["module:Products", "Module:Products", " module: Products "])
+async def test_a_module_tool_takes_the_module_prefix(given, monkeypatch) -> None:
+    """CRM-Q34-3 item 4: the module tools take ``module:<api_name>``, the
+    form of crm_aggregate, and the path holds the bare api_name."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_list_module_records(given)
+    await _T.crm_get_module_record(given, _ID)
+    paths = [c["path"] for c in calls if c["path"].startswith("/crm/modules/")]
+    assert paths == ["/crm/modules/Products/records", f"/crm/modules/Products/records/{_ID}"]
+
+
+@pytest.mark.parametrize("bad", ["module:module:Products", "module:../admin", "module:"])
+async def test_the_prefix_is_stripped_once_and_the_rule_still_holds(bad, monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    out = await _T.crm_list_module_records(bad)
+    assert out.startswith("Refused:") and "Invalid module name" in out
     assert calls == []
 
 

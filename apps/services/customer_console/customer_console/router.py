@@ -1373,6 +1373,54 @@ TERMINAL_STATUSES = frozenset({400, 404, 413, 422})
 CREDENTIAL_STATUSES = frozenset({401, 402, 403})
 
 
+#: The phrases that mark a vendor refusal as a BILLING refusal. A closed list
+#: of specific vendor sentences, matched in lower case against the message.
+#:
+#: 🔴 **Why this exists (2026-11-17).** The Anthropic account ran dry and
+#: Anthropic answered HTTP 400, not 402. A 400 is terminal, so the walk never
+#: reached the DeepSeek steps behind it, for over two hours.
+#: ⚠️ A bare word such as ``billing`` is left out on purpose. A vendor 400 can
+#: quote the request back, and a customer can write that word. Only a whole
+#: vendor phrase may mark a refusal as billing.
+BILLING_PHRASES: dict[str, tuple[str, ...]] = {
+    "anthropic": (
+        "credit balance is too low",  # HTTP 400, an empty balance
+        "you have reached your specified api usage limits",  # HTTP 400, our own cap
+    ),
+    # ⚠️ Not ``insufficient_quota``: litellm drops the error code from str(exc)
+    # for ``openai/``, so only the sentence survives. Gemini sends the SAME
+    # sentence on a per-minute 429, so the phrase must stay OpenAI-only.
+    "openai": ("exceeded your current quota",),
+    "deepseek": ("insufficient balance",),
+    "openrouter": ("insufficient credits", "requires more credits"),
+}
+
+#: Statuses that a billing phrase may lift to 402. Other statuses keep their own.
+_BILLING_LIFTED = frozenset({400, 403, 429})
+
+
+def effective_status(exc: BaseException, vendor: str | None = None) -> int | None:
+    """The status that the failover policy reads for a vendor error.
+
+    402 when the error is a billing refusal, else the error's own status. A
+    billing refusal is a 400, 403 or 429 whose message holds a
+    :data:`BILLING_PHRASES` entry for THIS vendor. An unknown vendor never lifts.
+
+    🔴 **The message is read to MATCH it and is never kept.** Nothing here
+    logs, stores or returns it (the rule of :func:`describe_failure`). Only
+    the status leaves.
+    """
+    status = getattr(exc, "status_code", None)
+    phrases = BILLING_PHRASES.get(vendor or "")
+    if status not in _BILLING_LIFTED or not phrases:
+        return status
+    try:
+        text = str(exc).lower()
+    except Exception:  # an odd error must not break the walk
+        return status
+    return 402 if any(p in text for p in phrases) else status
+
+
 def is_retryable(status: int | None) -> bool:
     """Is another step worth trying?
 
@@ -1456,6 +1504,9 @@ def describe_failure(failed: UpstreamFailed) -> dict[str, Any]:
         except Exception:  # an odd error must not break the log line
             text = ""
         hints = [w for w in ERROR_HINTS if re.search(rf"\b{w}\b", text)]
+    # OUR word, set by the classification and never by a match on the message.
+    if failed.status == 402:
+        hints.insert(0, "billing")
     return {
         "upstream_status": failed.status,
         "vendor": failed.vendor or "none",
@@ -1510,7 +1561,8 @@ async def walk_chain(
         try:
             answer = await attempt(step)
         except Exception as exc:
-            status = getattr(exc, "status_code", None)
+            # ⚠️ The effective status, so a billing 400 reads as the 402 it is.
+            status = effective_status(exc, vendor)
             if on_refusal is not None:
                 # Best effort. Recording a refusal must never become a second
                 # failure on a call that is already failing.
