@@ -21,8 +21,10 @@ proved without the database.
 7. A statement past the timeout is the 503 ``aggregate_timeout``.
 8. 30,000 records in 200 groups answer inside the 10 s timeout.
 9. A text field of numbers sums in two groups as in one (CRM-Q34-11).
-10. The chat tool walks pages 1 to 3 of one field with tied values, and
-    each group shows once. Among ties, the keys give the order.
+10. Through the chat tool: page 1 of one field is the answer of before
+    (a split, the near pass of ``q``, a date group in time order), and pages
+    2 and 3 continue it. 122 tied groups show once each, in the order of
+    their names. Among ties of two fields, the keys give the order.
 
 The hermetic rules are in ``test_crm_two_group.py``.
 """
@@ -112,7 +114,7 @@ def invoices(ns, monkeypatch):
     and one with no date. Org B: one invoice of its own site."""
     a, b = ns.org_a, ns.org_b
     # Org A also mirrors Works, the module of item 9.
-    _mirror_org(ns, a, [_module("Invoices"), _module("Works")])
+    _mirror_org(ns, a, [_module("Invoices"), _module("Works"), _module("Places")])
     _mirror_org(ns, b, [_module("Invoices")])
     for org in (a, b):
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
@@ -194,12 +196,21 @@ async def test_a_page_past_the_end_is_empty_with_the_counts(invoices, app_engine
     assert body["records"] == 1002 and body["omitted"] == count
 
 
-async def test_one_group_field_pages_past_fifty(invoices, app_engine) -> None:
+async def test_one_group_field_continues_the_answer_of_one_page(invoices, app_engine) -> None:
+    """Second fix round, B: page 1 of one field is the answer of before, with
+    ``next_group_page``. ``group_page=2`` and 3 continue it, and together
+    the three pages hold each group once."""
     a = invoices.org_a
     one = {k: v for k, v in _TWO.items() if k not in ("group_field2", "bucket")}
-    groups, first = await _every_page(invoices, a, 50, **one)
-    # 120 sites, and the record with no site.
-    assert first["group_count"] == 121 == len({g["key"] for g in groups})
+    first = await _ok(invoices, a, **one)
+    assert "group_count" not in first and first["omitted"] == 71
+    assert first["next_group_page"] == 2
+    page1 = await _ok(invoices, a, **one, group_page=1)
+    assert page1 == first  # page 1 is the answer of before
+    rest = [await _ok(invoices, a, **one, group_page=p) for p in (2, 3)]
+    assert all(r["group_count"] == 121 and r["total"] == first["total"] for r in rest)
+    groups = [*first["groups"], *rest[0]["groups"], *rest[1]["groups"]]
+    assert len(groups) == 121 == len({g["key"] for g in groups})
     assert all("key2" not in g and "label2" not in g for g in groups)
     assert sum(g["value"] for g in groups) == first["total"]
 
@@ -288,6 +299,7 @@ async def test_off_the_list_a_second_field_is_a_422(invoices, app_engine, monkey
     # Fix round item 1: off the list the route ignores the page parameters,
     # page 2 and a huge page too. The answer is the one of no page.
     plain = await _get(invoices, a, entity="module:Invoices", group_field="Site")
+    assert "next_group_page" not in plain.json()
     for page in (1, 2, 10**20):
         res = await _get(invoices, a, entity="module:Invoices", group_field="Site",
                          group_page=page, group_page_size=50)
@@ -329,7 +341,7 @@ async def test_a_statement_past_the_timeout_is_the_503(invoices, app_engine, mon
     slow = aggregate_route.paged_sql
     # Each row of the page sleeps past the LOCAL timeout of the statement.
     monkeypatch.setattr(aggregate_route, "paged_sql",
-                        lambda inner, whole: slow(inner, whole)
+                        lambda *args: slow(*args)
                         + " AND pg_sleep(0.5) IS NOT NULL")
     monkeypatch.setattr(aggregate_route, "STATEMENT_TIMEOUT_MS", 200)
     res = await _get(invoices, invoices.org_a, **_TWO)
@@ -449,24 +461,134 @@ async def _tool_text(p: Any, org: str, monkeypatch: Any, **args: Any) -> str:
     return await tools.crm_aggregate(**args)
 
 
-async def test_the_tool_pages_one_field_with_ties_and_no_group_twice(
-        invoices, app_engine, monkeypatch) -> None:
-    """Fix round item 1: 121 groups of Site (8 or 9 records each, so most
-    counts tie), walked page 1, 2, 3 through the tool. Every group shows
-    exactly once, and page 1 names the count of pages."""
+_PLACE_DEFS = [
+    ("Site", "lookup", {"lookup_module": "Sites"}, False, False),
+    ("Kind", "select", [{"label": "Rent", "value": "R"}, {"label": "Power", "value": "P"}],
+     False, False),
+    ("Qty", "number", None, False, False),
+    ("Tax", "number", None, False, False),
+    ("Visit_Date", "date", None, False, False),
+]
+
+
+@pytest.fixture
+def places(invoices):
+    """Module Places of org A: 121 sites, and a record with no site. Site n
+    holds 2 records when n is a multiple of 3, else 1, so most counts tie.
+    The id of site n is ``p<n>`` and its name ``Z<200 - n>``, so the names
+    sort the other way round from the ids. An order by id in place of the
+    name puts other groups on page 2."""
+    a = invoices.org_a
+    _defs(invoices, a, "module:Places", _PLACE_DEFS)
+    rows = []
+    for n in range(121):
+        for copy in range(2 if n % 3 == 0 else 1):
+            rows.append((f"x{n:03d}{copy}", {
+                "Site": {"id": f"p{n:03d}", "name": f"Z{200 - n:03d}"},
+                "Kind": "R" if n % 2 else "P", "Qty": n % 7, "Tax": n % 5,
+                "Visit_Date": f"2026-{7 + n % 4:02d}-0{1 + copy}"}))
+    rows.append(("x-none", {"Kind": "R", "Qty": 1, "Tax": 1, "Visit_Date": "2026-07-09"}))
+    with invoices.admin_engine.begin() as c:
+        for ext, fields in rows:
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Places', 'zoho', :e, "
+                ":n, CAST(:f AS jsonb))"),
+                {"o": a, "e": ext, "n": "Fiber", "f": json.dumps(fields)})
+    return invoices
+
+
+def _lines(out: str) -> list[tuple[str, float]]:
     import re
 
-    a = invoices.org_a
-    seen: list[str] = []
-    for page in (1, 2, 3):
-        out = await _tool_text(invoices, a, monkeypatch, entity="module:Invoices",
-                               group_field="Site", page=page)
-        seen.extend(re.findall(r"^- (.+?): ", out, flags=re.M))
-        if page == 1:
-            assert "Groups 1-50 of 121, page 1 of 3. Ask for page 2 for more." in out
-            assert "Other (" not in out
-    sites = {f"Site {i}" for i in range(120)} | {"(none)"}
-    assert len(seen) == len(set(seen)) == 121 and set(seen) == sites
+    return [(m[0], float(m[1].replace(",", "")))
+            for m in re.findall(r"^- (.+?): ([0-9,.]+)$", out, flags=re.M)]
+
+
+async def test_the_tool_walks_one_field_with_ties_by_the_name(
+        places, app_engine, monkeypatch) -> None:
+    """Second fix round, E4: page 1 through the tool is the answer of before
+    (no page parameter), and pages 2 and 3 come from the paged read. Each of
+    the 122 groups shows once, and page 2 starts right after page 1 in the
+    order of page 1: the count down, then the NAME. The names sort the other
+    way from the ids, so an order by the id goes red here."""
+    a = places.org_a
+    pages = [_lines(await _tool_text(places, a, monkeypatch, entity="module:Places",
+                                     group_field="Site", page=page)) for page in (1, 2, 3)]
+    assert [len(p) for p in pages] == [50, 50, 22]
+    seen = [label for page in pages for label, _v in page]
+    assert len(seen) == len(set(seen)) == 122
+    walk = [item for page in pages for item in page]
+    assert walk == sorted(walk, key=lambda g: (-g[1], g[0]))
+    last, first = pages[0][-1], pages[1][0]
+    assert (-last[1], last[0]) < (-first[1], first[0])
+    page1 = await _tool_text(places, a, monkeypatch, entity="module:Places",
+                             group_field="Site")
+    assert "Ask for page 2 for the next groups." in page1.splitlines()
+
+
+async def _sent_and_text(p: Any, org: str, monkeypatch: Any,
+                         **args: Any) -> tuple[list[tuple[dict, dict]], str]:
+    """The tool text, and each aggregate call of the tool with its answer."""
+    import acb_skills.crm_tools as tools
+
+    calls: list[tuple[dict, dict]] = []
+
+    async def _forward(path: str, params: dict | None = None, timeout: float = 30.0) -> Any:
+        sent = {k: v for k, v in (params or {}).items() if v is not None}
+        query = urlencode(sent)
+        res = await _call(p, _admin(org), "GET", f"{path}?{query}" if query else path)
+        body = res.json() if res.status_code == 200 else {}
+        if path == "/crm/aggregate":
+            assert res.status_code == 200, res.text
+            calls.append((sent, body))
+        return body
+
+    monkeypatch.setattr(tools, "_get", _forward)
+    return calls, await tools.crm_aggregate(**args)
+
+
+async def test_a_split_by_a_group_answers_on_and_off_the_list(
+        places, app_engine, monkeypatch) -> None:
+    """Second fix round, E1: a split by a group through the tool is the
+    same answer on the list and off it, never a 422."""
+    args = {"entity": "module:Places", "measure": "sum", "fields": ["Qty", "Tax"],
+            "group_field": "Kind"}
+    on_calls, on = await _sent_and_text(places, places.org_a, monkeypatch, **args)
+    _set(monkeypatch, "")
+    off_calls, off = await _sent_and_text(places, places.org_a, monkeypatch, **args)
+    assert on == off and on_calls[-1][1] == off_calls[-1][1]
+    assert "group_page" not in on_calls[-1][0] and len(on_calls[-1][1]["split"]) == 2
+
+
+async def test_q_and_a_group_keep_the_near_pass(places, app_engine, monkeypatch) -> None:
+    """Second fix round, E2: ``q`` with a near spelling and a group, on the
+    list. Page 1 of the tool is the route's answer with no page, near pass
+    and all."""
+    a = places.org_a
+    calls, _out = await _sent_and_text(places, a, monkeypatch, entity="module:Places",
+                                       group_field="Kind", q="Fibre")
+    sent, body = calls[-1]
+    assert "group_page" not in sent and "group_count" not in body
+    route = await _ok(places, a, entity="module:Places", group_field="Kind", q="Fibre")
+    assert body == route
+    assert body.get("near") or body.get("nearest"), body
+
+
+async def test_a_date_group_stays_in_time_order(places, app_engine, monkeypatch) -> None:
+    """Second fix round, E3: a month group of one field through the tool is
+    the answer of before, in time order, on page 1. Page 2 of it is the
+    same answer too, as off the list, since a date group cannot continue."""
+    a = places.org_a
+    args = {"entity": "module:Places", "group_field": "Visit_Date", "bucket": "month"}
+    calls, _out = await _sent_and_text(places, a, monkeypatch, **args)
+    body = calls[-1][1]
+    keys = [g["key"] for g in body["groups"]]
+    assert keys == ["2026-07", "2026-08", "2026-09", "2026-10"]
+    assert body == await _ok(places, a, entity="module:Places", group_field="Visit_Date",
+                             bucket="month")
+    later = await _ok(places, a, **args, group_page=2)
+    assert later == body and "group_count" not in later
 
 
 def _ordered(groups: list[dict]) -> list[dict]:

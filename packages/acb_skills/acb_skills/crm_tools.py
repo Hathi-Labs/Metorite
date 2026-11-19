@@ -2082,11 +2082,12 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
-    # CRM-Q34-10: the route refuses a second group that it cannot take. On a
-    # module group it pages the groups, so page N is its page N, page 1 too.
-    # Off CRM_MODULE_FIND_ORGS it ignores the page, as before.
+    # CRM-Q34-10: the route refuses a second group that it cannot take. With
+    # one, or for page 2 on of one module group, the route cuts page N. Page
+    # 1 of one group is the answer of before, and a route that cannot page
+    # it ignores the page.
     params["group_field2"] = group_field2 or None
-    if slug.startswith(MODULE_PREFIX) and (group_field or group_field2):
+    if group_field2 or (slug.startswith(MODULE_PREFIX) and group_field and _page(page) > 1):
         params.update(group_page=_page(page), group_page_size=MAX_ROWS)
     if fields:
         # CRM-Q25e part 2: one statement reads each field. The route checks
@@ -2209,6 +2210,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
                 else fmt_with(data.get("other"), data.get("others"), "other"))
         lines.append(f"Other ({omitted} smaller groups): {rest}. "
                      "The total counts them. Narrow the filter to see them.")
+        lines.extend(_next_page_line(data))
     zone = data.get("zone")
     if zone and (group_by in _ZONED_GROUPS or "datetime" in (
             data.get("group_field_type"), data.get("group_field2_type"))):
@@ -2219,6 +2221,12 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     lines.extend([*filters, *mine, *_text_number_lines(data, split),
                   *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
+
+
+def _next_page_line(data: dict[str, Any]) -> list[str]:
+    """CRM-Q34-10: one line when the route says that page 2 continues this
+    answer (``next_group_page``), else none."""
+    return ["Ask for page 2 for the next groups."] if data.get("next_group_page") else []
 
 
 def _group_words(data: dict[str, Any], group_field: str | None, bucket: str | None) -> str:

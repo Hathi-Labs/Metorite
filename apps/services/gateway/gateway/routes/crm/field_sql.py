@@ -58,6 +58,7 @@ groups of ``aggregate.py`` take their month on that clock, through
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -766,6 +767,32 @@ def check_groups(scope: FieldScope, key: str | None, key2: str | None,
     to_first = dated[0] or not dated[1]
     return (check_group(scope, key, bucket if to_first else None),
             check_group(scope, key2, None if to_first else bucket))
+
+
+#: CRM-Q34-10: the bound options of :func:`group_label_sql`.
+_OPTIONS_KEY = "agf_opts"
+#: The label of a group with no value, as ``aggregate._compute`` names it.
+NO_VALUE_LABEL = "(none)"
+
+
+def one_group_order(ref: FieldRef) -> tuple[str, dict[str, Any]]:
+    """CRM-Q34-10: the ORDER BY of a later page of ONE group field, over the
+    columns ``value``, ``label`` and ``key`` of the grouped rows.
+
+    It is the order in which ``aggregate._compute`` keeps its 50 largest
+    groups, so page 2 starts where the answer of one page stops: the value
+    rounded to 2 places, largest first, then the label as Python names it.
+    The label is the lookup name, else the option label, else the key, else
+    "(none)". An empty text falls through, as Python's ``or`` does.
+    ``COLLATE "C"`` orders it by code point, as Python sorts a ``str``. The
+    key ends the order, so it is total. The options are one bound value."""
+    label = (
+        f"COALESCE(NULLIF(label, ''), NULLIF(CAST(:{_OPTIONS_KEY} AS jsonb) ->> key, ''), "
+        f"NULLIF(key, ''), '{NO_VALUE_LABEL}') COLLATE \"C\""
+    )
+    order = (f"round(CAST(value AS numeric), 2) DESC NULLS LAST, {label} ASC, "
+             "key ASC NULLS LAST")
+    return order, {_OPTIONS_KEY: json.dumps(ref.options or {})}
 
 
 # ── The expressions. Every key and value is a bound parameter. ──────────────

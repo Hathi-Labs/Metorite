@@ -66,14 +66,18 @@ each other group largest first.
 **Two group fields, and pages of groups** (CRM-Q34-10, ``crm_platform.md``
 §18.17). On a module, ``group_field2`` names a second field, so a group is a
 pair, such as a site and a month. At most one of the two is a date, and
-``bucket`` goes to it. ``group_page`` and ``group_page_size`` (1 to
-:data:`GROUP_PAGE_MAX`, default :data:`MAX_GROUPS`) page the groups IN SQL,
-largest value first, then by each key. That order is a total order, so two
-pages never share a group. The answer adds ``group_count``, ``group_page``
-and ``group_pages``. ``total`` and ``records`` stay the answer over every
-group. It is dark behind ``CRM_MODULE_FIND_ORGS`` (``module_find_allowed``).
-Off the list, ``group_field2`` is a 422 that names the way without it, and
-the page parameters are ignored, so every other call is the answer of today.
+``bucket`` goes to it. Such a call is paged IN SQL with ``group_page`` and
+``group_page_size`` (1 to :data:`GROUP_PAGE_MAX`, default :data:`MAX_GROUPS`),
+largest value first, then by each key. With ONE field, only a page past 1 of
+a value group is paged. It takes the order in which the answer of one page
+cut its 50 groups (``field_sql.one_group_order``), so page 2 starts where
+that answer stops. That answer then carries ``next_group_page``. Page 1, a
+date group, a split, a ``group_by`` key word and ``q`` keep the answer of
+before. A paged answer adds ``group_count``, ``group_page`` and
+``group_pages``. ``total`` and ``records`` stay the answer over every group.
+It is dark behind ``CRM_MODULE_FIND_ORGS`` (``module_find_allowed``). Off the
+list, ``group_field2`` is a 422 that names the way without it, and the page
+parameters are ignored, so every other call is the answer of today.
 
 **One zone for each month** (CRM-Q25b). ``created_month``, ``updated_month``
 and a ``datetime`` bucket take the month on the clock of the CRM zone,
@@ -182,6 +186,7 @@ from gateway.routes.crm.field_sql import (
     module_measure,
     module_scope,
     module_where,
+    one_group_order,
     overlay_amount,
     overlay_close,
     overlay_filters,
@@ -548,6 +553,10 @@ class AggregateResponse(BaseModel):
     group_count: int | None = Field(default=None, exclude_if=lambda value: value is None)
     group_page: int | None = Field(default=None, exclude_if=lambda value: value is None)
     group_pages: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-10: 2 when the answer of one page left groups out and a
+    #: ``group_page=2`` continues it (:func:`_paging`). Absent otherwise.
+    next_group_page: int | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -1188,10 +1197,13 @@ async def _module_filters(
 #: ``avg`` reads ``s`` and ``n`` instead. Each value is a literal.
 _WHOLE: dict[str, str] = {"min": "min(value)", "max": "max(value)"}
 
-#: The order of the groups of a page: the largest value first, then each
-#: key. (key, key2) is unique for each group, so the order is TOTAL, and two
-#: pages never share a group or skip one.
+#: The order of the groups of a page of TWO group fields: the largest value
+#: first, then each key. (key, key2) is unique for each group, so the order
+#: is TOTAL, and two pages never share a group or skip one.
 GROUP_ORDER = "value DESC NULLS LAST, key ASC NULLS LAST, key2 ASC NULLS LAST"
+
+#: A later page of ONE group field takes ``field_sql.one_group_order``: the
+#: order in which :func:`_compute` keeps its 50 largest groups.
 
 
 @dataclass
@@ -1209,12 +1221,13 @@ class _Pages:
     text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
 
 
-def paged_sql(inner: str, whole: str) -> str:
+def paged_sql(inner: str, whole: str, order: str = GROUP_ORDER) -> str:
     """ONE statement over the groups of *inner*: a first row (``agf_pos`` 0)
     with the measure over every group and the count of groups, then the rows
     of one page (``agf_pos`` from ``:agf_lo`` + 1 to ``:agf_hi``). The page is
     cut in SQL, so the answer never holds every group. *inner* is SQL of this
-    module, *whole* a value of :data:`_WHOLE`, and the page bounds are bound
+    module, *whole* a value of :data:`_WHOLE`, *order* :data:`GROUP_ORDER`
+    or ``field_sql.one_group_order``, and the page bounds are bound
     values."""
     cols = "key, label, key2, label2, value, s, n, c"
     return (
@@ -1222,7 +1235,7 @@ def paged_sql(inner: str, whole: str) -> str:
         "SELECT 0 AS agf_pos, NULL AS key, NULL AS label, NULL AS key2, NULL AS label2, "
         f"{whole} AS value, sum(s) AS s, sum(n) AS n, sum(c) AS c, "
         "count(*) AS agf_count FROM agf_groups "
-        f"UNION ALL SELECT * FROM (SELECT row_number() OVER (ORDER BY {GROUP_ORDER}) "
+        f"UNION ALL SELECT * FROM (SELECT row_number() OVER (ORDER BY {order}) "
         f"AS agf_pos, {cols}, 0 AS agf_count FROM agf_groups) agf_page "
         "WHERE agf_pos > :agf_lo AND agf_pos <= :agf_hi"
     )
@@ -1233,7 +1246,7 @@ async def _read_pages(
     group_field2: str | None, bucket: str | None, pairs: list[tuple[str, str]],
     params: ListParams, page: int, size: int, timeout_ms: int | None,
     status_group: bool,
-) -> _Pages:
+) -> _Pages | None:
     """One page of the groups of a module total, by one or two fields, in
     the caller's tenant session (CRM-Q34-10). The filters are the ones of
     :func:`_read` (:func:`_module_filters`), and every key is bound."""
@@ -1248,6 +1261,10 @@ async def _read_pages(
     measured = check_measure(scope, field) if field else None
     if group_field2 is None:
         grouped, grouped2 = check_group(scope, group_field, bucket), None
+        if grouped.type in DATE_TYPES:
+            # A date group of one field keeps time order, so no later page
+            # can continue it: the caller gives the answer of one page.
+            return None
     else:
         grouped, grouped2 = check_groups(scope, group_field, group_field2, bucket)
     bound = dict(mod.where.params)
@@ -1282,9 +1299,13 @@ async def _read_pages(
         f"FROM {MODULE_TABLE}{from_source(*sources)}{where_sql}{group_by_sql}"
     )
     whole = _WHOLE.get(field_measure, "sum(value)")
+    order = GROUP_ORDER
+    if grouped2 is None:
+        order, order_params = one_group_order(grouped)
+        bound.update(order_params)
     await _keep_deadline(db, deadline)
     rows = (await db.execute(
-        text(paged_sql(inner, whole)), bound,
+        text(paged_sql(inner, whole, order)), bound,
     )).fetchall()
     head = next(r for r in rows if int(r.agf_pos) == 0)
     page_rows = sorted((r for r in rows if int(r.agf_pos) > 0), key=lambda r: int(r.agf_pos))
@@ -1297,15 +1318,18 @@ async def _read_pages(
 def _paging(
     module: str | None, group_field: str | None, fields: str | None,
     group_field2: str | None, group_page: int | None, group_page_size: int | None,
+    *, status_group: bool = False, q: str | None = None,
 ) -> tuple[int, int] | None:
     """CRM-Q34-10: the page and its size for a paged answer, None for the
     answer of today, or a 422.
 
     ``group_field2`` is new, so a core entity and an org off
-    ``CRM_MODULE_FIND_ORGS`` refuse it. With no ``group_field2``, a core
-    entity and an org off the list IGNORE ``group_page`` and
-    ``group_page_size``: the call is the call of today, page 2 too. On the
-    list, a module call with ``group_field`` and a page parameter is paged."""
+    ``CRM_MODULE_FIND_ORGS`` refuse it. On the list, a call with it is paged.
+    With no ``group_field2``, the paged answer serves ONLY what the answer
+    of today cannot: a page past 1 of one field of a module. A split, a
+    ``group_by`` key word and ``q`` (its near pass) keep the answer of today,
+    and so does a date group (:func:`_read_pages`). Off the list and on a
+    core entity, the page parameters are ignored."""
     if group_field2 is None and group_page is None and group_page_size is None:
         return None
     if group_field2 is not None and module is None:
@@ -1315,12 +1339,14 @@ def _paging(
         raise _refuse(TWO_GROUP_OFF)
     if not on:
         return None
-    if group_field is None:
-        if group_field2 is not None or (group_page or 1) > 1:
-            raise _refuse("group_field2 and group_page go with group_field.")
+    if group_field2 is None and (
+            (group_page or 1) <= 1 or group_field is None or fields or status_group
+            or q is not None):
         return None
+    if group_field is None:
+        raise _refuse("group_field2 goes with group_field.")
     if fields:
-        raise _refuse("A split takes one group field and no page. Give field=<key>.")
+        raise _refuse("A split takes one group field. Give field=<key>.")
     page = 1 if group_page is None else group_page
     if not 1 <= page <= GROUP_PAGES_MAX:
         raise _refuse(f"group_page is 1 to {GROUP_PAGES_MAX:,}.")
@@ -1335,8 +1361,9 @@ async def _compute_pages(
     group_field2: str | None, bucket: str | None, pairs: list[tuple[str, str]],
     params: ListParams, paging: tuple[int, int], timeout_ms: int | None,
     timed_out: dict[str, Any], status_group: bool,
-) -> AggregateResponse:
-    """The paged answer of :func:`_compute` (CRM-Q34-10). A field that is
+) -> AggregateResponse | None:
+    """The paged answer of :func:`_compute` (CRM-Q34-10), or None for a date
+    group of one field, which takes the answer of one page. A field that is
     not on the module names the modules that hold it (task 3690), and a
     statement past the timeout is the 503 of today."""
     try:
@@ -1354,6 +1381,8 @@ async def _compute_pages(
         if _is_timeout(exc):
             raise HTTPException(status_code=503, detail=timed_out) from None
         raise
+    if got is None:
+        return None
     return _paged_answer(f"{MODULE_PREFIX}{module}", measure, group_field, bucket,
                          got, *paging)
 
@@ -1666,13 +1695,16 @@ async def _compute(
     if status_group:
         group_by, group_field = None, STATUS_WORD
     group_field2 = group_field2 or None
-    paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size)
+    paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size,
+                     status_group=status_group, q=params.q)
     if paging is not None and module is not None and group_field is not None:
-        return await _compute_pages(
+        paged = await _compute_pages(
             module, measure=measure, field=field, group_field=group_field,
             group_field2=group_field2, bucket=bucket, pairs=pairs, params=params,
             paging=paging, timeout_ms=timeout_ms, timed_out=timed_out,
             status_group=status_group)
+        if paged is not None:
+            return paged
     try:
         async with _tenant_session() as db:
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
@@ -1802,7 +1834,21 @@ async def _compute(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),
             group_by),
+        next_group_page=_next_page(module, group_field, fields, rest, bucketed,
+                                   status_group, params.q),
     )
+
+
+def _next_page(module: str | None, group_field: str | None, fields: str | None,
+               rest: list[Any], bucketed: bool, status_group: bool,
+               q: str | None) -> int | None:
+    """CRM-Q34-10: 2 when ``group_page=2`` continues this answer of one page
+    (:func:`_paging`): a module on ``CRM_MODULE_FIND_ORGS``, groups left out,
+    and a value group of one field with no split, no key word and no ``q``."""
+    if (not rest or module is None or group_field is None or fields or bucketed
+            or status_group or q is not None):
+        return None
+    return 2 if module_find_allowed(current_tenant()) else None
 
 
 def _group_split(split: list[FieldRef], acc: _Acc, empty: list[bool]) -> dict[str, float | None]:

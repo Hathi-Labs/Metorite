@@ -134,9 +134,9 @@ def test_on_the_list_the_page_and_its_size(agg, monkeypatch) -> None:
     _flag(agg, monkeypatch, True)
     assert agg._paging("Invoices", "Site", None, "Status", None, None) == (1, agg.MAX_GROUPS)
     assert agg._paging("Invoices", "Site", None, None, 3, 200) == (3, 200)
-    assert "200" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 1, 201))
-    assert _detail(lambda: agg._paging("Invoices", "Site", None, None, 1, 0))
-    assert "1 to 1,000,000" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 0,
+    assert "200" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 2, 201))
+    assert _detail(lambda: agg._paging("Invoices", "Site", None, None, 2, 0))
+    assert "1 to 1,000,000" in _detail(lambda: agg._paging("Invoices", "Site", None, "Day", 0,
                                                             None))
     # Fix round item 2: a page past the bound is a 422, never an int8 overflow.
     assert agg.GROUP_PAGES_MAX == 1_000_000
@@ -145,9 +145,41 @@ def test_on_the_list_the_page_and_its_size(agg, monkeypatch) -> None:
         assert "1 to 1,000,000" in _detail(
             lambda page=page: agg._paging("Invoices", "Site", None, None, page, None))
     assert "group_field" in _detail(lambda: agg._paging("Invoices", None, None, "Site", 1, None))
-    assert "group_field" in _detail(lambda: agg._paging("Invoices", None, None, None, 2, None))
-    assert agg._paging("Invoices", None, None, None, 1, None) is None
-    assert "split" in _detail(lambda: agg._paging("Invoices", "Site", "a,b", None, 2, None))
+    assert "split" in _detail(lambda: agg._paging("Invoices", "Site", "a,b", "Day", 1, None))
+
+
+def test_one_field_pages_only_what_the_old_answer_cannot(agg, monkeypatch) -> None:
+    """Second fix round, B: with one field, only a page past 1 of a value
+    group is paged. Page 1, a split, a group_by key word (status), ``q`` and
+    no group field keep the answer of before."""
+    _flag(agg, monkeypatch, True)
+    for page, size in ((None, 50), (1, None), (1, 200), (0, None)):
+        assert agg._paging("Invoices", "Site", None, None, page, size) is None
+    assert agg._paging("Invoices", "Site", "a,b", None, 2, None) is None
+    assert agg._paging("Invoices", "@status", None, None, 2, None, status_group=True) is None
+    assert agg._paging("Invoices", "Site", None, None, 2, None, q="acme") is None
+    assert agg._paging("Invoices", None, None, None, 2, None) is None
+    assert agg._paging("Invoices", "Site", None, None, 2, None) == (2, agg.MAX_GROUPS)
+
+
+def test_the_order_of_one_field_is_the_cut_of_the_old_answer() -> None:
+    """Second fix round, B: a later page of one field orders as the answer
+    of one page cut its 50 groups: the rounded value down, then the label of
+    Python (lookup name, option label, key, "(none)") by code point, then
+    the key."""
+    import json
+
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _scope()
+    order, params = fs.one_group_order(scope.ref("Site"))
+    assert order.startswith("round(CAST(value AS numeric), 2) DESC NULLS LAST, COALESCE(")
+    assert 'NULLIF(label, \'\')' in order and "'(none)') COLLATE \"C\" ASC" in order
+    assert order.endswith("key ASC NULLS LAST")
+    assert order.index("NULLIF(label") < order.index("->> key") < order.index("NULLIF(key")
+    status = fs.FieldRef(key="Status", type="select", label="Status", options={"P": "Paid"})
+    assert json.loads(fs.one_group_order(status)[1]["agf_opts"]) == {"P": "Paid"}
+    assert params == {"agf_opts": "{}"}
 
 
 def test_two_dates_are_a_422() -> None:
@@ -231,11 +263,11 @@ async def test_the_tool_names_the_page_and_each_pair(monkeypatch) -> None:
     assert "Other (" not in out
 
 
-async def test_the_tool_sends_the_page_on_every_module_group(monkeypatch) -> None:
-    """Fix round item 1: page 1 and page 2 of a module group both ask the
-    route for its page, so both read ONE order and no group repeats or goes
-    missing. Item 3: a second group goes to the route, which refuses what it
-    cannot take. A core entity sends no page."""
+async def test_the_tool_sends_a_page_only_where_the_old_answer_stops(monkeypatch) -> None:
+    """Second fix round, A: page 1 of one group sends no page, so it is the
+    answer of before (a split, the near pass of q, time order, findings).
+    Page 2 on of a module group asks the route for its page. A second group
+    always goes to the route, which refuses what it cannot take."""
     import acb_skills.crm_tools as tools
 
     sent: list[dict] = []
@@ -248,14 +280,19 @@ async def test_the_tool_sends_the_page_on_every_module_group(monkeypatch) -> Non
                 "total": 1, "other": 0, "omitted": 0}
 
     monkeypatch.setattr(tools, "_get", _get)
-    for page in (1, 2):
-        await tools.crm_aggregate("module:Invoices", group_field="Site", page=page)
-        assert (sent[-1]["group_page"], sent[-1]["group_page_size"]) == (page, tools.MAX_ROWS)
-        assert "group_field2" not in sent[-1]
+    await tools.crm_aggregate("module:Invoices", group_field="Site", page=1)
+    assert not {"group_field2", "group_page", "group_page_size"} & set(sent[-1])
+    await tools.crm_aggregate("module:Invoices", group_field="Site", fields=["Qty", "Tax"])
+    assert not {"group_page", "group_page_size"} & set(sent[-1])
+    await tools.crm_aggregate("module:Invoices", group_field="Site", page=2)
+    assert (sent[-1]["group_page"], sent[-1]["group_page_size"]) == (2, tools.MAX_ROWS)
+    assert "group_field2" not in sent[-1]
     await tools.crm_aggregate("module:Invoices", group_by="status", group_field2="Site")
     assert sent[-1]["group_field2"] == "Site" and sent[-1]["group_page"] == 1
     await tools.crm_aggregate("deals", group_field="Region", group_field2="Stage", page=2)
-    assert sent[-1]["group_field2"] == "Stage" and "group_page" not in sent[-1]
+    assert sent[-1]["group_field2"] == "Stage"
+    await tools.crm_aggregate("deals", group_field="Region", page=2)
+    assert "group_page" not in sent[-1]
     await tools.crm_aggregate("module:Invoices")
     assert not {"group_field2", "group_page", "group_page_size"} & set(sent[-1])
 
@@ -300,3 +337,23 @@ def test_a_page_of_an_empty_module_is_no_filter_miss() -> None:
     params = {"entity": "module:Invoices", "group_field": "Site", "group_field2": "Day",
               "group_page": 1, "group_page_size": 50}
     assert tools._no_match(params, {"records": 0}, "Invoices") is None
+
+
+async def test_page_1_says_that_page_2_continues_it(monkeypatch) -> None:
+    """Second fix round, D: one short line, only when the route says that
+    page 2 continues the answer."""
+    import acb_skills.crm_tools as tools
+
+    body = {"entity": "module:Invoices", "measure": "count", "zone": "UTC",
+            "groups": [{"key": "s1", "label": "Site 1", "value": 3}],
+            "total": 5, "other": 2, "omitted": 2, "records": 5}
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        return dict(body)
+
+    monkeypatch.setattr(tools, "_get", _get)
+    plain = await tools.crm_aggregate("module:Invoices", group_field="Site")
+    assert "Ask for page 2" not in plain and "Other (2 smaller groups)" in plain
+    body["next_group_page"] = 2
+    more = await tools.crm_aggregate("module:Invoices", group_field="Site")
+    assert "Ask for page 2 for the next groups." in more.splitlines()

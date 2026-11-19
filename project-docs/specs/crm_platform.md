@@ -8622,35 +8622,49 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   largest groups.
 - **Outcome.** A module total takes `group_field2`, a second group field. At
   most one of the two fields is a date, and `bucket` goes to it. The route
-  pages the groups in SQL with `group_page` and `group_page_size` (1 to 200,
-  default 50). The answer gives `group_count`, `group_page` and
-  `group_pages`.
+  pages such groups in SQL with `group_page` and `group_page_size` (1 to
+  200, default 50). A total of one field can go past its 50 largest groups
+  with `group_page=2` and on. A paged answer gives `group_count`,
+  `group_page` and `group_pages`.
 - **Scope.**
-  - The order of a page is the value, largest first, then each key. A key
-    ends the order, so two pages never share a group or skip one.
+  - A page of two fields is in the order of the value, largest first, then
+    each key. A key ends the order, so two pages never share a group.
+  - Page 1 of one field is the answer of today, byte for byte. When it
+    leaves groups out on the list, it carries `next_group_page: 2`, and the
+    tool adds "Ask for page 2 for the next groups."
+  - Page 2 on of one field takes the order in which page 1 cut its 50
+    groups: the value rounded to 2 places, largest first, then the label of
+    the group by code point, then the key (`field_sql.one_group_order`). So
+    page 2 starts where page 1 stops.
   - `total` and `records` stay the answer over every group. A group with no
     value in a field is its own group, with the label "(none)".
   - The filters are the ones of the module total of today, through one
     helper (`aggregate._module_filters`).
   - A core entity, two date fields, one field twice, a bucket on a value
-    field and a split each give a 422.
+    field, and a split with two fields each give a 422.
   - Off the list, `group_field2` gives a 422. It names the way without it:
     group by one field, and filter by the other. The route ignores
     `group_page` and `group_page_size`, so every other call gives the answer
-    of today. A `group_page` past 1,000,000 gives a 422.
-  - The tool `crm_aggregate` takes `group_field2` and always sends it. On a
-    module group, its `page` is the page of the route, page 1 too. On the
-    list, page 1 of one group field is then a paged answer. It names the page
-    and the count of pages, and it has no "Other" line.
-- **Limits.** A paged answer has no findings of one day. Its `other` is None,
-  and its `omitted` counts the groups that are not on the page. A `q` filters
-  a paged answer by its exact words, with no near pass. Groups of a date
-  come in the order of their value, not of time.
-- **Fences.** `tests/unit/test_crm_two_group.py` (each refusal, the SQL of one
-  group field, the total order and the tool text) and
-  `tests/unit/test_crm_two_group_r8.py` (each group of each page against an
-  independent `GROUP BY`, the list count, org B, the base answer byte for
-  byte, the 503, and 30,000 records in 200 groups).
+    of today. A `group_page` past 1,000,000 gives a 422 on the list.
+  - The tool `crm_aggregate` takes `group_field2` and always sends it. It
+    sends the page only with `group_field2`, or for page 2 on of one module
+    group.
+- **Limits.** A page past 1 of one date group gives the answer of page 1
+  again. So does a page past 1 with a split, a `group_by` key word or a `q`.
+  Those groups cannot continue in the order of the value, and that answer
+  says to narrow the filter. A paged answer has no findings of one day. Its
+  `other` is None, and its `omitted` counts the groups that are not on the
+  page. A `q` filters a two-field
+  answer by its exact words, with no near pass. A value that ends in exactly
+  half of a cent can round one way in Python and the other in SQL.
+- **Fences.** `tests/unit/test_crm_two_group.py` holds each refusal, the SQL
+  of one group field, both orders and the tool text.
+  `tests/unit/test_crm_two_group_r8.py` checks each group of each page
+  against an independent `GROUP BY`. It also checks the list count, org B,
+  the base answer byte for byte, the 503, and 30,000 records in 200 groups.
+  Through the tool, it checks a split, the near pass of `q`, and a date
+  group in time order. It walks 122 tied groups whose names sort the other
+  way from their ids.
 
 ## 19. The daily-use UX (2026-10-12)
 
