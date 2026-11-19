@@ -184,6 +184,11 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes to the relay of a run with no queue (`_emit_to_run_or_relay`).
    - Fences: `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_tool_packs_off.py`.
 
+27a. **A WhatsApp turn holds the read tools of its packs** (G2, task 3494, `one_assistant_context.md` §4.2.7). It ships dark behind `CHAT_PACKS_BATCH_ORGS`, and it amends rule 27 for that one batch run.
+   - `_batch_packs_for_run` makes the holder from the run boundary only: the org of `_current_run_org()`, the session's member, `run_is_solo()` and the parent's binding. `_whatsapp_pack_turn_due` needs the channel `whatsapp` that `bot_run` binds, and the flag. With the flag empty, `_start_pack_turn` is never called.
+   - `_assemble_batch_agents(packs=)` applies the packs after the overrides, through `_start_pack_turn(whatsapp=True)` and `_apply_pack_turn(read_only=True)`. `_bind_batch_packs` binds the run key and the record after `bind_artifact_context`. A retry passes no holder.
+   - The apply keeps the read tools only (`tool_packs.batch_read_tools`, fail closed). It loads no mail pack, no skill, no loader and no `find_tools`, and it replaces no specialist. `_pack_call` answers a write tool with `tool_packs.BATCH_WRITE_REFUSED`. Fence: `test_chat_packs_batch.py`.
+
 28. **`load_skill_tools` loads a pack in the middle of a turn** (WS-67 OA-7e, layer (b), `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
    - OA-7i: `_plan_pack_loader` asks `tool_packs.plan_loader` once for each run. `_offer_pack_loader` and the removal of a specialist read that one plan. `_mcp_may_attach` looks ahead at the registry and fails closed. Its rules live in `_mcp_reach_rows`, which the skill map of TOF-5a-1 reads too. Do not compute reachability anywhere else.
    - `_offer_pack_loader` puts `tool_packs.LoadSkillToolsProvider` on a view of the run (`agent_with_providers`). Only `_apply_tool_packs` with `offer_loader` calls it, and only `executor._apply_pack_turn` passes that. Do not offer the loader on another path.

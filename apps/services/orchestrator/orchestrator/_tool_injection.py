@@ -3859,6 +3859,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
        refuses, and else the write is recorded on the run's record
        (``tool_packs.pack_write_refusal``). No await comes between the run
        check and the record, so a hand-off in the same model step sees it.
+       G2 (task 3494): before it, a tool that is not read-only refuses in a
+       run with a read-only record (``tool_packs.batch_write_refusal``).
     3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
        BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
     4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
@@ -3902,6 +3904,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
     from acb_skills.tool_packs import (
         PACK_RUN_KEY,
         PACK_SLUG_ATTR,
+        batch_write_refusal,
         note_used,
         owner_scope,
         pack_tool_runs,
@@ -3926,6 +3929,11 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         if held_now and not held and (
                 _is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             return _held_in_turn(owner, name)
+        # G2 (task 3494): a WhatsApp turn holds read tools only. Its own check,
+        # before any await, and it fails closed.
+        no_card = batch_write_refusal(name, ctx)
+        if no_card is not None:
+            return no_card
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:
             return twice
@@ -4182,6 +4190,39 @@ def _pack_base_names(
     return names | (injected - withheld)
 
 
+def _read_only_build(build: PackBuild | None) -> PackBuild | None:
+    """G2 (task 3494): *build* with its read tools only
+    (``tool_packs.batch_read_tools``, which fails closed), or None."""
+    if build is None:
+        return None
+    from acb_skills import tool_packs
+
+    return dataclasses.replace(build, tools=tuple(tool_packs.batch_read_tools(build.tools)))
+
+
+def _turn_persona(
+    persona: str, loaded: Sequence[tuple[str, bool]], bullets: Mapping[str, str],
+    via: Iterable[str], build_ctx: Mapping[str, Any], *, skills: Sequence[Any],
+    builds: Sequence[PackBuild], read_only: bool,
+) -> str | None:
+    """The persona of a pack turn, or None when the swap fails.
+
+    ``tool_packs.persona_for`` for the web chat. G2 (task 3494): a WhatsApp
+    turn (*read_only*) swaps out no delegation text, so the persona keeps
+    its bytes, and ``tool_packs.batch_rules`` follows it. That one line names
+    the packs and no write tool."""
+    from acb_skills import tool_packs
+
+    if read_only:
+        rules = tool_packs.batch_rules(b.slug for b in builds)
+        return f"{persona.rstrip(chr(10))}\n\n{rules}\n" if rules else persona
+    try:
+        return tool_packs.persona_for(persona, loaded, bullets, via, build_ctx, skills=skills)
+    except RuntimeError as exc:
+        _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
+        return None
+
+
 def _specialist_counts(
     pool: Sequence[Any], only: Iterable[str] | None = None,
 ) -> dict[str, int]:
@@ -4210,8 +4251,16 @@ async def _apply_tool_packs(
     bullets: Mapping[str, str],
     offer_loader: bool = False,
     is_authorized: Any = None,
+    read_only: bool = False,
 ) -> PackApply | None:
     """Put the packs of this turn in the run (layer (a), §4.2.2).
+
+    G2 (task 3494): *read_only* is the WhatsApp turn. It loads no published
+    skill, keeps the read tools of each build only
+    (``tool_packs.batch_read_tools``) and skips a build with none. The record
+    is read-only: no owner leaves, no hand-off refuses, and the persona keeps
+    its bytes with ``tool_packs.batch_rules`` after it. The executor passes
+    no loader with it.
 
     *turn* is the ``tool_packs.PackTurn`` that the executor read beside the
     load. *allowed* is ``tool_packs.packs_on`` of the bound tenant. The
@@ -4272,10 +4321,11 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
-    # WS-STU F3: the published skills that the words of this turn name.
+    # WS-STU F3: the published skills that the words of this turn name. G2: a
+    # WhatsApp turn loads none.
     # TOF-5a-1: the facts of the MCP lookahead of this run, for an ``mcp:``
     # action of a skill. The member's grant is the run's own check.
-    turn = await _turn_with_skills(turn, reach=McpReach(
+    turn = turn if read_only else await _turn_with_skills(turn, reach=McpReach(
         agent=agent, agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
         is_authorized=is_authorized))
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
@@ -4291,7 +4341,8 @@ async def _apply_tool_packs(
     search_on = offer_loader and tool_packs.tool_search_on(org)
     if search_on:
         base += 1
-    specialists = _specialist_counts(pool)
+    # G2: in a read-only turn the specialist of each owner stays.
+    specialists = {} if read_only else _specialist_counts(pool)
     # TOF-1b: the code packs that each skill of the turn brings. A turn with no
     # skill makes no map, and ``choose`` then gives the choice of F3.
     skill_map = _skill_pack_map(turn, agent, agent_name=agent_name, tool_scope=tool_scope,
@@ -4326,6 +4377,9 @@ async def _apply_tool_packs(
     builds: list[PackBuild] = []
     for slug in choice.slugs:
         build = await _pack_tools(slug, build_ctx, holds=holds)
+        # G2: the guarded build, then its read tools only. A pack with no read
+        # tool is skipped.
+        build = _read_only_build(build) if read_only else build
         if build is None or not build.tools:
             continue
         builds.append(build)
@@ -4352,7 +4406,8 @@ async def _apply_tool_packs(
     skill_slugs = [s.slug for s in skills]
     named = {name for s in skills for name in s.tools}
     needs = [b.slug for b in builds if named & {_tool_name(t) for t in b.tools}]
-    draft = tool_packs.PackRun.of(turn, choice, loaded, skills=skill_slugs, needs=needs)
+    draft = tool_packs.PackRun.of(turn, choice, loaded, skills=skill_slugs, needs=needs,
+                                  read_only=read_only)
     kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
@@ -4382,18 +4437,16 @@ async def _apply_tool_packs(
     if not builds and not plan.offered and not skills and candidates is None:
         return None
     via = plan.via_loader
-    try:
-        persona = tool_packs.persona_for(
-            str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx,
-            skills=skills)
-    except RuntimeError as exc:
-        _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
+    persona = _turn_persona(
+        str(opts.get("instructions") or ""), loaded, bullets, via, build_ctx,
+        skills=skills, builds=builds, read_only=read_only)
+    if persona is None:
         return None
     # Task 1747: the record keeps the sticky packs that left at the start of
     # this turn, and which of them the loader offers. The context of the turn
     # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
     record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered,
-                                   skills=skill_slugs, needs=needs)
+                                   skills=skill_slugs, needs=needs, read_only=read_only)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it, and with
