@@ -628,6 +628,37 @@ def test_d_a_closed_task_reopens_on_the_fix_release_only(world) -> None:
     assert _task(w, task_id).lane == "Open" and len(_tasks(w)) == 1
 
 
+@_DB_GATE
+def test_d2_a_null_release_count_never_reopens_a_closed_task(world) -> None:
+    """The twin of the f2 test for ``repeat_after_close``. The fix release counted
+    in the hour of the close (no repeat). A count with no release comes later, and
+    ``last_release`` still names the fix release. Mutation: read ``last_seen_at``
+    in ``repeat_after_close`` and this goes red."""
+    w = world
+    base = _now()
+    fp, task_id, _ = _to_fix_live(w, base - timedelta(days=8))
+    _sync(w, base - timedelta(minutes=5), running=R_NEW)
+    assert _fprow(w, fp).state == "closed"
+    closed_at = base - timedelta(hours=2)
+    _tally(w, release=R_NEW)
+    with w.p.admin_engine.begin() as c:  # that count fell in the hour of the close
+        c.execute(text(
+            "UPDATE failure_fingerprints SET closed_at = CAST(:at AS timestamptz), "
+            "last_release_at = date_trunc('hour', CAST(:at AS timestamptz)) "
+            "WHERE fingerprint = :f"), {"at": closed_at, "f": fp})
+        c.execute(text(
+            "UPDATE failure_daily SET releases = array_remove(releases, :r) "
+            "WHERE fingerprint = :f AND day >= CAST(:d AS date)"),
+            {"r": R_NEW, "f": fp, "d": closed_at.date()})
+    _sync(w, base, running=R_NEW)
+    assert _fprow(w, fp).state == "closed"
+    _tally(w, release=None)
+    _sync(w, base + timedelta(minutes=1), running=R_NEW)
+    row = _fprow(w, fp)
+    assert (row.state, row.reopened) == ("closed", 0) and row.last_release == R_NEW
+    assert len(_tasks(w)) == 1
+
+
 # ── e. One closer ───────────────────────────────────────────────────────────
 
 
