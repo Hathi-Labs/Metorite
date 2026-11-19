@@ -535,19 +535,23 @@ async def test_production_refuses_without_a_remote_gvisor_backend(
 
 
 def _remote_runsc(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, *, runtime_arg: bool) -> None:
-    """Production with the SBX-15 settings. *runtime_arg* adds ``--runtime=runsc`` to the argv."""
+    """Production with the SBX-15 settings.
+
+    The real ``build_run_argv`` adds ``--runtime=runsc`` since the merge with
+    SBX-15. With *runtime_arg* False, a stub drops that flag, so the argv
+    check of ``_compute_start`` still has a case to refuse.
+    """
     s = env["settings"]
     s.acb_env = "prod"
     s.sandbox_backend = "docker-remote"
     s.sandbox_runtime = "runsc"
-    if runtime_arg:
+    if not runtime_arg:
         real = sb.build_run_argv
 
-        def with_runtime(*, runtime: str = "runc", **kw: Any) -> list[str]:
-            argv = real(**kw)
-            return [argv[0], f"--runtime={runtime}", *argv[1:]]
+        def without_runtime(**kw: Any) -> list[str]:
+            return [a for a in real(**kw) if a != "--runtime=runsc"]
 
-        monkeypatch.setattr(sb, "build_run_argv", with_runtime)
+        monkeypatch.setattr(sb, "build_run_argv", without_runtime)
 
 
 async def test_production_refuses_an_argv_without_runsc_even_with_the_settings(
@@ -569,10 +573,15 @@ async def test_production_refuses_a_start_that_skips_the_org_lock(
     broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SBX-F26: a start with --runtime=runsc but no org admit is refused, and an admit that raises stops it."""
+    """SBX-F26: an admit that raises stops the start, and no container runs.
+
+    Since the merge with SBX-15, ``_compute_start`` always awaits the admit
+    in the start gate, so no start can skip it. The AST fence
+    ``test_every_start_in_the_broker_passes_the_admit_under_the_gate``
+    (``test_sandbox_remote_backend.py``) pins that.
+    """
     _remote_runsc(env, monkeypatch, runtime_arg=True)
-    with bound_run(ORG), pytest.raises(sb.SandboxRefused):  # no _remote_org_admit
-        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+
     async def refuse(org: str) -> None:
         raise sb.SandboxBusy("another org holds the box")
 
