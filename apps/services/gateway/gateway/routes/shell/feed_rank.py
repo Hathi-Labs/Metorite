@@ -255,8 +255,10 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     does."""
     if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks", "decision", "agent_questions"):
+                "deal_close_passed", "agent_asks", "decision", "agent_questions",
+                "provider_alert"):
         # A due date is a day, so no hour moves a due task into Now (RX-5).
+        # AO-2: an AI vendor alert waits on an admin of the operator org.
         return "needs_you"
     if kind == "unblocked":
         return "ready"

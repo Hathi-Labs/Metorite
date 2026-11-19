@@ -1084,6 +1084,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   reminder_due: "Reminder",
   reminder_check: "Check-back",
   reminder_unconfirmed: "Unconfirmed",
+  // AO-2: an AI vendor account is out of credit or low, for the operator's admins.
+  provider_alert: "AI vendor alert",
 };
 
 /**
