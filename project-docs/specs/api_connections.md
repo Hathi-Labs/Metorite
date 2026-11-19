@@ -7,8 +7,10 @@ D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`).**
   one builder and the Zoho Books template. It declares the flag
   `API_CONNECTIONS_ORGS`, and the flag is empty.
 - **API-2 is built dark (task 3788).** The connect flow of Zoho Books.
-- **API-3 is in build (task 3789).** The four gateway routes of §2.3, dark
-  behind `API_CONNECTIONS_ORGS`. §2.3a holds its decisions.
+- **API-3 is built dark (task 3789).** The four gateway routes of §2.3 in
+  `routes/api_connections.py`, behind `API_CONNECTIONS_ORGS`. The write route
+  refuses every call. §2.3a holds its decisions. No live call ran with a real
+  credential.
 - No chat tool calls a connection yet (API-4).
 
 Zoho Books is an owner priority and the first template. Verified
@@ -266,7 +268,7 @@ build follows these decisions.
   another org reads in the tenant session of that org, so it never sees the
   row of this org.
 - **(f) A cut answer.** The guard marks an answer that its 64 KiB cap cut
-  (`Answer.cut`). The gateway refuses it with the name of the page argument.
+  (`Answer.cut`). The guard never reads past its cap, so an answer of exactly 64 KiB counts as cut. The gateway refuses it with the name of the page argument.
 - **(g) The host.** `provider_meta.api_domain` must be a host of the template.
   For a template with a client, it must also be a host of `CLIENT_HOSTS`. Each
   call goes through `request_https`: https on 443 only. `send` refuses a 3xx.
@@ -562,7 +564,7 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 |---|---|---|---|
 | API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD | AGENT-SAFE. Built |
 | API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
-| API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE |
+| API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE. Built dark |
 | API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) | AGENT-SAFE to build dark |
 | API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD | AGENT-SAFE |
 | API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW | AGENT-SAFE |

@@ -90,8 +90,9 @@ SIGN_INS: tuple[str, ...] = ("oauth_code", "key_header", "key_query", "basic")
 #: holds the network code.
 MAX_ANSWER_CAP = 64 * 1024
 
-#: The gateway total reads at most this many pages (§2.3).
-MAX_TOTAL_PAGES = 20
+#: The gateway total reads at most this many pages (§2.3, §2.3a decision d).
+#: It equals the member limit of the call limiter, ten calls a minute.
+MAX_TOTAL_PAGES = 10
 
 #: The largest page size of an op. The spec names no number. API-1 takes 200,
 #: the largest page that a list read needs for the rung 1 demo.
@@ -189,6 +190,9 @@ class Total:
     field: str
     #: The most pages that the total reads. At most :data:`MAX_TOTAL_PAGES`.
     max_pages: int = MAX_TOTAL_PAGES
+    #: The currency field of each item, or empty. With one, the gateway total
+    #: refuses a list of more than one currency (§2.3a, decision d).
+    currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -468,6 +472,8 @@ def _check_paging_and_total(where: str, op: Operation) -> None:
             raise TemplateError("total", where, "a total is on a paged class A read")
         if not (_KEY.fullmatch(op.total.items) and _KEY.fullmatch(op.total.field)):
             raise TemplateError("total", where, "a total names keys of the answer")
+        if op.total.currency and not _KEY.fullmatch(op.total.currency):
+            raise TemplateError("total", where, "a currency field is a key of the answer")
         if not _positive(op.total.max_pages) or op.total.max_pages > MAX_TOTAL_PAGES:
             raise TemplateError("over_cap", where, f"a total reads 1 to {MAX_TOTAL_PAGES} pages")
 

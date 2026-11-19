@@ -11,7 +11,8 @@ books connectors. This file only names what the mechanism carries.
   that names it is refused.
 * **Reads only.** Each op is class A. Writes wait for D-API-4.
 * **The total.** The gateway total adds the ``total`` field of each invoice
-  of ``list_invoices`` (§2.3).
+  of ``list_invoices`` (§2.3). It refuses a list of more than one
+  ``currency_code``.
 
 **No report op yet.** §2.10 asks whether Zoho Books has a report op, such as
 profit and loss. The spec and the code name no path of such an op. So API-1
@@ -73,7 +74,7 @@ ZOHO_BOOKS = Template(
                 ("sort_order", _SORT_ORDER),
             ),
             paging=Paging(page_key="page", size_key="per_page", size=_PAGE_SIZE),
-            total=Total(items="invoices", field="total"),
+            total=Total(items="invoices", field="total", currency="currency_code"),
             shape_read=True,
         ),
         Operation(
