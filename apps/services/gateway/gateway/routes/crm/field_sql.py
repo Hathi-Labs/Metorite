@@ -1778,7 +1778,7 @@ def _no_constant(name: str) -> Any:
     raise ValueError(name)
 
 
-def _no_nul(name: str, value: str) -> None:
+def _leaf_text_guard(name: str, value: str) -> None:
     """A NUL in a query leaf is refused by the ONE guard (``records.refuse_nul``,
     CRM-Q25c: a second copy is a defect, fence ``test_crm_nul_guard_r8.py``).
     The 422 keeps the query code ``query_value_invalid``."""
@@ -1799,7 +1799,7 @@ def _leaf_of(item: Mapping[str, Any]) -> list[QueryLeaf]:
     from acb_common.studio_query import VALUE_INVALID
 
     key, op = str(item["field"]), str(item["op"])
-    _no_nul(key, "")
+    _leaf_text_guard(key, "")
     if "value" not in item:
         raise query_refusal(VALUE_INVALID, f"Field `{_shown(key)}`: give a value.")
     values = list(item["value"]) if op == "in" else [item["value"]]
@@ -1808,7 +1808,7 @@ def _leaf_of(item: Mapping[str, Any]) -> list[QueryLeaf]:
         if isinstance(value, bool | int | float):
             pass
         elif isinstance(value, str):
-            _no_nul("", value)
+            _leaf_text_guard("", value)
         else:
             raise query_refusal(
                 VALUE_INVALID,
