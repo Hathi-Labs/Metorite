@@ -65,6 +65,10 @@ GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled
 #: change here changes the order, and the seed must change with it.
 BASE: dict[str, int] = {
     # The needs kinds, in the needs feed's own order (KIND_ORDER).
+    # AO-2: the AI vendor alert of the operator org's admins. It gives no feed
+    # signal, so no card holds it today. The row keeps the needs order of
+    # KIND_ORDER, where it sits before `overdue`.
+    "provider_alert": 66,
     "overdue": 63,
     "approval": 59,
     "due_today": 55,
@@ -251,8 +255,10 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     does."""
     if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks", "decision", "agent_questions"):
+                "deal_close_passed", "agent_asks", "decision", "agent_questions",
+                "provider_alert"):
         # A due date is a day, so no hour moves a due task into Now (RX-5).
+        # AO-2: an AI vendor alert waits on an admin of the operator org.
         return "needs_you"
     if kind == "unblocked":
         return "ready"

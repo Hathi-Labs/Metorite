@@ -347,7 +347,7 @@ class TestTheFeatureGate:
         assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
                           "sources": {"tasks": "absent", "reminders": "absent", "studio": "absent",
                                       "approvals": "absent", "projects": "absent",
-                                      "email": "absent"}}
+                                      "email": "absent", "providers": "absent"}}
         assert fakes.calls == []
 
     def test_a_member_without_approvals_gets_no_pending_action(self, fakes):
@@ -567,7 +567,7 @@ class TestTheAnswer:
         # RM-2b: `reminders` is a needs source, absent while the flag is off.
         assert answer["sources"] == {"tasks": "ok", "reminders": "absent", "studio": "absent",
                                      "approvals": "absent", "projects": "ok",
-                                     "email": "ok"}
+                                     "email": "ok", "providers": "absent"}
 
 
 class TestTheClock:
@@ -833,12 +833,15 @@ class TestAFailingAppIsLeftOut:
         assert answer["sources"].pop("reminders") == "absent"
         # J2b-4a: `studio` is absent for a member without `studio:publish`.
         assert answer["sources"].pop("studio") == "absent"
+        # AO-2: `providers` is absent for a member without `feature:chat`.
+        assert answer["sources"].pop("providers") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.0)
         answer = run(admin(*ALL, "approvals"))
         assert answer["sources"].pop("studio") == "absent"
+        assert answer["sources"].pop("providers") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
         assert fakes.calls == []
 
