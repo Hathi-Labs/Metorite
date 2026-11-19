@@ -5195,6 +5195,7 @@ async def _inject_mcp_servers(
     from orchestrator import _maf_mcp
 
     _note_mcp_labels([], [], frozenset())  # CSY-10: no label of an older run stays
+    _note_mcp_briefs([], [], None)  # CSY-1: no brief of an older run stays
     if agent_name in UNTRUSTED_INPUT_AGENTS:
         # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
         # a server, and no check here can prove that a server cannot fetch.
@@ -5241,6 +5242,7 @@ async def _inject_mcp_servers(
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
+            _note_mcp_briefs(servers, attached, getattr(agent, "mcp_tools", None))
         return
 
     for srv in servers:
@@ -5269,6 +5271,29 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
     except Exception:  # the platform surface alone
         packs = set()
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
+
+
+def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any) -> None:
+    """CSY-1: record the brief of each server that attached (*attached* is what
+    ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
+    (``acb_skills.server_brief``). It reuses the rows that the read gave. The
+    remote tool names come from the tool's own record. A fault never blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        names = {str(n) for n in (attached or [])}
+        remote: dict[str, list[str]] = {}
+        for tool in tools or []:
+            meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
+            remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
+        server_brief.set_attached(
+            (str(s.name), server_brief.server_brief(
+                str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
+                remote.get(str(s.name), [])))
+            for s in servers if s.name and str(s.name) in names
+        )
+    except Exception as exc:
+        _log.warning("mcp.briefs_unavailable", error=type(exc).__name__)
 
 
 def _note_mcp_labels(servers: list[Any], attached: Any, reserved: frozenset[str]) -> None:
@@ -5372,6 +5397,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # IN-8c (D98): the admin that an OAuth row acts as, for the card.
             acts_as=(str(getattr(srv, "connected_by", None) or "")
                      if getattr(srv, "oauth", False) is True else ""),
+            # CSY-1: the label and the admin's description, for the brief.
+            label=str(getattr(srv, "label", "") or ""),
+            description=str(getattr(srv, "description", "") or ""),
         ))
     return out
 
