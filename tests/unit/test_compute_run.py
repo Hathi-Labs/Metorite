@@ -610,3 +610,109 @@ class TestTheReach:
 
         assert "never retype rows" in addendum.COMPUTE_RULE.lower().replace("**", "")
         assert "no network" in addendum.COMPUTE_RULE_SHORT
+
+
+# ── the contract with the REAL sandbox broker (SBX-18) ───────────────────────
+
+class TestTheBrokerContract:
+    """``build_compute_tar`` and ``parse_compute_tar`` are the real ones."""
+
+    async def test_the_inputs_pass_the_name_check_and_the_outputs_parse(self, box) -> None:
+        import io
+        import tarfile
+
+        ref = box["keep"](ROWS)
+        # (2) what ``tar -c -C /workspace/out .`` gives: dot-slash names, a dir, a bad name
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, data in (("./result.csv", b"a,b\n1,2\n"), ("./chart.png", b"\x89PNG-x" * 10),
+                               ("./notes.exe", b"nope")):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        parsed = broker.parse_compute_tar(buf.getvalue())
+        assert set(parsed) == {"result.csv", "chart.png"}  # the .exe is dropped by the broker
+        box["result"] = _Result(files=parsed)
+
+        out = await cr.compute_run("print(1)", [ref])
+        files, _timeout = box["calls"][0]
+        assert broker.build_compute_tar(files)  # (1) every name passes the real check
+        assert set(files) == {"main.py", f"inputs/{ref}.txt"}
+        assert {(f["name"], f["size"]) for f in out["files"]} == {
+            ("result.csv", 8), ("chart.png", 60)}
+        assert sorted(p for p, _ in box["written"]) == ["outputs/chart.png", "outputs/result.csv"]
+
+    def test_the_signature_and_the_fields_are_what_the_tool_reads(self) -> None:
+        import inspect
+
+        assert list(inspect.signature(broker.compute_enabled).parameters) == ["org"]
+        assert {"exit_code", "stdout", "stderr", "timed_out", "files", "duration_ms"} <= set(
+            broker.ComputeResult.__dataclass_fields__)
+        assert broker.COMPUTE_OUT_TARGET == "/workspace/out"
+        assert "out/" in cr.compute_run.__doc__
+
+    def test_a_name_outside_the_contract_is_refused_by_the_real_check(self) -> None:
+        with pytest.raises(broker.SandboxRefused):
+            broker.build_compute_tar({"main.py": b"x", "inputs/rows.txt": b"x"})
+
+
+# ── the real container (needs a Docker daemon: -m sandbox_docker) ───────────
+
+from tests.unit._sandbox_broker_fakes import bound_run  # noqa: E402
+from tests.unit.test_coding_sandbox_image import coding_sandbox_image  # noqa: E402,F401
+from tests.unit.test_sandbox_exec_hygiene import (  # noqa: E402,F401 - fixtures by name
+    DOCKER_ORG,
+    bind_mounts_work,
+    docker_image,
+    real,
+)
+
+SUM_CODE = (
+    "import pandas as pd" + chr(10)
+    + "df = pd.read_csv('inputs/{ref}.txt')" + chr(10)
+    + "df.assign(c=df['a'] + df['b']).to_csv('out/sum.csv', index=False)" + chr(10)
+    + "print(int((df['a'] + df['b']).sum()))" + chr(10)
+)
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_compute_run_sums_an_input_ref_and_returns_an_out_csv(
+    real: dict[str, Any], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    import importlib
+
+    from acb_common import bind_run_context, tenant_redis
+    from acb_common.db import bind_tenant, release_tenant
+
+    settings = real["settings"]
+    monkeypatch.setattr(settings, "compute_run_orgs", DOCKER_ORG)
+    monkeypatch.setattr(settings, "maf_coding_scope", f"compute:{DOCKER_ORG}")
+    monkeypatch.setattr(settings, "acb_env", "dev")
+    monkeypatch.setattr(broker, "_BROKER", real["broker"])
+    redis, written = _Redis(), []
+
+    async def _write(path, content, *, encoding="utf-8", overwrite=False):
+        written.append((path, content))
+        return {"path": path, "size": len(content)}
+
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **kw: redis)
+    monkeypatch.setattr(importlib.import_module("acb_skills.write_artifact"),
+                        "write_artifact", _write)
+    thread = "t-compute-e2e"
+    with bound_run(DOCKER_ORG, thread=thread, member=MEMBER):
+        token = bind_tenant(DOCKER_ORG)
+        try:
+            bind_run_context(user=MEMBER, thread_id=thread, member_verified=True)
+            owner = trs._owner_key()
+            assert owner == (DOCKER_ORG, MEMBER, thread)
+            ref = trs._keep(owner, "a,b" + chr(10) + "1,2" + chr(10) + "3,4" + chr(10),
+                            False, "crm_list_records")
+            out = await cr.compute_run(SUM_CODE.format(ref=ref), [ref], 50)
+        finally:
+            release_tenant(token)
+    await real["broker"].settle()
+    assert isinstance(out, dict) and out["ok"] is True, out
+    assert "10" in out["stdout"] and out["stdout"].startswith("<<<COMPUTE STDOUT")
+    assert [(f["name"], f["size"]) for f in out["files"]] == [("sum.csv", 18)]
+    assert written == [("outputs/sum.csv", b"a,b,c" + chr(10).encode() + b"1,2,3" + chr(10).encode()
+                        + b"3,4,7" + chr(10).encode())]
