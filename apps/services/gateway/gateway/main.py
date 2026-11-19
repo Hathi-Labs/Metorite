@@ -241,6 +241,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     _asyncio.ensure_future(_warm_clone_agents())
 
+    # TOF-1e: build the chat tools of the packs once, on a thread, so the
+    # first catalog read after a restart never builds them on the event loop.
+    # Only with the flag set for some org. A later flip warms on first read.
+    try:
+        if str(getattr(settings, "studio_chat_tools_orgs", "") or "").strip():
+            from gateway.studio import chat_tool_actions
+
+            chat_tool_actions.start_warm()
+    except Exception as exc:
+        _log.warning("gateway.chat_tools_warm_skipped", error=str(exc)[:200])
+
     # Load provider API keys from encrypted Postgres store into litellm SDK.
     #
     # H4: lifespan startup — there is no request, no session and no bound
