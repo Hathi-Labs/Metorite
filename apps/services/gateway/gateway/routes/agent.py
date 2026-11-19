@@ -103,11 +103,20 @@ class ResumeLaunch(BaseModel):
     #: live) and ``started``. :func:`_resume_from_row` gives the claim back
     #: only for ``new`` and ``refused``.
     phase: str = "new"
+    #: RESUME-4a-2 (task 3478, D-RES-9): a late decline. The row was claimed
+    #: to ``closed`` (``pending_ask.claim_declined_call``), and the run calls
+    #: NO tool: its note tells the model that nothing was done. Only
+    #: :func:`_resume_from_row` sets it, from ``declined`` of the checked
+    #: answer (R11).
+    decline: bool = False
 
     def as_kwarg(self) -> dict[str, Any]:
         """The ``resume_call`` kwarg of ``executor.run_agent_stream``."""
-        return {"stored": dict(self.stored), "request_id": self.request_id,
-                "title": self.title}
+        kwarg = {"stored": dict(self.stored), "request_id": self.request_id,
+                 "title": self.title}
+        if self.decline:
+            kwarg["declined"] = True
+        return kwarg
 
 
 class _ContinuationStarted(BaseModel):
@@ -3790,8 +3799,11 @@ async def _late_answer_from_row(
             pending_ask.move_ask, org, req.request_id,
             to="answered", from_states=pending_ask.WAITING, answer=req.answer,
         )
-    except Exception:  # noqa: BLE001
-        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # Never ``exc_info``: a database fault can echo the statement parameters, and
+        # one of them is the member's answer (a card edit or typed text). Class and id only.
+        _log.warning("agent.pending_ask_answer_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return None, True
     if moved is None:
         return None, True
@@ -3840,12 +3852,14 @@ async def _resumable_row(
     req: UserInputResponseRequest, user: UserContext,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
     """``(org, member, row, stored call)`` of a late Approve that may resume
-    (RESUME-2a), or None. With ``CHAT_DURABLE_ASKS`` off, or
-    ``CHAT_RESUME_ORGS`` or ``CHAT_LATE_APPROVE_ORGS`` off for the session's
-    org, it reads nothing. RESUME needs both flags: only the late-approve
-    scope writes and reads the SPENT mark that keeps the stored call of a
-    twin row from writing twice (review, P1-A). The org and the member are
-    the session's (R5, R11)."""
+    (RESUME-2a), or of a late decline (RESUME-4a-2), or None. With
+    ``CHAT_DURABLE_ASKS`` off, or ``CHAT_RESUME_ORGS`` or
+    ``CHAT_LATE_APPROVE_ORGS`` off for the session's org, it reads nothing.
+    RESUME needs both flags: only the late-approve scope writes and reads
+    the SPENT mark that keeps the stored call of a twin row from writing
+    twice (review, P1-A). A decline keeps the same two flags. The org and
+    the member are the session's (R5, R11). A ``REJECT`` answer is no
+    decline here: it keeps today's path."""
     import asyncio
 
     from orchestrator import pending_ask
@@ -3862,7 +3876,9 @@ async def _resumable_row(
         return None
 
     me = (getattr(user, "email", "") or "").strip().lower()
-    if req.declined or str(req.answer or "").strip().upper() != APPROVE or not me:
+    # RESUME-4a-2: a decline (`declined` true, no answer) or an APPROVE.
+    if not me or (req.declined is not True
+                  and str(req.answer or "").strip().upper() != APPROVE):
         return None
     try:
         row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
@@ -3911,8 +3927,8 @@ async def _resume_from_row(
 
     Each of these must hold, or it answers None and changes nothing:
 
-    * The answer is ``APPROVE``, and not a decline (RESUME-4a-2, task 3478, owns the
-      late decline and waits for D-RES-9).
+    * The answer is ``APPROVE``, or a decline (``declined`` true). A
+      ``REJECT`` answer keeps today's path.
     * The row of the session's org (RLS) waits, the session's member is its
       ``actor_email``, the request's thread is its thread, and its kind is
       ``confirmation``.
@@ -3942,6 +3958,21 @@ async def _resume_from_row(
     no stored call, no write and no run. No notice shows, because no run
     record exists yet. A second Approve of that card gets the plain 409, so
     the member asks again.
+
+    **A late decline** (RESUME-4a-2, task 3478, D-RES-9, the owner's answer
+    ``3be3ea82``). The same checks. The claim is
+    ``pending_ask.claim_declined_call``: the row moves to ``closed``. The
+    continuation runs NO tool. Its note tells the model that the member
+    declined and that nothing was done (``chat_recovery.RESUMED_DECLINED``).
+    The answer adds ``"declined": true``. Each miss returns None, and the
+    route then takes :func:`_late_decline_from_row`, as before.
+
+    A decline ALWAYS closes the card, and it needs no run slot (review of
+    4a-2, P2-1). A cap refusal returns None, so
+    :func:`_late_decline_from_row` closes the row. A refusal of the start, or
+    a raise before ``start_detached`` began, keeps the row ``closed``: no
+    give-back. The slot goes, and the answer is the 200 ``{"ok": true,
+    "declined": true}`` of a late decline, with no ``resumed``.
     """
     import asyncio
 
@@ -3951,6 +3982,7 @@ async def _resume_from_row(
     if found is None:
         return None
     org, me, row, _stored = found
+    declined = req.declined is True
     agent_name = str(row.get("agent_name") or "")
     # Case C (RESUME-2c): a live run on the thread keeps today's path.
     if not await _thread_at_rest(req.thread_id or ""):
@@ -3975,6 +4007,10 @@ async def _resume_from_row(
         organization_id=org, member=_session_member(user), thread_id=req.thread_id,
     )
     if not admission.admitted:
+        if declined:
+            # Review of 4a-2, P2-1 (a): a "no" needs no run slot. The late
+            # decline of before closes the row, with no run.
+            return None
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
@@ -3984,12 +4020,20 @@ async def _resume_from_row(
             },
         )
     try:
-        claimed = await asyncio.to_thread(
-            pending_ask.claim_stored_call, org, req.request_id,
-            member=me, thread_id=req.thread_id, answer=req.answer,
-        )
-    except Exception:
-        _log.warning("agent.resume_claim_failed", exc_info=True)
+        if declined:
+            claimed = await asyncio.to_thread(
+                pending_ask.claim_declined_call, org, req.request_id,
+                member=me, thread_id=req.thread_id,
+            )
+        else:
+            claimed = await asyncio.to_thread(
+                pending_ask.claim_stored_call, org, req.request_id,
+                member=me, thread_id=req.thread_id, answer=req.answer,
+            )
+    except Exception as exc:
+        # Class and id only: the claim carries the member's answer as a parameter.
+        _log.warning("agent.resume_claim_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         claimed = None
     if claimed is None:
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
@@ -4001,7 +4045,7 @@ async def _resume_from_row(
     run_id = str(uuid.uuid4())
     launch = ResumeLaunch(
         stored=claimed, request_id=req.request_id,
-        title=str(row.get("question") or ""),
+        title=str(row.get("question") or ""), decline=declined,
     )
     # A new run with a new reply row, and no prompt row: the payload carries
     # no message id and no words, and no `typed` mark.
@@ -4014,7 +4058,12 @@ async def _resume_from_row(
             cont, None,  # type: ignore[arg-type]
             user=user, background_tasks=BackgroundTasks(), _continuation=launch,
         )
-    except BaseException:
+    except BaseException as exc:
+        if declined and isinstance(exc, Exception) and launch.phase in ("new", "refused"):
+            # Review of 4a-2, P2-1 (b): no run began, and the claim keeps the
+            # row closed. The answer is the late decline of before.
+            await release_member_slot(organization_id=org, thread_id=req.thread_id)
+            return await _declined_with_no_run(org, me, req)
         await _give_back_claim(org, me, req, claimed, launch)
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
         raise
@@ -4028,8 +4077,11 @@ async def _resume_from_row(
     _log.info(
         "agent.pending_ask_resumed",
         request_id=req.request_id[:12], thread_id=req.thread_id[:12],
-        state=str(row.get("state") or ""),
+        state=str(row.get("state") or ""), declined=declined,
     )
+    if declined:
+        return {"ok": True, "resumed": True, "declined": True,
+                "threadId": started.thread_id, "runId": started.run_id}
     return {"ok": True, "resumed": True, "threadId": started.thread_id,
             "runId": started.run_id}
 
@@ -4044,9 +4096,16 @@ async def _give_back_claim(
     ran, so the row goes back to ``parked`` with its stored call
     (``pending_ask.restore_stored_call``). In ``starting`` or ``started`` the
     run may be live, so the claim stays and the call runs at most once. It
-    never raises, so the error of the run route stays the answer."""
+    never raises, so the error of the run route stays the answer.
+
+    A decline never gives its claim back (review of 4a-2, P2-1): the row
+    stays ``closed``, so the card cannot be approved later."""
     import asyncio
 
+    if launch.decline:
+        _log.info("agent.resume_decline_kept_closed", request_id=req.request_id[:12],
+                  phase=launch.phase)
+        return
     if launch.phase not in ("new", "refused"):
         _log.warning("agent.resume_claim_kept", request_id=req.request_id[:12],
                      phase=launch.phase)
@@ -4058,10 +4117,30 @@ async def _give_back_claim(
             pending_ask.restore_stored_call, org, req.request_id,
             member=me, thread_id=req.thread_id or "", stored=claimed,
         )
-    except BaseException:  # never mask the refusal of the route
-        _log.warning("agent.resume_claim_restore_failed", exc_info=True)
+    except BaseException as exc:  # never mask the refusal of the route
+        # Class and id only: the stored call holds the answer and the call arguments.
+        _log.warning("agent.resume_claim_restore_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return
     _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
+
+
+async def _declined_with_no_run(
+    org: str, me: str, req: UserInputResponseRequest,
+) -> dict[str, Any]:
+    """The answer of a late decline whose continuation never began (review
+    of 4a-2, P2-1 (b)). The claim moved the row to ``closed`` and dropped
+    its offer, so My Day drops the card. The answer is the one of
+    :func:`_late_decline_from_row`."""
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    _log.info(
+        "agent.pending_ask_declined_late",
+        request_id=req.request_id[:12], thread_id=(req.thread_id or "")[:12],
+        resumed=False,
+    )
+    return {"ok": True, "declined": True}
 
 
 def _stored_call_resumes(stored: Any, row: dict[str, Any]) -> bool:
@@ -4233,6 +4312,15 @@ async def respond_user_input(
             req.answer, req.thread_id,
         )
     if not delivered and req.declined:
+        # RESUME-4a-2 (D-RES-9): a late decline of a parked plain card with a
+        # stored call starts a short continuation that runs no tool, so the
+        # model says that nothing was done. Dark behind CHAT_RESUME_ORGS and
+        # CHAT_LATE_APPROVE_ORGS. None takes the path below, as before.
+        _resumed = await _resume_from_row(req, user)
+        if isinstance(_resumed, Response):
+            return _resumed  # type: ignore[return-value]
+        if _resumed is not None:
+            return _resumed
         # No run waits on this card. A decline starts no new run: the member
         # chose to do something else. A card with a durable row closes, so
         # it never draws again. Anything else is the plain 409.

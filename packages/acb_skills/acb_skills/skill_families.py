@@ -171,6 +171,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # SBX-19 (agent_sandbox.md rung 6a'): Python over the tool results of the
+    # chat, in the sealed `compute` target. A family that no org toggles: the
+    # flag COMPUTE_RUN_ORGS decides, and `_tool_injection._compute_withheld`
+    # drops the tool for an org that is off.
+    "compute": {
+        "label": "Compute",
+        "summary": "Run Python over the tool results of this chat, with no network.",
+        "description": (
+            "compute_run writes Python and runs it on tool results that the "
+            "chat already holds, by reference. The code has no network, no "
+            "secret and no access to Metorite. Files it writes show as cards."
+        ),
+        "tools": ("compute_run",),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "history": {
         "label": "Conversation history",
         "summary": (
