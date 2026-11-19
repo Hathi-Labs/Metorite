@@ -192,6 +192,8 @@ screen or flow with no flag waits for the owner's approval of its preview
 | Collision | What stops it | Fence |
 |---|---|---|
 | Two sessions build one task | `claim_task` refuses a held task with 409 | The Metorite server |
+| You take a task from a lane that went quiet | A hold with no activity for 2 hours goes to the next claim. So the server lets you take it. Never take a hold of another member, quiet or live. Ask on the task with `ask_on_task` first. `lane-rules.md` rule 1 binds the owner's lanes the same way. | Advisory |
+| Two tasks for the same work | Search the board before you make a task (`search_tasks`). Make new tasks only under your own epics. | Advisory |
 | Two fleets build one stream | §2: you own your streams, and the owner's fleet does not claim them | Advisory |
 | Two PRs take one migration number | Take main's highest number plus one at build time. Write the number on the task. `premerge.sh` refuses a number at or below main's highest. The later PR takes a new number. | `premerge.sh`, `tests/unit/test_premerge.py` |
 | Two PRs take one D-number or H-id | The first merge wins. The later PR takes a new number. | `premerge.sh` |
@@ -201,6 +203,15 @@ screen or flow with no flag waits for the owner's approval of its preview
 | Work on another person's branch | Push only to a branch that you made, or one that §2 gives you | Advisory |
 | A release that runs twice | Never install the release timer. Never dispatch `deploy.yml`. | Advisory |
 | One usage limit for two fleets | Use your own Claude accounts | Advisory |
+
+**See who works on what.** Open a task with `get_task`, or on the board.
+It shows the holder: the member, the client and the last activity. It also
+shows each open agent run, with its label and its newest line. This works
+across both fleets.
+
+`list_agent_runs` lists only your own runs. No view shows every agent of both
+fleets at once yet. The orchestration map adds it (`agent_coordination.md`
+§3.12, rung M1, task 3619).
 
 The owner's fleet keeps its own lists on the home box: the merge queue and a
 list of booked migration numbers. They are not in this repo, and you cannot
