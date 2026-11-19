@@ -1,7 +1,20 @@
 # The semantic model: one way for the chat to read any large data source
 
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
-D226). The rest stays PROPOSED. SEM-7 is built, dark (task 3737). Nothing else is built.**
+D226). The rest stays PROPOSED. SEM-7 is built, dark (task 3737). SEM-1b is
+built in part, dark (task 3736). Nothing else is built.**
+
+**SEM-1b status (2026-11-19, task 3736).** The route side is BUILT dark behind
+`SEMANTIC_MODEL_ORGS`. `GET /crm/aggregate` on a module takes `query`, and the
+old `field.<key>` pairs lower into the same compiler. A range leaf on a text
+field reads the strict number of CRM-Q34-11. A query range picks the day field
+of the findings. A refused leaf value names the leaf.
+
+A native datetime `eq` uses the rule `native_zone` of `field_sql.DATETIME_EQ`.
+That rule is an open owner decision. The tool argument waits for the owner's
+token budget ruling, as row SEM-1b-2b. The lowering of `custom.<key>` and the
+ops `ne`, `is_empty`, `contains` and `matches` are not built. Fences:
+`test_crm_query_grammar.py` and `test_crm_query_grammar_r8.py`.
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
@@ -601,7 +614,8 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-4** | 1 | A refusal lists the legal fields (the 8 most filled) and the legal operators. One repair. One `semantic.refusal` line and a daily counter | `tool_refusals.py`, `crm_tools.py`, `aggregate.py` | STANDARD · AGENT-SAFE | none: text only | `test_crm_refusal_next.py`, `test_semantic_refusal_counter.py` (new) | none |
 | **SEM-5** | 1 | The text of `crm_aggregate` says that a word is fine and the server finds the field, and that a module takes `q` | `crm_tools.py` | STANDARD · AGENT-SAFE | none: text only | `test_tool_schema_diet.py` | SEM-1a, SEM-2 |
 | **SEM-6** | 1 | A scripted replay of the four refusal classes, and a fixed set of 20 questions with synthetic data | `evals/semantic/` (new) | LOW · AGENT-SAFE | none | `test_semantic_eval_scripted.py` (new) | SEM-1a to SEM-5 |
-| **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
+| **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments. **BUILT dark, route side (task 3736):** the query on a module total, the text numbers, the day field and the leaf words. The tool argument is row SEM-1b-2b | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
+| **SEM-1b-2b** | 2 | `crm_aggregate` takes the `query` argument and sends it as JSON text (`_query_text`). The chat words of the answer read it already. About 64 schema tokens | `crm_tools.py`, `test_tool_schema_diet.py` | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_agent.py` (the tests that send `query` through the tool), `test_tool_schema_diet.py` | SEM-1b, and the owner's ruling on the token budget |
 | **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` (built, dark, task 3737) | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
 | **SEM-8** | 2 | Verified queries: save with parameters, match, run, the "verified" mark, stale on a shape change, one repair | `routes/crm/` (a new module), `crm_tools.py` | HIGH · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_verified_queries.py` and `_r8` (new) | SEM-7 |
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |

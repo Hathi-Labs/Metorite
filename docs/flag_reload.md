@@ -445,9 +445,14 @@ kinds `measure`, `join` and `query`, and `org_facts` serves the approved
 ones. `*` lists every org, and the default is empty. Empty keeps each item of
 these kinds as an unknown kind, and serves none.
 
-Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
-plan write and each facts read ask it. A reload applies a change. The flip
-stays OWNER-GATE (`enforcement-flip`).
+The same flag turns on `query` on a module total (`semantic_model.md` §5.1,
+SEM-1b). For each listed org, `GET /crm/aggregate` on a module takes one JSON
+query of conditions and `any` groups. Off the list, a `query` is a 422 that
+names `field_filters`, and each other answer stays byte for byte.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
+plan write, each facts read and each module total ask it. A reload applies a
+change. The flip stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
