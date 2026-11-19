@@ -8659,10 +8659,12 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   says to narrow the filter. A paged answer has no findings of one day. Its
   `other` is None, and its `omitted` counts the groups that are not on the
   page. A `q` filters a two-field
-  answer by its exact words, with no near pass. Page 1 orders by the value
-  rounded as Postgres rounds a numeric, half away from zero
+  answer by its exact words, with no near pass. Page 1 rounds the exact
+  numeric of each group, half away from zero, as page 2 does
   (`aggregate.cents`). So two groups that differ by a half cent can change
-  places on page 1. The shown values and the totals do not change.
+  places on page 1. The shown values and the totals do not change. A group
+  with no exact numeric, an overlay or a weighted total of deals, rounds the
+  text of its float. Such a group never has a page 2.
 - **Fences.** `tests/unit/test_crm_two_group.py` holds each refusal, the SQL
   of one group field, both orders and the tool text.
   `tests/unit/test_crm_two_group_r8.py` checks each group of each page

@@ -743,3 +743,60 @@ async def test_a_half_cent_at_the_border_shows_each_group_once(
     assert (keys[0][-1], keys[1][0]) == ranks, (keys[0][-2:], keys[1][:2])
     every = [*keys[0], *keys[1]]
     assert len(every) == 56 and len(set(every)) == 56
+
+
+# ── 13. Long digits at the border of page 1 (round 5) ───────────────────────
+
+#: case → (measure, the two groups: (id, name, Amt texts), keys at ranks 50
+#: and 51). Each Amt goes in as JSON number TEXT, so jsonb keeps every
+#: digit. Postgres sums 10.0 and 0.12499999999999999 to 10.12499999999999999,
+#: which rounds to 10.12, a tie with 10.12 that the name breaks. A float of
+#: it is 10.125, which rounds to 10.13: the old cut put the groups the other
+#: way round, and page 2 repeated one group and lost the other.
+_LONG = {
+    "sum_long": ("sum", [("ka", "Z", ["10.0", "0.12499999999999999"]),
+                         ("kb", "A", ["10.12"])], ("kb", "ka")),
+    "sum_neg_long": ("sum", [("ka", "A", ["-10.0", "-0.12499999999999999"]),
+                             ("kb", "Z", ["-10.12"])], ("ka", "kb")),
+    "avg_long": ("avg", [("ka", "Z", ["10.12", "10.12999999999999999"]),
+                         ("kb", "A", ["10.12"])], ("kb", "ka")),
+}
+
+
+@pytest.mark.parametrize("case", list(_LONG))
+async def test_long_digits_at_the_border_show_each_group_once(
+        invoices, app_engine, monkeypatch, case: str) -> None:
+    """Round 5 (the verifier's two cases and an avg): page 1 rounds the
+    exact numeric of each group, as page 2 does, so each of the 56 groups
+    shows once, and the tie at ranks 50 and 51 breaks by the name."""
+    measure, border, ranks = _LONG[case]
+    a = invoices.org_a
+    _defs(invoices, a, "module:Halves", _HALF_DEFS)
+    big = "100.0" if measure == "sum" else "50.0"
+
+    def row(site: str, name: str, amt: str) -> str:
+        return (f'{{"Site": {{"id": "{site}", "name": "{name}"}}, "Amt": {amt}}}')
+
+    rows = [(f"b{n}", row(f"s{n:02d}", f"B{n:02d}", big)) for n in range(49)]
+    for site, name, amts in border:
+        rows.extend((f"{site}{i}", row(site, name, amt)) for i, amt in enumerate(amts))
+    rows.extend((f"t{n}", row(f"t{n}", f"C{n}", "-100.0")) for n in range(5))
+    with invoices.admin_engine.begin() as c:
+        for ext, fields in rows:
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Halves', 'zoho', :e, "
+                ":e, CAST(:f AS jsonb))"), {"o": a, "e": ext, "f": fields})
+        kept = c.execute(text(
+            "SELECT fields ->> 'Amt' FROM crm_module_records WHERE organization_id = "
+            "CAST(:o AS uuid) AND module = 'Halves' AND ext_id = 'ka1'"), {"o": a}).scalar()
+    assert kept in ("0.12499999999999999", "-0.12499999999999999", "10.12999999999999999")
+    keys: list[list[Any]] = []
+    for page in (1, 2):
+        calls, _out = await _sent_and_text(invoices, a, monkeypatch, entity="module:Halves",
+                                           measure=measure, field="Amt", group_field="Site",
+                                           page=page)
+        keys.append([g.get("key") for g in calls[-1][1]["groups"]])
+    assert (keys[0][-1], keys[1][0]) == ranks, (keys[0][-2:], keys[1][:2])
+    every = [*keys[0], *keys[1]]
+    assert len(every) == 56 and len(set(every)) == 56

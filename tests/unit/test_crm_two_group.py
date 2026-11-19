@@ -433,3 +433,41 @@ def test_the_cut_reads_the_raw_value_before_the_answer_rounds_it(agg) -> None:
                   (AggregateGroup(key="kb", label="Z", value=-0.12), -0.12)],
                  key=lambda g: agg.cut_key(*g))
     assert [g.label for g, _raw in neg] == ["Z", "A"]
+
+
+@pytest.mark.parametrize(("raw", "cents"), [
+    ("1E+500", "1E+500"), ("100.12499999999999999", "100.12"),
+    ("1000000000000000.125", "1000000000000000.13"),
+    ("-0.12499999999999999999", "-0.12"), ("-10.12499999999999999", "-10.12"),
+])
+def test_the_cut_rounds_the_exact_numeric(agg, raw, cents) -> None:
+    """Round 5: the cut rounds the ``numeric`` of the row, never a float of
+    it. A float of 100.12499999999999999 is 100.125, which rounds up."""
+    from decimal import Decimal
+
+    assert agg.cents(Decimal(raw)) == Decimal(cents)
+
+
+def test_a_huge_or_odd_value_never_crashes(agg) -> None:
+    """Round 5: 10**400 is no float (OverflowError before), and a NaN
+    numeric has no cents."""
+    from decimal import Decimal
+
+    assert agg.cents(10**400) == Decimal(10**400)
+    assert agg.cents(Decimal("NaN")) is None and agg.cents(None) is None
+    assert agg.cents(Decimal("-1E+5000")) == Decimal("-1E+5000")
+
+
+def test_a_row_keeps_its_exact_value(agg) -> None:
+    """Round 5: ``_acc_of`` keeps the numeric of the row in ``raw`` and
+    shows the float as before. The cut reads ``raw``."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    row = SimpleNamespace(value=Decimal("10.12499999999999999"), s=0, n=1, label="Z", c=2)
+    acc = agg._acc_of(row, 1)
+    assert acc.value == 10.125 and acc.raw == Decimal("10.12499999999999999")
+    assert agg.cents(agg._cut_value(acc)) == Decimal("10.12")
+    assert agg._acc_of(SimpleNamespace(value=3, s=0, n=0, label=None, c=3), 1).raw == 3
+    acc.value = None  # the field is empty in every row
+    assert agg._cut_value(acc) is None

@@ -748,6 +748,21 @@ class _Acc:
     others: dict[str, float] = dc_field(default_factory=dict)
     #: CRM-Q25e part 2: the group of each field of a split after the first.
     parts: list[_Acc] = dc_field(default_factory=list)
+    #: CRM-Q34-10: the value as the row gave it, before any float: the
+    #: ``numeric`` of the statement as a ``Decimal``. The cut of page 1
+    #: rounds it (:func:`cents`) as SQL rounds it. None when the row gave
+    #: no exact number, and then the cut reads ``value``.
+    raw: Decimal | None = None
+
+
+def _exact(value: Any) -> Decimal | None:
+    """CRM-Q34-10: a value of a row as an exact ``Decimal``: a ``numeric``
+    as it came, an integer (a count) as it is, anything else None."""
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Decimal(value)
+    return None
 
 
 def _key(value: Any) -> str | None:
@@ -938,7 +953,7 @@ def _acc_of(r: Any, fields: int) -> _Acc:
     acc = _Acc(
         value=None if r.value is None else float(r.value),
         s=float(r.s or 0), n=int(r.n or 0), name=r.label,
-        rows=int(getattr(r, "c", 0) or 0),
+        rows=int(getattr(r, "c", 0) or 0), raw=_exact(r.value),
     )
     for i in range(1, fields):
         v = getattr(r, f"v{i}", None)
@@ -1785,7 +1800,7 @@ async def _compute(
         for key, acc in read.values.items()
     ]
     # The 50 largest groups stay. The rest fold into `other`.
-    groups.sort(key=lambda g: cut_key(g[0], g[1].value))
+    groups.sort(key=lambda g: cut_key(g[0], _cut_value(g[1])))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     # With no group, the one row IS the total, so no group is shown.
     shown = [] if overall else [g for g, _acc in kept]
@@ -1844,9 +1859,10 @@ async def _compute(
     )
 
 
-#: The cents of :func:`cents`, and a context wide enough for any float.
+#: The cents of :func:`cents`. The context grows with the value
+#: (:func:`cents`), from at least 1,000 digits.
 _CENT = Decimal("0.01")
-_WIDE = Context(prec=400)
+_WIDE_DIGITS = 1000
 
 #: What :func:`cut_key` reads when no raw value is given.
 _SHOWN = object()
@@ -1854,20 +1870,33 @@ _SHOWN = object()
 
 def cents(value: Any) -> Decimal | None:
     """CRM-Q34-10: *value* rounded to 2 places as Postgres rounds a
-    ``numeric``: half away from zero, on the decimal text. ``repr`` of a
-    float is the shortest text that reads back as it, which is the text of
-    the numeric the statement gave. So 0.125 is 0.13 and -0.125 is -0.13
-    here and in SQL, where ``round(float, 2)`` gives 0.12 and -0.12. None,
-    NaN and an infinity give None."""
+    ``numeric``: half away from zero, on the exact digits. A ``Decimal`` (the
+    ``numeric`` of the row) and an integer round as they are. A float has
+    lost digits already, so it reads ``repr``, its shortest text: only a
+    value with no exact number takes that way. None, NaN and an infinity
+    give None. A value of any size rounds: the context holds every digit."""
     if value is None:
         return None
     try:
-        exact = value if isinstance(value, Decimal) else Decimal(repr(float(value)))
+        exact = _exact(value)
+        if exact is None:
+            exact = Decimal(repr(float(value)))
         if not exact.is_finite():
             return None
-        return exact.quantize(_CENT, rounding=ROUND_HALF_UP, context=_WIDE)
-    except (TypeError, ValueError, InvalidOperation):
+        digits = max(_WIDE_DIGITS, exact.adjusted() + 10)
+        return exact.quantize(_CENT, rounding=ROUND_HALF_UP,
+                              context=Context(prec=digits, Emax=digits * 2))
+    except (TypeError, ValueError, InvalidOperation, OverflowError):
         return None
+
+
+def _cut_value(acc: _Acc) -> Any:
+    """The value that the cut of page 1 rounds: the exact ``raw`` of the row
+    when the answer still shows a value, else ``value`` (None when the field
+    is empty in every row)."""
+    if acc.value is None:
+        return None
+    return acc.raw if acc.raw is not None else acc.value
 
 
 def cut_key(group: AggregateGroup, raw: Any = _SHOWN) -> tuple[Any, ...]:
