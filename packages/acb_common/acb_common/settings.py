@@ -1170,6 +1170,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_run_phase_event.py.
     chat_run_phase_orgs: str = ""
 
+    # ── A card checks that its object did not change (HRD-10a) ──────────────
+    #
+    # CHAT_CARD_PRECONDITION_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and `update_task` sends the PATCH of before,
+    # with no `If-Match`. On, `update_task` sends the `updated_at` that it
+    # read before the card as `If-Match`. A task that changed while the card
+    # waited gets a 412, the tool writes nothing, and the tool answers with
+    # the HRD-7 text "Changed since the card" and the old and new values
+    # (owner decision A, 2026-11-16). The one reader is
+    # `acb_skills.ask_tools.card_precondition_on`. It reads the org from the
+    # run binding and fails closed. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_card_precondition.py.
+    chat_card_precondition_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
