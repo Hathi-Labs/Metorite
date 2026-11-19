@@ -685,8 +685,8 @@ from the caller. A `code` row has an empty `ai` section and an empty `admin`
 section.
 
 **`shape_only`: one module.** The closed key sets, `LABEL_MAX` (80),
-`number_like` and `_has_literal` already live in `crm_sync/catalogue.py` of
-SEM-7 (PR 2599, task 3737). The 300-character cap is `BODY_MAX` of
+`number_like` and `_has_literal` live in `crm_sync/catalogue.py` on the branch
+of SEM-7 (PR 2599, task 3737). Main has them after that PR merges. The 300-character cap is `BODY_MAX` of
 `routes/crm/rules.py`, the cap of `crm_business_rules` (migration 283).
 
 SEM-12 reuses that module. It adds one public function there, `shape_only(body)`,
@@ -701,7 +701,7 @@ short code, or `None`.
 | A key, a label of at most 80 characters, an option of at most 80, a count, a fill share, a date or a closed word | Allows, in the `code` and `ai` sections |
 | A description in the `ai` section | Allows only text that code built from closed words, of at most 300 characters |
 | Text in the `admin` section | Allows 1 to 300 characters that pass `clean_body`, with no digit that `_has_literal` finds |
-| A parameter name | Allows a name that matches the name pattern. Refuses a name that does not match the name pattern, such as `2024` or `5.5`. The pattern is `_PARAM_NAME` of the catalogue |
+| A parameter name | Allows a name that matches the name pattern. Refuses a number-like name such as `2024` or `5.5` (`number_like`), and a name that does not match the pattern, such as `Acme Ltd`. The pattern is `_PARAM_NAME` of the catalogue |
 | A verified query | Allows named parameters. Refuses a key such as `value`, and any literal in a condition |
 | An amount, a total, a balance or a figure of money | Refuses, in every section |
 | Free text that the source or the model wrote, outside the cases above | Refuses |
@@ -925,8 +925,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
 - `test_semantic_shape_only.py` (new). One case for each row of the
   `shape_only` table in §10.4, and a source check that `connections/semantic_model.py`
   defines no second `LABEL_MAX`, `number_like` or `_has_literal`. **Mutations:**
-  drop the `_PARAM_NAME` full match on a parameter name, and the name `2024` passes
-  and the case fails. Drop the section check, and the part in the wrong section
+  drop the `_PARAM_NAME` full match on a parameter name, and the name `Acme Ltd`
+  passes and the case fails. Drop the `number_like` call on the name, and the name
+  `2024` passes and the case fails. Drop the section check, and the part in the wrong section
   passes and the case fails.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
