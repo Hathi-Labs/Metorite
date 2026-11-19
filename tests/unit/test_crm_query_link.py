@@ -3,11 +3,15 @@
 Database-free, so it never skips. ``crm_sync.terms.link_field`` is pure: the
 caller passes the fields that the member may use, and the word of the model.
 
-1. The ladder: the exact key, the key in any case, the folded label, the
-   admin's answer of the term, then the words of ``terms._hit``. The first
-   step that finds a field decides.
-2. A close pair never picks: two or more fields at one step give each key
-   (at most three) and the step ``ambiguous``.
+A wrong link is worse than the refusal of today. So the function links a
+field only when the name is certain, and otherwise it only suggests.
+
+1. The ladder: the exact key, the admin's answer of the term, the key in any
+   case, then the folded label. Only these four steps link (``linked``).
+   The ``near`` step fits the words of the word with ``terms._hit``, and it
+   suggests only, for the caller to name in a refusal.
+2. A close pair never picks: two or more fields at a link step give each key
+   (at most three, and ``more`` counts the rest) and the step ``ambiguous``.
 3. A key word (``@amount``) and a sum of keys (``a+b``) pass through, so the
    caller keeps its old path. A word over 80 characters, an empty word and a
    word of marks only give ``none``.
@@ -21,7 +25,12 @@ Non-vacuity (each mutation was run once, and the named test went red):
   field_beats_its_label`` fails;
 * return the first of two fits: ``test_two_fits_give_both_keys_and_pick_none``
   fails;
-* drop the pass-through: ``test_a_key_word_and_a_sum_pass_through`` fails.
+* drop the pass-through: ``test_a_key_word_and_a_sum_pass_through`` fails;
+* let the ``near`` step link: ``test_a_general_word_never_links_the_one_field_
+  that_holds_it`` fails;
+* fold ``%`` away: ``test_a_percent_label_folds_apart_from_its_amount`` fails;
+* run the ``term`` step after ``case``: ``test_an_admin_answer_comes_before_
+  the_key_in_another_case`` fails.
 """
 
 from __future__ import annotations
@@ -48,6 +57,16 @@ class F:
     visible: bool = True
 
 
+def link(*keys: str, step: str, money: bool = False) -> Link:
+    """A result that links: the caller may run the key."""
+    return Link(keys=keys, step=step, money=money, linked=True)
+
+
+def hint(*keys: str, step: str, money: bool = False, more: int = 0) -> Link:
+    """A result that does not link: the caller may only name the keys."""
+    return Link(keys=keys, step=step, money=money, linked=False, more=more)
+
+
 FIELDS = (
     F("Deal_Stage", "Pipeline Step", "select"),
     F("Amt_Billed", "Billing Amount", "currency"),
@@ -60,13 +79,13 @@ FIELDS = (
 
 @pytest.mark.parametrize("field", FIELDS, ids=lambda f: f.key)
 def test_each_stored_key_links_to_itself(field: F) -> None:
-    assert link_field(FIELDS, field.key) == Link(
-        keys=(field.key,), step="exact", money=field.type in terms.MONEY_TYPES)
+    assert link_field(FIELDS, field.key) == link(
+        field.key, step="exact", money=field.type in terms.MONEY_TYPES)
 
 
 @pytest.mark.parametrize("word", ["deal_stage", "DEAL_STAGE", "dEaL_sTaGe"])
 def test_a_key_in_another_case_gives_the_stored_key(word: str) -> None:
-    assert link_field(FIELDS, word) == Link(keys=("Deal_Stage",), step="case")
+    assert link_field(FIELDS, word) == link("Deal_Stage", step="case")
 
 
 @pytest.mark.parametrize("word", [
@@ -74,105 +93,200 @@ def test_a_key_in_another_case_gives_the_stored_key(word: str) -> None:
     "billing-amount", "Billing  Amount", "billingamount", " Billing Amount ",
 ])
 def test_a_label_in_any_case_or_spacing_gives_its_key(word: str) -> None:
-    assert link_field(FIELDS, word) == Link(keys=("Amt_Billed",), step="label", money=True)
+    assert link_field(FIELDS, word) == link("Amt_Billed", step="label", money=True)
 
 
 def test_a_field_with_no_label_reads_its_key_as_the_label() -> None:
-    assert link_field(FIELDS, "owner name") == Link(keys=("Owner_Name",), step="label")
+    assert link_field(FIELDS, "owner name") == link("Owner_Name", step="label")
 
 
 def test_the_exact_key_of_another_field_beats_its_label() -> None:
     # "Stage" is the label of one field and the key of another.
     fields = [F("Status", "Stage", "select"), F("Stage", "Pipeline", "select")]
-    assert link_field(fields, "Stage") == Link(keys=("Stage",), step="exact")
+    assert link_field(fields, "Stage") == link("Stage", step="exact")
     # The key in another case beats the label too.
-    assert link_field(fields, "stage") == Link(keys=("Stage",), step="case")
+    assert link_field(fields, "stage") == link("Stage", step="case")
 
 
-def test_the_word_step_runs_only_when_no_label_fits() -> None:
+def test_a_near_fit_runs_only_when_no_label_fits_and_never_links() -> None:
     fields = [F("Rent_Paid", "Rent", "currency"), F("Rent_Due", "Rent Due", "currency")]
-    assert link_field(fields, "rent") == Link(keys=("Rent_Paid",), step="label", money=True)
-    assert link_field(fields, "rent due") == Link(keys=("Rent_Due",), step="label", money=True)
-    assert link_field(fields, "due") == Link(keys=("Rent_Due",), step="word", money=True)
+    assert link_field(fields, "rent") == link("Rent_Paid", step="label", money=True)
+    assert link_field(fields, "rent due") == link("Rent_Due", step="label", money=True)
+    assert link_field(fields, "due") == hint("Rent_Due", step="near", money=True)
 
 
-def test_the_word_step_takes_a_plural_by_the_hit_rule() -> None:
+def test_a_near_fit_takes_a_plural_by_the_hit_rule() -> None:
     fields = [F("Deposits_Held", "Deposits Held", "currency")]
-    assert link_field(fields, "deposit held") == Link(
-        keys=("Deposits_Held",), step="word", money=True)
+    assert link_field(fields, "deposit held") == hint("Deposits_Held", step="near", money=True)
 
 
-def test_the_word_step_needs_every_word_of_the_word() -> None:
+def test_a_near_fit_needs_every_word_of_the_word() -> None:
     # Stricter than terms.candidates: no general word drops, so "deal amount"
-    # never picks a text field that holds "deal" only.
+    # never suggests a text field that holds "deal" only.
     fields = [F("Deal_Name", "Deal Name", "text"), F("Amount", "Amount", "currency")]
     assert link_field(fields, "deal amount") == Link()
 
+
+@pytest.mark.parametrize(("fields", "word", "near"), [
+    # The amount of an invoice is the grand total, not the one field that
+    # holds the word.
+    ([F("Amount_Received", "Amount Received", "currency"),
+      F("Grand_Total", "Grand Total", "currency")], "amount", "Amount_Received"),
+    ([F("GSTIN", "GSTIN", "text"), F("Tax_Total", "Tax Total", "currency")], "gst", "GSTIN"),
+    ([F("Customer_No", "Customer No", "text")], "customer", "Customer_No"),
+    ([F("Paid_On", "Paid On", "date")], "paid", "Paid_On"),
+])
+def test_a_general_word_never_links_the_one_field_that_holds_it(
+    fields: list[F], word: str, near: str,
+) -> None:
+    found = link_field(fields, word)
+    assert found.step == "near" and found.linked is False
+    assert found.keys == (near,)
+
+
+@pytest.mark.parametrize("word", ["in", "id", "fe", "fa", "no", "do"])
+def test_a_word_under_three_letters_is_no_near_fit(word: str) -> None:
+    fields = [F("GSTIN", "GSTIN", "text"), F("Deal_Id", "Deal Id", "text"),
+              F("Fees", "Fees", "currency"), F("Fax_No", "Fax No", "text"),
+              F("Doc_Ref", "Doc Ref", "text")]
+    assert link_field(fields, word) == Link()
+
+
+def test_a_short_word_beside_a_longer_one_drops_from_the_near_fit() -> None:
+    fields = [F("GSTIN", "GSTIN", "text"), F("Tax_Total", "Tax Total", "currency")]
+    # "gst in" would fold to the label "GSTIN" and link it, so the test takes
+    # "gst no": "no" drops, and "gst" alone only suggests.
+    assert link_field(fields, "gst no") == hint("GSTIN", step="near")
+
+
+# ── The percent mark of a label ─────────────────────────────────────────────
+
+def test_a_percent_label_folds_apart_from_its_amount() -> None:
+    fields = [F("GST_Pct", "GST %", "percent"), F("GST_Amount", "GST Amount", "currency")]
+    # "gst" is the label of neither. Before the fix, "GST %" folded to "gst".
+    found = link_field(fields, "gst")
+    assert found.linked is False and found.step == "near"
+    assert found.keys == ("GST_Pct", "GST_Amount")
+    assert link_field(fields, "GST %") == link("GST_Pct", step="label")
+    assert link_field(fields, "gst percent") == link("GST_Pct", step="label")
+    assert link_field(fields, "gst amount") == link("GST_Amount", step="label", money=True)
+
+
+def test_a_discount_word_does_not_link_the_discount_percent() -> None:
+    fields = [F("Discount_Pct", "Discount %", "percent")]
+    found = link_field(fields, "discount")
+    assert found.linked is False and found.step == "near"
+    assert link_field(fields, "Discount %") == link("Discount_Pct", step="label")
+
+
+def test_the_fold_changes_only_the_percent_mark() -> None:
+    assert terms._fold("Sales Orders") == terms._fold("sales_orders") == "salesorders"
+    assert terms._fold("GST %") == "gstpercent"
+    assert terms._fold("") == ""
+
+
+# ── The admin's answer of the term ──────────────────────────────────────────
 
 def _answers(module: str, word: str, key: str) -> dict[str, str]:
     return {terms.term_id(module, word): key}
 
 
+TWO_FEES = [F("Fee_A", "Service Fee", "currency"), F("Fee_B", "Late Fee", "currency")]
+
+
 def test_an_admin_answer_of_the_term_links_its_field() -> None:
-    fields = [F("Fee_A", "Service Fee", "currency"), F("Fee_B", "Late Fee", "currency")]
     answers = _answers("Invoices", "fee", "Fee_B")
-    assert link_field(fields, "fee") == Link(keys=("Fee_A", "Fee_B"), step="ambiguous",
-                                             money=True)
-    assert link_field(fields, "fee", module="Invoices", answers=answers) == Link(
-        keys=("Fee_B",), step="term", money=True)
+    assert link_field(TWO_FEES, "fee") == hint("Fee_A", "Fee_B", step="near", money=True)
+    assert link_field(TWO_FEES, "fee", module="Invoices", answers=answers) == link(
+        "Fee_B", step="term", money=True)
+
+
+def test_an_admin_answer_comes_before_the_key_in_another_case() -> None:
+    # As in terms.decide, the admin's answer of "fee" decides first. Only the
+    # exact key comes before it.
+    fields = [F("Fee", "Fee", "currency"), F("Late_Fee", "Late Fee", "currency")]
+    answers = _answers("Invoices", "fee", "Late_Fee")
+    assert link_field(fields, "fee", module="Invoices", answers=answers) == link(
+        "Late_Fee", step="term", money=True)
+    pick = terms.decide([terms.Candidate("Fee", "Fee"), terms.Candidate("Late_Fee", "Late Fee")],
+                        answer=answers[terms.term_id("Invoices", "fee")])
+    assert pick.field == "Late_Fee"
+    assert link_field(fields, "Fee", module="Invoices", answers=answers) == link(
+        "Fee", step="exact", money=True)
 
 
 def test_an_answer_that_names_a_field_not_passed_is_ignored() -> None:
-    fields = [F("Fee_A", "Service Fee", "currency"), F("Fee_B", "Late Fee", "currency")]
     answers = _answers("Invoices", "fee", "Gone_Field")
-    assert link_field(fields, "fee", module="Invoices", answers=answers).step == "ambiguous"
+    assert link_field(TWO_FEES, "fee", module="Invoices", answers=answers).step == "near"
 
 
 def test_the_term_step_needs_the_module_and_the_answers() -> None:
-    fields = [F("Fee_A", "Service Fee", "currency"), F("Fee_B", "Late Fee", "currency")]
     answers = _answers("Invoices", "fee", "Fee_B")
-    assert link_field(fields, "fee", answers=answers).step == "ambiguous"
-    assert link_field(fields, "fee", module="Invoices").step == "ambiguous"
-    assert link_field(fields, "fee", module="Orders", answers=answers).step == "ambiguous"
+    assert link_field(TWO_FEES, "fee", answers=answers).step == "near"
+    assert link_field(TWO_FEES, "fee", module="Invoices").step == "near"
+    assert link_field(TWO_FEES, "fee", module="Orders", answers=answers).step == "near"
 
 
-def test_a_label_beats_an_answer_of_the_term() -> None:
-    fields = [F("Fee_A", "Fee", "currency"), F("Fee_B", "Late Fee", "currency")]
+def test_a_word_with_a_cut_slug_reads_no_answer() -> None:
+    long_word = "service fee charged monthly for the account"
+    assert len("-".join(terms.words(long_word))) >= terms.SLUG_MAX
+    other = "service fee charged monthly for the account of last year"
+    assert terms.term_id("Invoices", long_word) == terms.term_id("Invoices", other)
+    answers = _answers("Invoices", long_word, "Fee_B")
+    assert link_field(TWO_FEES, long_word, module="Invoices", answers=answers).step != "term"
+    assert link_field(TWO_FEES, other, module="Invoices", answers=answers).step != "term"
+
+
+def test_a_word_with_a_letter_of_another_script_reads_no_answer() -> None:
     answers = _answers("Invoices", "fee", "Fee_B")
-    assert link_field(fields, "fee", module="Invoices", answers=answers) == Link(
-        keys=("Fee_A",), step="label", money=True)
+    word = "राशि fee"
+    assert terms.term_id("Invoices", word) == terms.term_id("Invoices", "fee")
+    found = link_field(TWO_FEES, word, module="Invoices", answers=answers)
+    assert found.step != "term" and found.linked is False
 
 
 # ── 2. A close pair never picks ─────────────────────────────────────────────
 
 def test_two_fits_give_both_keys_and_pick_none() -> None:
     fields = [F("Net_A", "Net Total", "currency"), F("Net_B", "net-total", "currency")]
-    assert link_field(fields, "net total") == Link(keys=("Net_A", "Net_B"), step="ambiguous",
+    assert link_field(fields, "net total") == hint("Net_A", "Net_B", step="ambiguous",
                                                    money=True)
 
 
 def test_two_keys_that_differ_in_case_only_are_ambiguous() -> None:
     fields = [F("amount", "One", "currency"), F("Amount", "Two", "number")]
-    assert link_field(fields, "Amount") == Link(keys=("Amount",), step="exact", money=True)
-    assert link_field(fields, "AMOUNT") == Link(keys=("amount", "Amount"), step="ambiguous",
+    assert link_field(fields, "Amount") == link("Amount", step="exact", money=True)
+    assert link_field(fields, "AMOUNT") == hint("amount", "Amount", step="ambiguous",
                                                 money=True)
 
 
-def test_more_than_three_fits_give_the_first_three_keys() -> None:
-    fields = [F(f"Rent_{n}", f"Rent {n}", "currency") for n in range(5)]
-    found = link_field(fields, "rent")
-    assert found.step == "ambiguous"
-    assert found.keys == ("Rent_0", "Rent_1", "Rent_2")
-    assert len(found.keys) == terms.MAX_CANDIDATES
+def test_more_than_three_fits_give_three_keys_and_count_the_rest() -> None:
+    fields = [F(f"Net_{n}", "Net Total", "currency") for n in range(5)]
+    assert link_field(fields, "net total") == hint(
+        "Net_0", "Net_1", "Net_2", step="ambiguous", money=True, more=2)
+    near = [F(f"Rent_{n}", f"Rent {n}", "currency") for n in range(5)]
+    assert link_field(near, "rent") == hint(
+        "Rent_0", "Rent_1", "Rent_2", step="near", money=True, more=2)
+    assert link_field(near[:3], "rent").more == 0
 
 
-def test_money_is_true_only_when_each_key_is_a_money_field() -> None:
+def test_money_is_a_hint_true_only_when_each_key_is_a_money_field() -> None:
     fields = [F("Rent_Paid", "Rent Paid", "currency"), F("Rent_Note", "Rent Note", "text")]
     mixed = link_field(fields, "rent")
-    assert mixed.step == "ambiguous" and mixed.money is False
+    assert mixed.step == "near" and mixed.money is False
     assert link_field(fields, "Rent_Paid").money is True
     assert link_field(fields, "Rent_Note").money is False
     assert link_field(fields, "nothing here").money is False
+
+
+@pytest.mark.parametrize("word", [
+    "Deal_Stage", "deal_stage", "close date", "billing", "@amount", "", "x" * 81,
+    "pipeline", "nothing",
+])
+def test_linked_is_true_only_for_a_link_step(word: str) -> None:
+    found = link_field(FIELDS, word)
+    assert found.linked == (found.step in terms.LINK_STEPS), found
+    assert terms.LINK_STEPS == ("exact", "term", "case", "label")
 
 
 # ── 3. Pass-through and the bounds ──────────────────────────────────────────
@@ -196,20 +310,19 @@ def test_a_long_or_empty_or_marks_only_word_gives_none(word: str) -> None:
 
 def test_a_word_of_the_longest_length_still_links() -> None:
     key = "K" * terms.TERM_MAX
-    assert link_field([F(key)], key) == Link(keys=(key,), step="exact")
+    assert link_field([F(key)], key) == link(key, step="exact")
 
 
 def test_a_word_with_no_ascii_word_and_no_label_gives_none() -> None:
-    # terms.words() reads ASCII only. With no word, the word step must not
-    # match every field.
+    # terms.words() reads ASCII only. With no word, the near step must not
+    # fit every field.
     fields = [F("Rent_Paid", "Rent Paid", "currency"), F("Rent_Due", "Rent Due", "currency")]
     assert link_field(fields, "राशि") == Link()
 
 
 def test_a_label_in_another_script_links_by_the_fold() -> None:
     fields = [F("Size_1", "Größe", "number")]
-    assert link_field(fields, "GRÖßE") == Link(keys=("Size_1",), step="label",
-                                                         money=True)
+    assert link_field(fields, "GRÖßE") == link("Size_1", step="label", money=True)
 
 
 def test_a_word_that_is_not_text_gives_none() -> None:
@@ -230,9 +343,8 @@ CANARY = "Quokkacanary"
 @pytest.mark.parametrize(("fields", "word", "step"), [
     ([F("F_1", "Rent")], CANARY, "none"),
     ([F("F_1", "Quokka Canary")], CANARY, "label"),
-    ([F("F_1", "Quokka Canary Fee"), F("F_2", "Quokka Canary Tax")], "quokka canary",
-     "ambiguous"),
-    ([F("F_1", "Quokka Canary Fee")], "quokka canary", "word"),
+    ([F("F_1", "Quokka Canary"), F("F_2", "quokka-canary")], "quokka canary", "ambiguous"),
+    ([F("F_1", "Quokka Canary Fee"), F("F_2", "Quokka Canary Tax")], "quokka canary", "near"),
     ([F("F_1", "Rent")], CANARY * 10, "none"),
 ])
 def test_the_result_never_holds_the_word(fields: list[F], word: str, step: str) -> None:
@@ -243,8 +355,9 @@ def test_the_result_never_holds_the_word(fields: list[F], word: str, step: str) 
     assert set(found.keys) <= {f.key for f in fields}
 
 
-def test_a_link_has_only_keys_a_step_and_the_money_mark() -> None:
-    assert [f.name for f in dataclasses.fields(Link)] == ["keys", "step", "money"]
+def test_a_link_has_only_keys_a_step_and_three_marks() -> None:
+    assert [f.name for f in dataclasses.fields(Link)] == [
+        "keys", "step", "money", "linked", "more"]
     with pytest.raises(dataclasses.FrozenInstanceError):
         Link().step = "exact"  # type: ignore[misc]
 
@@ -257,8 +370,7 @@ def test_a_field_the_caller_leaves_out_is_never_a_target() -> None:
     assert link_field(shown, "Margin") == Link()
     assert link_field(shown, "margin") == Link()
     # The function reads no visible flag: the caller decides.
-    assert link_field([*FIELDS, hidden], "Margin") == Link(keys=("Margin",), step="exact",
-                                                           money=True)
+    assert link_field([*FIELDS, hidden], "Margin") == link("Margin", step="exact", money=True)
 
 
 def test_a_key_word_alias_and_a_sum_are_no_targets() -> None:
@@ -270,15 +382,15 @@ def test_a_key_word_alias_and_a_sum_are_no_targets() -> None:
                      parts=(paid, due))
     # The fields of a module scope: a key word holds the same ref again.
     scope = {"Rent_Paid": paid, "Rent_Due": due, "@amount": paid, "@total": total}
-    assert link_field(scope.values(), "rent paid") == Link(
-        keys=("Rent_Paid",), step="label", money=True)
-    assert link_field(scope.values(), "rent") == Link(
-        keys=("Rent_Paid", "Rent_Due"), step="ambiguous", money=True)
+    assert link_field(scope.values(), "rent paid") == link("Rent_Paid", step="label",
+                                                           money=True)
+    assert link_field(scope.values(), "rent") == hint("Rent_Paid", "Rent_Due", step="near",
+                                                      money=True)
 
 
 def test_a_generator_of_fields_is_read_once_for_every_step() -> None:
     fields = (f for f in FIELDS)
-    assert link_field(fields, "close date") == Link(keys=("Closing_Date",), step="label")
+    assert link_field(fields, "close date") == link("Closing_Date", step="label")
 
 
 # ── 5. The purity fence ─────────────────────────────────────────────────────

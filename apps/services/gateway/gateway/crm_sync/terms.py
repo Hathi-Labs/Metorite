@@ -38,12 +38,14 @@ exactly one longer value (3 letters or more), and the initials of a value of
 two or more words.
 
 **A link (SEM-2a).** :func:`link_field` maps a word of the model to the
-stored key of one field. The first step of its ladder that finds a field
-decides: the exact key, the key in any case, the folded label, an admin's
-answer of the term, then the words of :func:`_hit`. Two or more fields at one
-step give each key and pick none. The caller passes only the fields that the
-member may use, and the caller applies :func:`close` to the totals of two
-money fields. The word never goes into the result.
+stored key of one field. A wrong link is worse than a refusal, so only a
+certain name links: the exact key, an admin's answer of the term, the key in
+any case, or the folded label, in that order. Two or more fields at one of
+these steps give each key and pick none. A near fit by the words of
+:func:`_hit` is a suggestion only, which the caller can name in a refusal.
+The caller passes only the fields that the member may use, and the caller
+applies :func:`close` to the totals of two money fields. The word never goes
+into the result.
 """
 
 from __future__ import annotations
@@ -347,6 +349,15 @@ TERM_MAX = 80
 #: The first character of a key word of a module scope (``@amount``). A
 #: stored key never starts with it.
 KEY_WORD_MARK = "@"
+#: The steps of :func:`link_field` that link a field, in the order of the
+#: ladder. Each is a certain name. The ``near`` step only suggests.
+LINK_STEPS: tuple[str, ...] = ("exact", "term", "case", "label")
+#: The shortest word that the ``near`` step reads. A shorter word ("in",
+#: "id", "no") is part of too many field names to suggest one.
+NEAR_MIN = 3
+#: The word that ``%`` reads as in a folded label, so "GST %" and
+#: "GST Amount" fold apart, and "gst" folds to neither.
+PERCENT_WORD = "percent"
 
 
 @dataclass(frozen=True)
@@ -354,25 +365,46 @@ class Link:
     """What :func:`link_field` found for one word.
 
     ``keys`` holds stored field keys only, never the word: none, one, or up
-    to :data:`MAX_CANDIDATES` when ``step`` is ``ambiguous``. ``step`` names
-    the step that decided: ``exact``, ``case``, ``label``, ``term`` or
-    ``word`` for one field, ``ambiguous`` for two or more fields at one step,
-    ``none`` for no field, and ``passthrough`` for a key word or a sum of
-    keys that the caller reads on its old path. ``money`` is True when each
-    key is a field of :data:`MONEY_TYPES`, so the caller can apply
-    :func:`close` to their totals."""
+    to :data:`MAX_CANDIDATES`. ``step`` names the step that decided:
+    ``exact``, ``term``, ``case`` or ``label`` for one field (a link),
+    ``ambiguous`` for two or more fields at one of those steps, ``near`` for
+    the fields that the words of the word fit (a suggestion), ``none`` for
+    no field, and ``passthrough`` for a key word or a sum of keys that the
+    caller reads on its old path.
+
+    ``linked`` is True only for a link (:data:`LINK_STEPS`). Only then may
+    the caller run the key. The keys of ``ambiguous`` and ``near`` are for
+    the caller to name, never to run. ``more`` counts the further fields of
+    the deciding step past the keys, so a caller reads ``more > 0`` as
+    "possibly more". ``money`` is a hint: True when each key is a field of
+    :data:`MONEY_TYPES`. SEM-2b decides the money rule of :func:`close` from
+    the measure types of the aggregate, without ``percent``."""
 
     keys: tuple[str, ...] = ()
     step: str = "none"
     money: bool = False
+    linked: bool = False
+    more: int = 0
 
 
 def _fold(text: Any) -> str:
     """A label in one form: lower case, with each character that is not a
-    letter or a digit dropped. It is the rule of ``fold_module`` in
+    letter or a digit dropped. ``%`` reads as :data:`PERCENT_WORD` first.
+    Apart from ``%``, it is the rule of ``fold_module`` in
     ``routes/crm/modules.py`` (CRM-Q34-12). This module imports no route, so
     it keeps its own copy."""
-    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+    text = str(text or "").replace("%", f" {PERCENT_WORD} ")
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _own_term(word: str) -> bool:
+    """True when the term question of *word* belongs to *word* alone. Its
+    slug must be shorter than :data:`SLUG_MAX`, because the slug is cut there,
+    and two long words can share one cut slug. :func:`words` must keep each
+    letter and digit of it, because it drops a letter that is not ASCII, and
+    then "<other script> fee" reads the answer of "fee"."""
+    return (len("-".join(words(word))) < SLUG_MAX
+            and not any(ch.isalnum() and not ch.isascii() for ch in word))
 
 
 def _stored(fields: Iterable[Any]) -> list[tuple[str, str, str]]:
@@ -391,12 +423,16 @@ def _stored(fields: Iterable[Any]) -> list[tuple[str, str, str]]:
 
 
 def _link(found: Sequence[tuple[str, str, str]], step: str) -> Link:
-    """The link of the fields that one step found: the one key, or each key
-    (at most :data:`MAX_CANDIDATES`) with the step ``ambiguous``."""
-    if len(found) > 1:
-        step, found = "ambiguous", found[:MAX_CANDIDATES]
-    return Link(keys=tuple(k for k, _label, _type in found), step=step,
-                money=all(t in MONEY_TYPES for _key, _label, t in found))
+    """The result of the fields that one step found. At a step of
+    :data:`LINK_STEPS`, one field is the link, and two or more give
+    ``ambiguous``. The ``near`` step never links. At most
+    :data:`MAX_CANDIDATES` keys show, and ``more`` counts the rest."""
+    if len(found) > 1 and step in LINK_STEPS:
+        step = "ambiguous"
+    shown = found[:MAX_CANDIDATES]
+    return Link(keys=tuple(k for k, _label, _type in shown), step=step,
+                money=all(t in MONEY_TYPES for _key, _label, t in shown),
+                linked=step in LINK_STEPS, more=len(found) - len(shown))
 
 
 def link_field(fields: Iterable[Any], word: str, *, module: str = "",
@@ -414,17 +450,20 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
     first step that finds a field decides:
 
     1. ``exact``: the stored key;
-    2. ``case``: the key in any case;
-    3. ``label``: the label, folded by :func:`_fold`;
-    4. ``term``: the admin's answer of the term question of *word* in
-       *module*. *answers* is ``term_state(...).answers``, which the caller
-       read. With no *module* or no *answers*, the step does not run;
-    5. ``word``: each word of *word* hits a word of the label or of the key
-       (:func:`_hit`).
+    2. ``term``: the admin's answer of the term question of *word* in
+       *module*, first as in :func:`decide`. *answers* is
+       ``term_state(...).answers``, which the caller read. With no *module*
+       or no *answers*, or a word that :func:`_own_term` refuses, the step
+       does not run;
+    3. ``case``: the key in any case;
+    4. ``label``: the label, folded by :func:`_fold`;
+    5. ``near``: each word of *word* of :data:`NEAR_MIN` letters or more hits
+       a word of the label or of the key (:func:`_hit`). It suggests and
+       never links.
 
-    One field at a step is the link. Two or more give ``ambiguous`` and pick
-    none. The result never holds *word*, and the function reads no database,
-    no setting and no clock, and logs nothing."""
+    One field at steps 1 to 4 is the link (``linked``). Two or more give
+    ``ambiguous`` and pick none. The result never holds *word*, and the
+    function reads no database, no setting and no clock, and logs nothing."""
     asked = word if isinstance(word, str) else ""
     trimmed = asked.strip()
     if trimmed.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in trimmed:
@@ -435,6 +474,11 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
     found = [f for f in pool if f[0] == trimmed]
     if found:
         return _link(found, "exact")
+    if module and answers and words(trimmed) and _own_term(trimmed):
+        picked = answers.get(term_id(module, trimmed))
+        found = [f for f in pool if f[0] == picked]
+        if found:
+            return _link(found, "term")
     case = trimmed.casefold()
     found = [f for f in pool if f[0].casefold() == case]
     if found:
@@ -443,18 +487,13 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
     found = [f for f in pool if folded and _fold(f[1]) == folded]
     if found:
         return _link(found, "label")
-    wanted = list(dict.fromkeys(words(trimmed)))
-    if module and answers and wanted:
-        picked = answers.get(term_id(module, trimmed))
-        found = [f for f in pool if f[0] == picked]
-        if found:
-            return _link(found, "term")
+    wanted = [w for w in dict.fromkeys(words(trimmed)) if len(w) >= NEAR_MIN]
     if wanted:
         found = [f for f in pool
                  if all(_hit(w, list(dict.fromkeys([*words(f[1]), *words(f[0])])))
                         for w in wanted)]
         if found:
-            return _link(found, "word")
+            return _link(found, "near")
     return Link()
 
 
@@ -464,8 +503,11 @@ __all__ = [
     "GENERAL_WORDS",
     "KEY_WORD_MARK",
     "KIND_TERM",
+    "LINK_STEPS",
     "MAX_CANDIDATES",
     "MONEY_TYPES",
+    "NEAR_MIN",
+    "PERCENT_WORD",
     "TAX_PART_WORDS",
     "TAX_WORDS",
     "TERMS_BUCKET",
