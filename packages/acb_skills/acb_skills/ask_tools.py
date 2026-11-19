@@ -1488,8 +1488,8 @@ CARD_OTHER_MEMBER = "another member answered"
 #: The card stays open after the run ends (WS-51 S2). No caller reads it yet:
 #: RESUME-4 owns the model's side of a parked card.
 CARD_PARKED = "parked"
-#: The object changed after the card showed. No caller reads it yet: HRD-10
-#: adds the check.
+#: The object changed after the card showed. HRD-10a gives the first caller:
+#: ``update_task`` of Projects, behind :func:`card_precondition_on`.
 CARD_CHANGED_SINCE = "changed since"
 
 
@@ -1553,10 +1553,13 @@ CARD_OUTCOMES: dict[str, CardOutcome] = {
         "done yet.",
         "Tell the member that the card waits for them. Do not say that it is "
         "done."),
+    # Owner decision A (HRD-10a, 2026-11-16): text first. The model tells the
+    # member, and a new card shows only when the member asks for it.
     CARD_CHANGED_SINCE: CardOutcome(
         "Changed since the card",
         "the item changed after the card showed, so nothing was done.",
-        "Read the item again. Then show a new card with what is true now."),
+        "Tell the member what changed. Show a new card only if the member "
+        "asks for it."),
 }
 
 #: The leads of each outcome of a card that did nothing.
@@ -1613,6 +1616,35 @@ def card_not_done_text(act: str = "") -> str:
     if outcome is None or outcome == CARD_APPROVED or outcome not in CARD_OUTCOMES:
         outcome = CARD_DECLINED
     return card_outcome_text(outcome, act)
+
+
+def card_precondition_on(org: object = None) -> bool:
+    """True when ``CHAT_CARD_PRECONDITION_ORGS`` names *org*. THE reader
+    (HRD-10a).
+
+    *org* defaults to the bound tenant of the run (``acb_common.db``), never
+    to a value of the request (R5). A comma list of org ids, or ``*`` for
+    each one. Empty means off, the default. It reads the settings on each
+    call, so a flag reload (``docs/flag_reload.md``) applies a change with no
+    restart. Any fault reads as off.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "chat_card_precondition_orgs", "") or "")
+        entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        if not entries:
+            return False
+        if "*" in entries:
+            return True
+        if org is None:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        name = str(org or "").strip().lower()
+        return bool(name) and name in entries
+    except Exception:
+        return False
 
 
 #: CO-17: the card id of the last card that the member approved on this frame,
