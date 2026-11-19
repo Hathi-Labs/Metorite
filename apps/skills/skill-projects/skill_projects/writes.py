@@ -2154,7 +2154,8 @@ def _versions_fact(pairs: list[tuple[str, str]]) -> str:
     """ONE card fact for the versions of many tasks (HRD-10b).
 
     A short hash of the sorted ``(task_id, updated_at)`` pairs: 16 hex
-    characters of a SHA-256. A change of any one version changes the fact.
+    characters of an 8-byte BLAKE2b digest. A change of any one version changes
+    the fact.
 
     ⚠️ Defence in depth only, for a future grant of a card with rows. Today
     a late approve (HRD-22) and a stored call (RESUME-2a) never apply to
@@ -2164,7 +2165,8 @@ def _versions_fact(pairs: list[tuple[str, str]]) -> str:
     not the list of stamps, so 50 rows do not put 50 timestamps in the card
     text."""
     raw = json.dumps(sorted(pairs), separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    # An 8-byte digest is 16 hex characters, so no head slice is needed.
+    return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 
 class _EditPlan:
