@@ -247,8 +247,11 @@ build follows these decisions.
 - **(b) The name.** `{name}` is the template id, such as `zoho_books`. An org
   has one row for each provider today.
 - **(c) The daily budget.** It is half of `Limits.per_day`. When the template
-  names no daily cap, the budget is `DEFAULT_DAILY_BUDGET`, 1000 calls a day
-  for each connection. The counter is a `tenant_redis` key of the connection
+  names no daily cap, the budget is `DEFAULT_DAILY_BUDGET`, 500 calls a day
+  for each connection. That is half of a careful guess of 1000. The Zoho
+  Books template names `per_day=1000`, so its budget is 500. ⚠️ Nobody has
+  confirmed the real daily cap of Zoho Books against Zoho's own page. It
+  depends on the plan. This is an owner check before the flag flip. The counter is a `tenant_redis` key of the connection
   and the UTC day. One MULTI block does the INCR and an EXPIREAT at the end of
   that day, so no key lives without a time limit. When Redis does not answer,
   the call fails closed with 503.
@@ -262,6 +265,14 @@ build follows these decisions.
   `incomplete` is true, and `total` is null. The sum so far is in
   `partial_total`. When the total mark names a currency field and the pages
   hold more than one currency, the gateway refuses with the list.
+  - A number with an exponent past `MAX_EXPONENT` (40), either way, counts
+    as `not_numbers`. It never raises.
+  - The gateway adds in its own `decimal` context of 80 digits. The context
+    traps a rounding, an overflow and an invalid operation. A sum that
+    cannot stay exact is refused with 422 `not_exact`. A sum never rounds in
+    silence.
+  - A figure longer than `MAX_FIGURE` (100) characters is refused as
+    `not_exact`. The answer of a total also keeps the answer cap of the op.
 - **(e) The caller.** The org and the member come from the session that
   `resolve_identity` resolves. The gateway reads no org from the body, the
   query or a header. A caller with no member or no org gets 404. A member of
@@ -275,7 +286,10 @@ build follows these decisions.
 - **(h) Find and describe.** Each one checks the flag, the grant and the row,
   and spends one call of the limiter. The answer is short: the op, the class
   and one line. Describe adds the arguments and their shapes. While writes
-  are off, find and describe show class A ops only.
+  are off, find and describe show class A ops only. `read` and `write` give
+  a hidden op the same 404 `operation_not_found` as an unknown op. So a
+  member cannot list the write ops. `write` spends one call of the limiter
+  before it answers.
 - **(i) The refresh.** The Zoho client of the CRM refreshes the token. API-2
   reads that client through `routes/crm/connection.py::zoho_oauth_config`,
   and API-3 reads it in the same place. The gateway makes no second reader of
@@ -283,6 +297,35 @@ build follows these decisions.
 - **(j) Error text.** Each error text passes the credential remover, and that
   includes the reason of `OutboundRefused`. A transport fault gives only the
   name of its class.
+
+**The credential remover.** It removes the access token, the refresh token
+and the client secret from each text of an answer and of an error.
+
+- Each character of a value matches as itself or percent-encoded, in upper
+  or lower case hex. So a value with each byte encoded, or only some, goes.
+- The `+` form, the JSON-escaped form and the form after the sign-in scheme
+  go too.
+- The match runs on a copy with no format character (category Cf, the
+  variation selectors). So a zero-width joiner inside a token does not hide
+  it. The span goes from the original text.
+- The first 16 and the last 16 characters of each value go too, so a
+  partial echo goes.
+- `MIN_SECRET` is 8. The gateway refuses with 503 `credential_unusable` a
+  row whose access token, refresh token or client secret is shorter, or is
+  not plain ASCII. An empty refresh token or client secret is absent. So a
+  value of one letter never removes each such letter of an answer.
+- A secret field of the template goes also when a hidden character hides
+  its key.
+
+**The flag off is 404 for any input.** `read` and `write` read the body
+after the flag dependency. So a dark route answers 404 for a body that is
+not JSON, an empty body or another content type. With the flag on, a bad
+body is 422 `bad_body`, and the error names no input.
+
+**The query shapes are open words on purpose.** The closed shape grammar of
+API-1 has no alternation. So `status` and `sort_column` take a short word of
+lower case letters and `_`, and Zoho refuses a word that it does not know.
+`per_page` takes 0 to 49 by its shape, and `template.build` refuses 0.
 
 **More decisions of the build.**
 

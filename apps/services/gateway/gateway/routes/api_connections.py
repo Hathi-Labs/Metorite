@@ -71,7 +71,7 @@ from acb_auth.permissions import integration_use_permission
 from acb_common import get_logger, tenant_redis
 from acb_common.app_manifests.base import ARG_KEY_PATTERN, BadCall
 from acb_skills.hidden_text import strip_hidden
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from gateway import outbound_guard
 from gateway.connections import api as api_templates
 from gateway.connections import mcp_tools, shared_token, store
@@ -97,7 +97,7 @@ from gateway.routes.integrations_api_connect import (
     OWNING_APP,
     require_api_connections,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 _log = get_logger("gateway.api_connections")
 
@@ -328,7 +328,12 @@ async def _ready(found: _Found, op: Operation) -> _Ready:
     forms = call.secret_forms(
         (credential.access_token, credential.refresh_token, credential.client_secret),
         scheme=found.template.sign_in.scheme)
-    if not call.token_is_plain(credential.access_token):
+    # §2.3a: each secret is plain and at least call.MIN_SECRET long, so the
+    # remover never takes a short value. An empty refresh token or client
+    # secret is absent, and passes.
+    if not call.token_is_plain(credential.access_token) or not all(
+            not value or call.token_is_plain(value)
+            for value in (credential.refresh_token, credential.client_secret)):
         raise _refused(503, "credential_unusable")
     domain = (credential.provider_meta.get(auth.META_API_DOMAIN)
               or found.row.provider_meta.get(auth.META_API_DOMAIN))
@@ -414,14 +419,20 @@ async def _total(ready: _Ready, args: dict[str, Any], record: _Record) -> dict[s
         try:
             count = adder.add_page(data)
         except call.AnswerRefused as exc:
-            raise _refused(502, exc.code) from None
+            raise _refused(422 if exc.code == "not_exact" else 502, exc.code) from None
         if count < size:
             stopped = None
             break
     mixed = adder.mixed()
     if mixed is not None:
         raise _refused(422, "mixed_currency", currencies=mixed)
-    return adder.answer(incomplete=stopped is not None, stopped_by=stopped)
+    try:
+        out = adder.answer(incomplete=stopped is not None, stopped_by=stopped)
+    except call.AnswerRefused as exc:
+        raise _refused(422, exc.code) from None
+    if call.size_of(out) > op.answer_cap:
+        raise _too_large(op)
+    return out
 
 
 # ── The log line ────────────────────────────────────────────────────────────
@@ -447,6 +458,23 @@ def _known_op(found: _Found | None, op: str) -> str | None:
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
+
+
+async def _body(request: Request) -> CallIn:
+    """The body of ``read`` and ``write``, read AFTER the flag dependency.
+
+    A ``CallIn`` parameter makes FastAPI parse the body before any
+    dependency runs, so a dark route would answer 422 for a bad body. Here
+    the router dependency runs first, so a dark route is 404 for ANY body
+    (§2.3a). An error names the place and the type, never the input.
+    """
+    raw = await request.body()
+    try:
+        return CallIn.model_validate_json(raw or b"null")
+    except ValidationError as exc:
+        errors = [{"loc": list(e.get("loc", ())), "type": e.get("type")}
+                  for e in exc.errors(include_url=False, include_input=False)]
+        raise _refused(422, "bad_body", errors=errors[:10]) from None
 
 
 def _words(text: str) -> set[str]:
@@ -511,16 +539,21 @@ async def describe_operation(
 @router.post("/{name}/read")
 async def read_operation(
     name: str,
+    request: Request,
     user: Annotated[UserContext, Depends(get_current_user)],
-    body: Annotated[CallIn, Body()],
 ) -> dict[str, Any]:
     """Run one class A op (§2.3). With ``total``, the gateway total."""
     started = time.monotonic()
     record = _Record()
     found: _Found | None = None
+    op_name = ""
     try:
         found = await _resolve(user, name)
-        op = found.template.op(body.op)
+        body = await _body(request)
+        op_name = body.op
+        # A hidden op (class B or C while writes are off) is the same 404 as
+        # an unknown op, so a member cannot list the write ops.
+        op = _visible_op(found.template, body.op)
         if op is None:
             raise _refused(404, "operation_not_found")
         if op.cls != "A":
@@ -545,27 +578,36 @@ async def read_operation(
     except HTTPException as exc:
         record.status = exc.status_code
         raise
+    except Exception:
+        record.status = 500
+        raise
     finally:
-        _log_call(found, _known_op(found, body.op), record, started)
+        _log_call(found, _known_op(found, op_name), record, started)
 
 
 @router.post("/{name}/write")
 async def write_operation(
     name: str,
+    request: Request,
     user: Annotated[UserContext, Depends(get_current_user)],
-    body: Annotated[CallIn, Body()],
 ) -> dict[str, Any]:
     """Steps 1 to 3, then the refusal of every call (D-API-4).
 
-    ⚠️ Nothing after the class check sends a request. No setting, flag or
+    It spends one call of the limiter, so a loop cannot probe op names
+    fast. A hidden op is the same 404 as an unknown op. A class A op is 403
+    ``wrong_class``. ⚠️ Nothing here sends a request. No setting, flag or
     column opens this route in API-3. API-9 builds writes.
     """
     started = time.monotonic()
     record = _Record()
     found: _Found | None = None
+    op_name = ""
     try:
         found = await _resolve(user, name)
-        op = found.template.op(body.op)
+        body = await _body(request)
+        op_name = body.op
+        await _spend_limiter(found)
+        op = _visible_op(found.template, body.op)
         if op is None:
             raise _refused(404, "operation_not_found")
         if op.cls == "A":
@@ -574,8 +616,11 @@ async def write_operation(
     except HTTPException as exc:
         record.status = exc.status_code
         raise
+    except Exception:
+        record.status = 500
+        raise
     finally:
-        _log_call(found, _known_op(found, body.op), record, started)
+        _log_call(found, _known_op(found, op_name), record, started)
 
 
 __all__ = ["API_NAMESPACE", "BUDGET_NAMESPACE", "WRITES_OFF", "router"]

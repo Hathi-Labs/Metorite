@@ -13,10 +13,19 @@ Mutation table. Each row names a mutation and the test that it breaks.
 | E2 | ``template.build`` drops the check of ``reserved_keys`` | ``test_a_context_key_as_an_argument_is_refused`` |
 | E3 | ``call.check_host`` accepts any host | ``test_a_host_outside_the_template_is_refused`` |
 | E4 | ``call.check_host`` skips the client list | ``test_a_host_off_the_client_list_is_refused`` |
-| E5 | ``_https`` calls ``outbound_guard.request`` and not ``request_https`` | ``test_request_https_refuses_another_port_and_http`` |
+| E5 | ``_https`` calls ``outbound_guard.request`` and not ``request_https`` | ``test_each_call_goes_through_request_https`` |
 | E6 | ``send`` follows a redirect | ``test_a_redirect_is_refused_and_its_target_gets_nothing`` |
 | E7 | ``call.token_is_plain`` passes a CR or an LF | ``test_a_token_with_cr_or_lf_never_reaches_a_header`` |
 | E8 | ``CallIn`` takes an extra key | ``test_the_body_names_no_org_and_no_host`` |
+| E9 | ``scrub`` matches only the literal form (no percent-encoded byte) | ``test_the_remover_takes_each_echo_form`` |
+| E10 | ``scrub`` matches on the text with the format characters kept | ``test_the_remover_takes_each_echo_form`` |
+| E11 | ``secret_forms`` takes a value shorter than ``MIN_SECRET`` | ``test_the_remover_leaves_a_short_value_and_plain_text_alone`` |
+| E12 | ``_ready`` checks the access token only | ``test_a_short_or_odd_secret_in_the_row_is_refused`` |
+| E13 | the read route takes ``CallIn`` as a body parameter again | ``test_the_flag_off_is_404_for_any_body`` |
+| E14 | ``read`` or ``write`` uses ``template.op`` and not ``_visible_op`` | ``test_a_hidden_op_is_the_same_404_as_an_unknown_op`` |
+| E15 | ``write`` does not spend the limiter | ``test_a_hidden_op_is_the_same_404_as_an_unknown_op`` |
+| E16 | ``clean`` compares the raw key only | ``test_a_secret_field_goes_also_behind_a_hidden_character`` |
+| E17 | ``template._check_size`` takes ``0`` | ``test_a_page_size_outside_1_to_the_page_size_is_refused`` |
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ from gateway.connections.api import call
 from gateway.connections.api.zoho_books import ZOHO_BOOKS
 from gateway.crm_sources.base import UntrustedHost
 from gateway.crm_sources.zoho.auth import API_HOSTS
+from gateway.routes import api_connections as routes
 
 from tests.unit import _api_call_fakes as f
 
@@ -200,7 +210,8 @@ async def test_the_headers_are_the_template_ones_only(monkeypatch) -> None:
     assert sent.ip == f.PUBLIC_IP
 
 
-@pytest.mark.parametrize("token", [f"{f.S_ACCESS}\r\nX-Evil: 1", f"{f.S_ACCESS}\n", "a b", ""])
+@pytest.mark.parametrize("token", [f"{f.S_ACCESS}\r\nX-Evil: 1", f"{f.S_ACCESS}\n", "a b", "",
+                                   "abcdefg", "a"])
 async def test_a_token_with_cr_or_lf_never_reaches_a_header(monkeypatch, token) -> None:
     rows, wire, _ = f.hermetic(monkeypatch)
     rows.put(f.ORG_A, f.credential(access=token))
@@ -229,3 +240,142 @@ def test_the_credential_forms_cover_the_encoded_and_scheme_shapes() -> None:
                  f"Zoho-oauthtoken {token}"):
         assert token not in call.scrub(f"x {text} y", forms)
         assert call.scrub(f"x {text} y", forms) == f"x {call.REMOVED} y"
+
+
+# ── The credential remover (fix round 1) ─────────────────────────────────────
+
+
+def _encode_all(text: str, *, lower: bool = False) -> str:
+    out = "".join(f"%{b:02X}" for b in text.encode())
+    return out.lower() if lower else out
+
+
+@pytest.mark.parametrize("shown", [
+    f.S_REFRESH.replace("-", "%2D"),
+    f.S_REFRESH.replace("-", "%2d"),
+    _encode_all(f.S_REFRESH),
+    _encode_all(f.S_REFRESH, lower=True),
+    f.S_REFRESH[:9] + "\u200d" + f.S_REFRESH[9:],
+    f.S_REFRESH[:5] + "\u200c\u00ad\ufe0f" + f.S_REFRESH[5:],
+    f.S_REFRESH[:16],
+    f.S_REFRESH[:20],
+    f.S_REFRESH[-16:],
+    f"Zoho-oauthtoken+{f.S_REFRESH}",
+])
+def test_the_remover_takes_each_echo_form(shown) -> None:
+    forms = call.secret_forms([f.S_ACCESS, f.S_REFRESH], scheme="Zoho-oauthtoken")
+    out = call.scrub(f"before {shown} after", forms)
+    assert out.startswith("before ") and out.endswith(" after")
+    assert call.REMOVED in out
+    for part in (f.S_REFRESH[:16], f.S_REFRESH[-16:], "SENTINEL"):
+        assert part not in out.replace("\u200d", "").replace("\u200c", ""), out
+
+
+def test_the_remover_leaves_a_short_value_and_plain_text_alone() -> None:
+    assert call.secret_forms(["a", "abcdefg", None, ""]) == ()
+    assert call.scrub("a banana", call.secret_forms(["a"])) == "a banana"
+    forms = call.secret_forms([f.S_ACCESS])
+    assert call.scrub("an invoice of 2026", forms) == "an invoice of 2026"
+
+
+@pytest.mark.parametrize("field", ["refresh", "secret"])
+async def test_a_short_or_odd_secret_in_the_row_is_refused(monkeypatch, field) -> None:
+    from dataclasses import replace as _replace
+
+    rows, wire, _ = f.hermetic(monkeypatch)
+    cred = f.credential()
+    cred = _replace(cred, refresh_token="short") if field == "refresh" else _replace(
+        cred, client_secret="sec ret\n")
+    rows.put(f.ORG_A, cred)
+    r = await f.call(f.user(), "POST", READ, body=f.read())
+    assert (r.status_code, r.json()["detail"]["code"]) == (503, "credential_unusable")
+    assert wire.sent == []
+
+
+def test_a_secret_field_goes_also_behind_a_hidden_character() -> None:
+    from acb_skills.hidden_text import strip_hidden
+
+    data = {"pass\u200bword": "x", "password": "y", "keep": "z"}
+    out = call.clean(data, secret_fields=("password",), forms=(), strip=strip_hidden)
+    assert out == {"keep": "z"}
+
+
+# ── The flag off is 404 for any body (fix round 1) ───────────────────────────
+
+
+@pytest.mark.parametrize("content", [b"{", b"", b"not json", b"[]", b'{"op": 1}', b"\xff\xfe"])
+async def test_the_flag_off_is_404_for_any_body(monkeypatch, content) -> None:
+    _, wire, _ = f.hermetic(monkeypatch)
+    f.flag(monkeypatch, "")
+    for kind in ("application/json", "text/plain"):
+        for method, path in (("POST", READ), ("POST", "/connections/api/zoho_books/write"),
+                             ("GET", "/connections/api/zoho_books/ops"),
+                             ("GET", "/connections/api/zoho_books/ops/list_invoices")):
+            r = await f.call(f.user(perms=["*"]), method, path, content=content,
+                             params={"q": "x" * 500}, headers={"content-type": kind})
+            assert (r.status_code, r.json()) == (404, {"detail": "Not Found"}), (kind, path, r.text)
+    assert wire.sent == []
+
+
+async def test_a_bad_body_with_the_flag_on_is_422_and_names_no_input(monkeypatch) -> None:
+    f.hermetic(monkeypatch)
+    r = await f.call(f.user(), "POST", READ, content=b'{"op": "' + f.S_ACCESS.encode() + b'", "x": 1}')
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_body"
+    assert f.S_ACCESS not in r.text
+
+
+# ── Hidden ops and the grant, with no database (fix round 1) ─────────────────
+
+
+def _with_writer(monkeypatch):
+    from gateway.connections.api.template import Operation
+
+    variant = f.with_op(ZOHO_BOOKS, Operation(
+        name="create_invoice", method="POST", path="/books/v3/invoices", cls="B",
+        title="Make one invoice.", always_confirm=True))
+    f.use_template(monkeypatch, variant)
+    return variant
+
+
+async def test_a_hidden_op_is_the_same_404_as_an_unknown_op(monkeypatch) -> None:
+    rows, wire, raw = f.hermetic(monkeypatch)
+    rows.put(f.ORG_A, f.credential(template=_with_writer(monkeypatch)))
+    write = "/connections/api/zoho_books/write"
+    unknown_read = await f.call(f.user(), "POST", READ, body=f.read("no_such_op"))
+    unknown_write = await f.call(f.user(), "POST", write, body=f.read("no_such_op"))
+    hidden_read = await f.call(f.user(), "POST", READ, body=f.read("create_invoice"))
+    hidden_write = await f.call(f.user(), "POST", write, body=f.read("create_invoice"))
+    assert unknown_read.status_code == 404
+    for r in (unknown_write, hidden_read, hidden_write):
+        assert (r.status_code, r.text) == (404, unknown_read.text)
+    a_write = await f.call(f.user(), "POST", write, body=f.read("list_invoices"))
+    assert (a_write.status_code, a_write.json()["detail"]["code"]) == (403, "wrong_class")
+    member = [k for k in raw.data if f":{routes.API_NAMESPACE}:rate:m:" in k]
+    # A read checks the op before it spends. Each of the three writes spent
+    # one call of the limiter before its answer.
+    assert int(raw.data[member[0]]) == 3
+    assert wire.sent == []
+
+
+async def test_a_denied_grant_is_the_same_404_as_an_unknown_name(monkeypatch) -> None:
+    rows, wire, _ = f.hermetic(monkeypatch)
+    unknown = await f.call(f.user(), "POST", "/connections/api/no_such_api/read", body=f.read())
+    denied = [
+        await f.call(f.user(f.MEMBER, perms=f.MEMBER_PERMS), "POST", READ, body=f.read()),
+        await f.call(f.user(perms=["integrations:manage"]), "POST", READ, body=f.read()),
+        await f.call(f.user(perms=["integrations:use:api-other", "integrations:manage"]),
+                     "GET", "/connections/api/zoho_books/ops"),
+    ]
+    assert unknown.status_code == 404
+    for r in denied:
+        assert (r.status_code, r.text) == (404, unknown.text)
+    assert rows.reads == [(f.ORG_A, "api:no_such_api")] + [(f.ORG_A, "api:zoho_books")] * 3
+    assert wire.sent == []
+
+
+@pytest.mark.parametrize("size", ["0", "00", "50", "99"])
+async def test_a_page_size_outside_1_to_the_page_size_is_refused(monkeypatch, size) -> None:
+    _, wire, _ = f.hermetic(monkeypatch)
+    r = await f.call(f.user(), "POST", READ, body=f.read(per_page=size))
+    assert r.status_code == 422, r.text
+    assert wire.sent == []

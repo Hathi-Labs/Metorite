@@ -317,6 +317,7 @@ def hermetic(monkeypatch: Any, *, wire: Wire | None = None) -> tuple[Rows, Wire,
 
 
 async def call(who: Any, method: str, path: str, *, body: Any = None,
+               content: bytes | None = None,
                params: dict[str, str] | None = None,
                headers: dict[str, str] | None = None) -> httpx.Response:
     """One request through the real router, as *who*. The tenant comes from
@@ -339,7 +340,7 @@ async def call(who: Any, method: str, path: str, *, body: Any = None,
         async with REAL_CLIENT(
             transport=httpx.ASGITransport(app=app), base_url="http://gateway.test",
         ) as client:
-            return await client.request(method, path, json=body, params=params,
+            return await client.request(method, path, json=body, content=content, params=params,
                                         headers=headers)
     finally:
         release_tenant(scope)
@@ -348,6 +349,14 @@ async def call(who: Any, method: str, path: str, *, body: Any = None,
 def read(op: str = "list_invoices", **kw: Any) -> dict[str, Any]:
     total = kw.pop("total", False)
     return {"op": op, "args": kw, **({"total": True} if total else {})}
+
+
+def use_template(monkeypatch: Any, template: Any) -> None:
+    """Serve *template* as ``zoho_books``."""
+    from gateway.connections import api as api_templates
+
+    monkeypatch.setattr(api_templates, "template",
+                        lambda name: template if name == "zoho_books" else None)
 
 
 def with_op(template: Any, op: Any) -> Any:

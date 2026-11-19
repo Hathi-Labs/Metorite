@@ -27,8 +27,8 @@ Mutation table. Each row names a mutation and the test that it breaks.
 |---|---|---|
 | R1 | ``_resolve`` reads the row in a session of another org | ``test_org_a_cannot_call_a_connection_of_org_b`` |
 | R2 | ``_granted`` skips the manage check of ``grant = admin`` | ``test_a_refused_grant_is_the_same_404_as_an_unknown_name`` |
-| R3 | ``read`` drops the class check | ``test_read_runs_class_a_only_and_write_refuses_every_call`` |
-| R4 | ``write`` sends the request of a class B op | ``test_read_runs_class_a_only_and_write_refuses_every_call`` |
+| R3 | ``read`` takes the op with ``template.op`` and not ``_visible_op`` | ``test_read_runs_class_a_only_and_write_refuses_every_call`` |
+| R4 | ``write`` answers ``writes_off`` for a hidden op, not the 404 | ``test_read_runs_class_a_only_and_write_refuses_every_call`` |
 | R5 | the router drops the flag dependency | ``test_the_flag_off_is_404_for_each_route`` |
 | R6 | ``_fetch`` drops ``call.clean`` | ``test_an_echoed_credential_never_reaches_the_answer_or_the_log`` |
 | R7 | a transport fault passes ``str(exc)`` | ``test_a_failed_call_never_shows_the_credential`` |
@@ -221,17 +221,18 @@ async def test_read_runs_class_a_only_and_write_refuses_every_call(ns, monkeypat
     await _seed(ns, ns.org_a, f.credential(template=variant))
     admin = f.user(org=ns.org_a, perms=["*"])
 
+    hidden = {"detail": {"code": "operation_not_found"}}
     r = await _call(ns, admin, "POST", READ, body=f.read("create_invoice"))
-    assert (r.status_code, r.json()["detail"]["code"]) == (403, "wrong_class")
-    for op in ("create_invoice", "list_invoices", "no_such_op"):
+    assert (r.status_code, r.json()) == (404, hidden)
+    for op in ("create_invoice", "no_such_op"):
         r = await _call(ns, admin, "POST", WRITE, body=f.read(op))
-        assert r.status_code in (403, 404), r.text
-    assert (await _call(ns, admin, "POST", WRITE, body=f.read("create_invoice"))).json() == {
-        "detail": {"code": "writes_off"}}
+        assert (r.status_code, r.json()) == (404, hidden), r.text
+    r = await _call(ns, admin, "POST", WRITE, body=f.read("list_invoices"))
+    assert (r.status_code, r.json()["detail"]["code"]) == (403, "wrong_class")
     found = await _call(ns, admin, "GET", FIND)
     assert [o["op"] for o in found.json()["operations"]] == ["get_invoice", "list_invoices"]
-    hidden = await _call(ns, admin, "GET", "/connections/api/zoho_books/ops/create_invoice")
-    assert hidden.status_code == 404
+    described = await _call(ns, admin, "GET", "/connections/api/zoho_books/ops/create_invoice")
+    assert described.status_code == 404
     assert ns.wire.sent == []
     ok = await _call(ns, admin, "POST", READ, body=f.read())
     assert ok.status_code == 200 and len(ns.wire.sent) == 1

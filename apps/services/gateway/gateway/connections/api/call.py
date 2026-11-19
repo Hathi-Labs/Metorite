@@ -25,14 +25,24 @@ and ``tests/unit/test_api_no_env_credentials.py``.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import (
+    Context,
+    Decimal,
+    DivisionByZero,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    Underflow,
+)
 from typing import Any
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote_plus
 
 from gateway.connections.api.template import Template, Total
 from gateway.crm_sources.base import UntrustedHost
@@ -41,8 +51,29 @@ from gateway.crm_sources.base import UntrustedHost
 REMOVED = "[removed]"
 
 #: The daily budget of a connection whose template names no daily cap
-#: (§2.3a, decision c).
-DEFAULT_DAILY_BUDGET = 1000
+#: (§2.3a, decision c): half of a careful guess of 1000 calls a day.
+DEFAULT_DAILY_BUDGET = 500
+
+#: The shortest credential value that the remover takes. The gateway refuses
+#: a row with a shorter one, so a value of one letter never turns each such
+#: letter of an answer into :data:`REMOVED` (§2.3a).
+MIN_SECRET = 8
+
+#: The length of the start and of the end of a credential that the remover
+#: also removes, so a partial echo of a credential goes too.
+SECRET_PART = 16
+
+#: The largest exponent of a number that the total adds, either way. A
+#: larger one counts as ``not_numbers`` (§2.3a, decision d).
+MAX_EXPONENT = 40
+
+#: The longest figure of a total. A longer one is refused as ``not_exact``.
+MAX_FIGURE = 100
+
+#: The arithmetic of the total. Each fault raises, so a sum never rounds or
+#: overflows in silence.
+SUM_CONTEXT = Context(prec=80, Emax=200, Emin=-200,
+                      traps=[Inexact, Overflow, Underflow, InvalidOperation, DivisionByZero])
 
 #: The deepest nesting of an answer that :func:`clean` walks. A deeper answer
 #: is refused, so a hostile answer cannot exhaust the stack.
@@ -110,43 +141,96 @@ def context_values(template: Template, provider_meta: Mapping[str, Any]) -> dict
 
 
 def token_is_plain(token: object) -> bool:
-    """True for a token of printable ASCII with no space. A token with a CR,
-    an LF or another control character never goes into a header."""
-    return (isinstance(token, str) and bool(token)
+    """True for a token of printable ASCII with no space, of at least
+    :data:`MIN_SECRET` characters. A token with a CR, an LF or another control
+    character never goes into a header."""
+    return (isinstance(token, str) and len(token) >= MIN_SECRET
             and all(0x21 <= ord(ch) <= 0x7E for ch in token))
 
 
 # ── Step 9: the credential remover ──────────────────────────────────────────
 
 
+def _hidden_format(ch: str) -> bool:
+    """True for a format character: category Cf (ZWJ, ZWNJ, the soft hyphen
+    and the other zero-width marks) or a variation selector."""
+    return (unicodedata.category(ch) == "Cf" or 0xFE00 <= ord(ch) <= 0xFE0F
+            or 0xE0100 <= ord(ch) <= 0xE01EF)
+
+
 def secret_forms(values: Iterable[str | None], scheme: str = "") -> tuple[str, ...]:
     """Each form of each credential value that a text may hold.
 
-    The literal value, its URL-encoded forms (upper and lower case hex, and
-    ``+`` for a space), its JSON-escaped form, and the value after the
-    sign-in scheme. The longest form comes first, so a short form never
-    breaks a long one before the long one goes.
+    The literal value, its ``quote_plus`` form (``+`` for a space), its
+    JSON-escaped form, the value after the sign-in scheme, and its first and
+    last :data:`SECRET_PART` characters, for a partial echo. :func:`scrub`
+    matches each character of a form as itself or percent-encoded, in upper
+    or lower case hex. So a value with every byte encoded, or only some,
+    goes too. A value shorter than :data:`MIN_SECRET` is left out. The
+    longest form comes first.
     """
     forms: set[str] = set()
     for value in values:
-        if not value:
+        if not value or len(value) < MIN_SECRET:
             continue
-        encoded = quote(value, safe="")
-        for form in (value, encoded, encoded.lower(), quote_plus(value),
-                     json.dumps(value)[1:-1]):
-            forms.add(form)
+        forms.update((value, quote_plus(value), json.dumps(value)[1:-1]))
+        if len(value) > SECRET_PART:
+            forms.update((value[:SECRET_PART], value[-SECRET_PART:]))
         if scheme:
             forms.add(f"{scheme} {value}")
     return tuple(sorted((f for f in forms if f), key=lambda f: (-len(f), f)))
 
 
+@functools.lru_cache(maxsize=256)
+def _form_pattern(form: str) -> re.Pattern[str]:
+    """*form* with each character as itself or as its percent-encoded bytes.
+    A space also matches ``+``."""
+    parts: list[str] = []
+    for ch in form:
+        encoded = "".join(f"%{b:02x}" for b in ch.encode("utf-8"))
+        options = [re.escape(ch), re.escape(encoded)]
+        if ch == " ":
+            options.append(r"\+")
+        parts.append("(?:" + "|".join(options) + ")")
+    return re.compile("".join(parts), re.IGNORECASE)
+
+
 def scrub(text: str, forms: Iterable[str]) -> str:
     """*text* with each form of :func:`secret_forms` replaced by
-    :data:`REMOVED`."""
-    for form in forms:
-        if form in text:
-            text = text.replace(form, REMOVED)
-    return text
+    :data:`REMOVED`.
+
+    The match runs on a copy with each format character removed, so a
+    zero-width joiner inside a token does not hide it. Each character of a
+    form matches as itself or percent-encoded. The matched span goes from the
+    ORIGINAL text, with the format characters inside it. Spans that overlap
+    or touch become one :data:`REMOVED`.
+    """
+    shapes = tuple(forms)
+    if not shapes or not text:
+        return text
+    keep = [i for i, ch in enumerate(text) if not _hidden_format(ch)]
+    folded = "".join(text[i] for i in keep)
+    spans: list[tuple[int, int]] = []
+    for form in shapes:
+        for found in _form_pattern(form).finditer(folded):
+            if found.end() > found.start():
+                spans.append((keep[found.start()], keep[found.end() - 1] + 1))
+    if not spans:
+        return text
+    spans.sort()
+    merged: list[list[int]] = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    out: list[str] = []
+    last = 0
+    for start, end in merged:
+        out.extend((text[last:start], REMOVED))
+        last = end
+    out.append(text[last:])
+    return "".join(out)
 
 
 def clean_text(text: object, forms: Iterable[str], strip: Strip,
@@ -187,6 +271,10 @@ def clean(value: Any, *, secret_fields: Iterable[str], forms: Iterable[str],
     drop = frozenset(secret_fields)
     shapes = tuple(forms)
 
+    def _dropped(key: Any) -> bool:
+        # The key as the API sent it, and the key with no hidden character.
+        return key in drop or strip(str(key)) in drop
+
     def _walk(node: Any, depth: int) -> Any:
         if depth > MAX_DEPTH:
             raise AnswerRefused("too_deep")
@@ -196,7 +284,7 @@ def clean(value: Any, *, secret_fields: Iterable[str], forms: Iterable[str],
             return [_walk(item, depth + 1) for item in node]
         if isinstance(node, dict):
             return {scrub(strip(str(k)), shapes): _walk(v, depth + 1)
-                    for k, v in node.items() if k not in drop}
+                    for k, v in node.items() if not _dropped(k)}
         return node
 
     return _walk(value, 0)
@@ -226,17 +314,29 @@ def plain_number(value: Any) -> Decimal | None:
     """*value* as a :class:`Decimal` when it is a plain number, else None.
 
     A JSON number is a number. A text is a number only when its whole shape
-    is :data:`PLAIN_NUMBER`. A bool, a list, an object, ``None`` and each other
-    text are not numbers.
+    is :data:`PLAIN_NUMBER`. A bool, a list, an object, ``None``, each other
+    text, a value that is not finite, and a value whose exponent is past
+    :data:`MAX_EXPONENT` are not numbers. It never raises.
     """
+    number = _decimal(value)
+    if number is None or not number.is_finite():
+        return None
+    if number and abs(number.adjusted()) > MAX_EXPONENT:
+        return None
+    return number
+
+
+def _decimal(value: Any) -> Decimal | None:
+    """*value* as a :class:`Decimal` by type, before the checks of
+    :func:`plain_number`."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return Decimal(value)
     if isinstance(value, Decimal):
-        return value if value.is_finite() else None
+        return value
     if isinstance(value, float):
-        return Decimal(repr(value)) if value == value and abs(value) != float("inf") else None
+        return Decimal(repr(value))  # NaN and inf: plain_number refuses them
     if isinstance(value, str) and PLAIN_NUMBER.fullmatch(value):
         try:
             return Decimal(value)
@@ -261,7 +361,8 @@ class Adder:
         """Add the items of one page. Returns the count of its items.
 
         Raises :class:`AnswerRefused` (``not_a_list``) when the page holds no
-        list under the mark's key.
+        list under the mark's key, and ``not_exact`` when the sum cannot
+        stay exact in :data:`SUM_CONTEXT`.
         """
         items = data.get(self.mark.items) if isinstance(data, dict) else None
         if not isinstance(items, list):
@@ -275,7 +376,10 @@ class Adder:
                 self.not_numbers += 1
             else:
                 self.numbers += 1
-                self.total += number
+                try:
+                    self.total = SUM_CONTEXT.add(self.total, number)
+                except ArithmeticError:
+                    raise AnswerRefused("not_exact") from None
             if self.mark.currency:
                 code = row.get(self.mark.currency)
                 self.currencies.add(code if isinstance(code, str)
@@ -288,8 +392,12 @@ class Adder:
 
     def answer(self, *, incomplete: bool, stopped_by: str | None) -> dict[str, Any]:
         """The answer of the total. A total that a limit stopped has no
-        ``total``: its sum so far is ``partial_total``."""
+        ``total``: its sum so far is ``partial_total``. Raises
+        :class:`AnswerRefused` (``not_exact``) for a figure past
+        :data:`MAX_FIGURE` characters."""
         figure = format(self.total, "f")
+        if len(figure) > MAX_FIGURE:
+            raise AnswerRefused("not_exact")
         currency = next(iter(self.currencies)) if len(self.currencies) == 1 else None
         return {
             "field": self.mark.field,
@@ -334,8 +442,13 @@ __all__ = [
     "CONTEXT_VALUE",
     "DEFAULT_DAILY_BUDGET",
     "MAX_DEPTH",
+    "MAX_EXPONENT",
+    "MAX_FIGURE",
+    "MIN_SECRET",
     "PLAIN_NUMBER",
     "REMOVED",
+    "SECRET_PART",
+    "SUM_CONTEXT",
     "Adder",
     "AnswerRefused",
     "Strip",

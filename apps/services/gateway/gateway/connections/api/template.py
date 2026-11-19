@@ -574,10 +574,11 @@ def build(template: Template, op_name: str, args: Mapping[str, Any]) -> Call:
 
 
 def _check_size(op: Operation, args: Mapping[str, Any]) -> None:
-    """Refuse a page size above the op's page size, as ``size``.
+    """Refuse a page size outside 1 to the op's page size, as ``size``.
 
     The validator already refuses a size shape that allows a larger number.
-    This check holds the cap again at each call.
+    This check holds the cap again at each call. The closed shape grammar has
+    no alternation, so a size shape can take ``0``. This check refuses it.
     """
     if op.paging is None:
         return
@@ -585,7 +586,7 @@ def _check_size(op: Operation, args: Mapping[str, Any]) -> None:
     if isinstance(value, bool) or value is None:
         return
     text = str(value) if isinstance(value, int) else value
-    if isinstance(text, str) and text.isascii() and text.isdigit() and int(text) > op.paging.size:
+    if isinstance(text, str) and text.isascii() and text.isdigit() and not 1 <= int(text) <= op.paging.size:
         raise BadCall(op.paging.size_key, "size")
 
 

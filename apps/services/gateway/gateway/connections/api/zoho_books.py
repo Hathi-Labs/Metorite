@@ -51,9 +51,10 @@ _SORT_ORDER = r"[AD]{1}"
 #: can send it on each page.
 _PAGE_SIZE = 49
 
-#: The size shape takes 0 to 49. The closed grammar cannot say "1 to 50", and
+#: The size shape takes 0 to 49. The closed grammar cannot say "1 to 49", and
 #: the validator refuses a size shape that allows a number above the page
-#: size. ``build`` also refuses a size above the page size at each call.
+#: size. ``build`` refuses a size outside 1 to the page size at each call, so
+#: it refuses ``0``.
 _PER_PAGE = r"[1-4]{0,1}[0-9]{1}"
 
 ZOHO_BOOKS = Template(
@@ -95,9 +96,10 @@ ZOHO_BOOKS = Template(
         ),
     ),
     # Third-party guides give 100 calls a minute for each organization
-    # (§2.10). The daily cap depends on the Zoho plan. API-3 checks both
-    # against Zoho's own page, and sets the daily cap then.
-    limits=Limits(per_minute=100),
+    # (§2.10). The daily cap depends on the Zoho plan, and nobody has
+    # confirmed it against Zoho's own page (an owner check, §2.3a c). 1000 is
+    # a careful guess at the smallest plan, so the daily budget is 500.
+    limits=Limits(per_minute=100, per_day=1000),
 )
 
 __all__ = ["ZOHO_BOOKS"]

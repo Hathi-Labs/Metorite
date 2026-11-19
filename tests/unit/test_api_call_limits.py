@@ -18,7 +18,11 @@ Mutation table. Each row names a mutation and the test that it breaks.
 | L7 | ``_read_capped`` never sets ``cut`` | ``test_the_guard_marks_a_cut_answer`` |
 | L8 | the total loop has no page bound | ``test_the_total_stops_at_the_page_limit_and_says_incomplete`` |
 | L9 | an incomplete total gives ``total`` | ``test_a_limit_stops_the_total_and_gives_no_figure`` |
-| L10 | ``plain_number`` takes a comma, an exponent or NaN | ``test_the_total_adds_plain_numbers_only`` |
+| L10 | ``plain_number`` drops the finite check or the exponent bound | ``test_the_total_adds_plain_numbers_only`` |
+| L11 | ``Adder.add_page`` adds with ``+=`` in the default context | ``test_a_sum_that_cannot_stay_exact_is_refused`` |
+| L12 | ``_total`` drops the answer cap of the total | ``test_the_total_answer_has_the_answer_cap`` |
+| L13 | the read route drops ``except Exception`` (status 0 in the log) | ``test_an_unexpected_fault_logs_status_500_never_0`` |
+| L14 | ``plain_number`` drops the exponent bound | ``test_a_huge_exponent_counts_as_not_a_number_and_never_raises`` |
 """
 
 from __future__ import annotations
@@ -99,15 +103,19 @@ async def test_find_and_describe_spend_one_limiter_call_and_no_budget(monkeypatc
 
 
 def test_the_budget_is_half_the_daily_cap_or_the_default() -> None:
-    assert call.daily_budget(ZOHO_BOOKS) == call.DEFAULT_DAILY_BUDGET == 1000
+    # Zoho names a careful daily cap of 1000, so its budget is 500. The
+    # default is half of the same guess (§2.3a c).
+    assert ZOHO_BOOKS.limits.per_day == 1000
+    assert call.daily_budget(ZOHO_BOOKS) == call.DEFAULT_DAILY_BUDGET == 500
     capped = replace(ZOHO_BOOKS, limits=Limits(per_minute=100, per_day=2000))
     assert call.daily_budget(capped) == 1000
+    assert call.daily_budget(replace(ZOHO_BOOKS, limits=Limits(per_minute=100))) == 500
     assert call.daily_budget(replace(ZOHO_BOOKS, limits=Limits(per_minute=1, per_day=1))) == 1
 
 
 async def test_the_daily_budget_stops_a_loop(monkeypatch) -> None:
     _, wire, _ = f.hermetic(monkeypatch)
-    monkeypatch.setattr(call, "DEFAULT_DAILY_BUDGET", 2)
+    f.use_template(monkeypatch, replace(ZOHO_BOOKS, limits=Limits(per_minute=100, per_day=4)))
     for _ in range(2):
         assert (await f.call(f.user(), "POST", READ, body=f.read())).status_code == 200
     r = await f.call(f.user(), "POST", READ, body=f.read())
@@ -237,6 +245,10 @@ async def test_a_total_on_an_op_with_no_mark_is_refused(monkeypatch) -> None:
     ("1,000", None), ("1e3", None), ("NaN", None), ("Infinity", None), (" 5", None),
     ("007", None), ("5 m", None), (True, None), (None, None), ([1], None), ("", None),
     (chr(0x661), None), ("+5", None),
+    (Decimal("NaN"), None), (float("nan"), None), (Decimal("Infinity"), None),
+    (float("inf"), None), (Decimal("-Infinity"), None), (Decimal("sNaN"), None),
+    (Decimal("1E+999999999"), None), (1e300, None), (10 ** 41, None), (10 ** 40, str(10 ** 40)),
+    (Decimal("1E-41"), None), (Decimal("1E-40"), "1E-40"), (Decimal(0), "0"),
 ])
 def test_the_total_adds_plain_numbers_only(value, number) -> None:
     got = call.plain_number(value)
@@ -250,3 +262,63 @@ def test_the_parse_refuses_nan_and_keeps_decimals_exact() -> None:
     adder = call.Adder(ZOHO_BOOKS.op("list_invoices").total)
     adder.add_page(data)
     assert adder.answer(incomplete=False, stopped_by=None)["total"] == "0.3"
+
+
+# ── The arithmetic of the total (fix round 1) ────────────────────────────────
+
+
+def _page(*totals: str) -> bytes:
+    """A page whose ``total`` values are raw JSON number literals."""
+    items = ",".join(f'{{"total":{t},"currency_code":"INR"}}' for t in totals)
+    return f'{{"code":0,"invoices":[{items}]}}'.encode()
+
+
+@pytest.mark.parametrize("huge", ["1e999999999", "1e999990", "-1e999999999", "1e-999999999"])
+async def test_a_huge_exponent_counts_as_not_a_number_and_never_raises(monkeypatch, huge) -> None:
+    f.hermetic(monkeypatch, wire=f.Wire(answer=_ok(_page(huge, "2.5"))))
+    r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["total"], out["numbers"], out["not_numbers"]) == ("2.5", 1, 1)
+    assert len(r.content) < 2000
+
+
+async def test_a_sum_that_cannot_stay_exact_is_refused(monkeypatch) -> None:
+    # 10^40 + 10^-40 needs 81 digits. The default context (28 digits) rounds
+    # it in silence. The total's own context traps Inexact.
+    f.hermetic(monkeypatch, wire=f.Wire(answer=_ok(_page("1" + "0" * 40, "1e-40"))))
+    r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
+    assert (r.status_code, r.json()["detail"]) == (422, {"code": "not_exact"})
+
+
+def test_the_adder_never_rounds() -> None:
+    adder = call.Adder(ZOHO_BOOKS.op("list_invoices").total)
+    adder.add_page(call.parse(_page("123456789012345678901234567890.123456789012345678901234567891",
+                                    "0.000000000000000000000000000009"), exact=True))
+    assert adder.answer(incomplete=False, stopped_by=None)["total"] == (
+        "123456789012345678901234567890.123456789012345678901234567900")
+    with pytest.raises(call.AnswerRefused):
+        adder.add_page(call.parse(_page("1" + "0" * 40, "1e-40"), exact=True))
+
+
+async def test_the_total_answer_has_the_answer_cap(monkeypatch) -> None:
+    f.hermetic(monkeypatch, wire=f.Wire(answer=_ok(b'{"code":0,"invoices":[]}')))
+    f.use_template(monkeypatch, replace(ZOHO_BOOKS, operations=tuple(
+        replace(op, answer_cap=60) for op in ZOHO_BOOKS.operations)))
+    r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
+    assert (r.status_code, r.json()["detail"]["code"]) == (422, "answer_too_large")
+
+
+async def test_an_unexpected_fault_logs_status_500_never_0(monkeypatch) -> None:
+    import structlog
+
+    f.hermetic(monkeypatch)
+
+    def _boom(self, data):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(call.Adder, "add_page", _boom)
+    with structlog.testing.capture_logs() as events, pytest.raises(RuntimeError):
+        await f.call(f.user(), "POST", READ, body=f.read(total=True))
+    (line,) = [e for e in events if e.get("event") == "api.call"]
+    assert line["status"] == 500
