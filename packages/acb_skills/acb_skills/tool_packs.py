@@ -67,6 +67,9 @@ _log = get_logger("acb_skills.tool_packs")
 
 __all__ = [
     "ALL",
+    "BATCH_NAMESPACE",
+    "BATCH_READ_RULES",
+    "BATCH_WRITE_REFUSED",
     "DECAY_TURNS",
     "LOAD_TOOL",
     "MAX_PACKS",
@@ -88,6 +91,10 @@ __all__ = [
     "PackRun",
     "PackTurn",
     "Sticky",
+    "batch_allowed",
+    "batch_read_tools",
+    "batch_rules",
+    "batch_write_refusal",
     "begin_turn",
     "catalog",
     "choose",
@@ -108,6 +115,7 @@ __all__ = [
     "pack_only_refusal",
     "pack_tool_runs",
     "pack_write_refusal",
+    "packs_batch_on",
     "packs_on",
     "persona_for",
     "plan_loader",
@@ -1543,6 +1551,115 @@ def tool_search_on(org: object) -> bool:
     return ALL in orgs or org_id in orgs
 
 
+# ── G2: the read packs of a WhatsApp turn (chat_reach.md, task 3494) ────────
+#
+# A WhatsApp turn shows no card (D115), so it holds no write tool of a pack.
+# With ``CHAT_PACKS_BATCH_ORGS`` naming the org, the member's own WhatsApp
+# turn of the orchestrator holds the READ tools of the packs that its words or
+# its sticky packs choose. The specialist of each owner stays for the writes.
+# Fence: ``tests/unit/test_chat_packs_batch.py``.
+
+#: The answer to a call of a pack tool that is not read-only in a WhatsApp
+#: turn. The build never offers such a tool, so this is the second wall.
+BATCH_WRITE_REFUSED = "That needs a card, and WhatsApp cannot show one. Open the chat in the app."
+
+#: The rules of the read packs of a WhatsApp turn. They name no write tool,
+#: because the turn holds none.
+BATCH_READ_RULES = (
+    "WHATSAPP READ TOOLS. You hold the read tools of {labels}. Use them "
+    "yourself to find and read. To change data, use the assistant tool of that "
+    "app, as you do with no pack."
+)
+
+
+def packs_batch_on(org: object) -> bool:
+    """True when ``CHAT_PACKS_BATCH_ORGS`` names organization *org*. THE one
+    reader (G2, task 3494).
+
+    The setting lists the organization ids, or ``*`` for each one, in any
+    case and with spaces. It reads the setting on each call, so a SIGHUP
+    reload applies a change (``docs/flag_reload.md``). It fails closed: an
+    empty list, an empty *org*, an org that the list does not name and a
+    fault in the settings read each give False. It asks only its own
+    setting. The caller holds the allowed packs of :func:`packs_on`. The
+    caller passes the bound tenant of the run, never a value from request
+    input (R5). Its one caller is ``orchestrator.executor``.
+    """
+    org_id = str(org or "").strip().lower()
+    if not org_id:
+        return False
+    try:
+        from acb_common import get_settings
+
+        orgs = _entries(getattr(get_settings(), "chat_packs_batch_orgs", ""))
+    except Exception:  # never turn the packs on after a fault
+        _log.warning("tool_packs.batch_flag_read_failed")
+        return False
+    return ALL in orgs or org_id in orgs
+
+
+def batch_allowed(allowed: Iterable[str]) -> frozenset[str]:
+    """The packs of *allowed* that a WhatsApp turn may hold. A pack whose
+    owner reads text that a stranger wrote (the email packs) never loads
+    there, so the run keeps its MCP servers (``_holds_untrusted_pack``)."""
+    return frozenset(slug for slug in allowed if pack(slug) is not None
+                     and not _reads_strangers(slug))
+
+
+def batch_read_tools(tools: Iterable[Any]) -> list[Any]:
+    """The tools of *tools* that a WhatsApp turn may hold, in order: each
+    that the risk registry marks read-only (``subagent_contract.
+    annotated_read_only``). A tool with no entry counts as a write, so the
+    filter fails closed. A tool of :data:`CHAT_FILE_TOOLS` is no read, so it
+    leaves too. A display tool (``subagent_contract.DISPLAY_TOOLS``:
+    ``open_in_app``, ``show_view``, ``render_*``, ``studio_plan``) leaves
+    as well. It acts on the web page or needs a card, a relative link does
+    not open on a phone, and a live web run on the same thread would get its
+    page moved. Mutation: drop the DISPLAY_TOOLS test -> red
+    (``test_every_pack_tool_in_the_batch_subset_is_a_read``)."""
+    from acb_skills.subagent_contract import DISPLAY_TOOLS, annotated_read_only
+    from acb_skills.tool_guard import tool_name
+
+    kept: list[Any] = []
+    for item in tools:
+        try:
+            name = tool_name(item)
+            if name not in DISPLAY_TOOLS and annotated_read_only(name):
+                kept.append(item)
+        except Exception:  # an unreadable tool is a write
+            continue
+    return kept
+
+
+def batch_rules(slugs: Iterable[str]) -> str:
+    """The one rules text of the read packs *slugs* of a WhatsApp turn
+    (:data:`BATCH_READ_RULES`), or "" for no pack."""
+    labels = [_label(slug) for slug in dict.fromkeys(slugs) if slug]
+    return BATCH_READ_RULES.format(labels=", ".join(labels)) if labels else ""
+
+
+def batch_write_refusal(tool: Any, ctx: Mapping[str, Any] | None) -> str | None:
+    """:data:`BATCH_WRITE_REFUSED` for a call of the pack tool *tool* in a run
+    whose record is read-only, else None. ``_tool_injection._pack_call`` asks
+    it before any await. It is its own check, apart from
+    :func:`pack_write_refusal`: a fault in the read-only test refuses."""
+    try:
+        run = (ctx or {}).get(PACKS_KEY)
+    except Exception:
+        return None
+    if not isinstance(run, PackRun) or run.read_only is not True:
+        return None
+    try:
+        from acb_skills.subagent_contract import annotated_read_only
+
+        if annotated_read_only(str(tool or "")):
+            return None
+    except Exception:  # fail closed: a read-only record refuses
+        pass
+    _log.info("tool_packs.batch_write_refused", tool=str(tool or ""))
+    return BATCH_WRITE_REFUSED
+
+
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
 #
 # Layer (a) takes three inputs in OA-7c: the sticky packs of the chat, a
@@ -1602,6 +1719,10 @@ DECAY_TURNS = 8
 #: ``cc:<org>:tool-packs:<session>:<member hash>`` through the tenant wrapper,
 #: in the idiom of the email working set (``email_chat_context``).
 NAMESPACE = "tool-packs"
+#: G2 (task 3494). The namespace of the sticky state of a WhatsApp turn. A
+#: web run can be live on the WhatsApp thread, so the session alone does not
+#: keep the two channels apart.
+BATCH_NAMESPACE = "tool-packs-wa"
 #: The life of the state, slid by each turn.
 TTL_S = 30 * 24 * 3600
 #: The longest wait for Redis. A slow Redis costs the record, never the turn.
@@ -1650,6 +1771,11 @@ class PackTurn:
     #: a ``skill_packs.SkillPack``, in the order of the skill id. The run reads
     #: them from the database (``_tool_injection._turn_with_skills``).
     skills: tuple[Any, ...] = ()
+    #: G2 (task 3494). The Redis namespace of the sticky state of this turn:
+    #: :data:`NAMESPACE` for the web chat, :data:`BATCH_NAMESPACE` for a
+    #: WhatsApp turn. So a WhatsApp turn never changes the sticky packs of
+    #: the web chat, also on a thread that both channels use.
+    namespace: str = NAMESPACE
 
 
 @dataclass(frozen=True)
@@ -1789,6 +1915,14 @@ class PackRun:
     #: and a ``load_skill_tools`` call of one model step never add the same
     #: name twice, and the load never answers :data:`LOAD_UNAVAILABLE` for it.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, compare=False, repr=False)
+    #: G2 (task 3494). The Redis namespace of the sticky state
+    #: (:attr:`PackTurn.namespace`). :func:`note_used` writes there.
+    namespace: str = NAMESPACE
+    #: G2 (task 3494). True for the read packs of a WhatsApp turn: each pack
+    #: holds its read tools only, the specialist of each owner stays, and no
+    #: hand-off is refused. ``_tool_injection._pack_call`` refuses any call of
+    #: a tool that is not read-only (:func:`batch_write_refusal`).
+    read_only: bool = False
 
     @classmethod
     def of(
@@ -1796,19 +1930,24 @@ class PackRun:
         via_loader: Iterable[str] = (), offered: Iterable[str] = (),
         skills: Iterable[str] = (),
         needs: Iterable[str] = (),
+        read_only: bool = False,
     ) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
         held answer, in load order. *via_loader* names the owners that the
         loader replaces (OA-7i, :func:`plan_loader`). *offered* names the
         packs that the loader offers (task 1747, :attr:`gone_offered`).
         *skills* names the skill packs that the run loaded (WS-STU F3), and
-        *needs* the code packs that hold a tool of one of them (:attr:`needs`)."""
+        *needs* the code packs that hold a tool of one of them (:attr:`needs`).
+
+        G2 (task 3494): with *read_only* the record replaces no owner and
+        refuses no hand-off. The run holds the read tools of a pack only, so
+        the owner's specialist must stay for the writes."""
         slugs = tuple(slug for slug, _held in loaded)
-        via = frozenset(str(owner) for owner in via_loader)
+        via = frozenset() if read_only else frozenset(str(owner) for owner in via_loader)
         gone = tuple(slug for slug in dict.fromkeys(choice.evicted)
                      if slug not in slugs and pack(slug) is not None)
         replaced: set[str] = set(via)
-        for slug in slugs:
+        for slug in () if read_only else slugs:
             found = pack(slug)
             if (found is not None and found.delegation_refusal
                     and _specialist_leaves(found.owner, slugs, via)):
@@ -1818,13 +1957,15 @@ class PackRun:
             turn=turn.turn, stored=turn.stored, slugs=slugs,
             first={slug: choice.first.get(slug, (turn.turn, i)) for i, slug in enumerate(slugs)},
             held={slug: bool(held) for slug, held in loaded},
-            refusals=_refusals_for(slugs), replaced=frozenset(replaced), via_loader=via,
+            refusals={} if read_only else _refusals_for(slugs),
+            replaced=frozenset(replaced), via_loader=via,
             used={entry.slug: entry.used for entry in turn.sticky
                   if entry.slug in slugs and _asked_now(turn, entry.slug) is None},
             gone=gone, gone_offered=frozenset(offered) & frozenset(gone),
             words=tuple(slug for slug in slugs if choice.layers.get(slug) == "words"),
             skills=tuple(str(slug) for slug in skills),
             needs=frozenset(str(slug) for slug in needs),
+            namespace=turn.namespace, read_only=bool(read_only),
         )
 
     def holds(self) -> tuple[str, ...]:
@@ -1897,7 +2038,12 @@ class PackRun:
         run called a write tool of its packs answers
         :data:`WROTE_HANDOFF_REFUSED` (:meth:`wrote_refusal`). So the rule only
         adds a refusal, and every answer above stays as it was. *starts* is
-        True for an ask that starts a hand-off (:func:`delegation_refusal`)."""
+        True for an ask that starts a hand-off (:func:`delegation_refusal`).
+
+        G2 (task 3494): a read-only record refuses no hand-off. The specialist
+        does the writes of a WhatsApp turn, as before the packs."""
+        if self.read_only:
+            return None
         name = str(agent_name or "")
         found = None if self.left else self.refusals.get(name)
         if not found and (self.later or self.left):
@@ -2646,6 +2792,7 @@ def _sticky_of(raw: Any) -> tuple[Sticky, ...]:
 
 async def begin_turn(
     org: Any, session: Any, member: Any, words: Any, surface: Any = "",
+    namespace: str = NAMESPACE,
 ) -> PackTurn:
     """Count this member turn of the chat and read its sticky packs.
 
@@ -2657,28 +2804,36 @@ async def begin_turn(
     raises: a fault gives a turn with no sticky pack that writes nothing.
     *surface* is the app slug that the gateway bound (OA-7d). It is cleaned
     here again, so a value that names no pack gives "".
+
+    G2 (task 3494): *namespace* is :data:`BATCH_NAMESPACE` for a WhatsApp
+    turn, and any other value reads as :data:`NAMESPACE`. The turn carries it,
+    so each later write of the turn goes to the same state.
     """
     org_id, chat = str(org or ""), str(session or "")
     part = _member_part(member)
     text = str(words or "")
     where = clean_surface(surface)
+    space = BATCH_NAMESPACE if namespace == BATCH_NAMESPACE else NAMESPACE
     if not (org_id and chat and str(member or "").strip()):
-        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where)
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where,
+                        namespace=space)
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org_id):
             client = get_tenant_redis()
-            state = key(NAMESPACE, chat, part)
+            state = key(space, chat, part)
             turn = await asyncio.wait_for(
                 client.hincrby(state, _TURN_FIELD, 1), timeout=REDIS_TIMEOUT_S)
             raw = await asyncio.wait_for(client.hgetall(state), timeout=REDIS_TIMEOUT_S)
             await asyncio.wait_for(client.expire(state, TTL_S), timeout=REDIS_TIMEOUT_S)
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("tool_packs.state_read_failed", error=type(exc).__name__)
-        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where)
+        return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where,
+                        namespace=space)
     return PackTurn(
-        org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True, surface=where)
+        org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True, surface=where,
+        namespace=space)
 
 
 def pack_of_tool(name: str, allowed: Iterable[str]) -> str:
@@ -2721,7 +2876,7 @@ def with_resume_pack(turn: PackTurn, slug: str) -> PackTurn:
     return PackTurn(turn.org, turn.session, turn.member_part, turn.turn,
                     tuple(sorted((*rest, held), key=lambda e: e.first)),
                     turn.words, stored=turn.stored, surface=turn.surface,
-                    skills=turn.skills)
+                    skills=turn.skills, namespace=turn.namespace)
 
 
 async def drop_sticky(turn: PackTurn | PackRun, slugs: Iterable[str]) -> None:
@@ -2732,9 +2887,10 @@ async def drop_sticky(turn: PackTurn | PackRun, slugs: Iterable[str]) -> None:
     try:
         from acb_common.tenant_redis import key, organization_scope
 
+        space = getattr(turn, "namespace", NAMESPACE) or NAMESPACE
         with organization_scope(turn.org):
             await asyncio.wait_for(
-                get_tenant_redis().hdel(key(NAMESPACE, turn.session, turn.member_part), *names),
+                get_tenant_redis().hdel(key(space, turn.session, turn.member_part), *names),
                 timeout=REDIS_TIMEOUT_S)
     except Exception as exc:
         _log.warning("tool_packs.state_write_failed", error=type(exc).__name__)
@@ -2790,7 +2946,7 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
 
         with organization_scope(run.org):
             client = get_tenant_redis()
-            state = key(NAMESPACE, run.session, run.member_part)
+            state = key(run.namespace or NAMESPACE, run.session, run.member_part)
             await asyncio.wait_for(client.hset(state, slug, value), timeout=REDIS_TIMEOUT_S)
             await asyncio.wait_for(client.expire(state, TTL_S), timeout=REDIS_TIMEOUT_S)
     except Exception as exc:

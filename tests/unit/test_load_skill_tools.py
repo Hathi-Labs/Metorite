@@ -796,14 +796,17 @@ def test_only_the_run_that_layer_a_serves_offers_the_loader() -> None:
     """Rooms, WhatsApp and delegated runs get no ``load_skill_tools``: the one
     caller that asks for the loader is ``_apply_pack_turn``, which only
     ``run_agent_stream`` calls, after ``_start_pack_turn`` said yes
-    (``test_tool_packs_choice.py``). Mutation: offer the loader from another
-    path → red."""
+    (``test_tool_packs_choice.py``). G2 (task 3494): the WhatsApp batch run
+    calls it too, through ``_apply_batch_packs`` with ``read_only=True``, and
+    that branch passes ``offer_loader=False``, pinned by
+    ``test_tool_packs_choice.py::test_the_read_only_pack_apply_offers_no_loader``.
+    Mutation: offer the loader from another path → red."""
     executor = "apps/services/orchestrator/orchestrator/executor.py"
     injection = "apps/services/orchestrator/orchestrator/_tool_injection.py"
     assert _calls_with_keyword(executor, "offer_loader") == {"_apply_pack_turn"}
     assert _calls_with_keyword(injection, "offer_loader") == set()
     assert _callers(injection, "_offer_pack_loader") == {"_apply_tool_packs"}
-    assert _callers(executor, "_apply_pack_turn") == {"run_agent_stream"}
+    assert _callers(executor, "_apply_pack_turn") == {"run_agent_stream", "_apply_batch_packs"}
 
 
 # ── 4. The live run, with a scripted model ──────────────────────────────────
