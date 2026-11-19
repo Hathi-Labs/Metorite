@@ -1640,13 +1640,16 @@ async def _act_new(
     rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str],
     background: BackgroundTasks, user: UserContext,
 ) -> dict[str, Any]:
+    from gateway.routes.email.markdown_mail import mail_text
     from gateway.routes.email.transport.send import SendEmailRequest, send_email
 
     attachments, count = await _new_attachments(rec, files, user)
+    # Task 3605: the body is Markdown. A held run (a ``no_egress`` run, H-236)
+    # sends text only: the Markdown as written, so each link shows its address.
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
-        body_text=rec["body"], attachments=attachments or None,
+        body_text=mail_text(rec["body"]), attachments=attachments or None,
     ), background, user)
     return {"ok": True, "action": "send", "id": (res or {}).get("id"),
             "files": count, **ticked}
@@ -1663,10 +1666,12 @@ async def _save_new(
     saved = await upsert_draft(DraftUpsertRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC],
         bcc=ticked[KIND_BCC], subject=rec.get("subject") or "", body=rec["body"],
-        attachments=attachments, from_chat=True,
+        attachments=attachments, from_chat=True, body_markdown=True,
     ), user)
+    # Task 3605: the draft holds text only, and the answer says so.
+    kept = {"formatting": saved["formatting"]} if (saved or {}).get("formatting") else {}
     return {"ok": True, "action": "save", "draft_id": str((saved or {}).get("id") or ""),
-            "files": count, **ticked}
+            "files": count, **ticked, **kept}
 
 
 def _form_ids(rows: Sequence[dict[str, Any]], choice: Any) -> frozenset[str] | None:
