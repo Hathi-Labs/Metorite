@@ -1160,6 +1160,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_run_phase_event.py.
     chat_run_phase_orgs: str = ""
 
+    # ── A card checks that its object did not change (HRD-10a) ──────────────
+    #
+    # CHAT_CARD_PRECONDITION_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and `update_task` sends the PATCH of before,
+    # with no `If-Match`. On, `update_task` sends the `updated_at` that it
+    # read before the card as `If-Match`. A task that changed while the card
+    # waited gets a 412, the tool writes nothing, and the tool answers with
+    # the HRD-7 text "Changed since the card" and the old and new values
+    # (owner decision A, 2026-11-16). The one reader is
+    # `acb_skills.ask_tools.card_precondition_on`. It reads the org from the
+    # run binding and fails closed. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_card_precondition.py.
+    chat_card_precondition_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -2287,6 +2302,7 @@ class Settings(BaseSettings):
     sandbox_exec_max_timeout_seconds: int = 300
     sandbox_output_cap_bytes: int = 12288
     # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
+    # A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`.
     sandbox_max_per_org: int = 2
     sandbox_max_total: int = 4
     # SBX-18 (agent_sandbox.md 0c, rung 6a'): the `compute` target runs Python
@@ -2316,6 +2332,31 @@ class Settings(BaseSettings):
     # It must lie outside every mount root. "" resolves to
     # {agents_clone_dir}/sandbox-broker, a sibling of state/ and repos/.
     sandbox_state_dir: str = ""
+    # SBX-8 (agent_sandbox.md §4.3). The container runtime: `runc` (the
+    # default, Docker's own) or `runsc` (gVisor). Any other value refuses
+    # each start. Plain `str`, so a bad value refuses a start and never
+    # stops the boot. To install `runsc` on a box is the owner gate WS43-G5.
+    sandbox_runtime: str = "runc"
+    # SBX-15 (agent_sandbox.md §4.6, D187). `docker` (the default) runs the
+    # containers on the local daemon. `docker-remote` runs them on the
+    # daemon of the dedicated sandbox box, at `sandbox_docker_host`
+    # (`ssh://user@10.x.x.x` or `tcp://`). Only the broker's own `docker`
+    # child gets that value, as DOCKER_HOST. On `docker-remote` a start
+    # outside dev (ACB_ENV) refuses `runc`, so production runs `runsc` only.
+    # The remote backend runs the `code_task` target only. To set it on
+    # production is the owner gate SBX-G11.
+    sandbox_backend: str = "docker"
+    sandbox_docker_host: str = ""
+    # Outside dev, `ssh://` and `tcp://` refuse a loopback host, and
+    # `tcp://` needs TLS with a client certificate. This is the dir of that
+    # certificate (ca.pem, cert.pem, key.pem). Only the broker's `docker`
+    # child gets it, as DOCKER_CERT_PATH with DOCKER_TLS_VERIFY=1.
+    sandbox_docker_cert_path: str = ""
+    # The size of the `/workspace` tmpfs of a remote container. The broker
+    # copies the working dir in before each command and copies it back
+    # after, so a working dir above this size refuses. Keep it below
+    # `sandbox_memory`, because a tmpfs uses the memory of the container.
+    sandbox_remote_workspace_mb: int = 512
 
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'
