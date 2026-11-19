@@ -442,26 +442,73 @@ def test_the_route_binds_the_raw_parts():
 
 
 def test_the_route_binds_the_raw_parts_in_both_run_scopes():
-    """R7 source fence (fix round 1, B3). The chat route binds the raw parts
-    INSIDE both run scopes: the continuation scope of RESUME-2a and the
-    ``_serve`` scope, where ``run_detached`` copies the context into the run.
-    A server Continue note sets ``_client_text = False``, so the note is no
-    part. The pinned line of ``test_tool_packs_choice`` stays as it is.
-    Mutations: delete the main bind, delete the continuation bind, or drop
-    ``_client_text = False`` -> red."""
-    text = (ROOT / "apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
-    text = text.replace("\r\n", "\n")
-    assert text.count("bind_raw_parts(_raw_parts)") == 2
-    assert ("with member_typed(_typed, sent=_sent_text), surface_scope(None), \\\n"
-            "                bind_raw_parts(_raw_parts):") in text, "the continuation scope"
-    main_scope = "with member_typed(_typed, sent=_sent_text), surface_scope(_surface):"
-    assert text.count(main_scope) == 1
-    serve = text[text.index(main_scope):]
-    serve = serve[:serve.index("async for chunk in _serve_run(timing):")]
-    assert "with bind_raw_parts(_raw_parts):" in serve, "the main scope binds the parts"
-    assert ('req.payload["message"] = _note\n            _client_text = False') in text
-    assert text.index("_client_text = True") < text.index("_client_text = False") < text.index(
-        "client_text=_client_text")
+    """R7 source fence (fix round 1, B3, round 2 (3)). It reads the AST of
+    the route, so a change of white space or of line breaks does not move it.
+
+    * ``_raw_parts = _paste_raw_parts(...)`` comes AFTER
+      ``await _apply_turn_decision(...)``: the replayed steers are known only
+      after the ENGAGE seam took them.
+    * Exactly two ``with`` scopes bind ``bind_raw_parts(_raw_parts)``, each
+      after that line, and each one CONTAINS the start of its run: the
+      continuation scope holds ``start_detached(...)``, and the main scope
+      holds ``async for ... in _serve_run(...)``. Each sits in a scope that
+      binds ``member_typed``, so the drain task copies both.
+    * A server Continue note sets ``_client_text = False`` in the same branch
+      that writes the note into ``message``.
+
+    The pinned line of ``test_tool_packs_choice`` stays as it is. Mutations:
+    delete the main bind, delete the continuation bind, bind an empty
+    ``with`` before the loop, compute ``_raw_parts`` before the turn
+    decision, or drop ``_client_text = False`` -> red."""
+    source = (ROOT / "apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def calls(node: ast.AST, name: str) -> list[ast.Call]:
+        return [n for n in ast.walk(node) if isinstance(n, ast.Call)
+                and (getattr(n.func, "id", None) or getattr(n.func, "attr", None)) == name]
+
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+               and any(getattr(t, "id", None) == "_raw_parts" for t in n.targets)
+               and isinstance(n.value, ast.Call)
+               and getattr(n.value.func, "id", None) == "_paste_raw_parts"]
+    assert len(assigns) == 1, "one computation of the raw parts"
+    at = assigns[0].lineno
+    route = next(f for f in ast.walk(tree)
+                 if isinstance(f, ast.AsyncFunctionDef) and assigns[0] in ast.walk(f))
+    decisions = [c.lineno for c in calls(route, "_apply_turn_decision")]
+    assert decisions and max(decisions) < at, "the parts come after the turn decision"
+
+    withs = [n for n in ast.walk(route) if isinstance(n, (ast.With, ast.AsyncWith))]
+    binds = [w for w in withs if any(
+        isinstance(i.context_expr, ast.Call)
+        and getattr(i.context_expr.func, "id", None) == "bind_raw_parts"
+        and [getattr(a, "id", None) for a in i.context_expr.args] == ["_raw_parts"]
+        for i in w.items)]
+    assert len(binds) == 2, "two run scopes bind the raw parts"
+    starts: set[str] = set()
+    for scope in binds:
+        assert scope.lineno > at, "a bind comes after the raw parts"
+        body = ast.Module(body=scope.body, type_ignores=[])
+        if calls(body, "start_detached"):
+            starts.add("continuation")
+        if any(isinstance(n, ast.AsyncFor) and calls(n.iter, "_serve_run")
+               for n in ast.walk(body)):
+            starts.add("main")
+        typed = [w for w in withs
+                 if any(isinstance(i.context_expr, ast.Call)
+                         and getattr(i.context_expr.func, "id", None) == "member_typed"
+                         for i in w.items)
+                 and scope in ast.walk(w)]
+        assert typed, "the bind sits in a member_typed scope"
+    assert starts == {"continuation", "main"}, starts
+
+    notes = [n for n in ast.walk(route) if isinstance(n, ast.If)
+             and any(isinstance(s, ast.Assign) and isinstance(s.value, ast.Name)
+                     and s.value.id == "_note" for s in n.body)]
+    assert notes and any(
+        isinstance(s, ast.Assign) and any(getattr(t, "id", None) == "_client_text" for t in s.targets)
+        and isinstance(s.value, ast.Constant) and s.value.value is False
+        for n in notes for s in n.body), "a server Continue note is no part"
 
 
 def test_a_resume_launch_frames_a_replayed_pasted_steer():
@@ -717,8 +764,9 @@ def test_a_binding_that_cannot_be_read_frames_each_turn_whole(monkeypatch):
 def test_a_prover_that_cannot_load_keeps_the_seam(monkeypatch):
     """Round 2 (1): when ``acb_skills.attachment_tools`` cannot load, the seam
     proves no note (the safe default) and goes on. A string run stays
-    byte-identical, and a list run still frames. Mutation: the import inside
-    the binding ``try`` -> red (the string run is framed whole)."""
+    byte-identical, and a list run still frames with its lead. Mutation: the
+    import inside the binding ``try`` -> red (whole mode: the list run loses
+    its lead)."""
     import sys
 
     monkeypatch.setitem(sys.modules, "acb_skills.attachment_tools", None)
