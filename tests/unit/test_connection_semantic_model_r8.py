@@ -21,7 +21,10 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS), with two organizations:
 7. ``approve`` leaves exactly one approved row and archives the old one,
    in one transaction: when its second step fails, the first is undone;
 8. ``accept_part`` changes one part of a draft only, and runs ``shape_only``;
-9. with the flag off a write refuses with ``off`` and writes no row.
+9. with the flag off a write refuses with ``off`` and writes no row;
+10. (SEM-12b) a body over the cap in jsonb text bytes refuses with
+    ``too_big`` and writes no row, and a body at the cap is written with
+    ``octet_length(body::text)`` equal to the count of ``body_bytes``.
 
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
@@ -32,7 +35,8 @@ connection select ``_LOCK_SQL`` AND the ``FROM integration_connections`` of
 ``_INSERT_SQL`` (case 4: the insert names the connection by its id alone,
 and the foreign key check skips RLS). A drop of only one of the two keeps
 case 4 green, because each one guards the other. Swap the two steps of
-``approve`` (case 7, the index trips).
+``approve`` (case 7, the index trips). Count the compact JSON in
+``body_bytes`` (case 10: the CHECK of the migration trips, not ``too_big``).
 
 Not a fence here: a drop of ``FORCE`` in the migration. The template of this
 suite applies ``generated/04``, which forces RLS again, and the app role does
@@ -470,6 +474,85 @@ async def test_9_with_the_flag_off_a_write_refuses_off(db, monkeypatch) -> None:
                           None) == "off"
     assert await _call(db, db.org_a, "read_approved", cid) is None
     assert len(_rows(db, cid)) == 1
+
+
+# ── 10. The size cap agrees with the CHECK (SEM-12b) ────────────────────────
+
+
+def _word(n: int) -> str:
+    """A run of letters for *n*: a key and an option hold no digit."""
+    out = ""
+    while True:
+        out = chr(ord("a") + n % 26) + out
+        n //= 26
+        if n == 0:
+            return out
+
+
+def _sized_body(target: int) -> dict[str, Any]:
+    """A shape-only body whose jsonb text is exactly *target* bytes. It
+    fills ``code.fields`` with options of 80 letters, then pads the label
+    of the last field."""
+    from gateway.connections.semantic_model import body_bytes
+
+    fields: list[dict[str, Any]] = []
+    body: dict[str, Any] = {"v": 1, "code": {
+        "entities": [{"key": "Sales", "label": "Sales vouchers"}], "fields": fields},
+        "ai": {}, "admin": {}}
+    while True:
+        field: dict[str, Any] = {"entity": "Sales", "key": "Fld" + _word(len(fields)),
+                                 "label": "Ledger", "options": []}
+        fields.append(field)
+        while len(field["options"]) < 100:
+            head = "Opt " + _word(len(field["options"])) + " "
+            option = head + "a" * (80 - len(head))
+            field["options"].append(option)
+            if body_bytes(body) > target:
+                # Take the last option back. When the room left is more than
+                # a label pad, add a shorter option. Then pad the label.
+                field["options"].pop()
+                room = target - body_bytes(body)
+                if room > 70:
+                    field["options"].append(option[:room - 34])
+                pad = target - body_bytes(body)
+                assert 0 <= pad <= 70, pad
+                field["label"] = "Ledger" + "s" * pad
+                assert body_bytes(body) == target
+                return body
+
+
+async def test_10_a_body_over_the_cap_in_jsonb_text_is_refused_too_big(db) -> None:
+    """The compact JSON is under the cap, and the jsonb text is over it.
+    Mutation: count the compact JSON in ``body_bytes``, and the INSERT
+    raises the CHECK of the migration, not ``too_big``."""
+    import json
+
+    from gateway.connections.semantic_model import BODY_BYTES_MAX
+    from gateway.crm_sync.catalogue import shape_only
+
+    body = _sized_body(BODY_BYTES_MAX + 1)
+    assert shape_only(body) is None
+    compact = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    assert len(compact) < BODY_BYTES_MAX
+    cid = _connection(db, db.org_a)
+    assert await _refused(db, db.org_a, "save_draft", cid, body, _HASH, False) == "too_big"
+    assert _rows(db, cid) == []
+
+
+async def test_10_a_body_at_the_cap_is_written_and_the_check_agrees(db) -> None:
+    """The Python count and ``octet_length(body::text)`` are the same number,
+    so the CHECK of the migration and ``too_big`` meet at one cap."""
+    from gateway.connections.semantic_model import BODY_BYTES_MAX
+
+    for target in (BODY_BYTES_MAX, BODY_BYTES_MAX - 1):
+        body = _sized_body(target)
+        cid = _connection(db, db.org_a)
+        assert await _call(db, db.org_a, "save_draft", cid, body, _HASH, False) == 1
+        with db.admin_engine.connect() as c:
+            size = c.execute(text(
+                "SELECT octet_length(body::text) FROM connection_semantic_models "
+                "WHERE connection_id = CAST(:c AS uuid)"), {"c": cid}).scalar_one()
+        assert size == target <= BODY_BYTES_MAX
 
 
 def test_the_suite_finds_the_migration_by_its_content() -> None:

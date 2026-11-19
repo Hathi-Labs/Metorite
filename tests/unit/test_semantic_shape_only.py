@@ -269,6 +269,28 @@ def test_row_6_a_label_or_an_option_that_is_an_amount_is_refused(label: str) -> 
         "code.fields:options_value")
 
 
+@pytest.mark.parametrize("label", ["450000 INR due", "Acme paid 450000 INR", "Total 4500 rs",
+                                   "5 USD", "5USD", "300 eur", "12 GBP owed"])
+def test_row_6_a_code_of_money_after_a_digit_is_refused(label: str) -> None:
+    """SEM-12b: a code of money AFTER a digit, as a label and as an option.
+    Mutation: drop the two code-after-digit forms of ``_MONEY``, and each
+    case passes."""
+    assert shape_only(_with(("code", "entities", 0, "label"), label)) == (
+        "code.entities:label_value")
+    assert shape_only(_with(("code", "fields", 0, "options"), ["Open", label])) == (
+        "code.fields:options_value")
+
+
+@pytest.mark.parametrize("label", ["Sales Orders", "GSTR1", "Phase 2", "Q4 plan", "1st quarter",
+                                   "The 3rs", "Form 26AS", "5 usda", "Rsvp list",
+                                   "four thousand rupees"])
+def test_row_6_a_legitimate_label_with_a_digit_or_a_word_of_money_passes(label: str) -> None:
+    """A code ends at a word boundary, and ``rs`` after a digit needs a space.
+    A figure in plain words passes by design (§10.4 row 6)."""
+    assert shape_only(_with(("code", "entities", 0, "label"), label)) is None
+    assert shape_only(_with(("code", "fields", 0, "options"), ["Open", label])) is None
+
+
 def test_row_6_a_measure_label_with_a_figure_is_refused() -> None:
     assert shape_only(_with(("admin", "measures", 0, "label"), "Revenue over 5000")) == (
         "admin.measures:label_value")
@@ -738,6 +760,29 @@ def test_the_writer_names_no_connection_by_id_alone_in_an_insert() -> None:
     # P2: FOR NO KEY UPDATE, so an insert of another table that references
     # the connection does not wait on this lock.
     assert sm._LOCK_SQL.rstrip().endswith("FOR NO KEY UPDATE")
+
+
+def test_the_two_registry_statements_name_the_bound_org() -> None:
+    """Advisory. FORCE RLS on the registry keeps each statement to the bound
+    org. The explicit org filter is a second layer. Mutation: drop the
+    filter from ``LOCK_ONE_FOR_MODEL_SQL`` or ``FROM_ONE_FOR_MODEL_SQL``, and
+    this fails."""
+    from gateway.connections.store import FROM_ONE_FOR_MODEL_SQL, LOCK_ONE_FOR_MODEL_SQL
+
+    assert "AND organization_id = {org}" in LOCK_ONE_FOR_MODEL_SQL
+    assert "AND c.organization_id = {org}" in FROM_ONE_FOR_MODEL_SQL
+    assert sm._BOUND_ORG in sm._LOCK_SQL and sm._BOUND_ORG in sm._INSERT_SQL
+
+
+def test_the_size_cap_counts_the_jsonb_text_form() -> None:
+    """jsonb text puts a space after each comma and colon. Mutation: count
+    the compact JSON in ``body_bytes``, and this fails. The R8 suite proves
+    the count against ``octet_length(body::text)``."""
+    body = {"v": 1, "code": {"entities": [{"key": "Sales", "label": "Ünits"}]},
+            "ai": {}, "admin": {}}
+    spaced = ('{"ai": {}, "v": 1, "code": {"entities": [{"key": "Sales", '
+              '"label": "Ünits"}]}, "admin": {}}')
+    assert sm.body_bytes(body) == len(spaced.encode("utf-8"))
 
 
 def test_the_catalogue_exports_shape_only() -> None:

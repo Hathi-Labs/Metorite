@@ -2,7 +2,7 @@
 
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
 D226). The rest stays PROPOSED. SEM-7 (task 3737) and the library half of SEM-8 (task 3738) are built, dark.
-SEM-12 is BUILT, dark (task 3742): migration 464, `connections/semantic_model.py`, and
+SEM-12 (task 3742) and its repair SEM-12b (task 3834) are BUILT, dark: migration 464, `connections/semantic_model.py`, and
 `shape_only` in `crm_sync/catalogue.py`, behind `CONNECTION_MODEL_ORGS`. Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
@@ -705,7 +705,7 @@ short code, or `None`.
 | Text in the `admin` section | Allows 1 to 300 characters that pass `clean_body`, with no digit that `_has_literal` finds |
 | A parameter name | Allows a name that matches the name pattern. Refuses a name that does not match the pattern, such as `Acme Ltd`, `2024` or `5.5`. The pattern is `_PARAM_NAME` of the catalogue. The `number_like` call is a second guard for a number-like name |
 | A verified query | Allows named parameters. Refuses a key such as `value`, and any literal in a condition |
-| An amount, a total, a balance or a figure of money | Refuses, in every section |
+| An amount, a total, a balance or a figure of money | Refuses a key that names a figure, in every section. Refuses a label or an option that reads as a number, or that holds a money mark beside a digit on either side. A mark is a symbol (`₹ $ € £ ¥`) or a code (`rs inr usd eur gbp`), such as `Rs. 400`, `450000 INR due` or `5USD`. After a digit, `rs` needs a space first, so `3rs` passes. A figure in plain words, such as `four thousand`, passes in a label by design |
 | Free text that the source or the model wrote, outside the cases above | Refuses |
 | A key outside the closed set, or a part in the wrong section | Refuses |
 | A key that names a secret: header, token, url, path or host (§8) | Refuses |
@@ -965,6 +965,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
   leaves exactly one approved row, and archives the old one in the same
   transaction. Two concurrent drafts get two numbers. A draft with `approved_at`
   set fails the CHECK. A write with the flag off refuses with "off".
+  A body over 262144 bytes of jsonb text refuses with `too_big` and writes no row.
+  A body at the cap is written, and `octet_length(body::text)` equals the count.
+  **Mutation (SEM-12b):** count the compact JSON in `body_bytes`, and the over-cap case fails.
   **Mutations:** drop the partial unique index, and the second-approved case
   fails. The cross-tenant case has two guards: the lock select, and the select
   in the INSERT. Each guard covers the other. So a drop of one guard keeps the
@@ -985,6 +988,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
   fails. Drop one place from `_key_values`, and the case of that place fails. The
   synonym target is the exception, because `_targets` already admits only keys
   that pass the key rule.
+  Drop the two code-after-digit forms of `_MONEY`, and `450000 INR due` passes.
+  Drop the org filter of a registry statement, and the advisory source case fails.
+  FORCE RLS is the first layer, and that filter is a second layer.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the
