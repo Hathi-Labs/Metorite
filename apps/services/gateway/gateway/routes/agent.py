@@ -4706,6 +4706,15 @@ async def reconnect_agent_stream(
         except Exception:  # noqa: BLE001 — never block a replay on this check
             _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
+        # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
+        # not see the whole run gets no event of it, and then the end below.
+        if not await _replay_ok(
+            thread_id, actor, getattr(user, "organization_id", None),
+        ):
+            _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
+            yield _reconnect_end(thread_id)
+            return
+
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between
         # replay end and subscribe start.
@@ -4734,7 +4743,7 @@ async def reconnect_agent_stream(
             # Agent finished — emit RUN_FINISHED so the frontend translator
             # (translateAndPersistStream) maps it to {"type":"done"} and the
             # UI exits the reconnecting state.
-            yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': thread_id, 'threadId': thread_id})}\n\n"
+            yield _reconnect_end(thread_id)
 
     return StreamingResponse(
         _event_generator(),
@@ -4745,6 +4754,45 @@ async def reconnect_agent_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+def _reconnect_end(thread_id: str) -> str:
+    """The end frame of a reconnect: the frame when nothing is left to replay.
+
+    The frontend translator maps it to ``{"type": "done"}``, and the chat
+    leaves the reconnecting state. RESUME-2d sends the same frame to a reader
+    who may not see the run."""
+    import json as _json
+
+    return f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': thread_id, 'threadId': thread_id})}\n\n"
+
+
+async def _replay_ok(
+    thread_id: str, actor: str, organization_id: str | None,
+) -> bool:
+    """RESUME-2d (D-RES-10): True when *actor* may replay the whole run in the
+    stream of *thread_id*. ``gateway.rooms.replay_allowed`` holds the rule.
+
+    The actor and the org come from the session (``UserContext``), never
+    from the request (R5). The room read is the bound read of
+    ``resolve_room_access``. The run start is the head of the stream
+    (``stream_relay.stream_head_ms``). A Redis fault reads as an unknown
+    start, and a failed room read as no room, so each fault fails closed for
+    a shared room. A solo chat replays as before."""
+    import asyncio as _asyncio
+
+    from gateway.rooms import replay_allowed, resolve_room_access
+    from orchestrator.stream_relay import stream_head_ms
+
+    room = await _asyncio.to_thread(
+        resolve_room_access, thread_id, actor, organization_id=organization_id,
+    )
+    try:
+        start = await stream_head_ms(thread_id)
+    except Exception:  # an unknown start fails closed
+        _log.warning("agent.reconnect_head_failed", thread_id=thread_id[:12])
+        start = None
+    return replay_allowed(room, start)
 
 
 def _thread_owner_ok(

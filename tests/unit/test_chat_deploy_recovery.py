@@ -821,6 +821,11 @@ def test_a_reconnect_to_a_dead_run_ends_with_the_marker(liveness, no_persist, mo
         {"type": "TEXT_MESSAGE_CONTENT", "delta": "half an answer"},
     ])
     monkeypatch.setattr(agent_routes, "_thread_owner_ok", lambda *_a, **_k: True)
+
+    async def _solo(*_a, **_k):  # RESUME-2d: a solo reader, with no database
+        return True
+
+    monkeypatch.setattr(agent_routes, "_replay_ok", _solo)
     app = FastAPI()
     app.get("/agent/run/{thread_id}/reconnect")(agent_routes.reconnect_agent_stream)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
