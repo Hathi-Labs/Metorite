@@ -43,9 +43,9 @@ const OTHER_ID_KEYS: readonly string[] = [
 ];
 
 const UUID = /^(?:page:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SHORT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
-/** The target of one call: an id from an allowed key, or "" for none. */
+/** The target of one call: a UUID from an allowed key, or "" for none. A short
+ * token never passes, because a model may write a secret into an id key. */
 export function targetOf(tool: string, args: Record<string, unknown> | undefined): string {
   if (!args || typeof args !== "object") return "";
   const keys = Object.hasOwn(TARGET_KEYS, tool) ? TARGET_KEYS[tool] : OTHER_ID_KEYS;
@@ -54,7 +54,6 @@ export function targetOf(tool: string, args: Record<string, unknown> | undefined
     const value = typeof raw === "string" ? raw.trim() : "";
     if (!value) continue;
     if (UUID.test(value)) return value.toLowerCase();
-    if (SHORT_ID.test(value) && /\d/.test(value)) return value;
   }
   return "";
 }

@@ -88,7 +88,15 @@ describe("a target is an id, never a value", () => {
   it("an id of an allowed key is the target", () => {
     expect(targetOf("read_page", { page_id: PAGE })).toBe(PAGE);
     expect(targetOf("read_page", { page_id: `page:${PAGE.toUpperCase()}` })).toBe(`page:${PAGE}`);
-    expect(targetOf("find_tasks", { task_id: "T-1042" })).toBe("T-1042");
+    expect(targetOf("find_tasks", { task_id: PAGE })).toBe(PAGE);
+  });
+
+  it("a short token never passes, also in an id key (review of the B2 slice)", () => {
+    // A model may write a secret into an id key. Mutation: bring back the short-token rule -> red.
+    for (const secret of ["sk-abc123secrettokenXYZ", "ghp_16C7e42F292c6912E7710c838347Ae178B4a", "AKIAIOSFODNN7EXAMPLE", "T-1042"]) {
+      expect(targetOf("read_page", { page_id: secret })).toBe("");
+      expect(targetOf("find_tasks", { id: secret })).toBe("");
+    }
   });
 
   it("a title, a query, a body or a sentence is never a target", () => {
