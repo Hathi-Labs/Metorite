@@ -144,6 +144,7 @@ reading it as one is what F5 was. Fence:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -178,6 +179,7 @@ __all__ = [
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleBillingUnavailable",
     "ConsoleMemberWriteUnavailable",
+    "ConsoleProviderHealthUnavailable",
     "ConsoleProvisionUnavailable",
     "ConsoleRouterUnavailable",
     "ConsoleSeatWriteUnavailable",
@@ -192,6 +194,7 @@ __all__ = [
     "invalidate",
     "invite_member_on_console",
     "is_wired",
+    "provider_health_on_console",
     "provision_org_on_console",
     "read_order_on_console",
     "reconcile",
@@ -1159,6 +1162,80 @@ async def run_spend_on_console(
         {"actor_email": actor_email, "run_id": run_id},
         unavailable=ConsoleBillingUnavailable,
     )
+
+
+# ── The vendor alert read (AO-2, customer_console.md §6A.17b) ───────────────
+#
+# The Console judges each vendor, and this box tells the admins of the
+# operator org. The box asks, as `bootstrap_placed_orgs` does: every arrow
+# runs from the box to the Console. Its one caller is
+# `gateway/provider_alerts.py`.
+
+#: The Console door of the vendor alert words. Capability ``serve``.
+PROVIDER_HEALTH_DOOR = "/registry/providers/health"
+
+#: The words that the Console may send. A row with another word is dropped.
+PROVIDER_ALERT_SIGNALS = frozenset({"out", "low", "serving", "clear", "other"})
+
+#: A vendor id is short and plain: the catalog prefix of a model.
+_PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+#: The longest display name kept. The registry's longest is under 20.
+_LABEL_MAX = 40
+#: A days-left value is a short decimal string, as the Console sends money.
+_DAYS_LEFT = re.compile(r"^\d{1,5}(\.\d{1,2})?$")
+
+
+class ConsoleProviderHealthUnavailable(Exception):
+    """The Console gave no vendor alert answer that this box can read.
+
+    The box is not wired, the network failed, or the door answered with any
+    status other than 200. A 403 means the deployment key lacks ``serve``.
+    The message is ours, never a vendor's: an HTTP status or a transport
+    error class.
+    """
+
+
+def _alert_row(raw: Any) -> dict[str, Any] | None:
+    """One checked row, or None. Only four keys survive, each in a closed
+    shape, so no free text that a vendor wrote can pass through."""
+    if not isinstance(raw, dict):
+        return None
+    provider = raw.get("provider")
+    signal = raw.get("signal")
+    label = raw.get("label")
+    days = raw.get("days_left")
+    if not isinstance(provider, str) or not _PROVIDER_ID.match(provider):
+        return None
+    if signal not in PROVIDER_ALERT_SIGNALS:
+        return None
+    if not isinstance(label, str) or not label.strip() or len(label) > _LABEL_MAX:
+        label = provider
+    if not (isinstance(days, str) and _DAYS_LEFT.match(days)):
+        days = None
+    return {"provider": provider, "label": " ".join(label.split()),
+            "signal": signal, "days_left": days}
+
+
+async def provider_health_on_console() -> list[dict[str, Any]]:
+    """Read one alert word per vendor from the Console.
+
+    Returns rows of ``{"provider", "label", "signal", "days_left"}``, each
+    checked by :func:`_alert_row`. Raises
+    :class:`ConsoleProviderHealthUnavailable` on an unwired box, a transport
+    fault, or any status other than 200. Non-allocating: a read, with no
+    member and no org in the body. It never touches ``resolve_for_signin``.
+    """
+    if not is_wired():
+        raise ConsoleProviderHealthUnavailable("unwired")
+    status, body = await _post_deployment_door(
+        PROVIDER_HEALTH_DOOR, {}, unavailable=ConsoleProviderHealthUnavailable
+    )
+    if status != 200:
+        raise ConsoleProviderHealthUnavailable(f"HTTP {status}")
+    rows = body.get("providers")
+    if not isinstance(rows, list):
+        raise ConsoleProviderHealthUnavailable("a body with no providers list")
+    return [row for row in (_alert_row(r) for r in rows) if row is not None]
 
 
 # ── The customer CHECKOUT client (H-152, the checkout half) ─────────────────
