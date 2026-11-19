@@ -578,6 +578,23 @@ _PENDING_SHARES_SQL = (
     "ORDER BY s.share_requested_at, s.id LIMIT :lim"
 )
 
+#: The most shared skills in one read of :func:`list_shared_skills`. A row
+#: holds no body, so the page is wider than the page of the pending asks.
+MAX_SHARED_SKILLS = 50
+
+#: The skills that the org shares (:data:`SHARED_WITH_ORG`), by name, for the
+#: holder's list (J2d follow-up). A shared skill whose newest ask is pending
+#: or rejected still shows, because the members still load its approved
+#: version. ⚠️ Like the pending read, it does not filter on the member,
+#: because the holder is not the owner. A private skill never shows. A read
+#: only: no lock.
+_SHARED_SKILLS_SQL = (
+    "SELECT id::text, name, slug, description, owner_email, shared_version, "
+    "share_state, share_version, share_decided_by, share_decided_at FROM studio_skills "
+    f"WHERE organization_id = {_BOUND_ORG} AND {SHARED_WITH_ORG} "
+    "ORDER BY lower(name), id LIMIT :lim"
+)
+
 #: The refusal of a move without the right ``studio:publish``.
 NO_SHARE_RIGHT = "Only a holder of studio:publish can approve, reject or list a skill share."
 #: The refusal of an approve by the owner of the skill.
@@ -630,6 +647,25 @@ class PendingShare:
     requested_at: datetime | None
     body: dict[str, Any]
     content_hash: str
+
+
+@dataclass(frozen=True)
+class SharedSkill:
+    """One skill that the org shares, for the holder's list. ``approved_by``
+    and ``approved_at`` name the approval of ``shared_version``. They are None
+    when a newer ask replaced that record: the columns keep the newest ask
+    only. ``share_state`` and ``share_version`` are that newest ask."""
+
+    skill_id: str
+    name: str
+    slug: str
+    description: str
+    owner_email: str
+    shared_version: int
+    share_state: str | None
+    share_version: int | None
+    approved_by: str | None
+    approved_at: datetime | None
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -798,6 +834,32 @@ async def list_pending_shares(db: Any, *, can_publish: bool,
             owner_email=str(r[4]), version=int(r[5]),
             requested_by=str(r[6]) if r[6] is not None else str(r[4]),
             requested_at=r[7], body=dict(body or {}), content_hash=str(r[9])))
+    return out, len(rows) > limit
+
+
+async def list_shared_skills(db: Any, *, can_publish: bool,
+                             limit: int = MAX_SHARED_SKILLS) -> tuple[list[SharedSkill], bool]:
+    """The skills that the bound org shares, by name, at most *limit* (1 to
+    :data:`MAX_SHARED_SKILLS`). The second value is True when more skills
+    are past the page. Anything but ``True`` in *can_publish* raises
+    :class:`ShareRefused` before any statement. A holder reads this list to
+    find the skill to unshare (J2d follow-up)."""
+    _share_right(can_publish)
+    if (isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_SHARED_SKILLS):
+        raise SkillStoreError(f"limit must be an integer from 1 to {MAX_SHARED_SKILLS}")
+    rows = (await db.execute(text(_SHARED_SKILLS_SQL), {"lim": limit + 1})).all()
+    out: list[SharedSkill] = []
+    for r in rows[:limit]:
+        shared, state, asked = int(r[5]), _str_or_none(r[6]), _int_or_none(r[7])
+        # The decision columns name the approval of the shared version only
+        # while the newest ask is that approval.
+        mine = state == "approved" and asked == shared
+        out.append(SharedSkill(
+            skill_id=str(r[0]), name=str(r[1]), slug=str(r[2]), description=str(r[3]),
+            owner_email=str(r[4]), shared_version=shared, share_state=state,
+            share_version=asked, approved_by=_str_or_none(r[8]) if mine else None,
+            approved_at=r[9] if mine else None))
     return out, len(rows) > limit
 
 

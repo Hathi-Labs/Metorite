@@ -36,7 +36,7 @@ The model then calls `act=approve`, which shows the card with the whole text. Th
 
 **Known limits.**
 
-- **Unshare of a kept skill.** A holder may unshare a kept skill only through the raw `DELETE /studio/skills/{id}/share` route. No surface lists the id of an approved skill. The chat `unshare` first sends the owner-only read, so it gives a holder the 404 text. Nobody can pause or publish a kept skill whose owner left. Follow-up, not built: a holder list of approved shares and a holder unshare act.
+- **Unshare of a kept skill.** The follow-up below closes this limit. A holder lists the shared skills and ends a share from the chat. Nobody can pause or publish a kept skill whose owner left.
 - **Open owner decision.** Keep a shared skill when its owner is purged, or delete it. The purge keeps it for now.
 - **Loads once published.** The loader needs `state = 'published'`, and a new saved version moves a skill to draft. So the tool text says that members load the version once the skill is published. The tool cannot read the state.
 
@@ -44,6 +44,18 @@ The model then calls `act=approve`, which shows the card with the whole text. Th
 - After a holder unshares a kept skill, the skill is private. No member can reach it, and no purge deletes it.
 - A pending ask of a later version of a kept skill stays in the Needs row. A holder may approve or reject it.
 - In production, `STUDIO_ORGS` can name each org. Then the Needs row, the owner's read and the purge rule go live at the next release. The chat tool waits for the `TOOL_PACKS` line.
+
+**The follow-up: the holder's list and unshare** (🔨 BUILT, dark, 2026-11-19, task 3765). It adds no table, no migration and no flag. `STUDIO_ORGS` gates it, as it gates each share route. The owner gate is the `TOOL_PACKS` line of `studio-share`, as above.
+
+1. `GET /studio/skill-shares?state=approved` gives a holder of `studio:publish` each skill that the bound org shares. The one test is `skills_store.SHARED_WITH_ORG`. So a skill still shows while a newer ask waits, or after a reject. A private skill never shows. The list is in name order, because a holder looks for a skill by its name. Each row holds the name, the slug, the description, the owner, `shared_version` and the newest ask, and no body. At most 50 rows, with `truncated`.
+2. Each row also holds `approved_by` and `approved_at`. They name the approval of `shared_version` only while the newest ask is that approval. A newer ask clears the decision columns, and a reject names the rejecter, so the row then gives NULL. This follow-up adds no column.
+3. `skills_store.list_shared_skills` runs `_share_right` before any statement, so a member without the right gets 403 before any session. The statement filters on the bound org, and RLS binds it too. It does not filter on the member, as the pending list does not. Each state other than `pending` and `approved` is 422.
+4. The chat tool has a sixth act, `shared`. It reads that list and shows no card. The rows give the id, the name, the owner and the versions. `skill_id` is now optional, because `shared` needs no skill.
+5. The chat `unshare` keeps the owner path. When the owner's read gives 404, the tool reads the holder's list. A member without the right gets 403 there, so the tool gives the old 404 text and shows no card. A skill that is not in the list gives no card either.
+6. For a skill in the list, ONE card names the skill and its owner. Its detail says "The other members stop loading it". Only `approved` sends `DELETE /studio/skills/{id}/share`, and a steer gives `revised`, which never sends. The tool reads the list again first, and a change gives "The skill changed while the card was open".
+7. The DELETE route checks the right again, and the store reads the session member (R5). The unshare clears the share columns as the owner's unshare does. The result text says that only the owner loads the skill now.
+
+Fences: `test_studio_skill_share.py` (the 403, the 422, the statement and the approver rule), `test_studio_skill_share_r8.py` (`test_r8_the_holder_lists_only_the_shared_skills_of_the_bound_org`, two orgs), `test_studio_skill_share_chat.py` (section 9) and `test_studio_skill_share_chat_r8.py` (`test_r8_a_holder_lists_and_ends_the_share_of_another_member_from_the_chat`).
 
 **Not built.** No page and no button. The holder decides in the chat. No feed signal, so My Day shows no card for the row. No share to a group or to named people.
 

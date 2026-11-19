@@ -37,6 +37,17 @@ owner test of ``_share_decide`` -> check 3 goes red (the store refuses too, so
 the test reads that no card showed). M3: drop the ``is_cut`` refusal -> the
 cut approve writes -> red. M4: add ``"studio-share": "studio"`` to ``FOLLOWS``
 -> check 6 goes red.
+
+**The holder's unshare and list (J2d follow-up).** 9. A holder who is not
+the owner ends the share of Owen's skill on ONE card that names the skill
+and its owner. A decline or a steer writes nothing. A member without the
+right gets the 404 text of the owner's read, and no card. A skill that the
+org does not share gives no card. ``act=shared`` lists the shared skills of
+the org for a holder only. M5: let ``_holder_end`` go on after a 403 of the
+list -> ``test_a_plain_member_cannot_end_a_share_of_another_member`` goes red
+(the store refuses too, so the test reads that no card showed). M6: treat
+``revised`` as approved -> ``test_a_steer_or_a_decline_never_ends_the_share``
+goes red.
 """
 
 from __future__ import annotations
@@ -137,9 +148,20 @@ class _Db:
         body = self.bodies[n]
         return (SID, n, body, store.content_hash(body), self.owner, WHEN)
 
+    def _shared_rows(self) -> _Result:
+        """The holder's list of shared skills: this skill, once a holder
+        approved a version and nobody unshared it since."""
+        s = self.share
+        if s["visibility"] != "org" or s["shared"] is None:
+            return _Result([])
+        return _Result([(SID, self.name, "quotes", "", self.owner, s["shared"], s["state"],
+                         s["version"], s["dec_by"], s["dec_at"])])
+
     async def execute(self, stmt: Any, params: dict[str, Any]) -> _Result:
         sql = str(stmt)
         s = self.share
+        if sql == store._SHARED_SKILLS_SQL:
+            return self._shared_rows()
         if sql == store._PENDING_SHARES_SQL:
             if s["state"] != "pending":
                 return _Result([])
@@ -367,13 +389,15 @@ def test_no_result_text_says_a_member_loads_a_version_without_the_published_cond
         assert "published" in src[m.start():m.start() + 200], m.group(0)
 
 
-@pytest.mark.parametrize("act", ["status", "ask", "unshare", "approve", "reject"])
+@pytest.mark.parametrize(("act", "who"), [
+    ("status", OWEN), ("ask", OWEN), ("unshare", OWEN), ("approve", ADA), ("reject", ADA),
+    ("unshare", ADA), ("shared", ADA)])
 def test_an_org_outside_studio_orgs_gets_404_and_no_session(
-    world: World, monkeypatch: pytest.MonkeyPatch, act: str,
+    world: World, monkeypatch: pytest.MonkeyPatch, act: str, who: str,
 ) -> None:
     _pending(world, 2)
     monkeypatch.setattr(get_settings(), "studio_orgs", "")
-    out = world.act(ADA if act in ("approve", "reject") else OWEN, act=act)
+    out = world.act(who, act=act)
     assert out["ok"] is False and out.get("status") == 404
     assert world.sessions == 0 and world.card.shown == [] and world.wrote() == []
 
@@ -569,7 +593,9 @@ def test_the_tool_takes_no_org_or_member_and_its_description_is_one_sentence() -
     assert "\n" not in doc and doc.endswith(".") and doc.count(". ") == 0
     assert len(doc.split()) <= 25
     schema = sf.tool_json_schema(st.studio_skill_share)["function"]
-    assert schema["parameters"]["required"] == ["skill_id"]
+    # act=shared needs no skill, so no parameter is required (J2d follow-up).
+    assert schema["parameters"].get("required", []) == []
+    assert schema["parameters"]["properties"]["act"]["enum"] == list(st.SHARE_ACTS)
 
 
 def test_the_pack_holds_the_one_tool_and_stays_dark() -> None:
@@ -648,3 +674,107 @@ async def test_the_pack_builds_no_tool_outside_studio_orgs(
                                  module=load_agent_module(STUDIO_DIR))
     assert build is not None and build.owner == "studio-builder"
     assert tuple(tool_name(t) for t in build.tools) == want
+
+
+# ── 9. The holder's unshare and list (J2d follow-up) ───────────────────────
+
+
+def test_a_holder_ends_the_share_of_another_member_on_one_card(world: World) -> None:
+    _shared(world, 1)
+    out = world.act(ADA, act="unshare")
+    assert out["ok"] is True and out["decision"] == "approved"
+    assert out["visibility"] == "private" and out["shared_version"] is None
+    assert out["share_state"] is None and out["note"] == st._SHARE_DONE["end"]
+    [card] = world.card.shown
+    assert card["title"] == "End the share of «Quotes»?"
+    assert card["detail"] == f"The owner is «{OWEN}». The other members stop loading it."
+    assert card["context"].startswith(st._SHARE_HOLDER_END_NOTE)
+    assert f"Owner: «{OWEN}»" in card["context"]
+    assert "Now: Each member of the organization loads version 1" in card["context"]
+    assert card["responder"] == ADA and card["non_interactive_default"] == "deny"
+    assert world.wrote() == ["UPDATE"]
+    assert world.db.share["visibility"] == "private" and world.db.share["shared"] is None
+    assert ("DELETE", f"/studio/skills/{SID}/share") in world.requests
+
+
+@pytest.mark.parametrize(("answer", "decision"), [(False, "stopped"),
+                                                  (ask_tools.REVISED, "revised")])
+def test_a_steer_or_a_decline_never_ends_the_share(
+    world: World, answer: Any, decision: str,
+) -> None:
+    """The decision is the card's. A steer closes the card as ``revised``,
+    and that is never an approve."""
+    _shared(world, 1)
+    world.card.answer = answer
+    out = world.act(ADA, act="unshare")
+    assert out["ok"] is False and out["decision"] == decision
+    assert len(world.card.shown) == 1 and world.wrote() == []
+    assert world.db.share["visibility"] == "org" and world.db.share["shared"] == 1
+    assert ("DELETE", f"/studio/skills/{SID}/share") not in world.requests
+
+
+def test_a_plain_member_cannot_end_a_share_of_another_member(world: World) -> None:
+    _shared(world, 1)
+    out = world.act(MEL, act="unshare")
+    assert out["ok"] is False and out["status"] == 404 and _message(out) == st._NOT_YOURS
+    assert world.card.shown == [] and world.wrote() == []
+    assert ("DELETE", f"/studio/skills/{SID}/share") not in world.requests
+    assert world.db.share["visibility"] == "org"
+
+
+@pytest.mark.parametrize("state", [None, "pending", "rejected"])
+def test_a_holder_meets_no_card_for_a_skill_that_is_not_shared(
+    world: World, state: str | None,
+) -> None:
+    if state:
+        world.db.share.update(state=state, version=2, req_by=OWEN, req_at=WHEN)
+    out = world.act(ADA, act="unshare")
+    assert out["ok"] is False and _message(out) == st._SHARE_NOT_SHARED
+    assert world.card.shown == [] and world.wrote() == []
+
+
+def test_a_share_that_moved_under_the_holders_card_writes_nothing(world: World) -> None:
+    _shared(world, 1)
+    world.card.between = lambda: world.db.share.update(state="pending", version=2)
+    out = world.act(ADA, act="unshare")
+    assert out["ok"] is False and _message(out) == st._CHANGED_UNDER_CARD
+    assert world.wrote() == [] and world.db.share["visibility"] == "org"
+
+
+def test_the_owner_still_ends_his_own_share_with_the_owner_card(world: World) -> None:
+    """Owen holds the right too. His own skill takes the owner path."""
+    _shared(world, 1)
+    out = world.act(OWEN, act="unshare")
+    assert out["ok"] is True and out["note"] == st._SHARE_DONE["unshare"]
+    assert world.card.shown[0]["context"].startswith(st._SHARE_END_NOTE)
+    assert ("GET", "/studio/skill-shares") not in world.requests
+
+
+def test_a_holder_lists_the_shared_skills_and_nothing_is_written(world: World) -> None:
+    _shared(world, 1)
+    out = world.act(ADA, act="shared", skill_id="")
+    assert out["ok"] is True and out["truncated"] is False
+    assert out["shares"] == [{"skill_id": SID, "name": "«Quotes»", "owner_email": OWEN,
+                              "shared_version": 1, "share_state": "approved",
+                              "share_version": 1}]
+    assert out["note"] == st._SHARED_NOTE
+    assert world.card.shown == [] and world.wrote() == []
+
+
+def test_a_holder_lists_nothing_when_no_skill_is_shared(world: World) -> None:
+    _pending(world, 2)
+    out = world.act(ADA, act="shared")
+    assert out["ok"] is True and out["shares"] == [] and out["note"] == st._SHARED_NONE
+
+
+def test_a_plain_member_cannot_list_the_shared_skills(world: World) -> None:
+    _shared(world, 1)
+    out = world.act(MEL, act="shared")
+    assert out["ok"] is False and out["status"] == 403
+    assert _message(out) == skills.NO_SHARED_LIST_RIGHT
+    assert "Quotes" not in json.dumps(out)
+
+
+def test_the_copied_page_of_the_shared_list_is_the_store_page() -> None:
+    assert st._SHARED_PAGE == store.MAX_SHARED_SKILLS
+    assert st.SHARED_PATH.endswith(f"?state={skills.APPROVED}")

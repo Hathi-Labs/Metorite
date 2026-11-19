@@ -41,6 +41,11 @@ f. With ``STUDIO_ORGS`` empty, the tool gets 404, and Ada's needs answer is the
 g. The member purge keeps Owen's shared skill with its versions. It deletes
    his private skill and his skills with only a pending or a rejected ask. The
    skills of Mel and of org B stay. It runs as the app role and as a superuser.
+h. Ada, a holder who is not the owner, lists the shared skills from the chat
+   and ends the share of Owen's skill on one card. The share columns clear as
+   the owner's unshare clears them, and Mel loads nothing at the next read.
+   Mel cannot end it, and Zed of org B never sees it. A declined card writes
+   nothing.
 """
 
 from __future__ import annotations
@@ -477,3 +482,60 @@ def test_r8_the_purge_keeps_a_shared_skill_and_deletes_each_other_skill(
     row = _row(world, ids["shared"])
     assert (row["visibility"], row["shared_version"], row["share_state"]) == (
         "org", 1, "pending")
+
+
+# ── h. The holder's unshare from the chat (J2d follow-up) ──────────────────
+
+
+def test_r8_a_holder_lists_and_ends_the_share_of_another_member_from_the_chat(
+    world: _World,
+) -> None:
+    a, b = world.p.org_a, world.p.org_b
+
+    async def go() -> dict[str, Any]:
+        sid = await _published(a)
+        await world.act(OWEN, a, skill_id=sid, act="ask")
+        await world.act(ADA, a, skill_id=sid, act="approve")
+        cards = len(world.card.shown)
+        out: dict[str, Any] = {"sid": sid, "loaded": await _loads(a, MEL, sid)}
+        out["listed"] = await world.act(ADA, a, act="shared")
+        out["zed_list"] = await world.act(ZED, b, act="shared")
+        out["mel"] = await world.act(MEL, a, skill_id=sid, act="unshare")
+        out["zed"] = await world.act(ZED, b, skill_id=sid, act="unshare")
+        out["refused_cards"] = len(world.card.shown) - cards
+        world.card.answer = False
+        out["declined"] = await world.act(ADA, a, skill_id=sid, act="unshare")
+        out["after_decline"] = _row(world, sid)
+        world.card.answer = True
+        out["gone"] = await world.act(ADA, a, skill_id=sid, act="unshare")
+        out["card"] = world.card.shown[-1]
+        out["after"] = await _loads(a, MEL, sid)
+        out["owen"] = await _loads(a, OWEN, sid)
+        out["listed_after"] = await world.act(ADA, a, act="shared")
+        out["again"] = await world.act(ADA, a, skill_id=sid, act="unshare")
+        return out
+
+    got = world.run(go)
+    sid = got["sid"]
+    assert got["loaded"] == [(sid, 1)]
+    assert got["listed"]["ok"] is True
+    assert sid in {r["skill_id"] for r in got["listed"]["shares"]}
+    assert sid not in {r["skill_id"] for r in got["zed_list"]["shares"]}
+    assert got["mel"]["ok"] is False and got["mel"]["status"] == 404
+    assert got["zed"]["ok"] is False
+    assert got["zed"]["errors"][0]["message"] == st._SHARE_NOT_SHARED
+    assert got["refused_cards"] == 0
+    assert got["declined"]["ok"] is False and got["declined"]["decision"] == "stopped"
+    assert (got["after_decline"]["visibility"], got["after_decline"]["shared_version"]) == (
+        "org", 1)
+    assert got["gone"]["ok"] is True and got["gone"]["visibility"] == "private"
+    assert got["gone"]["note"] == st._SHARE_DONE["end"]
+    assert f"Owner: «{OWEN}»" in got["card"]["context"]
+    assert "The other members stop loading it." in got["card"]["detail"]
+    assert got["after"] == [] and got["owen"] == [(sid, 1)]
+    row = _row(world, sid)
+    assert (row["visibility"], row["shared_version"], row["share_state"],
+            row["share_version"]) == ("private", None, None, 1)
+    assert sid not in {r["skill_id"] for r in got["listed_after"]["shares"]}
+    assert got["again"]["ok"] is False
+    assert got["again"]["errors"][0]["message"] == st._SHARE_NOT_SHARED
