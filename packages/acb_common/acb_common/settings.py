@@ -404,6 +404,16 @@ class Settings(BaseSettings):
     # so a flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_plan_kinds_semantic.py.
     semantic_model_orgs: str = ""
+    # `api_connections_orgs` (WS-API API-1, task 3787, D228, 2026-11-19)
+    # lists the organization ids that may use an API connection in the chat
+    # (`api_connections.md` §4, D-API-8), in the grammar of `crm_orgs`.
+    # Default empty means NO organization. API-1 declares it, and the later
+    # rung 1 slices read it. The one reader is
+    # `acb_common.api_connections_flag.api_connections_allowed`. A `*_ORGS`
+    # key, so a SIGHUP reload applies it (`docs/flag_reload.md`). The flip
+    # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_api_templates.py.
+    api_connections_orgs: str = ""
     # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
     # the organization ids that may write and read the semantic model of a
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
