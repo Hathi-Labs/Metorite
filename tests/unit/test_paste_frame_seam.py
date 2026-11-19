@@ -432,7 +432,29 @@ def test_the_route_binds_the_raw_parts():
     assert _paste_raw_parts("", steers, client_text=True, followup=True,
                             resume_launch=False) == (PASTE9,), "a follow-up adds its steers only"
     assert _paste_raw_parts("x", steers, client_text=True, followup=False,
-                            resume_launch=True) == (), "RESUME-2a binds the empty tuple"
+                            resume_launch=True) == (PASTE9,), "RESUME-2a keeps its steers only"
+    assert _paste_raw_parts("x", [], client_text=True, followup=False,
+                            resume_launch=True) == (), "RESUME-2a with no steer is empty"
+
+
+def test_a_resume_launch_frames_a_replayed_pasted_steer():
+    """Fix round 1 (B4): ENGAGE replays a pending steer into a RESUME-2a run,
+    and ``executor._set_run_note`` puts the server's note BEFORE it. So the
+    9-line pasted steer reaches the model, and it must sit in a block. The
+    note stays outside. Mutation: ``_paste_raw_parts`` that returns ``()``
+    for a resume launch -> red."""
+    from gateway.routes.agent import _paste_raw_parts
+
+    parts = _paste_raw_parts("", [{"text": PASTE9, "author": MEMBER}], client_text=True,
+                             followup=False, resume_launch=True)
+    note = "[Note from the platform] The approved change ran. Tell the member the result."
+    replayed = steer.format_replayed([{"author": MEMBER, "text": PASTE9}])
+    payload: dict[str, Any] = {"message": replayed}
+    executor._set_run_note(payload, note)
+    turn = Message("user", [payload["message"]])
+    out = _users(_request(_middleware(parts, current=turn), [turn]))[0]
+    assert out.startswith(f"{note}\n\n[steer from {MEMBER}] {_frame().paste_note()}")
+    assert out.count(OPEN) == 1 and _inside(out, "CANARYB")
 
 
 def test_an_empty_tuple_still_frames_the_earlier_turns():

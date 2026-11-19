@@ -404,13 +404,17 @@ def _paste_raw_parts(
     words while ``message`` is still the client's text. That covers a typed
     turn, a pill, a retry, an API call, a card answer and a Continue with no
     restart marker. A Continue whose note the server wrote adds nothing for
-    the note, and a steer follow-up sends no words. RESUME-2a is the empty
-    tuple: the executor writes its note. An empty tuple is still a bound run.
-    The words are the RAW sent words, never ``typed_text`` (``MEMBER_SENT``)."""
-    if resume_launch:
-        return ()
+    the note, and a steer follow-up sends no words. RESUME-2a sends no words
+    either, but it keeps the steers that ENGAGE replays: the executor puts
+    its note BEFORE them (``executor._set_run_note``), so a pasted steer
+    still reaches the model and must get its frame. So the tuple is empty
+    only for a RESUME-2a or a server Continue note with no replayed steer. An
+    empty tuple is still a bound run. The words are the RAW sent words, never
+    ``typed_text`` (``MEMBER_SENT``)."""
     parts = [str(s.get("text") or "") for s in taken_steers
              if isinstance(s, dict) and str(s.get("text") or "").strip()]
+    if resume_launch:
+        return tuple(parts)
     if client_text and not followup and str(sent_words or "").strip():
         parts.append(str(sent_words))
     return tuple(parts)
@@ -3672,7 +3676,8 @@ async def run_agent_stream_endpoint(
         from orchestrator.stream_relay import start_detached
 
         # A continuation has no app of the dock, so it binds no surface. Its
-        # raw parts are the empty tuple: a bound run with no member text.
+        # raw parts hold only the steers that ENGAGE replayed, which follow
+        # the server's note: a bound run with no member words.
         with member_typed(_typed, sent=_sent_text), surface_scope(None), \
                 bind_raw_parts(_raw_parts):
             count_member_steers(_actor, _taken_steers)
