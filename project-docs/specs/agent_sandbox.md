@@ -38,7 +38,7 @@
     (`maf_coding_engine.md`),
   - the package store and its versions (`ai_studio.md` A3 and A4, D187),
   - installs, scopes and promotion (`package_host.md`, D187),
-  - the tool failure log (Metorite task 1793, no spec yet, D187),
+  - the tool failure log (Metorite task 1793, `tool_failure_log.md`, D187),
   - the confirmation card (`projects_ai_chat.md` §5),
   - branch 0 and the route allowlists (`external_agent_access.md` §10.1),
   - credit prices (`credit_pricing.md`),
@@ -159,12 +159,15 @@ read at `539221a29` on 2026-11-15. Re-verify it at dispatch.
 | 1. Save and reuse | A member does a three-step job and saves it. A new chat finds it from a plain sentence and runs it (3414) | F3 loads a skill pack. F6a (3160) built the save offer behind a build-time flag. Only Knowledge reaches the catalog: CRM, Projects, Email and Calendar give 0 rows. A skill matches on its exact name only. A skill pack adds rules, not tools | TOF-1a catalog coverage (3404). TOF-1b a skill brings its tools (3411). TOF-1c a match on the member's words (3412). TOF-1d the offer for each org (3413) | The offer flag, the HathiLabs org first |
 | 2. The tool failure log | A tool error becomes one task with counts. A fix merges, and the next release closes it (3417) | Nothing. Task 1793 has no spec | TOF-2a the spec (3416), then the build (1793) | None |
 | 3. Repair a saved skill | Mira shows why a skill broke, proposes version 2 and tries it with writes held. The member approves, and undo works (3420) | F7 undo exists. F4 tests and §7 step 6 "Improve" of `ai_studio.md` are not built | TOF-3b the F4 tests (3419). TOF-3a the repair (3418) | None |
-| 4. Share with the org | A member shares a skill, an admin approves it, and the chat of another member uses it (3422) | `list_loadable` loads an `org` skill. No route sets `visibility`. The J2b slices approve app versions, not skills | TOF-4a share and approve (3421): 🔨 BUILT, dark (2026-11-18), `ai_studio.md` §14 J2c. TOF-4b the chat tool or card that asks (task 3765) | None |
+| 4. Share with the org | A member shares a skill, an admin approves it, and the chat of another member uses it (3422) | `list_loadable` loads an `org` skill. No route sets `visibility`. The J2b slices approve app versions, not skills | TOF-4a share and approve (3421): 🔨 BUILT, dark (2026-11-18), `ai_studio.md` §14 J2c. TOF-4b the chat tool, the Needs row and the purge rule (3765): 🔨 BUILT, dark (2026-11-19), `ai_studio.md` §14 J2d | None |
 | 5. Connected systems | A skill uses an approved MCP tool, then a Zoho action (3426) | MCP rows reach the catalog (B1b-2). `action_tool` gives None for an `mcp:` or `integration:` id. B1b-3 and B1b-4 are in flight | TOF-5a MCP actions (3423). TOF-5b integration actions (3424), after IN-3 (3176). TOF-5c a direct provider request (3425) | 3176 is OWNER-GATE. 3425 is a decision. `api_connections.md` D-API-2 asks to replace 3425 with a closed operation list, with no wait for IN-3 |
 | 6. Sandbox code tools | The chat builds, runs and keeps a tool that no chain can do | No SBX code | SBX-1 to SBX-11 (umbrella 810). SBX-12 to SBX-17 (3427 to 3432) | SBX-G9 to SBX-G11 for production |
 
 §12 named tasks 1980 to 1985 for SBX-12 to SBX-17. Those tasks never
 existed on the board. Tasks 3427 to 3432 replace them.
+
+The spec of the failure store of rung 2 is `tool_failure_log.md` (TOF-2a,
+task 3416).
 
 ### Persistence and loading
 
@@ -1281,8 +1284,8 @@ version row names that member in `published_by`. The `live_version` of the
 owner and each install keep their version. This path is the one exception to
 D180.2, and one function of the store holds it.
 
-**Level (c), the report.** Metorite task 1793 owns the tool failure log, and
-it has no spec yet. SBX-14 waits for that spec. A report holds:
+**Level (c), the report.** Metorite task 1793 owns the tool failure log.
+The spec of the failure store is `tool_failure_log.md`. A report holds:
 
 - The name of the built-in tool, the error class and the run id.
 - The gap category, and whether a workaround worked.

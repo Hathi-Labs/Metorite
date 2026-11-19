@@ -178,6 +178,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # chat answer. `on` gives the chat one more pass and spends model tokens,
     # so only the owner writes it (D-FIND-8).
     "FIND_CLAIM_CHECK",
+    # chat_failure_modes.md section 6 HRD-17e-1: the orgs whose chat save
+    # keeps the longer stored reply, and the orgs that only log it. It changes
+    # what a save writes, so only the operator writes it. The `CHAT_` prefix
+    # covers both too.
+    "CHAT_NO_SHRINK_ORGS", "CHAT_NO_SHRINK_SHADOW_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
@@ -198,6 +203,18 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # semantic_model.md SEM-7: the orgs where the CRM plan checks the kinds
+    # measure, join and query, and org_facts serves them. It changes what the
+    # chat reads for the org, so only the operator writes it.
+    "SEMANTIC_MODEL_ORGS",
+    # semantic_model.md SEM-12: the orgs that may write and read the semantic
+    # model of a connection. It changes what the chat may read for the org,
+    # so only the operator writes it.
+    "CONNECTION_MODEL_ORGS",
+    # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
+    # outside API through a connection. It opens an egress path for the org,
+    # so only the operator writes it.
+    "API_CONNECTIONS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
@@ -215,6 +232,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # CSY-1: the orgs whose chat gets the "Connected systems" block. It adds
+    # the admin's text about each server to the context, so only the operator
+    # writes it.
+    "CONNECTED_SYSTEMS_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.

@@ -7,24 +7,45 @@
  * and no member turn. The run state (`lib/runStatus.ts`, the `resumed` event)
  * and the answer POST (`lib/respondInput.ts`, `resumedOf`) hold the rest.
  *
+ * RESUME-3b adds case A (RESUME-2b): when the parked turn is the last turn,
+ * the run goes on in the SAME reply, under the parked run's id. Its stream
+ * holds a second `RUN_STARTED` of that run, marked `resumed`. The chat
+ * translator sends it on as the frame `run_resumed`, and the attach loop then
+ * keeps the reply open.
+ *
  * Fence (R7): `chatResume.test.ts`.
  */
 
 import type { ChatMessage } from "@/lib/chatStore";
+import type { RunStatus } from "@/lib/runStatus";
+
+/**
+ * True when the run goes on in the reply that parked (RESUME-3b, case A):
+ * the run's key is the key of the run that parked. The `attach` event keeps
+ * both keys, so this stays true while the replay reads.
+ */
+export function goesOnInParkedReply(run: Pick<RunStatus, "runKey" | "parkedRunKey">): boolean {
+  return run.runKey !== null && run.runKey === run.parkedRunKey;
+}
 
 /**
  * The message that the "Approved" line of a card draws under: the last
  * message before the reply of the run that goes on now. With no such reply
  * it is the last message. Null for an empty chat, and the line then draws at
  * the foot.
+ *
+ * RESUME-3b: in case A (`sameReply`) the run goes on in the parked reply, so
+ * the line draws under that reply, the run's own one.
  */
 export function receiptAnchorBeforeRun(
   messages: readonly Pick<ChatMessage, "id" | "role" | "content">[],
   runMessageId: string | null,
+  sameReply = false,
 ): string | null {
+  if (sameReply && runMessageId && messages.some((m) => m.id === runMessageId)) return runMessageId;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.id === runMessageId) continue;
+    if (m.id === runMessageId && !sameReply) continue;
     // A notice line is no turn, so a line never draws under it.
     if (m.role === "system" && m.content.startsWith("__ERROR__")) continue;
     return m.id;
@@ -47,4 +68,47 @@ export function waitingCardIds(
   for (const c of cards) if (c.requestId && !c.redraft) out.add(c.requestId);
   for (const q of questions) if (q) out.add(q);
   return out;
+}
+
+// ── RESUME-3b: a run that goes on after its park ───────────────────────────
+
+/** The frame that the chat translator sends for a `RUN_STARTED` marked
+ *  `resumed`: the same run goes on after its park (case A). */
+export const RUN_RESUMED_FRAME = "run_resumed";
+
+/**
+ * The frame of one gateway event that says the run goes on after its park,
+ * or null. Only a `RUN_STARTED` with `resumed: true` makes one. The caller
+ * checks the run binding first, so a start of another run never gets here.
+ * Every other event, a plain `RUN_STARTED` too, makes no frame.
+ */
+export function runResumedFrameOf(
+  ev: { type?: unknown; resumed?: unknown; runId?: unknown; run_id?: unknown },
+): { type: typeof RUN_RESUMED_FRAME; run_id: string } | null {
+  if (ev.type !== "RUN_STARTED" || ev.resumed !== true) return null;
+  const id = typeof ev.runId === "string" ? ev.runId : typeof ev.run_id === "string" ? ev.run_id : "";
+  return { type: RUN_RESUMED_FRAME, run_id: id };
+}
+
+/** How a replay ends so far: `terminal` after a `done`, and `parked` when
+ *  that `done` was a park. */
+export interface ReplayEnd {
+  terminal: boolean;
+  parked: boolean;
+}
+
+/** A replay that has read no end yet. */
+export const REPLAY_OPEN: ReplayEnd = Object.freeze({ terminal: false, parked: false });
+
+/**
+ * The end of a replay after one more frame. The end is the LAST `done` after
+ * the last `run_resumed`. A `done` in the middle of a stream (a park, a Stop
+ * in the window of the start, the synthetic end of a reconnect) ends nothing
+ * when the same run goes on after it. So a `run_resumed` opens the end again,
+ * and a cut after it reads as not finished. Any other frame keeps the end.
+ */
+export function replayEndAfter(end: ReplayEnd, frame: { type?: unknown; parked?: unknown }): ReplayEnd {
+  if (frame.type === "done") return { terminal: true, parked: frame.parked === true };
+  if (frame.type === RUN_RESUMED_FRAME) return REPLAY_OPEN;
+  return end;
 }
