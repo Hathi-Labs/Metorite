@@ -8,20 +8,25 @@ fake of the ``_https`` seam, Redis is a fake behind the real ``TenantRedis``,
 and the store is an in-memory fake. ``test_api_connect_r8.py`` runs the real
 SQL (AC8).
 
-Mutation table. Each mutation was made by hand, and the named test failed.
+Mutation table. Each mutation was made by hand on 2026-11-19, and the named
+test failed: 11 of 11 killed. M3 survived the first run, because the one-use
+mark of the state is kept under the org of the session, so a state of org B
+found no mark in org A. The test now plants the mark, so only the org check of
+the state can refuse.
 
 | # | Mutation | Test that fails |
 |---|---|---|
 | M1 | the flag dependency is gone from the router | ``test_ac1_flag_off_every_route_is_404_before_the_permission`` |
-| M2 | the start or the callback drops ``require_permission`` | ``test_ac2_no_manage_permission_is_403`` |
-| M3 | the callback does not compare the org of the state | ``test_ac3_a_bad_state_is_400_and_zoho_gets_no_call`` |
+| M2 | the start drops ``require_permission`` | ``test_ac2_no_manage_permission_is_403`` |
+| M3 | the callback does not compare the org of the state | ``test_ac3_the_state_must_name_the_session_even_with_a_mark`` |
+| M3b | the callback does not compare the member of the state | ``test_ac3_the_state_must_name_the_session_even_with_a_mark`` |
 | M4 | the callback reads the one-use mark with GET and not GETDEL | ``test_ac3_a_replayed_state_is_400_and_zoho_gets_no_call`` |
 | M5 | the API domain is not checked against the template hosts | ``test_ac4_an_api_domain_off_the_template_is_400_and_the_token_goes`` |
 | M6 | ``provider_meta`` keeps every key of the credential | ``test_provider_meta_keeps_the_public_facts_only`` |
-| M7 | the save runs before the test read | ``test_ac7_a_failed_test_read_saves_nothing_and_revokes`` |
+| M7 | a failed test read does not stop the save | ``test_ac7_a_failed_test_read_saves_nothing_and_revokes`` |
 | M8 | the pick takes any id, not one of the pending list | ``test_ac6_a_pick_outside_the_list_is_400_and_saves_nothing`` |
 | M9 | the pick reads the entry with GET and not GETDEL | ``test_ac6_a_pick_is_taken_once`` |
-| M10 | the test read lets an argument set ``organization_id`` | ``test_the_test_read_sets_the_context_after_the_arguments`` |
+| M10 | the test read sends no ``organization_id`` | ``test_the_test_read_sets_the_context_after_the_arguments`` |
 """
 
 from __future__ import annotations
@@ -389,6 +394,20 @@ async def test_ac3_a_bad_state_is_400_and_zoho_gets_no_call(world: World) -> Non
         assert res.json()["detail"] == "invalid_state"
     assert world.token_calls() == [] and world.books.requests == []
     assert world.registry.saves == []
+
+
+@pytest.mark.parametrize(("org", "member"), [(ORG_B, ADMIN), (ORG_A, OTHER_ADMIN)])
+async def test_ac3_the_state_must_name_the_session_even_with_a_mark(
+    world: World, org: str, member: str,
+) -> None:
+    """The one-use mark of org A and the session member is planted, so only
+    the org and member check of the state can refuse (M3)."""
+    state = signing.sign_state(purpose=connect.STATE_PURPOSE, org=org, member=member)
+    nonce = signing.verify_state(state, purpose=connect.STATE_PURPOSE)["nonce"]
+    await routes._put(ORG_A, routes.STATE_NAMESPACE, nonce, ADMIN)
+    res = await _callback(connect.mark_state(state))
+    assert res.status_code == 400 and res.json()["detail"] == "invalid_state"
+    assert world.token_calls() == []
 
 
 async def test_ac3_a_state_of_another_member_is_400(world: World) -> None:
