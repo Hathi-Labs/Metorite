@@ -425,6 +425,10 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
         {api.description && <p className="text-sm text-muted-foreground leading-relaxed">{api.description}</p>}
 
+        {api.chat_use && !api.chat_use.usable && (
+          <p className="text-xs text-muted-foreground leading-relaxed" data-testid="custom-api-chat-note">{api.chat_use.note}</p>
+        )}
+
         {usedBy.length > 0 && (
           <div>
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Used by agents</div>
