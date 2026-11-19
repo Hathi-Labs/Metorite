@@ -2,15 +2,14 @@
 
 <!-- ste-tier: strict -->
 
-**Status: PROPOSED, 2026-11-16. Verified against the code on 2026-11-16 at
-`origin/main` `20ef30cfb`. Audit rounds 1 and 2, the delta audit, the
-changed-lines audit and the final changed-lines audit are applied,
-2026-11-16. A last check of the R9 sentences is pending.** Nothing is
-built. The owner activates this spec after an Opus spec audit gives GO.
+**Status: ACTIVE, 2026-11-18.** The owner activated this spec and accepted
+TOF-Q1 to TOF-Q4 as recommended (§15). The owner answered in chat with the
+orchestrator on 2026-11-18, and on demo task 3417 (answer 6ca17583).
+Verified against the code on 2026-11-16 at `origin/main` `20ef30cfb`.
+The audit rounds are applied, 2026-11-16. A last check of the R9 sentences
+is pending.
 
-No build slice starts before the owner activates this spec. The defaults of
-§15 hold until the owner answers. TOF-Q2 is the exception: TOF-2b waits for
-the owner's answer.
+Each build slice starts dark, behind its own flag.
 
 **Merge after PR 2445.** This spec cites D225, which only the open PR 2445
 holds. Merge this spec after PR 2445. At merge, re-check D225 here, in
@@ -927,6 +926,14 @@ it, red first.
 | **TOF-Q2** | May the fields of §10.1 leave each customer org with no consent, from day one? D225 names "counts, the tool name and the error class". §10.1 adds the code site, the sources, the surfaces at a band of 3, dates, hours on the platform row, and releases. A tool or a route that one org alone uses names that org by inference, with its day counts (T1). Does the privacy page need a line? | Yes to the list. Add one line through the WS-33 flow, which the owner approves | Each added field is a fact of our code or a coarse time. None is tenant text. A coding agent needs the code site to fix the cause |
 | **TOF-Q3** | Which member does the sync job act as, and which staff group sees the project? | A new member `tool-failures@hathilabs.com`, which the owner adds, and one staff group that the owner names | D140.2 needs a named member. A member write is the owner's act |
 | **TOF-Q4** | May a coding agent of a staff member read a consented report? | No, for now. A person of the Metorite team reads it in the Operator Console | D126.3 lets Metorite staff read a report. An agent sends the text to a model vendor, which the member did not consent to |
+
+**Answers, 2026-11-18, owner in chat with the orchestrator (answer 6ca17583 on demo task 3417).**
+The owner accepted all four recommendations.
+
+- **TOF-Q1:** yes. The demo shows the "fix live" state, and the close follows 7 days later with no repeat on production.
+- **TOF-Q2:** yes. Every customer org counts from day one, with the fields of §10.1 and one line on the privacy page. TOF-2b may start.
+- **TOF-Q3:** the owner adds the member `tool-failures@hathilabs.com` and names one staff group. The owner does both, because a member write is the owner's act.
+- **TOF-Q4:** no. A person of the Metorite team reads a consented report in the Operator Console, with an audit row. No coding agent reads it.
 
 ## 16. Verification commands
 

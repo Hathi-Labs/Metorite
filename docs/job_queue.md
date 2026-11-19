@@ -314,7 +314,14 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
   names. The job writes the structural edges of `knowledge_graph.md` §4.1,
   with no model.
-- **The fifth consumer (WS-TOF TOF-2e, built dark).**
+- **The fifth consumer (AO-2, built dark).** `provider_alerts.seed` seeds
+  the detached kind `provider_alerts.check` once in each bucket, with the
+  dedupe key `provider_alerts:<bucket>`. It runs only for an org that
+  `PROVIDER_ALERT_ORGS` names. The job reads the AI vendor alerts of the
+  Console and tells the admins of that org (`customer_console.md` §6A.17b).
+  Its effect is `send`, and it gets one try.
+
+- **The sixth consumer (WS-TOF TOF-2e, built dark).**
   `failures/sync.seed` seeds the detached kind `failure.sync` once in each
   bucket, with the dedupe key `failure_sync:<bucket>`. It runs only in the
   org that `TOOL_FAILURE_ORG_ID` names, and only with `TOOL_FAILURE_TASKS`
