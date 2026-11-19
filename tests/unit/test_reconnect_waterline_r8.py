@@ -21,7 +21,10 @@ R7, each with the mutation that turns it red:
 * ``test_a_solo_reader_*`` — the golden frames. Any change to a solo replay
   (a new frame, a lost frame, another end) fails.
 * ``test_a_late_joiner_*`` — drop the ``_replay_ok`` call from the route,
-  and the joiner reads the run (live, parked and ended).
+  and the joiner reads the run (live, parked and ended). Drop the
+  ``withheld`` marker, and the chat attaches again in a loop (review P1).
+* ``test_a_solo_reader_*`` also count the XRANGE calls. Read the stream head
+  for a solo chat, and they fail.
 * ``test_the_margin_*`` — drop the margin, or flip the compare.
 * ``test_a_passer_by_*`` — let a reader with no join row in.
 * ``test_org_b_*`` — drop the membership check that comes first.
@@ -90,6 +93,8 @@ class _Redis:
         self.store: dict[str, Any] = {}
         self.streams: dict[str, list[tuple[str, dict]]] = {}
         self.live_tail: dict[str, list[tuple[str, dict]]] = {}
+        #: Each XRANGE call. A solo reconnect makes none (RESUME-2d, note 1).
+        self.xrange_calls = 0
 
     async def get(self, key):
         v = self.store.get(key)
@@ -111,6 +116,7 @@ class _Redis:
         return sum(1 for k in keys if k in self.store or self.streams.get(k))
 
     async def xrange(self, key, count=None):
+        self.xrange_calls += 1
         entries = list(self.streams.get(key) or [])
         return entries[:count] if count else entries
 
@@ -177,9 +183,17 @@ def _frames(r: _Redis, tid: str) -> str:
     return "".join(out)
 
 
-def _end(tid: str) -> str:
-    """The end frame of the route, as it was before RESUME-2d."""
-    return f"data: {json.dumps({'type': 'RUN_FINISHED', 'runId': tid, 'threadId': tid})}\n\n"
+def _end(tid: str, *, withheld: bool = False) -> str:
+    """The end frame of the route, as it was before RESUME-2d. A withheld
+    reader gets it with the marker ``withheld: true``."""
+    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": tid, "threadId": tid}
+    if withheld:
+        evt["withheld"] = True
+    return f"data: {json.dumps(evt)}\n\n"
+
+
+def _withheld(tid: str) -> str:
+    return _end(tid, withheld=True)
 
 
 _RUN = [
@@ -272,6 +286,8 @@ def test_a_solo_reader_replays_the_same_bytes_of_an_ended_run(db, redis):
     status, body = _get(tid, _ALICE, db.org_a)
     assert status == 200
     assert body == _frames(redis, tid) + _end(tid)
+    assert "withheld" not in body
+    assert redis.xrange_calls == 0  # a solo reconnect reads no stream head
 
 
 def test_a_solo_reader_replays_the_same_bytes_of_a_live_run(db, redis):
@@ -281,6 +297,7 @@ def test_a_solo_reader_replays_the_same_bytes_of_a_live_run(db, redis):
     assert status == 200
     # The replay, then the live tail, and no extra end: the tail holds it.
     assert body == _frames(redis, tid)
+    assert redis.xrange_calls == 0
     assert body.count("live tail") == 1 and body.endswith(
         f"data: {json.dumps({'type': 'RUN_FINISHED', 'runId': 'run-1', '_stream_id': f'{_START + 21_000}-9'})}\n\n")
 
@@ -290,6 +307,7 @@ def test_a_solo_chat_with_no_participant_row_still_replays(db, redis):
     tid = _room(db, visibility="private", rows=())
     _seed(redis, tid, _ENDED)
     assert _get(tid, _ALICE, db.org_a) == (200, _frames(redis, tid) + _end(tid))
+    assert redis.xrange_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +331,10 @@ def test_a_late_joiner_gets_no_event_and_the_normal_end(db, redis, shape):
         _seed(redis, tid, _PARKED if shape == "parked" else _ENDED)
     status, body = _get(tid, _BOB, db.org_a)
     assert status == 200
-    assert body == _end(tid)
+    assert body == _withheld(tid)
+    # The marker: the chat tells this end from a normal one (review P1).
+    frame = json.loads(body.removeprefix("data: ").strip())
+    assert frame == {"type": "RUN_FINISHED", "runId": tid, "threadId": tid, "withheld": True}
     assert "secret part one" not in body and "live tail" not in body
 
 
@@ -321,7 +342,7 @@ def test_a_late_joiner_of_a_since_join_room_gets_none_too(db, redis):
     tid = _room(db, history="since_join",
                 rows=((_ALICE, "owner", None), (_BOB, "viewer", 4000)))
     _seed(redis, tid, _ENDED)
-    assert _get(tid, _BOB, db.org_a) == (200, _end(tid))
+    assert _get(tid, _BOB, db.org_a) == (200, _withheld(tid))
 
 
 @pytest.mark.parametrize(("offset", "replays"), [(1000, True), (2000, True),
@@ -330,7 +351,7 @@ def test_the_margin_is_2s_after_the_start(db, redis, offset, replays):
     tid = _room(db, rows=((_ALICE, "owner", None), (_BOB, "member", offset)))
     _seed(redis, tid, _ENDED)
     body = _get(tid, _BOB, db.org_a)[1]
-    assert body == (_frames(redis, tid) + _end(tid) if replays else _end(tid))
+    assert body == (_frames(redis, tid) + _end(tid) if replays else _withheld(tid))
 
 
 def test_a_passer_by_of_an_org_visible_room_gets_none(db, redis):
@@ -338,7 +359,7 @@ def test_a_passer_by_of_an_org_visible_room_gets_none(db, redis):
     _seed(redis, tid, _ENDED)
     status, body = _get(tid, _DAN, db.org_a)
     assert status == 200  # Dan may read the room, so no 403
-    assert body == _end(tid)
+    assert body == _withheld(tid)
     # The owner of the same room still replays it.
     assert _get(tid, _ALICE, db.org_a)[1] == _frames(redis, tid) + _end(tid)
 
@@ -377,7 +398,7 @@ def test_a_continuation_gives_a_joiner_after_part_one_no_event(db, redis):
     tid = _room(db, rows=((_ALICE, "owner", None), (_BOB, "member", 1_800_000),
                           (_DAN, "member", -1000)))
     _seed(redis, tid, _TWO_PARTS)
-    assert _get(tid, _BOB, db.org_a) == (200, _end(tid))
+    assert _get(tid, _BOB, db.org_a) == (200, _withheld(tid))
     # Dan was there before part one, so he reads both parts.
     body = _get(tid, _DAN, db.org_a)[1]
     assert body == _frames(redis, tid) + _end(tid)
@@ -400,8 +421,10 @@ def test_a_trimmed_head_is_the_known_residual(db, redis):
 
 def test_no_stream_gives_every_reader_the_same_end(db, redis):
     tid = _room(db, rows=((_ALICE, "owner", None), (_BOB, "member", 60_000)))
+    # Alice was there from the start, so she gets the normal end. Bob joined
+    # after an unknown start, so he gets the withheld end.
     assert _get(tid, _ALICE, db.org_a) == (200, _end(tid))
-    assert _get(tid, _BOB, db.org_a) == (200, _end(tid))
+    assert _get(tid, _BOB, db.org_a) == (200, _withheld(tid))
 
 
 def test_the_rule_reads_the_bound_room(db):

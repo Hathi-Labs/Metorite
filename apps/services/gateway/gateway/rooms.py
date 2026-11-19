@@ -200,7 +200,13 @@ def replay_allowed(
     * else the reader replays when ``join_ms <= run_start_ms + margin_ms``.
 
     A reader who joined in the middle of a run gets none of it. Both times
-    are epoch ms. The function is pure. Fences:
+    are epoch ms. ⚠️ The join row is the row that names the reader. It wins
+    over an earlier group or ``org`` row of the same reader, so a member who
+    was named after the run started gets none, even when a group row was
+    there before. That is stricter than "a matching row", and it fails
+    closed. A group or ``org`` row with a NULL join (a legacy row) gives no
+    join row, so it fails closed too (``resolve_room_access``). The
+    function is pure. Fences:
     ``tests/unit/test_reconnect_waterline.py`` (hermetic) and
     ``tests/unit/test_reconnect_waterline_r8.py`` (R8).
     """

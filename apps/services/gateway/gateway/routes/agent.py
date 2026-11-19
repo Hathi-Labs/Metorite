@@ -4659,10 +4659,12 @@ async def reconnect_agent_stream(
     # a second person watches a run work; ephemeral threads (no session row)
     # stay reachable for the person who started them.
     actor = getattr(user, "email", None) or "default"
-    if not await _asyncio.to_thread(
-        _thread_owner_ok, thread_id, actor,
-        getattr(user, "organization_id", None),
-    ):
+    # One room read serves the guard and the replay rule (RESUME-2d). It is
+    # the read of `_thread_owner_ok`, through `_thread_room`.
+    room = await _asyncio.to_thread(
+        _thread_room, thread_id, actor, getattr(user, "organization_id", None),
+    )
+    if not _room_readable(room):
         raise HTTPException(status_code=403, detail="Not your conversation")
 
     _log.info(
@@ -4707,12 +4709,11 @@ async def reconnect_agent_stream(
             _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
         # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
-        # not see the whole run gets no event of it, and then the end below.
-        if not await _replay_ok(
-            thread_id, actor, getattr(user, "organization_id", None),
-        ):
+        # not see the whole run gets no event of it, only the end frame with
+        # `withheld: true`, so the chat does not attach to the run again.
+        if not await _replay_ok(thread_id, room):
             _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
-            yield _reconnect_end(thread_id)
+            yield _reconnect_end(thread_id, withheld=True)
             return
 
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
@@ -4756,43 +4757,70 @@ async def reconnect_agent_stream(
     )
 
 
-def _reconnect_end(thread_id: str) -> str:
+def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
     """The end frame of a reconnect: the frame when nothing is left to replay.
 
     The frontend translator maps it to ``{"type": "done"}``, and the chat
-    leaves the reconnecting state. RESUME-2d sends the same frame to a reader
-    who may not see the run."""
+    leaves the reconnecting state. RESUME-2d: a reader who may not see the
+    run gets the same frame with ``withheld: true``. The chat then does not
+    attach to that run again while the server lists it
+    (``runStatus.ts``, ``attach_withheld``). The frame with no marker keeps
+    its bytes."""
     import json as _json
 
-    return f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': thread_id, 'threadId': thread_id})}\n\n"
+    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": thread_id, "threadId": thread_id}
+    if withheld:
+        evt["withheld"] = True
+    return f"data: {_json.dumps(evt)}\n\n"
 
 
-async def _replay_ok(
-    thread_id: str, actor: str, organization_id: str | None,
-) -> bool:
-    """RESUME-2d (D-RES-10): True when *actor* may replay the whole run in the
-    stream of *thread_id*. ``gateway.rooms.replay_allowed`` holds the rule.
+async def _replay_ok(thread_id: str, room: Any) -> bool:
+    """RESUME-2d (D-RES-10): True when the reader of *room* may replay the
+    whole run in the stream of *thread_id*. ``gateway.rooms.replay_allowed``
+    holds the rule.
 
-    The actor and the org come from the session (``UserContext``), never
-    from the request (R5). The room read is the bound read of
-    ``resolve_room_access``. The run start is the head of the stream
-    (``stream_relay.stream_head_ms``). A Redis fault reads as an unknown
-    start, and a failed room read as no room, so each fault fails closed for
-    a shared room. A solo chat replays as before."""
-    import asyncio as _asyncio
-
-    from gateway.rooms import replay_allowed, resolve_room_access
+    *room* is the ``RoomAccess`` of the guard (:func:`_thread_room`), so the
+    route reads the room once. The actor and the org of that read come from
+    the session (``UserContext``), never from the request (R5). A solo chat,
+    and ``None`` (no rooms layer), replay with no stream read, so a solo
+    reconnect costs nothing more. Else the run start is the head of the
+    stream (``stream_relay.stream_head_ms``). A Redis fault reads as an
+    unknown start, and fails closed for a shared room."""
+    if room is None:
+        return True
+    from gateway.rooms import replay_allowed, room_is_solo
     from orchestrator.stream_relay import stream_head_ms
 
-    room = await _asyncio.to_thread(
-        resolve_room_access, thread_id, actor, organization_id=organization_id,
-    )
+    if room_is_solo(room):
+        return True
     try:
         start = await stream_head_ms(thread_id)
     except Exception:  # an unknown start fails closed
         _log.warning("agent.reconnect_head_failed", thread_id=thread_id[:12])
         start = None
     return replay_allowed(room, start)
+
+
+def _thread_room(
+    thread_id: str, user_id: str, organization_id: str | None,
+) -> Any:
+    """The ``RoomAccess`` of *user_id* in *thread_id*, or None when the rooms
+    layer is absent (an import failure: the pre-138 world, where each thread
+    was solo). :func:`_thread_owner_ok` reads it, and the reconnect route
+    reads it once for the guard and the replay rule (RESUME-2d)."""
+    try:
+        from gateway.rooms import resolve_room_access
+        return resolve_room_access(
+            thread_id, user_id, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
+        return None
+
+
+def _room_readable(room: Any) -> bool:
+    """The answer of :func:`_thread_owner_ok` for a room of
+    :func:`_thread_room`: True for no rooms layer, else ``can_read``."""
+    return room is None or bool(room.can_read)
 
 
 def _thread_owner_ok(
@@ -4820,13 +4848,7 @@ def _thread_owner_ok(
     The name is kept because it is the guard two endpoints already name; what
     it means is now "may read this room".
     """
-    try:
-        from gateway.rooms import resolve_room_access
-        return resolve_room_access(
-            thread_id, user_id, organization_id=organization_id,
-        ).can_read
-    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
-        return True
+    return _room_readable(_thread_room(thread_id, user_id, organization_id))
 
 
 def _thread_control_ok(

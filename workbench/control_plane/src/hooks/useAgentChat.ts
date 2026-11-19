@@ -1226,6 +1226,8 @@ export function useAgentChat({
     let terminal = false;
     // The last `done` was a park (RESUME-3a).
     let parkedEnd = false;
+    // RESUME-2d: the server kept this run from this reader (`withheld`).
+    let withheldEnd = false;
     let streamed = false;
     try {
       const curState = getSessionState(threadId);
@@ -1430,6 +1432,7 @@ export function useAgentChat({
                 // a slot of a redraft ends (C3).
                 parkedEnd = evt.parked === true;
                 if (parkedEnd) emitAgentEvent("onRunRested", { threadId });
+                withheldEnd = evt.withheld === true;
                 break;
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
@@ -1482,14 +1485,18 @@ export function useAgentChat({
         setSessionState(threadId, (prev) => ({
           ...prev,
           // Nothing came back: polling fills the reply from the saved row.
-          recovering: !recovered,
-          runStatus: recovered ? "idle" : "recovering",
+          // A withheld run is not this reader's: nothing to recover.
+          recovering: !recovered && !withheldEnd,
+          runStatus: recovered || withheldEnd ? "idle" : "recovering",
         }));
         // The run state hears how the stream ended. With no terminal event
         // the server answers whether the run goes on.
         // No stream: the next attach waits longer (`attach_failed`), so a run
         // that cannot replay is never asked in a loop.
-        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal, ...(terminal && parkedEnd ? { parked: true } : {}) });
+        // RESUME-2d: a withheld end is no "Done". The chat rests and does not
+        // attach to that run again while the server lists it.
+        if (streamed && withheldEnd) dispatchRun(threadId, { type: "attach_withheld", at: Date.now() });
+        else if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal, ...(terminal && parkedEnd ? { parked: true } : {}) });
         else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }

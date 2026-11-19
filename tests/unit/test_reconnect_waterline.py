@@ -179,3 +179,39 @@ def test_the_head_is_the_ms_of_the_first_entry(monkeypatch, entries, want):
 
     monkeypatch.setattr(stream_relay, "_get_client", _client)
     assert asyncio.run(stream_relay.stream_head_ms("t")) == want
+
+
+# ── The route helpers (review of fbe141d7b) ─────────────────────────────────
+
+def test_the_end_frame_keeps_its_bytes_and_marks_a_withheld_end():
+    from gateway.routes import agent as agent_routes
+
+    assert agent_routes._reconnect_end("t-1") == (
+        'data: {"type": "RUN_FINISHED", "runId": "t-1", "threadId": "t-1"}\n\n'
+    )
+    assert agent_routes._reconnect_end("t-1", withheld=True) == (
+        'data: {"type": "RUN_FINISHED", "runId": "t-1", "threadId": "t-1", '
+        '"withheld": true}\n\n'
+    )
+
+
+def test_a_solo_room_replays_with_no_stream_read(monkeypatch):
+    """Note 1: a solo reconnect reads no stream head. Read it first, and a
+    Redis fault could change a solo reply."""
+    from gateway.routes import agent as agent_routes
+
+    calls: list[str] = []
+
+    async def _head(tid):
+        calls.append(tid)
+        raise RuntimeError("Redis is down")
+
+    monkeypatch.setattr(stream_relay, "stream_head_ms", _head)
+    solo = _room(email=_ALICE, members=[_ALICE], visibility="private",
+                 is_shared=False, has_join_row=True, join_ms=None)
+    assert asyncio.run(agent_routes._replay_ok("t", solo)) is True
+    assert asyncio.run(agent_routes._replay_ok("t", None)) is True
+    assert calls == []
+    # A shared room reads the head once, and a fault fails closed.
+    assert asyncio.run(agent_routes._replay_ok("t", _room())) is False
+    assert calls == ["t"]

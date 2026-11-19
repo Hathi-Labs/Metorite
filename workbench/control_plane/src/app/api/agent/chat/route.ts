@@ -564,6 +564,9 @@ async function translateAndPersistStream(
           // chat then shows no "Done" (§4.12.4 item 5). Every other frame is
           // as before.
           if (ev.parked === true) out.parked = true;
+          // RESUME-2d: the gateway kept the run from this reader (D-RES-10).
+          // The chat does not attach to that run again (`attach_withheld`).
+          if (ev.withheld === true) out.withheld = true;
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.
