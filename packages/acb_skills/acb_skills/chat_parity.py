@@ -224,6 +224,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
+    "packages/acb_skills/acb_skills/org_facts_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
