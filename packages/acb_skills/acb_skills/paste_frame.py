@@ -12,7 +12,7 @@ behind ``CHAT_PASTE_FRAME_ORGS`` (:func:`paste_frame_on`, empty is off):
 * :data:`RAW_PARTS` is the raw binding. The chat route binds the raw member
   parts of the turn there (:func:`bind_raw_parts`). A tuple is a bound run,
   also when it is empty. None means that the door binds nothing, and then
-  the seam frames nothing on the run. It is NOT ``MEMBER_SENT``: that holds
+  the seam frames nothing on the run. It is NOT the member-sent variable of the profile: that holds
   ``typed_text``, which is empty for a long paste.
 * The composer records the shape of the run input (:func:`record_shape`):
   ``session``, ``list`` or ``string``. The seam frames nothing on the
@@ -422,7 +422,7 @@ def paste_frame_everywhere() -> bool:
 #: the sent words while the message is still the client's text, and the raw
 #: text of each replayed steer. A tuple is a bound run, also when it is empty
 #: (a Continue whose note the server wrote, and RESUME-2a). None means that
-#: the door binds nothing. Never read ``MEMBER_SENT`` or ``sent_words()`` in
+#: the door binds nothing. Never read the member-sent variable or the sent-words reader in
 #: its place: they hold ``typed_text``, which is empty for a long paste.
 RAW_PARTS: contextvars.ContextVar[tuple[object, ...] | None] = contextvars.ContextVar(
     "paste_frame_raw_parts", default=None)

@@ -414,7 +414,7 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
 
 
 def _paste_raw_parts(
-    sent_words: str,
+    sent_text: str,
     taken_steers: list[dict[str, Any]],
     *,
     client_text: bool,
@@ -435,13 +435,13 @@ def _paste_raw_parts(
     still reaches the model and must get its frame. So the tuple is empty
     only for a RESUME-2a or a server Continue note with no replayed steer. An
     empty tuple is still a bound run. The words are the RAW sent words, never
-    ``typed_text`` (``MEMBER_SENT``)."""
+    ``typed_text`` (the member-sent variable of the profile)."""
     parts = [str(s.get("text") or "") for s in taken_steers
              if isinstance(s, dict) and str(s.get("text") or "").strip()]
     if resume_launch:
         return tuple(parts)
-    if client_text and not followup and str(sent_words or "").strip():
-        parts.append(str(sent_words))
+    if client_text and not followup and str(sent_text or "").strip():
+        parts.append(str(sent_text))
     return tuple(parts)
 
 
@@ -3694,7 +3694,7 @@ async def run_agent_stream_endpoint(
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
 
     # HRD-14b: the raw member parts of this turn, for the paste frame. Read
-    # after the ENGAGE seam took the steers it replays. Never MEMBER_SENT.
+    # after the ENGAGE seam took the steers it replays. Never the member-sent variable of the profile.
     _raw_parts = _paste_raw_parts(
         _sent_words, _taken_steers, client_text=_client_text,
         followup=_followup, resume_launch=_resume_launch is not None,
