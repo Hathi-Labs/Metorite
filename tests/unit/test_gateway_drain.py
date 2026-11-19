@@ -620,6 +620,33 @@ class TestTheDrainRoute:
         assert r.status_code == 200
         assert r.json() == {"tried": 0, "parked": 0}
 
+    def test_the_park_route_reads_nothing_from_the_request(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R5: no tenant and no member come from the request. Each park uses
+        the org of its own run (``pending_ask.park_for_stop``). The route
+        takes no parameter, and a body or a query that names an org changes
+        nothing. Mutation: give the route an ``org`` parameter -> red. The
+        route adds no database or Redis site: ``test_db_engine_seam.py`` and
+        ``test_tenant_redis.py`` fence the seams."""
+        import inspect
+
+        from gateway.routes import drain
+        from orchestrator import pending_ask
+
+        assert inspect.signature(drain.drain_park).parameters == {}
+        seen: list[tuple[tuple, dict]] = []
+
+        async def _park_at_stop(*a, **k):
+            seen.append((a, k))
+            return {"tried": 0, "parked": 0}
+
+        monkeypatch.setattr(pending_ask, "park_at_stop", _park_at_stop)
+        r = client.post("/internal/drain/park?organization_id=org-x&org=org-x",
+                        headers=AUTH, json={"organization_id": "org-x", "member": "a@b.c"})
+        assert r.status_code == 200 and r.json() == {"tried": 0, "parked": 0}
+        assert seen == [((), {})], "the route passes nothing from the request"
+
     def test_a_park_in_flight_counts_as_a_running_run(
         self, client, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

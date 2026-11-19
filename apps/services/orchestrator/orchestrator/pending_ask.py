@@ -1276,11 +1276,26 @@ def parking_threads() -> set[str]:
     a run that waits on a person. Until its park pops the Future, the thread
     reads as waiting (``executor.threads_waiting_on_a_person``). Without
     this, a first count of 0 lets the stop cut a park in the middle, before
-    the drain of the run saves the reply."""
-    return {
-        thread for wake, outcome, thread in list(_STOP_WAITS.values())
-        if wake.done() and not wake.cancelled() and not outcome.done()
-    }
+    the drain of the run saves the reply.
+
+    Each entry gives the thread of its wait AND the owner thread that the
+    Future recorded (``_pending_user_input.owner_of``), the key of that skip
+    set. So the two can never differ."""
+    try:
+        from orchestrator.executor import _pending_user_input
+
+        owner_of = _pending_user_input.owner_of
+    except Exception:
+        def owner_of(_request_id: str) -> str | None:
+            return None
+    out: set[str] = set()
+    for request_id, (wake, outcome, thread) in list(_STOP_WAITS.items()):
+        if wake.done() and not wake.cancelled() and not outcome.done():
+            out.add(thread)
+            owner = owner_of(request_id)
+            if owner:
+                out.add(owner)
+    return out
 
 
 async def park_for_stop(request_id: str, thread_id: str, fut: Any = None) -> bool:
