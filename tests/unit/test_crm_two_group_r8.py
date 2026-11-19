@@ -393,9 +393,9 @@ async def test_a_text_field_of_numbers_sums_in_two_groups(works, app_engine) -> 
                     group_field="Invoice_Date", bucket="month")
     truth = _work_truth(works, a)
     got = {(g.get("key"), g.get("key2")): g["value"] for g in two["groups"]}
-    # A pair whose every Fiber is no number has a None value, as one field has.
-    assert {k: v for k, v in got.items() if v is not None} == {
-        k: round(v, 2) for k, v in truth.items() if v}
+    # A pair with no number in Fiber sums to 0, as a group of one field does.
+    assert set(truth) <= set(got)
+    assert got == {k: round(truth.get(k, 0.0), 2) for k in got}
     # The same three counts, the same total, the same records as one field.
     assert two["text_numbers"] == one["text_numbers"]
     assert set(two["text_numbers"]["Fiber"]) >= {"numbers", "no_value", "not_numbers"}
