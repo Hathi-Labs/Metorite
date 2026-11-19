@@ -42,6 +42,7 @@ from skill_projects.manifest import allowed, route_for
 __all__ = [
     "DETAIL_MAX",
     "GatewayRefusal",
+    "PreconditionFailed",
     "data",
     "delete",
     "get",
@@ -128,6 +129,33 @@ def _template(method: str, path: str) -> str:
     return route.path if route is not None else ""
 
 
+class PreconditionFailed(GatewayRefusal):
+    """A 412 of ``core.require_precondition``: the row changed since the read
+    that gave the ``If-Match`` token (HRD-10a).
+
+    ``current`` is the route's ``detail.current``, the row as it is now, or
+    ``{}``. Its values can hold words of other people, so a caller fences
+    each value that it shows. It is a :class:`GatewayRefusal`, so each caller
+    that catches a refusal or reads ``status == 412`` keeps its path."""
+
+    def __init__(self, message: str, *, current: dict[str, Any], **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.current = current
+
+
+def _changed_since(status: int, body: Any) -> dict[str, Any] | None:
+    """The row of a precondition 412 (``detail.error`` is
+    ``precondition_failed``), ``{}`` when it has no row, or None for each
+    other response."""
+    if status != 412 or not isinstance(body, dict):
+        return None
+    raw = body.get("detail")
+    if not isinstance(raw, dict) or raw.get("error") != "precondition_failed":
+        return None
+    current = raw.get("current")
+    return dict(current) if isinstance(current, dict) else {}
+
+
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     if resp.status_code < 400:
         return
@@ -139,6 +167,16 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         hint = "Not permitted."
     else:
         hint = f"Failed ({resp.status_code})."
+    current = _changed_since(resp.status_code, body)
+    if current is not None:
+        raise PreconditionFailed(
+            f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""),
+            current=current,
+            status=resp.status_code,
+            detail=detail,
+            fields=fields,
+            route=_template(method, path),
+        )
     raise GatewayRefusal(
         f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""),
         status=resp.status_code,

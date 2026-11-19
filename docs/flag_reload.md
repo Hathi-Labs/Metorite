@@ -33,6 +33,18 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
+(`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
+sends the `updated_at` of the read that the card shows as `If-Match`. A task
+that changed while the card waited gets a 412, and the tool writes nothing. The
+tool then answers "Changed since the card", with the old and new values of the
+fields on the card. `*` lists every org, and the default is empty.
+
+Empty gives the PATCH of before, with no `If-Match`. Its one reader is
+`acb_skills.ask_tools.card_precondition_on`. It reads the org from the run
+binding, and a fault reads as off. The tool asks it at each call, so a reload
+applies to the next call. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_CARD_RECORD_ORGS` turns on the card record (`chat_organization.md`
 §16.3, CO-17). For each listed org, a write card that a member approves leaves
 one row in `chat_card_record`: the chat, the member, the card id, the outcome
