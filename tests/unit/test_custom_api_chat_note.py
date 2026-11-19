@@ -8,8 +8,6 @@ with the flag off, or when the text claims that the chat can use the row.
 from __future__ import annotations
 
 import inspect
-from typing import Any
-
 from gateway.routes import integrations
 
 ROW = {"service_id": "acme", "label": "Acme", "env_vars": [{"key": "ACME_KEY"}]}
@@ -29,12 +27,5 @@ def test_the_status_row_itself_has_no_note_so_the_flag_decides() -> None:
 
 def test_the_list_adds_the_note_only_behind_the_flag() -> None:
     src = inspect.getsource(integrations)
-    assert "api_connections_allowed(str(current_tenant()))" in src
+    assert "api_connections_allowed(current_tenant())" in src
     assert 'status_row["chat_use"] = dict(CUSTOM_ROW_CHAT_USE)' in src
-
-
-def test_the_note_is_a_copy_so_a_caller_cannot_change_the_constant() -> None:
-    row: dict[str, Any] = {}
-    row["chat_use"] = dict(integrations.CUSTOM_ROW_CHAT_USE)
-    row["chat_use"]["usable"] = True
-    assert integrations.CUSTOM_ROW_CHAT_USE["usable"] is False

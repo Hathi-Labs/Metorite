@@ -902,7 +902,7 @@ async def integration_status(
             if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
             status_row = _custom_status_row(row, custom_keys_by_service)
-            if api_connections_allowed(str(current_tenant())):
+            if api_connections_allowed(current_tenant()):
                 status_row["chat_use"] = dict(CUSTOM_ROW_CHAT_USE)
             result.append(status_row)
     except Exception:
