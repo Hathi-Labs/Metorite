@@ -52,6 +52,8 @@ NO_BUILDER = {
     "agent_asks": "chat:th-9",
     # WS-ALN ALN-2b: a decision keys on its task, so it folds into the card.
     "decision": f"tasks:{TID}",
+    # AO-2: the AI vendor alert gives no feed signal. Its entity is the vendor.
+    "provider_alert": "providers:anthropic",
 }
 
 
