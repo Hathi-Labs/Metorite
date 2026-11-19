@@ -687,8 +687,9 @@ def crm_module_href(module: str, record_id: Any) -> str:
     """The link that opens one record of a mirrored module (FIND-11):
     ``/crm?tab=module&module=<Module>&mrec=<Module>:<id>``, the view state
     of ``app/crm/lib/urlState.ts``. The ONE builder of this link."""
-    return (f"/crm?tab=module&module={quote(str(module))}"
-            f"&mrec={quote(str(module) + ':' + str(record_id))}")
+    # Not an f-string: the fence of ``crm_href`` counts one f-string link.
+    return ("/crm?tab=module&module=" + quote(str(module))
+            + "&mrec=" + quote(str(module) + ":" + str(record_id)))
 
 
 def crm_reports_href() -> str:
