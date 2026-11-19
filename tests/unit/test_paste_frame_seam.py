@@ -437,6 +437,29 @@ def test_the_route_binds_the_raw_parts():
                             resume_launch=True) == (), "RESUME-2a with no steer is empty"
 
 
+def test_the_route_binds_the_raw_parts_in_both_run_scopes():
+    """R7 source fence (fix round 1, B3). The chat route binds the raw parts
+    INSIDE both run scopes: the continuation scope of RESUME-2a and the
+    ``_serve`` scope, where ``run_detached`` copies the context into the run.
+    A server Continue note sets ``_client_text = False``, so the note is no
+    part. The pinned line of ``test_tool_packs_choice`` stays as it is.
+    Mutations: delete the main bind, delete the continuation bind, or drop
+    ``_client_text = False`` -> red."""
+    text = (ROOT / "apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
+    text = text.replace("\r\n", "\n")
+    assert text.count("bind_raw_parts(_raw_parts)") == 2
+    assert ("with member_typed(_typed, sent=_sent_text), surface_scope(None), \\\n"
+            "                bind_raw_parts(_raw_parts):") in text, "the continuation scope"
+    main_scope = "with member_typed(_typed, sent=_sent_text), surface_scope(_surface):"
+    assert text.count(main_scope) == 1
+    serve = text[text.index(main_scope):]
+    serve = serve[:serve.index("async for chunk in _serve_run(timing):")]
+    assert "with bind_raw_parts(_raw_parts):" in serve, "the main scope binds the parts"
+    assert ('req.payload["message"] = _note\n            _client_text = False') in text
+    assert text.index("_client_text = True") < text.index("_client_text = False") < text.index(
+        "client_text=_client_text")
+
+
 def test_a_resume_launch_frames_a_replayed_pasted_steer():
     """Fix round 1 (B4): ENGAGE replays a pending steer into a RESUME-2a run,
     and ``executor._set_run_note`` puts the server's note BEFORE it. So the
