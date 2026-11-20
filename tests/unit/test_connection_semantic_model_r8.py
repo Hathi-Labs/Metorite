@@ -24,7 +24,10 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS), with two organizations:
 9. with the flag off a write refuses with ``off`` and writes no row;
 10. (SEM-12b) a body over the cap in jsonb text bytes refuses with
     ``too_big`` and writes no row, and a body at the cap is written with
-    ``octet_length(body::text)`` equal to the count of ``body_bytes``.
+    ``octet_length(body::text)`` equal to the count of ``body_bytes``;
+11. (SEM-13a) a draft of the profiler saves through ``save_draft`` with
+    ``made_by`` ``code``, an empty ``ai`` section and ``untrusted_origin``
+    false, and its body passes ``shape_only``.
 
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
@@ -557,3 +560,78 @@ async def test_10_a_body_at_the_cap_is_written_and_the_check_agrees(db) -> None:
 
 def test_the_suite_finds_the_migration_by_its_content() -> None:
     assert re.fullmatch(r"\d+_connection_semantic_models\.sql", _migration().name)
+
+
+# ── 11. A draft of the profiler (SEM-13a) ───────────────────────────────────
+
+
+async def test_11_a_profiler_draft_saves_through_the_writer(db, monkeypatch) -> None:
+    """SEM-13a (``semantic_model.md`` §10.5): ``profiler.profile`` reads a real
+    ``mcp:`` org row and the real approvals, and writes ONE draft through
+    ``save_draft``. A fake lister and a fake caller take the place of the
+    network, and a fake Redis takes the place of the cache. The row has
+    ``made_by`` ``code``, an empty ``ai`` section and ``untrusted_origin``
+    false, and its body passes ``shape_only``.
+
+    Mutation: write the body with ``untrusted_origin`` true, and this case
+    fails."""
+    import json
+
+    from acb_common.db import tenant_session
+    from acb_common.tenant_redis import TenantRedis
+    from gateway.connections import mcp_tools, profiler
+    from gateway.crm_sync.catalogue import shape_only
+    from gateway.studio import mcp_actions, mcp_approvals
+
+    from tests.unit.test_studio_mcp_tools import RawRedis
+
+    name = f"sem13a-{uuid.uuid4().hex[:8]}"
+    with db.admin_engine.begin() as c:
+        cid = c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, status, provider_meta, connected_by) VALUES (CAST(:o AS uuid), :p, "
+            "'integrations', 'org', 'connected', CAST(:m AS jsonb), 'admin@example.test') "
+            "RETURNING id::text"),
+            {"o": db.org_a, "p": f"mcp:{name}", "m": json.dumps({
+                "transport": "http", "url": "https://books.example.test/mcp",
+                "agent_scope": ["*"], "label": name})}).scalar_one()
+    db.made.append(cid)
+    tool = {"name": "vouchers", "description": "", "annotations": {"readOnlyHint": True},
+            "inputSchema": {"type": "object", "properties": {}}}
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(RawRedis()))
+    monkeypatch.setattr(mcp_tools, "_LIVE_IN_FLIGHT", {})
+
+    async def _lister(server: Any) -> list[Any]:
+        return [tool]
+
+    async def _caller(server: Any, called: str, args: dict[str, Any]) -> Any:
+        return {"structuredContent": {
+            "columns": [{"name": "Custom_Field_10", "type": "int64"},
+                        {"name": "Voucher_Date", "type": "date"}],
+            "rows": [[1, "2024-04-01"], [2, "2025-03-31"]]}}
+
+    async with tenant_engine_scope(_app_dsn(db)):
+        async with tenant_session(db.org_a) as s:
+            await mcp_approvals.upsert(
+                s, server=name, tool="vouchers", member="admin@example.test",
+                text_hash=mcp_actions.tool_text_hash(mcp_tools.clean_tools([tool]).tools[0]))
+        out = await profiler.profile(db.org_a, cid, lister=_lister, caller=_caller)
+    assert out.outcome == profiler.SAVED, out
+    assert out.version == 1 and out.calls == 1
+    with db.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT organization_id::text, state, made_by, untrusted_origin, body, shape_hash "
+            "FROM connection_semantic_models WHERE connection_id = CAST(:c AS uuid)"),
+            {"c": cid}).one()
+    assert row.organization_id == db.org_a and row.state == "draft"
+    assert row.made_by == "code" and row.untrusted_origin is False
+    assert row.shape_hash == out.shape_hash
+    body = row.body if isinstance(row.body, dict) else json.loads(row.body)
+    assert body["ai"] == {} and shape_only(body) is None
+    assert {f["key"]: f["type"] for f in body["code"]["fields"]} == {
+        "Custom_Field_1_0": "integer", "Voucher_Date": "date"}
+    # An org that is not the org of the row gets no profile and no row.
+    async with tenant_engine_scope(_app_dsn(db)):
+        other = await profiler.profile(db.org_b, cid, lister=_lister, caller=_caller)
+    assert other.outcome == "refused:connection"
+    assert len(_rows(db, cid)) == 1
