@@ -2680,12 +2680,19 @@ def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
 
     WS-67 OA-9c: a spawn child (*agent_name* is the worker) gets the run key
     that the spawn minted for the pack tools of its job instead
-    (:func:`_job_pack_keys`). It never gets the parent's key or the record."""
+    (:func:`_job_pack_keys`). It never gets the parent's key or the record.
+
+    TOF-3a F12b: it drops the notes of the skill runs of the parent too
+    (``_tool_injection.SKILL_RUN_NOTES_KEY``), so a call of a child never
+    notes on the run of its parent."""
     try:
         from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+
+        from orchestrator._tool_injection import SKILL_RUN_NOTES_KEY
     except ImportError:
         return {}
-    return {PACK_RUN_KEY: None, PACKS_KEY: None, **_job_pack_keys(agent_name)}
+    return {PACK_RUN_KEY: None, PACKS_KEY: None, SKILL_RUN_NOTES_KEY: None,
+            **_job_pack_keys(agent_name)}
 
 
 def _job_pack_keys(agent_name: str, ctx: Any = None) -> dict[str, Any]:
@@ -10406,6 +10413,15 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        # TOF-3a F12b: the rows of the skills of this run, in their own task,
+        # while the tenant is still bound. No notes, no task (flag off).
+        # It never raises into this finally: only an ``Exception`` is held,
+        # so a ``CancelledError`` still stops the run.
+        if _pack_apply is not None:
+            with contextlib.suppress(Exception):
+                from orchestrator._tool_injection import schedule_skill_runs
+
+                schedule_skill_runs(_pack_apply)
         if _tier_task is not None:
             if not _tier_task.done():
                 _tier_task.cancel()

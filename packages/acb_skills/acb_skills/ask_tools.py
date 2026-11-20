@@ -1604,6 +1604,13 @@ def last_card_outcome() -> str | None:
     return _LAST_OUTCOME.get()
 
 
+def clear_card_outcome() -> None:
+    """Forget the outcome of the last card of this frame, as the start of
+    :func:`request_confirmation` does. TOF-3a F12b calls it before a tool of
+    a loaded skill runs, so a call with no card of its own reads None."""
+    _LAST_OUTCOME.set(None)
+
+
 def card_not_done_text(act: str = "") -> str:
     """The text of a tool whose card did nothing, from the outcome of the
     last card of this frame (:func:`last_card_outcome`), with *act*.
