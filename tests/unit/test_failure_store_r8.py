@@ -68,6 +68,7 @@ _FUNCTIONS = (
     "failure_tally(text, text, text, text, text, text, text, text, integer)",
     "failure_org_band(text)",
     "failure_due(integer)",
+    "failure_due_v2(integer)",
     "failure_set(text, text, uuid, timestamp with time zone, timestamp with time zone, "
     "timestamp with time zone, text, bigint, integer)",
     "failure_prune_daily(date)",
@@ -78,7 +79,14 @@ def _migration() -> str:
     root = Path(__file__).resolve().parents[2] / "infra" / "postgres"
     [hit] = [f for f in root.glob("[0-9]*_*.sql")
              if "CREATE TABLE IF NOT EXISTS failure_events" in f.read_text(encoding="utf-8")]
-    return hit.read_text(encoding="utf-8")
+    # The sync slice adds a column and two function bodies in a second file (TOF-2e,
+    # 467): the store the job reads is the two files in order.
+    [more] = [f for f in root.glob("[0-9]*_*.sql")
+              if "ADD COLUMN IF NOT EXISTS last_release_at" in f.read_text(encoding="utf-8")]
+    assert more.name > hit.name
+    # The ladder runs each file again (a second pass): 467 adds a function and
+    # leaves the old `failure_due` as 466 made it, so a replay of 466 still works.
+    return (hit.read_text(encoding="utf-8") + "\n" + more.read_text(encoding="utf-8"))
 
 
 def _fp(tool: str, code: str, exc: str = "-", site: str = "-") -> str:
@@ -420,6 +428,7 @@ def test_each_function_is_a_definer_with_a_fixed_path_and_no_public_grant(world)
 _JOBS = (
     ("SELECT failure_org_band(:fp)", {"fp": "00bc2542a73b3967"}),
     ("SELECT * FROM failure_due(10)", {}),
+    ("SELECT * FROM failure_due_v2(10)", {}),
     ("SELECT failure_set(:fp, 'open', NULL, NULL, NULL, NULL, NULL, 0, 0)",
      {"fp": "00bc2542a73b3967"}),
     ("SELECT failure_prune_daily(CAST(now() AS date) - 500)", {}),
@@ -545,7 +554,7 @@ def test_due_gives_platform_rows_and_counts_only(world) -> None:
     _tally(world.app, world.b, {**args, "n": 3})
     with world.app.connect() as c, c.begin():
         c.execute(text(_BIND), {"o": world.a})
-        result = c.execute(text("SELECT * FROM failure_due(10) WHERE fingerprint = :f"),
+        result = c.execute(text("SELECT * FROM failure_due_v2(10) WHERE fingerprint = :f"),
                            {"f": args["fp"]})
         cols = list(result.keys())
         [row] = result.mappings().all()
@@ -602,6 +611,83 @@ def test_the_app_role_prunes_its_own_tenant_rows_only(world) -> None:
                               "WHERE occurred_at < now() - interval '30 days'")).rowcount
     assert gone == 1
     assert _admin(world, "SELECT organization_id::text FROM failure_events") == [(world.b,)]
+
+
+def test_p9_the_prune_hook_keeps_each_retention_in_each_org(world, monkeypatch) -> None:
+    """P9 (TOF-2e, §5.4). The prune hook of ``gateway/failures/sync.py`` runs
+    in the session of each org, as the app role. ``failure_events`` older than
+    30 days and ``failure_org_days`` older than 90 days go, in that org only.
+    In the internal org it also takes ``failure_daily`` older than 400 days.
+
+    Mutations: an event bound of 40 days, an org day bound of 100 days, no
+    org term on a delete as the owner role (RLS still binds the app role),
+    and no daily prune. Each bound and the daily prune turn this test red."""
+    from datetime import timedelta
+
+    from acb_common import get_settings
+    from gateway.failures import sync
+
+    s = get_settings()
+    for name, value in (("tool_failure_tasks", True), ("tool_failure_org_id", world.a),
+                        ("tool_failure_project_id", str(uuid.uuid4())),
+                        ("tool_failure_run_as", "tool-failures@tof2e.test")):
+        monkeypatch.setattr(s, name, value)
+    _internal(world, world.a)
+    args = _args()
+    fp = args["fp"]
+    _tally(world.app, world.a, args)
+    today = _admin(world, "SELECT (now() AT TIME ZONE 'UTC')::date")[0][0]
+    with world.p.admin_engine.begin() as c:
+        for org in (world.a, world.b, world.c):
+            for age, mark in (("31 days", "old"), ("29 days", "new")):
+                c.execute(text(
+                    "INSERT INTO failure_events (organization_id, occurred_at, fingerprint, "
+                    "source, surface, error_code, tool, exc_type, code_site, run_id) VALUES "
+                    "(CAST(:o AS uuid), now() - CAST(:age AS interval), :fp, 'chat_tool', "
+                    "'chat', 'exception', :t, :e, :s, :m)"),
+                    {"o": org, "age": age, "fp": fp, "t": args["tool"], "e": args["exc"],
+                     "s": args["site"], "m": mark})
+            for days in (91, 89):
+                c.execute(text(
+                    "INSERT INTO failure_org_days (organization_id, fingerprint, day) "
+                    "VALUES (CAST(:o AS uuid), :fp, :d) ON CONFLICT DO NOTHING"),
+                    {"o": org, "fp": fp, "d": today - timedelta(days=days)})
+        for days in (401, 399):
+            c.execute(text("INSERT INTO failure_daily (fingerprint, day, occurrences) "
+                           "VALUES (:fp, :d, 1)"), {"fp": fp, "d": today - timedelta(days=days)})
+
+    def prune(org: str) -> None:
+        async def go() -> None:
+            from acb_common.db import tenant_session
+
+            url = world.p.app_url.render_as_string(hide_password=False)
+            async with tenant_engine_scope(url), tenant_session(org) as db:
+                await sync.prune_hook(db, today)
+        asyncio.run(go())
+
+    def left(org: str) -> tuple[list[Any], list[Any]]:
+        events = sorted(r[0] for r in _admin(
+            world, "SELECT run_id FROM failure_events "
+                   "WHERE organization_id = CAST(:o AS uuid) AND run_id IS NOT NULL", o=org))
+        days = sorted((today - r[0]).days for r in _admin(
+            world, "SELECT day FROM failure_org_days WHERE organization_id = CAST(:o AS uuid) "
+                   "AND day < :t - 30", o=org, t=today))
+        return events, days
+
+    def daily() -> list[int]:
+        return sorted((today - r[0]).days for r in _admin(
+            world, "SELECT day FROM failure_daily WHERE fingerprint = :f AND day < :t - 300",
+            f=fp, t=today))
+
+    prune(world.b)
+    assert left(world.b) == (["new"], [89])
+    assert left(world.a) == (["new", "old"], [89, 91])  # another org: untouched
+    assert daily() == [399, 401]  # org B is not the internal org
+    prune(world.a)
+    prune(world.c)
+    for org in (world.a, world.b, world.c):
+        assert left(org) == (["new"], [89]), org
+    assert daily() == [399]
 
 
 
