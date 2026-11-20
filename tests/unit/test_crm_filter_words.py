@@ -255,9 +255,13 @@ def test_the_probe_of_an_old_call_is_the_pairs() -> None:
 
 
 def test_the_total_and_the_list_pass_the_flag_to_the_builder() -> None:
-    read = inspect.getsource(agg._read)
+    # CRM-Q34-10: the module steps live in ``_module_filters``, which the
+    # read of one page and the paged read both call.
+    read = inspect.getsource(agg._module_filters)
     assert "filter_probe(scope, pairs, finding)" in read
     assert "words=finding" in read
+    for reader in (agg._read, agg._read_pages):
+        assert "_module_filters(" in inspect.getsource(reader)
     helper = inspect.getsource(fs.module_field_where)
     assert "module_find_allowed" in helper and "words=words" in helper
 

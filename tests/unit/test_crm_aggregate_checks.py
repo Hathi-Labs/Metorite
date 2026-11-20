@@ -23,6 +23,8 @@ from typing import Any
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
+#: A day after the asked October of these tests: the month is over.
+_DONE = date(2026, 11, 20)
 
 
 def _scope(**more: Any) -> Any:
@@ -127,6 +129,15 @@ def test_a_query_range_gets_the_baseline_and_widens_its_own_bound() -> None:
     ([*_october(), ("Invoice_Date", "2026-10-05")], ()),
     ([*_october(), ("Invoice_Date.not", "2026-10-05")], ()),
     ([*_october(), ("Invoice_Date.in", "2026-10-05,2026-10-06")], ()),
+    # P2-1: ANY filter on ANOTHER date field bounds the periods before too.
+    ([*_october(), ("Due_Date.from", "2026-10-01")], ()),
+    ([*_october(), ("Due_Date.to", "2026-12-31")], ()),
+    ([*_october(), ("Due_Date", "2026-10-05")], ()),
+    ([*_october(), ("Due_Date.empty", "false")], ()),
+    (_october(), ((_leaf("Due_Date", "gte", "2026-10-01"),),)),
+    ([], ((_leaf("Invoice_Date", "gte", "2026-10-01"),),
+          (_leaf("Invoice_Date", "lte", "2026-10-31"),),
+          (_leaf("Due_Date", "lte", "2026-10-31"),))),
 ])
 def test_any_other_filter_on_the_day_field_gives_no_baseline(pairs: list, nodes: tuple) -> None:
     """A wider start widens the window only when the one ``.from`` is the
@@ -139,11 +150,14 @@ def test_any_other_filter_on_the_day_field_gives_no_baseline(pairs: list, nodes:
                              words=True) is None
 
 
-def test_a_filter_word_on_another_field_keeps_the_baseline() -> None:
+def test_a_filter_on_a_field_that_is_no_date_keeps_the_baseline() -> None:
+    """A filter word or a number range on a field that is no date holds each
+    period in the same way, so the baseline stays (the R8 oracle proves its
+    figures)."""
     from gateway.routes.crm import field_sql as fs
 
     scope = _scope()
-    pairs = [*_october(), ("Due_Date.empty", "false"), ("Total.not", "0")]
+    pairs = [*_october(), ("Total.not", "0"), ("Total.from", "100"), ("Total.to", "900")]
     base = fs.baseline_range(scope, scope.fields["Invoice_Date"], pairs, words=True)
     assert base is not None and base.bound == "agf_v0"
 
@@ -240,7 +254,7 @@ def test_the_checks_hold_the_outlier_of_the_asked_range_and_the_coverage() -> No
     covered = agg._coverage(read, 110, 1431)
     assert covered == {"records": 1431, "no_value": 1321,
                        "statuses": {"draft": 0, "cancelled": 0}}
-    checks = agg._checks(read, "sum", covered)
+    checks = agg._checks(read, "sum", covered, today=_DONE)
     assert [(c["kind"], c["key"]) for c in checks] == [
         ("outlier", "2026-10"), ("coverage", "no_value")]
     assert checks[0]["sentence"] == (
@@ -252,20 +266,20 @@ def test_the_checks_hold_the_outlier_of_the_asked_range_and_the_coverage() -> No
     calm = {None: acc(value=100.0, rows=100, n=100)}
     wild = {**{p: [acc(value=100.0, rows=100, n=100)] for p in range(-6, 0)},
             -2: [acc(value=9000.0, rows=100, n=100)]}
-    assert agg._checks(_read(calm, wild), "sum", None) == []
+    assert agg._checks(_read(calm, wild), "sum", None, today=_DONE) == []
 
 
 def test_a_period_with_no_value_is_no_peer_and_reads_none() -> None:
     from gateway.routes.crm import aggregate as agg
 
     acc = agg._Acc
-    read = _read({None: acc(value=0.0, rows=5, n=0)},
+    read = _read({None: acc(value=0.0, rows=25, n=0)},
                  {-1: [acc(value=0.0, rows=4, n=0)]})
     periods = agg._periods(read, "sum")
     assert [p for p, *_ in periods] == list(range(-6, 1))
     assert periods[-2] == (-1, "2026-09", None, 4)
     assert periods[0] == (-6, "2026-04", None, 0)
-    assert [c["kind"] for c in agg._checks(read, "sum", agg._coverage(read, 0, 5))] == [
+    assert [c["kind"] for c in agg._checks(read, "sum", agg._coverage(read, 0, 25), today=_DONE)] == [
         "coverage"]
     # No measure field and no status: no coverage, and weighted counts none.
     count = _read({None: acc(value=5.0, rows=5)}, {}, measured=False)
@@ -278,7 +292,7 @@ def test_the_route_source_keeps_concentration_out_of_checks() -> None:
         encoding="utf-8")
     body = source.split("def _checks(", 1)[1].split("\ndef ", 1)[0]
     assert "number_findings" not in body and "concentration(" not in body
-    assert "checks=_checks(read, measure, covered)" in source
+    assert "checks=_checks(read, measure, covered, today=_today(read.zone))" in source
 
 
 # ── 3. The tool text ─────────────────────────────────────────────────────────
@@ -366,3 +380,101 @@ def test_the_tool_source_says_check_why_and_prints_each_warn_check() -> None:
     assert "first = [*_first_lines(data), *_check_lines(data)]" in source
     assert 'found.get("severity") == "warn"' in source
     assert 'frame.wrap("CHECK", sentence)' in source
+
+
+# ── 4. The fix round of the verifier (P2-2, P3-2, P3-3, P3-4) ──────────────
+
+
+def _small_month(asked: float, rows: int) -> Any:
+    """The asked month holds *asked* over *rows* records, and each of the 6
+    months before it holds 100 over 100 records."""
+    from gateway.routes.crm import aggregate as agg
+
+    acc = agg._Acc
+    return _read({None: acc(value=asked, rows=rows, n=rows)},
+                 {p: [acc(value=100.0, rows=100, n=100)] for p in range(-6, 0)})
+
+
+@pytest.mark.parametrize("today", [date(2026, 10, 1), date(2026, 10, 13), date(2026, 10, 31),
+                                   date(2026, 9, 15)])
+def test_a_month_that_is_not_over_gets_no_outlier(today: date) -> None:
+    """P2-2: October on a day of October (or before it) holds only part of
+    its records. 4 bills against 100 a month is no outlier then. The
+    ``part_period`` of NUM-1 says so, as an ``info``."""
+    from gateway.routes.crm import aggregate as agg
+
+    checks = agg._checks(_small_month(4.0, 4), "count", None, today=today)
+    assert all(c["kind"] != "outlier" for c in checks), checks
+    assert all(c["severity"] == "info" for c in checks)
+    if date(2026, 10, 1) <= today < date(2026, 10, 31):
+        [part] = checks
+        assert (part["kind"], part["sentence"]) == (
+            "part_period", f"October has only {today.day} {'day' if today.day == 1 else 'days'} so far.")
+
+
+def test_a_finished_month_with_the_same_small_total_is_an_outlier() -> None:
+    from gateway.routes.crm import aggregate as agg
+
+    [jump] = agg._checks(_small_month(4.0, 4), "count", None, today=date(2026, 11, 1))
+    assert (jump["kind"], jump["key"], jump["severity"]) == ("outlier", "2026-10", "warn")
+    assert jump["sentence"] == "2026-10 is under 20% of the median of the other 6 months. Check why."
+
+
+def test_the_clock_is_the_one_crm_clock_in_the_crm_zone(monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    from gateway.routes.crm import aggregate as agg
+
+    monkeypatch.setattr(agg, "_crm_now", lambda: datetime(2026, 10, 31, 20, 0, tzinfo=UTC))
+    assert agg._today("UTC") == date(2026, 10, 31)
+    # 01:30 on 1 November in Kolkata: October is over there.
+    assert agg._today("Asia/Kolkata") == date(2026, 11, 1)
+    assert agg._today("Not/AZone") == date(2026, 10, 31)
+
+
+@pytest.mark.parametrize("measure", ["avg", "min", "max", "weighted"])
+def test_a_min_max_or_average_gets_no_outlier(measure: str) -> None:
+    """P3-2: only a count and a sum of a period are figures of one kind."""
+    from gateway.routes.crm import aggregate as agg
+
+    assert {"count", "sum", "sum_amount"} == agg.OUTLIER_MEASURES
+    assert agg._checks(_small_month(9000.0, 100), measure, None, today=_DONE) == []
+    assert agg._checks(_small_month(9000.0, 100), "sum", None, today=_DONE)
+
+
+def test_a_coverage_of_few_records_is_no_check() -> None:
+    """P3-3: 5 records with 3 empty is no signal. The minimum is the one of
+    a concentration in NUM-1, and the counts stay in the answer."""
+    from acb_common.number_sense import CONCENTRATION_MIN_RECORDS
+    from gateway.routes.crm import aggregate as agg
+
+    assert agg.COVERAGE_MIN_RECORDS == CONCENTRATION_MIN_RECORDS == 20
+    read = _read({}, {})
+    read.base = None
+    few = {"records": 19, "no_value": 19}
+    assert agg._checks(read, "sum", few, today=_DONE) == []
+    [gap] = agg._checks(read, "sum", {"records": 20, "no_value": 19}, today=_DONE)
+    assert (gap["kind"], gap["key"], gap["records"]) == ("coverage", "no_value", 19)
+
+
+def test_a_grouped_total_of_an_empty_field_says_its_check_first() -> None:
+    """P3-4: a grouped total whose field is empty everywhere says each warn
+    check first. With no check, the text is the text of before."""
+    import asyncio
+
+    import acb_skills.crm_tools as tools
+
+    data = {"values": 0, "records": 30, "total": None, "groups": [{"key": "a"}]}
+    lead = "Invoices, sum of Total by Status"
+
+    async def empty(more: dict) -> str | None:
+        return await tools._empty_groups("module:Invoices", {"measure": "sum"},
+                                         {**data, **more}, lead, ("Total", []), [], [], {})
+
+    before = asyncio.run(empty({}))
+    assert before == f"{lead}: no values recorded for Total."
+    assert asyncio.run(empty({"checks": [_check("part_period", "x", severity="info")]})) == before
+    said = asyncio.run(empty({"checks": [_check("coverage", "30 of the records have no "
+                                                            "Total. Check why.")]}))
+    lines = said.split("\n")
+    assert lines[1] == tools.CHECK_FIRST and lines[-1] == before

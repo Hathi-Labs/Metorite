@@ -388,6 +388,7 @@ _BILL_DEFS = [
     ("Fee", "text", None, False, False),
     ("Notes", "text", None, False, False),
     ("Tag", "select", None, False, False),
+    ("Paid_On", "date", None, False, False),
 ]
 
 
@@ -400,6 +401,7 @@ def _bill(org: str, m: int, i: int) -> dict[str, Any]:
         fields["Notes"] = "Rent for the office" if i % 3 == 0 else "monthly fee"
     if i % 4 != 3:
         fields["Tag"] = ("A", "B", "C")[(i // 2) % 3]
+    fields["Paid_On"] = f"2026-{m:02d}-{min(28, 1 + i % 28 + i % 3):02d}"
     return {"o": org, "e": f"bill-{m}-{i}", "f": json.dumps(fields)}
 
 
@@ -487,6 +489,9 @@ _COMPOSED = [
     ("empty", "Amount", {**_RANGE_PAIRS, "field.Notes.empty": "true"},
      "coalesce(btrim(fields ->> 'Notes'), '') = ''"),
     ("text number", "Fee", {**_RANGE_PAIRS}, "true"),
+    # A number range on a field that is no date holds each period the same.
+    ("number range", "Amount", {**_RANGE_PAIRS, "field.Amount.from": "105"},
+     "jsonb_typeof(fields -> 'Amount') = 'number' AND (fields ->> 'Amount')::numeric >= 105"),
     ("text number and words", "Fee",
      {"query": json.dumps(_RANGE_LEAVES), "field.Tag.in": "A,C"},
      "fields ->> 'Tag' IN ('A', 'C')"),
@@ -530,7 +535,10 @@ async def test_the_baseline_composes_with_each_filter(bills, app_engine, name: s
                           _RANGE_LEAVES[1]])},
     {**_RANGE_PAIRS, "field.Bill_Date.not": "2026-10-05"},
     {**_RANGE_PAIRS, "query": json.dumps(_RANGE_LEAVES[:1])},
-], ids=["any group", "gt", "word on the day", "two starts"])
+    # P2-1: a filter on ANOTHER date field bounds the periods before too.
+    {**_RANGE_PAIRS, "field.Paid_On.from": "2026-10-01"},
+    {**_RANGE_PAIRS, "query": json.dumps([{"field": "Paid_On", "op": "lte", "value": "2026-10-31"}])},
+], ids=["any group", "gt", "word on the day", "two starts", "another date", "another date leaf"])
 async def test_any_other_filter_on_the_day_gives_no_baseline_and_the_same_figure(
         bills, app_engine, call: dict) -> None:
     a = bills.org_a
@@ -695,6 +703,11 @@ async def test_the_baseline_over_thirty_thousand_rows_answers_inside_the_timeout
     with ns.admin_engine.begin() as c:
         c.execute(text(_BIG_DAYS_SQL), {"o": a, "n": _BIG})
         c.execute(text("ANALYZE crm_module_records"))
+        # The size of the module, as the fill step writes it (NUM-2 guard).
+        c.execute(text(
+            "INSERT INTO crm_field_fill (organization_id, entity, key, filled, total, "
+            "distinct_count) VALUES (CAST(:o AS uuid), 'module:Ledger', 'Amount', :n, :n, "
+            "1000)"), {"o": a, "n": _BIG})
     agg = "/crm/aggregate?entity=module:Ledger&measure=sum&field=Amount&"
     month = {"field.Bill_Date.from": "2026-10-01", "field.Bill_Date.to": "2026-10-31"}
     quarter = {"field.Bill_Date.from": "2026-07-01", "field.Bill_Date.to": "2026-09-30"}
@@ -718,3 +731,105 @@ async def test_the_baseline_over_thirty_thousand_rows_answers_inside_the_timeout
         assert len(b_lit["baseline"]) == 6 and "baseline" not in b_dark, name
         for key in ("total", "records", "values"):
             assert b_lit[key] == b_dark[key], (name, key)
+
+
+
+# ── 11. The fix round of the verifier ──────────────────────────────────────
+
+
+async def test_another_date_range_gives_no_false_baseline(bills, app_engine) -> None:
+    """P2-1: Bill_Date in October AND Paid_On from 1 October. No bill of
+    April to September was paid in October, so a baseline would read 0 in
+    each month: false data. The answer has none, and the same figure."""
+    a = bills.org_a
+    call = {**_RANGE_PAIRS, "field.Paid_On.from": "2026-10-01"}
+    lit = await _agg(bills, a, entity="module:Bills", **call)
+    assert "baseline" not in lit and lit["records"] > 0
+    oracle = _oracle(bills, a, "fields ->> 'Paid_On' >= '2026-10-01'", "Amount")
+    assert lit["records"] == oracle["2026-10"][1]
+    assert set(oracle) == {"2026-10"}  # the month before reads nothing: it was false
+
+
+async def test_the_size_guard_skips_the_baseline_of_a_large_module(bills, app_engine) -> None:
+    """P2-3: a module with more records than BASELINE_MAX_RECORDS, or with
+    no size, gets no baseline. The figure and the coverage stay."""
+    from gateway.routes.crm.field_sql import BASELINE_MAX_RECORDS
+
+    a = bills.org_a
+    call = {"measure": "sum", "field": "Amount", **_RANGE_PAIRS}
+    small = await _agg(bills, a, entity="module:Bills", **call)
+    assert len(small["baseline"]) == 6
+
+    def size(n: int | None) -> None:
+        with bills.admin_engine.begin() as c:
+            if n is None:
+                c.execute(text("DELETE FROM crm_field_fill WHERE organization_id = "
+                               "CAST(:o AS uuid) AND entity = 'module:Bills'"), {"o": a})
+            else:
+                c.execute(text("UPDATE crm_field_fill SET total = :n WHERE organization_id = "
+                               "CAST(:o AS uuid) AND entity = 'module:Bills'"), {"o": a, "n": n})
+
+    for n in (BASELINE_MAX_RECORDS + 1, None):
+        size(n)
+        big = await _agg(bills, a, entity="module:Bills", **call)
+        assert "baseline" not in big, n
+        assert big["coverage"] == small["coverage"], n
+        for key in ("total", "records", "values", "groups"):
+            assert big[key] == small[key], (n, key)
+    size(None)
+    with bills.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_fill (organization_id, entity, key, filled, total, "
+            "distinct_count) VALUES (CAST(:o AS uuid), 'module:Bills', 'Amount', 1, :n, 1)"),
+            {"o": a, "n": BASELINE_MAX_RECORDS})
+    assert len((await _agg(bills, a, entity="module:Bills", **call))["baseline"]) == 6
+
+
+async def test_the_flag_is_read_once_so_the_answer_is_never_mixed(bills, app_engine,
+                                                                  monkeypatch) -> None:
+    """P3-1: a reload of the flag between two reads would mix the answer.
+    The route reads it once: the answer holds all three fields or none."""
+    from gateway.routes.crm import aggregate as agg
+
+    a = bills.org_a
+    call = {"measure": "sum", "field": "Amount", **_RANGE_PAIRS}
+    for first in (True, False):
+        calls: list[bool] = []
+
+        def flip(first: bool = first, calls: list[bool] = calls) -> bool:
+            calls.append(True)
+            return first if len(calls) == 1 else not first
+
+        monkeypatch.setattr(agg, "number_sense_on", flip)
+        body = await _agg(bills, a, entity="module:Bills", **call)
+        assert len(calls) == 1, calls
+        held = {key for key in ("baseline", "checks", "coverage") if key in body}
+        assert held in ({"baseline", "coverage"}, {"baseline", "checks", "coverage"},
+                        set()), (first, held)
+        assert bool(held) is first
+
+
+async def test_a_month_that_is_not_over_gets_no_outlier(dewin, app_engine, monkeypatch) -> None:
+    """P2-2: org B has 100 invoices in each month from April to October,
+    and 4 in November so far. On 10 November the month is not over, so 4
+    is no outlier. On 5 December the same 4 is one."""
+    from datetime import UTC, datetime
+
+    from gateway.routes.crm import aggregate as agg
+
+    b = dewin.org_b
+    with dewin.admin_engine.begin() as c:
+        c.execute(text(_INSERT), [_row(b, f"nov-{i}", f"2026-11-0{1 + i}", 1000)
+                                  for i in range(4)])
+    november = {"field.Invoice_Date.from": "2026-11-01", "field.Invoice_Date.to": "2026-11-30"}
+    monkeypatch.setattr(agg, "_crm_now", lambda: datetime(2026, 11, 10, 6, 0, tzinfo=UTC))
+    body = await _agg(dewin, b, entity="module:Invoices", **november)
+    assert body["records"] == 4 and len(body["baseline"]) == 6
+    assert [(c["kind"], c["severity"]) for c in body["checks"]] == [("part_period", "info")]
+    assert body["checks"][0]["sentence"] == "November has only 10 days so far."
+    monkeypatch.setattr(agg, "_crm_now", lambda: datetime(2026, 12, 5, 6, 0, tzinfo=UTC))
+    later = await _agg(dewin, b, entity="module:Invoices", **november)
+    assert [(c["kind"], c["key"], c["severity"]) for c in later["checks"]] == [
+        ("outlier", "2026-11", "warn")]
+    assert later["checks"][0]["sentence"] == (
+        "2026-11 is under 20% of the median of the other 6 months. Check why.")

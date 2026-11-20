@@ -8740,6 +8740,75 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
   the total and the list. It also proves org B, the flag off and the time
   over 30,000 rows.
 
+**CRM-Q34-10 · Two group fields, and pages of groups.**
+Status: built 2026-11-18 on `crm-q34-10-mt-a22ac1fb` (task 3727), not merged.
+Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
+
+- **Need.** A member asked for each site by month, over several hundred sites.
+  The total took only one field as its group, and it kept only the 50
+  largest groups.
+- **Outcome.** A module total takes `group_field2`, a second group field. At
+  most one of the two fields is a date, and `bucket` goes to it. The route
+  pages such groups in SQL with `group_page` and `group_page_size` (1 to
+  200, default 50). A total of one field can go past its 50 largest groups
+  with `group_page=2` and on. A paged answer gives `group_count`,
+  `group_page` and `group_pages`.
+- **Scope.**
+  - A page of two fields is in the order of the value, largest first, then
+    each key. A key ends the order, so two pages never share a group.
+  - Page 1 of one field is the answer of today, byte for byte, with one
+    exception. On the list, a value group of a module with more than 50
+    groups cuts its 50 groups in the order of page 2 (`aggregate.cut_key`),
+    so page 2 continues it. With 50 groups or fewer, off the list, on a core
+    entity, and for a date group, a split, a key word or `q`, page 1 keeps
+    the order of today. When page 1 leaves groups out on the
+    list, it carries `next_group_page: 2`. The tool
+    then ends its "Other" line with "Ask for page 2 for the next groups." in
+    place of "Narrow the filter to see them."
+  - Page 2 on of one field takes the order in which page 1 cut its 50
+    groups: the value rounded to 2 places, largest first, then the label of
+    the group by code point, then the key by code point with a NULL key last
+    (`field_sql.one_group_order`). Page 1 breaks a tie the same way
+    (`aggregate.cut_key`). So page 2 starts where page 1 stops.
+  - A later page of one field holds 50 groups, as page 1 does. Another
+    `group_page_size` gives a 422. Two fields take 1 to 200.
+  - `total` and `records` stay the answer over every group. A group with no
+    value in a field is its own group, with the label "(none)".
+  - The filters are the ones of the module total of today, through one
+    helper (`aggregate._module_filters`). That covers the filter words of
+    CRM-Q34-5 and the `query` of SEM-1b, so a paged answer counts the same
+    records. A paged answer carries `filter_words` and `text_numbers` too.
+  - A core entity, two date fields, one field twice, a bucket on a value
+    field, and a split with two fields each give a 422.
+  - Off the list, `group_field2` gives a 422. It names the way without it:
+    group by one field, and filter by the other. The route ignores
+    `group_page` and `group_page_size`, so every other call gives the answer
+    of today. A `group_page` past 1,000,000 gives a 422 on the list.
+  - The tool `crm_aggregate` takes `group_field2` and always sends it. It
+    sends the page only with `group_field2`, or for page 2 on of one module
+    group.
+- **Limits.** A page past 1 of one date group gives the answer of page 1
+  again. So does a page past 1 with a split, a `group_by` key word or a `q`.
+  Those groups cannot continue in the order of the value, and that answer
+  says to narrow the filter. A paged answer has no findings of one day. Its
+  `other` is None, and its `omitted` counts the groups that are not on the
+  page. A `q` filters a two-field
+  answer by its exact words, with no near pass. On the list, page 1 of a
+  value group of a module with more than 50 groups rounds the exact numeric
+  of each group. It rounds
+  half away from zero, as page 2 does (`aggregate.cents`). There, two groups whose
+  values differ by under half a cent can change places on page 1. So can the
+  set of groups at the cut of 50, and `other`. The shown values and the
+  total do not change.
+- **Fences.** `tests/unit/test_crm_two_group.py` holds each refusal, the SQL
+  of one group field, both orders and the tool text.
+  `tests/unit/test_crm_two_group_r8.py` checks each group of each page
+  against an independent `GROUP BY`. It also checks the list count, org B,
+  the base answer byte for byte, the 503, and 30,000 records in 200 groups.
+  Through the tool, it checks a split, the near pass of `q`, and a date
+  group in time order. It walks 122 tied groups whose names sort the other
+  way from their ids.
+
 ## 19. The daily-use UX (2026-10-12)
 
 **Bottom line.** The CRM reads its data correctly, but a sales rep cannot yet
