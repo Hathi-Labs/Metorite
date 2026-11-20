@@ -677,11 +677,17 @@ async def _record_test_failures(org: str, member: str, skill_id: str,
     for an org on ``STUDIO_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``. With the
     flag off it sends no statement.
 
-    *org* and *member* come from the session. ``body_key`` is the key of the
-    body that ran: *body* for an unsaved body, else the stored version that
-    the suite ran. A row holds codes, the test id and action names, never an
-    input or a value. Best effort: a fault logs its class only and never
-    changes the answer of the route."""
+    A test of a body that is not saved writes no row. The row would name a
+    version that did not run (``run_suite`` reports ``current_version`` for
+    such a body). So a row names only a stored version that the suite ran,
+    and ``body_key`` is the key of that stored body.
+
+    *org* and *member* come from the session. A row holds codes, the test id
+    and action names, never an input or a value. Best effort: a fault logs
+    its class only, never its text, and never changes the answer of the
+    route."""
+    if body is not None:
+        return
     if not flags.studio_allowed(org) or not flags.skill_repair_allowed(org):
         return
     from gateway.studio import skill_repair, skill_runs
@@ -693,12 +699,10 @@ async def _record_test_failures(org: str, member: str, skill_id: str,
     written = 0
     try:
         async with _tenant_session() as db:
-            if body is None:
-                ran = await store.get_version(db, member, skill_id, result.version)
-                if ran is None:
-                    return
-                body = ran.body
-            key = skill_repair.body_key(body)
+            ran = await store.get_version(db, member, skill_id, result.version)
+            if ran is None or int(ran.version) != int(result.version):
+                return
+            key = skill_repair.body_key(ran.body)
             for found in failed:
                 try:
                     await skill_runs.record_test(

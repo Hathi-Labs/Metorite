@@ -4664,8 +4664,10 @@ async def _apply_tool_packs(
     _log_skills_loaded(skills, choice.skills_skipped)
     _note_dry_run_loaded(skill_slugs)  # WS-STU F4b
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key,
-                        skill_notes=_skill_run_notes(facts, skills, run_ctx, run_key,
-                                                     words=str(getattr(turn, "words", "") or "")))
+                        skill_notes=_skill_run_notes(
+                            facts, skills, run_ctx, run_key,
+                            words=str(getattr(turn, "words", "") or ""),
+                            pack_tools={_tool_name(t) for b in builds for t in b.tools}))
     if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
     # TS-2a: with the search on, the run holds ``find_tools`` also with no
@@ -4799,6 +4801,11 @@ async def _turn_with_skills(turn: Any) -> Any:
 #: The key of the run context that holds the :class:`SkillRunNotes` of a run.
 SKILL_RUN_NOTES_KEY = "skill_run_notes"
 
+#: The ``detail`` of a passed row of a skill whose tools no pack tool of the
+#: run holds. The hook of the pack tool guard cannot see those calls, so the
+#: row did not observe the run. A code word, never a value.
+UNOBSERVED = "unobserved"
+
 #: The facts of the skills that :func:`_turn_with_skills` built, by pack slug.
 #: :func:`_apply_tool_packs` binds an empty dict around the call, so a call
 #: from any other place keeps no fact. The default is None, never a mutable
@@ -4884,10 +4891,11 @@ class SkillRunNotes:
     slot, only to hash them at the write, and the repr never shows them."""
 
     __slots__ = ("_words", "failures", "member", "org", "run_id", "run_key", "skills",
-                 "thread_id", "writes")
+                 "thread_id", "unobserved", "writes")
 
     def __init__(self, *, org: str, member: str, run_id: str, thread_id: str | None,
-                 run_key: str, skills: Mapping[str, _LoadedSkill], words: str) -> None:
+                 run_key: str, skills: Mapping[str, _LoadedSkill], words: str,
+                 unobserved: Iterable[str] = ()) -> None:
         self.org = org
         self.member = member
         self.run_id = run_id
@@ -4895,6 +4903,10 @@ class SkillRunNotes:
         self.run_key = run_key
         self.skills = dict(skills)
         self._words = words
+        #: The slugs of the skills with no tool that is a pack tool of the run.
+        #: The hook cannot see their calls, so a passed row of one says
+        #: :data:`UNOBSERVED` in its detail.
+        self.unobserved = frozenset(unobserved) & frozenset(self.skills)
         #: The slug of a skill to its reason and detail, as the row keeps them.
         self.failures: dict[str, tuple[str, str]] = {}
         #: The slug of a skill to each write action and its key names.
@@ -4929,7 +4941,8 @@ class SkillRunNotes:
     def row_of(self, slug: str) -> tuple[bool, str, str, list[dict[str, Any]]]:
         """The ``passed``, the reason, the detail and the writes of the row
         of the skill *slug*."""
-        reason, detail = self.failures.get(slug, ("passed", ""))
+        reason, detail = self.failures.get(
+            slug, ("passed", UNOBSERVED if slug in self.unobserved else ""))
         writes = [{"action": a, "keys": sorted(k)}
                   for a, k in sorted(self.writes.get(slug, {}).items())]
         return reason == "passed", reason, detail, writes
@@ -4941,7 +4954,7 @@ class SkillRunNotes:
 
 def _skill_run_notes(facts: Mapping[str, _LoadedSkill], skills: Sequence[Any],
                      run_ctx: Mapping[str, Any], run_key: str, *,
-                     words: str) -> SkillRunNotes | None:
+                     words: str, pack_tools: Iterable[str] = ()) -> SkillRunNotes | None:
     """The notes of the run, or None. Only the skills that the run holds at
     the end of the apply count (*skills*, after ``_skills_present`` and
     ``_keep_skill_packs``). With no fact (the flag is off, or no skill
@@ -4954,7 +4967,11 @@ def _skill_run_notes(facts: Mapping[str, _LoadedSkill], skills: Sequence[Any],
     ``assistant_profile.sent_words`` at the start of the run, before any
     steer, so it is the sent text of the member. That is the ``content`` of
     the member's ``chat_message`` row (``routes/agent.py`` saves the same
-    text). A turn with no sent text, such as a Continue, gets no notes."""
+    text). A turn with no sent text, such as a Continue, gets no notes.
+
+    *pack_tools* is the names of the pack tools of the run. A kept skill with
+    no tool among them is ``unobserved`` (:data:`UNOBSERVED`). It never
+    raises: a fault gives None, and the turn goes on with no notes."""
     if not facts:
         return None
     try:
@@ -4969,8 +4986,10 @@ def _skill_run_notes(facts: Mapping[str, _LoadedSkill], skills: Sequence[Any],
         if not kept or not org or not member or not run_id or not str(words).strip():
             return None
         thread = str(run_ctx.get("session_id") or "").strip() or None
+        held = frozenset(pack_tools)
+        blind = [slug for slug, skill in kept.items() if not held & set(skill.actions)]
         return SkillRunNotes(org=org, member=member, run_id=run_id, thread_id=thread,
-                             run_key=run_key, skills=kept, words=words)
+                             run_key=run_key, skills=kept, words=words, unobserved=blind)
     except Exception as exc:  # the class only
         _log.info("executor.skill_run_unnoted", error_type=type(exc).__name__)
         return None
@@ -4996,7 +5015,23 @@ def _note_skill_call(notes: SkillRunNotes | None, tool: str, fn: Any, args: tupl
     gives ``Refused``. A card of this call that the member declined
     (``ask_tools.last_card_outcome``) gives ``card_declined``. A write tool
     (no read-only mark in the risk registry) adds its key names: the names
-    of the arguments of the owner's signature, never a value."""
+    of the arguments of the owner's signature, never a value.
+
+    ⚠️ The limit. The hook sees only calls that go through ``_pack_tool``.
+    Some calls leave no signal, so the row reads passed:
+
+    * a call of a tool of the run base: a workflow action,
+      ``tool:crm_change_history``, ``tool:crm_search_notes``, or a door-op
+      tool that the member holds;
+    * a call that a pack refusal answers before the hook: held in the turn,
+      the batch write refusal, the pack write refusal, or the refusal of an
+      argument shape.
+
+    A run that ends in an error or a stop also writes passed rows. A RESUME
+    run that keeps its run_id can write passed rows twice. F12c reads failed
+    rows only, so a passed row never blocks a repair. A skill with no tool
+    among the pack tools of the run gets :data:`UNOBSERVED` in the detail of
+    its passed row."""
     if notes is None:
         return
     try:

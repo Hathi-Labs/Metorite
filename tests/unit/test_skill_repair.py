@@ -435,14 +435,30 @@ class TestTheWriters:
         assert one["kw"]["body_key"] == skill_repair.body_key(_BODY)
         assert one["kw"]["credits"] == Decimal("1.5") and one["kw"]["run_id"] == "r-missing_write"
         assert one["kw"]["writes"] == [{"action": "tool:create_task", "keys": []}]
+        assert {c["kw"]["version"] for c in seen} == {2}, "the stored version that ran"
 
-    async def test_an_unsaved_body_takes_its_own_key(self, monkeypatch) -> None:
+    async def test_an_unsaved_body_writes_no_row(self, monkeypatch) -> None:
+        """Review P2-B: ``run_suite`` reports ``current_version`` for a body
+        that is not saved, so a row would name a version that did not run.
+        Mutation: write the rows of an unsaved body -> red."""
         _flags(monkeypatch)
         route, seen, versions = _route(monkeypatch)
+        opened: list[Any] = []
+        monkeypatch.setattr(route, "_tenant_session", lambda *a, **k: opened.append(a))
         body = {"instructions": "Other.", "actions": ["tool:create_task"]}
         await route._record_test_failures(ORG, MEMBER, SKILL, _suite("extra_write"), body)
-        assert versions == []
-        assert seen[0]["kw"]["body_key"] == skill_repair.body_key(body)
+        assert seen == [] and versions == [] and opened == []
+
+    async def test_a_stored_version_that_is_gone_writes_no_row(self, monkeypatch) -> None:
+        _flags(monkeypatch)
+        route, seen, _versions = _route(monkeypatch)
+
+        async def gone(*_a: Any, **_k: Any) -> Any:
+            return None
+
+        monkeypatch.setattr(route.store, "get_version", gone)
+        await route._record_test_failures(ORG, MEMBER, SKILL, _suite("extra_write"), None)
+        assert seen == []
 
     async def test_the_test_writer_with_the_flag_off_opens_no_session(self, monkeypatch) -> None:
         route, seen, versions = _route(monkeypatch)
@@ -454,11 +470,19 @@ class TestTheWriters:
         assert seen == [] and versions == [] and opened == []
 
     async def test_a_test_store_fault_is_swallowed(self, monkeypatch) -> None:
+        """Verifier P3-4: the warning of the test writer names the class of a
+        fault, never its text. Mutation: log ``str(exc)`` -> red."""
         _flags(monkeypatch)
         route, seen, _versions = _route(monkeypatch, fail=RuntimeError(WORDS))
+        lines: list[tuple[str, dict[str, Any]]] = []
+        for level in ("debug", "info", "warning", "error", "exception"):
+            monkeypatch.setattr(route._log, level, lambda event, *a, **kw: lines.append(
+                (str(event), {**kw, "a": a})))
         await route._record_test_failures(
             ORG, MEMBER, SKILL, _suite("missing_write", "call_cap"), None)
         assert len(seen) == 1, "a fault that is no refusal ends the write"
+        assert any(kw.get("error_type") == "RuntimeError" for _e, kw in lines), lines
+        _assert_no_words(lines)
         route, seen, _versions = _route(monkeypatch, fail=skill_runs.SkillRunError("x", "y"))
         await route._record_test_failures(
             ORG, MEMBER, SKILL, _suite("missing_write", "call_cap"), None)
@@ -570,3 +594,130 @@ def test_the_suite_fake_matches_the_result_shape() -> None:
     """The fake of the suite keeps the fields of ``TestResult``."""
     names = {f.name for f in dataclasses.fields(skill_tests.TestResult)}
     assert {"test_id", "passed", "reason", "detail", "writes", "credits", "run_id"} <= names
+
+
+# ── Review round 1: the best-effort parts are fenced (R7) ───────────────────
+
+
+@pytest.mark.parametrize("broken", ["annotated_read_only", "is_refusal", "saw"])
+async def test_a_fault_of_the_note_never_changes_a_good_call(monkeypatch, writes_are,
+                                                             broken) -> None:
+    """Verifier P2-A: a fault inside ``_note_skill_call`` after a call that
+    worked leaves the answer of the tool as it was. The guard must not answer
+    "The tool failed". Mutation: narrow its ``except Exception`` -> red."""
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise LookupError(WORDS)
+
+    if broken == "annotated_read_only":
+        monkeypatch.setattr("acb_skills.subagent_contract.annotated_read_only", boom)
+    elif broken == "is_refusal":
+        monkeypatch.setattr("acb_common.tool_refusals.is_refusal", boom)
+    else:
+        monkeypatch.setattr(ti.SkillRunNotes, "saw", boom)
+    lines = _log_spy(monkeypatch)
+    notes = _notes()
+    with _run(notes):
+        assert await _tool("create_task", _ok)(title="x") == "Done."
+    assert notes.row_of(SLUG)[:2] == (True, "passed")
+    assert any(kw.get("error_type") == "LookupError" for _e, kw in lines)
+    _assert_no_words(lines)
+
+
+async def test_a_fault_of_the_notes_never_stops_the_apply(monkeypatch) -> None:
+    """Verifier P2-A: a fault inside ``_skill_run_notes`` gives no notes,
+    and ``_apply_tool_packs`` still loads the skill pack, so the turn goes
+    on. Mutation: narrow its ``except Exception`` -> red."""
+    import dataclasses as dc
+
+    from orchestrator import executor
+
+    from tests.unit.test_skill_packs import SESSION as PACK_SESSION
+    from tests.unit.test_skill_packs import _pack, _tenant
+    from tests.unit.test_skill_packs import _turn as _pack_turn
+
+    found = _pack(actions=[])
+
+    async def _with(turn: Any) -> Any:
+        facts = ti._SKILL_FACTS.get()
+        assert facts is not None, "the apply binds the facts"
+        facts[found.slug] = _loaded(found.skill_id)
+        return dc.replace(turn, skills=(found,))
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise LookupError(WORDS)
+
+    monkeypatch.setattr(ti, "_turn_with_skills", _with)
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 40)
+    monkeypatch.setattr(ti, "_pack_base_names", lambda *_a, **_k: set())
+    monkeypatch.setattr(executor, "_verified_run_member", boom)
+    agent = SimpleNamespace(default_options={"tools": [], "instructions": "BASE"})
+    with _tenant():
+        applied = await ti._apply_tool_packs(
+            [agent], _pack_turn("use the quote helper", ()),
+            {"session_id": PACK_SESSION, "run_id": "run-1"}, allowed=frozenset(),
+            agent_name="orchestrator", tool_scope=None, agent_config=None, bullets={})
+    assert applied is not None and applied.record.skills == (found.slug,)
+    assert applied.skill_notes is None
+    assert ti.SKILL_RUN_NOTES_KEY not in applied.context()
+
+
+def test_schedule_never_raises(monkeypatch) -> None:
+    """A fault of the start of the task gives None, never a raise."""
+    def no_loop() -> Any:
+        raise RuntimeError(WORDS)
+
+    monkeypatch.setattr(ti.asyncio, "get_running_loop", no_loop)
+    applied = ti.PackApply(builds=(), record=None, run_key=RUN_KEY, skill_notes=_notes())
+    assert ti.schedule_skill_runs(applied) is None
+    assert ti.schedule_skill_runs(object()) is None
+
+
+def test_the_finally_holds_each_exception_of_the_schedule() -> None:
+    """The call in the ``finally`` of ``run_agent_stream`` sits inside
+    ``contextlib.suppress(Exception)``, so a fault never replaces the end of
+    the run, and a ``CancelledError`` still passes. Mutation: call it with no
+    suppress, or suppress ``BaseException`` -> red."""
+    import ast
+
+    src = (_ROOT / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    found = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.With):
+            continue
+        items = [ast.unparse(i.context_expr) for i in node.items]
+        calls = [n for n in ast.walk(node) if isinstance(n, ast.Call)
+                 and ast.unparse(n.func) == "schedule_skill_runs"]
+        if calls:
+            found.append(items)
+    assert found == [["contextlib.suppress(Exception)"]], found
+
+
+def test_a_child_context_drops_the_notes() -> None:
+    from orchestrator import executor
+
+    assert executor._without_pack_keys()[ti.SKILL_RUN_NOTES_KEY] is None
+
+
+def test_a_skill_with_no_pack_tool_is_unobserved(monkeypatch) -> None:
+    """Review P2-C: a skill whose tools no pack tool of the run holds gets
+    the code word ``unobserved`` in the detail of its passed row. A failed
+    row keeps its own detail. Mutation: drop the ``pack_tools`` test -> red."""
+    from acb_common.db import bind_tenant, release_tenant
+    from orchestrator import executor
+
+    monkeypatch.setattr(executor, "_verified_run_member", lambda: MEMBER)
+    facts = {SLUG: _loaded(), SLUG2: _loaded(SKILL2, send_email="tool:send_email")}
+    kept = [SimpleNamespace(slug=SLUG), SimpleNamespace(slug=SLUG2)]
+    token = bind_tenant(ORG)
+    try:
+        notes = ti._skill_run_notes(facts, kept, {"run_id": "run-1"}, RUN_KEY, words=WORDS,
+                                    pack_tools={"create_task", "read_email"})
+    finally:
+        release_tenant(token)
+    assert notes is not None and notes.unobserved == {SLUG2}
+    assert notes.row_of(SLUG) == (True, "passed", "", [])
+    assert notes.row_of(SLUG2) == (True, "passed", ti.UNOBSERVED, [])
+    notes.saw("send_email", error="ToolBoom")
+    assert notes.row_of(SLUG2)[:3] == (False, "tool_error", "send_email: ToolBoom")

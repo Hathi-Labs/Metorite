@@ -121,6 +121,13 @@ def _rows(world: Any, org: str) -> list[tuple]:
     return _go(world, go)
 
 
+async def _count(org: str) -> int:
+    async with tenant_session(org) as db:
+        return int((await db.execute(text(
+            "SELECT count(*) FROM studio_skill_runs WHERE created_by LIKE :t"),
+            {"t": _LIKE})).scalar_one())
+
+
 def _notes(org: str, skill_id: str) -> ti.SkillRunNotes:
     return ti.SkillRunNotes(
         org=org, member=ANA, run_id=f"run-{uuid.uuid4().hex}", thread_id="thread-r8",
@@ -202,6 +209,9 @@ def test_r8_a_test_failure_lands_under_the_session_org(world) -> None:
     async def go() -> str:
         sid = await _skill(a)
         with _bound(a):
+            # A test of a body that is not saved writes no row (review P2-B).
+            await route._record_test_failures(a, ANA, sid, _suite(sid), dict(BODY))
+            assert await _count(a) == 0
             await route._record_test_failures(a, ANA, sid, _suite(sid), None)
         return sid
 
@@ -210,6 +220,7 @@ def test_r8_a_test_failure_lands_under_the_session_org(world) -> None:
     assert row[:6] == (sid, "test", False, "missing_write",
                        "The turn did not hold the write tool:create_task.", ANA)
     assert (row[6], row[7], row[8]) == ("r-missing_write", "t-missing_write", None)
+    assert row[10].count('"version": 1') == 1, "the stored version that ran"
     assert row[9] == skill_repair.body_key(BODY)
     assert _rows(world, b) == []
 
