@@ -856,8 +856,9 @@ decide call and writes an empty `ai` section.
 - It refuses a tool whose `destructiveHint` is true or whose `idempotentHint`
   is false. It refuses a server with `always_confirm`.
 - It calls a tool only with no required argument, or with a key from an
-  earlier read.
+  earlier read. "The plan and the caps" below gives the rule.
 - It makes at most 20 calls in 30 s, with at most 64 KB for each result.
+  "The plan and the caps" below says what happens at each cap.
 - It keeps only keys, types, counts and the first and last date.
 - It normalises keys and types to the grammar of §10.4 (`Custom_Field_10`,
   `int64` and the other cases).
@@ -1015,8 +1016,55 @@ approved yet. Fences in `test_connection_profiler.py`:
 - A type goes through a closed table to one plain word. So `int64` becomes
   `integer`, and `float64` becomes `number`. A type that is not in the table
   becomes `unknown`.
+- A `-` becomes `_` before the digit rule, so `list-invoices` becomes
+  `list_invoices`. A dot and a space stay refused.
+- The run leaves out a key or a type word with 5 or more digits in a row in
+  its raw text, and counts it. A date, an account number and an amount have
+  5 or more digits in a row. The digit rule would hide that figure in a key. So `d20240115`, `acct_50012345` and `invoice_123456` are left out.
+- A run of 4 or fewer digits gets an `_` between each two digits. So
+  `Q4_2024_Target` becomes `Q4_2_0_2_4_Target`, and `cf_9001` becomes
+  `cf_9_0_0_1`.
+- This rule applies to entity keys, field keys, column names, argument keys
+  and type words.
 - A key that still fails the rule, or that is the same as a key already in the
   entity, is left out. The run counts it.
+
+A known limit (F3 of the verifier, 2026-11-20): a value or an instruction
+written as one identifier with no space passes as a key. So SEM-15 must review
+the keys before a key gets into a prompt.
+
+**The plan and the caps (fix round, 2026-11-20).** The profiler plans its
+calls in one fixed order. First come the reads with no argument, in the order
+of the tool name. Then come the keyed reads, in the order of the tool name and
+then the key.
+
+- A keyed read takes one required `string` argument. The call sends the raw
+  key that an earlier read returned. A raw key fills an argument only when
+  `connection_key_problem` passes it as it is.
+- A result object with exactly one list of records is a wrapper, such as
+  `{"data": [...], "total": 120}`. Its records belong to the tool, or to the
+  key that filled the call. The wrapper word is no entity, and it never fills
+  an argument. An object with two or more lists of records gives one entity
+  for each key.
+- The profiler cuts the plan to 20 calls before the first call, and counts
+  each cut call in `left_out`. Then it writes what it read. So the call cap
+  never stops a run, and the hash does not depend on where a cap falls. A
+  hard guard still refuses a 21st call.
+- A result over 64 KB, or over the 1 MB budget of the client, skips that tool
+  only. The tool gives no shape, the run counts it in `left_out`, and the
+  run goes on.
+- Four events stop the run, and then the run writes nothing. They are the
+  30 s cap (`stopped:time`) and a cache that cannot count the org window
+  (`stopped:cache`). They are also a full org window (`stopped:limited`) and
+  a server that changed during the run (`stopped:changed`). The last one
+  covers `LIVE_CHANGED` and `LIVE_NO_SERVER`. Another refusal of one call
+  skips that call.
+- The run frees its `LIVE_PER_ORG` slot before it writes the draft.
+
+A known limit (F4 of the verifier, 2026-11-20): the B1b-3 `tool_text_hash`
+does not cover `inputSchema`. So a server can add a required argument to an
+approved tool, and the profiler acts on that schema. A later slice must hash
+the schema too.
 
 **The flag.** `profile` checks `connection_model_allowed(org)` first. With the
 flag off, it lists no tool, calls no tool and writes nothing.
@@ -1207,8 +1255,23 @@ names the mutation that must turn it red.
     false, gets no call. **Mutation:** drop the hint check, and the case fails.
   - The approval. A tool with no B1b-3 approval, or with a changed text, gets
     no call. **Mutation:** drop the check of the approval, and the case fails.
-  - The caps. The 21st call stops the run. A result over 64 KB stops the run.
-    A run over 30 s stops. **Mutation:** drop one cap, and its case fails.
+  - The caps. The plan is cut to 20 calls in a fixed order, and two runs
+    give the same hash (`test_the_plan_is_cut_to_20_calls_in_a_fixed_order`).
+    A 21st call is still refused (`test_a_21st_call_is_still_refused`). A
+    result over 64 KB skips that tool only
+    (`test_a_result_over_64_kb_skips_that_tool_only`). A run over 30 s stops
+    and writes nothing (`test_a_run_over_30_s_stops`). A cache that cannot
+    count stops the run (`test_a_cache_that_cannot_count_stops_the_run`).
+    **Mutation:** drop the plan cut, the skip of a big result, or a time
+    check, and its case fails.
+  - The fix round of 2026-11-20. Each rule has a case, and the drop of the
+    rule turns it red:
+    `test_only_a_raw_key_that_passes_the_rule_fills_an_argument` (F1),
+    `test_a_wrapper_takes_the_tool_name_and_fills_no_argument` (P1b),
+    `test_a_tool_name_with_a_dash_gives_an_entity` (P2),
+    `test_a_key_with_five_digits_in_a_row_is_left_out` (F2),
+    `test_a_changed_server_during_the_run_stops_it` (F5) and
+    `test_the_write_holds_no_live_slot`.
   - No value. A value in a fake result does not get into the body.
     **Mutation:** keep a value, and the case fails.
   - The normalisation. `Custom_Field_10` and `int64` normalise, and
