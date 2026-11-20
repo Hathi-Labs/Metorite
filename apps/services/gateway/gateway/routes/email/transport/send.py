@@ -84,6 +84,12 @@ class SendEmailRequest(BaseModel):
     # H-392: Metorite files that the member can see, each with the digest
     # that its card showed (``metorite_files.resolve_metorite_files``).
     metorite_files: list[MetoriteFileRef] | None = None
+    # HRD-10d-3 (task 3824): the local id of the newest message of the thread
+    # that the card of this reply saw (``thread_head``). Only a chat tool
+    # with ``CHAT_CARD_PRECONDITION_ORGS`` on names it. With it, a newer
+    # message in the thread is a 409 before any provider call
+    # (:func:`refuse_changed_thread`). With no value the send is as before.
+    expect_thread: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class MetoriteFileRef(BaseModel):
@@ -292,6 +298,12 @@ async def send_email(
     async with _tenant_session() as db:
         reply_pmid, reply_thread_id = await _reply_target(
             db, req.account_id, req.reply_to_message_id, owner)
+        if req.expect_thread is not None and req.reply_to_message_id:
+            # HRD-10d-3: the thread is read again from the stored rows, and
+            # never from the request, before the provider session.
+            await refuse_changed_thread(
+                db, owner, req.account_id, reply_thread_id, reply_pmid,
+                req.expect_thread)
         # Ownership check + auth + rotated-cred persist all live in the session
         # helper (401 on auth failure, 404 on a foreign account).
         async with provider_session(
@@ -513,6 +525,87 @@ async def _reply_target(
     if row is None:
         raise HTTPException(status_code=404, detail=REPLY_NOT_IN_MAILBOX)
     return row.provider_message_id, row.thread_id
+
+
+# ── HRD-10d-3: a newer message in the thread of a reply (task 3824) ─────────
+#
+# ``chat_failure_modes.md`` §6 row HRD-10d-3. A reply card shows the thread as
+# it was. Another message can come into the thread while the card waits: the
+# other person answered, or the member replied from another device. The send
+# then refuses, because the reply can be out of date.
+
+#: The newest message of one thread of one mailbox that is not a draft. The
+#: owner predicate is the one mailbox seam, and FORCE RLS keeps another
+#: organization out. A draft never counts, so the card's own draft and a
+#: draft that the member saves do not move it. The order is total, so the
+#: card and the send pick the same row from the same rows.
+THREAD_HEAD_SQL = (
+    "SELECT em.id::text AS id, em.provider_message_id, em.received_at, em.from_address"
+    " FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.account_id = CAST(:aid AS uuid) AND em.thread_id = :tid"
+    " AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
+    " AND {owner}"
+    " ORDER BY em.received_at DESC NULLS LAST, em.id DESC LIMIT 1")
+
+#: The words of the 409 of a reply whose thread has a newer message.
+THREAD_CHANGED_WORDS = (
+    "A newer message came into this conversation after the card showed, so "
+    "nothing was sent.")
+
+
+async def thread_head(db, owner: str, account_id: str, thread_id: str | None):
+    """The row of :data:`THREAD_HEAD_SQL`, or None. THE one read of the head
+    of a thread: the card takes its marker from it, and the send compares
+    against it. A mail with no thread has no head."""
+    if not thread_id or _as_uuid(account_id) is None:
+        return None
+    sql = THREAD_HEAD_SQL.format(owner=mailbox_predicate("ea", uid="uid", level="read"))
+    return (await db.execute(text(sql), {
+        "aid": _as_uuid(account_id), "tid": thread_id, "uid": owner})).fetchone()
+
+
+def _sender_of(row) -> str:
+    """The address of the From of a stored row, or ""."""
+    import json
+
+    frm = getattr(row, "from_address", None)
+    if isinstance(frm, str):
+        try:
+            frm = json.loads(frm or "{}")
+        except ValueError:
+            frm = {}
+    return str((frm or {}).get("email") or "") if isinstance(frm, dict) else ""
+
+
+async def refuse_changed_thread(
+    db, owner: str, account_id: str, thread_id: str | None,
+    answered_pmid: str | None, expect: str,
+) -> None:
+    """Answer 409 ``thread_changed`` when the thread of a reply has a message
+    that is newer than *expect*, the head that its card saw.
+
+    The head is read again from the stored rows (:func:`thread_head`). It
+    passes when it is *expect*, when it is the mail that the reply answers,
+    and when the thread has no head. Any other head is a message that came
+    after the card, so nothing is sent. *expect* is only compared, and no
+    row is read by it, so a marker of another thread or another mailbox is
+    refused too. ``detail.newer`` names the From and the time of that
+    message, and the tool fences each value."""
+    from acb_skills.reply_card import THREAD_CHANGED
+
+    head = await thread_head(db, owner, account_id, thread_id)
+    if head is None or head.id == _as_uuid(expect) or (
+            answered_pmid and head.provider_message_id == answered_pmid):
+        return
+    when = head.received_at.isoformat() if getattr(
+        head.received_at, "isoformat", None) else str(head.received_at or "")
+    from acb_common import get_logger
+
+    get_logger("gateway.email.send").warning(
+        "email.send_refused", reason=THREAD_CHANGED)
+    raise HTTPException(status_code=409, detail={
+        "reason": THREAD_CHANGED, "message": THREAD_CHANGED_WORDS,
+        "newer": {"from": _sender_of(head), "received_at": when}})
 
 
 class ImportArtifactRequest(BaseModel):
