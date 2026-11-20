@@ -13,6 +13,10 @@
  * translator sends it on as the frame `run_resumed`, and the attach loop then
  * keeps the reply open.
  *
+ * RESUME-3d adds the reply row that the server list names for a live
+ * continuation (`attachPickOf`). A tab that did not get the 200 then replays
+ * the run into that row, with no read of the saved rows.
+ *
  * Fence (R7): `chatResume.test.ts`.
  */
 
@@ -111,4 +115,46 @@ export function replayEndAfter(end: ReplayEnd, frame: { type?: unknown; parked?:
   if (frame.type === "done") return { terminal: true, parked: frame.parked === true };
   if (frame.type === RUN_RESUMED_FRAME) return REPLAY_OPEN;
   return end;
+}
+
+// ── RESUME-3d: the reply row that the list names ───────────────────────────
+
+/** Where a re-attach replays (`useAgentChat.attach`). */
+export interface AttachPick {
+  /** The reply that this chat shows and that the replay goes into, or null. */
+  target: ChatMessage | null;
+  /** Read the saved rows to find the target, as before RESUME-3d. */
+  readSaved: boolean;
+  /** The id that the replay takes when no target shows (`replayIdOf`). */
+  resumeId: string | null;
+}
+
+/**
+ * The target of a re-attach, before any read of the saved rows.
+ *
+ * - With a reply row that the list names (`listedReplyId`), that row is the
+ *   target. When the chat does not show it yet, the replay takes its id.
+ *   No saved row is read, so no older reply can be the target. Case A
+ *   names the parked reply, and case B names the new one.
+ * - With none, the rules of before hold. The reply that this tab knows is
+ *   the target, else an interrupted last reply when no stale tail holds,
+ *   else the saved rows decide.
+ */
+export function attachPickOf(
+  run: Pick<RunStatus, "messageId" | "listedReplyId" | "staleTail" | "resumedAt">,
+  messages: readonly ChatMessage[],
+  interrupted: (m: ChatMessage | undefined) => boolean,
+): AttachPick {
+  const reply = (id: string | null) =>
+    (id ? messages.find((m) => m.id === id && m.role === "assistant") : undefined) ?? null;
+  if (run.listedReplyId) {
+    return { target: reply(run.listedReplyId), readSaved: false, resumeId: run.listedReplyId };
+  }
+  const last = messages[messages.length - 1];
+  const target = reply(run.messageId) ?? (!run.staleTail && interrupted(last) ? last : null);
+  return {
+    target,
+    readSaved: target === null,
+    resumeId: run.resumedAt > 0 ? run.messageId : null,
+  };
 }

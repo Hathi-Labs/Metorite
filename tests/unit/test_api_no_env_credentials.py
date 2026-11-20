@@ -7,9 +7,11 @@ imports ``acb_skills.integrations``, and none reads ``os.environ`` or
 ``os.getenv``. An operator key in the environment is never a fallback for an
 API connection, at any rung (IN-D7).
 
-The API modules are each file of ``gateway/connections/api/`` and each route
-file whose name starts with ``integrations_api``. A new API module under one of
-those names joins the scan with no change here.
+The API modules are each file of ``gateway/connections/api/``, each route
+file whose name starts with ``integrations_api``, and the call routes of API-3
+(``routes/api_connections.py``). A new API module under one of those names
+joins the scan with no change here. API-3 also bans ``import os`` and a bare
+``environ`` or ``getenv`` name.
 
 Mutation: add ``import os`` and ``os.environ.get("X")`` to
 ``connections/api/connect.py``, and ``test_no_api_module_reads_the_environment``
@@ -31,6 +33,7 @@ _GATEWAY = _REPO / "apps" / "services" / "gateway" / "gateway"
 def _api_modules() -> list[Path]:
     found = sorted((_GATEWAY / "connections" / "api").glob("*.py"))
     found += sorted((_GATEWAY / "routes").glob("integrations_api*.py"))
+    found += sorted((_GATEWAY / "routes").glob("api_connections*.py"))
     return found
 
 
@@ -41,6 +44,8 @@ def _offences(source: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                if alias.name == "os" or alias.name.startswith("os."):
+                    hits.append("import os")
                 if alias.name == "acb_skills.integrations" or alias.name.startswith(
                         "acb_skills.integrations."):
                     hits.append(f"import {alias.name}")
@@ -56,6 +61,9 @@ def _offences(source: str) -> list[str]:
         elif isinstance(node, ast.Attribute) and node.attr in (
                 "environ", "getenv", "environb", "getenvb"):
             hits.append(f".{node.attr}")
+        elif isinstance(node, ast.Name) and node.id in (
+                "environ", "getenv", "environb", "getenvb"):
+            hits.append(node.id)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and (
                 node.func.id == "__import__"):
             hits.append("__import__")
@@ -64,8 +72,8 @@ def _offences(source: str) -> list[str]:
 
 def test_the_scan_sees_the_api_modules() -> None:
     names = {p.name for p in _api_modules()}
-    assert {"template.py", "zoho_books.py", "connect.py",
-            "integrations_api_connect.py"} <= names, names
+    assert {"template.py", "zoho_books.py", "connect.py", "call.py", "__init__.py",
+            "integrations_api_connect.py", "api_connections.py"} <= names, names
 
 
 @pytest.mark.parametrize("path", _api_modules(), ids=lambda p: p.name)
@@ -84,6 +92,10 @@ def test_no_api_module_reads_the_environment(path: Path) -> None:
     "from os import environ\n",
     "from os import getenv as g\n",
     "m = __import__('os')\n",
+    "import os\n",
+    "import os.path\n",
+    "x = environ['KEY']\n",
+    "def f():\n    import os\n    return os.getenv('K')\n",
 ])
 def test_the_fence_sees_each_banned_form(source: str) -> None:
     assert _offences(source), source
