@@ -316,8 +316,14 @@ approve a version and read the approved version. `*` lists every org, and the
 default is empty. Empty means each write refuses with "off", and the read
 returns nothing.
 
-Its one reader is `gateway.connections.semantic_model.connection_model_allowed`.
-Each function asks it with the org of the bound tenant, on each call. So a
+It has two readers. `gateway.connections.semantic_model.connection_model_allowed`
+gates the model. `decide_features.mode_for` gates the decide step of the
+profiler, through the prefix `connection.` (SEM-13b). Both use the one rule
+`decide_features.org_listed`, and
+`test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree`
+fences it.
+
+Each reader takes the org of the bound tenant, on each call. So a
 reload applies to the next call. A flip is the gate `enforcement-flip`.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus

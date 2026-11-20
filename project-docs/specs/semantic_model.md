@@ -19,7 +19,10 @@ ops `ne`, `is_empty`, `contains` and `matches` are not built. Fences:
 
 **SEM-13a (task 3835) is BUILT, dark, with no caller: `connections/profiler.py`,
 and the no-member entry and the live list with schemas in
-`connections/mcp_tools.py`. Nothing else is built.**
+`connections/mcp_tools.py`. SEM-13b (task 3836) is BUILT, dark, with no
+caller: the decide step in `connections/profiler_decide.py`, the prefix
+`connection.` and the feature `connection.map_model`, `off` by default (§10.7).
+Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
@@ -629,8 +632,8 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py`, and the one `shape_only` function in `crm_sync/catalogue.py`. The body, the writer, the flag, the migration shape and the file list are in §10.4 | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, org B cannot name the connection of org A, cascade on delete, one approved version), `test_semantic_shape_only.py` (new), `test_flag_reload.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`. The mutation of each is in §14 | D-SEM-2, SEM-7 (PR 2599, task 3737) |
 | **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft. **Split (audit, 2026-11-19, task 3743)** into SEM-13a, SEM-13b and SEM-13c, the three rows below. This row is the umbrella, and it holds no code of its own | `connections/`, `decide_features.py` (see the three rows) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The fences of the three rows. No class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. The sealed eval of review gap 5 is in SEM-13c | SEM-12 |
 | **SEM-13a** | 3 | The profiler, first slice (task 3835): steps 1, 2 and 4 of §4.2, with no decide call and an empty `ai` section. No caller. The scope, the decision on approval and the code anchors are in §10.5 | `gateway/connections/profiler.py` (new), `gateway/connections/mcp_tools.py` (a no-member call entry and a live list read that also gives the input schemas), `tests/unit/test_connection_profiler.py` (new), `tests/unit/test_connection_semantic_model_r8.py` (one case) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, a fake lister and a fake caller, no network), `test_connection_semantic_model_r8.py` (one profiler draft case). These stay green: `test_studio_mcp_tools.py`, `test_studio_live_preview.py`, `test_studio_preview_sends_nothing.py`, `test_studio_mcp_approvals.py`, and the R8 files `test_studio_live_preview_r8.py` and `test_studio_mcp_approvals_r8.py`. The mutation of each is in §14 | SEM-12 (built) |
-| **SEM-13b** | 3 | The profiler, step 3 of §4.2 (task 3836): the decide step. A `connection.` prefix and the feature `connection.map_model`, with its own day counter. The payer is the `connected_by` member. The `ai` section gets the chosen closed words | `gateway/decide_features.py` (a new `Prefix`), `gateway/connections/profiler.py` | HIGH (model calls, credits) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (extended, with the decide call faked), `test_decide_seam.py` | SEM-13a |
-| **SEM-13c** | 3 | The profiler, last slice (task 3837): step 0 of §4.2 (the trigger), a map from a normalised key back to the source field, and **review gap 5**: a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline. Two notes of the SEM-13a review: the caller must retry with a backoff after `stopped:limited`. Two sources can give one entity name, and their records merge, for example a tool `invoices` and a key `invoices`, or `list-invoices` and `list_invoices`. The result is a less exact draft with no value. SEM-13c or SEM-15 owns the repeated or merged draft | `evals/semantic/profiler/` (new), the trigger, the key map | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The scripted eval (new), with its sealed held-out set. It reuses `splits.py` and `compare.py` of task 3649 after they merge. On 2026-11-19, `git ls-tree -r origin/main --name-only` holds neither file, so no text cites them as on `main` | SEM-13b, task 3649 on `main` |
+| **SEM-13b** | 3 | **BUILT dark (task 3836).** The profiler, step 3 of §4.2: the decide step. A `connection.` prefix and the feature `connection.map_model`, with its own day counter. The payer is the `connected_by` member. The `ai` section gets the chosen closed words. The decisions, the state, the questions, the cost and the code anchors are in §10.7 | `gateway/decide_features.py` (a new `Prefix`), `gateway/connections/profiler.py`, `gateway/connections/profiler_decide.py` (new), `crm_sync/map_pipeline.py` (a `namespace` keyword only) | HIGH (model calls, credits) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS`, and the mode of `connection.map_model` | `test_connection_profiler.py` (extended, with the decide call faked), `test_decide_seam.py`, `test_connection_semantic_model_r8.py` (one case). The mutation of each is in §14 | SEM-13a |
+| **SEM-13c** | 3 | The profiler, last slice (task 3837): step 0 of §4.2 (the trigger), a map from a normalised key back to the source field, and **review gap 5**: a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline. Two notes of the SEM-13a review: the caller must retry with a backoff after `stopped:limited`. Two sources can give one entity name, and their records merge, for example a tool `invoices` and a key `invoices`, or `list-invoices` and `list_invoices`. The result is a less exact draft with no value. SEM-13c or SEM-15 owns the repeated or merged draft. **From SEM-13b (§10.7):** the caller compares the digest with the LATEST draft too, or reuses its `ai` section. Else each rerun with no approved version spends again. The caller does not retry at once after `refused:model:*`, because the run spent its requests. A `failed:*` run spent nothing, and a retry spends only when it reaches the decide. A retry after `stopped:*` spends nothing | `evals/semantic/profiler/` (new), the trigger, the key map | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The scripted eval (new), with its sealed held-out set. It reuses `splits.py` and `compare.py` of task 3649 after they merge. On 2026-11-19, `git ls-tree -r origin/main --name-only` holds neither file, so no text cites them as on `main` | SEM-13b, task 3649 on `main` |
 | **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended). **Review Q1:** this PR moves the pin test of CSY §3.1 and the figure in CSY §5 to 1,300 characters (the WS-CSY planner agrees to that edit) | CSY-1 (task 3400), D-CSY-1 |
 | **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model. **Review gap 3:** the provider runs the same grant check as the attach (`is_authorized`), and returns nothing in a run that holds an untrusted pack (CSY §3.6: a member never learns of a server they cannot use) | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | HIGH (grant) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended). Two fence cases: a member without the grant reads nothing, and a run with the email pack reads nothing | SEM-12 |
 | **SEM-16** | 3 | The panel: the draft as a diff, accept per part, "Read it again" | `ConnectionSheet.tsx` | STANDARD UI · captures before merge | `CONNECTION_MODEL_ORGS` | Vitest of `ConnectionSheet.tsx` (extended) | SEM-13, CSY-9 (task 3409) |
@@ -1401,6 +1404,177 @@ SEM-8b. `three_kinds` and `admin_only_vq` need SEM-8b.
    `CRM_ANSWER_FIRST_ORGS`, because the tool loads only there. Default:
    accept this, and add no new flag.
 
+### 10.7 SEM-13b in detail: the decide step
+
+The SEM-13b row of §10.2 named two files and no rule for each part of
+the step. This section gives the second slice of the SEM-13 split. It adds no
+D-number and no migration. The SEM-13b row of §10.2 and §14 point here. §10.6
+already holds SEM-9, so this section takes the next free number.
+
+**The scope (hand this paragraph to the builder as it is).** SEM-13b, HIGH,
+dark, with no caller. It does step 3 of §4.2 for a draft of the profiler of
+§10.5. The step asks the decide tier about each entity of the draft. Code then
+writes the chosen closed words into the `ai` section. It changes no rule of
+§4.2.
+
+- A new prefix `connection.` in `decide_features.py`, and one feature
+  `connection.map_model` at the tail of the table.
+- A new module `gateway/connections/profiler_decide.py` holds the step.
+  `profiler.py` already holds 621 lines, so the step goes in a module of its
+  own. `profiler.py` calls it from `profile`.
+- `crm_sync/map_pipeline.py` gets ONE change: a `namespace` keyword on
+  `reserve_requests`.
+
+**The decisions (fail closed, made by the lane, no owner decision).** Each
+decision below binds this slice. None of them changes §4.2.
+
+1. **The org gate.** The prefix `connection.` reads the setting
+   `connection_model_orgs` (`CONNECTION_MODEL_ORGS`) as its `orgs_setting`.
+   The slice adds no flag and no `.env` key. The prefix bills `integrations`,
+   which is `mcp.OWNING_APP`, and it starts the cool-down on a 402 only.
+   So the setting has TWO readers. `connection_model_allowed` gates the
+   model, and `mode_for` gates the decide step through the prefix.
+   The prefix sets `fold`, so both readers use the one rule
+   `decide_features.org_listed`. The rule trims and lower-cases each entry and the
+   org. `*` lists every org, and an empty list lists none. The fence is
+   `test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree`.
+   The other prefixes match as before. The slice corrects the comment in
+   `settings.py` and the text of `docs/flag_reload.md`, which named one
+   reader.
+2. **The mode.** `connection.map_model` is `off` by default, as each feature
+   of the table is. `off` asks nothing. `shadow` asks and counts, and writes
+   no `ai` item. `on` writes the `ai` items. This is the rule of
+   `map_pipeline`, where a feature in `shadow` writes no item. The flip of
+   `CONNECTION_MODEL_ORGS` and of the mode is for the owner only.
+3. **The caps.** The step imports `CATALOGUE_TOKENS` (24,000 estimated
+   tokens) and `CATALOGUE_REQUESTS` (12) from `map_pipeline`, and copies no
+   number. The catalogue step of `map_pipeline` asks the same questions,
+   the purpose and the key parts of one entry. So its caps fit the step. The
+   run caps (`TOKEN_CAP`, `RUN_REQUESTS`) bound the mapping of the CRM slots,
+   which this step does not do.
+4. **The day counter.** The step counts on its own Redis key,
+   `connection_map_model:requests:<UTC date>`, under the cap `DAILY_REQUESTS`
+   (40) of `map_pipeline`. `reserve_requests` takes a `namespace` keyword.
+   Its default is `map_pipeline.NAMESPACE` (`crm_map_pipeline`), so each CRM
+   key stays the same.
+5. **The payer.** The payer is the `connected_by` member of the connection.
+   The rules are those of `map_pipeline`. The value must hold an `@`.
+   `note_labels._member_left` must give `None` before the first request. A
+   row that the migration of `mcp.py` wrote holds
+   `migrated-from-mcp-servers`, which holds no `@`.
+   With no payer, or with a payer that left, the step spends nothing. The run
+   then saves the draft of code, with an empty `ai` section.
+6. **The state.** The state names the entity by its key. It names each field
+   by a ref (`fields.f1`, `fields.f2`, and on), with its key and its type.
+   It holds no value, no label, no count, no date and no `records`.
+7. **The questions and the closed lists.** Each question offers only the
+   words of one closed list, and `none`. "The questions" below names each
+   builder.
+8. **A bad answer.** An answer below `SURE` (0.75), or with its top two inside
+   `MARGIN` (0.15), gives no `ai` item for that part. A refused answer, an
+   answer outside the closed list, `none` and garbage give no item too. The
+   step asks no question a second time. A second ask of `map_pipeline` sends
+   sample values, and this step sends no value.
+9. **The join with `profile`.** The step runs only when the shape differs
+   from the approved version. The code body must also pass the local checks:
+   `shape_only` and the size cap `BODY_BYTES_MAX`. A code body that fails
+   a check asks nothing, and the writer refuses it. The `ai` items can
+   make the body fail. Then the run saves the code draft with an empty
+   `ai` section, and the reason is `ai_dropped`. The step runs with no
+   tenant session open (R5). So `profile` uses two short
+   sessions in place of one. The first reads `read_approved`. The step runs
+   with no session. The second session calls `save_draft`.
+10. **A stop in the run.** A cap, the day counter, a cool-down or no
+    answer stops the step. The run still saves the draft, with the `ai`
+    items of the requests that came back. Each item text is the text that
+    `catalogue.ai_description` builds from the closed words, so `shape_only`
+    passes.
+11. **No live call in a test.** Each test fakes `acb_llm.decide`, as `_fake`
+    of `test_decide_seam.py` does. No test makes a network call or a live
+    call, and no test reaches the production Router.
+
+**The state.** One request for one entity sends this state, and nothing else:
+
+```json
+{"entity": {"key": "invoices"},
+ "fields": {"f1": {"key": "amount_due", "type": "number"},
+            "f2": {"key": "created", "type": "date"}}}
+```
+
+The refs follow the order of the fields of the `code` section of the draft.
+The state holds at most `MAX_CANDIDATES` (40) fields of `map_pipeline`. Each
+key is the key of the draft, after the normalisation of §10.5. The known limit
+F3 of §10.5 still holds: a key can hold words that a source wrote.
+
+**The questions.** Four builders in `profiler_decide.py` make each question.
+Each builder holds one closed list:
+
+| Builder | Question id | Closed list | The `ai` key |
+|---|---|---|---|
+| `purpose_question()` | `purpose` | `catalogue.PURPOSES` | `purpose` of the entity |
+| `part_question(part, refs)` | `part.<part>` | The refs of the fields whose type fits the part | `meaning` of the field (`amount`, `date`, `status` or `parent`, the keys of `catalogue.PART_MEANINGS`) |
+| `unit_question(ref)` | `unit.<ref>` | `catalogue.UNITS` | `unit` of the field |
+| `tax_question(ref)` | `tax.<ref>` | The keys of `questions.EVIDENCE_WORDS` | `tax` of the field |
+
+- A part takes fields of these types: `amount` takes `integer` and `number`.
+  `date` takes `date` and `datetime`. `status` takes `string`. `parent` takes
+  `string`, `integer` and `object`. A part with no such field asks nothing.
+- The customer part is `parent`, as in `catalogue.KEY_PARTS`.
+- The step asks `unit` and `tax` for the first 5 fields of the type `integer`
+  or `number`. The number 5 is `(QUESTION_LIMIT - 1 - len(KEY_PARTS)) // 2`.
+  So one entity asks at most 15 questions, and one request carries them.
+- A field that two parts choose gets no `meaning`, because one field holds
+  one part.
+- An `ai` field item holds `entity`, `key`, the words that it got, and
+  `text`. An `ai` entity item holds `key`, `purpose` and `text`.
+
+**`Profile` (new fields).** `questions` is the count of questions that the
+step asked. `requests` is the count of requests that went out. `decide` is the
+reason that the step ended, or `None` when the step did not run. The reasons
+are `off`, `done`, `no_payer`, `member_left`, `cooldown`, `token_cap`,
+`run_cap`, `daily_cap`, `ai_dropped` (decision 9), `counter`, `no_answer`
+and `failed`.
+
+With `counter`, the day counter cannot count, so the step spends nothing.
+The reason `failed` keeps the items that came back before the fault.
+
+**The cost (a bound).** One entity costs one request. One run costs at most
+12 requests (`CATALOGUE_REQUESTS`) and 24,000 estimated tokens
+(`CATALOGUE_TOKENS`). One org costs at most 40 requests (`DAILY_REQUESTS`) in
+one UTC day, on the key of the step.
+
+An unchanged shape costs 0 only when
+an approved version exists. `semantic_model` has no read of the latest
+draft. So a connection with a draft and no approved version asks again at
+each new run, within the 40 requests of one day.
+
+**Known limits.**
+
+- One run asks about the first 12 entities of the body order only. The
+  next run asks about the same entities again.
+- `shadow` logs counts and request ids only, and writes no answer. So a
+  run in `shadow` gives little to judge. SEM-13c, or the review of the
+  flip, must plan for that.
+
+**The code anchors (verified against the branch of SEM-13a at `c79cd1a33`,
+2026-11-20).** Each path is under `apps/services/gateway/gateway/` unless it
+says otherwise.
+
+| Anchor | What the code shows |
+|---|---|
+| `decide_features.py` `Prefix`, `PREFIXES` and `FEATURE_TABLE` | A prefix names its org setting, its app and its cool-down rule. `PREFIXES` holds `my_day.`, `crm.` and `projects.`. `REGISTERED` and `ON_FEATURES` read the table |
+| `decide_features.py` `mode_for` and `ask` | `mode_for` reads `decide_feature_modes`, then the org setting of the prefix, for the bound tenant. `ask` reads `mode_for` again and returns `None` for `off` |
+| `crm_sync/map_pipeline.py` lines 161 to 170 | `TOKEN_CAP` 20,000, `RUN_REQUESTS` 12, `DAILY_REQUESTS` 40, `CATALOGUE_TOKENS` 24,000 and `CATALOGUE_REQUESTS` 12 |
+| `crm_sync/map_pipeline.py` `reserve_requests` and `_requests_key` | Before this slice, the key is `key(NAMESPACE, "requests", <date>)` with `NAMESPACE` `crm_map_pipeline` and no other namespace |
+| `crm_sync/map_pipeline.py` `_Payer` | `member is None` stops with `no_member`. `note_labels._member_left` runs before the first request only |
+| `crm_sync/note_labels.py` `_member` and `_member_left` | `_member` keeps a `connected_by` that holds `@`. `_member_left` gives `unverified` on a failed read |
+| `crm_sync/map_pipeline.py` `sure_choice` and `estimate` | The rule of `SURE` and `MARGIN`, and the estimate of the tokens of a request |
+| `connections/store.py` `Connection.connected_by` and `connections/mcp.py` `MIGRATED_BY` | The column, and the value `migrated-from-mcp-servers` of a migrated row |
+| `crm_sync/catalogue.py` `ai_description`, `PURPOSES`, `PART_MEANINGS` and `UNITS` | The text of an `ai` item is built from closed words only. `_ai_item` of `shape_only` builds it again and refuses any other text |
+| `crm_sync/questions.py` `EVIDENCE_WORDS` | The four tax marks: `includes_gst`, `excludes_gst`, `after_tds` and `gst_amount` |
+| `customer_console/store.py` `usage_event.module_slug` | An attribution label only. The slug `integrations` adds no price |
+| `connections/profiler.py` `_write` | Before this slice, ONE session reads `read_approved` and calls `save_draft` |
+
 ---
 
 ## 11. The WS-CSY planner's ten rules, mapped
@@ -1533,6 +1707,13 @@ uv run pytest tests/unit/test_connection_profiler.py tests/unit/test_semantic_sh
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_connection_semantic_model_r8.py \
   tests/unit/test_studio_live_preview_r8.py tests/unit/test_studio_mcp_approvals_r8.py -q
+
+# SEM-13b (hermetic first, then the R8 cases on the database). Each decide call is a fake
+uv run pytest tests/unit/test_connection_profiler.py tests/unit/test_decide_seam.py \
+  tests/unit/test_crm_map_pipeline.py tests/unit/test_email_decide_on.py \
+  tests/unit/test_semantic_shape_only.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_connection_semantic_model_r8.py tests/unit/test_crm_map_pipeline_r8.py -q
 
 # SEM-9 (hermetic first, then the R8 suites on a real database)
 uv run pytest tests/unit/test_crm_questions_chat.py tests/unit/test_crm_plan_kinds_semantic.py \
@@ -1672,6 +1853,79 @@ names the mutation that must turn it red.
     `test_an_approved_shape_with_the_same_hash_saves_no_draft`.
     **Mutation:** put a count in the hash, or drop a field type from it, and
     a case fails.
+
+**The SEM-13b fences (R7).** Each decision of §10.7 names its test, and each
+test names the mutation that must turn it red. Each test fakes
+`acb_llm.decide`, so no test makes a live call.
+
+- `test_connection_profiler.py` (extended, hermetic):
+  - The state: `test_the_decide_state_holds_no_value`. The test plants values
+    in the results and searches each state for them. **Mutation:** add a
+    sample value or the label to the state of a field, and the case fails.
+  - The text: `test_a_closed_word_builds_the_ai_text_and_shape_only_passes`.
+    **Mutation:** write the text of the answer in place of the text of
+    `ai_description`, and `shape_only` refuses the body, so the case fails.
+  - A bad answer: `test_an_answer_outside_the_list_writes_no_ai_item` and
+    `test_an_unsure_answer_writes_no_ai_item`. **Mutation:** drop the check
+    of the closed list, or the check of `SURE` and `MARGIN`, and its case
+    fails. The closed list has two guards for a word: the check of the
+    answer, and the `None` of `ai_description`. The case of a ref of another
+    part has one guard, and it turns red.
+  - The two readers: `test_the_two_readers_of_connection_model_orgs_agree`
+    runs `connection_model_allowed` and `mode_for` on each form of the
+    list and the org. **Mutation:** drop the `fold` of the `connection.`
+    prefix, and the rows that differ in case or in spaces fail.
+  - The order: `test_a_code_body_over_the_cap_asks_nothing`,
+    `test_a_code_body_that_fails_shape_only_asks_nothing` and
+    `test_ai_items_over_the_cap_save_the_code_draft`. **Mutation:** run the
+    step before the local checks, and the first two cases fail. Save the
+    body with its `ai` items, and the third case fails.
+  - Two parts: `test_a_field_that_two_parts_choose_gets_no_meaning`.
+    **Mutation:** give the field the meaning of each part, and the case
+    fails.
+  - The payer: `test_no_payer_spends_nothing` (no `connected_by`, and the
+    migrated value) and `test_a_departed_payer_spends_nothing`.
+    **Mutation:** drop the `@` check, or the `_member_left` check, and its
+    case fails.
+  - The day counter: `test_the_day_counter_is_its_own_key`. **Mutation:**
+    drop the `namespace` argument of the call, and the count lands on the
+    CRM key, so the case fails.
+  - The CRM key: `test_the_crm_day_counter_key_is_unchanged` records the
+    Redis keys of `reserve_requests` with no `namespace`. Each key is
+    `cc:<org>:crm_map_pipeline:requests:<date>`. **Mutation:** change the
+    default of the keyword, and the case fails. `test_crm_map_pipeline.py`
+    stays green, and it holds the whole CRM path of the counter.
+  - The caps: `test_the_caps_stop_the_decide_step`. The run cap, the token
+    cap and the day counter each stop the step, and the run saves the items
+    of the requests that came back. **Mutation:** drop one cap, and its case
+    fails.
+  - The join: `test_a_same_shape_asks_nothing`. **Mutation:** run the step
+    before the check of the hash, and the case fails.
+  - The modes: `test_mode_off_asks_nothing` and
+    `test_mode_shadow_writes_no_ai_item`. **Mutation:** drop the mode check
+    of the step, or write the items in `shadow`, and its case fails.
+  - The sessions: `test_the_decide_runs_with_no_session_open`. The fake
+    `tenant_session` counts the open sessions, and the fake decide reads the
+    count. **Mutation:** move the step back into the one session of
+    `_write`, and the case fails.
+- `test_decide_seam.py` (extended, hermetic):
+  - `test_a_connection_feature_reads_its_orgs_setting`. The feature reads
+    `connection_model_orgs`, bills `integrations`, and is `off` by default.
+    **Mutation:** drop the `connection.` row of `PREFIXES`, and the case
+    fails.
+  - `test_the_registry_lists_every_old_feature_in_the_old_order` now pins
+    the new tail `connection.map_model`. `ORG_SETTINGS` holds
+    `connection_model_orgs`, so each old feature stays `off` under that
+    list. **Mutation:** put the feature before `projects.align`, and the
+    case fails.
+- `test_email_decide_on.py` (extended): the set of `on` features holds
+  `CONNECTION_FEATURES`. **Mutation:** make the feature not `on`-legal, and
+  the case fails.
+- `test_connection_semantic_model_r8.py` (extended, R8). One case: a
+  profiler run in `on` with a fake decide writes an `ai` item through
+  `save_draft` on a real Postgres. The row has `made_by` `ai`, and its body
+  passes `shape_only`. **Mutation:** write the text of an item from the
+  answer and not from `ai_description`, and the writer refuses the body.
 
 **The SEM-9 fences (R7).** Each rule of §10.6 names its test, and each test
 names the mutation that must turn it red.

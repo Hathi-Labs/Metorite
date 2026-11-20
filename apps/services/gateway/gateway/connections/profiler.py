@@ -1,11 +1,13 @@
-"""The profiler of a connection, first slice (WS-SEM SEM-13a, task 3835).
+"""The profiler of a connection (WS-SEM SEM-13a, task 3835, and SEM-13b,
+task 3836).
 
-Spec: ``project-docs/specs/semantic_model.md`` §4.2 and §10.5. Dark behind
-``CONNECTION_MODEL_ORGS``. No caller exists in this slice.
+Spec: ``project-docs/specs/semantic_model.md`` §4.2, §10.5 and §10.7. Dark
+behind ``CONNECTION_MODEL_ORGS``. No caller exists yet.
 
-:func:`profile` does steps 1, 2 and 4 of §4.2 for ONE MCP connection of an
-org. It never does step 3: it makes no decide call, and the ``ai`` section
-of the draft is empty.
+:func:`profile` does steps 1 to 4 of §4.2 for ONE MCP connection of an org.
+Step 3, the decide step, lives in ``connections/profiler_decide.py``. It is
+dark behind the mode of ``connection.map_model``, ``off`` by default, and
+then the ``ai`` section of the draft is empty.
 
 1. **Discover.** ONE live ``tools/list`` with the raw input schemas
    (``mcp_tools.live_tool_schemas``, through the run of
@@ -21,6 +23,11 @@ of the draft is empty.
    a cache that cannot count, a full org window and a call that raises a
    change of the server stop the run, and then the run writes nothing. The
    server identity is checked once, at the list read.
+3. **Decide (SEM-13b).** Only when the shape differs from the approved
+   version and the code body passes the local checks (``shape_only`` and the
+   size cap): one request for each entity, with closed lists only, paid by
+   the ``connected_by`` member (``profiler_decide.decide``). It runs with no
+   session open.
 4. **Write the draft.** The body keeps keys, types, counts and the first and
    last date only, never a value. Each key and type is normalised to the
    grammar of §10.4 (:func:`normalise_key`, :func:`normalise_type`).
@@ -57,8 +64,8 @@ from typing import Any
 from acb_common import get_logger
 
 from gateway.connections import mcp as mcp_registry
-from gateway.connections import mcp_tools, semantic_model, store
-from gateway.crm_sync.catalogue import PART_ITEMS_MAX, connection_key_problem
+from gateway.connections import mcp_tools, profiler_decide, semantic_model, store
+from gateway.crm_sync.catalogue import PART_ITEMS_MAX, connection_key_problem, shape_only
 from gateway.studio import mcp_actions
 
 _log = get_logger("connections.profiler")
@@ -130,13 +137,20 @@ class Profile:
     """What one run did. It holds no value, no url and no header.
 
     ``outcome`` is :data:`OFF`, :data:`SAVED`, :data:`SAME`, :data:`EMPTY`,
-    ``refused:<code>``, ``stopped:<cap>`` or ``failed:<reason>``."""
+    ``refused:<code>``, ``stopped:<cap>`` or ``failed:<reason>``.
+
+    SEM-13b: ``questions`` and ``requests`` count what the decide step asked
+    and sent. ``decide`` is the reason that the step ended
+    (``profiler_decide.Decided``), or None when the step did not run."""
 
     outcome: str
     calls: int = 0
     left_out: int = 0
     version: int | None = None
     shape_hash: str | None = None
+    questions: int = 0
+    requests: int = 0
+    decide: str | None = None
 
 
 # ── The pure parts ──────────────────────────────────────────────────────────
@@ -408,11 +422,14 @@ def _result_bytes(result: Mapping[str, Any]) -> int:
                .encode("utf-8", "surrogatepass"))
 
 
-async def _server_of(org: str, connection_id: Any) -> str | None:
-    """The server name of the connection *connection_id* of *org*, or None.
+async def _server_of(org: str, connection_id: Any) -> tuple[str, Any] | None:
+    """The server name and the ``connected_by`` of the connection
+    *connection_id* of *org*, or None.
 
     Only a ``connected`` ``mcp:`` org row of ``integrations`` with an HTTP
-    transport passes (the cloud MCP path, §10.5 "The origin")."""
+    transport passes (the cloud MCP path, §10.5 "The origin"). The
+    ``connected_by`` is a stored fact, never request input: the decide step
+    reads its payer from it (§10.7)."""
     from gateway.db import tenant_session
 
     try:
@@ -429,7 +446,9 @@ async def _server_of(org: str, connection_id: Any) -> str | None:
     if transport not in mcp_registry._HTTP_TRANSPORTS:
         return None
     name = conn.provider[len(mcp_registry.PREFIX):]
-    return name if mcp_registry.NAME_RE.match(name) else None
+    if not mcp_registry.NAME_RE.match(name):
+        return None
+    return name, getattr(conn, "connected_by", None)
 
 
 def _may_call(run: mcp_tools.OrgReadRun, tool: Mapping[str, Any],
@@ -563,18 +582,55 @@ async def _run(run: mcp_tools.OrgReadRun) -> Profile | tuple[dict[str, Any], str
     return body, digest, reads
 
 
+#: The reason of the decide step when its ai items would make the body
+#: fail ``shape_only`` or the size cap: the run saves the code draft.
+AI_DROPPED = "ai_dropped"
+
+
+def _fits(body: Mapping[str, Any]) -> bool:
+    """True when the writer would take *body*: it passes ``shape_only`` and
+    it is within ``semantic_model.BODY_BYTES_MAX`` (SEM-13b, §10.7)."""
+    return (shape_only(body) is None
+            and semantic_model.body_bytes(body) <= semantic_model.BODY_BYTES_MAX)
+
+
 async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str,
-                 reads: _Reads) -> Profile:
-    """Step 4: no draft when the approved version has the same hash, else
-    one draft through ``semantic_model.save_draft``."""
+                 reads: _Reads, connected_by: Any = None) -> Profile:
+    """Steps 3 and 4: no draft when the approved version has the same hash.
+    Else the decide step, then one draft through
+    ``semantic_model.save_draft``.
+
+    Two short sessions, and the decide step between them with no session
+    open (R5, §10.7 decision 9): the first reads ``read_approved``, the
+    second saves the draft. The decide step runs only when the shape differs
+    from the approved version and the code body passes the local checks
+    (``shape_only`` and the size cap). When its ai items would make the body
+    fail, the run saves the code draft with an empty ``ai`` section."""
     from gateway.db import tenant_session
 
-    done = {"calls": reads.calls, "left_out": reads.left_out, "shape_hash": digest}
+    done: dict[str, Any] = {"calls": reads.calls, "left_out": reads.left_out,
+                            "shape_hash": digest}
+    async with tenant_session(org) as db:
+        approved = await semantic_model.read_approved(db, connection_id)
+    if approved is not None and approved.shape_hash == digest:
+        # An unchanged shape asks nothing and spends nothing.
+        return Profile(SAME, **done)
+    if _fits(body):
+        # The decide spends credits, so it runs only for a code body that
+        # the writer can save (§10.7 decision 9). A code body that fails a
+        # local check asks nothing, and the writer refuses it below.
+        decided = await profiler_decide.decide(org, connected_by, body)
+        reason = decided.reason
+        full = {**body, "ai": decided.ai}
+        if decided.ai and not _fits(full):
+            # The ai items would make the body fail. Save the code draft, so
+            # the requests that went out still leave a draft.
+            _log.info("connections.profiler.ai_dropped", requests=decided.requests)
+            full, reason = {**body, "ai": {}}, AI_DROPPED
+        body = full
+        done.update(questions=decided.questions, requests=decided.requests, decide=reason)
     try:
         async with tenant_session(org) as db:
-            approved = await semantic_model.read_approved(db, connection_id)
-            if approved is not None and approved.shape_hash == digest:
-                return Profile(SAME, **done)
             version = await semantic_model.save_draft(db, connection_id, body, digest,
                                                       untrusted_origin=False)
     except semantic_model.ModelRefused as no:
@@ -600,12 +656,14 @@ async def profile(org: str, connection_id: Any, *, lister: mcp_tools.Lister | No
        with no approved tool, gets no profile.
     4. One live list, then the shape reads under the caps.
     5. With the slot free, the draft, unless the approved version has the
-       same ``shape_hash``."""
+       same ``shape_hash``. Before the draft, the decide step of SEM-13b
+       (``profiler_decide.decide``), with no session open."""
     if not semantic_model.connection_model_allowed(org):
         return Profile(OFF)
-    server = await _server_of(org, connection_id)
-    if server is None:
+    found = await _server_of(org, connection_id)
+    if found is None:
         return Profile("refused:connection")
+    server, connected_by = found
     try:
         async with mcp_tools.org_read_run(org, server, lister=lister, caller=caller) as run:
             done = await _run(run)
@@ -618,4 +676,4 @@ async def profile(org: str, connection_id: Any, *, lister: mcp_tools.Lister | No
     if isinstance(done, Profile):
         return done
     # The block above freed the slot of the run, so the write holds none.
-    return await _write(org, connection_id, *done)
+    return await _write(org, connection_id, *done, connected_by)
