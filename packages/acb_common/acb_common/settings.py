@@ -1372,6 +1372,17 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agents_overview_r8.py.
     agents_view_orgs: str = ""
 
+    # ── Agents: the map read (WS-MCP SW-102, agent_coordination.md §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agents/overview?shape=map` answers
+    # 404, and the plain overview does not change. The map also needs
+    # AGENTS_VIEW_ORGS. The one reader is
+    # `gateway.routes.projects.agent_summary.agent_map_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_map_r8.py.
+    agent_map_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

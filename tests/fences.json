@@ -239,6 +239,7 @@
     "must_run": [
       "tests/unit/test_action_broker_tenancy_r8.py",
       "tests/unit/test_agent_label_fence.py",
+      "tests/unit/test_agent_map_r8.py",
       "tests/unit/test_agent_policies_r8.py",
       "tests/unit/test_api_connections_r8.py",
       "tests/unit/test_app_audit_bound_r8.py",

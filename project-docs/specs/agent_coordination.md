@@ -20,7 +20,7 @@ This spec gates every SW slice (D135.4). The decisions are **D140** in `work_pla
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
 
-**Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. Nothing is built. The owner decides Q19 to Q22.
+**Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`.** No other map slice is built.
 
 **Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. Nothing is built.
 
@@ -2007,6 +2007,8 @@ They keep their own gates.
 - **Done when.** R8 with two organizations, an admin, a lead and a member. Each sees only the runs that the overview gives them. A person with no visible run has no node. No answer holds a session key. The 301st run sets `truncated`. With `project_id`, a member who cannot see the project gets 404, and the runs of a sub-project show in the scope of its parent.
 - **Fence.** `tests/unit/test_agent_map_r8.py` (new), `tests/unit/test_observability_two_org_r8.py`, `tests/unit/test_projects_chat_coverage.py`.
 - **Risk.** HIGH (visibility across the organization, as SW-51). **Gate.** AGENT-SAFE, dark. **Depends on.** AGA-7 (built).
+- **Built and dark, 2026-11-20.** The route already holds a class A row in `skill_projects/manifest.py`, with the tool `agents_list` in `PLANNED`. The manifest keys on the method and the path, so the slice adds no new row and no new tool name. `lines` is an empty list until SW-107 stores `dispatched_by_run_id`.
+- **The flags.** `shape=map` needs `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. The route checks `AGENTS_VIEW_ORGS` first. With either flag off, the map answers the same 404, and the plain overview does not change. The quiet opt-in is `show_quiet=true`. The flip of `AGENT_MAP_ORGS` is OWNER-GATE (`enforcement-flip`).
 
 #### SW-103 · The Map view
 
