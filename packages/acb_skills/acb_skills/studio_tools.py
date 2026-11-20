@@ -2403,7 +2403,7 @@ _SHARE_DONE = {
 #: The card note of a holder who ends the share of a skill of another member.
 _SHARE_HOLDER_END_NOTE = ("Approve to end the share of a skill of another member. The other "
                           "members stop loading it at their next message. The skill becomes "
-                          "private to its owner.")
+                          "private to its owner. A waiting ask is withdrawn.")
 _SHARE_NOT_SHARED = ("No skill that the organization shares has this id. Nothing changed. "
                      "Send act shared for the list.")
 _SHARE_LIST_CUT = (" The list holds the first {n} shared skills by name only, so this skill can "

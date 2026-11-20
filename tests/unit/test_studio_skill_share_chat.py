@@ -779,3 +779,16 @@ def test_a_plain_member_cannot_list_the_shared_skills(world: World) -> None:
 def test_the_copied_page_of_the_shared_list_is_the_store_page() -> None:
     assert st._SHARED_PAGE == store.MAX_SHARED_SKILLS
     assert st.SHARED_PATH.endswith(f"?state={skills.APPROVED}")
+
+
+def test_the_holder_card_says_a_waiting_ask_is_withdrawn(world: World) -> None:
+    """The unshare clears share_state, so a waiting ask of a newer version
+    goes away. The holder card says so, as the owner card does. Mutation: drop
+    the sentence from ``_SHARE_HOLDER_END_NOTE`` -> red."""
+    _shared(world, 1)
+    world.db.share.update(state="pending", version=2)
+    out = world.act(ADA, act="unshare")
+    assert out["ok"] is True and world.db.share["state"] is None
+    [card] = world.card.shown
+    assert "A waiting ask is withdrawn." in card["context"].split("\n", 1)[0]
+    assert "Version 2 waits for a holder" in card["context"]

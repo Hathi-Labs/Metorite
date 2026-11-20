@@ -37,6 +37,7 @@ The model then calls `act=approve`, which shows the card with the whole text. Th
 **Known limits.**
 
 - **Unshare of a kept skill.** The follow-up below closes this limit. A holder lists the shared skills and ends a share from the chat. Nobody can pause or publish a kept skill whose owner left.
+- **The first 50 only.** A holder sees and ends the first 50 shared skills by name from the chat. Past 50 the result says so, and the route `DELETE /studio/skills/{id}/share` ends the share. No Studio screen ends a share yet. A page offset is a later slice.
 - **Open owner decision.** Keep a shared skill when its owner is purged, or delete it. The purge keeps it for now.
 - **Loads once published.** The loader needs `state = 'published'`, and a new saved version moves a skill to draft. So the tool text says that members load the version once the skill is published. The tool cannot read the state.
 
