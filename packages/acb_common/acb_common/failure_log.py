@@ -47,7 +47,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Collection, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -120,6 +120,7 @@ _DROPPED = 0
 _BUILTIN: frozenset[str] = frozenset()
 _RELEASE: str | None = None
 _DRAIN: asyncio.Task[None] | None = None
+_CHANNEL_READER: Callable[[], object] | None = None
 
 
 # ── The process state that callers set once ──────────────────────────────────
@@ -143,6 +144,81 @@ def set_release(sha: object) -> None:
     global _RELEASE
     value = sha.strip().lower() if isinstance(sha, str) else ""
     _RELEASE = value if _RELEASE_RE.match(value) else None
+
+
+def set_channel_reader(reader: Callable[[], object] | None) -> None:
+    """Store the reader of the run's channel (TOF-2c, §4.2 "The surfaces").
+
+    ``acb_skills.builtin_tools`` gives it at its import. The reader returns
+    the ``channel`` key of the run context that the executor binds. This
+    module imports no ``acb_skills`` module, so the reader comes in here."""
+    global _CHANNEL_READER
+    _CHANNEL_READER = reader
+
+
+#: The ``source`` values of a run that no member started (§4.2 "The surfaces").
+#: ``workflow`` is ``routes/workflows/service.py``. ``projects.agent_dispatch``
+#: is ``routes/projects/agent_dispatch.py`` (an agent works a task).
+_AUTOMATION_SOURCES = frozenset({"workflow", "automation", "projects.agent_dispatch"})
+#: The agent of the Projects assistant rail (``lib/nav.ts``, the Projects pane).
+_PROJECTS_AGENT = "projects-assistant"
+
+
+def run_channel(parent: object, source: object, *, agent: object = "",
+                batch: bool = False) -> str:
+    """The surface of a chat run, a value of the closed list (§4.2). Pure.
+
+    The executor binds it as the ``channel`` key of each run context.
+
+    * A delegated run keeps the channel of the run that asked (*parent*).
+    * ``whatsapp`` is the WhatsApp channel.
+    * A source in :data:`_AUTOMATION_SOURCES`, and a batch run with no
+      source, is ``automation``. A person waits on no such run.
+    * ``chat``, or no source on the stream path, is ``chat``. The Projects
+      assistant agent there is ``projects_assistant``.
+    * Any other source is ``other``. The source is a label of the caller. A
+      forged label mislabels the surface only, and carries no text."""
+    if isinstance(parent, str) and parent in ff.SURFACES:
+        return parent
+    value = source.strip().lower() if isinstance(source, str) else ""
+    if value == "whatsapp":
+        return "whatsapp"
+    if value in _AUTOMATION_SOURCES or (not value and batch):
+        return "automation"
+    if value in ("", "chat"):
+        name = agent.strip().lower() if isinstance(agent, str) else ""
+        return "projects_assistant" if name == _PROJECTS_AGENT else "chat"
+    return "other"
+
+
+def run_fields() -> dict[str, Any]:
+    """The surface and the pointers of the run on this frame, for a chat
+    capture site (C1 to C4). Never raises.
+
+    The surface is the run's ``channel`` key, or ``other`` with none. The
+    run id, the session and the member come from the run context of
+    ``acb_common._log``. The member counts only when the run bound it as
+    verified (H-73), so a claim in a request body never enters a row (R5)."""
+    out: dict[str, Any] = {"surface": "other", "run_id": None, "session_id": None,
+                           "member_email": None}
+    try:
+        reader = _CHANNEL_READER
+        channel = reader() if reader is not None else None
+        if isinstance(channel, str) and channel in ff.SURFACES:
+            out["surface"] = channel
+    except Exception:  # the class only: never fail the capture site
+        _log.debug("failure_log.channel_unread")
+    try:
+        from acb_common._log import get_run_context
+
+        ctx = get_run_context()
+        out["run_id"] = ctx.get("run_id") or None
+        out["session_id"] = ctx.get("thread_id") or None
+        if ctx.get("member_verified") == "1":
+            out["member_email"] = ctx.get("user") or None
+    except Exception:
+        _log.debug("failure_log.run_context_unread")
+    return out
 
 
 @functools.lru_cache(maxsize=16)
