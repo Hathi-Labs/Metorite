@@ -5,7 +5,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 `e5644259b`.
 
 **§4.12 (RESUME, task 3255) is a SPEC of 2026-11-14, verified at
-`3040ac9e4`. RESUME-1a, RESUME-2a, RESUME-4a-1 and RESUME-4a-2 are built, and all four are dark. RESUME-3a (the chat client, PR 2443) is built (the rows below).** It makes a chat pick up exactly where
+`3040ac9e4`. RESUME-1a, RESUME-2a, RESUME-2b, RESUME-4a-1, RESUME-4a-2 and RESUME-5 are built, and all six are dark. RESUME-2d (2026-11-19, no flag) and RESUME-2e (2026-11-20, no flag of its own) are built. RESUME-3a (the chat client, PR 2443) is built (the rows below).** It makes a chat pick up exactly where
 it left off. A late Approve runs the stored call of its card once, and a
 release keeps the work.
 
@@ -27,13 +27,19 @@ release keeps the work.
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
-| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a, RESUME-2a and RESUME-4a-1 are built (the rows below) |
+| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a, RESUME-2a, RESUME-2b, RESUME-4a-1, RESUME-4a-2, RESUME-5, RESUME-2d and RESUME-2e are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
-| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The same flag turns on case A of RESUME-2b, so the flip also needs RESUME-3b (task 3475) and RESUME-2d (the reconnect replay obeys the waterline, BUILT 2026-11-19). The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. RESUME-2b (task 3460, the row below) builds case A. RESUME-2c (task 3461) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2b — a late Approve goes on in the same reply, case A (task 3460) | **BUILT** 2026-11-17, branch `stu-resume2b`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with no migration and no new flag. A parked turn that is the last turn, in a room whose members did not change, keeps its run id, its stream and its reply row. D-RES-7: a park keeps its stream 24 h. Each doubt gives case B, and the review fixes of 2026-11-17 (P1, P2-1, P2-2), of round 2 (P1, P2-a, P2-b) and of round 3 (P2-1) are built. The flip waited for two slices. RESUME-2d closes the gap of round 2, P2-c (BUILT 2026-11-19, the row below). RESUME-3b (task 3475) is the chat side, and it is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2d — the reconnect replay gives the whole run or none of it (task 3724) | **BUILT** 2026-11-19, branch `mt-82b507bd-resume2d`. No flag, no migration and no new state (D-RES-10). A solo chat replays the same bytes. A reader of a shared room replays the run only when a participant row places the reader in the room at the start of the run, with a margin of 2 s. Any other reader gets only the end frame, marked `withheld: true`. Fences: `tests/unit/test_reconnect_waterline.py` and `tests/unit/test_reconnect_waterline_r8.py` (R8) |
+| §4.12 RESUME-2e — the memory of a case A run reads part one once (task 3818) | **BUILT** 2026-11-20, branch `mt-5c919acd-resume2e`. No flag of its own and no migration. It acts only on a case A run, so only where `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both name the org. A plain run and a case B run are as before, byte for byte. Fences: `tests/unit/test_resume_continuation.py` (section 16) and `tests/unit/test_resume_continuation_r8.py` (R8) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 is the next row. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-4a-2 — a late decline reaches the model (task 3478) | **BUILT** 2026-11-17, branch `stu-resume4a2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The owner decided D-RES-9 (§4.12.8). Server only: no client sends this request until RESUME-7, because the web card sends `REJECT`. The fixes of the review of 2026-11-17 (P2-1, P2-2) are built. One owner question is open (§4.12.4, "What RESUME-4a-2 built"). No migration and no new flag. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-3b — the chat takes case A, the same reply (task 3475) | **BUILT** 2026-11-19, branch `stu-resume3b`. No flag of its own, and no migration. The server field `parkedRunId` shows only where `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both name the org. The client paths show only where RESUME-2b (PR 2583) sends `sameReply` or a `resumed` start. This row replaces what the RESUME-3a row says of RESUME-3b. RESUME-3c (task 3476) is not built. RESUME-3d (task 3785) is built (the row below). The production flip stays OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-3d — a listed continuation names its reply row (task 3785) | **BUILT** 2026-11-19, branch `mt-dbde72d3-resume3d`. No flag of its own, and no migration. The live row of a continuation run carries `messageId`, its reply row, only where `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both name the org. A tab that did not get the 200 then replays the run into that row, with no read of the saved rows, in case A and in case B. With a flag off, each row is as before, byte for byte. The production flip stays OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-5 — the stop parks a run that waits on a card (task 3265) | **BUILT** 2026-11-19, branch `resume5`, dark. A run parks at the stop only where `CHAT_DURABLE_ASKS` is on and `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS` both name its org. No migration and no new flag. `gateway-drain.sh` calls `POST /internal/drain/park` once, before its first count. Each waiting run parks in its own task. Its row is `parked`, its reply has no "interrupted" mark, and an Approve after the restart goes on in the same reply (§4.12.5). A card that opens after the call does not park. The `gateway-drain.sh` edit is under the dated `deploy-write` grant. The production flip is OWNER-GATE (`enforcement-flip`), and it waits for the flip of RESUME-2a and RESUME-2b |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1561,7 +1567,13 @@ names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
 
 **Status: 📋 SPEC, 2026-11-14. RESUME-1a (2026-11-15) and RESUME-2a
 (2026-11-16) are built and dark, and so are the RESUME-2a follow-ups (task
-3467). RESUME-3a (2026-11-16) is built. Nothing else is built.** Metorite task 3255
+3467). RESUME-3a (2026-11-16) is built, and RESUME-4a-1 (2026-11-16),
+RESUME-4a-2 (2026-11-17), RESUME-2b (2026-11-17, branch `stu-resume2b`) and
+RESUME-5 (2026-11-19, branch `resume5`) are built and dark. RESUME-3b and
+RESUME-3d (2026-11-19) are built, with no flag of their own. Nothing else is
+built.**
+
+Metorite task 3255
 (RESUME-0). Verified against code at `origin/main` `3040ac9e4`. HRD-22 (task
 3231) is on `main`, and this section read its commits too.
 
@@ -1638,7 +1650,7 @@ card. No notice about a restart shows.
 | 2 | Close and reopen during a run | As in 1 while the run is live. A run that ended while away shows its saved row. A cached reply that is still marked as live polls Postgres every 1.5 s, for 45 s | Met for a live run | An attach stream gets no BFF reattach, so the BFF cuts it every 310 s and it replays again. The stream lives 1 h after its last event and holds 50 000 events at most. Advisory, no slice |
 | 3 | Reopen after the run ended | The saved rows, the phase `idle`, and no "Done". A reply with the `run_interrupted` mark shows "The assistant was interrupted by an update" with Continue | Met | The interrupted notice after a release. RESUME-6 |
 | 4 | A card waits past 10 minutes | The run parks. The BFF drops `parked` from `RUN_FINISHED` (`src/app/api/agent/chat/route.ts` 549), so "Done" flashes and the card goes, then comes back from `GET /chat/pending-asks`. The row says "Paused. Answer the card to go on". Approve gets the 409 `run_restarted`. The chat sends the envelope as a new turn, and shows "The assistant restarted · Your answer went to it as a new message." below the new reply. The new run draws a new card | The same card stays in the same reply. Approve does the act once, and the same reply goes on, with no notice | The production case. RESUME-1 to RESUME-3, with HRD-22 as the stop-gap |
-| 5 | A release restart during a run | The stop waits up to 60 s for working runs, and never for a run that waits on a person (`gateway/routes/drain.py`, `deploy/hostinger/gateway-drain.sh`). The stop cuts a longer run: "The assistant was interrupted by an update", with Continue. A run on a card ends at once, its row stays `open`, and an answer takes the path of 4. A send in the gap shows "Metorite is updating", and the chat holds it in memory only | The reply finishes by itself. The card waits as if no release came | RESUME-5, RESUME-6 |
+| 5 | A release restart during a run | The stop waits up to 60 s for working runs, and never for a run that waits on a person (`gateway/routes/drain.py`, `deploy/hostinger/gateway-drain.sh`). The stop cuts a longer run: "The assistant was interrupted by an update", with Continue. A run on a card ends at once, and its row stays `open`. With the RESUME flags off, an answer takes the path of 4. With the RESUME flags on, an Approve of a card that a stop cut resumes in case B, in a new reply (corrected 2026-11-19). RESUME-5 (built 2026-11-19, dark) parks the card at the stop instead, so the Approve goes on in the same reply. A send in the gap shows "Metorite is updating", and the chat holds it in memory only | The reply finishes by itself. The card waits as if no release came | RESUME-5, RESUME-6 |
 | 6 | A second device or a second tab | It reads the run from the poll and replays it with the open card. Only the asked member sees `needs_input`. Two answers to a confirmation: `confirmation_resolved` closes the other card, and the loser reads "Not applied · <title>. Nothing waits on this answer now. The run ended, or someone answered it." Two answers to a question card: no event closes it, and the losing answer becomes a steer | One answer counts. The other device shows that someone answered the card | HRD-16. For a parked card the row moves once, and the loser gets the plain 409 |
 | 7 | A dropped network | The read throws. The row shows "Checking the run", and then "Done" after 20 s with no answer from the server, while the run can still go on. The toast says "You are offline". A send while offline shows "Metorite is updating", and the chat holds it in memory only | "Checking the run" stays until a complete poll answers. Offline says offline. A send waits in an outbox | HRD-17 |
 
@@ -1820,10 +1832,11 @@ these steps:
 
 The continuation run does these steps, in order:
 
-1. It marks the thread active with no stream reset
-   (`stream_relay.mark_active(reset=False)`), and keeps the run id of the
-   parked run. It deletes the parked `RUN_FINISHED` from the stream (XDEL).
-   So a replay reads one run with a pause in it.
+1. It keeps the run id of the parked run. It deletes the parked
+   `RUN_FINISHED` from the stream (XDEL). Then it marks the thread active with
+   no stream reset (`stream_relay.mark_active(reset=False)`). So a replay
+   reads one run with a pause in it. RESUME-2b put the XDEL first, because a
+   subscriber stops at the first `RUN_FINISHED`.
 2. It pushes `confirmation_resolved` for the old request id. Each tab and
    device closes the card as "Approved".
 3. It runs the stored call with no model, as the member, inside the one
@@ -1973,6 +1986,160 @@ path.
   record exists yet. A second Approve of that card gets the plain 409, so
   the member asks again.
 
+**What RESUME-2b built (2026-11-17, branch `stu-resume2b`, dark).** Case A,
+the same reply. It needs no migration and no new flag.
+
+- **The reply row in the stored call.** `pending_ask._record` adds
+  `message_id` to the stored call. It comes from the `run_liveness` record of
+  the run (`_run_facts`), never from an event. Version 1 stays, and each
+  reader allows a call with no key. A call stored before RESUME-2b has none,
+  so it takes case B.
+- **The choice.** After the claim, `_same_reply_of` gives case A only when
+  each test holds. The row was `parked` and names its run, and the stored
+  call names its reply row. The stream still ends in the parked
+  `RUN_FINISHED` of that run (`stream_relay.parked_end_of`), so no Stop and
+  no new run came after it. The reply row is the last turn of the chat
+  (`routes.chat.reply_turn`, under the session's org). No member joined after
+  the reply row, and the label of the room did not change since the park.
+  Each doubt and each fault give case B.
+- **A decline never takes case A (the merge with RESUME-4a-2).** A late
+  decline keeps no run and no stream. It starts the short continuation of
+  RESUME-4a-2 with a new run id and a new reply row. Its answer and its
+  kwarg are the ones of RESUME-4a-2, byte for byte. The executor never marks
+  its start (`_same_reply_run` refuses `declined`).
+- **The label (review of 2026-11-17, P1, and round 2, P1).** Part two runs at
+  the intersection of now, and the row keeps its first label for ever. So
+  `_same_label_as_park` compares the label of now (`chat_fold._run_authority`)
+  with the `authority` label of the reply row, which the fold at the park
+  wrote. It compares the members AND the caps (`routes.chat.label_of`). A
+  member who joined or left gives case B. A cap that a member gained or lost
+  gives case B too. No label means solo at the park, and the room must still be solo.
+  The read of the label fails open, so a failed room read (`_resolve_room`)
+  and a shared room with no label give case B too.
+- **The window after the check (round 2, P1).** A change can come after the
+  check and before the executor reads the access of the run. So the final
+  fold of a same-reply run reads the label of now again
+  (`chat_fold._same_label_as_row`). Part two goes into the fallback row when
+  the label differs from the row's label, or a member joined after the row.
+  With no label, a room that is shared now, or a room read that failed, sends
+  it there too.
+- **A member who came back (round 2, P2-b).** A set of members cannot show a
+  member who left and came back. Such a member has a history waterline
+  (`join_message_ts`) later than the reply row, so a reload hides part two
+  from them. So a waterline later than the row's `timestamp_ms` gives case B
+  (`_LAST_TURN_SQL`).
+- **The last turn (review, P2-2).** "After" is the order of `_get_messages`:
+  a larger `(timestamp_ms, id)`. So a shown row with the same millisecond and
+  a larger id comes after the reply. An empty agent row that the mint left
+  shows to no reader, and it does not count.
+- **The start.** Case A starts the run with the parked run's id and its
+  reply row, so the mint changes nothing. `start_detached(keep_stream=True)`
+  checks the parked end again before any state changes. It deletes that entry
+  (XDEL) BEFORE it marks the thread active with no reset, because a
+  subscriber stops at the first `RUN_FINISHED`. The fold reads the whole
+  stream and writes it into the same row.
+- **Part one is never written over (review, P2-1).** The XDEL must delete
+  exactly the parked end. A count of 0 means that a trim or another party
+  took it after the check. Then `start_detached` raises `ParkedStreamGone`
+  before the thread reads as active. The restart sweep reads the fallback row
+  from the record of the run (`sameReplyFallbackId`).
+- **The head decides (round 2, P2-a).** The executor marks the `RUN_STARTED`
+  of a same-reply run `resumed` (`_same_reply_run`, from the server's kwarg).
+  So the stream tells part one's start from a continuation's start
+  (`stream_relay.part_one_at_head`). A case B run starts a stream of its own,
+  so its start has no mark. A later Approve can then go on in its reply.
+  `parked_end_of` refuses a head whose first start carries the mark.
+- **The events of this run (round 3, P2-1, and its delta).** The start of a
+  same-reply run writes the id of the parked end that it deleted into the run
+  record (`parkedEndId`). The events of THIS run are the events after that id
+  (`chat_fold.same_reply_own`). In a chain of two continuations, that leaves
+  out part two, which an earlier start marked too. The fold
+  (`chat_fold.same_reply_events`) takes three paths:
+  1. This run's own marked start landed, and part one's start is at the head.
+     The whole replay goes into the reply row.
+  2. Else the events of this run go into a fresh fallback row. That is the
+     rest of a run whose part one a trim took. It is also the
+     `run_interrupted` marker of a run that died before its start, or the
+     rest of a part two whose start a trim took.
+  3. With no event after the id, nothing new goes to a row. A record from
+     before round 3 has no id. Then a run with no marked start writes nothing
+     new too, and the last marked start begins the events of the run.
+
+  Part one, and an earlier part of a chain, never go to a row again. A run
+  whose own start never landed writes no `agent_run` trace, because the trace
+  is an upsert on the shared run id.
+- **The mark of step 5.** A row of case A has no `run_interrupted` mark,
+  because a dead run puts other events after the park. So the clear of step 5
+  needs no code of its own.
+- **A parked end that goes before the start.** `start_detached` raises
+  `ParkedStreamGone` before any state changes. The run route raises
+  `_SameReplyGone`, and `_resume_from_row` starts case B under the same claim
+  and the same cap slot. So the old row keeps its words, and the tap is not
+  lost.
+- **The answer.** The 200 adds `sameReply` and `messageId`, the reply row of
+  the run. The row exists before the answer goes, and only the member who
+  approved reads it.
+- **D-RES-7.** `pending_ask.park` calls `stream_relay.keep_parked_stream`
+  right after it sends the parked `RUN_FINISHED`, when both resume flags name
+  the org. The stream then lives 24 h (`PARKED_STREAM_TTL_SECONDS`). The two
+  `mark_inactive` calls after a park keep the 24 h, and the next
+  `mark_active` of the thread ends them.
+- **A known gap that must close before the flag flip (round 2, P2-c).**
+  `GET /agent/run/{thread_id}/reconnect` replays the stream from `0-0`. It
+  checks room membership (`_thread_owner_ok`), and it checks no history
+  waterline and no caps. D-RES-7 keeps a parked stream for 24 h, so the
+  window in which a late joiner can read part one in the stream is wider. The
+  gap was there before RESUME-2b. Do not flip `CHAT_RESUME_ORGS` before a
+  slice makes the reconnect replay obey the waterline and the label. The
+  slice RESUME-2d (§4.12.7) owns it. The rule is decided: a reader gets the
+  whole run or none of it (D-RES-10, 2026-11-19). **Closed 2026-11-19** by
+  RESUME-2d (built, no flag).
+- **Known P3 gap: a Stop in the start window (verifier of 2026-11-18, F2).**
+  A Stop (`stream_relay.cancel_run`) can come after `parked_end_of` and
+  before the XDEL of `start_detached`. With no live run, it pushes a
+  `RUN_FINISHED` with `cancelled` after the parked end. The XDEL still deletes
+  the parked end, so case A goes on with a terminal event in the middle of
+  the stream. A tab that attaches from `0-0` while the run works stops at
+  that event. The run ignores the Stop, because `start_detached` calls
+  `clear_stopped`. The row still gets both parts. RESUME-3b owns it: the
+  attach loop reads on past a terminal event in the middle of a stream.
+- **Known P3 gap: the 24 h map is in one process (verifier, F5).** The map
+  `stream_relay._PARKED_STREAMS` lives in the process that parked the run.
+  The next run of the same thread, in another process, does not clear that
+  entry. When the first process then calls `mark_inactive` for the thread (a
+  Stop that it serves), the stream of the next run lives 24 hours. The cost is the
+  Redis memory of one stream only. Production runs ONE gateway worker today.
+- **Not in this slice.** The chat side of case A is RESUME-3b (task 3475).
+  The continuation sends a second `RUN_STARTED` with the same run id, and a
+  replay of the chat must keep one bubble. The park's fold sealed the row, so
+  the upsert refuses a live checkpoint of the BFF until the final fold. The memory
+  extraction at the run end read the parked part again. RESUME-2e (task 3818)
+  closes that gap (§4.12.7).
+
+Fences: `tests/unit/test_resume_continuation.py` (sections 13, 14 and 15) and
+`tests/unit/test_resume_continuation_r8.py` (R8, the real stream on a private
+Redis, and the real rows under RLS). The label check has
+`test_a_changed_room_gives_a_new_reply` (R8),
+`test_a_cap_that_changed_after_the_park_gives_a_new_reply` (R8) and
+`test_the_label_check_compares_members_and_caps`. The window has
+`test_a_change_in_the_window_sends_part_two_to_its_own_row` (R8). A member who
+came back has `test_a_member_who_left_and_came_back_gives_a_new_reply` (R8).
+The tie rule has `test_the_case_a_checks_on_real_rows` (R8). The head has
+`test_three_parts_go_into_one_row_unless_a_trim_took_part_one` (R8),
+`test_a_continuation_with_no_start_never_writes_part_one_again` (R8),
+`test_a_trimmed_head_never_writes_over_part_one` (R8),
+`test_same_reply_events_decide_by_the_head` and
+`test_a_same_reply_fold_never_writes_over_part_one`.
+
+The decline rule has `test_a_late_decline_never_goes_on_in_the_same_reply`,
+`test_a_decline_is_never_a_same_reply_run` and
+`test_a_late_decline_of_a_case_a_card_takes_the_path_of_4a_2` (R8). The real
+HRD-22b witness composes with case A in
+`test_a_true_twin_takes_the_old_path_and_never_case_a` (R8). The other relay
+tests stub that witness, and each card has a title of its own thread
+(`_title_of`). A clock that steps back made an earlier approve read as a twin
+(verifier of PR 2583).
+
 **What RESUME-4a-2 built (2026-11-17).** D-RES-9 decides it. A late decline
 (`declined: true`) of a row with a stored call takes the path of a late
 Approve, with these changes:
@@ -2092,10 +2259,10 @@ one (C2). Else it takes the server's own reply row of the run, from the saved
 rows. Else it draws a placeholder. In each case one bubble shows after the
 fold (`chatResume.test.ts`, `e2e/chat-card-restart.spec.ts`).
 
-The `messageId` branch of `replayIdOf` does nothing yet, because the server does
-not send `messageId` in the 200. A task for RESUME-2b adds the reply id to
-the 200. Today one bubble rests on the minted row of S14 and on the poll,
-which skips identical text.
+RESUME-2b (2026-11-17) adds `messageId` and `sameReply` to the 200, so the
+`messageId` branch of `replayIdOf` has a value once a flag is on. Before
+that, one bubble rested on the minted row of S14 and on the poll, which skips
+identical text.
 
 The same bubble of case A belongs to RESUME-2b and RESUME-3b. RESUME-3a
 changes the chat in these places:
@@ -2117,10 +2284,65 @@ changes the chat in these places:
   here, and that this tab did not answer, leaves "Approved · <title>".
 - The two `run_restarted` notices take the words above.
 - In case A, RESUME-3b (task 3475) keeps the reply open when a replay reads
-  on after a parked `RUN_FINISHED`.
+  on after a `done` in the middle of the stream. It is built (below).
 - RESUME-3c (task 3476) adds the words that need a server code. They are
   for a changed record, an expired card, and an answer from another tab
   first.
+
+**What RESUME-3b built (2026-11-19).** The chat side of case A. Case A keeps
+the parked run's id, so the keys tell the parked run from a new one. Each
+rule below is a fence in `chatResume.test.ts`:
+
+- **The list.** A parked row of `GET /chat/active-sessions` names its run
+  (`parkedRunId`), the `run_id` of the caller's newest waiting question. It
+  shows only where both resume flags name the org. The run state keeps it as
+  `parkedRunKey`.
+- **The same run.** After a park, a listed run with that key, or with the
+  run key that this chat already holds, is the SAME run. It is not new, it
+  has no stale tail, and the parked reply stays the target of the replay.
+  A match by the run key alone also sets `parkedRunKey`, so the line below
+  draws under the reply (review of 2026-11-19, P2-1).
+- **The 200.** `resumedOf` reads `sameReply` (only JSON `true`). Three
+  things send a `resumed` event into the parked reply. They are `sameReply`,
+  the key `parkedRunKey`, and the run key while the chat rests after the
+  park. A decline that comes late never takes case A. Its 200 has a new run
+  id and no `messageId`, so it stays a new run.
+- **The second start.** `api/agent/chat/route.ts` sends one frame
+  `run_resumed` for a `RUN_STARTED` marked `resumed`, after the run binding
+  accepts it. A plain start sends no frame, as before.
+- **The end of a replay.** The attach loop reads on past a `done` in the
+  middle of the stream, as it did before. The fault was its terminal flag,
+  which nothing reset. Now `replayEndAfter` gives the end: the last `done`
+  after the last `run_resumed`. A `run_resumed` makes the reply stream again,
+  and a cut after it reads as not finished. The e2e holds this with a
+  replay that is cut after part two (review of 2026-11-19, P2-3).
+- **Not in this slice.** A replay that starts at the second start, with no
+  part one, is not handled here. RESUME-2d (task 3724) may cut part one for
+  a late joiner, and it owns that replay.
+- **The line.** In case A, the "Approved" line of another device draws under
+  the parked reply, the run's own (`receiptAnchorBeforeRun`).
+- **A known gap (task 3818), closed by RESUME-2e.** The memory extraction
+  at the end of a case A run read the parked part again (RESUME-2b). Now it
+  reads only the part after the park (§4.12.7, the RESUME-2e row).
+
+**What RESUME-3d built (2026-11-19).** A tab that opens during a
+continuation gets no 200, so it had no reply id. The attach then took the
+last saved reply. In case B that is the parked reply, so the new run
+replayed into it, and the text could show twice until a reload. Now the
+live row of a continuation names its reply row:
+
+- **The server.** The continuation start (`start_detached`, with
+  `continuation=True`) writes the `messageId` of the run record into the
+  run's entry in `cc:<org>:liveruns`. A plain run writes no reply row. The route
+  `GET /chat/active-sessions` sends it on the live row, only where both
+  resume flags name the org. It adds no key, no table and no migration.
+  Only a reader who may see the chat gets the row, as before.
+- **The chat.** The run state keeps the listed id as `listedReplyId`, and
+  a new run takes it as its reply. The attach then replays into that row,
+  and it reads no saved row (`attachPickOf`). In case A that is the parked
+  reply, and in case B the new one.
+- **With no field.** An old gateway, or a flag that is off, sends no
+  `messageId`. Each state and each attach is then as before.
 
 **6. HRD-22 and this design.** HRD-22 (task 3231) is the stop-gap on rung 0.
 On a late Approve of a parked plain card, it writes a one-use grant in Redis.
@@ -2154,7 +2376,9 @@ the release landed when nobody worked, from 23:49 to 01:33 UTC. D194 changed
 that on 2026-11-07. This design keeps D-1 deferred, and hands the work over
 inside one process (D-RES-4). Before RESUME-5 starts, an agent reads the
 `gateway-drain:` lines of the last 7 days on the box. That read changes
-nothing.
+nothing. RESUME-5 was built on 2026-11-19 with no such read, because its
+brief kept the agent off the production box. The read is still open, and
+it must come before the flag flip.
 
 **RESUME-5, park at the stop.** `gateway-drain.sh` first calls a new route,
 `POST /internal/drain/park`. Each run of the process that waits on a person
@@ -2162,8 +2386,61 @@ parks at once, with the rules of `pending_ask.park`. Its row goes to
 `parked`, its stored call is already on the row, and its reply saves with no
 "interrupted" mark. Then the drain counts as today.
 
-After the release, an Approve resumes the card as §4.12.4 says. The member
-sees "Waiting for your answer" before, during and after the release.
+After the release, an Approve resumes the card as §4.12.4 says, in the same
+reply (`sameReply` true, case A). The member sees "Waiting for your answer"
+before, during and after the release.
+
+**What RESUME-5 built (2026-11-19, task 3265).** These rules bind the slice:
+
+- **The flags.** A run parks at the stop only where `CHAT_DURABLE_ASKS` is
+  on and `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS` both name its org
+  (`chat_resume_on` and `late_approve_on`). The slice adds no flag and no
+  migration. With either flag off, no wait takes the stop signal, and the
+  route answers `{"tried": 0, "parked": 0}`. The bytes of each run, row and
+  message are as before.
+- **The gate.** AGENT-SAFE to build, dark. The flag flip is OWNER-GATE
+  (`enforcement-flip`). The edit of `deploy/hostinger/gateway-drain.sh` is
+  under the dated `deploy-write` grant of `.claude/OWNER_GRANTS.md` (to
+  2026-11-30).
+- **The park runs in the run's own task.** The route wakes each wait that
+  exists now (`pending_ask.park_at_stop`). Each wait then parks in its own
+  task (`executor.wait_user_future`, `pending_ask.park_for_stop`). `park`
+  reads two ContextVars of the run. The HRD-22 offer reads the card of the
+  wait, and the "Not done" line reads the closed cards of the run. A call
+  from the route task would lose both.
+- **The flags are read twice.** A wait takes the signal only when both flags
+  name the tenant that the run bound. The park reads them again with the org
+  of the row. A refusal keeps the wait, as before. No tenant and no member
+  come from the request (R5).
+- **The count waits for the park.** Until its park takes the Future, a
+  thread reads as waiting on a person. So `GET /internal/drain` reads a woken
+  thread as a running run (`pending_ask.parking_threads`). Then the stop
+  waits for the drain of the run. The drain saves the reply and forgets the
+  record, so the next process writes no `run_interrupted` mark.
+- **The script.** The call has its own bound (`GATEWAY_DRAIN_PARK_SECONDS`,
+  8 s), and the route waits at most `pending_ask.STOP_PARK_SECONDS` (5 s).
+  The bound of the wait starts before the call, so the whole stop step stays
+  inside `TimeoutStopSec=75`. A 404 from an older gateway (the first
+  release), and each other failure, lets the drain go on. The script always
+  exits 0. It writes a `gateway-drain: parked N run(s)` line only when a run
+  parked, and a `no park answer` line when the call failed.
+- **A card that opens during the wait of the stop does not park.** The
+  owner's orchestrator decided it on 2026-11-19. The signal wakes only the
+  waits that exist when the route runs. A later card takes the restart path
+  of before (§4.12.2 row 5): the stop cuts the run, and the row stays
+  `open`. With the RESUME flags on, an Approve then resumes it in case B,
+  because `_same_reply_of` takes case A only for a `parked` row. The stored
+  call is on the row from the card (`note_event`, `_record`), and
+  `_thread_at_rest` closes the dead run first. So the card writes once.
+
+Fences (R7):
+
+- `tests/unit/test_gateway_drain.py`: the script, the route and the count.
+- `tests/unit/test_pending_ask_flow.py`: the park in the run's own task, the
+  flags, the late card, a refusal, and an answer that comes first.
+- `tests/unit/test_resume_continuation.py`: the restart and the same reply.
+- `tests/unit/test_resume_continuation_r8.py` (R8):
+  `test_a_card_parked_at_the_stop_goes_on_in_the_same_reply`.
 
 **RESUME-6, a cut run goes on by itself.** The next process closes a run that
 the stop cut, as today (`run_liveness.sweep_dead_instances`,
@@ -2224,15 +2501,18 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-0a (task 3259) | 0 | A failed read of the pending asks settles no card | The BFF route answers a failure as a failure. The chat closes no card on a failed read | `src/lib/pendingAsks.test.ts` | STANDARD | none |
 | RESUME-1 (task 3260) | 1 | The card stores its call: the `stored_call` column, the bind at the card, and the resumable list. RESUME-1a (task 3260) is the plain card, BUILT 2026-11-15 and dark. RESUME-1b (task 3434) is the question cards | A plain card of each listed write stores its tool, arguments, call id, card text and act keys. A rows card, an email card and a large call store none. The browser never reads it. Each listed tool writes nothing before its card. R8 holds the column under FORCE RLS | `tests/unit/test_resume_stored_call.py`, `tests/unit/test_resume_stored_call_r8.py`, `tests/unit/test_tenant_coverage.py` | HIGH (a migration, consent). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | none |
 | RESUME-2a (task 3261) | 1 | A late Approve of a plain card claims its row once and runs the stored call once, in a NEW reply (case B): the claim, the 200 `resumed`, the stored-call yes, the prologue and the note path. **BUILT** 2026-11-16, dark. The follow-ups P2-1 to P2-3 (task 3467) are built: an atomic drop of the offer, the mark under either flag, and a claim of three answers | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py`, `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` | HIGH (consent, the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-1 |
-| RESUME-2b (task 3460) | 1 | Case A: the same reply. The same run id, no stream reset, the XDEL of the parked `RUN_FINISHED`, the fold into the same row, and D-RES-7 | A thread whose last turn is the parked turn goes on in the same reply | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (the run loop) | RESUME-2a |
+| RESUME-2b (task 3460) | 1 | Case A: the same reply. The same run id, no stream reset, the XDEL of the parked `RUN_FINISHED`, the fold into the same row, and D-RES-7. **BUILT** 2026-11-17, branch `stu-resume2b`, dark | A thread whose last turn is the parked turn goes on in the same reply | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (the run loop) | RESUME-2a |
 | RESUME-2c (task 3461) | 1 | Case C: a live run on the thread. The stored call runs at once, and its result goes into the live run as a steer note | An Approve during a live run acts once, and the live reply knows it | `tests/unit/test_resume_continuation.py` | HIGH (consent, the run loop) | RESUME-2a |
+| RESUME-2d (task 3724) | 1 | **BUILT** 2026-11-19, branch `mt-82b507bd-resume2d`. The reconnect replay gives a reader the WHOLE run or none of it (D-RES-10, option B, owner 2026-11-19). `GET /agent/run/{thread_id}/reconnect` replays the run only when the chat is solo for the reader, or the reader matches a participant row (`join_message_ts`) whose join time is at or before the start of the run, with a margin of 2 s: `join_ms <= run_start_ms + 2000`. Any other reader gets no event of the run, and then the end frame with the marker `withheld: true`. The chat then rests, and it does not attach to that run again while the server lists it. One rule covers a live, a parked and an ended run. It closes the gap of round 2, P2-c, which D-RES-7 makes 24 h wide. It needs no migration, no new state and no flag | A late joiner reads no event of a run that started before the join, through the reconnect. A passer-by of an org-visible room reads none either. A solo chat replays as before, byte for byte. The saved reply stays readable by the saved-message view | `tests/unit/test_reconnect_waterline.py` (hermetic) and `tests/unit/test_reconnect_waterline_r8.py` (R8) | HIGH (who reads what: the waterline of a room). No flag: the fix leaves solo bytes unchanged | RESUME-2b |
+| RESUME-2e (task 3818) | 1 | **BUILT** 2026-11-20, branch `mt-5c919acd-resume2e`. The memory extraction at the end of a case A run reads only the part after the park. The end of the park folds part one and extracts it. The fold of a case A run that writes the whole replay into the reply row now also gives `chat_fold.MEMORY_CONTENT_KEY`: the text of the events after the deleted parked end (`same_reply_own`). `build_extraction_conversation` reads that key in place of `content`. The row still gets both parts. The fallback row holds part two only, so it needs no key. A continuation sends no words, so its run end has no user turn and extracts nothing. A steer that the ENGAGE seam replays gives it a user turn, and memory then gets part two only. The watermark is the `parkedEndId` of the run record, which RESUME-2b already writes. No new state, no flag of its own and no migration | A case A run extracts each fact of part one once. A plain run and a case B run extract as before, byte for byte | `tests/unit/test_resume_continuation.py` (section 16) and `tests/unit/test_resume_continuation_r8.py` (R8) | STANDARD (the run end seam). It acts only where `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both name the org | RESUME-2b |
 | RESUME-3a (task 3262) | 1 | The chat takes the resume of case B: no envelope, no notice, the BFF keeps `parked`, the `resumed` run event (C1), the replay target (C2), the 429 reason, the stale card, the Approve of another device, and the words of §4.12.4 item 5 that need no server code. **BUILT** 2026-11-16 | A parked card approved after a reload turns to "Approved", and ONE new reply goes on at the end. No "restarted" shows, before or after a reload. A park shows no "Done". Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2a |
-| RESUME-3b (task 3475) | 1 | The chat side of case A: the same bubble, and a replay that reads on after a parked `RUN_FINISHED` keeps the reply open | An Approve of a parked turn that is the last turn goes on in the same reply | `src/lib/chatResume.test.ts` | HIGH (the attach loop) | RESUME-2b, RESUME-3a |
+| RESUME-3b (task 3475) | 1 | The chat side of case A. (1) The BFF sends one frame `run_resumed` for a `RUN_STARTED` marked `resumed`. (2) The attach loop ends a replay at the last `done` after the last `run_resumed` (`chatResume.replayEndAfter`), and a `run_resumed` makes the reply stream again. The attach always read on past a `done` in the middle. The fault was its terminal flag, which nothing reset. (3) `resumedOf` reads `sameReply`, and `AgentChat` passes it in the `resumed` event. (4) `ServerRun.parkedRunId` and `RunStatus.parkedRunKey`: a listed run with the parked key is the same run, and the parked reply stays its target. (5) The "Approved" line of case A draws under the run's own reply. (6) `GET /chat/active-sessions` adds `parkedRunId` to a parked row, only with both resume flags on for the org. Non-goals: RESUME-3d (task 3785), RESUME-2d (task 3724) and RESUME-3c. **BUILT** 2026-11-19, branch `stu-resume3b`. The known gap of task 3818 (the memory extraction at the end of a case A run read the parked part again) is closed by RESUME-2e. | (a) Three tabs: the approving tab after a reload, the approving tab with no reload, and a second tab that showed the parked card. In each, the card leaves with "Approved · <title>" under the parked reply, and the reply goes on in THAT bubble. One bubble shows during the run and after a reload. (b) A replay that holds a `done` and then a `resumed` start keeps the reply open and shows no "Done". It ends as the last frame says, and a cut after that point reads as not finished. (c) A second `RUN_STARTED` with the same id adds no bubble. (d) With no `sameReply`, no `resumed` start and no `parkedRunId`, each frame and request is as before. Each state is as before, with one exception. After a park, a list that names the run key that the chat already holds is the same run going on. Then `doneMessageId` clears, the attach waits no gap, the tail is not stale, and `parkedRunKey` takes that key. (e) With a flag off, the list rows are as before | `src/lib/chatResume.test.ts`, `src/lib/runBinding.test.ts`, `src/lib/liveRuns.test.ts`, `e2e/chat-card-restart.spec.ts`, `tests/unit/test_pending_ask_flow.py` | HIGH (the attach loop). AGENT-SAFE to build. No flag of its own. The flip stays OWNER-GATE | RESUME-2b (PR 2583), RESUME-3a |
+| RESUME-3d (task 3785) | 1 | The live row of a run names its reply row (`messageId`). A tab that did not get the 200 then replays a continuation into that row, with no read of the saved rows. (1) `start_detached(continuation=True)` gives the `messageId` of the run record to `register_live_run`. A re-register of the same run keeps it. (2) `list_live_runs` and `GET /chat/active-sessions` send it on the live row, only with both resume flags on for the org. (3) `LiveRun.messageId`, `ServerRun.messageId` and `RunStatus.listedReplyId`. (4) `chatResume.attachPickOf` picks the target of the attach. **BUILT** 2026-11-19, branch `mt-dbde72d3-resume3d`. No flag of its own, and no migration. It shows only where `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both name the org | A run that a tab lists after a reload replays into its own reply row, in case A and in case B | `src/lib/chatResume.test.ts`, `src/lib/liveRuns.test.ts`, `tests/unit/test_active_sessions_tenant.py` | HIGH (the attach loop) | RESUME-3b |
 | RESUME-3c (task 3476) | 1 | The words of §4.12.4 item 5 that need a server code: the changed record, the expired card, and another tab or device first | Each moment shows its words from the server's code | `src/lib/chatResume.test.ts` | STANDARD | RESUME-3a, and the server codes |
-| RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3 |
+| RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3, and RESUME-2d |
 | RESUME-4a (task 3478) | 2 | Two parts. **4a-1, BUILT 2026-11-16, dark:** after each continuation on the note path, each stored native session of the thread goes stale. The prologue marks it before the stored call and before the model runs, so the next turn reads the text history that holds the reply. **4a-2, BUILT 2026-11-17, dark:** the late decline (D-RES-9, decided). A late "Not now" of a row with a stored call starts a short continuation that runs no tool. Server only: no client sends it until RESUME-7 | 4a-1: in case B with `MAF_NATIVE_SESSIONS` on, the turn after a continuation loads no session for any agent of the thread (`digest_drop`, reason `resume_stale`), and the next turn reads the text history (which holds the reply when the browser's copy holds it). Another org cannot mark a row. A thread with no row gets no row, and a second mark changes nothing. With the flags off or `MAF_NATIVE_SESSIONS` off, the run sends no statement. 4a-2: the row moves to `closed` once, the 200 says `resumed` and `declined`, no tool runs, and the note holds the `CARD_DECLINED` text. A row with no stored call, a flag off and each other miss take the late decline of before. A cap refusal or a refused start still closes the row with a 200 | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_native_stale_r8.py` (R8), `tests/unit/test_resume_continuation_r8.py` (R8) | HIGH (the run loop, the native session store). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-2a |
 | RESUME-4b (task 3479) | 2 | The exact path: save the session at the park with call X and a placeholder result, swap the real result under X in `session.state`, and run with no new message | The model input of a continuation holds the call and its real result under one call id, and no orphan call. A run that is not a continuation keeps the preamble goldens byte for byte (`tests/unit/test_native_session_persistence.py`, `evals/trajectories`) | `tests/unit/test_resume_native_session.py`, `tests/unit/test_native_session_persistence.py` | HIGH (the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-4a |
-| RESUME-5 (task 3265) | 2 | Park at the stop | A stop with a card open parks its run. The row is `parked`, the reply has no "interrupted" mark, and an Approve after the restart resumes it | `tests/unit/test_gateway_drain.py`, `tests/unit/test_pending_ask_flow.py` | HIGH (the deploy path) | RESUME-1 |
+| RESUME-5 (task 3265) | 2 | Park at the stop. **BUILT** 2026-11-19, branch `resume5`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `CHAT_DURABLE_ASKS` on (§4.12.5, "What RESUME-5 built") | A stop with a card open parks its run. The row is `parked`, the reply has no "interrupted" mark, and an Approve after the restart resumes it in the same reply (`sameReply` true). A card that opens after the call does not park. Flags off, the bytes are as before | `tests/unit/test_gateway_drain.py`, `tests/unit/test_pending_ask_flow.py`, `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` (R8) | HIGH (the deploy path). AGENT-SAFE to build (dark). The flag flip is OWNER-GATE (`enforcement-flip`). The `gateway-drain.sh` edit is under the dated `deploy-write` grant | RESUME-1 |
 | RESUME-6 (task 3266) | 2 | A cut run goes on by itself | A cut run with no open write goes on in the same reply with no notice. A run with an open write shows Continue, as today. Flag off, nothing goes on by itself | `tests/unit/test_resume_after_release.py` | HIGH (the run loop, the deploy path) | RESUME-2, RESUME-3 |
 | RESUME-D2 (task 3267) | 2 | Chat · Rung 2 demo · A release does not stop the chat | The owner runs the script below at a release slot | none | demo | RESUME-4 to RESUME-6, RESUME-D1 |
 | RESUME-7 (task 3268) | 3 | Approve and Not now on the My Day card | An Approve on My Day resumes the card with no chat open. It follows each consent rule of §4.12.4 | `tests/unit/test_my_day_card_approve.py` | HIGH (consent) | RESUME-2, WAIT-1 (1550), WAIT-2 (1551) |
@@ -2286,18 +2566,76 @@ late decline of a parked card starts a short continuation. The other option
 was to record the answer only. RESUME-4a-2 builds the decision (§4.12.4,
 "What RESUME-4a-2 built").
 
+**D-RES-10, DECIDED 2026-11-19 (task 3724, answer `a078f5dc`).** The owner
+chose option B, with no flag. A reader gets the whole run or none of it.
+
+A reader gets the run in two cases. The first case is a solo chat. The second
+case is a match with a participant row. Its join time is at or before the
+start of the run (a margin of 2 s). Any other reader gets no event of the run, and then the normal end.
+
+One rule covers a live, a parked and an ended run. It needs no migration and
+no new state, because the run has no label to read today.
+
+The rule is stricter than the saved-message view. A late joiner of a
+full-history room loses the live view of that one run. So does a passer-by of
+an org-visible room. That reader still reads the saved reply.
+
+The other options were two. Option B behind a dark flag
+`CHAT_REPLAY_GUARD_ORGS` was the first. Option A was the second. It keeps
+parity with the saved-message view, and it needs new state for the label of a
+live run. RESUME-2d builds the decision (§4.12.7).
+
+**What RESUME-2d built (2026-11-19).** The rule is the pure function
+`gateway.rooms.replay_allowed`. The route calls it once, through
+`routes/agent.py` `_replay_ok`.
+
+- **The start of a run.** It is the ms part of the id of the first stream
+  entry (`stream_relay.stream_head_ms`). Each run resets the stream, so the
+  first entry is the start of the run. No run record keeps a start after the
+  run ends. `join_stream_id` is never written, so the rule reads
+  `join_message_ts`. Both values are epoch ms. The join time comes from the
+  gateway clock, and the start comes from the Redis clock. The margin of 2 s
+  takes a small skew.
+- **One stream holds one run.** A continuation of case A keeps the run id
+  and the stream. So the start of the stream is the start of part one. A
+  member who joined after part one gets no event of part one or part two.
+- **The join row.** The row that names the reader wins. A NULL join on that
+  row is the owner row, so it reads as "from the start". The creator of a
+  chat with no participant row also reads as "from the start". A group or
+  `org` row counts only with its own join time. A passer-by of an
+  org-visible room has no row, and gets no event.
+- **The join row is the direct row.** It wins over an earlier group or `org`
+  row of the same reader. So a member who was named after the run started
+  gets no event, even when a group row was there before. That is stricter
+  than "a matching row", and it fails closed. A legacy group or `org` row
+  with a NULL join also fails closed.
+- **The withheld end.** A refused reader gets `RUN_FINISHED` with
+  `withheld: true`. The chat reads it as `attach_withheld`, and it does not
+  attach to that run again while the server lists it (review P1).
+- **One room read.** The route reads the room once, for the guard and the
+  rule. A solo chat reads no stream head, so its bytes do not change.
+- **A fault fails closed** for a shared room. A failed room read and a Redis
+  fault give only the end frame.
+- **Known residual.** `STREAM_MAXLEN` trims the oldest entries of a very long
+  run. The first entry that stays is then later than the true start. A
+  member who joined between the two reads the rest of the run.
+  `test_a_trimmed_head_is_the_known_residual` holds the behaviour.
+
 #### 4.12.9 Anchors, and where the evidence and the code differ
 
-**Anchors**, verified at `3040ac9e4`. RESUME-2a refreshed the rows that it touched on 2026-11-16:
+**Anchors**, verified at `3040ac9e4`. RESUME-2a refreshed the rows that it touched on 2026-11-16, and RESUME-2b on 2026-11-17. RESUME-5 refreshed the rows of the park, the 409 and the stop on 2026-11-19, on `cb0c515e3` with its own edits:
 
 | What | Where |
 |---|---|
-| The park, and the run cancel | `apps/services/orchestrator/orchestrator/pending_ask.py` `park` (526-600), and `executor.py` `wait_user_future` (2792, the park at 2855-2861) |
-| The row columns, and the claim | `pending_ask.py` `_COLUMNS` (192), `claim_stored_call` (472) |
-| The late answer, the resume, and the 409 | `apps/services/gateway/gateway/routes/agent.py` `_late_answer_from_row` (3638), `_resume_from_row` (3795), and the `run_restarted` 409 (4128) |
+| The park, and the run cancel | `apps/services/orchestrator/orchestrator/pending_ask.py` `park` (1086), and `executor.py` `wait_user_future` (3219, the park at 3298-3304) |
+| The park at the stop (RESUME-5) | `pending_ask.py` `stop_wait` (1232), `end_stop_wait` (1256), `parking_threads` (1272), `park_for_stop` (1286), `park_at_stop` (1302). `executor.py` `wait_user_future`: the signal at 3272, and the park in the run's own task at 3283-3290. `_wait_slice` (3325) and `_park_at_stop` (3347) |
+| The row columns, the claim, and the reply row of a stored call | `pending_ask.py` `_COLUMNS` (213), `claim_stored_call` (493), `_run_facts` (774), `_record` (806) |
+| The late answer, the resume, and the 409 | `apps/services/gateway/gateway/routes/agent.py` `_late_answer_from_row` (3813), `_resume_from_row` (3980), `_continuation_request` (4202), `_same_reply_of` (4223), `_same_label_as_park` (4281), and the `run_restarted` 409 (4598) |
+| The last turn of a chat (RESUME-2b) | `apps/services/gateway/gateway/routes/chat.py` `_SHOWN_ROW_SQL` (681), `_LAST_TURN_SQL` (701), `label_of` (739), `reply_turn` (761). The fold of part one: `apps/services/gateway/gateway/chat_fold.py` `_same_label_as_row` (505), `same_reply_events` (556). The mark of a same-reply start: `executor.py` `_same_reply_run` (7037) |
+| The parked stream (RESUME-2b, D-RES-7) | `stream_relay.py` `PARKED_STREAM_TTL_SECONDS` (95), `ParkedStreamGone` (154), `mark_inactive` (537), `keep_parked_stream` (567), `parked_end_of` (598), `part_one_at_head` (624) |
 | The resend, and the note of a resume | `apps/services/gateway/gateway/chat_recovery.py` `card_answer_after_restart` (731), `card_answer_from_ask` (762), `compose_card_answer` (150), `compose_resumed_call_note` (194) |
-| The stop | `apps/services/gateway/gateway/routes/drain.py`, `deploy/hostinger/gateway-drain.sh` (60 s), `deploy/hostinger/acb-gateway.service` (`TimeoutStopSec=75`) |
-| The control bus, and the starter | `apps/services/orchestrator/orchestrator/stream_relay.py` `_deliver_control` (1122), `cancel_run` (1623), `mark_active` (367), `start_detached` (1301) |
+| The stop | `apps/services/gateway/gateway/routes/drain.py` `_chat_runs` (109), `drain` (137), `drain_park` (157). `deploy/hostinger/gateway-drain.sh` (60 s, and 8 s for the park call). `deploy/hostinger/acb-gateway.service` (`TimeoutStopSec=75`). The sweep that writes the mark: `run_liveness.py` `sweep_dead_instances` (446) |
+| The control bus, and the starter | `apps/services/orchestrator/orchestrator/stream_relay.py` `_deliver_control` (1274), `cancel_run` (1837), `mark_active` (397), `start_detached` (1453) |
 | The card gate | `packages/acb_skills/acb_skills/ask_tools.py` `request_confirmation` (2332), `act_keys` (1923), `card_call` (1936). The gate wrapper is `apps/services/orchestrator/orchestrator/_tool_injection.py` `_agated` (1192) |
 | The stored call of WhatsApp | `apps/services/gateway/gateway/routes/whatsapp_channel/acts.py` `_run` (710), and `packages/acb_skills/acb_skills/whatsapp_acts.py` `confirming` (287), `card_text` (202) |
 | The native session, and the prologue | `apps/services/orchestrator/orchestrator/native_session_store.py` (rule 6, `begin_turn` 516, `finish_turn` 660). `executor.py` `_resume_prologue` (6847), `_native_session_skip` (10567) and `no_current_turn` (10604) |
@@ -2344,7 +2682,8 @@ need for a second service:
 
 **Reopen D-1 when** a production stop logs a `gateway-drain:` line other than
 `0 runs` or `every run ended`. The other lines say that the stop went ahead
-while runs were live, or while the count did not answer. Run
+while runs were live, or while the count did not answer. Since RESUME-5, the
+`parked N run(s)` line and the `no park answer` line are not such lines. Run
 `sudo journalctl -u acb-gateway --since "7 days ago" -o cat | grep gateway-drain`
 on the box to see each stop.
 
@@ -2374,21 +2713,23 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/lib/chatStore.ts` | `releaseLoading`, `setSessionAgent` |
 | `workbench/control_plane/src/hooks/useAgentChat.ts` | The reattach loop |
 | `workbench/control_plane/src/lib/nav.ts` | `NavPane.agent` |
-| `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
-| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), the grant write of a late approve (S2 item 8), and `_resume_from_row` (RESUME-2a) |
+| `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`), and `reply_turn` (RESUME-2b) |
+| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), the grant write of a late approve (S2 item 8), `_resume_from_row` (RESUME-2a), and `_same_reply_of` and `_same_label_as_park` (RESUME-2b) |
 | `packages/acb_skills/acb_skills/late_approve.py` | A late approve acts once: the flag, the offer, the grant and its one use (S2 item 8) |
 | `packages/acb_skills/acb_skills/stored_call.py` | A card stores its call: the flag, the shape and the call id (§4.12 RESUME-1a), and the stored-call yes (RESUME-2a) |
-| `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a), `claim_stored_call` (RESUME-2a), and the retention `prune` and `prune_hook` (task 3435) |
-| `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2), `_resume_prologue` (RESUME-2a) |
-| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `start_detached` (RESUME-2a), `list_live_runs`, `drop_run_slot` |
+| `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a), `claim_stored_call` (RESUME-2a), the reply row of the call and the 24 h of a parked stream (RESUME-2b), the retention `prune` and `prune_hook` (task 3435), and the park at the stop: `stop_wait`, `park_for_stop`, `park_at_stop` and `parking_threads` (RESUME-5) |
+| `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2), `_resume_prologue` (RESUME-2a), and the stop signal in `wait_user_future` (RESUME-5) |
+| `apps/services/gateway/gateway/routes/drain.py` | The stop count `GET /internal/drain`, and `POST /internal/drain/park` (RESUME-5) |
+| `deploy/hostinger/gateway-drain.sh` | The stop step: one park call, then the count (RESUME-5) |
+| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `start_detached` (RESUME-2a, `keep_stream` RESUME-2b), `keep_parked_stream`, `parked_end_of` (RESUME-2b), `list_live_runs`, `drop_run_slot` |
 | `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
 | `workbench/control_plane/src/lib/chatTurnFailure.ts` | The capped turn leaves the thread with one notice (D-3) |
 | `workbench/control_plane/src/lib/chatSteer.ts` | A send during a run steers it: the one control, the steer send, the follow-up rule (§4.9) |
 | `apps/services/orchestrator/orchestrator/steer.py` | `return_unconsumed`, `has_pending_steers`, `without_replayed` (§4.9) |
 | `workbench/control_plane/src/lib/runStatus.ts` | The one run state: the reducer, the step, the view and the no-flash rule (§4.10) |
 | `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
-| `workbench/control_plane/src/lib/chatResume.ts` | The line of an Approve from another device, and the stale card set (§4.12 RESUME-3a). Fence: `chatResume.test.ts` |
-| `workbench/control_plane/src/lib/respondInput.ts` | The answer POST: `resumedOf` and the cap reason (§4.12 RESUME-3a) |
+| `workbench/control_plane/src/lib/chatResume.ts` | The line of an Approve from another device, and the stale card set (§4.12 RESUME-3a). The frame `run_resumed`, the end of a replay (`replayEndAfter`) and the line of case A (RESUME-3b). The target of an attach (`attachPickOf`, RESUME-3d). Fence: `chatResume.test.ts` |
+| `workbench/control_plane/src/lib/respondInput.ts` | The answer POST: `resumedOf` and the cap reason (§4.12 RESUME-3a), and `sameReply` (RESUME-3b) |
 
 ---
 
@@ -2492,6 +2833,19 @@ docker run -d --rm --name resume4-r8-redis -p 127.0.0.1:16406:6379 redis:7-alpin
 HELD_R8_REDIS_URL=redis://127.0.0.1:16406/0 uv run pytest tests/unit/test_resume_continuation_r8.py -rs
 ```
 
+For §4.12 RESUME-2b, from the repo root. The R8 file needs a private
+database and a private Redis, because it runs FLUSHDB. The tests of case A
+point the stream relay at that Redis too. A skip is not a pass.
+
+```bash
+uv run pytest tests/unit/test_resume_continuation.py tests/unit/test_resume_stored_call.py \
+  tests/unit/test_pending_ask_flow.py tests/unit/test_late_approve_grant.py
+uv run pytest tests/unit/test_concurrent_run_guard.py tests/unit/test_chat_deploy_recovery.py \
+  tests/unit/test_chat_fold_other_run.py tests/unit/test_flag_doc_sorted.py
+docker run -d --rm --name resume2b-r8-redis -p 127.0.0.1:16412:6379 redis:7-alpine
+HELD_R8_REDIS_URL=redis://127.0.0.1:16412/0 uv run pytest tests/unit/test_resume_continuation_r8.py -rs
+```
+
 For §4.12 RESUME-4a-2, from the repo root. Each R8 file needs a private
 database. The two files with a Redis need a private Redis, because they run
 FLUSHDB. Run one R8 file at a time. A skip is not a pass.
@@ -2508,6 +2862,37 @@ HELD_R8_REDIS_URL=redis://127.0.0.1:16411/0 uv run pytest tests/unit/test_resume
 HELD_R8_REDIS_URL=redis://127.0.0.1:16411/0 uv run pytest tests/unit/test_late_approve_grant_r8.py -rs
 uv run pytest tests/unit/test_resume_stored_call_r8.py -rs
 uv run pytest tests/unit/test_pending_ask_store.py -rs
+```
+
+For §4.12 RESUME-5, from the repo root. The script tests need a bash with
+curl. The R8 file needs a private database and a private Redis, because it
+runs FLUSHDB. Run one R8 file at a time. A skip is not a pass. Never run the
+drain against production.
+
+```bash
+uv run pytest tests/unit/test_gateway_drain.py tests/unit/test_pending_ask_flow.py \
+  tests/unit/test_resume_continuation.py tests/unit/test_chat_deploy_recovery.py \
+  tests/unit/test_late_approve_grant.py
+docker run -d --rm --name resume5-r8-redis -p 127.0.0.1:16415:6379 redis:7-alpine
+HELD_R8_REDIS_URL=redis://127.0.0.1:16415/0 uv run pytest tests/unit/test_resume_continuation_r8.py \
+  -rs -k "parked_at_the_stop or case_a_goes_on or real_park_keeps"
+```
+
+For §4.12 RESUME-3b, run these on the home box under `timeout`, never on
+the owner's PC. The first four commands run from `workbench/control_plane`.
+The last one runs from the repo root. The e2e needs a free port, and it
+holds `flock ~/lanes/e2e.lock`. The last command needs no database.
+
+```bash
+npx vitest run src/lib/chatResume.test.ts src/lib/runStatus.test.ts src/lib/runBinding.test.ts \
+  src/lib/respondInput.test.ts src/lib/liveRuns.test.ts src/lib/confirmationQueue.test.ts \
+  src/lib/confirmationReceipts.test.ts src/lib/pendingAsks.test.ts
+npx vitest run src/lib/sharedTaskUi.test.ts src/lib/theme/conformance.test.ts src/lib/boards.test.ts \
+  src/lib/nav.test.ts
+npx tsc --noEmit
+npx playwright test e2e/chat-card-restart.spec.ts e2e/chat-run-status.spec.ts --project=ci
+uv run pytest tests/unit/test_pending_ask_flow.py tests/unit/test_active_sessions_tenant.py \
+  tests/unit/test_flag_doc_sorted.py
 ```
 
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)

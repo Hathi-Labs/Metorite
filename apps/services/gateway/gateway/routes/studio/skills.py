@@ -40,8 +40,28 @@ publish or resume. A pause is not gated, so a member can always stop a live
 skill. No route renames a skill, so a skill with a hidden character in its
 name cannot go live again: the member makes a new skill. A new version of a
 published skill
-returns the skill to ``draft`` in the same transaction. No route changes the
-visibility, so each skill stays ``private`` (J2 owns the share).
+returns the skill to ``draft`` in the same transaction. No route of F2a
+changes the visibility.
+
+**The share with the org (WS-STU J2c, ``ai_studio_rows/J2c.md``).** Five
+routes over the share functions of the store. Each reads ``STUDIO_ORGS``
+first (404, no session). ``PACKAGE_HOST_ORGS`` does not apply, because a
+skill share needs no install. The owner asks with ``POST
+/skills/{id}/versions/{n}/share`` (202 ``pending``). A second ask of the same
+version writes nothing. Another member, another org and no such version get
+404. A holder of ``studio:publish`` reads ``GET /skill-shares?state=pending``
+(each other caller gets 403, before any session). A holder approves or
+rejects one version with ``POST .../share/approve`` or ``.../share/reject``.
+The handler passes ``user.has_permission(SHARE_RIGHT)`` to the store as
+``can_publish``, and the store refuses the rest (403). The owner cannot
+approve (403). A version that nobody asked for, another org and no such
+skill get 404. A decided ask is 409 ``share_conflict``. ``DELETE
+/skills/{id}/share`` unshares: the owner always, another member only with the
+right. No route takes a visibility from a request, so no route can set
+``group`` or ``system``. ``GET /skills/{id}/share`` gives the owner the share
+of one skill (J2d), with the 404 of each other caller. The chat tool
+``studio_skill_share`` (J2d, ``acb_skills.studio_tools``) sends these routes,
+and the page is a later slice.
 
 **Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
 move waits for the first to commit, then reads the new state, and
@@ -57,18 +77,22 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from acb_common.studio_manifest import MAX_DEPTH
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.skill_slug import slug_from_name  # the one shared slug (STU-F8a)
 from acb_skills.tool_packs import MAX_PACK_TOOLS
-from fastapi import Body, Depends, HTTPException
+from fastapi import Body, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
+from gateway.routes.studio.packages import SHARE_RIGHT
 from gateway.studio import skills_store as store
 from pydantic import BaseModel, ValidationError
 
 __all__ = ["MAX_ACTIONS", "TRANSITIONS", "router", "slug_from_name"]
+
+_log = get_logger(__name__)
 
 #: The most actions a skill holds: one WS-67 tool pack.
 MAX_ACTIONS = MAX_PACK_TOOLS
@@ -506,3 +530,200 @@ async def set_skill_state(
             if after is None or after.current_version != skill.current_version:
                 raise _refuse(409, CHANGED)
     return {"skill": _skill_out(after)}
+
+
+# ── The share with the org (WS-STU J2c) ────────────────────────────────────
+
+#: The 409 of a share move that the state of the ask does not allow (J2c).
+SHARE_CONFLICT = "share_conflict"
+FORBIDDEN = "forbidden"
+#: The one state that ``GET /skill-shares`` reads.
+PENDING = "pending"
+BAD_SHARE_STATE = ("state is pending, the one state that this list reads. Send it, or "
+                   "leave it out.")
+NO_SHARE_LIST_RIGHT = ("Only a holder of studio:publish reads the skills that wait for a "
+                       "share. Ask the owner of your organization for that right.")
+
+
+@contextlib.contextmanager
+def _share_errors() -> Iterator[None]:
+    """The refusals of the share moves as HTTP answers. ``ShareRefused`` is
+    403 ``forbidden``. ``ShareConflict`` is 409 :data:`SHARE_CONFLICT`, with
+    the state that the store read."""
+    try:
+        yield
+    except store.ShareRefused as exc:
+        raise HTTPException(status_code=403, detail={
+            "code": FORBIDDEN, "message": str(exc)}) from None
+    except store.ShareConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": SHARE_CONFLICT, "message": str(exc),
+            "share_state": exc.current}) from None
+
+
+def _share_out(share: store.Share) -> dict[str, Any]:
+    return {
+        "skill_id": share.skill_id,
+        "visibility": share.visibility,
+        "shared_version": share.shared_version,
+        "share_state": share.share_state,
+        "share_version": share.share_version,
+        "requested_by": share.requested_by,
+        "requested_at": share.requested_at,
+        "decided_by": share.decided_by,
+        "decided_at": share.decided_at,
+    }
+
+
+def _pending_share_out(found: store.PendingShare) -> dict[str, Any]:
+    """One row of the holder's list, with the FULL body of the asked version."""
+    return {
+        "skill_id": found.skill_id,
+        "name": found.name,
+        "slug": found.slug,
+        "description": found.description,
+        "owner_email": found.owner_email,
+        "version": found.version,
+        "requested_by": found.requested_by,
+        "requested_at": found.requested_at,
+        "body": found.body,
+        "content_hash": found.content_hash,
+    }
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share", status_code=202)
+async def request_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner asks to share one version with the org (J2c). The answer is
+    202 ``pending``. A second ask of the same version writes nothing. A
+    decided ask of this or a newer version is 409. Another member, another
+    org and no such version get 404. The handler takes no body, so a
+    visibility in a request changes nothing."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    v = _number(version)
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await store.request_share(db, user.email, sid, v)
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.share_asked", skill_id=sid, version=v)
+    return _share_out(found)
+
+
+@router.get("/skills/{skill_id}/share")
+async def get_skill_share(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner reads the share of one skill (J2d): the visibility, the
+    shared version and the newest ask. It reads no right and writes nothing.
+    Another member, another org and no such skill get 404."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            found = await store.get_share(db, user.email, sid)
+    if found is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return _share_out(found)
+
+
+@router.get("/skill-shares")
+async def list_skill_shares(
+    user: UserContext = Depends(get_current_user),
+    state: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """The asks of the bound org that wait for a holder (J2c), oldest first,
+    each with the full body of the asked version. Only a holder of
+    ``studio:publish`` reads it, and each other caller gets 403 before any
+    session. ``truncated`` is True when more asks wait past the page."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if state is not None and state != PENDING:
+        raise _refuse(422, BAD_SHARE_STATE)
+    # D180.3: the holder of the share verb reads what waits for it. Fail closed.
+    can = user.has_permission(SHARE_RIGHT)
+    if not can:
+        raise HTTPException(status_code=403, detail={
+            "code": FORBIDDEN, "message": NO_SHARE_LIST_RIGHT})
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            rows, more = await store.list_pending_shares(db, can_publish=can)
+    return {"state": PENDING, "shares": [_pending_share_out(r) for r in rows],
+            "truncated": more}
+
+
+async def _decide_share(user: UserContext, skill_id: str, version: str, approve: bool,
+                        can: bool) -> dict[str, Any]:
+    """One approve or reject. *can* is the check of the share verb that the
+    handler made. The store refuses each other value first."""
+    sid = _skill_id(skill_id)
+    v = _number(version)
+    decide = store.approve_share if approve else store.reject_share
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await decide(db, user.email, sid, v, can_publish=can)
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.share_decided", skill_id=sid, version=v,
+              move="approve" if approve else "reject")
+    return _share_out(found)
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share/approve")
+async def approve_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` approves one pending ask (J2c). The
+    skill becomes ``org``, and other members load this version. The owner
+    gets 403. No ask of this version, another org and no such skill get
+    404. A decided ask is 409 ``share_conflict``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return await _decide_share(user, skill_id, version, True,
+                               user.has_permission(SHARE_RIGHT))
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share/reject")
+async def reject_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` rejects one pending ask (J2c). The
+    owner may reject too. The visibility does not change. The answers are
+    those of the approve."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return await _decide_share(user, skill_id, version, False,
+                               user.has_permission(SHARE_RIGHT))
+
+
+@router.delete("/skills/{skill_id}/share")
+async def unshare_skill(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return a skill to ``private`` (J2c). The owner always may. Another
+    member needs ``studio:publish`` (403 without it), and then a skill that
+    is not ``org`` in the bound org is 404. The next turn of each other
+    member loads the skill no more."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await store.unshare(db, user.email, sid,
+                                        can_publish=user.has_permission(SHARE_RIGHT))
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.unshared", skill_id=sid)
+    return _share_out(found)

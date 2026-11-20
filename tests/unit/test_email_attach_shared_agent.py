@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -1127,3 +1128,89 @@ async def test_a_refused_artifact_ref_on_the_new_mail_card_gets_the_next_step(
     assert "/email/new-card/act" not in tool["posts"] and tool["sent"] == []
     assert agents._refused_text("The email has no text, so nothing was sent.") == (
         "Not sent. The email has no text, so nothing was sent.")
+
+
+# ── Task 3812: the text and the files agree ────────────────────────────────
+
+
+def test_promises_file_reads_the_words() -> None:
+    """A text that says a file is attached or enclosed makes the promise.
+    Mutation: drop ``_promises_file`` → every case below is red."""
+    for text in ("Please find attached the deck.", "See the attachment.", "Enclosed is the PDF"):
+        assert agents._promises_file(text), text
+    for text in ("Thanks, talk soon.", "", None):
+        assert not agents._promises_file(text), text
+
+
+async def test_a_text_that_says_attached_with_no_file_warns_on_the_card(
+    monkeypatch, tool,
+) -> None:
+    """The card of a mail with no file, whose text says "attached", shows the
+    warning line. A mail with no such words shows none.
+    Mutation: drop the notice in ``send_email`` → the first assert is red."""
+    seen: list[str] = []
+
+    async def approve(**kw: Any) -> bool:
+        seen.append(str(kw.get("context") or ""))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", approve)
+    await agents.send_email(F.BOX, body="Please find attached the deck.", to=[F.KNOWN],
+                            subject="Deck")
+    await agents.send_email(F.BOX, body="Thanks, talk soon.", to=[F.KNOWN], subject="Hi")
+    assert agents._PROMISE_NO_FILE in seen[0]
+    assert agents._PROMISE_NO_FILE not in seen[1]
+
+
+# ── Task 3812 item 3: a file the member uploaded into the chat goes on the draft ──
+
+
+async def test_a_chat_upload_goes_on_the_draft_and_the_card_lists_it(
+    monkeypatch, tool, disk,
+) -> None:
+    """The owner's case (2026-11-18): the member uploads a file into the chat
+    and asks for a draft with it. The upload lands in ``inputs/<slug>/``. In a
+    normal chat (no outside mail read) ``send_email`` writes the artifact ref,
+    the approval card lists the file with its name and size, and the mail goes
+    with the file. Mutation: drop ``_chat_file_refs`` or the file line of the
+    card → this test goes red."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    seen: list[str] = []
+
+    async def approve(**kw: Any) -> bool:
+        seen.append(str(kw.get("context") or "") + str(kw.get("detail") or ""))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", approve)
+    up = disk.rel(disk.s_alice, "upload.png", "inputs")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        out = await agents.send_email(F.BOX, body="Here is the picture.", to=[F.KNOWN],
+                                      subject="Picture", attachments=[up])
+    assert out.startswith("Sent email to"), out
+    [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
+    assert [m["ref"] for m in sent["metorite_files"]] == [_ref(up)]
+    [[att]] = tool["sent"]
+    assert att["content"] == b"PNG-UPLOAD" and att["filename"] == "upload.png"
+    [card] = seen
+    assert "upload.png" in card, card
+    assert re.search(r"upload\.png.{0,12}\d+(\.\d+)? ?(B|KB|MB|bytes)", card), card
+
+
+async def test_a_chat_upload_goes_through_the_one_email_card(new_card_world, disk) -> None:
+    """The same upload, on the one email card (the gateway records the card
+    and its digest, and the act sends the file). Mutation: refuse an
+    ``inputs/`` file in ``_chat_thread_file`` → red."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    tool = new_card_world
+    up = disk.rel(disk.s_alice, "upload.png", "inputs")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        await agents.send_email(F.BOX, body="The report is attached.", to=[F.KNOWN],
+                                subject="Report", attachments=[up])
+    [card] = [b for p, b in tool["bodies"] if p == "/email/new-card"]
+    assert card["metorite_files"] == [_ref(up)]
+    [[att]] = tool["sent"]
+    assert att["content"] == b"PNG-UPLOAD"
