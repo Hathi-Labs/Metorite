@@ -3333,8 +3333,9 @@ def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]
     if word == ".not":
         # `.not` holds the records with no value too (``field_sql``).
         line += ", or has no value"
-    # Each stored value is org data: one line, at most 60 characters.
-    counted = [" ".join(str(v).split())[:60] for v in matched.get(name) or []]
+    # Each stored value is org data: one line of at most 60 characters,
+    # between double quotes (:func:`_quoted_name`).
+    counted = [_quoted_name(v) for v in matched.get(name) or []]
     if counted:
         line += f" ({'left out' if word == '.not' else 'counted'} {_names(counted)})"
     return line

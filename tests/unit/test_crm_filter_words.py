@@ -409,7 +409,8 @@ def test_the_filter_line_words_each_word() -> None:
                                  "filter_words": words})
     assert line == (
         "Filters: Notes contains '50%'; Site starts with 'Ac'; Status is not Won, or has no "
-        f"value; Status is one of Open, Lost (counted Open, {('OPEN x' * 20)[:60]} and Lost); "
+        f'value; Status is one of Open, Lost (counted "Open", "{("OPEN x" * 20)[:60]}" and '
+        '"Lost"); '
         "Due has no value; Amount has a value.")
 
 
