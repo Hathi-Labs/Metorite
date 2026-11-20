@@ -29,10 +29,15 @@ F12c adds the five fences of the owner to this file. The R8 half of F12b is
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import contextlib
+import copy
 import dataclasses
+import hashlib
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,10 +48,19 @@ import pytest
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
 from acb_common import get_settings
+from acb_common.tenant_redis import TenantRedis
 from acb_skills import ask_tools
+from acb_skills import studio_tools as stools
+from acb_skills.skill_dry_run import HoldAndRecord, current_dry_run
 from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+from agent_framework import FunctionTool
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from gateway.studio import skill_repair, skill_runs, skill_tests
+from gateway.studio import skills_store as store
 from orchestrator import _tool_injection as ti
+
+from tests.unit.test_skill_tests import SlotRedis
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -721,3 +735,896 @@ def test_a_skill_with_no_pack_tool_is_unobserved(monkeypatch) -> None:
     assert notes.row_of(SLUG2) == (True, "passed", ti.UNOBSERVED, [])
     notes.saw("send_email", error="ToolBoom")
     assert notes.row_of(SLUG2)[:3] == (False, "tool_error", "send_email: ToolBoom")
+
+
+# ══ F12c: the repair, the approve and the undo ══════════════════════════════
+#
+# The five fences of the owner (F12.md "Done when"), hermetic. The routes run
+# in a FastAPI app with the real router. The store and the store of skill runs
+# are fakes in memory. ``skill_tests.run_suite`` is REAL, with a fake runner
+# that sends each call through the real ``HoldAndRecord`` and a fake meter, as
+# the F4b tests do. No model call and no credit read happen. The R8 half is
+# ``tests/unit/test_skill_repair_r8.py``.
+#
+# **The mutations (R7).**
+#
+# * Drop the ``check_contract`` call of the repair route:
+#   ``test_a_repair_that_adds_an_action_is_refused`` and
+#   ``test_a_repair_that_changes_another_key_is_refused`` go red.
+# * Compare only ``actions`` in ``check_contract``:
+#   ``test_a_repair_that_changes_another_key_is_refused`` goes red.
+# * Drop the class read of ``check_contract``:
+#   ``test_the_class_check_reads_the_catalog`` goes red.
+# * Call the approve route on each decision:
+#   ``test_only_approved_calls_the_approve_route`` goes red.
+# * Drop check 5: ``test_a_second_repair_of_one_run_is_refused`` goes red.
+# * Compare ``content_hash`` in place of ``body_key``, or drop check 8:
+#   ``test_a_repeat_of_a_failed_body_is_refused`` goes red.
+# * Offer version 2 on the input run alone, or read the text of the model:
+#   ``test_no_card_while_a_test_fails`` and ``test_no_card_while_the_input_fails``
+#   go red.
+# * Drop check 11: ``test_cap_unset_spends_nothing`` goes red.
+
+R_ORG = "11111111-1111-4111-8111-111111111111"
+ANA = "ana@f12c.test"
+BEN = "ben@f12c.test"
+R_SID = "22222222-3333-4444-8666-777777777777"
+_T0 = datetime(2026, 11, 20, tzinfo=UTC)
+R_INPUT = "Call Asha on 555 0100 about the Acme lead"
+R_BITS = ("Asha", "555", "0100")
+R_BASE = {
+    "description": "Use it for leads.", "instructions": "Add the lead.",
+    "actions": ["object:lead.create", "object:lead.list"],
+    "tests": [{"id": "t1", "input": "Add Ravi from Acme",
+               "expect": [{"action": "object:lead.create", "fields": {"data.company": "Acme"}}]}],
+}
+R_CATALOG = [{"id": "object:lead.create", "class": "B"}, {"id": "object:lead.list", "class": "A"},
+             {"id": "tool:send_email", "class": "C"}]
+
+
+def _lead_tool() -> FunctionTool:
+    async def studio_record_create(package_id: str = "", object: str = "",
+                                   data: dict[str, Any] | None = None) -> str:
+        raise AssertionError("a held write ran")
+
+    return FunctionTool(func=studio_record_create, name="studio_record_create", description="d")
+
+
+def _mail_tool() -> FunctionTool:
+    async def send_email(to: str = "", body: str = "") -> str:
+        raise AssertionError("a held write ran")
+
+    return FunctionTool(func=send_email, name="send_email", description="d")
+
+
+_LEAD = (_lead_tool(), {"package_id": "p1", "object": "lead", "data": {"company": "Acme"}})
+
+
+class _RepairRunner:
+    """A fake turn of the dry run. It arms and loads the record, and sends
+    the calls for each message through the real ``HoldAndRecord``. Its
+    answer text always says that all is well: the end-state rule must never
+    read it."""
+
+    def __init__(self, calls: dict[str, list[Any]] | None = None) -> None:
+        self.calls = calls or {}
+        self.messages: list[str] = []
+
+    async def __call__(self, message: str, *, run_id: str, thread_id: str, org: str,
+                       member: str) -> str:
+        record = current_dry_run()
+        assert record is not None and org == R_ORG and member == ANA
+        self.messages.append(message)
+        record.armed = record.loaded = True
+
+        async def never() -> None:
+            raise AssertionError("a held call ran")
+
+        for function, args in self.calls.get(message, [_LEAD]):
+            ctx = SimpleNamespace(result=None, function=function, arguments=args)
+            await HoldAndRecord().process(ctx, never)
+        return "All tests passed. Everything is fine. Offer version 2."
+
+
+def _run_row(**over: Any) -> skill_runs.SkillRun:
+    values: dict[str, Any] = {
+        "id": str(uuid.uuid4()), "skill_id": R_SID, "version": 2, "kind": "live",
+        "passed": False, "reason": "tool_error", "detail": "create_task: ToolBoom",
+        "body_key": skill_repair.body_key(R_BASE), "writes": (),
+        "input_hash": skill_runs.input_hash(R_ORG, R_INPUT), "repair_of": None,
+        "test_id": None, "run_id": "run-live-1", "thread_id": "thread-1", "credits": None,
+        "created_by": ANA, "created_at": _T0}
+    values.update(over)
+    return skill_runs.SkillRun(**values)
+
+
+class _Repairs:
+    """The fake world of the repair routes: one skill of ANA, its versions, the
+    rows of the store of skill runs, the chat of ANA, and the spies."""
+
+    def __init__(self) -> None:
+        self.state = "published"
+        self.versions: dict[int, dict[str, Any]] = {
+            1: {**R_BASE, "instructions": "Add it."}, 2: copy.deepcopy(R_BASE)}
+        self.rows: list[skill_runs.SkillRun] = []
+        self.messages: list[str] = [R_INPUT, "Hello"]
+        self.runner = _RepairRunner()
+        self.meter_reads = 0
+        self.catalog_reads = 0
+        self.added: list[dict[str, Any]] = []
+        self.moves: list[str] = []
+        self.proposals: list[dict[str, Any]] = []
+        self.redis: Any = None
+
+    @property
+    def current(self) -> int:
+        return max(self.versions)
+
+    def skill(self) -> store.Skill:
+        return store.Skill(id=R_SID, name="Leads", slug="leads", description="d",
+                           owner_email=ANA, visibility="private", state=self.state,
+                           current_version=self.current, created_at=_T0, updated_at=_T0)
+
+    def version(self, number: int | None) -> store.Version | None:
+        number = self.current if number is None else number
+        body = self.versions.get(number)
+        if body is None:
+            return None
+        return store.Version(skill_id=R_SID, version=number, body=copy.deepcopy(body),
+                             content_hash=store.content_hash(body), created_by=ANA,
+                             created_at=_T0)
+
+
+@pytest.fixture
+def repairs(monkeypatch) -> _Repairs:  # noqa: C901 - one fake world
+    from gateway.jobs import headless_turn
+    from gateway.routes.studio import actions as actions_route
+    from gateway.routes.studio import skills as route
+
+    w = _Repairs()
+    settings = get_settings()
+    for key in ("studio_orgs", "studio_skill_tests_orgs", "studio_skill_repair_orgs"):
+        monkeypatch.setattr(settings, key, "*", raising=False)
+    monkeypatch.setattr(settings, "studio_skill_tests_cap_credits", "5", raising=False)
+
+    @contextlib.asynccontextmanager
+    async def session(*_a: Any, **_k: Any) -> Any:
+        yield SimpleNamespace()
+
+    async def catalog_rows() -> list[dict[str, Any]]:
+        w.catalog_reads += 1
+        return [dict(r) for r in R_CATALOG]
+
+    def mine(member: str, sid: str) -> bool:
+        return member.strip().lower() == ANA and sid == R_SID
+
+    async def get_skill(_db: Any, member: str, sid: str, *, for_update: bool = False) -> Any:
+        return w.skill() if mine(member, sid) else None
+
+    async def get_version(_db: Any, member: str, sid: str, version: int | None = None) -> Any:
+        return w.version(version) if mine(member, sid) else None
+
+    async def add_version(_db: Any, member: str, sid: str, body: Any) -> Any:
+        assert mine(member, sid)
+        store.check_body(body)
+        w.added.append(copy.deepcopy(dict(body)))
+        w.versions[w.current + 1] = copy.deepcopy(dict(body))
+        return w.version(None)
+
+    async def set_state(_db: Any, member: str, sid: str, state: str) -> bool:
+        w.moves.append(state)
+        w.state = state
+        return True
+
+    async def load_skill(org: str, member: str, sid: str, version: int | None) -> Any:
+        assert (org, member, sid) == (R_ORG, ANA, R_SID)
+        return w.skill(), w.version(version)
+
+    async def get_run(_db: Any, rid: str) -> Any:
+        return next((r for r in w.rows if r.id == rid), None)
+
+    async def proposal_for(_db: Any, repair_of: str) -> Any:
+        return next((r for r in w.rows if r.kind == "proposal" and r.repair_of == repair_of),
+                    None)
+
+    async def repeats(_db: Any, sid: str, key: str) -> bool:
+        return any(r.skill_id == sid and r.body_key == key and not r.passed
+                   and r.reason in skill_runs.REPEAT_REASONS for r in w.rows)
+
+    async def record_proposal(_db: Any, member: str, sid: str, repair_of: str,
+                              **kw: Any) -> Any:
+        if any(r.kind == "proposal" and r.repair_of == repair_of for r in w.rows):
+            raise skill_runs.AlreadyRepaired()
+        failed = next(r for r in w.rows if r.id == repair_of)
+        w.proposals.append({"member": member, "sid": sid, "repair_of": repair_of, **kw})
+        row = _run_row(kind="proposal", passed=kw["passed"], reason=kw["reason"],
+                       detail=kw.get("detail", ""), body_key=kw["body_key"],
+                       repair_of=repair_of, version=failed.version,
+                       writes=tuple(kw.get("writes") or ()), run_id=kw.get("run_id"),
+                       thread_id=None, credits=kw.get("credits"))
+        w.rows.append(row)
+        return row
+
+    async def record_live(_db: Any, member: str, sid: str, **kw: Any) -> Any:
+        if any(r.kind == "live" and not r.passed and r.run_id == kw["run_id"] for r in w.rows):
+            raise skill_runs.DuplicateFailure()
+        row = _run_row(reason=kw["reason"], run_id=kw["run_id"], thread_id=kw["thread_id"],
+                       version=kw["version"], body_key=kw["body_key"],
+                       input_hash=skill_runs.input_hash(R_ORG, kw["input_text"]))
+        w.rows.append(row)
+        return row
+
+    async def newest_passed_live(_db: Any, member: str, sid: str) -> Any:
+        found = [r for r in w.rows if r.kind == "live" and r.passed and r.created_by == member]
+        return found[-1] if found else None
+
+    async def failed_live_of_run(_db: Any, sid: str, run_id: str) -> Any:
+        return next((r for r in w.rows if r.kind == "live" and not r.passed
+                     and r.run_id == run_id), None)
+
+    async def failed_input(_db: Any, member: str, thread_id: Any, want: Any) -> Any:
+        if member != ANA or thread_id != "thread-1":
+            return None
+        return next((m for m in w.messages if skill_runs.input_hash(R_ORG, m) == want), None)
+
+    async def runner(message: str, **kw: Any) -> Any:
+        return await w.runner(message, **kw)
+
+    async def meter(org: str, member: str, run_id: str) -> Decimal:
+        w.meter_reads += 1
+        return Decimal("0.5")
+
+    monkeypatch.setattr(route, "_tenant_session", session)
+    monkeypatch.setattr(actions_route, "catalog_rows", catalog_rows)
+    monkeypatch.setattr(route.store, "get_skill", get_skill)
+    monkeypatch.setattr(route.store, "get_version", get_version)
+    monkeypatch.setattr(route.store, "add_version", add_version)
+    monkeypatch.setattr(route.store, "set_state", set_state)
+    monkeypatch.setattr(skill_tests, "_load_skill", load_skill)
+    w.redis = SlotRedis()
+    monkeypatch.setattr(skill_tests, "get_tenant_redis", lambda: TenantRedis(w.redis))
+    monkeypatch.setattr(skill_tests, "agent_runner", runner)
+    monkeypatch.setattr(headless_turn, "console_meter", meter)
+    for name, fn in (("get_run", get_run), ("proposal_for", proposal_for),
+                     ("repeats_a_failed_body", repeats), ("record_proposal", record_proposal),
+                     ("record_live", record_live), ("newest_passed_live", newest_passed_live),
+                     ("failed_live_of_run", failed_live_of_run)):
+        monkeypatch.setattr(skill_runs, name, fn)
+    monkeypatch.setattr(skill_repair, "failed_input", failed_input)
+    return w
+
+
+def _app(email: str = ANA, org: str = R_ORG) -> TestClient:
+    from acb_auth import UserContext, UserRole, get_current_user
+    from acb_auth.access import build_access
+    from gateway.routes.studio import actions as actions_route
+
+    app = FastAPI()
+    app.include_router(actions_route.router)
+    app.dependency_overrides[get_current_user] = lambda: UserContext(
+        email=email, role=UserRole.EMPLOYEE, access=build_access(["feature:studio"]),
+        organization_id=org)
+    return TestClient(app)
+
+
+def _failed(w: _Repairs, **over: Any) -> skill_runs.SkillRun:
+    row = _run_row(**over)
+    w.rows.append(row)
+    return row
+
+
+def _repair(w: _Repairs, failure: str | None, *, email: str = ANA, **body: Any) -> Any:
+    payload = {"instructions": "Add the lead. Always fill the company.", **body}
+    if failure is not None:
+        payload["failure_id"] = failure
+    return _app(email).post(f"/studio/skills/{R_SID}/repairs", json=payload)
+
+
+def _spent(w: _Repairs) -> tuple[int, int]:
+    return len(w.runner.messages), w.meter_reads
+
+
+# -- the pure contract --------------------------------------------------------
+
+_CLASSES = {r["id"]: r["class"] for r in R_CATALOG}
+
+
+def test_the_contract_takes_new_instructions_and_a_removed_action() -> None:
+    proposed = skill_repair.proposed_body(R_BASE, "Add the lead, then stop.",
+                                          ["object:lead.list"])
+    assert proposed["actions"] == ["object:lead.create"]
+    assert proposed["tests"] == R_BASE["tests"] and proposed["description"] == R_BASE["description"]
+    assert skill_repair.check_contract(R_BASE, proposed, _CLASSES) is None
+    with pytest.raises(skill_repair.RepairError) as bad:
+        skill_repair.proposed_body(R_BASE, "", ["tool:send_email"])
+    assert bad.value.code == "not_an_action"
+
+
+def test_a_change_of_white_space_alone_is_no_change() -> None:
+    same = skill_repair.proposed_body(R_BASE, "  Add   the lead. ", [])
+    assert skill_repair.check_contract(R_BASE, same, _CLASSES) == "no_change"
+
+
+@pytest.mark.parametrize("key", ["description", "tests", "cards", "knowledge"])
+def test_each_other_key_is_fixed(key: str) -> None:
+    changed = {**copy.deepcopy(R_BASE), "instructions": "New."}
+    changed[key] = "changed" if key != "tests" else []
+    assert skill_repair.check_contract(R_BASE, changed, _CLASSES) == "widened"
+    gone = {k: v for k, v in R_BASE.items() if k != "description"}
+    assert skill_repair.check_contract(R_BASE, {**gone, "instructions": "x"}, _CLASSES) == "widened"
+
+
+def test_an_unknown_class_ranks_at_the_top() -> None:
+    assert skill_repair.class_rank("A") < skill_repair.class_rank("B") \
+        < skill_repair.class_rank("C") < skill_repair.class_rank("X")
+    assert skill_repair.class_rank("?") == skill_repair.class_rank("X")
+
+
+# -- fence 1: no widening -----------------------------------------------------
+
+
+def test_a_repair_that_adds_an_action_is_refused(repairs, monkeypatch) -> None:
+    """The route builds the proposal so that it cannot add an action. A
+    builder that adds one still stops at ``check_contract``, with no runner
+    call. Mutation: drop the subset check or the route's contract call -> red."""
+    added = {**copy.deepcopy(R_BASE), "actions": [*R_BASE["actions"], "tool:send_email"],
+             "instructions": "Send a mail too."}
+    assert skill_repair.check_contract(R_BASE, added, _CLASSES) == "widened"
+    failed = _failed(repairs)
+    removed = _repair(repairs, failed.id, remove_actions=["tool:send_email"])
+    assert removed.status_code == 422 and removed.json()["detail"]["code"] == "not_an_action"
+    monkeypatch.setattr(skill_repair, "proposed_body", lambda *_a: copy.deepcopy(added))
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 422 and answer.json()["detail"]["code"] == "widened"
+    assert answer.json()["detail"]["message"] == skill_repair.WORDS["widened"]
+    assert _spent(repairs) == (0, 0) and repairs.proposals == [] and repairs.added == []
+
+
+def test_a_repair_that_changes_another_key_is_refused(repairs, monkeypatch) -> None:
+    """Mutation: compare only ``actions`` -> the description change passes -> red."""
+    changed = {**copy.deepcopy(R_BASE), "description": "Use it for each mail.",
+               "instructions": "New words."}
+    assert skill_repair.check_contract(R_BASE, changed, _CLASSES) == "widened"
+    failed = _failed(repairs)
+    monkeypatch.setattr(skill_repair, "proposed_body", lambda *_a: copy.deepcopy(changed))
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 422 and answer.json()["detail"]["code"] == "widened"
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []
+
+
+def test_the_class_check_reads_the_catalog(repairs) -> None:
+    """The route reads the catalog once, before its session, and the
+    contract reads the class of each action. Mutation: remove the class read
+    -> no read -> red."""
+    class Spy(dict):
+        def __init__(self, *a: Any) -> None:
+            super().__init__(*a)
+            self.read: list[str] = []
+
+        def get(self, key: Any, default: Any = None) -> Any:
+            self.read.append(key)
+            return super().get(key, default)
+
+    spy = Spy(_CLASSES)
+    proposed = skill_repair.proposed_body(R_BASE, "New words.", [])
+    assert skill_repair.check_contract(R_BASE, proposed, spy) is None
+    assert set(spy.read) == set(R_BASE["actions"])
+    # A class that the catalog ranks higher than each class of the base widens.
+    wide = Spy({"object:lead.create": "B", "object:lead.list": "A"})
+    narrow = {**R_BASE, "actions": ["object:lead.list"]}
+    assert skill_repair.check_contract(narrow, {**narrow, "instructions": "x"}, wide) is None
+    failed = _failed(repairs)
+    assert _repair(repairs, failed.id).status_code == 200
+    assert repairs.catalog_reads == 1
+
+
+# -- fence 3: one repair for each failed run ----------------------------------
+
+
+def test_a_second_repair_of_one_run_is_refused(repairs) -> None:
+    """Mutation: drop check 5 -> the second repair runs -> red."""
+    failed = _failed(repairs)
+    first = _repair(repairs, failed.id)
+    assert first.status_code == 200, first.text
+    spent = _spent(repairs)
+    second = _repair(repairs, failed.id, instructions="Another fix of the lead.")
+    assert second.status_code == 409 and second.json()["detail"]["code"] == "already_repaired"
+    assert _spent(repairs) == spent and len(repairs.proposals) == 1
+
+
+def test_a_proposal_that_failed_still_uses_the_one_repair(repairs) -> None:
+    repairs.runner = _RepairRunner({R_INPUT: [(_mail_tool(), {"to": "x"})]})
+    failed = _failed(repairs)
+    assert _repair(repairs, failed.id).json()["passed"] is False
+    again = _repair(repairs, failed.id, instructions="Another fix of the lead.")
+    assert again.json()["detail"]["code"] == "already_repaired"
+
+
+def test_a_second_it_was_wrong_of_one_run_is_refused(repairs) -> None:
+    repairs.rows.append(_run_row(passed=True, reason="passed", run_id="run-ok"))
+    first = _app().post(f"/studio/skills/{R_SID}/repairs", json={
+        "said_wrong": True, "instructions": "Add the lead. Always fill the company."})
+    assert first.status_code == 200, first.text
+    [wrong] = [r for r in repairs.rows if r.reason == "member_said_wrong"]
+    assert wrong.run_id == "run-ok" and repairs.proposals[0]["repair_of"] == wrong.id
+    spent = _spent(repairs)
+    second = _app().post(f"/studio/skills/{R_SID}/repairs", json={
+        "said_wrong": True, "instructions": "Another fix of the lead."})
+    assert second.status_code == 409 and second.json()["detail"]["code"] == "already_repaired"
+    assert _spent(repairs) == spent
+
+
+# -- fence 4: no repeat of a failed body --------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["live", "test", "proposal"])
+def test_a_repeat_of_a_failed_body_is_refused(repairs, kind: str) -> None:
+    """A body that failed before, by its repair key, as a live, a test or a
+    proposal row. A body that differs only in white space is a repeat too.
+    Mutation: compare ``content_hash`` -> the white space passes -> red."""
+    failed = _failed(repairs)
+    tried = skill_repair.proposed_body(R_BASE, "Add the lead. Fill the company.", [])
+    reason = {"live": "tool_error", "test": "missing_write", "proposal": "extra_write"}[kind]
+    extra = {"test_id": "t1"} if kind == "test" else {}
+    if kind == "proposal":
+        extra = {"repair_of": str(uuid.uuid4())}
+    repairs.rows.append(_run_row(kind=kind, reason=reason, body_key=skill_repair.body_key(tried),
+                                 run_id=f"run-{kind}", **extra))
+    answer = _repair(repairs, failed.id, instructions="Add  the lead.\n Fill the   company.")
+    assert answer.status_code == 409 and answer.json()["detail"]["code"] == "repeat_change"
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []
+
+
+def test_a_stop_of_the_platform_is_no_repeat(repairs) -> None:
+    """D-F12-13: ``cap_reached`` and ``run_failed`` are no fault of the skill."""
+    failed = _failed(repairs)
+    tried = skill_repair.proposed_body(R_BASE, "Add the lead. Fill the company.", [])
+    for reason in ("cap_reached", "run_failed"):
+        repairs.rows.append(_run_row(kind="proposal", reason=reason, repair_of=str(uuid.uuid4()),
+                                     body_key=skill_repair.body_key(tried)))
+    answer = _repair(repairs, failed.id, instructions="Add the lead. Fill the company.")
+    assert answer.status_code == 200, answer.text
+
+
+# -- fence 5: the end-state rule ----------------------------------------------
+
+
+def test_a_passing_try_offers_the_change(repairs) -> None:
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id)
+    out = answer.json()
+    assert answer.status_code == 200 and out["passed"] is True and out["tests"] == 1
+    assert out["next_version"] == 3 and out["instructions"].startswith("Add the lead.")
+    assert out["message"].startswith("I tried version 3 on your 1 test")
+    assert repairs.runner.messages == ["Add Ravi from Acme", R_INPUT]
+    assert repairs.proposals[0]["passed"] is True and repairs.added == []
+
+
+def test_no_card_while_a_test_fails(repairs) -> None:
+    """The test run holds an extra write. The text of the model says that all
+    is well. No change goes back, so no card can show. Mutation: offer on the
+    input run alone, or read the text -> red."""
+    repairs.runner = _RepairRunner({"Add Ravi from Acme": [_LEAD, _LEAD]})
+    failed = _failed(repairs)
+    out = _repair(repairs, failed.id).json()
+    assert out["passed"] is False and out["reason"] == "extra_write"
+    assert "instructions" not in out and "next_version" not in out
+    assert out["message"] == skill_repair.WORDS["failed"].format(next=3)
+    assert repairs.proposals[0]["passed"] is False and repairs.added == []
+
+
+def test_no_card_while_the_input_fails(repairs) -> None:
+    """The failed input calls a tool that the skill does not hold."""
+    repairs.runner = _RepairRunner({R_INPUT: [(_mail_tool(), {"to": "x", "body": "y"})]})
+    failed = _failed(repairs)
+    out = _repair(repairs, failed.id).json()
+    assert out["passed"] is False and out["reason"] == "other_action"
+    assert "instructions" not in out
+    [result] = [r for r in out["results"] if r["test_id"] == "input-1"]
+    assert result["words"] == skill_repair.WORDS["other_action"]
+
+
+def test_the_outcome_reads_the_door_never_the_text() -> None:
+    import inspect as _inspect
+
+    assert list(_inspect.signature(skill_repair.outcome).parameters) == ["result"]
+    good = skill_tests.TestResult(test_id="t1", passed=True, reason="passed")
+    bad = skill_tests.TestResult(test_id="input-1", passed=False, reason="invalid_call")
+    suite = skill_tests.SuiteResult(skill_id=R_SID, version=2, content_hash="c",
+                                    results=(good, bad), passed=True)
+    found = skill_repair.outcome(suite)
+    assert found.passed is False and found.reason == "invalid_call"
+
+
+def test_the_base_tests_run(monkeypatch) -> None:
+    """``run_suite`` gets the tests of the base version, also when the
+    proposed body holds others."""
+    seen: dict[str, Any] = {}
+
+    async def fake(**kw: Any) -> Any:
+        seen.update(kw)
+        return "result"
+
+    monkeypatch.setattr(skill_tests, "run_suite", fake)
+    base_tests = skill_tests.parse_tests(R_BASE)
+    proposed = {**R_BASE, "tests": [{"id": "weak", "input": "x", "expect": []}]}
+    got = asyncio.run(skill_repair.try_proposal(
+        org=R_ORG, member=ANA, skill_id=R_SID, proposed=proposed, base_tests=base_tests,
+        input_text=R_INPUT, runner=lambda *a, **k: None, meter=lambda *a: None))
+    assert got == "result" and seen["tests"] == base_tests and seen["inputs"] == (R_INPUT,)
+
+
+def test_cap_unset_spends_nothing(repairs, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "studio_skill_tests_cap_credits", "", raising=False)
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 409 and answer.json()["detail"]["code"] == "cap_unset"
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []
+
+
+@pytest.mark.parametrize(("setup", "code"), [
+    ("moved", "skill_changed"), ("gone", "input_gone"), ("long", "input_too_long"),
+    ("tests", "too_many_tests")])
+def test_the_checks_refuse_before_any_spend(repairs, setup: str, code: str) -> None:
+    failed = _failed(repairs, version=1 if setup == "moved" else 2)
+    if setup == "gone":
+        repairs.messages = ["Hello"]
+    if setup == "long":
+        long_text = "x" * 2001
+        repairs.messages = [long_text]
+        repairs.rows[-1] = failed = _run_row(id=failed.id,
+                                             input_hash=skill_runs.input_hash(R_ORG, long_text))
+    if setup == "tests":
+        repairs.versions[2]["tests"] = [
+            {"id": f"t{i}", "input": f"Add {i}", "expect": []} for i in range(5)]
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 409 and answer.json()["detail"]["code"] == code, answer.text
+    assert answer.json()["detail"]["message"] == skill_repair.WORDS[code]
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []
+
+
+# -- the identity, the flag and the input -------------------------------------
+
+
+def test_a_member_cannot_repair_the_skill_or_the_run_of_another(repairs) -> None:
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id, email=BEN)
+    assert answer.status_code == 404
+    other = _failed(repairs, created_by=BEN, run_id="run-ben")
+    assert _repair(repairs, other.id).status_code == 404
+    passed = _failed(repairs, passed=True, reason="passed", run_id="run-ok")
+    assert _repair(repairs, passed.id).status_code == 404
+    assert _spent(repairs) == (0, 0)
+
+
+def test_the_org_and_the_member_come_from_the_session(repairs) -> None:
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id, organization_id=str(uuid.uuid4()), member=BEN)
+    assert answer.status_code == 200 and repairs.proposals[0]["member"] == ANA
+
+
+def test_flag_off_answers_404_on_each_route(repairs, monkeypatch) -> None:
+    failed = _failed(repairs)
+    for key in ("studio_skill_repair_orgs", "studio_skill_tests_orgs", "studio_orgs"):
+        monkeypatch.setattr(get_settings(), key, "", raising=False)
+        c = _app()
+        assert _repair(repairs, failed.id).status_code == 404, key
+        assert c.post(f"/studio/skills/{R_SID}/repairs/{uuid.uuid4()}/approve",
+                      json={"expected_version": 2}).status_code == 404, key
+        if key != "studio_skill_tests_orgs":
+            assert c.get(f"/studio/skills/{R_SID}/runs").status_code == 404, key
+        monkeypatch.setattr(get_settings(), key, "*", raising=False)
+    assert _spent(repairs) == (0, 0) and repairs.catalog_reads == 0
+
+
+def test_no_input_text_is_kept(repairs, monkeypatch) -> None:
+    """After a try with "Call Asha on 555 0100", no row, no log line and no
+    answer holds a word of it. The writer refuses a ``writes`` item with a
+    value."""
+    from gateway.routes.studio import skills as route
+
+    lines: list[Any] = []
+    for level in ("info", "warning", "error"):
+        monkeypatch.setattr(route._log, level, lambda event, *a, **kw: lines.append((event, kw)))
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 200
+    assert any(e == "studio.skill_repair.result" for e, _ in lines)
+    for bit in R_BITS:
+        assert bit not in answer.text, bit
+        assert bit not in repr(repairs.proposals), bit
+        assert bit not in repr(lines), bit
+    with pytest.raises(skill_runs.SkillRunError):
+        skill_runs.check_writes([{"action": "object:lead.create", "keys": ["Call Asha"]}])
+
+
+def test_the_history_gives_codes_and_earlier_versions(repairs) -> None:
+    repairs.rows.extend([
+        _run_row(version=1, reason="card_declined", run_id="r1"),
+        _run_row(version=2, reason="tool_error", run_id="r2"),
+    ])
+
+    async def history(_db: Any, member: str, sid: str) -> Any:
+        return skill_runs.History(rows=tuple(reversed(repairs.rows)), others={"tool_error": 2})
+
+    import gateway.studio.skill_runs as runs_mod
+    runs_mod_history = runs_mod.history
+    try:
+        runs_mod.history = history
+        out = _app().get(f"/studio/skills/{R_SID}/runs").json()
+    finally:
+        runs_mod.history = runs_mod_history
+    assert [r["reason"] for r in out["runs"]] == ["tool_error", "card_declined"]
+    assert out["runs"][0]["words"] == skill_repair.WORDS["tool_error"]
+    assert out["others"] == {"tool_error": 2}
+    assert out["earlier_versions"] == [{"version": 1, "instructions": "Add it.",
+                                        "truncated": False}]
+    assert _app(BEN).get(f"/studio/skills/{R_SID}/runs").status_code == 404
+
+
+# -- the approve --------------------------------------------------------------
+
+
+def _passed_proposal(repairs: _Repairs) -> dict[str, Any]:
+    failed = _failed(repairs)
+    out = _repair(repairs, failed.id, remove_actions=["object:lead.list"]).json()
+    assert out["passed"] is True, out
+    return out
+
+
+def _approve(out: dict[str, Any], **over: Any) -> Any:
+    body = {"expected_version": out["base_version"], "instructions": out["instructions"],
+            "remove_actions": out["remove_actions"], **over}
+    return _app().post(f"/studio/skills/{R_SID}/repairs/{out['proposal_id']}/approve",
+                       json=body)
+
+
+def test_the_approve_writes_one_version_and_keeps_the_state(repairs) -> None:
+    out = _passed_proposal(repairs)
+    answer = _approve(out)
+    assert answer.status_code == 201, answer.text
+    assert answer.json()["version"]["version"] == 3 and repairs.moves == []
+    [written] = repairs.added
+    assert written["actions"] == ["object:lead.create"] and written["tests"] == R_BASE["tests"]
+    assert answer.json()["message"] == ("I saved version 3. The skill stays published. "
+                                        "Say undo to go back.")
+    again = _approve(out)
+    assert again.status_code == 409 and len(repairs.added) == 1
+
+
+def test_the_approve_refuses_a_body_that_is_not_the_proposal(repairs) -> None:
+    out = _passed_proposal(repairs)
+    for over in ({"instructions": "Another text."}, {"remove_actions": []},
+                 {"expected_version": 1}):
+        answer = _approve(out, **over)
+        assert answer.status_code == 409, over
+    assert repairs.added == []
+
+
+def test_the_approve_refuses_a_proposal_that_failed(repairs) -> None:
+    repairs.runner = _RepairRunner({R_INPUT: [(_mail_tool(), {"to": "x"})]})
+    failed = _failed(repairs)
+    _repair(repairs, failed.id)
+    [proposal] = [r for r in repairs.rows if r.kind == "proposal"]
+    answer = _app().post(f"/studio/skills/{R_SID}/repairs/{proposal.id}/approve", json={
+        "expected_version": 2, "instructions": "Add the lead. Always fill the company."})
+    assert answer.status_code == 409 and answer.json()["detail"]["code"] == "not_passed"
+    assert repairs.added == []
+
+
+def test_only_the_approve_route_writes_a_version_in_the_repair_path() -> None:
+    """A source fence: in the repair path, only ``approve_skill_repair``
+    calls ``add_version``, and none calls ``set_state``. Mutation: add a
+    version in the repair route -> red."""
+    src = (_ROOT / "apps/services/gateway/gateway/routes/studio/skills.py").read_text(
+        encoding="utf-8")
+    path = {"skill_run_history", "_the_failure", "_the_proposal", "_the_input",
+            "repair_skill", "_dry_run_and_record", "approve_skill_repair"}
+    calls: dict[str, set[str]] = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in path:
+            calls[node.name] = {ast.unparse(n.func).rsplit(".", 1)[-1]
+                                for n in ast.walk(node) if isinstance(n, ast.Call)}
+    assert set(calls) == path
+    assert {n for n, c in calls.items() if "add_version" in c} == {"approve_skill_repair"}
+    assert not any("set_state" in c for c in calls.values())
+    repair_src = (_ROOT / "apps/services/gateway/gateway/studio/skill_repair.py").read_text(
+        encoding="utf-8")
+    assert "add_version" not in repair_src and "set_state" not in repair_src
+
+
+# -- the chat tools -----------------------------------------------------------
+
+
+class _ToolGateway:
+    """The answers of the routes for the chat tools, by method and path."""
+
+    def __init__(self, tried: dict[str, Any], *, status: int = 200) -> None:
+        body = copy.deepcopy(R_BASE)
+        self.read = {"skill": {"id": R_SID, "name": "Leads", "state": "published",
+                               "current_version": 2},
+                     "version": {"version": 2, "body": body,
+                                 "content_hash": store.content_hash(body)}}
+        self.tried, self.status = tried, status
+        self.calls: list[tuple[str, str, Any]] = []
+
+    async def send(self, method: str, path: str, body: Any, act: str = "", miss: str = "",
+                   timeout: float = 15.0) -> Any:
+        self.calls.append((method, path, body))
+        if method == "GET" and path.endswith("/runs"):
+            return stools._Reply(404, {"detail": "Not found"})
+        if method == "GET":
+            return stools._Reply(200, self.read)
+        if path.endswith("/repairs"):
+            assert timeout == stools.REPAIR_WAIT_SECONDS
+            return stools._Reply(self.status, self.tried)
+        if path.endswith("/approve"):
+            return stools._Reply(201, {"skill": {**self.read["skill"], "current_version": 3},
+                                       "message": skill_repair.saved_words(3, "published")})
+        return stools._Reply(201, {"skill": {**self.read["skill"], "state": "draft"},
+                                   "version": {"version": 4}})
+
+
+def _tried(**over: Any) -> dict[str, Any]:
+    out = {"proposal_id": str(uuid.uuid4()), "base_version": 2, "next_version": 3,
+           "passed": True, "tests": 1, "state": "published",
+           "instructions": "Add the lead. Always fill the company.",
+           "remove_actions": ["object:lead.list"], "same_writes": False,
+           "message": skill_repair.passed_words(3, 1),
+           "results": [{"test_id": "t1", "passed": True, "reason": "passed",
+                        "words": "passed"}]}
+    out.update(over)
+    return out
+
+
+def _tool_world(monkeypatch, tried: dict[str, Any], decision: str = "approved",
+                status: int = 200) -> tuple[_ToolGateway, list[str]]:
+    gw = _ToolGateway(tried, status=status)
+    cards: list[str] = []
+
+    async def decide(title: str, detail: str, context: str) -> str:
+        cards.append(context)
+        return decision
+
+    async def held() -> bool:
+        return False
+
+    monkeypatch.setattr(stools, "_send", gw.send)
+    monkeypatch.setattr(stools, "_decide", decide)
+    monkeypatch.setattr(stools, "_chat_is_held", held)
+    monkeypatch.setattr(stools, "_must_ask", held)
+    return gw, cards
+
+
+def _call_repair(gw: _ToolGateway, **kw: Any) -> dict[str, Any]:
+    args = {"skill_id": R_SID, "failure_id": str(uuid.uuid4()),
+            "instructions": "Add the lead. Always fill the company.",
+            "remove_actions": ["object:lead.list"],
+            "based_on": gw.read["version"]["content_hash"], **kw}
+    return asyncio.run(stools.studio_skill_repair(**args))
+
+
+@pytest.mark.parametrize("decision", ["revised", "stopped", "no_card"])
+def test_only_approved_calls_the_approve_route(monkeypatch, decision: str) -> None:
+    """On revised, stopped and no_card the tool calls nothing more and writes
+    nothing. Mutation: approve on each decision -> red."""
+    gw, cards = _tool_world(monkeypatch, _tried(), decision)
+    out = _call_repair(gw)
+    assert len(cards) == 1 and out["ok"] is False and out["decision"] == decision
+    assert not any(p.endswith("/approve") for _m, p, _b in gw.calls)
+    assert ("context" in out) is (decision == "no_card")
+
+
+def test_approved_calls_the_approve_route_once(monkeypatch) -> None:
+    tried = _tried()
+    gw, cards = _tool_world(monkeypatch, tried)
+    out = _call_repair(gw)
+    approves = [b for _m, p, b in gw.calls if p.endswith("/approve")]
+    assert approves == [{"expected_version": 2, "instructions": tried["instructions"],
+                         "remove_actions": ["object:lead.list"]}]
+    assert out["ok"] is True and out["say"].startswith("I saved version 3.")
+    assert "Remove: «object:lead.list»" in cards[0]
+
+
+def test_the_tool_shows_no_card_for_a_try_that_failed(monkeypatch) -> None:
+    tried = {"passed": False, "message": skill_repair.WORDS["failed"].format(next=3),
+             "results": [{"test_id": "t1", "passed": False, "reason": "extra_write",
+                          "words": skill_repair.WORDS["extra_write"]}]}
+    gw, cards = _tool_world(monkeypatch, tried)
+    out = _call_repair(gw)
+    assert cards == [] and out["ok"] is False and out["code"] == "failed"
+    assert out["say"].startswith("Version 3 did not pass")
+    assert skill_repair.WORDS["extra_write"] in out["say"]
+
+
+def test_a_refusal_of_the_route_gives_its_words(monkeypatch) -> None:
+    gw, cards = _tool_world(monkeypatch, {"detail": {
+        "code": "repeat_change", "message": skill_repair.WORDS["repeat_change"]}}, status=409)
+    out = _call_repair(gw)
+    assert cards == [] and out["code"] == "repeat_change"
+    assert out["say"] == skill_repair.WORDS["repeat_change"]
+    gw404, _ = _tool_world(monkeypatch, {"detail": "Not found"}, status=404)
+    assert _call_repair(gw404)["say"] == skill_repair.WORDS["not_owner"]
+
+
+def test_the_tool_needs_based_on_for_new_instructions(monkeypatch) -> None:
+    gw, cards = _tool_world(monkeypatch, _tried())
+    out = _call_repair(gw, based_on="")
+    assert out["ok"] is False and cards == []
+    assert not any(p.endswith("/repairs") for _m, p, _b in gw.calls)
+
+
+def test_the_undo_tool_calls_the_f7_route(monkeypatch) -> None:
+    gw, _ = _tool_world(monkeypatch, _tried())
+    out = asyncio.run(stools.studio_skill_undo(skill_id=R_SID, expected_version=3))
+    assert gw.calls == [("POST", f"/studio/skills/{R_SID}/undo", {"expected_version": 3})]
+    assert out["say"] == ("Version 2 is back, as version 4. The skill is a draft now. "
+                          "Say publish to use it again.")
+    assert asyncio.run(stools.studio_skill_undo(skill_id=R_SID, expected_version=1))["ok"] is False
+
+
+def test_the_result_text_fits() -> None:
+    """At most 1188 characters. The outcome and the next step are in the
+    first 400, also after a cut, and a cut ends with "and N more"."""
+    head = skill_repair.passed_words(3, 4)
+    tail = [f"Test t{i}: {skill_repair.WORDS['field_mismatch']}" for i in range(40)]
+    said = stools.say_text(head, tail)
+    assert len(said) <= stools.MAX_SAY_CHARS and said.startswith(head)
+    assert len(head) <= stools.SAY_HEAD_CHARS
+    assert said.rstrip(".").split()[-3:-1] == ["and", said.split()[-2]] or "more" in said[-12:]
+    assert said.endswith("more")
+    for words in (*skill_repair.WORDS.values(), skill_repair.saved_words(12, "published")):
+        assert len(words.format(next=12)) <= stools.SAY_HEAD_CHARS
+    assert len(stools.say_text("x" * 2000, ["y"])) <= stools.MAX_SAY_CHARS
+
+
+def test_the_tools_take_no_org_or_member_and_have_one_sentence() -> None:
+    import inspect as _inspect
+
+    for fn in stools.STUDIO_REPAIR_TOOLS:
+        params = set(_inspect.signature(fn).parameters)
+        assert not params & {"org", "organization_id", "member", "user", "owner_email"}
+        doc = _inspect.getdoc(fn) or ""
+        assert "\n" not in doc and doc.endswith(".") and doc.count(". ") == 0
+        assert len(doc.split()) <= 25
+    assert {f.__name__ for f in stools.STUDIO_REPAIR_TOOLS} == set(stools.STUDIO_REPAIR_NAMES)
+
+
+def test_flag_off_offers_no_repair_tool(monkeypatch) -> None:
+    """The pack filter drops both tools while the org is off a switch of the
+    repair. Mutation: drop the filter -> red."""
+    tools = [stools.studio_skill_repair, stools.studio_skill_undo, stools.studio_skill_list]
+    settings = get_settings()
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: R_ORG)
+    for key in ("studio_orgs", "studio_skill_tests_orgs", "studio_skill_repair_orgs"):
+        monkeypatch.setattr(settings, key, "*", raising=False)
+    kept, dropped = ti._drop_studio_repair_unless_open(list(tools), [])
+    assert kept == tools and dropped == []
+    for key in ("studio_skill_repair_orgs", "studio_skill_tests_orgs", "studio_orgs"):
+        monkeypatch.setattr(settings, key, "", raising=False)
+        kept, dropped = ti._drop_studio_repair_unless_open(list(tools), [])
+        assert kept == [stools.studio_skill_list], key
+        assert sorted(dropped) == ["studio_skill_repair", "studio_skill_undo"], key
+        monkeypatch.setattr(settings, key, "*", raising=False)
+    from acb_skills import tool_packs as tp
+
+    assert tp.PACKS["studio-repair"].owner == "studio-builder"
+    assert "studio-repair" not in tp.FOLLOWS
+    assert tp.with_followers({"studio"}) == {"studio", "studio-more"}
+    assert "studio_skill_repair" not in tp.PACKS["studio-more"].tools
+
+
+def test_a_repair_waits_on_the_slot_of_f4b(repairs) -> None:
+    """The repair runs inside the F4b slot of the member, so a suite that
+    runs gives 429 ``suite_running`` and spends nothing."""
+    from acb_common.tenant_redis import key, organization_scope
+
+    who = hashlib.sha256(ANA.encode("utf-8")).hexdigest()[:24]
+    with organization_scope(R_ORG):
+        busy = key("studio-skill-test-busy", who)
+    repairs.redis.data[busy.value] = "a-suite-runs"
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id)
+    assert answer.status_code == 429 and answer.json()["detail"]["code"] == "suite_running"
+    assert answer.json()["detail"]["message"] == skill_repair.WORDS["suite_running"]
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []

@@ -104,7 +104,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-share",
+        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
+        "studio-share",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -556,7 +557,8 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
     for slug in sf.pack_slugs():
         # WS-STU J2d: studio-share holds one tool of about 360 characters, so it
         # has its own floor. The mutation (the rules block alone) prices 0 more.
-        floor = 300 if slug == "studio-share" else 1000
+        # TOF-3a F12c: studio-repair holds two short tools, so it has that floor too.
+        floor = 300 if slug in ("studio-share", "studio-repair") else 1000
         assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + floor, slug
 
 
@@ -685,10 +687,12 @@ DOOR_READ = ("studio_app_read",)
 RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
 #: The two workflow writes of the second pack of the owner (STB-6b).
 WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live")
-#: The one tool of the fourth pack of the owner, the share of a skill (WS-STU J2d).
+#: The one tool of the fifth pack of the owner, the share of a skill (WS-STU J2d).
 SHARE_TOOLS = ("studio_skill_share",)
+#: The two tools of the fourth pack of the owner, the repair of a skill (TOF-3a F12c).
+REPAIR_TOOLS = ("studio_skill_repair", "studio_skill_undo")
 #: Each pack of the Studio owner, in the order of ``PACKS``.
-STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-share")
+STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-share")
 
 
 def _studio_scope() -> set[str]:
@@ -707,9 +711,10 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert tuple(more["tools"]) == STUDIO_MORE_TOOLS
     assert (set(family["tools"]) | set(more["tools"]) | set(WORKFLOW_WRITES)
-            | set(SHARE_TOOLS)) == _studio_scope()
+            | set(SHARE_TOOLS) | set(REPAIR_TOOLS)) == _studio_scope()
     assert tuple(sf.SKILL_FAMILIES["studio-workflows"]["tools"]) == WORKFLOW_WRITES
     assert tuple(sf.SKILL_FAMILIES["studio-share"]["tools"]) == SHARE_TOOLS
+    assert tuple(sf.SKILL_FAMILIES["studio-repair"]["tools"]) == REPAIR_TOOLS
     # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
     # WS-67 TS-1b split the 23 into a core of 10 and studio-more of 13, with no tool in both.
     assert len(family["tools"]) == 10 and len(more["tools"]) == 13
@@ -792,6 +797,8 @@ _NOT_TOOLS = {"no_card", "based_on", "request_id"}
     # WS-67 TS-1b: after a 422 on a skill save, studio-more says to load the
     # core with the load tool. It names no core tool.
     ("studio-more", STUDIO_MORE_TOOLS, frozenset({tp.LOAD_TOOL})),
+    # TOF-3a F12c: the repair pack names its two tools only.
+    ("studio-repair", REPAIR_TOOLS, frozenset()),
 ])
 def test_the_studio_rules_name_only_tools_of_the_pack(
     slug: str, own: tuple[str, ...], extra: frozenset[str],
@@ -860,8 +867,10 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     assert more.surface_slugs == core.surface_slugs == ("studio",)
     assert more.words == core.words
     # WS-STU J2d: the dark share pack is last, so the cap drops it first.
-    assert list(tp.PACKS)[-4:] == list(STUDIO_PACKS)
+    # TOF-3a F12c: the dark repair pack is just before it.
+    assert list(tp.PACKS)[-5:] == list(STUDIO_PACKS)
     assert "studio-share" not in tp.FOLLOWS
+    assert "studio-repair" not in tp.FOLLOWS
 
 
 def test_the_studio_pack_is_filtered_by_the_owner_key() -> None:
