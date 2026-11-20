@@ -29,27 +29,29 @@ The R8 half is the class at the end. It runs the real tool through the real
 ``/email`` router on a real Postgres, as a role that cannot bypass RLS, with
 a fake provider::
 
-    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5479/acb_tenant \\
+    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant \\
         uv run pytest tests/unit/test_email_thread_changed.py -v -rs
 
-Mutations (R7). Each one turns the named tests red:
+Mutations (R7). Each one turns the named tests red (checked 2026-11-20):
 
 * M1. ``send.send_email``: drop the ``refuse_changed_thread`` call.
   ``test_a_changed_thread_is_409_before_the_provider`` and the R8
   ``test_a_newer_message_while_the_card_waited_sends_nothing``.
-* M2. ``send.refuse_changed_thread``: trust the marker of the request
-  (return when ``expect`` is a UUID). ``test_a_marker_that_is_not_the_head_is_refused``.
+* M2. ``send.refuse_changed_thread``: trust the marker of the request.
+  ``test_a_marker_that_is_not_the_head_is_refused`` and the R8 tests of a
+  newer message.
 * M3. ``send.THREAD_HEAD_SQL``: count a draft. The R8
-  ``test_the_members_own_draft_does_not_stop_the_send`` and
-  ``test_an_unchanged_thread_sends_and_the_markers_agree``.
-* M4. ``agents._thread_changed_text``: the old text with the flag on.
-  ``test_on_a_409_gives_the_hrd7_text_and_the_newer_message``.
-* M5. ``agents.send_email``: read the head with the flag off.
+  ``test_the_members_own_draft_does_not_stop_the_send``.
+* M4. ``agents.send_email`` or ``agents.compose_reply``: let the 409 take
+  the old path. ``test_on_a_409_gives_the_hrd7_text_and_the_newer_message``
+  and ``test_on_a_409_of_the_act_says_the_draft_stays``.
+* M5. ``agents._thread_check_on``: on with the flag off.
   ``test_off_send_email_reads_no_head_and_names_no_marker``.
 * M6. ``agents._thread_changed_text``: claim a send.
   ``test_the_answer_never_claims_a_send``.
-* M7. ``send.THREAD_HEAD_SQL``: drop the account or the owner predicate.
-  The R8 ``test_another_thread_and_another_mailbox_do_not_count``.
+* M7. ``send.THREAD_HEAD_SQL``: drop the account, the thread or the owner
+  predicate. The R8 ``test_another_thread_and_another_mailbox_do_not_count``
+  and ``test_the_head_is_the_members_own_and_this_tenants``.
 """
 
 from __future__ import annotations
@@ -571,20 +573,22 @@ def _msg(c: Any, aid: str, org: str, *, thread: str, folder: str, frm: str,
          "o": org}).scalar_one())
 
 
-def _account(c: Any, owner: str, org: str) -> str:
+def _account(c: Any, owner: str, org: str, address: str = "") -> str:
     return str(c.execute(text(
         "INSERT INTO email_accounts (user_id, provider, email_address, "
         "credentials_encrypted, sync_enabled, sync_interval_secs, sync_status, "
-        "organization_id) VALUES (:u, 'microsoft', :u, 'x', true, 300, 'idle', "
-        "CAST(:o AS uuid)) RETURNING id"), {"u": owner, "o": org}).scalar_one())
+        "organization_id) VALUES (:u, 'microsoft', :e, 'x', true, 300, 'idle', "
+        "CAST(:o AS uuid)) RETURNING id"),
+        {"u": owner, "e": address or owner, "o": org}).scalar_one())
 
 
 @pytest.fixture
 def box(promoted, app_engine, monkeypatch):  # noqa: F811 - fixtures
     """A mailbox of one member in org A with one thread: the mail from Ravi,
     and an older draft of the member. A newer mail of ANOTHER thread of the
-    same mailbox, and a newer mail with the same thread id in the mailbox of
-    ANOTHER member, wait beside it. A fake provider takes each send."""
+    same mailbox, and a newer mail with the same thread id in a SECOND
+    mailbox of the member and in the mailbox of ANOTHER member, wait beside
+    it. A fake provider takes each send."""
     _assert_non_priv(app_engine)
     p = promoted
     tag = uuid.uuid4().hex[:8]
@@ -595,6 +599,7 @@ def box(promoted, app_engine, monkeypatch):  # noqa: F811 - fixtures
     with p.admin_engine.begin() as c:
         aid = _account(c, owner, p.org_a)
         bid = _account(c, other, p.org_a)
+        cid = _account(c, owner, p.org_a, address=f"second-{owner}")
         mail = _msg(c, aid, p.org_a, thread=thread, folder="inbox", frm=RAVI,
                     when=now - timedelta(hours=3), tag="mail")
         _msg(c, aid, p.org_a, thread=thread, folder="drafts", frm=owner,
@@ -603,6 +608,8 @@ def box(promoted, app_engine, monkeypatch):  # noqa: F811 - fixtures
              when=now - timedelta(hours=1), tag="other-thread")
         _msg(c, bid, p.org_a, thread=thread, folder="inbox", frm=RAVI,
              when=now - timedelta(hours=1), tag="other-box")
+        _msg(c, cid, p.org_a, thread=thread, folder="inbox", frm=RAVI,
+             when=now - timedelta(hours=1), tag="second-box")
     sends: list[dict[str, Any]] = []
 
     @asynccontextmanager
@@ -621,12 +628,14 @@ def box(promoted, app_engine, monkeypatch):  # noqa: F811 - fixtures
         monkeypatch.setattr(automation, name, _nothing)
     try:
         yield types.SimpleNamespace(p=p, owner=owner, other=other, aid=aid, bid=bid,
-                                    mail=mail, thread=thread, sends=sends, now=now)
+                                    cid=cid, mail=mail, thread=thread, sends=sends,
+                                    now=now)
     finally:
         with p.admin_engine.begin() as c:
             c.execute(text("DELETE FROM email_messages WHERE account_id IN "
-                           "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": aid, "b": bid})
-        _purge(p.admin_engine, [aid, bid])
+                           "(CAST(:a AS uuid), CAST(:b AS uuid), CAST(:c AS uuid))"),
+                      {"a": aid, "b": bid, "c": cid})
+        _purge(p.admin_engine, [aid, bid, cid])
 
 
 def _tool(m: Any, s: Any, monkeypatch: pytest.MonkeyPatch, sent: list[dict[str, Any]],
@@ -734,9 +743,9 @@ class TestTheReplyOnARealDatabase:
 
     async def test_another_thread_and_another_mailbox_do_not_count(self, box, monkeypatch):
         """A newer mail of another thread of the mailbox, and a newer mail of
-        the same thread id in the mailbox of another member, do not stop the
-        reply. Both are in the store before the card, and one more of each
-        comes while the card waits."""
+        the same thread id in a second mailbox of the member or in the mailbox
+        of another member, do not stop the reply. Each is in the store before
+        the card, and one more of each comes while the card waits."""
         m = box
         sent: list[dict[str, Any]] = []
         async with _Session(m) as s:
@@ -744,10 +753,13 @@ class TestTheReplyOnARealDatabase:
             _card_then(m, monkeypatch, folder="inbox", account=m.bid)
             out = await _reply(m, s)
             assert out.startswith(f"Replied to {RAVI}"), out
+            _card_then(m, monkeypatch, folder="inbox", account=m.cid)
+            out = await _reply(m, s)
+            assert out.startswith(f"Replied to {RAVI}"), out
             _card_then(m, monkeypatch, folder="inbox", thread=f"{m.thread}-other")
             out = await _reply(m, s)
             assert out.startswith(f"Replied to {RAVI}"), out
-        assert len(m.sends) == 2
+        assert len(m.sends) == 3
 
     async def test_flag_off_sends_as_before(self, box, monkeypatch):
         """Off, no head is read and no marker is sent, so a newer message
