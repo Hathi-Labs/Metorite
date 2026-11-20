@@ -600,6 +600,9 @@ _ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
 _READ_ONLY_KEY_KEY = "_mcpc2_read_only_key"
 #: IN-8c: the key that holds ``(admin email, host)`` of an OAuth server.
 _ACTS_AS_KEY = "_in8c_acts_as"
+#: CSY-6: the key that holds the ``instructions`` of the server's ``initialize``
+#: answer, the raw string or None. Third-party text: only the brief reads it.
+_INSTRUCTIONS_KEY = "_csy6_instructions"
 
 
 def server_acts_as(tool: Any) -> tuple[str, str] | None:
@@ -621,6 +624,68 @@ def server_always_confirms(tool: Any) -> bool:
     The attach writes the flag from the registry row. A tool with no flag
     reads as false, as a row with no key does."""
     return getattr(tool, "__dict__", {}).get(_ALWAYS_CONFIRM_KEY) is True
+
+
+def server_instructions(tool: Any) -> str | None:
+    """The ``instructions`` that the server of *tool* sent in its ``initialize``
+    answer (CSY-6, ``chat_connected_systems.md`` §3.5), or None.
+
+    Third-party text. Its one reader is the brief (``_tool_injection._note_mcp_briefs``
+    to ``acb_skills.server_brief``), which caps, frames and escapes it. A log line
+    takes its length only. A value that is not a string reads as None."""
+    value = getattr(tool, "__dict__", {}).get(_INSTRUCTIONS_KEY)
+    return value if isinstance(value, str) else None
+
+
+def _keep_instructions(tool: Any, session: Any) -> None:
+    """Wrap ``initialize`` of ONE MCP session, so *tool* keeps the server's
+    ``instructions`` (CSY-6). MAF 1.19 reads only the capabilities of the answer.
+
+    The wrapper sits on the session object only: no class and no module changes.
+    It returns the answer unchanged, and a fault in the record loses the text
+    only, so the connect goes on."""
+    real = getattr(session, "initialize", None)
+    if real is None or getattr(real, "__csy6_kept__", False):
+        return
+
+    async def _initialize(*args: Any, **kwargs: Any) -> Any:
+        result = await real(*args, **kwargs)
+        with contextlib.suppress(Exception):
+            text = getattr(result, "instructions", None)
+            from acb_skills.server_brief import INSTRUCTIONS_RAW_MAX
+
+            tool.__dict__[_INSTRUCTIONS_KEY] = (
+                text[:INSTRUCTIONS_RAW_MAX] if isinstance(text, str) else None)
+        return result
+
+    _initialize.__csy6_kept__ = True  # type: ignore[attr-defined]
+    with contextlib.suppress(AttributeError, TypeError):
+        session.initialize = _initialize
+
+
+def _watch_sessions(tool: Any, stack: Any) -> None:
+    """Make *stack*, the exit stack of *tool*, pass each context that it enters
+    to :func:`_keep_instructions` (CSY-6).
+
+    MAF 1.19 makes the client session in ``MCPTool._connect_on_owner`` with
+    ``self._exit_stack.enter_async_context(ClientSession(...))``, and calls
+    ``session.initialize()`` before it sets ``self.session``. This stack is the
+    one place where the tool sees the session before that call. The wrapper sits
+    on this stack object only. A context with no ``initialize`` (the transport)
+    passes through."""
+    real = getattr(stack, "enter_async_context", None)
+    if real is None or getattr(real, "__csy6_kept__", False):
+        return
+
+    async def _enter(cm: Any) -> Any:
+        entered = await real(cm)
+        if callable(getattr(entered, "initialize", None)) and hasattr(entered, "send_request"):
+            _keep_instructions(tool, entered)
+        return entered
+
+    _enter.__csy6_kept__ = True  # type: ignore[attr-defined]
+    with contextlib.suppress(AttributeError, TypeError):
+        stack.enter_async_context = _enter
 
 
 def server_read_only_key(tool: Any) -> bool:
@@ -768,6 +833,12 @@ def _run_scoped_tool_class() -> type:
     Each session it opens gets the ``tools/list`` caps (:func:`_cap_list_tools`),
     and the tool keeps the hints of each listed tool (:func:`tool_meta`).
 
+    CSY-6: the tool keeps the server's ``instructions`` from the ``initialize``
+    answer (:func:`server_instructions`). The hook is the ``_exit_stack``
+    property (:func:`_watch_sessions`), as MAF 1.19 calls ``initialize`` before it
+    sets ``session``. A session that MAF finds already set gets the same wrap in
+    the ``session`` setter. Each reset of the session state clears the text.
+
     With progressive disclosure on (WS-8c items 25 and 26), each loader that
     MAF builds is marked (:func:`_mark_loaders`), and the list loader returns
     the index of :func:`mcp_index`, not the full schemas.
@@ -794,7 +865,22 @@ def _run_scoped_tool_class() -> type:
                 meta = self.__dict__.setdefault("_ws8c_tool_meta", {})
                 _cap_list_tools(value, functools.partial(
                     _record_tool_list, meta, server=str(getattr(self, "name", "") or "")))
+                _keep_instructions(self, value)
             self.__dict__["_ws8c_session"] = value
+
+        @property
+        def _exit_stack(self) -> Any:
+            return self.__dict__.get("_csy6_exit_stack")
+
+        @_exit_stack.setter
+        def _exit_stack(self, value: Any) -> None:
+            if value is not None:
+                _watch_sessions(self, value)
+            self.__dict__["_csy6_exit_stack"] = value
+
+        def _reset_session_state(self) -> None:
+            super()._reset_session_state()
+            self.__dict__.pop(_INSTRUCTIONS_KEY, None)
 
         async def __aenter__(self) -> Any:
             if self.is_connected:
@@ -1072,6 +1158,9 @@ async def attach_mcp_tools(
         member_present=member_present and _person_present(),
     )]
     names = [t.name for t in tools]
+    # CSY-6: the length of each server's instructions, never the text.
+    _log.info("mcp.instructions",
+              instructions_len={t.name: len(server_instructions(t) or "") for t in tools})
     _log.info("mcp.attached", servers=names,
               always_confirm=[t.name for t in tools if server_always_confirms(t)],
               read_only_key=[t.name for t in tools if server_read_only_key(t)])

@@ -1899,6 +1899,27 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # API-2 — the connect flow of an API template (Zoho Books). Dark: while
+    # API_CONNECTIONS_ORGS does not hold the org, each route answers 404. The
+    # callback runs behind the member session through the BFF, so it is NOT
+    # in PUBLIC_ROUTES.
+    from gateway.routes.integrations_api_connect import router as _api_connect_router
+
+    app.include_router(_api_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-3 — the four call routes of an API connection (find, describe,
+    # read, write). Dark: while API_CONNECTIONS_ORGS does not hold the org,
+    # each route answers 404. The write route refuses every call (D-API-4).
+    from gateway.routes.api_connections import router as _api_connections_router
+
+    app.include_router(_api_connections_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-54 GH-3 — the connect flow of the Metorite GitHub App
     # (github_integration.md §7). Dark: with GITHUB_APP_ENABLED off, each of
     # its routes answers 404. The callback runs behind the member session

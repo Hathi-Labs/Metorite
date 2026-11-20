@@ -576,6 +576,7 @@ def merge_kinds(
 
 async def _check_semantic_refs(
     db: Any, org: str, others: Sequence[Mapping[str, Any]], in_use: Any | None,
+    held: Sequence[Mapping[str, Any]] = (),
 ) -> None:
     """SEM-7: each semantic item of *others* that the version in use
     (*in_use*) does not hold as it is must fit the catalogue of today
@@ -584,11 +585,17 @@ async def _check_semantic_refs(
     field that left the source never blocks an unrelated change. The facts
     leave such an item out (``facts.semantic_facts``).
 
-    ⚠️ A restore or an Undo of a version that holds an item that is stale
-    now is refused as a whole, with 422 ``stale_<kind>``. SEM-8 must decide
-    the stale mark of ``semantic_model.md`` §6.3 (mark the item, propose one
-    repair) and replace this refusal with it."""
+    SEM-8 (``semantic_model.md`` §6.3, the stale mark): *held* holds the
+    items of an earlier approved version that a restore or an Undo brings
+    back. Such an item is not checked again either. A restore of that
+    version is never refused for an item that it already held. The item
+    comes back as it was, and the readers mark it stale at read time
+    (``verified_queries.stale_reason``). The facts and the matcher never
+    serve it, and an admin sees it with its reason and can ask for one
+    repair. Only an item that is new or changed against both versions is
+    refused when it does not fit the catalogue."""
     kept = set(_canonical(split_rules(_rules_of(in_use))[1])) if in_use is not None else set()
+    kept |= set(_canonical(held))
     fresh = [o for o in others if is_semantic(o) and _canonical([o])[0] not in kept]
     if not fresh:
         return
@@ -755,6 +762,7 @@ async def commit(
     based_on: int | None,
     draft: int | None = None,
     catalogue: Sequence[Mapping[str, Any]] | None = None,
+    held: Sequence[Mapping[str, Any]] = (),
 ) -> Any:
     """Approve a snapshot, in the caller's transaction, under :func:`lock_plan`.
 
@@ -773,6 +781,11 @@ async def commit(
     catalogue of today (:func:`_check_semantic_refs`). Off the list, these
     items pass through as items of an unknown kind.
 
+    SEM-8: *held* holds the items of the earlier approved version that a
+    restore brings back. Such an item counts as an item of the version in
+    use for both checks, so the restore keeps it and the readers mark it
+    stale. Each other caller passes none.
+
     CRM-Q31-3: the catalogue rides the version in use. With *catalogue*
     ``None``, the ``catalogue`` items of *others* drop out, and those of the
     approved version in use go in. So a draft approve, a restore and a change
@@ -790,9 +803,16 @@ async def commit(
     if semantic:
         in_use = in_use if in_use is not None else await _approved(db)
     in_use_items = split_rules(_rules_of(in_use))[1] if in_use is not None else None
+    if held and semantic:
+        # SEM-8: the items of the restored version count as items in use.
+        # So check_kinds skips their shape check too. That is safe: each
+        # reader drops an item that fails `semantic_problem`
+        # (`verified_queries.queries_of`, `facts.semantic_facts`), so a
+        # restored item of an illegal shape is kept and never served.
+        in_use_items = [*(in_use_items or []), *(dict(h) for h in held)]
     check_kinds(others, semantic=semantic, in_use=in_use_items)
     if semantic:
-        await _check_semantic_refs(db, org, others, in_use)
+        await _check_semantic_refs(db, org, others, in_use, held)
     # The rule rows are locked first, so the profile and the checks read the
     # state that the writes below act on.
     rows = {
@@ -1374,9 +1394,12 @@ async def restore_mapping_plan(
                     "message": "A draft cannot be restored. Approve it instead.",
                 })
             fields, others = split_rules(old.rules)
+            # SEM-8: the items of the old version come back as they were. A
+            # semantic item that is stale now is kept, and the readers mark
+            # it stale (``_check_semantic_refs``).
             row = await commit(
                 db, org=org, fields=fields, others=others, by=by,
-                based_on=int(old.version),
+                based_on=int(old.version), held=without_catalogue(others),
             )
     except DBAPIError as exc:
         conflict = _db_conflict(exc)

@@ -8605,13 +8605,45 @@ merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
   access rule admits the member to every record of the org, or to none.
 - **Flag off.** `q` on a module total is the 422 of CRM-Q34-2, and the list
   matches the record name only, byte for byte.
-- **Not in this slice.** `field.<key>` on the module list (CRM-Q34-4), and an
-  index of the row text (no migration).
+- **Not in this slice.** `field.<key>` on the module list (CRM-Q34-4 below),
+  and an index of the row text (no migration).
 - **Fences.** `tests/unit/test_crm_module_find.py` holds the AST fence on
   the one builder, the flag, the caps, the escape and the near bounds.
   `tests/unit/test_crm_module_find_r8.py` proves that the list and the total
   agree and that org B stays out. It also proves that 30,000 rows of 3 KB
   answer inside the 10 s timeout.
+
+**CRM-Q34-4 · One filter builder for a module list and a module total.**
+Status: built dark 2026-11-19 on `crm-q34-4-v2-mt-3697` (task 3697), on
+main after CRM-Q34-7, and not merged. Flag `CRM_MODULE_FIND_ORGS`.
+
+- **Outcome.** `GET /crm/modules/{module}/records` takes `field.<key>` and its
+  `.from` and `.to` ends. A list and a total with the same filters hold the
+  same records. The route is the whole slice: the tool is not changed, so it costs no
+  token of the Studio budget. The tool arguments are the follow-up
+  (CRM-Q34-4c below).
+- **One builder.** The list calls `field_sql.module_field_where`. It makes the
+  same three calls as the total: `text_matches`, `lookup_ids` and
+  `module_where`. `custom.<key>` stays for the UI in this slice. A later slice
+  sends it through the same builder.
+- **Flag off.** A list with a `field.<key>` is a 422 that names `crm_aggregate`
+  with `field_filters`. The list never drops a filter in silence. A list with
+  no `field.<key>`, and `custom.<key>`, answer byte for byte as before.
+- **Token budget.** The Studio chat at the pack cap fits its found tools in
+  30,000 schema tokens. Each CRM tool text counts about three times, because
+  the request holds the CRM tools more than once. The texts of `crm_aggregate`
+  and `crm_list_module_records` are NOT changed here.
+- **Fences.** `tests/unit/test_crm_module_list_filters.py` holds the AST fence
+  on the one builder and the tool. `tests/unit/test_crm_module_list_filters_r8.py`
+  proves that a list and a total count the same records, that an unknown field
+  is a 422 on both, and that org B stays out.
+- **CRM-Q34-4c (follow-up row, not built).** `crm_list_module_records` takes
+  `field_filters` (sent as `field.<key>`), and `fields`: 1 to 5 distinct keys
+  that show each value on each row, cut at 80 characters. `field_filters`
+  alone costs about 49 tokens of the Studio budget (room 1186 against main
+  1235), and `fields` costs more. The owner choice is to raise
+  `FIND_SCHEMA_TOKENS` by about 60. Without that, another tool text must free
+  the tokens.
 
 ## 19. The daily-use UX (2026-10-12)
 

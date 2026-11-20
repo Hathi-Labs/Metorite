@@ -1005,10 +1005,10 @@ def shape_result(raw: Any) -> tuple[dict[str, Any], bool]:
     return {"content": items, "structured": shaped}, shaper.truncated
 
 
-def _live_key(*parts: str) -> Any:
+def _live_key(*parts: str, namespace: str = LIVE_NAMESPACE) -> Any:
     from acb_common import tenant_redis
 
-    return tenant_redis.key(LIVE_NAMESPACE, *parts)
+    return tenant_redis.key(namespace, *parts)
 
 
 def _member_part(member: str) -> str:
@@ -1106,21 +1106,28 @@ def _decode_answer(raw: Any) -> tuple[dict[str, Any], bool, float] | None:
     return result, truncated, float(fetched)
 
 
-async def _spend(org: str, member: str) -> None:
+async def _spend(org: str, member: str, *, namespace: str = LIVE_NAMESPACE) -> None:
     """Count one live read that makes a network call, or raise
     :class:`LiveLimited`. A fixed window of :data:`RATE_WINDOW_S` in
     ``tenant_redis``, with SET NX EX and then INCR: one counter for the member and
     one for the org. A member over the limit does not count for the org. A
-    cache that does not answer raises :class:`ListFailed` (fail closed)."""
+    cache that does not answer raises :class:`ListFailed` (fail closed).
+
+    *namespace* names the counters. The Studio live read uses
+    :data:`LIVE_NAMESPACE`. The API calls of ``routes/api_connections.py``
+    (API-3) pass their own, so the two never spend from one counter. The
+    limits are the same."""
     now = _now()
     window = str(int(now // RATE_WINDOW_S))
     left = max(1, int(RATE_WINDOW_S - now % RATE_WINDOW_S))
     try:
         client = _redis()
         with _scope(org):
-            for key, cap in ((_live_key("rate", "m", _member_part(member), window),
+            for key, cap in ((_live_key("rate", "m", _member_part(member), window,
+                                        namespace=namespace),
                               MEMBER_CALLS_PER_WINDOW),
-                             (_live_key("rate", "org", window), ORG_CALLS_PER_WINDOW)):
+                             (_live_key("rate", "org", window, namespace=namespace),
+                              ORG_CALLS_PER_WINDOW)):
                 # SET NX EX makes the key WITH its TTL in one command, so no
                 # key ever lives without one. A key that is there takes INCR.
                 if await client.set(key, "1", nx=True, ex=RATE_WINDOW_S + 1):
