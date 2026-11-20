@@ -119,7 +119,8 @@ async def test_the_send_takes_the_ticked_recorded_rows(_world) -> None:
     sent = _world["sends"].sent
     assert len(sent) == 1
     assert sent[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [F.COLLEAGUE], "bcc": [],
-                                         "text_digest": "a" * 64}
+                                         "text_digest": "a" * 64,
+                                         "files_digest": None}
 
 
 async def test_an_unticked_row_is_not_sent_also_when_the_draft_holds_it(_world) -> None:
@@ -256,7 +257,8 @@ async def test_the_schedule_stores_only_the_ticked_set(_world, monkeypatch) -> N
     out = await _act(card["card_id"], answer)
     assert out["action"] == "schedule"
     assert stored[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [], "bcc": [],
-                                           "text_digest": "a" * 64}
+                                           "text_digest": "a" * 64,
+                                           "files_digest": None}
     assert _world["sends"].sent == []
 
 

@@ -116,6 +116,20 @@ _GET_BY_ID_SQL = (
 #: same row. The lock order of the Knowledge rows is in ``kb_sync/engine.py``.
 _LOCK_BY_ID_SQL = _GET_BY_ID_SQL + " FOR NO KEY UPDATE"
 
+#: SEM-12: the two statements of ``connections/semantic_model.py`` that touch
+#: the registry. They live here, because only this module names the table
+#: (``test_crm_connection_scan.py``). Each takes the bound-org SQL as ``{org}``
+#: and reads the id only, never the credential column.
+LOCK_ONE_FOR_MODEL_SQL = (
+    "SELECT id FROM integration_connections "
+    "WHERE id = CAST(:cid AS uuid) AND organization_id = {org} "
+    "FOR NO KEY UPDATE"
+)
+FROM_ONE_FOR_MODEL_SQL = (
+    "FROM integration_connections c "
+    "WHERE c.id = CAST(:cid AS uuid) AND c.organization_id = {org}"
+)
+
 _BLOB_SQL = (
     "SELECT credentials_encrypted FROM integration_connections "
     f"WHERE {_KEY_WHERE} AND status <> 'disconnected'"

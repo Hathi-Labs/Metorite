@@ -98,8 +98,9 @@ SIGN_INS: tuple[str, ...] = ("oauth_code", "key_header", "key_query", "basic")
 #: holds the network code.
 MAX_ANSWER_CAP = 64 * 1024
 
-#: The gateway total reads at most this many pages (§2.3).
-MAX_TOTAL_PAGES = 20
+#: The gateway total reads at most this many pages (§2.3, §2.3a decision d).
+#: It equals the member limit of the call limiter, ten calls a minute.
+MAX_TOTAL_PAGES = 10
 
 #: The largest page size of an op. The spec names no number. API-1 takes 200,
 #: the largest page that a list read needs for the rung 1 demo.
@@ -200,6 +201,9 @@ class Total:
     field: str
     #: The most pages that the total reads. At most :data:`MAX_TOTAL_PAGES`.
     max_pages: int = MAX_TOTAL_PAGES
+    #: The currency field of each item, or empty. With one, the gateway total
+    #: refuses a list of more than one currency (§2.3a, decision d).
+    currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -511,6 +515,8 @@ def _check_paging_and_total(where: str, op: Operation) -> None:
             raise TemplateError("total", where, "a total is on a paged class A read")
         if not (_KEY.fullmatch(op.total.items) and _KEY.fullmatch(op.total.field)):
             raise TemplateError("total", where, "a total names keys of the answer")
+        if op.total.currency and not _KEY.fullmatch(op.total.currency):
+            raise TemplateError("total", where, "a currency field is a key of the answer")
         if not _positive(op.total.max_pages) or op.total.max_pages > MAX_TOTAL_PAGES:
             raise TemplateError("over_cap", where, f"a total reads 1 to {MAX_TOTAL_PAGES} pages")
 
@@ -568,10 +574,11 @@ def build(template: Template, op_name: str, args: Mapping[str, Any]) -> Call:
 
 
 def _check_size(op: Operation, args: Mapping[str, Any]) -> None:
-    """Refuse a page size above the op's page size, as ``size``.
+    """Refuse a page size outside 1 to the op's page size, as ``size``.
 
     The validator already refuses a size shape that allows a larger number.
-    This check holds the cap again at each call.
+    This check holds the cap again at each call. The closed shape grammar has
+    no alternation, so a size shape can take ``0``. This check refuses it.
     """
     if op.paging is None:
         return
@@ -579,7 +586,7 @@ def _check_size(op: Operation, args: Mapping[str, Any]) -> None:
     if isinstance(value, bool) or value is None:
         return
     text = str(value) if isinstance(value, int) else value
-    if isinstance(text, str) and text.isascii() and text.isdigit() and int(text) > op.paging.size:
+    if isinstance(text, str) and text.isascii() and text.isdigit() and not 1 <= int(text) <= op.paging.size:
         raise BadCall(op.paging.size_key, "size")
 
 
