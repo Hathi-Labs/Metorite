@@ -843,7 +843,80 @@ async def test_filter_words_count_the_same_on_every_page(invoices, app_engine) -
 #: The answers of the base code, recorded with origin/main's aggregate.py,
 #: field_sql.py, core.py and crm_tools.py put in place (9bb67296a,
 #: 2026-11-20). Name → the response text.
-_BASE_CUT: dict[str, str] = {}
+_BASE_CUT: dict[str, str] = {
+    "avg": (
+        '{"entity":"module:Bavg","measure":"avg","group_by":null,"group_field":"Site","fi'
+        'eld":"Amt","field_type":"number","field_label":"Amt","group_field_label":"Site",'
+        '"keys":{},"group_field_type":"lookup","bucket":null,"groups":[{"key":"kb","label'
+        '":"Bbb","value":31.01},{"key":"ka","label":"Aaa","value":31.0},{"key":"kc","labe'
+        'l":"Ccc","value":20.0}],"total":28.25,"other":0.0,"omitted":0,"zone":"UTC","valu'
+        'es":4,"records":4}'
+    ),
+    "deals": (
+        '{"entity":"deals","measure":"sum","group_by":null,"group_field":"region","field"'
+        ':"fee","field_type":"number","field_label":"fee","group_field_label":"region","k'
+        'eys":{},"group_field_type":"select","bucket":null,"groups":[{"key":"r00","label"'
+        ':"r00","value":50.0},{"key":"r01","label":"r01","value":50.0},{"key":"r02","labe'
+        'l":"r02","value":50.0},{"key":"r03","label":"r03","value":50.0},{"key":"r04","la'
+        'bel":"r04","value":50.0},{"key":"r05","label":"r05","value":50.0},{"key":"r06","'
+        'label":"r06","value":50.0},{"key":"r07","label":"r07","value":50.0},{"key":"r08"'
+        ',"label":"r08","value":50.0},{"key":"r09","label":"r09","value":50.0},{"key":"r1'
+        '0","label":"r10","value":50.0},{"key":"r11","label":"r11","value":50.0},{"key":"'
+        'r12","label":"r12","value":50.0},{"key":"r13","label":"r13","value":50.0},{"key"'
+        ':"r14","label":"r14","value":50.0},{"key":"r15","label":"r15","value":50.0},{"ke'
+        'y":"r16","label":"r16","value":50.0},{"key":"r17","label":"r17","value":50.0},{"'
+        'key":"r18","label":"r18","value":50.0},{"key":"r19","label":"r19","value":50.0},'
+        '{"key":"r20","label":"r20","value":50.0},{"key":"r21","label":"r21","value":50.0'
+        '},{"key":"r22","label":"r22","value":50.0},{"key":"r23","label":"r23","value":50'
+        '.0},{"key":"r24","label":"r24","value":50.0},{"key":"r25","label":"r25","value":'
+        '50.0},{"key":"r26","label":"r26","value":50.0},{"key":"r27","label":"r27","value'
+        '":50.0},{"key":"r28","label":"r28","value":50.0},{"key":"r29","label":"r29","val'
+        'ue":50.0},{"key":"r30","label":"r30","value":50.0},{"key":"r31","label":"r31","v'
+        'alue":50.0},{"key":"r32","label":"r32","value":50.0},{"key":"r33","label":"r33",'
+        '"value":50.0},{"key":"r34","label":"r34","value":50.0},{"key":"r35","label":"r35'
+        '","value":50.0},{"key":"r36","label":"r36","value":50.0},{"key":"r37","label":"r'
+        '37","value":50.0},{"key":"r38","label":"r38","value":50.0},{"key":"r39","label":'
+        '"r39","value":50.0},{"key":"r40","label":"r40","value":50.0},{"key":"r41","label'
+        '":"r41","value":50.0},{"key":"r42","label":"r42","value":50.0},{"key":"r43","lab'
+        'el":"r43","value":50.0},{"key":"r44","label":"r44","value":50.0},{"key":"r45","l'
+        'abel":"r45","value":50.0},{"key":"r46","label":"r46","value":50.0},{"key":"r47",'
+        '"label":"r47","value":50.0},{"key":"r48","label":"r48","value":50.0},{"key":"Bbb'
+        '","label":"Bbb","value":31.01}],"total":2512.01,"other":31.0,"omitted":1,"zone":'
+        '"UTC","values":51,"records":51}'
+    ),
+    "sum": (
+        '{"entity":"module:Bits","measure":"sum","group_by":null,"group_field":"Site","fi'
+        'eld":"Amt","field_type":"number","field_label":"Amt","group_field_label":"Site",'
+        '"keys":{},"group_field_type":"lookup","bucket":null,"groups":[{"key":"s00","labe'
+        'l":"B00","value":50.0},{"key":"s01","label":"B01","value":50.0},{"key":"s02","la'
+        'bel":"B02","value":50.0},{"key":"s03","label":"B03","value":50.0},{"key":"s04","'
+        'label":"B04","value":50.0},{"key":"s05","label":"B05","value":50.0},{"key":"s06"'
+        ',"label":"B06","value":50.0},{"key":"s07","label":"B07","value":50.0},{"key":"s0'
+        '8","label":"B08","value":50.0},{"key":"s09","label":"B09","value":50.0},{"key":"'
+        's10","label":"B10","value":50.0},{"key":"s11","label":"B11","value":50.0},{"key"'
+        ':"s12","label":"B12","value":50.0},{"key":"s13","label":"B13","value":50.0},{"ke'
+        'y":"s14","label":"B14","value":50.0},{"key":"s15","label":"B15","value":50.0},{"'
+        'key":"s16","label":"B16","value":50.0},{"key":"s17","label":"B17","value":50.0},'
+        '{"key":"s18","label":"B18","value":50.0},{"key":"s19","label":"B19","value":50.0'
+        '},{"key":"s20","label":"B20","value":50.0},{"key":"s21","label":"B21","value":50'
+        '.0},{"key":"s22","label":"B22","value":50.0},{"key":"s23","label":"B23","value":'
+        '50.0},{"key":"s24","label":"B24","value":50.0},{"key":"s25","label":"B25","value'
+        '":50.0},{"key":"s26","label":"B26","value":50.0},{"key":"s27","label":"B27","val'
+        'ue":50.0},{"key":"s28","label":"B28","value":50.0},{"key":"s29","label":"B29","v'
+        'alue":50.0},{"key":"s30","label":"B30","value":50.0},{"key":"s31","label":"B31",'
+        '"value":50.0},{"key":"s32","label":"B32","value":50.0},{"key":"s33","label":"B33'
+        '","value":50.0},{"key":"s34","label":"B34","value":50.0},{"key":"s35","label":"B'
+        '35","value":50.0},{"key":"s36","label":"B36","value":50.0},{"key":"s37","label":'
+        '"B37","value":50.0},{"key":"s38","label":"B38","value":50.0},{"key":"s39","label'
+        '":"B39","value":50.0},{"key":"s40","label":"B40","value":50.0},{"key":"s41","lab'
+        'el":"B41","value":50.0},{"key":"s42","label":"B42","value":50.0},{"key":"s43","l'
+        'abel":"B43","value":50.0},{"key":"s44","label":"B44","value":50.0},{"key":"s45",'
+        '"label":"B45","value":50.0},{"key":"s46","label":"B46","value":50.0},{"key":"s47'
+        '","label":"B47","value":50.0},{"key":"s48","label":"B48","value":50.0},{"key":"k'
+        'b","label":"Bbb","value":31.01}],"total":2512.01,"other":31.0,"omitted":1,"zone"'
+        ':"UTC","values":51,"records":51}'
+    ),
+}
 
 
 def _bits(p: Any, org: str, module: str, rows: list[tuple[str, str, str, str]]) -> None:
@@ -884,7 +957,6 @@ async def test_off_the_list_page_1_keeps_the_cut_of_before(bits, app_engine, mon
                        group_field="Site")
     avg = await _get(bits, a, entity="module:Bavg", measure="avg", field="Amt",
                      group_field="Site")
-    print("BASECUT", json.dumps({"sum": total.text, "avg": avg.text}))
     body = total.json()
     assert body["groups"][-1]["label"] == "Bbb" and body["other"] == 31.0
     values = [g["value"] for g in avg.json()["groups"]]
@@ -946,7 +1018,6 @@ async def test_a_core_entity_keeps_the_cut_of_before(deals, app_engine, monkeypa
     res = await _get(deals, deals.org_a, entity="deals", measure="sum", field="fee",
                      group_field="region")
     assert res.status_code == 200, res.text
-    print("BASECUT", json.dumps({"deals": res.text}))
     body = res.json()
     assert body["groups"][-1]["key"] == "Bbb" and body["other"] == 31.0
     assert res.text == _BASE_CUT["deals"]
