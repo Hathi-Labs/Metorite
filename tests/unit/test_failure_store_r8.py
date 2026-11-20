@@ -68,6 +68,7 @@ _FUNCTIONS = (
     "failure_tally(text, text, text, text, text, text, text, text, integer)",
     "failure_org_band(text)",
     "failure_due(integer)",
+    "failure_due_v2(integer)",
     "failure_set(text, text, uuid, timestamp with time zone, timestamp with time zone, "
     "timestamp with time zone, text, bigint, integer)",
     "failure_prune_daily(date)",
@@ -83,11 +84,9 @@ def _migration() -> str:
     [more] = [f for f in root.glob("[0-9]*_*.sql")
               if "ADD COLUMN IF NOT EXISTS last_release_at" in f.read_text(encoding="utf-8")]
     assert more.name > hit.name
-    # The ledger runs each file once. A suite applies both again on a database that
-    # kept the later `failure_due`, and 466 makes the old return type again. So the
-    # drop of 467 comes first here.
-    return ("DROP FUNCTION IF EXISTS public.failure_due(integer);\n"
-            + hit.read_text(encoding="utf-8") + "\n" + more.read_text(encoding="utf-8"))
+    # The ladder runs each file again (a second pass): 467 adds a function and
+    # leaves the old `failure_due` as 466 made it, so a replay of 466 still works.
+    return (hit.read_text(encoding="utf-8") + "\n" + more.read_text(encoding="utf-8"))
 
 
 def _fp(tool: str, code: str, exc: str = "-", site: str = "-") -> str:
@@ -429,6 +428,7 @@ def test_each_function_is_a_definer_with_a_fixed_path_and_no_public_grant(world)
 _JOBS = (
     ("SELECT failure_org_band(:fp)", {"fp": "00bc2542a73b3967"}),
     ("SELECT * FROM failure_due(10)", {}),
+    ("SELECT * FROM failure_due_v2(10)", {}),
     ("SELECT failure_set(:fp, 'open', NULL, NULL, NULL, NULL, NULL, 0, 0)",
      {"fp": "00bc2542a73b3967"}),
     ("SELECT failure_prune_daily(CAST(now() AS date) - 500)", {}),
@@ -554,7 +554,7 @@ def test_due_gives_platform_rows_and_counts_only(world) -> None:
     _tally(world.app, world.b, {**args, "n": 3})
     with world.app.connect() as c, c.begin():
         c.execute(text(_BIND), {"o": world.a})
-        result = c.execute(text("SELECT * FROM failure_due(10) WHERE fingerprint = :f"),
+        result = c.execute(text("SELECT * FROM failure_due_v2(10) WHERE fingerprint = :f"),
                            {"f": args["fp"]})
         cols = list(result.keys())
         [row] = result.mappings().all()

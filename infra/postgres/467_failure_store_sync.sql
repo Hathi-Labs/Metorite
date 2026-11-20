@@ -10,16 +10,18 @@
 --       holds the fix).
 --   failure_tally   Writes `last_release_at`. Same signature, so CREATE OR
 --       REPLACE keeps the grants.
---   failure_due     Lists the watched rows first, then the rows with new counts,
---       then the muted rows, so a flood of rows that wait under the limit of
---       §7.2 never starves a task that the job watches. It returns
---       `last_release_at`. A return type cannot change under CREATE OR
---       REPLACE, so the file drops its own function and makes it again. No
---       other object depends on it. The grants run again below.
+--   failure_due_v2  The new reader of the sync job. It lists the watched rows
+--       first, then the rows with new counts, then the muted rows, so a flood
+--       of rows that wait under the limit of §7.2 never starves a task that the
+--       job watches. It returns `last_release_at`. It is a NEW function with a
+--       new name. A return type cannot change under CREATE OR REPLACE, and a
+--       replay of 466 (the ladder runs each file again) would try to make the
+--       old `failure_due` again. So `failure_due` stays as 466 made it, and no
+--       code reads it after this change.
 --
 -- Expand only (R6): a nullable column, no rename, no change of a tenant table.
 -- Old code does not read the column or the new return column. Idempotent: ADD
--- COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION, DROP FUNCTION IF EXISTS,
+-- COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION,
 -- REVOKE and GRANT.
 -- Number: 467 booked for task 3546 with ~/lanes/reserve_migration.sh (R1).
 -- Fence: tests/unit/test_tool_failure_tasks_r8.py (R8) and
@@ -111,8 +113,7 @@ $tally$;
 -- The return type gained `last_release_at` (TOF-2e), and CREATE OR REPLACE
 -- cannot change a return type. So the file drops its own function first. No
 -- other object depends on it, and the grants below run again.
-DROP FUNCTION IF EXISTS public.failure_due(integer);
-CREATE FUNCTION public.failure_due(p_limit integer)
+CREATE OR REPLACE FUNCTION public.failure_due_v2(p_limit integer)
 RETURNS TABLE (
     fingerprint text, fp_version text, tool text, error_code text, exc_type text,
     code_site text, sources text[], surfaces text[], first_seen_at timestamptz,
@@ -133,14 +134,14 @@ DECLARE
 BEGIN
     SELECT c.internal_org INTO v_internal FROM public.failure_config c;
     IF v_internal IS NULL THEN
-        RAISE EXCEPTION 'failure_due: failure_config has no row' USING ERRCODE = '42501';
+        RAISE EXCEPTION 'failure_due_v2: failure_config has no row' USING ERRCODE = '42501';
     END IF;
     IF NULLIF(pg_catalog.current_setting('app.tenant_id', true), '')::uuid
            IS DISTINCT FROM v_internal THEN
-        RAISE EXCEPTION 'failure_due: only the internal org runs it' USING ERRCODE = '42501';
+        RAISE EXCEPTION 'failure_due_v2: only the internal org runs it' USING ERRCODE = '42501';
     END IF;
     IF p_limit IS NULL OR p_limit < 1 OR p_limit > 1000 THEN
-        RAISE EXCEPTION 'failure_due: p_limit must be 1 to 1000' USING ERRCODE = '22023';
+        RAISE EXCEPTION 'failure_due_v2: p_limit must be 1 to 1000' USING ERRCODE = '22023';
     END IF;
 
     -- A row is due when it has counts that the job has not seen yet, while
@@ -186,7 +187,7 @@ $due$;
 
 REVOKE ALL ON FUNCTION public.failure_tally(
     text, text, text, text, text, text, text, text, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.failure_due(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.failure_due_v2(integer) FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -197,7 +198,7 @@ BEGIN
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
             FOREACH f IN ARRAY ARRAY[
                 'public.failure_tally(text, text, text, text, text, text, text, text, integer)',
-                'public.failure_due(integer)'] LOOP
+                'public.failure_due_v2(integer)'] LOOP
                 EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', f, r);
             END LOOP;
         END IF;
@@ -205,7 +206,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'acb_app') THEN
         GRANT EXECUTE ON FUNCTION public.failure_tally(
             text, text, text, text, text, text, text, text, integer) TO acb_app;
-        GRANT EXECUTE ON FUNCTION public.failure_due(integer) TO acb_app;
+        GRANT EXECUTE ON FUNCTION public.failure_due_v2(integer) TO acb_app;
     END IF;
 END
 $$;

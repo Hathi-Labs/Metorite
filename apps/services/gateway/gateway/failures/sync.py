@@ -24,7 +24,7 @@ refuses a second task id for a fingerprint.
 ``apply_status_transition`` as ``system:tool-failures`` with
 ``automation=True``, as GH-6 does.
 
-**What it reads.** The platform rows of ``failure_due`` and the band of
+**What it reads.** The platform rows of ``failure_due_v2`` and the band of
 ``failure_org_band``. In the internal org it reads its own tasks, their
 ``pull_request`` references and their lanes. It reads no tenant row of
 another org.
@@ -50,7 +50,7 @@ rows of that prune stays.
 the GH-6 skip (:func:`is_failure_task`). :func:`tasks_enabled` and
 :func:`config` are the readers of the flag and the five settings.
 
-**The order of a run.** ``failure_due`` gives the watched rows first, then
+**The order of a run.** ``failure_due_v2`` gives the watched rows first, then
 the rows with new counts, then the muted rows. A row that waits or is muted
 writes its total as seen. The rows with no task run before any git read,
 and the git reads of one run stop at :data:`GIT_BUDGET_S`.
@@ -110,7 +110,7 @@ WATCHED = frozenset({"open", "fix_merged", "fix_live"})
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
-_DUE_SQL = "SELECT * FROM failure_due(CAST(:n AS integer))"
+_DUE_SQL = "SELECT * FROM failure_due_v2(CAST(:n AS integer))"
 _BAND_SQL = "SELECT failure_org_band(:fp)"
 _SET_SQL = (
     "SELECT failure_set(:fp, :state, CAST(:task AS uuid), "
@@ -212,7 +212,7 @@ def _now() -> datetime:
 
 @dataclass(frozen=True)
 class Day:
-    """One day of ``failure_daily`` in the answer of ``failure_due``."""
+    """One day of ``failure_daily`` in the answer of ``failure_due_v2``."""
 
     day: date
     n: int
@@ -221,7 +221,7 @@ class Day:
 
 @dataclass(frozen=True)
 class Due:
-    """One row of ``failure_due``. Platform fields only (§10.1)."""
+    """One row of ``failure_due_v2``. Platform fields only (§10.1)."""
 
     fingerprint: str
     tool: str
@@ -579,7 +579,7 @@ async def _sync_new(db: Any, cfg: Config, due: Due, band: str | None, lanes: Lan
     """§7.2: make the one task of a ``new`` fingerprint, when its rule holds.
 
     A row that waits under the limit writes its total as seen, so it leaves
-    ``failure_due`` until a new count comes (TOF-2e review, F1)."""
+    ``failure_due_v2`` until a new count comes (TOF-2e review, F1)."""
     if not wants_task(due, band, cfg):
         if st.shown_total != due.total:
             st.shown_total = due.total

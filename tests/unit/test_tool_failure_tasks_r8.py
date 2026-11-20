@@ -844,7 +844,7 @@ def test_f1_waiting_rows_never_starve_a_watched_task(world, monkeypatch) -> None
 async def _due_rows(w: W) -> list[str]:
     async with tenant_session(w.a) as db:
         return [r.fingerprint for r in (await db.execute(
-            text("SELECT fingerprint FROM failure_due(100)"))).fetchall()]
+            text("SELECT fingerprint FROM failure_due_v2(100)"))).fetchall()]
 
 
 @_DB_GATE
