@@ -12,6 +12,7 @@
 #   bash scripts/dev_up.sh --reset          --down, then a fresh start
 #   bash scripts/dev_up.sh --refresh-flags  copy production's switches from the staging box
 #   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh   a per-org dark switch on, for a preview
+#   DEV_UP_TOOL_PACKS="studio" bash scripts/dev_up.sh    chat tool packs on, for every org of the stack
 #
 # WHAT YOU GET, per worktree, on 127.0.0.1 only:
 #   * Postgres (pgvector) with the whole ladder AND the RLS promotion, so FORCE
@@ -140,6 +141,28 @@ studio_key_env() {
   fi
 }
 
+# GATEWAY_URL (task 2455): the skill tools (studio, crm, knowledge, company
+# search, email context) call the gateway at GATEWAY_URL, and they default to
+# :8080. On a dev machine the local model router listens there, so each tool
+# call went to the router. The gateway of the stack names its own port.
+#
+# tool_packs_env (task 2455): the chat tool packs that DEV_UP_TOOL_PACKS names,
+# on for every org of THIS stack. TOOL_PACKS is not a name of the SWITCH
+# pattern, so production's flags cannot carry it, and on a box it is
+# owner-only (work_plan.md section 6 D4). This stack holds two made-up orgs, so
+# a line here turns on no pack on a box. Empty (the default) gives no pack.
+#   DEV_UP_TOOL_PACKS="studio" bash scripts/dev_up.sh
+tool_packs_env() {
+  local packs="${DEV_UP_TOOL_PACKS:-}"
+  packs="${packs// /}"
+  [ -n "$packs" ] || return 0
+  if [[ ! "$packs" =~ ^(\*|[a-z0-9_-]+(,[a-z0-9_-]+)*)$ ]]; then
+    printf 'dev_up: DEV_UP_TOOL_PACKS skips %s (a comma list of pack slugs, or *)\n' "$packs" >&2
+    return 0
+  fi
+  printf '%s\n' "TOOL_PACKS=$packs" "TOOL_PACKS_ORGS=*"
+}
+
 gateway_env() {
   base_env
   flag_env root
@@ -151,7 +174,9 @@ gateway_env() {
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
     "EXECUTIVE_EMAILS=$ME" \
     "STUDIO_ORGS=*" \
-    "APP_REQUESTS_ORGS=*" \n    "GATEWAY_URL=http://127.0.0.1:$GW_PORT"
+    "APP_REQUESTS_ORGS=*" \
+    "GATEWAY_URL=http://127.0.0.1:$GW_PORT"
+  tool_packs_env
   studio_key_env
 }
 

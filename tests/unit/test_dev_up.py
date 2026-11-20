@@ -46,9 +46,13 @@ def _held(text: str) -> str:
     return match.group(1)
 
 
-def _print_env(tmp_path: Path, flags: Path | None = None) -> dict[str, dict[str, str]]:
+def _print_env_raw(
+    tmp_path: Path, flags: Path | None = None, extra: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run --print-env against an empty repo dir: no state, so slot 0."""
     env = {**os.environ, "DEV_UP_REPO": tmp_path.as_posix()}
+    env.pop("DEV_UP_TOOL_PACKS", None)
+    env.update(extra or {})
     if flags is not None:
         env["DEV_UP_FLAGS_FILE"] = flags.as_posix()
     res = subprocess.run(
@@ -56,6 +60,13 @@ def _print_env(tmp_path: Path, flags: Path | None = None) -> dict[str, dict[str,
         capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
     )
     assert res.returncode == 0, res.stderr
+    return res
+
+
+def _print_env(
+    tmp_path: Path, flags: Path | None = None, extra: dict[str, str] | None = None
+) -> dict[str, dict[str, str]]:
+    res = _print_env_raw(tmp_path, flags, extra)
     out: dict[str, dict[str, str]] = {}
     section = ""
     for line in res.stdout.splitlines():
@@ -99,7 +110,8 @@ class TestOutboundStaysOff:
     @needs_bash
     def test_no_key_or_secret_reaches_the_stack(self, tmp_path):
         env = _print_env(tmp_path)
-        allowed = {"GATEWAY_INTERNAL_TOKEN", "DATABASE_URL", "REDIS_URL", "GATEWAY_BASE_URL"}
+        # GATEWAY_URL (task 2455) is the loopback address of the stack's own gateway.
+        allowed = {"GATEWAY_INTERNAL_TOKEN", "DATABASE_URL", "REDIS_URL", "GATEWAY_BASE_URL", "GATEWAY_URL"}
         for section, values in env.items():
             for name in values:
                 if name in allowed:
@@ -273,3 +285,47 @@ class TestGatewayUrl:
     @needs_bash
     def test_the_web_app_keeps_its_own_variable(self, tmp_path):
         assert "GATEWAY_URL" not in _print_env(tmp_path)["web"]
+
+    @needs_bash
+    def test_every_gateway_line_is_a_name_and_a_value(self, tmp_path):
+        """A stray word in the printf list (a literal backslash-n once put an
+        `n` line there) is no setting. The parser of `_print_env` drops it
+        silently, so this test reads the raw lines."""
+        raw = _print_env_raw(tmp_path).stdout.splitlines()
+        start = raw.index("[gateway]")
+        body = []
+        for line in raw[start + 1:]:
+            if line.startswith("["):
+                break
+            if line.strip():
+                body.append(line)
+        bad = [line for line in body if "=" not in line]
+        assert bad == [], bad
+
+
+class TestToolPacks:
+    """Task 2455 item 2. `DEV_UP_TOOL_PACKS` turns chat tool packs on for the
+    orgs of this stack only. Empty gives no pack."""
+
+    @needs_bash
+    def test_no_pack_by_default(self, tmp_path):
+        gw = _print_env(tmp_path)["gateway"]
+        assert "TOOL_PACKS" not in gw
+        assert "TOOL_PACKS_ORGS" not in gw
+
+    @needs_bash
+    def test_the_named_packs_are_on_for_every_org_of_the_stack(self, tmp_path):
+        gw = _print_env(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio, crm"})["gateway"]
+        assert gw["TOOL_PACKS"] == "studio,crm"
+        assert gw["TOOL_PACKS_ORGS"] == "*"
+
+    @needs_bash
+    def test_a_bad_value_is_skipped(self, tmp_path):
+        res = _print_env_raw(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio;rm"})
+        assert "TOOL_PACKS" not in res.stdout
+        assert "DEV_UP_TOOL_PACKS skips" in res.stderr
+
+    @needs_bash
+    def test_the_web_app_gets_no_pack(self, tmp_path):
+        web = _print_env(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio"})["web"]
+        assert "TOOL_PACKS" not in web
