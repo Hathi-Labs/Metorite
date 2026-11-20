@@ -15,9 +15,11 @@ of the draft is empty.
    one class rule puts it in class A. It does not say ``destructiveHint``
    true or ``idempotentHint`` false. Its input schema has no required
    argument, or one required ``string`` argument that a key of an earlier
-   read fills. Never a value. At most :data:`MAX_CALLS` calls in
-   :data:`RUN_S` seconds, and at most :data:`RESULT_BYTES_MAX` bytes for
-   each result. A cap that fires stops the run, and the run writes nothing.
+   read fills. Never a value. The plan is cut to :data:`MAX_CALLS` calls in
+   a fixed order. A result over :data:`RESULT_BYTES_MAX` bytes skips that
+   tool. Both count in ``left_out``. The time cap of :data:`RUN_S` seconds,
+   a cache that cannot count and a changed server stop the run, and then
+   the run writes nothing.
 4. **Write the draft.** The body keeps keys, types, counts and the first and
    last date only, never a value. Each key and type is normalised to the
    grammar of §10.4 (:func:`normalise_key`, :func:`normalise_type`).
@@ -107,6 +109,10 @@ SAME = "same"
 EMPTY = "empty"
 
 _DIGITS = re.compile(r"(?<=\d)(?=\d)")
+#: A run of 5 or more digits in the raw text: a date, an account number or
+#: an amount. Such a key or type is left out, never normalised (F2, fail
+#: closed). A run of 4 or fewer digits gets the ``_`` of the digit rule.
+_LONG_DIGITS = re.compile(r"\d{5,}")
 _DATE_HEAD = re.compile(r"(\d{4}-\d{2}-\d{2})(?:$|[T ])")
 
 
@@ -157,19 +163,26 @@ def reduce_schema(schema: Any) -> dict[str, str] | None:
 def normalise_key(raw: Any) -> str | None:
     """*raw* as a key of §10.4, or ``None`` when it still fails the rule.
 
-    A run of digits gets an ``_`` between each two digits, so
-    ``Custom_Field_10`` becomes ``Custom_Field_1_0``. The one key rule is
-    ``catalogue.connection_key_problem``, and this module keeps no copy."""
-    if not isinstance(raw, str):
+    A raw key with a run of 5 or more digits is left out (:data:`_LONG_DIGITS`).
+    Else a ``-`` becomes ``_``, and a shorter run of digits gets an ``_``
+    between each two digits. So ``list-invoices`` becomes ``list_invoices``
+    and ``Custom_Field_10`` becomes ``Custom_Field_1_0``. A dot and a space
+    stay refused. The one key rule is ``catalogue.connection_key_problem``,
+    and this module keeps no copy."""
+    if not isinstance(raw, str) or _LONG_DIGITS.search(raw):
         return None
-    key = _DIGITS.sub("_", raw)
+    key = _DIGITS.sub("_", raw.replace("-", "_"))
     return key if connection_key_problem(key) is None else None
 
 
 def normalise_type(raw: Any) -> str:
     """A source type as one plain word of :data:`TYPE_WORDS`, else
-    :data:`UNKNOWN`. So ``int64`` becomes ``integer``."""
-    return TYPE_WORDS.get(raw.strip().lower(), UNKNOWN) if isinstance(raw, str) else UNKNOWN
+    :data:`UNKNOWN`. So ``int64`` becomes ``integer``. A word with a run of 5
+    or more digits is :data:`UNKNOWN` too, and the column table leaves its
+    column out."""
+    if not isinstance(raw, str) or _LONG_DIGITS.search(raw):
+        return UNKNOWN
+    return TYPE_WORDS.get(raw.strip().lower(), UNKNOWN)
 
 
 def _date_of(value: Any) -> str | None:
@@ -303,6 +316,9 @@ class _Shape:
             names.append(name)
             if isinstance(name, str):
                 declared = col.get("type")
+                if isinstance(declared, str) and _LONG_DIGITS.search(declared):
+                    self.dropped.add((ent.key, name))
+                    continue
                 self._field(ent, name, normalise_type(declared) if declared is not None
                             else None)
         for row in rows:
@@ -340,14 +356,19 @@ class _Shape:
         lists = {k: [r for r in v if isinstance(r, Mapping)] for k, v in data.items()
                  if isinstance(v, list)}
         lists = {k: v for k, v in lists.items() if v}
-        if not lists:
+        if len(lists) <= 1:
+            # No list, or one list in a wrapper such as {"data": [...]}: the
+            # records are of the tool (or of the key that filled the call).
+            # A wrapper word is no entity and never fills an argument.
             if (ent := self._entity(own)) is not None:
-                self._records(ent, [data])
+                self._records(ent, next(iter(lists.values())) if lists else [data])
             return
         for raw, records in lists.items():
             if (ent := self._entity(raw)) is None:
                 continue
-            if raw not in self.keys:
+            # Only a raw key that passes the key rule AS IT IS may fill an
+            # argument, because the call sends the raw key (F1).
+            if connection_key_problem(raw) is None and raw not in self.keys:
                 self.keys.append(raw)
             self._records(ent, records)
 
@@ -418,14 +439,37 @@ def _may_call(run: mcp_tools.OrgReadRun, tool: Mapping[str, Any],
             and hints.get("idempotentHint") is not False)
 
 
+#: The refusals of one call that mean the server is not the server of the
+#: list: the run stops and writes nothing (F5).
+_CHANGED = frozenset({mcp_tools.LIVE_CHANGED, mcp_tools.LIVE_NO_SERVER})
+
+
 class _Reads:
-    """The calls of one run, under the caps."""
+    """The calls of one run, under the caps.
+
+    The plan of the run is cut to :data:`MAX_CALLS` before the calls, so the
+    call cap never stops a run. :meth:`one` still refuses a 21st call (a hard
+    guard). A result over :data:`RESULT_BYTES_MAX`, or over the byte budget
+    of the client, skips that tool only. The time cap, a cache that cannot
+    count, a full org window and a changed server stop the run."""
 
     def __init__(self, run: mcp_tools.OrgReadRun, start: float) -> None:
         self.run = run
         self.start = start
         self.calls = 0
+        #: Planned calls that the cut removed, and results that were too big.
+        self.skipped = 0
         self.shape = _Shape()
+
+    @property
+    def left_out(self) -> int:
+        return self.shape.left_out + self.skipped
+
+    def cut(self, plan: list[Any]) -> list[Any]:
+        """*plan* cut to the calls that are left, the rest counted."""
+        room = max(0, MAX_CALLS - self.calls)
+        self.skipped += max(0, len(plan) - room)
+        return plan[:room]
 
     async def one(self, tool: str, args: dict[str, Any], named: str | None) -> None:
         if self.calls >= MAX_CALLS:
@@ -441,23 +485,32 @@ class _Reads:
         except mcp_tools.ListFailed as failed:
             if failed.reason == mcp_tools.REASON_CACHE:
                 # The org window cannot count, so no step may go on.
-                raise _Stop("limited") from None
+                raise _Stop("cache") from None
             if _clock() - self.start > RUN_S:
                 raise _Stop("time") from None
+            if failed.reason == mcp_tools.REASON_TOO_LARGE:
+                self.skipped += 1
             return
-        except mcp_tools.LiveRefused:
-            # A refused or failed tool gives no shape. The run goes on.
+        except mcp_tools.LiveRefused as no:
+            if no.reason in _CHANGED:
+                raise _Stop("changed") from None
+            # A refused tool gives no shape. The run goes on.
             if _clock() - self.start > RUN_S:
                 raise _Stop("time") from None
             return
         if _clock() - self.start > RUN_S:
             raise _Stop("time")
         if _result_bytes(result) > RESULT_BYTES_MAX:
-            raise _Stop("result_size")
+            # Too big to shape: this tool gives no shape, and the run goes on.
+            self.skipped += 1
+            return
         self.shape.add(tool, result, named)
 
 
-async def _run(org: str, connection_id: Any, run: mcp_tools.OrgReadRun) -> Profile:
+async def _run(run: mcp_tools.OrgReadRun) -> Profile | tuple[dict[str, Any], str, _Reads]:
+    """Steps 1 and 2 under the slot of the run. It gives a final
+    :class:`Profile`, or the body, the hash and the reads to write after the
+    slot is free."""
     meta = run.meta
     if meta.always_confirm is not False:
         return Profile("refused:always_confirm")
@@ -471,7 +524,7 @@ async def _run(org: str, connection_id: Any, run: mcp_tools.OrgReadRun) -> Profi
     tools: list[dict[str, Any]] = []
     plain: list[str] = []
     keyed: list[tuple[str, str]] = []
-    for tool in listed.tools:
+    for tool in sorted(listed.tools, key=lambda t: t["name"]):
         name = tool["name"]
         hints = mcp_actions.tool_hints(tool.get("annotations"))
         cls = mcp_actions.mcp_tool_class(hints, always_confirm=meta.always_confirm)
@@ -485,22 +538,23 @@ async def _run(org: str, connection_id: Any, run: mcp_tools.OrgReadRun) -> Profi
             keyed.append((name, next(iter(required))))
     reads = _Reads(run, start)
     try:
-        for name in plain:
+        # The plan, in one fixed order: the reads with no argument by tool
+        # name, then the keyed reads by tool name and key. Each part is cut
+        # to the calls that are left, so the hash of a run does not depend
+        # on where a cap would fall.
+        for name in reads.cut(plain):
             await reads.one(name, {}, None)
-        found = list(reads.shape.keys)
-        for name, arg in keyed:
-            for key in found:
-                await reads.one(name, {arg: key}, key)
+        found = sorted(reads.shape.keys)
+        for name, arg, key in reads.cut([(n, a, k) for n, a in keyed for k in found]):
+            await reads.one(name, {arg: key}, key)
     except _Stop as stop:
         _log.info("connections.profiler.stopped", cap=stop.cap, calls=reads.calls)
-        return Profile(f"stopped:{stop.cap}", calls=reads.calls,
-                       left_out=reads.shape.left_out)
+        return Profile(f"stopped:{stop.cap}", calls=reads.calls, left_out=reads.left_out)
     if not reads.shape.entities:
-        return Profile(EMPTY, calls=reads.calls, left_out=reads.shape.left_out)
+        return Profile(EMPTY, calls=reads.calls, left_out=reads.left_out)
     body = reads.shape.body()
-    digest = shape_hash({"tools": sorted(tools, key=lambda t: t["name"]),
-                         "entities": reads.shape.reduced()})
-    return await _write(org, connection_id, body, digest, reads)
+    digest = shape_hash({"tools": tools, "entities": reads.shape.reduced()})
+    return body, digest, reads
 
 
 async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str,
@@ -509,7 +563,7 @@ async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str
     one draft through ``semantic_model.save_draft``."""
     from gateway.db import tenant_session
 
-    done = {"calls": reads.calls, "left_out": reads.shape.left_out, "shape_hash": digest}
+    done = {"calls": reads.calls, "left_out": reads.left_out, "shape_hash": digest}
     try:
         async with tenant_session(org) as db:
             approved = await semantic_model.read_approved(db, connection_id)
@@ -539,7 +593,8 @@ async def profile(org: str, connection_id: Any, *, lister: mcp_tools.Lister | No
        approvals that did not fail. A server with ``always_confirm``, or
        with no approved tool, gets no profile.
     4. One live list, then the shape reads under the caps.
-    5. The draft, unless the approved version has the same ``shape_hash``."""
+    5. With the slot free, the draft, unless the approved version has the
+       same ``shape_hash``."""
     if not semantic_model.connection_model_allowed(org):
         return Profile(OFF)
     server = await _server_of(org, connection_id)
@@ -547,10 +602,14 @@ async def profile(org: str, connection_id: Any, *, lister: mcp_tools.Lister | No
         return Profile("refused:connection")
     try:
         async with mcp_tools.org_read_run(org, server, lister=lister, caller=caller) as run:
-            return await _run(org, connection_id, run)
+            done = await _run(run)
     except mcp_tools.LiveRefused as no:
         return Profile(f"refused:{no.reason}")
     except mcp_tools.LiveLimited:
         return Profile("stopped:limited")
     except mcp_tools.ListFailed as failed:
         return Profile(f"failed:{failed.reason}")
+    if isinstance(done, Profile):
+        return done
+    # The block above freed the slot of the run, so the write holds none.
+    return await _write(org, connection_id, *done)

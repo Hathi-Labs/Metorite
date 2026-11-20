@@ -24,9 +24,17 @@ of a profiler draft on a real Postgres is in
   ``test_a_tool_with_no_approval_gets_no_call`` goes red. Drop the
   ``tool_changed`` check of ``_class_a_item``:
   ``test_the_entry_refuses_an_unapproved_tool`` goes red.
-* Drop one cap: ``test_the_21st_call_stops_the_run``,
-  ``test_a_result_over_64_kb_stops_the_run`` or
-  ``test_a_run_over_30_s_stops`` goes red.
+* Drop the plan cut: ``test_the_plan_is_cut_to_20_calls_in_a_fixed_order``
+  goes red (the guard stops the run). Drop the skip of a result over 64 KB:
+  ``test_a_result_over_64_kb_skips_that_tool_only`` goes red. Drop a time
+  check: ``test_a_run_over_30_s_stops`` goes red.
+* The fix round of 2026-11-20. Drop the raw key check (F1):
+  ``test_only_a_raw_key_that_passes_the_rule_fills_an_argument``. Drop the
+  wrapper rule (P1b): ``test_a_wrapper_takes_the_tool_name_and_fills_no_argument``.
+  Drop the dash rule (P2): ``test_a_tool_name_with_a_dash_gives_an_entity``.
+  Drop the rule of 5 digits (F2): ``test_a_key_with_five_digits_in_a_row_is_left_out``.
+  Drop the stop on a changed server (F5):
+  ``test_a_changed_server_during_the_run_stops_it``. Each goes red.
 * Drop the normalisation of ``normalise_key`` or ``normalise_type``:
   ``test_custom_field_10_and_int64_normalise_and_shape_only_passes`` goes
   red.
@@ -224,8 +232,8 @@ def test_a_key_from_an_earlier_read_fills_one_string_argument(pw) -> None:
     pw.answers["records"] = lambda args: _rows(3)
     out = _run(pw)
     assert out.outcome == profiler.SAVED
-    assert pw.calls == [("modules", {}), ("records", {"module": "Leads"}),
-                        ("records", {"module": "Deals"})]
+    assert pw.calls == [("modules", {}), ("records", {"module": "Deals"}),
+                        ("records", {"module": "Leads"})]
     keys = {e["key"]: e["records"] for e in pw.saved[0]["body"]["code"]["entities"]}
     assert keys == {"Leads": 3, "Deals": 3}
 
@@ -389,20 +397,64 @@ async def test_the_live_list_reads_once_and_the_cache_holds_no_schema(pw) -> Non
 # ── The caps ────────────────────────────────────────────────────────────────
 
 
-def test_the_21st_call_stops_the_run(pw) -> None:
-    pw.tools = [_tool(f"read_{chr(97 + i)}") for i in range(21)]
+def test_the_plan_is_cut_to_20_calls_in_a_fixed_order(pw) -> None:
+    """25 tools, listed in reverse order: the 20 first by name are read, 5
+    are counted in ``left_out``, and the draft is written. A second run gives
+    the same hash."""
+    names = [f"read_{chr(97 + i)}" for i in range(25)]
+    pw.tools = [_tool(n) for n in reversed(names)]
+    first = _run(pw)
+    assert first.outcome == profiler.SAVED and first.calls == profiler.MAX_CALLS == 20
+    assert _called(pw) == names[:20] and first.left_out == 5
+    pw.calls.clear()
+    second = _run(pw)
+    assert _called(pw) == names[:20] and second.shape_hash == first.shape_hash
+
+
+def test_the_keyed_reads_are_cut_after_the_reads_with_no_argument(pw) -> None:
+    pw.tools = [_tool(f"read_{chr(97 + i)}") for i in range(18)] + [
+        _tool("records", schema={"type": "object", "required": ["module"],
+                                 "properties": {"module": {"type": "string"}}})]
+    pw.answers["read_a"] = {"structuredContent": {"Leads": [{"id": 1}], "Deals": [{"id": 2}],
+                                                  "Notes": [{"id": 3}]}}
     out = _run(pw)
-    assert out.outcome == "stopped:calls" and out.calls == profiler.MAX_CALLS == 20
-    assert len(pw.calls) == 20 and pw.saved == []
+    assert out.outcome == profiler.SAVED and out.calls == 20 and out.left_out == 1
+    assert pw.calls[-2:] == [("records", {"module": "Deals"}), ("records", {"module": "Leads"})]
 
 
-def test_a_result_over_64_kb_stops_the_run(pw) -> None:
-    pw.tools = [_tool("big"), _tool("after")]
+async def test_a_21st_call_is_still_refused(pw) -> None:
+    """The hard guard: the plan cut keeps the run under the cap, and a 21st
+    call that a fault would ask for is still refused."""
+    reads = profiler._Reads(SimpleNamespace(), 0.0)
+    reads.calls = profiler.MAX_CALLS
+    with pytest.raises(profiler._Stop) as stop:
+        await reads.one("read_a", {}, None)
+    assert stop.value.cap == "calls"
+
+
+def test_a_result_over_64_kb_skips_that_tool_only(pw) -> None:
+    pw.tools = [_tool("big"), _tool("invoices")]
     pw.answers["big"] = {"content": [{"type": "text", "text": "x" * 3000}
                                      for _ in range(25)]}
     out = _run(pw)
-    assert out.outcome == "stopped:result_size"
-    assert _called(pw) == ["big"] and pw.saved == []
+    assert out.outcome == profiler.SAVED and out.left_out == 1
+    assert _called(pw) == ["big", "invoices"]
+    keys = [e["key"] for e in pw.saved[0]["body"]["code"]["entities"]]
+    assert keys == ["invoices"]
+
+
+def test_a_result_over_the_client_budget_skips_that_tool_only(pw) -> None:
+    pw.tools = [_tool("huge"), _tool("invoices")]
+
+    def _huge(args: dict[str, Any]) -> Any:
+        from gateway import outbound_guard
+
+        raise outbound_guard.AnswerTooLarge("books.example.test", "too large")
+
+    pw.answers["huge"] = _huge
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED and out.left_out == 1
+    assert [e["key"] for e in pw.saved[0]["body"]["code"]["entities"]] == ["invoices"]
 
 
 def test_a_result_at_the_cap_does_not_stop(pw) -> None:
@@ -559,3 +611,130 @@ def test_the_profiler_writes_through_the_one_writer_only() -> None:
                  "_sdk_call", "_sdk_list", "decide_features", "untrusted_origin=True"):
         assert word not in source, word
     assert "untrusted_origin=False" in source
+
+
+# ── The fix round (2026-11-20): F1, P1b, P2, F2, F5 and the slot ───────────
+
+
+def test_only_a_raw_key_that_passes_the_rule_fills_an_argument(pw) -> None:
+    """F1: the call sends the RAW key, so a raw key that passes only after
+    its normalisation never fills an argument. A key with a long run of
+    digits is left out as an entity too."""
+    pw.tools = [_tool("modules"),
+                _tool("records", schema={"type": "object", "required": ["module"],
+                                         "properties": {"module": {"type": "string"}}})]
+    pw.answers["modules"] = {"structuredContent": {
+        "Leads": [{"id": 1}], "cf_9001": [{"id": 2}], "Sales-Orders": [{"id": 3}],
+        "d20240115": [{"id": 4}], "acct_50012345": [{"id": 5}]}}
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED
+    sent = [a["module"] for t, a in pw.calls if t == "records"]
+    assert sent == ["Leads"]
+    keys = {e["key"] for e in pw.saved[0]["body"]["code"]["entities"]}
+    assert keys == {"Leads", "cf_9_0_0_1", "Sales_Orders"}
+    assert out.left_out == 2
+
+
+def test_a_wrapper_takes_the_tool_name_and_fills_no_argument(pw) -> None:
+    """P1b: ``{"data": [...], "total": 120}`` of two tools gives two
+    entities named after the tools, and ``data`` never fills an argument."""
+    pw.tools = [_tool("invoices"), _tool("parties"),
+                _tool("records", schema={"type": "object", "required": ["module"],
+                                         "properties": {"module": {"type": "string"}}})]
+    pw.answers["invoices"] = {"structuredContent": {"data": [{"id": 1}], "total": 120}}
+    pw.answers["parties"] = {"structuredContent": {"data": [{"name": PLANTED}], "total": 9}}
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED
+    assert _called(pw) == ["invoices", "parties"]
+    entities = {e["key"]: e["records"] for e in pw.saved[0]["body"]["code"]["entities"]}
+    assert entities == {"invoices": 1, "parties": 1}
+
+
+def test_a_tool_name_with_a_dash_gives_an_entity(pw) -> None:
+    """P2: a dash becomes ``_``. A dot and a space still refuse."""
+    pw.tools = [_tool("list-invoices")]
+    assert _run(pw).outcome == profiler.SAVED
+    assert [e["key"] for e in pw.saved[0]["body"]["code"]["entities"]] == ["list_invoices"]
+    assert profiler.normalise_key("list.invoices") is None
+    assert profiler.normalise_key("list invoices") is None
+
+
+@pytest.mark.parametrize("raw", ["d20240115", "acct_50012345", "invoice_123456"])
+def test_a_key_with_five_digits_in_a_row_is_left_out(pw, raw) -> None:
+    """F2: a run of 5 or more digits is a date, an account number or an
+    amount. The key is left out and counted, never normalised."""
+    assert profiler.normalise_key(raw) is None
+    pw.tools = [_tool("rows")]
+    pw.answers["rows"] = {"structuredContent": {"columns": [
+        {"name": raw, "type": "int"}, {"name": "cf_9001", "type": "int"},
+        {"name": "amount", "type": "decimal12345"}], "rows": []}}
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED and out.left_out == 2
+    assert [f["key"] for f in pw.saved[0]["body"]["code"]["fields"]] == ["cf_9_0_0_1"]
+    text = json.dumps(pw.saved[0]["body"])
+    assert "12345" not in text and "1_2_3_4_5" not in text
+
+
+def test_the_normalisation_keeps_a_run_of_four_digits() -> None:
+    assert profiler.normalise_key("Q4_2024_Target") == "Q4_2_0_2_4_Target"
+    assert profiler.normalise_key("cf_9001") == "cf_9_0_0_1"
+    assert profiler.normalise_type("int12345") == "unknown"
+
+
+@pytest.mark.parametrize("reason", [mcp_tools.LIVE_CHANGED, mcp_tools.LIVE_NO_SERVER])
+def test_a_changed_server_during_the_run_stops_it(pw, monkeypatch, reason) -> None:
+    """F5: the server is not the server of the list, so the run writes
+    nothing. A refusal of one call for another reason skips that call."""
+    pw.tools = [_tool("a"), _tool("b"), _tool("c")]
+    real = mcp_tools.OrgReadRun.call
+
+    async def _call(self, tool: str, args: dict[str, Any], **kw: Any) -> Any:
+        if tool == "b":
+            raise mcp_tools.LiveRefused(reason)
+        return await real(self, tool, args, **kw)
+
+    monkeypatch.setattr(mcp_tools.OrgReadRun, "call", _call)
+    out = _run(pw)
+    assert out.outcome == "stopped:changed" and _called(pw) == ["a"] and pw.saved == []
+
+
+def test_a_call_that_is_refused_for_one_tool_skips_it(pw, monkeypatch) -> None:
+    pw.tools = [_tool("a"), _tool("b")]
+    real = mcp_tools.OrgReadRun.call
+
+    async def _call(self, tool: str, args: dict[str, Any], **kw: Any) -> Any:
+        if tool == "a":
+            raise mcp_tools.LiveRefused(mcp_tools.LIVE_NOT_A)
+        return await real(self, tool, args, **kw)
+
+    monkeypatch.setattr(mcp_tools.OrgReadRun, "call", _call)
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED and _called(pw) == ["b"]
+
+
+def test_a_cache_that_cannot_count_stops_the_run(pw) -> None:
+    """The first call breaks the cache, so the org window of the second call
+    cannot count: the run stops and writes nothing."""
+    pw.tools = [_tool("a"), _tool("b")]
+
+    def _break(args: dict[str, Any]) -> Any:
+        pw.raw.fail = RuntimeError("redis down")
+        return _rows()
+
+    pw.answers["a"] = _break
+    out = _run(pw)
+    assert out.outcome == "stopped:cache" and _called(pw) == ["a"] and pw.saved == []
+
+
+def test_the_write_holds_no_live_slot(pw, monkeypatch) -> None:
+    pw.tools = [_tool("invoices")]
+    held: list[dict[str, int]] = []
+    real = semantic_model.save_draft
+
+    async def _save(*args: Any, **kw: Any) -> int:
+        held.append(dict(mcp_tools._LIVE_IN_FLIGHT))
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(semantic_model, "save_draft", _save)
+    assert _run(pw).outcome == profiler.SAVED
+    assert held == [{}] and mcp_tools._LIVE_IN_FLIGHT == {}
