@@ -155,7 +155,8 @@ def test_zoho_books_signs_in_with_the_crm_client_and_sets_the_org():
 
 def test_zoho_books_marks_the_invoice_amount_for_the_total():
     op = ZOHO_BOOKS.op("list_invoices")
-    assert op is not None and op.total == Total(items="invoices", field="total")
+    assert op is not None and op.total == Total(items="invoices", field="total",
+                                           currency="currency_code")
     assert op.paging is not None and op.paging.size <= MAX_PAGE_SIZE
     assert op.total.max_pages == MAX_TOTAL_PAGES
 

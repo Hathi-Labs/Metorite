@@ -986,10 +986,10 @@ def shape_result(raw: Any) -> tuple[dict[str, Any], bool]:
     return {"content": items, "structured": shaped}, shaper.truncated
 
 
-def _live_key(*parts: str) -> Any:
+def _live_key(*parts: str, namespace: str = LIVE_NAMESPACE) -> Any:
     from acb_common import tenant_redis
 
-    return tenant_redis.key(LIVE_NAMESPACE, *parts)
+    return tenant_redis.key(namespace, *parts)
 
 
 def _member_part(member: str) -> str:
@@ -1151,10 +1151,13 @@ async def _count(client: Any, key: Any, cap: int, left: int) -> None:
         raise LiveLimited(left)
 
 
-async def _count_org(client: Any, window: str, left: int) -> None:
+async def _count_org(client: Any, window: str, left: int, *,
+                     namespace: str = LIVE_NAMESPACE) -> None:
     """The org key of the window: :data:`ORG_CALLS_PER_WINDOW` for each org
-    (SEM-13a split it out of :func:`_spend`). The caller holds the org scope."""
-    await _count(client, _live_key("rate", "org", window), ORG_CALLS_PER_WINDOW, left)
+    (SEM-13a split it out of :func:`_spend`). The caller holds the org scope.
+    *namespace* names the counter, as in :func:`_spend`."""
+    await _count(client, _live_key("rate", "org", window, namespace=namespace),
+                 ORG_CALLS_PER_WINDOW, left)
 
 
 def _window() -> tuple[str, int]:
@@ -1163,20 +1166,26 @@ def _window() -> tuple[str, int]:
     return str(int(now // RATE_WINDOW_S)), max(1, int(RATE_WINDOW_S - now % RATE_WINDOW_S))
 
 
-async def _spend(org: str, member: str) -> None:
+async def _spend(org: str, member: str, *, namespace: str = LIVE_NAMESPACE) -> None:
     """Count one live read that makes a network call, or raise
     :class:`LiveLimited`. A fixed window of :data:`RATE_WINDOW_S` in
     ``tenant_redis``, with SET NX EX and then INCR: one counter for the member and
     one for the org, in that order. A member over the limit does not count for
     the org. A cache that does not answer raises :class:`ListFailed` (fail
-    closed)."""
+    closed).
+
+    *namespace* names the counters. The Studio live read uses
+    :data:`LIVE_NAMESPACE`. The API calls of ``routes/api_connections.py``
+    (API-3) pass their own, so the two never spend from one counter. The
+    limits are the same."""
     window, left = _window()
     try:
         client = _redis()
         with _scope(org):
-            await _count(client, _live_key("rate", "m", _member_part(member), window),
+            await _count(client, _live_key("rate", "m", _member_part(member), window,
+                                           namespace=namespace),
                          MEMBER_CALLS_PER_WINDOW, left)
-            await _count_org(client, window, left)
+            await _count_org(client, window, left, namespace=namespace)
     except LiveLimited:
         raise
     except Exception as exc:
@@ -1184,15 +1193,16 @@ async def _spend(org: str, member: str) -> None:
         raise ListFailed(REASON_CACHE) from None
 
 
-async def _spend_org(org: str) -> None:
+async def _spend_org(org: str, *, namespace: str = LIVE_NAMESPACE) -> None:
     """Count one network step of a read with no member (SEM-13a) in the org
-    window only, or raise :class:`LiveLimited`. A cache that does not answer
-    raises :class:`ListFailed` (fail closed)."""
+    window only, or raise :class:`LiveLimited`. The profiler spends from
+    :data:`LIVE_NAMESPACE`, the org window of the Studio live read. A cache
+    that does not answer raises :class:`ListFailed` (fail closed)."""
     window, left = _window()
     try:
         client = _redis()
         with _scope(org):
-            await _count_org(client, window, left)
+            await _count_org(client, window, left, namespace=namespace)
     except LiveLimited:
         raise
     except Exception as exc:

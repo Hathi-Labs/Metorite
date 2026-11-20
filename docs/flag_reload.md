@@ -156,6 +156,16 @@ Its one reader is `acb_skills.tool_packs.packs_batch_on`. The batch run asks it
 at the start of each WhatsApp run, so a reload applies to the next run. Any
 value other than empty is OWNER-ONLY (`work_plan.md` §6 D4).
 
+`CHAT_PASTE_FRAME_ORGS` turns on the paste frame (`chat_failure_modes.md`
+§4.7b, HRD-14b). For each listed org, a native chat run puts each pasted block
+of 8 or more lines in ONE `PASTED TEXT` block, in a copy of each model
+request. The saved row and the stored session stay raw. `*` lists every org,
+and the default is empty. Its one reader is
+`acb_skills.paste_frame.paste_frame_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. Only `*` lets the `/v1` trim
+of a dev box restore a cut block, because that door binds no tenant. The flip
+is HRD-14e, and it is owner-only (`work_plan.md` §6.0 D4).
+
 `CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
 CO-11). For each listed org, a member may pin a chat, and the chat list shows a
 Pinned group. `*` lists every org, and the default is empty. Empty means the
@@ -472,9 +482,14 @@ kinds `measure`, `join` and `query`, and `org_facts` serves the approved
 ones. `*` lists every org, and the default is empty. Empty keeps each item of
 these kinds as an unknown kind, and serves none.
 
-Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
-plan write and each facts read ask it. A reload applies a change. The flip
-stays OWNER-GATE (`enforcement-flip`).
+The same flag turns on `query` on a module total (`semantic_model.md` §5.1,
+SEM-1b). For each listed org, `GET /crm/aggregate` on a module takes one JSON
+query of conditions and `any` groups. Off the list, a `query` is a 422 that
+names `field_filters`, and each other answer stays byte for byte.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
+plan write, each facts read and each module total ask it. A reload applies a
+change. The flip stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves

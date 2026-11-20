@@ -41,7 +41,7 @@ import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunSta
 import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
-import { REPLAY_OPEN, RUN_RESUMED_FRAME, replayEndAfter, type ReplayEnd } from "@/lib/chatResume";
+import { REPLAY_OPEN, RUN_RESUMED_FRAME, attachPickOf, replayEndAfter, type ReplayEnd } from "@/lib/chatResume";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -1152,10 +1152,10 @@ export function useAgentChat({
     // is a NEW run (another tab, a phone, a room member): the run state
     // holds no message for it, and a finished reply is never its target
     // (review of #1171, P1).
-    const last = st0.messages[st0.messages.length - 1];
-    const known = st0.run.messageId
-      ? st0.messages.find((m) => m.id === st0.run.messageId && m.role === "assistant")
-      : undefined;
+    // RESUME-3d: a live continuation that the list names with its reply row
+    // replays into that row, with no read of the saved rows
+    // (`attachPickOf`).
+    const pick = attachPickOf(st0.run, st0.messages, isInterruptedReply);
     // The server named ANOTHER run than the one this chat streamed (its
     // identity differs, re-review of #1171). A reply still marked streaming
     // is the old run's: it settles, and the new run never replays into it.
@@ -1168,8 +1168,8 @@ export function useAgentChat({
           : m)),
       }));
     }
-    let target = known ?? (!stale && isInterruptedReply(last) ? last : undefined);
-    if (!target) {
+    let target = pick.target ?? undefined;
+    if (pick.readSaved) {
       // The server saved the run's rows under THEIR ids: the member's turn
       // at run start (WS-51 S4), and the reply at each checkpoint of
       // `api/agent/chat/route.ts`. A run started elsewhere draws its prompt
@@ -1198,8 +1198,9 @@ export function useAgentChat({
       return;
     }
     // RESUME-3a (C2): a continuation whose reply row the server named replays
-    // into that row, so the fold at its end draws no second bubble.
-    const lastId = replayIdOf(target, st0.run.resumedAt > 0 ? st0.run.messageId : null, nanoid);
+    // into that row, so the fold at its end draws no second bubble. The 200
+    // names it (RESUME-3a), or the list does (RESUME-3d).
+    const lastId = replayIdOf(target, pick.resumeId, nanoid);
     const lastContent = target?.content || "";
     const placeholder = !target;
     // No thinking flag yet: the status row says the run works, and the

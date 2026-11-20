@@ -413,6 +413,38 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
     return None
 
 
+def _paste_raw_parts(
+    sent_text: str,
+    taken_steers: list[dict[str, Any]],
+    *,
+    client_text: bool,
+    followup: bool,
+    resume_launch: bool,
+) -> tuple[str, ...]:
+    """The raw member parts of ONE turn, for ``paste_frame.RAW_PARTS`` (HRD-14b).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The raw binding". In order, as
+    the turn holds them: the raw text of each steer that the ENGAGE seam
+    replays (``steer.format_replayed`` skips an empty one too), then the sent
+    words while ``message`` is still the client's text. That covers a typed
+    turn, a pill, a retry, an API call, a card answer and a Continue with no
+    restart marker. A Continue whose note the server wrote adds nothing for
+    the note, and a steer follow-up sends no words. RESUME-2a sends no words
+    either, but it keeps the steers that ENGAGE replays: the executor puts
+    its note BEFORE them (``executor._set_run_note``), so a pasted steer
+    still reaches the model and must get its frame. So the tuple is empty
+    only for a RESUME-2a or a server Continue note with no replayed steer. An
+    empty tuple is still a bound run. The words are the RAW sent words, never
+    ``typed_text`` (the member-sent variable of the profile)."""
+    parts = [str(s.get("text") or "") for s in taken_steers
+             if isinstance(s, dict) and str(s.get("text") or "").strip()]
+    if resume_launch:
+        return tuple(parts)
+    if client_text and not followup and str(sent_text or "").strip():
+        parts.append(str(sent_text))
+    return tuple(parts)
+
+
 async def _resume_note_for(
     thread_id: str, member: str, organization_id: str | None,
 ) -> str | None:
@@ -3154,10 +3186,14 @@ async def run_agent_stream_endpoint(
         _typed_mark = False  # and its row is not typed (D-PZ-37)
         _prompt = None if _prompt is None else _prompt.model_copy(
             update={"member_typed": False})
+    # HRD-14b: True while `message` is still the client's text. The raw
+    # binding of the paste frame (`_raw_parts` below) reads it.
+    _client_text = True
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
             req.payload["message"] = _note
+            _client_text = False
 
     # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
     # The chat asks for it once the run it steered has ended. It carries no
@@ -3654,7 +3690,15 @@ async def run_agent_stream_endpoint(
         count_member_steers,
         member_typed,
     )
+    from acb_skills.paste_frame import bind_raw_parts  # noqa: PLC0415
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
+
+    # HRD-14b: the raw member parts of this turn, for the paste frame. Read
+    # after the ENGAGE seam took the steers it replays. Never the member-sent variable of the profile.
+    _raw_parts = _paste_raw_parts(
+        _sent_words, _taken_steers, client_text=_client_text,
+        followup=_followup, resume_launch=_resume_launch is not None,
+    )
 
     # The detached run of this turn: the same arguments for a run that this
     # request reads (`run_detached` below) and for a continuation run that no
@@ -3680,8 +3724,11 @@ async def run_agent_stream_endpoint(
         # for a turn, so the run reads no typed or sent words.
         from orchestrator.stream_relay import ParkedStreamGone, start_detached
 
-        # A continuation has no app of the dock, so it binds no surface.
-        with member_typed(_typed, sent=_sent_text), surface_scope(None):
+        # A continuation has no app of the dock, so it binds no surface. Its
+        # raw parts hold only the steers that ENGAGE replayed, which follow
+        # the server's note: a bound run with no member words.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None), \
+                bind_raw_parts(_raw_parts):
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
@@ -3697,6 +3744,9 @@ async def run_agent_stream_endpoint(
                 await start_detached(
                     thread_id, agent_gen, exclusive=True,
                     keep_stream=_resume_launch.same_reply,
+                    # RESUME-3d: the live entry names the reply row, so a
+                    # tab that did not get the 200 replays into it.
+                    continuation=True,
                     organization_id=_organization_id, **_detached,
                 )
             except ParkedStreamGone:
@@ -3739,8 +3789,10 @@ async def run_agent_stream_endpoint(
                 # typed steers that ENGAGE took count now, and a tool result
                 # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
-                async for chunk in _serve_run(timing):
-                    yield chunk
+                # HRD-14b: the raw parts of the turn ride the same scope.
+                with bind_raw_parts(_raw_parts):
+                    async for chunk in _serve_run(timing):
+                        yield chunk
         finally:
             _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
                       **timing.fields())
