@@ -61,6 +61,7 @@ __all__ = [
     "REPLY_ANSWER_KEYS",
     "REPLY_ANSWER_OPTIONAL_KEYS",
     "REPLY_ANSWER_PREFIX",
+    "THREAD_CHANGED",
     "LookalikeWord",
     "NewMailChoice",
     "ReplyChoice",
@@ -108,6 +109,13 @@ REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 DRAFT_GONE = "draft_gone"
 ALREADY_REPLIED = "already_replied"
 DRAFT_UNCONFIRMED = "draft_unconfirmed"
+
+#: HRD-10d-3 (task 3824): the machine reason of a 409 of ``POST /email/send``
+#: when a newer message came into the thread of the reply after its card
+#: showed. The reply card act passes the same check on. Only a call that
+#: names ``expect_thread`` meets it, and only ``CHAT_CARD_PRECONDITION_ORGS``
+#: makes the tools name it. Nothing was sent.
+THREAD_CHANGED = "thread_changed"
 
 #: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the people
 #: that the member TICKED on the card (owner, 2026-10-24). The gateway
