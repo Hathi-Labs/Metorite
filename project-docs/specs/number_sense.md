@@ -140,6 +140,13 @@ this:
   (100,000) records gets no baseline. The size is the `total` of
   `crm_field_fill`, one read by the key of that table. A module with no
   fill row gets no baseline either. The coverage and the figure stay.
+  The fill step writes that table only for an org on `CRM_FILL_RANK_ORGS`.
+  So an org needs fill rank on, beside the answer-first flag, to get a
+  baseline. The fill step runs at most once in 24 hours. So a module that
+  grows past the limit can keep its baseline until the next fill. The
+  owner preview before the flip checks both flags and the module size.
+- **A paged answer.** An answer with `group_page` 2 or more, or with
+  `group_field2`, carries no `baseline`, no `checks` and no `coverage`.
 - **The same figure.** The baseline only adds periods before the asked
   range. The total, the records and the groups of the asked range stay the
   same with a `query`, the filter words, `q` and a text-number measure. The
