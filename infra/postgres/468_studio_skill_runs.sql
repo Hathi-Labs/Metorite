@@ -1,5 +1,5 @@
 -- ============================================================================
--- 465_studio_skill_runs.sql - the store of the runs of a saved skill
+-- 468_studio_skill_runs.sql - the store of the runs of a saved skill
 -- (WS-TOF TOF-3a, ai_studio_rows/F12.md slice F12a, Metorite task 3418).
 --
 -- What: one new table. `studio_skill_runs` holds one row for each run of a
@@ -25,7 +25,8 @@
 -- THE KINDS. A `proposal` row exactly has a `repair_of`, the id of the
 -- failed live row that it repairs (CHECK). A `live` row has an
 -- `input_hash` and a `run_id` (CHECKs). A `test` row has a `test_id`
--- (CHECK). The unique partial index `studio_skill_runs_one_repair` holds
+-- (CHECK). A row passed exactly when its reason is `passed`, and `credits`
+-- is never below 0 (CHECKs). The unique partial index `studio_skill_runs_one_repair` holds
 -- one proposal for each failed run. The unique partial index
 -- `studio_skill_runs_one_failed_live` holds one failed live row for each
 -- run of a skill. A NULL `run_id` never collides in a unique index, so the
@@ -57,10 +58,10 @@
 -- in tests/unit/test_tenancy_boundary.py matches the two with no comma
 -- between. The generated phases carry the table.
 --
--- The number is taken at build time (R1): 465 was booked for task 3418 on
--- 2026-11-20, and main held 464 as its highest file. Check it again at
--- merge. Pinned by tests/unit/test_studio_skill_runs_r8.py, which finds this
--- file by CONTENT, never by number (R1).
+-- The number is taken at build time (R1): 468 was booked for task 3418, and
+-- premerge.sh checks it again at merge. Pinned by
+-- tests/unit/test_studio_skill_runs_r8.py, which finds this file by
+-- CONTENT, never by number (R1).
 -- ============================================================================
 
 BEGIN;
@@ -123,7 +124,10 @@ CREATE TABLE IF NOT EXISTS studio_skill_runs (
     CONSTRAINT studio_skill_runs_live_run CHECK (kind <> 'live' OR run_id IS NOT NULL),
     CONSTRAINT studio_skill_runs_test_id CHECK (kind <> 'test' OR test_id IS NOT NULL),
     CONSTRAINT studio_skill_runs_created_by CHECK (
-        created_by <> '' AND created_by = lower(created_by))
+        created_by <> '' AND created_by = lower(created_by)),
+    -- A row passed exactly when its reason is `passed`.
+    CONSTRAINT studio_skill_runs_passed_reason CHECK (passed = (reason = 'passed')),
+    CONSTRAINT studio_skill_runs_credits CHECK (credits IS NULL OR credits >= 0)
 );
 
 -- The history of one skill, newest first.

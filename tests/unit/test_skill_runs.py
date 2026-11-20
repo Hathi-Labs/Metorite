@@ -119,10 +119,13 @@ def test_the_three_reason_sets_are_closed_as_the_spec_says() -> None:
 
 def test_a_stop_that_is_no_skill_fault_never_makes_a_repeat() -> None:
     """D-F12-13: a cap, a meter fault or the time limit is no failure of
-    the skill. The repeat check counts only a live code or a skill fault."""
-    assert sr.REPEAT_REASONS == sr.LIVE_CODES | sr.SKILL_FAULTS
+    the skill. The repeat check counts only a live code or a skill fault.
+    F4b gives ``run_failed`` to a time limit and a runner exception too, so
+    it does not count until F4b gives a time limit its own code. Mutation:
+    put ``run_failed`` back, and this fails."""
+    assert sr.LIVE_CODES | (sr.SKILL_FAULTS - {"run_failed"}) == sr.REPEAT_REASONS
     for stop in ("cap_reached", "cost_read_failed", "hold_unarmed", "skill_unloaded",
-                 "bad_test", "not_run", "passed"):
+                 "bad_test", "not_run", "passed", "run_failed"):
         assert stop not in sr.REPEAT_REASONS
 
 
@@ -169,6 +172,8 @@ def test_check_writes_keeps_names_sorted_with_no_repeat() -> None:
     [{"action": "tool:create_task"}],
     [{"action": "tool:create_task", "keys": [{"title": "x"}]}],
     [{"action": "tool:create_task", "keys": [1]}],
+    [{"action": "Asha", "keys": ["0100"]}],
+    [{"action": "555", "keys": []}],
     ["tool:create_task"],
 ])
 def test_check_writes_refuses_an_item_that_holds_a_value(writes: Any) -> None:
@@ -190,7 +195,7 @@ def test_check_writes_refuses_a_bad_list_or_a_cap(writes: Any) -> None:
 
 
 def test_check_writes_refuses_more_than_4096_bytes() -> None:
-    item = {"action": "tool:" + "a" * 75, "keys": [f"{n:02d}" + "k" * 62 for n in range(5)]}
+    item = {"action": "tool:" + "a" * 75, "keys": [f"k{n:02d}" + "k" * 61 for n in range(5)]}
     big = [dict(item) for _ in range(10)]
     assert sr.writes_bytes(sr.check_writes(big[:1])) < sr.MAX_WRITES_BYTES
     with pytest.raises(sr.SkillRunError) as err:
@@ -237,8 +242,6 @@ _LIVE_BAD = [
     ("version", _live(version=0)),
     ("version", _live(version=True)),
     ("version", _live(version="1")),
-    ("detail", _live(detail="x" * 301)),
-    ("detail", _live(detail="a\x00b")),
     ("thread_id", _live(thread_id="t\nx")),
     ("writes_value", _live(writes=[{"action": "tool:a", "keys": ["k"], "value": 1}])),
 ]
@@ -384,6 +387,34 @@ async def test_the_repeat_check_counts_only_a_skill_failure() -> None:
     db = _FakeDB({"SELECT EXISTS": _Result(scalar=True)})
     assert await sr.repeats_a_failed_body(db, SKILL, KEY) is True
     assert set(db.calls[0][1]["reasons"]) == sr.REPEAT_REASONS
+
+
+async def test_a_long_detail_is_cut_and_never_refused() -> None:
+    """A detail of F4b has no bound. The store cuts it to 300 characters and
+    removes each control character, and it writes the row. Mutation: raise
+    for a long detail again, and this fails."""
+    assert sr.cut_detail("x" * 5000) == "x" * sr.MAX_DETAIL_CHARS
+    assert sr.cut_detail("a\x00b\nc\td\x7f" + chr(0xD800) + "e") == "a b c d e"
+    assert sr.cut_detail(None) == ""
+    for kind in ("live", "test", "proposal"):
+        db = _FakeDB({"INSERT INTO studio_skill_runs": _Result([_row(kind=kind)])})
+        long = "create_task: " + "K\n" * 4000
+        if kind == "live":
+            await sr.record_live(db, ANA, SKILL, **_live(detail=long))
+        elif kind == "test":
+            await sr.record_test(db, ANA, SKILL, **_test(detail=long))
+        else:
+            await sr.record_proposal(db, ANA, SKILL, REPAIR, **_proposal(detail=long))
+        detail = db.calls[-1][1]["detail"]
+        assert len(detail) <= sr.MAX_DETAIL_CHARS and "\n" not in detail
+        assert detail.startswith("create_task: K K")
+
+
+def test_a_proposal_names_only_a_failed_row_of_the_same_member() -> None:
+    """Defence in depth: the INSERT of a proposal selects the failed row of
+    the member only. Mutation: drop the term, and this fails, and so does
+    ``test_studio_skill_runs_r8.py``."""
+    assert "r.created_by = CAST(:by AS text)" in sr._INSERT_PROPOSAL_SQL
 
 
 # ── 5. The one module ───────────────────────────────────────────────────────

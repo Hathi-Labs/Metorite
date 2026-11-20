@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/ai_studio_rows/F12.md``, "The table
 ``studio_skill_runs`` (F12a)". Migration: the file that creates
-``studio_skill_runs`` (465 at build). ``tests/unit/test_studio_skill_runs_r8.py``
+``studio_skill_runs`` (468 at build). ``tests/unit/test_studio_skill_runs_r8.py``
 runs this SQL on a real Postgres, and ``tests/unit/test_skill_runs.py`` holds
 the refusals.
 
@@ -20,7 +20,8 @@ This module reads no flag.
 row keeps :func:`input_hash` of the input, never the input. ``writes`` keeps
 action names and key names only, and :func:`check_writes` refuses an item
 that holds a value. ``detail`` must name a tool, an action, a key or an error
-class. The caller builds it, and the store caps it at 300 characters.
+class. The caller builds it. The store cuts it to 300 characters and removes
+each control character, and it never refuses a row for its detail.
 
 **Tenancy (R5).** Each function takes a session that the caller opened with
 ``tenant_session()``, so RLS binds each statement, and each statement names
@@ -80,6 +81,7 @@ __all__ = [
     "UnknownSkill",
     "bound_input_hash",
     "check_writes",
+    "cut_detail",
     "fold_space",
     "get_run",
     "history",
@@ -118,8 +120,11 @@ REASONS: Mapping[str, frozenset[str]] = MappingProxyType({
 
 #: The reasons of a failure of the skill. Only these make a body a repeat
 #: (F12.md check 8). A stop for a cap, a meter fault or the time limit is
-#: no failure of the skill (D-F12-13).
-REPEAT_REASONS: frozenset[str] = LIVE_CODES | SKILL_FAULTS
+#: no failure of the skill (D-F12-13). ``run_failed`` is not here: F4b gives
+#: it to a time limit and to a runner exception too, and those are faults of
+#: the platform. A repeat block is permanent, so the store leaves the code out
+#: until F4b gives a time limit its own code.
+REPEAT_REASONS: frozenset[str] = LIVE_CODES | (SKILL_FAULTS - {"run_failed"})
 
 #: The bound of the CHECK ``studio_skill_runs_detail``.
 MAX_DETAIL_CHARS = 300
@@ -140,10 +145,14 @@ WRONG_WINDOW_HOURS = 24
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _REASON = re.compile(r"[a-z_]{1,32}")
-#: An action name: ``tool:create_task`` or ``crm.read_deal``. No space.
-_ACTION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,79}")
-#: A key name: ``company`` or ``due_date``. No space.
-_KEY = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
+#: An action name: ``tool:create_task`` or ``crm.read_deal``. No space, and
+#: a letter first, so a token of digits such as ``0100`` is no name.
+#: ⚠️ Advisory: a word that is a plain name (``Asha``) still passes. The
+#: callers of F12b and F12c pass only action and key names of the catalog,
+#: never a token of the input.
+_ACTION = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,79}")
+#: A key name: ``company`` or ``due_date``. No space, and a letter first.
+_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
 _LIMIT_CREDITS = Decimal(10) ** 9
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
@@ -186,7 +195,7 @@ _INSERT_PROPOSAL_SQL = (
     "CAST(:thread_id AS text), CAST(:credits AS numeric), CAST(:by AS text) "
     f"FROM studio_skill_runs r WHERE r.organization_id = {_BOUND_ORG} "
     "AND r.id = CAST(:repair_of AS uuid) AND r.skill_id = CAST(:sid AS uuid) "
-    "AND r.kind = 'live' AND NOT r.passed "
+    "AND r.kind = 'live' AND NOT r.passed AND r.created_by = CAST(:by AS text) "
     "ON CONFLICT (organization_id, repair_of) WHERE kind = 'proposal' DO NOTHING "
     f"RETURNING {_COLUMNS}"
 )
@@ -274,7 +283,8 @@ class AlreadyRepaired(SkillRunError):
 
 
 class NotRepairable(SkillRunError):
-    """``repair_of`` names no failed live row of this skill in the bound org."""
+    """``repair_of`` names no failed live row of this skill, by this member,
+    in the bound org."""
 
     def __init__(self) -> None:
         super().__init__("not_repairable", "repair_of names no failed live row of this skill.")
@@ -375,6 +385,20 @@ def check_writes(writes: object) -> list[dict[str, Any]]:
     if writes_bytes(out) > MAX_WRITES_BYTES:
         raise SkillRunError("writes", f"writes holds at most {MAX_WRITES_BYTES} bytes.")
     return out
+
+
+def cut_detail(detail: object) -> str:
+    """*detail* as the row keeps it. Each control character, a NUL and a lone
+    surrogate become a space, each run of white space becomes one space, and
+    the text is cut to :data:`MAX_DETAIL_CHARS` characters. It never raises.
+    A detail of F4b has no bound, and a refusal after the suite spent credits
+    would write no row and break the one-repair rule."""
+    if not isinstance(detail, str):
+        return ""
+    clean = "".join(
+        " " if ord(c) < 0x20 or ord(c) == 0x7F or 0xD800 <= ord(c) <= 0xDFFF else c
+        for c in detail)
+    return fold_space(clean)[:MAX_DETAIL_CHARS].rstrip()
 
 
 def _plain(value: object, field: str, *, limit: int, required: bool) -> str | None:
@@ -516,7 +540,7 @@ async def record_live(db: Any, member: str, skill_id: str, *, version: int,
     params = {
         "version": _version(version), "kind": "live", "passed": passed,
         "reason": _reason("live", reason, passed),
-        "detail": _plain(detail, "detail", limit=MAX_DETAIL_CHARS, required=False) or "",
+        "detail": cut_detail(detail),
         "body_key": _body_key(body_key),
         "writes": json.dumps(check_writes(writes)), "test_id": None,
         "run_id": _plain(run_id, "run_id", limit=MAX_POINTER, required=True),
@@ -549,7 +573,7 @@ async def record_test(db: Any, member: str, skill_id: str, *, version: int,
     params = {
         "version": _version(version), "kind": "test", "passed": False,
         "reason": _reason("test", reason, False),
-        "detail": _plain(detail, "detail", limit=MAX_DETAIL_CHARS, required=False) or "",
+        "detail": cut_detail(detail),
         "body_key": _body_key(body_key), "input_hash": None,
         "writes": json.dumps(check_writes(writes)),
         "test_id": _plain(test_id, "test_id", limit=MAX_TEST_ID, required=True),
@@ -577,13 +601,13 @@ async def record_proposal(db: Any, member: str, skill_id: str, repair_of: str, *
     Raises :class:`SkillRunError` on a bad shape, before any statement.
     Raises :class:`AlreadyRepaired` when a proposal for the failed row
     exists, and :class:`NotRepairable` when *repair_of* names no failed live
-    row of this skill in the bound org. Both write no row.
+    row of this skill by *member* in the bound org. Both write no row.
     """
     params = {
         "by": _member(member), "sid": _uuid(skill_id, "skill_id"),
         "repair_of": _uuid(repair_of, "repair_of"), "passed": passed,
         "reason": _reason("proposal", reason, passed),
-        "detail": _plain(detail, "detail", limit=MAX_DETAIL_CHARS, required=False) or "",
+        "detail": cut_detail(detail),
         "body_key": _body_key(body_key),
         "writes": json.dumps(check_writes(writes)), "credits": _credits(credits),
         "run_id": _plain(run_id, "run_id", limit=MAX_POINTER, required=False),

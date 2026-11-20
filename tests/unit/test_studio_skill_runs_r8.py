@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/ai_studio_rows/F12.md``, "The table
 ``studio_skill_runs`` (F12a)" and "Done when". Code:
 ``gateway/studio/skill_runs.py``. Migration: the file that creates
-``studio_skill_runs`` (465 at build), found by its CONTENT, never by its
+``studio_skill_runs`` (468 at build), found by its CONTENT, never by its
 number (R1).
 
 The store runs on a phase-4 promoted scratch database, as the NOBYPASSRLS
@@ -173,16 +173,16 @@ def _admin_rows(world: Any, sql: str, params: dict[str, Any]) -> list[tuple]:
 
 _RAW = (
     "INSERT INTO studio_skill_runs (skill_id, version, kind, passed, reason, detail, "
-    "body_key, input_hash, writes, repair_of, test_id, run_id, created_by) "
+    "body_key, input_hash, writes, repair_of, test_id, run_id, credits, created_by) "
     "VALUES (CAST(:sid AS uuid), :v, :kind, :passed, :reason, :detail, :bk, :ih, "
-    "CAST(:writes AS jsonb), CAST(:rep AS uuid), :tid, :rid, :by)"
+    "CAST(:writes AS jsonb), CAST(:rep AS uuid), :tid, :rid, CAST(:cr AS numeric), :by)"
 )
 
 
 def _raw(sid: str, **kw: Any) -> dict[str, Any]:
     return {"sid": sid, "v": 1, "kind": "live", "passed": False, "reason": "tool_error",
             "detail": "", "bk": KEY, "ih": KEY2, "writes": "[]", "rep": None,
-            "tid": None, "rid": f"run-{uuid.uuid4().hex}", "by": ANA, **kw}
+            "tid": None, "rid": f"run-{uuid.uuid4().hex}", "cr": None, "by": ANA, **kw}
 
 
 def _refused(world: Any, org: str, sql: str, params: dict[str, Any]) -> str:
@@ -226,6 +226,9 @@ def test_r8_the_table_has_its_columns_rls_indexes_and_trigger(world) -> None:
         fk = c.execute(text(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
             "WHERE conname = 'studio_skill_runs_skill_fk'")).scalar_one()
+        checks = set(c.execute(text(
+            "SELECT conname FROM pg_constraint WHERE conrelid = "
+            "'studio_skill_runs'::regclass AND contype = 'c'")).scalars().all())
     assert set(cols) == {
         "id", "organization_id", "skill_id", "version", "kind", "passed", "reason",
         "detail", "body_key", "input_hash", "writes", "repair_of", "test_id", "run_id",
@@ -249,6 +252,10 @@ def test_r8_the_table_has_its_columns_rls_indexes_and_trigger(world) -> None:
     assert trigger == ["studio_skill_runs_immutable"]
     assert "(organization_id, skill_id) REFERENCES studio_skills(organization_id, id)" in fk
     assert "ON DELETE CASCADE" in fk
+    assert checks == {f"studio_skill_runs_{n}" for n in (
+        "version", "kind", "reason", "detail", "body_key", "input_hash", "writes_array",
+        "writes_items", "writes_size", "proposal_repairs", "live_input", "live_run",
+        "test_id", "created_by", "passed_reason", "credits")}
 
 
 def test_r8_the_migration_runs_twice(world) -> None:
@@ -302,7 +309,7 @@ def test_r8_writes_at_the_byte_cap_pass_the_check(world) -> None:
     cap passes the CHECK, and the count is the octet length."""
     a = world.p.org_a
     # 10 items of 5 keys of 60 characters: 4010 bytes, under the cap.
-    items = [{"action": "tool:" + "a" * 50, "keys": [f"{n:02d}" + "k" * 58 for n in range(5)]}
+    items = [{"action": "tool:" + "a" * 50, "keys": [f"k{n:02d}" + "k" * 57 for n in range(5)]}
              for _ in range(10)]
     assert sr.writes_bytes(items) < sr.MAX_WRITES_BYTES
     # Grow key names, at most 64 characters each, until the list is exactly
@@ -468,6 +475,9 @@ _ELEVEN = json.dumps([{"action": "tool:a", "keys": []}] * 11)
     ({"reason": "Tool_Error"}, "studio_skill_runs_reason"),
     ({"reason": "a" * 33}, "studio_skill_runs_reason"),
     ({"detail": "x" * 301}, "studio_skill_runs_detail"),
+    ({"passed": True}, "studio_skill_runs_passed_reason"),
+    ({"reason": "passed"}, "studio_skill_runs_passed_reason"),
+    ({"cr": "-0.01"}, "studio_skill_runs_credits"),
     ({"bk": "x" * 64}, "studio_skill_runs_body_key"),
     ({"bk": "ab" * 31}, "studio_skill_runs_body_key"),
     ({"ih": "AB" * 32}, "studio_skill_runs_input_hash"),
@@ -499,6 +509,9 @@ def test_r8_one_proposal_for_each_failed_row(world) -> None:
     async def go() -> tuple[str, sr.SkillRun, sr.SkillRun]:
         sid = await _skill(a)
         live = await _live(a, sid)
+        # A colleague cannot repair the failed run of Ana (defence in depth).
+        with pytest.raises(sr.NotRepairable):
+            await _proposal(a, sid, live.id, member=BEN)
         first = await _proposal(a, sid, live.id, passed=False, reason="cap_reached")
         with pytest.raises(sr.AlreadyRepaired):
             await _proposal(a, sid, live.id)
