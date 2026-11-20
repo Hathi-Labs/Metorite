@@ -535,6 +535,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "reminders": 2,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
+        # WS-TOF TOF-3a (F12a): the fake holds no skill run of the member.
+        "studio_skill_runs": 0,
         # WS-STU F1 and J2d: her private skill and the skill with only a
         # pending ask. The versions go by cascade.
         "studio_skills": 2,
@@ -885,6 +887,33 @@ def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
     assert keys.index("studio_skills") < keys.index("member_record")
     assert "studio_skill_versions" in cascade_closure("studio_skills")
     assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_skill_runs_of_this_org_go_before_her_skills() -> None:
+    """WS-TOF TOF-3a (F12a, ``ai_studio_rows/F12.md``): the purge deletes the
+    runs of a skill that the member made in this org, on ``created_by``.
+
+    A run row is the member's own record of a turn, a test or a repair. The
+    clause names the member and the bound org, because the same address may
+    hold runs in another org. The entry runs before ``studio_skills``, whose
+    cascade takes the runs of a deleted skill, so the count holds each row.
+
+    Mutation: drop the entry, and this and the count dict above fail. Drop
+    the org predicate, and this fails, and so does
+    ``test_studio_skill_runs_r8.py`` as the superuser.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skill_runs"]
+    assert rows.key == "studio_skill_runs"
+    assert rows.where == f"lower(created_by) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_skill_runs") < keys.index("studio_skills")
+    assert keys.index("studio_skill_runs") < keys.index("member_record")
+    assert "studio_skill_runs" in cascade_closure("studio_skills")
 
 
 def test_the_private_saved_views_go_and_the_shared_ones_stay() -> None:

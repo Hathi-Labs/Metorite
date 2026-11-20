@@ -666,7 +666,7 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 3. **Try.** A test chat beside the draft runs the skill on a dry-run door: reads are real, writes and sends are simulated.
 4. **Test cases.** Each test is a prompt and the action it should call. The member saves a good try as a test in one click.
 5. **Publish.** Private first. Sharing with the organization needs an approval (§9).
-6. **Improve.** Mira proposes an edit from failed turns, with the evidence. The member approves the diff. Row F12 of §14 (TOF-3a, task 3418) specifies the build, and it is not built.
+6. **Improve.** Mira proposes an edit from failed turns, with the evidence. The member approves the diff. Row F12 of §14 (TOF-3a, task 3418) specifies the build. Its store (F12a) is built, and the writers and the repair are not.
 
 **States (F2a).** A skill is in one of four states. The route `PATCH /studio/skills/{id}/state` owns the moves, and `skills.TRANSITIONS` holds them:
 
@@ -1183,7 +1183,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **F9** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/F9.md) |
 | **F10** | 🔨 F10a BUILT (2026-11-12, Metorite task 1423) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F10.md) |
 | **F11** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F11.md) |
-| **F12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F12.md) |
+| **F12** | F12a built 2026-11-20, F12b and F12c open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F12.md) |
 
 ### Group G — The builder
 
