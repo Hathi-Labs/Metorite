@@ -107,7 +107,7 @@ EXEMPT: dict[str, str] = {
     # are the only way in, and a deferred trigger lets a row commit only with
     # the delete of its org (security review, fix round 1).
     "email_detached_purges":   "the Mem0 purges of a purged org; the tenant no longer exists, so no session can bind it",
-    # WS-TOF TOF-2b (tool_failure_log.md §5.2, D225, migration 462). The
+    # WS-TOF TOF-2b (tool_failure_log.md §5.2, D225, migration 466). The
     # failure store counts platform code faults across tenants. A row holds a
     # fingerprint, the four code fields of §3 (each a CHECK on its grammar),
     # counts, dates and releases. It holds no organization id and no tenant
