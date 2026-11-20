@@ -208,8 +208,16 @@ _MIRROR_ADVICE = (
 )
 
 
-class _MirrorBlocked(RuntimeError):
-    """The gateway refused a write because the record or the create is Zoho's."""
+class _MirrorBlocked(GatewayRefusal):
+    """The gateway refused a write because the record or the create is Zoho's.
+
+    The gateway answers it with a 409. It is a ``GatewayRefusal`` that keeps
+    that status, so the C1 skip rule of the failure log reads it as an
+    answer (``tool_failure_log.md`` §4.2, TOF-2c). The message is the route's
+    sentence, which :func:`_mirror_message` shows as before."""
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message, status=status)
 
 
 def _mirror_message(exc: _MirrorBlocked) -> str:
@@ -263,7 +271,8 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         if resp.status_code == 409 and isinstance(body, dict):
             blocked = body.get("detail")
             if isinstance(blocked, dict) and blocked.get("code") in _MIRROR_CODES:
-                raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."))
+                raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."),
+                                     resp.status_code)
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("error") or "")
     except (_MirrorBlocked, _PreconditionFailed):

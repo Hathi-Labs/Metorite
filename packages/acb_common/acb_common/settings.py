@@ -1582,6 +1582,25 @@ class Settings(BaseSettings):
     # tests/unit/test_tool_argument_shapes.py.
     tool_arg_shapes: bool = False
 
+    # ── The tool failure log (WS-TOF TOF-2b, D225) ──────────────────────────
+    #
+    # `tool_failure_log_orgs` lists the organization ids whose tool failures
+    # the capture sites record, or `*` for each one. Empty means off, and no
+    # site writes a row. The one reader is
+    # `acb_common.failure_log.failure_log_on`, and it fails closed. A SIGHUP
+    # reload applies a change (docs/flag_reload.md).
+    # `tool_failure_tasks` runs the sync job `failure.sync` and the prune of
+    # the failure rows (TOF-2e). Off by default, and a change needs a restart.
+    # Flip both together, or the event rows stay with no prune
+    # (tool_failure_log.md §5.4).
+    #
+    # 🔴 OWNER-GATE on a box (`enforcement-flip`, tool_failure_log.md §12).
+    # A customer org on the list waits for the owner's answer to TOF-Q2.
+    # Fences: tests/unit/test_failure_log_queue.py,
+    # tests/unit/test_failure_store_r8.py.
+    tool_failure_log_orgs: str = ""
+    tool_failure_tasks: bool = False
+
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #
     # `spawn_subagents_orgs` lists the organization ids whose main assistant
