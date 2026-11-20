@@ -538,7 +538,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
     # WS-55 EA-14a. The holder, the run's member, an assignee or an admin gives
-    # a task up. The task keeps its status and its assignees, so class B.
+    # a task up. The assignees stay, and the task moves to its lane (task 3648), a
+    # status write on a task the caller holds, so class B.
     Route("POST", "/projects/agent-runs/{run_id}/release", "release_agent_run", "B"),
     # WS-55 SW-11a (spec §12.7). A person hands a stalled run back to an agent:
     # one member prompt, with the rule of Release. The task does not change, so
@@ -1598,8 +1599,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("PATCH", "/projects/tasks/{task_id}"): {
         "If-Match": (
             "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
-            "The one chat write that sends it is the image PATCH of create_task with "
-            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+            "The image PATCH of create_task with files sends it, and the witness fence "
+            "cannot run it, because the stub upload is a PDF. update_task sends it only "
+            "behind CHAT_CARD_PRECONDITION_ORGS (HRD-10a, default off), and "
+            "test_card_precondition.py is its witness."
         ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
