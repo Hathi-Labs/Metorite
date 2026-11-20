@@ -432,6 +432,21 @@ def is_refusal(value: Any) -> bool:
     return False
 
 
+def _record_auth_401(exc: GatewayRefusal, tool: str) -> None:
+    """The capture site C4 (``tool_failure_log.md`` §4.2): a 401 of the
+    gateway is our own service call that could not sign in. Every other
+    refusal is an answer (§4.1), or a 5xx that the gateway writes itself.
+    Hands ONE record to the one writer. Never raises, and changes no text."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="chat_tool", error_code="auth_401", tool=tool,
+            **failure_log.run_fields())
+    except Exception as err:  # the class only: the refusal text stays
+        _log.debug("tool_refusals.capture_failed", error_type=type(err).__name__)
+
+
 def refusals_as_text(
     fn: Callable[..., Awaitable[Any]], voice: RefusalVoice,
 ) -> Callable[..., Awaitable[Any]]:
@@ -446,6 +461,9 @@ def refusals_as_text(
     The log line holds no detail and no message, because those can hold
     text that a member typed. A *fn* that is already wrapped comes back as
     it is.
+
+    A 401 also writes ONE failure record (TOF-2c, C4). The text does not
+    change.
     """
     if getattr(fn, WRAPPED_ATTR, False):
         return fn
@@ -462,6 +480,8 @@ def refusals_as_text(
                 status=getattr(exc, "status", None),
                 route=getattr(exc, "route", "") or "",
             )
+            if getattr(exc, "status", None) == 401:
+                _record_auth_401(exc, tool)  # C4 (TOF-2c)
             return refusal_text(exc, voice)
 
     setattr(wrapper, WRAPPED_ATTR, True)

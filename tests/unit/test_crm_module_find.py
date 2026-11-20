@@ -235,12 +235,17 @@ def test_a_value_reads_as_text_and_never_as_json() -> None:
 
     text_sql = fs._text_value("c", "p")
     assert "WHEN 'string' THEN c ->> :p" in text_sql
-    assert "WHEN 'object' THEN c -> :p ->> 'name'" in text_sql
+    # CRM-Q34-5 round 3: the name of an object reads only when it is a JSON
+    # string or number, so a name that is an object gives no JSON text.
+    guarded = ("WHEN 'object' THEN (CASE WHEN jsonb_typeof(c -> :p -> 'name') "
+               "IN ('string', 'number') THEN c -> :p ->> 'name' END)")
+    assert guarded in text_sql
     assert "ELSE" not in text_sql and "'array'" not in text_sql
     lookup_sql = fs._lookup_name("c", "p")
     assert "ELSE" not in lookup_sql and "WHEN 'string' THEN c ->> :p" in lookup_sql
+    assert guarded in lookup_sql
     doc = fs.find_where(_scope(), ["x"]).sql
-    assert doc.count("jsonb_typeof") == 4
+    assert doc.count("jsonb_typeof") == 8
 
 
 def test_the_list_find_runs_under_the_aggregate_timeout() -> None:

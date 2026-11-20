@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 201
+-- Tables in this phase: 202
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -106,6 +106,9 @@ UPDATE chat_session_participant SET organization_id = (SELECT id FROM organizati
  WHERE organization_id IS NULL;
 
 UPDATE chat_topic SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE connection_semantic_models SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE copilot_config SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -760,4 +763,10 @@ UPDATE email_signature_settings SET organization_id = (SELECT id FROM organizati
  WHERE organization_id IS NULL;
 
 UPDATE pm_epic_contracts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_org_days SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;

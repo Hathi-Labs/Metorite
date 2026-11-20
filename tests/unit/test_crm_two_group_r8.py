@@ -65,7 +65,9 @@ _INVOICE_DEFS = [
     ("Invoice_Date", "date", None, False, False),
     ("Amount", "currency", None, False, False),
     ("Status", "select", [{"label": "Paid", "value": "Paid"},
-                          {"label": "Due", "value": "Due"}], False, False),
+                          {"label": "Due", "value": "Due"},
+                          {"label": "Void", "value": "Void"}], False, False),
+    ("Notes", "text", None, False, False),
 ]
 
 #: 1,000 invoices over 120 sites and 4 months, and two odd records.
@@ -79,7 +81,8 @@ _SEED_SQL = (
     "'Invoice_Date', '2026-' || lpad(CAST(7 + ((g / CAST(:sites AS int)) % 4) AS text), "
     "2, '0') || '-15', "
     "'Amount', (g % 97) + 1, "
-    "'Status', CASE WHEN g % 3 = 0 THEN 'Paid' ELSE 'Due' END) "
+    "'Status', CASE WHEN g % 3 = 0 THEN 'Paid' WHEN g % 7 = 0 THEN 'Void' ELSE 'Due' END, "
+    "'Notes', CASE WHEN g % 5 = 0 THEN 'box X1' ELSE 'plain' END) "
     "FROM generate_series(1, :n) AS g"
 )
 
@@ -330,6 +333,7 @@ async def test_a_one_field_call_is_the_answer_of_the_base_code(
     month = await _get(invoices, a, entity="module:Invoices", group_field="Invoice_Date",
                        bucket="month")
     assert month.status_code == 200, month.text
+    print('BASEJSON', json.dumps([res.text, month.text]))
     assert [res.text, month.text] == _BASE_ONE_FIELD
 
 
@@ -801,3 +805,34 @@ async def test_long_digits_at_the_border_show_each_group_once(
     assert (keys[0][-1], keys[1][0]) == ranks, (keys[0][-2:], keys[1][:2])
     every = [*keys[0], *keys[1]]
     assert len(every) == 56 and len(set(every)) == 56
+
+
+# ── 14. The filter words of CRM-Q34-5 on a paged answer (merge round) ───────
+
+
+async def test_filter_words_count_the_same_on_every_page(invoices, app_engine) -> None:
+    """A paged answer of two fields takes the filter words (``.in`` and
+    ``.has``) through the one module filter helper. Every group and the
+    count of records equal an independent SQL count, and the module list
+    with the same filters shows the same count."""
+    a = invoices.org_a
+    words = {"field.Status.in": "Paid,Void", "field.Notes.has": "x"}
+    query = {**{k: v for k, v in _TWO.items() if k != "field"}, "measure": "count", **words}
+    groups, first = await _every_page(invoices, a, 200, **query)
+    with invoices.admin_engine.begin() as c:
+        rows = c.execute(text(
+            "SELECT fields -> 'Site' ->> 'id' AS k1, "
+            "to_char(CAST(fields ->> 'Invoice_Date' AS date), 'YYYY-MM') AS k2, "
+            "count(*) AS n FROM crm_module_records WHERE organization_id = "
+            "CAST(:o AS uuid) AND module = 'Invoices' AND fields ->> 'Status' "
+            "IN ('Paid', 'Void') AND fields ->> 'Notes' ILIKE '%x%' GROUP BY 1, 2"),
+            {"o": a}).fetchall()
+    truth = {(r.k1, r.k2): float(r.n) for r in rows}
+    assert truth and {(g.get("key"), g.get("key2")): g["value"] for g in groups} == truth
+    assert first["group_count"] == len(truth)
+    assert first["records"] == sum(int(v) for v in truth.values())
+    assert first.get("filter_words")
+    listed = await _call(invoices, _admin(a), "GET",
+                         "/crm/modules/Invoices/records?" + urlencode({**words, "page_size": 1}))
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == first["records"]

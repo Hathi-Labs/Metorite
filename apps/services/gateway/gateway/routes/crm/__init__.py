@@ -182,6 +182,7 @@ from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm import terms as _terms  # noqa: F401
+from gateway.routes.crm import verified_queries as _verified_queries  # noqa: F401
 from gateway.routes.crm import views as _views  # noqa: F401
 from gateway.routes.crm.core import router
 

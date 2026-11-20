@@ -294,6 +294,9 @@ def _post_row(
             custom_events=[event], author_email=agent_name, author_kind="agent",
         )],
         actor_email=member, agent_name=agent_name,
+        # HRD-17e-1: the server fill. It takes the plain upsert in every
+        # mode, so a client text in the minted row never outlives the lead.
+        server_write=True,
         organization_id=organization_id,
     )
     if message_id in declined:

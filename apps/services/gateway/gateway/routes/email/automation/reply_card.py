@@ -81,6 +81,7 @@ from gateway.routes.email.transport.send import (
     SendEmailRequest,
     _as_uuid,
     send_email,
+    thread_head,
 )
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -246,6 +247,11 @@ class ReplyCardRequest(BaseModel):
     #: ``org`` or ``sent``, and the record keeps the flag for the Bcc that
     #: the member types on the card (``/reply-card/bcc``).
     held: bool = False
+    #: HRD-10d-3 (task 3824): True asks for ``thread_head``, the local id of
+    #: the newest message of the thread that is not a draft, read before the
+    #: drafter. Only ``compose_reply`` with ``CHAT_CARD_PRECONDITION_ORGS`` on
+    #: asks, and it sends the id back as ``expect_thread`` of the act.
+    thread_head: bool = False
 
 
 class ReplyCardBccRequest(BaseModel):
@@ -287,6 +293,11 @@ class ReplyCardActRequest(BaseModel):
     card_request_id: str
     card_thread_id: str
     answer: str
+    #: HRD-10d-3 (task 3824): the ``thread_head`` of the card. A Send passes
+    #: it to ``POST /email/send``, which reads the thread again and refuses a
+    #: newer message with 409 ``thread_changed``. A Save does not read it,
+    #: because it sends nothing. With no value the act is as before.
+    expect_thread: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 def _address(item: Any) -> str:
@@ -540,6 +551,8 @@ async def reply_card(
     write is best effort: a failure leaves the card as it was."""
     owner = user.email or "anonymous"
     mail = await _load_mail(req.message_id, owner)
+    # HRD-10d-3: the head of the thread BEFORE the drafter reads it.
+    head = await _card_thread_head(mail, owner) if req.thread_head else {}
     reply_to, reply_cc = mail.recipients(False)
     all_to, all_cc = mail.recipients(True)
     if not reply_to:
@@ -621,7 +634,7 @@ async def reply_card(
     # draft id never reached the record.
     card_id = await _write_reply_record(
         user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held,
-        draft_pending=bool(body.strip()))
+        draft_pending=bool(body.strip()), thread_head=head.get("thread_head", ""))
     # With no record, the card writes no draft (task 1526, fix round 1): the
     # act could not check that the draft left Drafts, and a send from the
     # Email app plus a Send on the card would mail each person twice.
@@ -741,6 +754,7 @@ async def reply_card(
         # A draft of the member stays in Drafts, beside the card's draft.
         "kept_draft": kept_draft,
         **unsaved,
+        **head,
     }
     if classes is not None:
         out["classes"] = classes
@@ -842,6 +856,42 @@ async def _recent_reply(mail: Any) -> dict[str, str]:
     except Exception as exc:
         _log.warning("email.reply_card_recent_failed", error=type(exc).__name__)
         return {}
+
+
+async def _card_thread_head(mail: _Mail, owner: str) -> dict[str, str]:
+    """``{"thread_head": <local id>}`` of the card (HRD-10d-3), "" for a mail
+    with no thread. A fault escapes and fails the card, so a card that asked
+    for the head never sends with no check."""
+    async with _tenant_session() as db:
+        row = await thread_head(db, owner, mail.account_id, mail.thread_id)
+    return {"thread_head": row.id if row is not None else ""}
+
+
+@router.get("/thread-head")
+async def thread_head_route(
+    message_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """HRD-10d-3 (task 3824): the local id of the newest message of the thread
+    of one mail of the member, that is not a draft (``send.thread_head``).
+    ``send_email`` reads it for a reply before its card, and only with
+    ``CHAT_CARD_PRECONDITION_ORGS`` on. A read: it writes nothing and calls
+    no provider. A mail that is not the member's is a 404."""
+    mid = _as_uuid(message_id)
+    if mid is None:
+        raise HTTPException(status_code=404, detail=REPLY_CARD_NOT_FOUND)
+    owner = user.email or "anonymous"
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            "SELECT em.account_id::text AS account_id, em.thread_id FROM email_messages em"
+            " JOIN email_accounts ea ON ea.id = em.account_id"
+            " WHERE em.id = CAST(:id AS uuid) AND "
+            + mailbox_predicate("ea", uid="uid", level="read")),
+            {"id": mid, "uid": owner})).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=REPLY_CARD_NOT_FOUND)
+        head = await thread_head(db, owner, row.account_id, row.thread_id)
+    return {"message_id": head.id if head is not None else ""}
 
 
 # ── A reply that already left (owner report, 2026-11-03, task 1526) ─────────
@@ -1144,6 +1194,7 @@ def _reply_record_key(card_id: str) -> Any:
 async def _write_reply_record(
     user: UserContext, message_id: str, added: list[str], *,
     bcc: Sequence[str] = (), held: bool = False, draft_pending: bool = False,
+    thread_head: str = "",
 ) -> str:
     """Record the added people of one card under a card id that this server
     mints. Returns the id, or "" on a fault. With "" the card adds nobody
@@ -1165,6 +1216,10 @@ async def _write_reply_record(
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
            "added": list(added), "bcc": list(bcc), "held": bool(held),
            "made_at": time.time(), "draft_pending": bool(draft_pending)}
+    if thread_head:
+        # HRD-10d-3: the head of the thread that the card showed. Only a card
+        # that asked for it holds it, so the record of before is unchanged.
+        rec["thread_head"] = thread_head
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -1226,6 +1281,8 @@ class _CardRecord(NamedTuple):
     #: The held flag of the record, or None when no record was read. Only a
     #: record that says False sends HTML (task 3605).
     held: bool | None = None
+    #: HRD-10d-3: the head of the thread that the card showed, or "".
+    thread_head: str = ""
 
 
 async def _take_reply_record(
@@ -1270,6 +1327,7 @@ async def _take_reply_record(
         float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
         rec.get("draft_pending") is True,
         rec.get("held") is not False,
+        str(rec.get("thread_head") or "")[:64],
     )
 
 
@@ -1474,6 +1532,11 @@ async def reply_card_act(
                 account_id=mail.account_id, to=to, cc=cc or None, bcc=bcc or None,
                 subject=subject, body_text=body if html_ok else mail_text(body),
                 body_markdown=html_ok, reply_to_message_id=req.message_id,
+                # HRD-10d-3: the record of THIS card wins. A request that
+                # leaves the field out cannot skip the check, and a request
+                # cannot name another head. Only a card with no head in its
+                # record takes the field of the request.
+                expect_thread=card.thread_head or req.expect_thread,
             ),
             background, user,
         )
