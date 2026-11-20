@@ -410,8 +410,11 @@ async def test_q_reads_no_json_text_of_a_name(wd, app_engine) -> None:
         total = await _total(wd, wd.org_a, q=q)
         page = await _list(wd, wd.org_a, q=q)
         assert total.json()["records"] == page.json()["total"] == 0, q
-    _t, page = await _total(wd, wd.org_a, q="Red"), await _list(wd, wd.org_a, q="Red")
-    assert sorted(r["name"] for r in page.json()["rows"]) == ["R01", "R03"]
+    # A string name still reads. `q` reads no list (CRM-Q34-7), so the list
+    # of R01 stays out, and the object name "Red Rose" of R03 is found.
+    total, page = await _total(wd, wd.org_a, q="Red"), await _list(wd, wd.org_a, q="Red")
+    assert sorted(r["name"] for r in page.json()["rows"]) == ["R03"]
+    assert total.json()["records"] == 1
 
 
 async def test_empty_on_a_text_field_has_one_meaning(wd, app_engine) -> None:
