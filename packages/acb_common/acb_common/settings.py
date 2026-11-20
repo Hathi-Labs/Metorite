@@ -2535,6 +2535,20 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). A production flip is gate
     # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
     chat_card_revise_orgs: str = ""
+
+    # ── A paste is framed as data (HRD-14b, chat_failure_modes.md §4.7b) ──
+    #
+    # CHAT_PASTE_FRAME_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default. Off, no run gets the paste frame, and each model
+    # request is byte for byte as before. On, a native chat run puts each
+    # block of 8 or more lines of a member turn in ONE `PASTED TEXT` block,
+    # in a copy of the request only. The `chat_message` row and the stored
+    # session stay raw. Only `*` lets the `/v1` trim restore a cut block,
+    # because that door binds no tenant. The one reader is
+    # `acb_skills.paste_frame.paste_frame_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). The flip is HRD-14e, owner-only
+    # (`work_plan.md` §6.0 D4). Fence: tests/unit/test_paste_frame_seam.py.
+    chat_paste_frame_orgs: str = ""
     # ── A card stores its call (RESUME-1a, chat_run_continuity.md §4.12.4) ──
     #
     # CHAT_RESUME_ORGS: a comma list of organization ids, or `*`. Empty is

@@ -2,7 +2,8 @@
 
 Spec: ``project-docs/specs/chat_failure_modes.md`` section 4.7b (PR 2529), the row
 HRD-14a of section 6 and the questions Q-HRD-14-1 to Q-HRD-14-12. The module
-is ``packages/acb_skills/acb_skills/paste_frame.py``. Nothing calls it yet.
+is ``packages/acb_skills/acb_skills/paste_frame.py``. HRD-14b (task 3667) adds
+its seam, dark: ``tests/unit/test_paste_frame_seam.py`` fences the seam.
 
 R7 fences named here:
 
@@ -489,12 +490,17 @@ def test_one_part_gives_one_block() -> None:
 
 
 def test_the_module_is_pure() -> None:
-    """It imports the standard library, the frame and the paste rule only."""
+    """It imports the standard library, the frame and the paste rule. Since
+    HRD-14b it also reads the logger and the settings (``acb_common``), the
+    bound tenant (``acb_common.db``) and the trim marker (``acb_llm.context``).
+    It never imports the orchestrator, MAF or a store."""
     tree = ast.parse((REPO / "packages/acb_skills/acb_skills/paste_frame.py")
                      .read_text(encoding="utf-8"))
     mods = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     mods |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert mods <= {"__future__", "re", "unicodedata", "collections.abc", "typing",
+                    "contextlib", "contextvars", "acb_common", "acb_common.db",
+                    "acb_llm.context",
                     "acb_common.assistant_profile", "acb_skills.reply_card",
                     "acb_skills.untrusted"}, mods
 
