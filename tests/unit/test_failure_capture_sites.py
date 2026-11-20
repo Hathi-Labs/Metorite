@@ -547,7 +547,7 @@ CAPTURE_SITES = {
 #: The SQL names of the store (§9 P6). Whole words only.
 SQL_NAMES = re.compile(
     r"\b(failure_events|failure_org_days|failure_fingerprints|failure_daily|failure_config"
-    r"|failure_reports|failure_tally|failure_org_band|failure_due|failure_set"
+    r"|failure_reports|failure_tally|failure_org_band|failure_due(?:_v2)?|failure_set"
     r"|failure_prune_daily)\b")
 #: The writer, the sync job (TOF-2e) and the member purge. The purge deletes the
 #: failure_events rows of a member (``routes/admin/members._PURGE_DELETES``). It is

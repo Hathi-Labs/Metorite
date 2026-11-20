@@ -109,10 +109,10 @@ BEGIN
 END
 $tally$;
 
--- 3. The platform rows that the sync job reads, with their counts.
--- The return type gained `last_release_at` (TOF-2e), and CREATE OR REPLACE
--- cannot change a return type. So the file drops its own function first. No
--- other object depends on it, and the grants below run again.
+-- 2. The platform rows that the sync job reads, with their counts.
+-- This is a NEW function. The return type of `failure_due` of 466 cannot change
+-- under CREATE OR REPLACE, and the ladder replays 466 after this file. So this
+-- file never drops or changes `failure_due`.
 CREATE OR REPLACE FUNCTION public.failure_due_v2(p_limit integer)
 RETURNS TABLE (
     fingerprint text, fp_version text, tool text, error_code text, exc_type text,
