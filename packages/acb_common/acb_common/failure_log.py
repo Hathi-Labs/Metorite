@@ -44,10 +44,12 @@ import asyncio
 import contextlib
 import functools
 import re
+import sys
 import threading
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any
 
@@ -221,6 +223,201 @@ def run_fields() -> dict[str, Any]:
     return out
 
 
+def door_surface(actor_via: object) -> str:
+    """The surface of a gateway request, from the prefix of ``X-Actor-Via``
+    (§4.2 "The surfaces", TOF-2d). Pure.
+
+    ``chat:`` is ``chat``, ``mcp:`` is ``mcp_edge``, and ``workflow:`` and
+    ``system:`` are ``automation``. Any other value is ``app``. Only the
+    prefix counts, so a forged header mislabels the surface and carries no
+    text."""
+    value = actor_via.strip().lower() if isinstance(actor_via, str) else ""
+    prefix = value.split(":", 1)[0] + ":" if ":" in value else ""
+    return _DOOR_SURFACES.get(prefix, "app")
+
+
+_DOOR_SURFACES = {"chat:": "chat", "mcp:": "mcp_edge", "workflow:": "automation",
+                  "system:": "automation"}
+
+
+# ── The request mark (TOF-2d, §4.2 "One writer for each request") ────────────
+
+
+class RequestMark:
+    """The mark of one gateway request. :func:`record_tool_failure` sets
+    ``recorded``, and the door site D2 then writes no record for the answer.
+
+    The door puts ONE holder in a ``ContextVar`` before it calls the app. A
+    child task and the thread pool copy the context, so they hold the same
+    object, and a flag that they set reaches the door. A ``ContextVar.set()``
+    lower down would not reach it."""
+
+    __slots__ = ("recorded",)
+
+    def __init__(self) -> None:
+        self.recorded = False
+
+
+_REQUEST_MARK: ContextVar[RequestMark | None] = ContextVar("failure_log_request_mark",
+                                                           default=None)
+
+
+def open_request_mark() -> tuple[RequestMark, Token[RequestMark | None]]:
+    """Open the mark of one request. The door calls it before the app, and
+    :func:`close_request_mark` after."""
+    mark = RequestMark()
+    return mark, _REQUEST_MARK.set(mark)
+
+
+def close_request_mark(token: Token[RequestMark | None]) -> None:
+    """Close the mark that :func:`open_request_mark` opened. Never raises."""
+    try:
+        _REQUEST_MARK.reset(token)
+    except (ValueError, RuntimeError):
+        _REQUEST_MARK.set(None)
+
+
+def _mark_request() -> None:
+    mark = _REQUEST_MARK.get()
+    if mark is not None:
+        mark.recorded = True
+
+
+# ── The MCP map (TOF-2d, §4.3) ───────────────────────────────────────────────
+
+#: The classes of the map that live in a service. This module imports no
+#: service, so it finds each class in ``sys.modules``. A module that no code
+#: imported cannot have raised an instance of its class.
+_TOO_LARGE = (("gateway.outbound_guard", "AnswerTooLarge"),
+              ("orchestrator._maf_mcp", "McpListTooLong"))
+_REFUSED = (("gateway.outbound_guard", "OutboundRefused"),)
+_UNREACHABLE = (("httpx", "TransportError"), ("httpx", "HTTPStatusError"),
+                ("anyio", "ClosedResourceError"), ("anyio", "BrokenResourceError"))
+_TOOL_EXECUTION = (("agent_framework.exceptions", "ToolExecutionException"),)
+_MCP_ERROR = (("mcp.shared.exceptions", "McpError"),)
+_LIST_FAILED = (("gateway.connections.mcp_tools", "ListFailed"),)
+#: ``httpx.codes.REQUEST_TIMEOUT`` (``mcp/shared/session.py``) and
+#: ``mcp.types.CONNECTION_CLOSED``.
+_MCP_TIMEOUT_CODE = 408
+_MCP_CLOSED_CODE = -32000
+#: The ``reason`` of ``ListFailed`` that ``shape_result`` raises for ``isError``.
+_REASON_TOOL_ERROR = "tool_error"
+_MAP_WALK_MAX = 64
+
+
+def _classes(names: Iterable[tuple[str, str]]) -> tuple[type, ...]:
+    out = []
+    for module, name in names:
+        space = getattr(sys.modules.get(module), "__dict__", None)
+        found = space.get(name) if isinstance(space, dict) else None
+        if isinstance(found, type):
+            out.append(found)
+    return tuple(out)
+
+
+def _mcp_chain(exc: BaseException) -> list[BaseException]:
+    """*exc*, each member of its groups, and each cause and context, once.
+    The walk of ``mcp_tools._reason`` (§4.3)."""
+    seen: list[BaseException] = []
+    stack: list[Any] = [exc]
+    while stack and len(seen) < _MAP_WALK_MAX:
+        cur = stack.pop()
+        if not isinstance(cur, BaseException) or any(cur is s for s in seen):
+            continue
+        seen.append(cur)
+        if isinstance(cur, BaseExceptionGroup):
+            stack.extend(cur.exceptions)
+        stack.extend((cur.__cause__, cur.__context__))
+    return seen
+
+
+def _mcp_deepest(exc: BaseException) -> BaseException | None:
+    """The deepest ``Exception``: the cause, else the context, else the first
+    member of a group, to the end. A ``CancelledError`` is no ``Exception``,
+    so the ``TimeoutError`` of ``asyncio.timeout`` is never the deepest."""
+    found: BaseException | None = None
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen and len(seen) < _MAP_WALK_MAX:
+        seen.add(id(cur))
+        if isinstance(cur, Exception):
+            found = cur
+        nxt = cur.__cause__ or cur.__context__
+        if nxt is None and isinstance(cur, BaseExceptionGroup) and cur.exceptions:
+            nxt = cur.exceptions[0]
+        cur = nxt
+    return found
+
+
+def _ours(exc: BaseException) -> bool:
+    """True when the last frame of the traceback of *exc* is in one of the
+    four trees of §3.2 rule 4, or its class has one of our roots (rule 3)."""
+    tb = exc.__traceback__
+    last = None
+    while tb is not None:
+        last = tb
+        tb = tb.tb_next
+    if last is not None and ff._in_tree(last.tb_frame.f_code.co_filename,
+                                        ff._repository_root()):
+        return True
+    module = getattr(type(exc), "__module__", None)
+    root = module.split(".", 1)[0] if isinstance(module, str) else ""
+    return root in ff._OUR_ROOTS or root.startswith(ff._OUR_PREFIXES)
+
+
+def _mcp_code_of(err: BaseException) -> object:
+    return getattr(getattr(err, "error", None), "code", None)
+
+
+def mcp_error_code(exc: BaseException) -> str:
+    """The ``mcp_*`` code of a failure of an MCP server, by the map of §4.3.
+
+    The capture sites C5, C6 and C7 call it. Each row in order tests every
+    exception of the chain. The first row that matches wins. The map reads
+    classes, numbers and frames only, never a message. Never raises: a fault
+    of the map gives ``mcp_unreachable``, a code that we do not own."""
+    try:
+        found = _mcp_chain(exc)
+        mcp_error = _classes(_MCP_ERROR)
+
+        def any_of(match: Callable[[BaseException], bool]) -> bool:
+            return any(match(e) for e in found)
+
+        def is_mcp(err: BaseException, *codes: int) -> bool:
+            return bool(mcp_error) and isinstance(err, mcp_error) and (
+                not codes or _mcp_code_of(err) in codes)
+
+        if any_of(lambda e: isinstance(e, TimeoutError) or is_mcp(e, _MCP_TIMEOUT_CODE)):
+            return "mcp_timeout"
+        too_large = _classes(_TOO_LARGE)
+        if too_large and any_of(lambda e: isinstance(e, too_large)):
+            return "mcp_too_large"
+        refused = _classes(_REFUSED)
+        if refused and any_of(lambda e: isinstance(e, refused)):
+            return "mcp_refused"
+        unreachable = (OSError, *_classes(_UNREACHABLE))
+        if any_of(lambda e: isinstance(e, unreachable) or is_mcp(e, _MCP_CLOSED_CODE)):
+            return "mcp_unreachable"
+        execution = _classes(_TOOL_EXECUTION)
+        listed = _classes(_LIST_FAILED)
+
+        def tool_error(e: BaseException) -> bool:
+            return ((bool(execution) and isinstance(e, execution) and e.__cause__ is None)
+                    or is_mcp(e)
+                    or (bool(listed) and isinstance(e, listed)
+                        and getattr(e, "reason", None) == _REASON_TOOL_ERROR))
+
+        if any_of(tool_error):
+            return "mcp_tool_error"
+        deepest = _mcp_deepest(exc)
+        if deepest is not None and _ours(deepest):
+            return "mcp_exception"
+    except Exception as err:  # the class only: the map never fails a site
+        with contextlib.suppress(Exception):
+            _log.warning("failure_log.mcp_map_failed", error=type(err).__name__)
+    return "mcp_unreachable"
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_orgs(raw: str) -> frozenset[str]:
     return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
@@ -281,6 +478,12 @@ def record_tool_failure(
 
     *route_paths* is the set of declared route templates, read once at start
     by the door site (TOF-2d). With none, a route reads ``route:other``.
+
+    A record that the writer accepts marks the request scope of the
+    gateway, when one is open (:class:`RequestMark`). So the door site D2
+    writes no second record for the answer of that request (§4.2, one
+    writer for each request). A refused call (no tenant, the org off the
+    flag, a value off its list) marks nothing, so D2 still writes.
     """
     global _DROPPED
     try:
@@ -320,6 +523,7 @@ def record_tool_failure(
             request_id=_text(request_id),
             model=_text(model),
         )
+        _mark_request()  # accepted: D2 writes no second record
         with _LOCK:
             if len(_PENDING) >= QUEUE_MAX:
                 _DROPPED += 1
