@@ -96,6 +96,13 @@ The rules:
     ``connected_by`` of the row, and the attach keeps it on the tool
     (:func:`server_acts_as`). The card escapes both values as it escapes
     the names (item 19). A header server gets no line.
+11. **The failure log** (TOF-2d, ``tool_failure_log.md`` §4.2 C5 and C6,
+    §4.3). A failed call of an MCP tool (C5, around each ``call_next()`` of
+    the gate) and a failed connect (C6) write one record through
+    ``failure_log.record_tool_failure``, with the code of the map of §4.3.
+    The server name goes to the tenant column only. The capture changes no
+    answer and raises nothing. It is off unless ``TOOL_FAILURE_LOG_ORGS``
+    names the org. Fence: ``tests/unit/test_failure_capture_sites.py``.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
@@ -289,6 +296,82 @@ def _reason(exc: BaseException) -> str:
         if cur.__cause__ is None and cur.__context__ is None and not nested:
             leaf = type(cur).__name__
     return leaf[:_REASON_CHARS]
+
+
+def _record_mcp_failure(exc: BaseException, name: str) -> None:
+    """Record one MCP failure of a chat run (TOF-2d, C5 and C6,
+    ``tool_failure_log.md`` §4.2 and §4.3). Never raises.
+
+    The code comes from the map of §4.3 (``failure_log.mcp_error_code``).
+    *name* is tenant text, the server and the tool, so the writer keeps it in
+    the tenant column ``tool_name`` only. The platform field is ``mcp``. The
+    surface and the pointers come from the run (``failure_log.run_fields``).
+    The writer reads the tenant of the run, never an argument (R5)."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="mcp_call", error_code=failure_log.mcp_error_code(exc),
+            tool=name, kind="mcp", **failure_log.run_fields())
+    except Exception as err:  # the class only: the run never sees it
+        _log.debug("mcp.capture_failed", error=type(err).__name__)
+
+
+def _maf_signal(exc: BaseException) -> bool:
+    """True for a control signal of MAF that a ``call_next()`` can raise: a
+    stop of the loop, a fatal middleware, a question to the member, or a
+    check of the arguments. None of them is a failure of the server."""
+    try:
+        from agent_framework.exceptions import MiddlewareException, UserInputRequiredException
+    except ImportError:  # pragma: no cover - MAF ships with the orchestrator
+        return False
+    if isinstance(exc, MiddlewareException | UserInputRequiredException):
+        return True
+    cls = type(exc)
+    return (str(getattr(cls, "__module__", "")).startswith("agent_framework")
+            and cls.__name__.startswith("_FunctionArgument"))
+
+
+def _with_call_capture(process: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    """The capture site C5 (TOF-2d, ``tool_failure_log.md`` §4.2): around each
+    ``call_next()`` of the gate, for a call of an MCP tool.
+
+    The wrap gives the gate a ``call_next`` that records an exception of the
+    call and raises it again. So the gate and MAF see the same exception, and
+    the answer of the run does not change. A loader, a function that is not
+    an MCP tool, and a control signal of MAF write nothing. It wraps the whole
+    ``process``, so the body of the gate stays as it is."""
+
+    @functools.wraps(process)
+    async def captured(self: Any, context: Any, call_next: Callable[[], Any]) -> None:
+        function = getattr(context, "function", None)
+        try:
+            from acb_skills.egress import _from_mcp
+
+            mcp_call = (function is not None and _from_mcp(function)
+                        and not is_mcp_loader(function))
+        except Exception:  # an unread function is not captured
+            mcp_call = False
+        if not mcp_call:
+            await process(self, context, call_next)
+            return
+
+        async def call_and_capture() -> Any:
+            try:
+                return await call_next()
+            except Exception as exc:
+                if not _maf_signal(exc):
+                    try:
+                        server, remote, _meta = self.owner_of(function)
+                        name = f"{server}/{remote}"
+                    except Exception:
+                        name = ""
+                    _record_mcp_failure(exc, name)
+                raise
+
+        await process(self, context, call_and_capture)
+
+    return captured
 
 
 async def _aclose_client(client: Any) -> None:
@@ -811,6 +894,7 @@ def _run_scoped_tool_class() -> type:
             except Exception as exc:
                 _log.warning("mcp.unreachable", name=self.name, host=_host(self.url),
                              reason=_reason(exc))
+                _record_mcp_failure(exc, str(self.name))  # TOF-2d, C6
                 await _close_one(self, self._httpx_client, client_first=True)
             return self
 
@@ -985,11 +1069,13 @@ async def attach_mcp_tools(
             _log.warning("mcp.refused", name=server.name, host=exc.host, reason=exc.reason)
             if failures is not None:
                 failures[server.name] = "unreachable"
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
         except Exception as exc:  # a lookup fault is a refusal too
             _log.warning("mcp.refused", name=server.name, host=host, reason=_reason(exc))
             if failures is not None:
                 failures[server.name] = "unreachable"
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
         # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
         codes = _watch_status(client) if server.oauth else []
@@ -1036,6 +1122,7 @@ async def attach_mcp_tools(
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
             if failures is not None:
                 failures[server.name] = "unreachable"
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue
         _choose_disclosure(tool)
@@ -1671,6 +1758,8 @@ def _make_gate_class() -> type:
             except Exception:
                 return False
 
+    # TOF-2d, C5: each call_next() of the gate records the failure of its call.
+    _McpPermissionGate.process = _with_call_capture(_McpPermissionGate.process)
     return _McpPermissionGate
 
 

@@ -146,6 +146,8 @@ not write a second copy of that seam. A bare test file name is under
 5g-1. held_card.py -- the rules of a held send card. `held_card_send_enabled` is the ONE reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. The client mirrors the marks in `sendCard.ts`. Fence: `test_held_send_classes.py`.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`. Every tool of every in-repo agent states it. `risk_summary_block(own=)` reads the agent's own tool list, never the process-wide registry.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`, `RefuseTools`). Do not write a third copy of the pair.
+5i-1. builtin_tools.py -- `builtin_tool_names()`, the ONE set of built-in chat tool names for the failure fingerprint (WS-TOF TOF-2b, `tool_failure_log.md` §3.2 rule 1). It is the names of `skill_families` that match `^[a-z][a-z0-9_]{0,79}$`, and never an F3 skill pack, because a skill name is tenant text.
+   - At its import it gives the set to `acb_common.failure_log.set_builtin_names`. `__init__.py` imports it first, so each process that imports `acb_skills` has the set. Do not edit `tool_packs.py` for it. Fence: `test_failure_fingerprint.py`.
 5i-2. unknown_tool.py -- the ONE answer to a call of a tool that the turn did not load (HRD-1, `chat_failure_modes.md` §4.2 B1).
    - MAF runs no middleware for an unknown name. So `UnknownToolAnswer`, a `ChatMiddleware`, rewrites the raw "not found" tool result before the next request.
    - `_set_text` writes `result` and `items`. The OpenAI client sends `items`, so a rewrite of `result` alone never reaches the model.

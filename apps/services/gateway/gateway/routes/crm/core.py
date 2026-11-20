@@ -1487,6 +1487,14 @@ class ExtraFilterInput:
     custom: tuple[tuple[str, str], ...] = ()
 
 
+def in_parts(value: str) -> list[str]:
+    """The values of one ``.in`` filter: *value* split on commas, each part
+    trimmed, and each empty part dropped. The ONE grammar of ``.in``: the
+    ``custom.<key>.in`` filter of a list and the ``field.<key>.in`` filter
+    of a module (CRM-Q34-5, ``field_sql``) both read it."""
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
 def custom_value_clauses(
     column: str, grouped: dict[tuple[str, bool], list[str]],
 ) -> tuple[list[str], dict[str, Any]]:
@@ -1615,9 +1623,7 @@ async def extra_filters(
             if name in known:
                 grouped.setdefault((name, False), []).append(value)
             elif name.endswith(".in") and name[:-3] in known:
-                grouped.setdefault((name[:-3], True), []).extend(
-                    part.strip() for part in value.split(",") if part.strip()
-                )
+                grouped.setdefault((name[:-3], True), []).extend(in_parts(value))
             else:
                 raise HTTPException(
                     status_code=422,

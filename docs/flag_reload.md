@@ -316,8 +316,14 @@ approve a version and read the approved version. `*` lists every org, and the
 default is empty. Empty means each write refuses with "off", and the read
 returns nothing.
 
-Its one reader is `gateway.connections.semantic_model.connection_model_allowed`.
-Each function asks it with the org of the bound tenant, on each call. So a
+It has two readers. `gateway.connections.semantic_model.connection_model_allowed`
+gates the model. `decide_features.mode_for` gates the decide step of the
+profiler, through the prefix `connection.` (SEM-13b). Both use the one rule
+`decide_features.org_listed`, and
+`test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree`
+fences it.
+
+Each reader takes the org of the bound tenant, on each call. So a
 reload applies to the next call. A flip is the gate `enforcement-flip`.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
@@ -589,6 +595,14 @@ The route also needs `STUDIO_ORGS`, and it refuses each run until the owner
 sets `STUDIO_SKILL_TESTS_CAP_CREDITS`. That cap has no default, and it needs a
 restart, because it is no `*_ORGS` key. A reload applies a change to this
 flag. Any value other than empty is OWNER-ONLY, because it spends credits.
+
+`TOOL_FAILURE_LOG_ORGS` turns on the record of tool failures for each listed
+org (`tool_failure_log.md` §6, TOF-2b). A capture site writes one row in the
+org and adds one count to the platform rows of the failure store. `*` lists
+every org, and the default is empty. Its one reader is
+`acb_common.failure_log.failure_log_on`, and each record asks it. A reload
+applies a change, and the flip stays OWNER-GATE (`enforcement-flip`). Flip
+`TOOL_FAILURE_TASKS` with it and restart, or the event rows stay with no prune.
 
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`

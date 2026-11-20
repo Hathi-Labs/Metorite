@@ -764,3 +764,9 @@ UPDATE email_signature_settings SET organization_id = (SELECT id FROM organizati
 
 UPDATE pm_epic_contracts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE failure_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_org_days SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

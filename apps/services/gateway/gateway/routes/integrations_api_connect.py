@@ -43,6 +43,11 @@ mark ``zb.`` here, and every other state to the CRM.
 7. The save under the advisory lock ``api.connect:<org>:api:zoho_books``,
    then the revoke of the old refresh token after the commit.
 
+**API-5.** A new start revokes and deletes the admin's own older pending pick
+(``_start_again``, gap 1). The pick reads the member of the entry before it
+takes the entry (gap 3). The status of a connected row carries the result card
+of IN-9 (``acb_common.connector_result_card``).
+
 **Tenancy (R5).** The org and the member come from the server-side
 ``UserContext``, never from the request. The row is read and written inside
 ``tenant_session(org)``. The Redis keys carry the org (``TenantRedis``). The
@@ -58,6 +63,7 @@ a short code (``auth.safe_code``). Fence:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import datetime
 from typing import Annotated, Any
@@ -66,6 +72,7 @@ import httpx
 from acb_auth import UserContext, get_current_user, require_feature_router, require_permission
 from acb_common import get_logger, tenant_redis
 from acb_common.api_connections_flag import api_connections_allowed
+from acb_common.connector_result_card import result_card
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from gateway import outbound_guard
@@ -96,11 +103,16 @@ STATE_PURPOSE = connect.STATE_PURPOSE
 START_ROUTE = "/api/zoho_books/start"
 CALLBACK_ROUTE = "/api/zoho/callback"
 PICK_ROUTE = "/api/zoho_books/pick"
+#: API-5 review, P2: the admin closes the pick sheet or the tab.
+CANCEL_ROUTE = "/api/zoho_books/cancel"
 STATUS_ROUTE = "/api/zoho_books"
 
 #: The Redis namespaces and the life of a pending entry.
 STATE_NAMESPACE = "api-connect-state"
 PICK_NAMESPACE = "api-connect-pick"
+#: API-5 (gap 1): the nonce of each admin's newest pending pick, under a hash
+#: of the member, so a new start finds the old entry and revokes its token.
+PICK_MEMBER_NAMESPACE = "api-connect-pick-member"
 PENDING_TTL_S = 600
 
 #: Where the callback sends the browser. The BFF passes only these shapes.
@@ -162,6 +174,9 @@ class StatusOut(BaseModel):
     updated_at: datetime | None = None
     #: The organizations of a pending pick, with ``?pick=``.
     choices: list[Choice] = []
+    #: API-5: the result card (IN-9) of a connected row, from
+    #: ``acb_common.connector_result_card``. ``None`` while not connected.
+    card: dict[str, Any] | None = None
 
 
 class PickIn(BaseModel):
@@ -193,8 +208,12 @@ def _status(row: store.Connection | None, choices: list[Choice] | None = None) -
     if row is None:
         return StatusOut(choices=choices or [])
     meta = row.provider_meta
+    connected = row.status == store.STATUS_CONNECTED
     return StatusOut(
-        connected=row.status == store.STATUS_CONNECTED,
+        connected=connected,
+        # IN-9: the one card model. Nothing uses the connection yet: the chat
+        # tools of API-4 are not built, so the card names no app.
+        card=result_card(PROVIDER, apps=(), templates=()) if connected else None,
         status=row.status,
         location=str(meta.get(auth.META_LOCATION) or "") or None,
         organization_id=str(meta.get(connect.META_ORGANIZATION_ID) or "") or None,
@@ -256,6 +275,85 @@ async def _peek(org: str, namespace: str, nonce: str) -> Any:
 def _unavailable(exc: Exception) -> HTTPException:
     _log.warning("api.connect_pending_unavailable", error=type(exc).__name__)
     return HTTPException(status_code=503, detail="pending_unavailable")
+
+
+def _member_key(member: str) -> str:
+    """The Redis part of a member: a hash, so no address is in a key."""
+    return hashlib.sha256(member.encode("utf-8")).hexdigest()[:32]
+
+
+async def _keep_pending(org: str, member: str, nonce: str, record: str) -> None:
+    """Keep a pending pick, and point the member's index at its nonce.
+
+    API-5 review (P3-3): two consents of one admin can be in flight. When the
+    index already points at an OLDER entry, that entry is dropped and its
+    token revoked, so the index never strands it. Best effort.
+    """
+    await _put(org, PICK_NAMESPACE, nonce, record)
+    index = _member_key(member)
+    try:
+        older = await _take(org, PICK_MEMBER_NAMESPACE, index)
+    except Exception as exc:  # the class only
+        _log.warning("api.connect_index_unread", error=type(exc).__name__)
+        older = None
+    await _put(org, PICK_MEMBER_NAMESPACE, index, nonce)
+    if older and str(older) != nonce:
+        await _drop_pending(org, member, str(older), "api.connect_superseded")
+
+
+async def _drop_pending(org: str, member: str, nonce: str, event: str) -> bool:
+    """Take the pending pick *nonce* of *member*, revoke its token, drop it.
+
+    The one way that a pending entry ends with no pick (API-5): a new start,
+    a newer consent, or a cancel. It reads the member of the entry FIRST, so
+    the entry of another member stays: only its own admin may end it. The
+    entry is taken with GETDEL, so two calls revoke the token once.
+
+    ⚠️ An entry that expired cannot be revoked: Redis dropped the sealed
+    credential with it, so nothing holds the token any more.
+
+    Best effort: it never raises. The log line *event* holds counts only,
+    never a token, a nonce or an address. True when it dropped an entry.
+    """
+    try:
+        raw = await _peek(org, PICK_NAMESPACE, nonce)
+        if raw is None or connect.pending_member(raw) != member:
+            return False
+        raw = await _take(org, PICK_NAMESPACE, nonce)
+    except Exception as exc:  # the class only
+        _log.warning("api.connect_pending_unread", error=type(exc).__name__)
+        return False
+    pending = connect.pending_from(raw, store.open_value) if raw else None
+    if pending is None:
+        return False
+    revoked, failed = 0, 0
+    try:
+        outcome = await _revoke(pending.credential, "pending_dropped")
+        if outcome is not None:
+            revoked, failed = (1, 0) if outcome == "confirmed" else (0, 1)
+    except Exception:  # the count only: the error text can hold the token
+        failed = 1
+    _log.info(event, revoked=revoked, failed=failed)
+    return True
+
+
+async def _start_again(org: str, member: str) -> None:
+    """API-5, gap 1 of §2.11: drop the admin's own older pending pick.
+
+    A consent that found several organizations keeps its sealed credential in
+    Redis until the pick. When the admin starts again, this takes that entry,
+    revokes its refresh token at Zoho and deletes it, before the new consent.
+    Zoho keeps 20 tokens for each user and client, so a stranded token could
+    push out the token of the CRM mirror. Best effort: a fault here never
+    blocks the new start.
+    """
+    try:
+        nonce = await _take(org, PICK_MEMBER_NAMESPACE, _member_key(member))
+    except Exception as exc:  # the class only
+        _log.warning("api.connect_restart_unread", error=type(exc).__name__)
+        return
+    if nonce:
+        await _drop_pending(org, member, str(nonce), "api.connect_restarted")
 
 
 # ── The steps ───────────────────────────────────────────────────────────────
@@ -355,6 +453,9 @@ async def start_zoho_books(user: UserContext = Depends(get_current_user)) -> Sta
     opened = verify_state(state, purpose=STATE_PURPOSE)
     if opened is None:  # a state that this process just signed always opens
         raise HTTPException(status_code=503, detail="signing_unavailable")
+    # API-5 (gap 1): an older pending pick of this admin goes, but only once
+    # the new state is signed, so a 503 above never ends the old pick.
+    await _start_again(org, member)
     try:
         await _put(org, STATE_NAMESPACE, opened["nonce"], member)
     except Exception as exc:  # the class only
@@ -429,7 +530,7 @@ async def zoho_books_callback(
         record = connect.pending_record(
             member, store.seal_value(connect.credential_text(credential)), choices)
         try:
-            await _put(org, PICK_NAMESPACE, nonce, record)
+            await _keep_pending(org, member, nonce, record)
         except Exception as exc:  # the class only
             _log.warning("api.connect_pending_unavailable", error=type(exc).__name__)
             await _revoke(credential, "pending_unavailable")
@@ -455,9 +556,20 @@ async def pick_zoho_books(
 
     The id must be one of the pending list that the server holds. The entry
     is taken once, so a second pick of one consent is 400.
+
+    API-5 (gap 3 of §2.11): the route reads the member of the entry BEFORE it
+    takes the entry. The org is the session's, through the tenant key. So
+    another admin of the org who holds the nonce gets 400, and the entry
+    stays for the admin who started the consent.
     """
     org = _organization(user)
     member = _member(user)
+    try:
+        seen = await _peek(org, PICK_NAMESPACE, body.pick)
+    except Exception as exc:  # the class only
+        raise _unavailable(exc) from None
+    if seen is None or connect.pending_member(seen) != member:
+        raise HTTPException(status_code=400, detail="invalid_pick")
     try:
         raw = await _take(org, PICK_NAMESPACE, body.pick)
     except Exception as exc:  # the class only
@@ -465,7 +577,7 @@ async def pick_zoho_books(
     pending = connect.pending_from(raw, store.open_value) if raw else None
     if pending is None:
         raise HTTPException(status_code=400, detail="invalid_pick")
-    if pending.member != member:
+    if pending.member != member:  # defence: the entry changed after the read
         await _revoke(pending.credential, "pick_refused")
         raise HTTPException(status_code=400, detail="invalid_pick")
     if body.zoho_organization_id not in {i for i, _ in pending.choices}:
@@ -481,6 +593,44 @@ async def pick_zoho_books(
     _audit(user, org, organizations=len(pending.choices))
     _log.info("api.connect_connected", template=TEMPLATE.id)
     return _status(row)
+
+
+class CancelIn(BaseModel):
+    """The pick handle of the pending consent that the admin leaves."""
+
+    pick: str = Field(pattern=_PICK_PATTERN)
+
+
+class CancelOut(BaseModel):
+    #: True when this call dropped the entry and asked Zoho to revoke its token.
+    cancelled: bool
+
+
+@router.post(CANCEL_ROUTE, response_model=CancelOut,
+             dependencies=[require_permission(MANAGE_PERMISSION)])
+async def cancel_zoho_books(
+    body: CancelIn, user: UserContext = Depends(get_current_user),
+) -> CancelOut:
+    """End the admin's own pending pick: revoke its token and drop it.
+
+    API-5 review, P2. The pick sheet calls it on close, and the tab sends it
+    as a beacon when it closes. The member check comes first, as in the pick:
+    another admin who holds the nonce changes nothing. A second cancel finds
+    no entry, so Zoho gets one revoke. A tab that dies with no cancel still
+    strands the token until Redis drops the entry (accepted, §2.11 gap 1).
+    """
+    org = _organization(user)
+    member = _member(user)
+    done = await _drop_pending(org, member, body.pick, "api.connect_cancelled")
+    if done:
+        # The index pointed at this entry. Drop it only when it still does.
+        try:
+            index = _member_key(member)
+            if str(await _peek(org, PICK_MEMBER_NAMESPACE, index) or "") == body.pick:
+                await _take(org, PICK_MEMBER_NAMESPACE, index)
+        except Exception as exc:  # the class only
+            _log.warning("api.connect_index_unread", error=type(exc).__name__)
+    return CancelOut(cancelled=done)
 
 
 @router.get(STATUS_ROUTE, response_model=StatusOut,
