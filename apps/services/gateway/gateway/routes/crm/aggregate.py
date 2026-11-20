@@ -168,12 +168,14 @@ from gateway.routes.crm.field_sql import (
     day_sql,
     field_hint,
     field_pairs,
+    filter_probe,
     find_near,
     find_where,
     find_words,
     from_source,
     group_sql,
     lookup_ids,
+    matched_values,
     measure_sql,
     module_measure,
     module_scope,
@@ -973,15 +975,20 @@ async def _read(
             - set(text_number_keys("count", None, None, pairs)))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
+        # CRM-Q34-5: an org on CRM_MODULE_FIND_ORGS takes the filter words.
+        # The probe holds the pairs that the two reads below take. Without
+        # the words, the probe IS the pairs.
+        probe, owners = filter_probe(scope, pairs, finding)
         # §18.16 part 6: a text filter counts each case and short form.
-        matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
+        matches = await text_matches(db, str(current_tenant()), scope, module, probe)
         # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
-        ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
-        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+        ids = await lookup_ids(db, str(current_tenant()), scope, probe)
+        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids,
+                             words=finding)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
-        matched = {pairs[i][0]: list(found) for i, found in matches.items()}
-        await _seed_aliases(db, module, pairs, matches)
+        matched = matched_values(pairs, owners, matches)
+        await _seed_aliases(db, module, probe, matches)
         # SEM-1b-1: the query joins the old filters by AND.
         where_sql, source = await _with_query(db, scope, module, nodes, zone, where_sql,
                                               bound, source, matched)

@@ -8645,6 +8645,78 @@ main after CRM-Q34-7, and not merged. Flag `CRM_MODULE_FIND_ORGS`.
   `FIND_SCHEMA_TOKENS` by about 60. Without that, another tool text must free
   the tokens.
 
+**CRM-Q34-5 · The filter words that a member needs.**
+Status: built dark 2026-11-20 on `crm-q34-5-mt-963474b0` (task 3698), not
+merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
+
+- **Outcome.** A module total and a module list take five filter words after
+  `field.<key>`. The Rung 4 filter sidebar sends the same words.
+  - `.has=<text>`: the value holds the text, in any case.
+  - `.starts=<text>`: the value starts with the text.
+  - `.not=<value>`: the exact negation of `=`. A record with no value matches.
+  - `.in=a,b`: one of the values. Each value matches as `=` matches it.
+  - `.empty=true|false`: the field holds no value, or a value.
+- **One parser, one builder.** `field_sql.filter_end` parses each word, and it
+  also parses `.from` and `.to`. A key of the module wins over a word. So a
+  field whose key is `Notes.has` stays that field. `_word_filter` builds each
+  clause, and `_filter` calls it. `module_where` serves the total and the
+  list, so both count the same records.
+- **The query grammar.** `lower_pair` lowers each word to the op of a query
+  leaf: `contains`, `starts`, `ne`, `in` and `is_empty`. A lowered leaf builds
+  the clause of its word through `_filter`. `starts` is no op of
+  `acb_common.studio_query`, and that module did not change. No native query
+  leaf takes a word yet (`QUERY_OPS` did not change).
+- **The matrix.** A text field, a picklist, a lookup and each other type take
+  `=` and the five words. A text field takes a range only when it holds
+  numbers (CRM-Q34-11).
+
+  | Type | `=` | `.from` `.to` | `.has` `.starts` | `.not` | `.in` | `.empty` |
+  |---|---|---|---|---|---|---|
+  | number, decimal, currency, percent, a sum | yes | yes | 422 | yes | yes | yes |
+  | date, datetime | yes | yes | 422 | yes | yes | yes |
+  | boolean | yes | 422 | 422 | yes | 422 | yes |
+  | text, select, lookup, multiselect | yes | 422 | yes | yes | yes | yes |
+
+  Each 422 of a word names every word that the field takes.
+- **`.has` and `.starts`.** `ILIKE` with `like_pattern`, the escape of the
+  module find. So `%`, `_` and `\` are literal. Case folds in the collation of
+  the database, as `q` does. Nothing removes an accent. A lookup reads the
+  name of its target and never its id. A text field reads a string, a number
+  or the name of an object, and each element of a list. So the JSON text of a
+  value never matches. The text holds 1 to 200 characters.
+- **`.not`.** `NOT coalesce(<the clause of =>, false)`. A text value counts
+  its stored variants, as `=` does. A lookup by a Metorite id also matches its
+  Zoho id.
+- **`.in`.** The grammar of `custom.<key>.in`: `core.in_parts` splits on
+  commas, trims each part and drops an empty part. At most 50 values, and 51
+  is a 422. A comma cannot be inside a value.
+- **`.empty`.** No value is a missing key, a JSON null, a text that trims to
+  nothing, or an empty list. A text field that holds numbers also reads the
+  words of `NO_VALUE_WORDS` (`NA`, `-` and the rest) as no value. It holds
+  numbers only when the same call reads it as a number. A number field reads
+  each value that is no plain number as empty, through `_amount`. A date that
+  does not exist is a value.
+- **The answer.** `filters_line` says each word in words. After a call with a
+  word, the tool says how many matching records hold no plain number in the
+  measured field, from `values` against `records`. The text of each older
+  call does not change. The field search (`FIELDS_SEARCH_HINT`) names the
+  words. No tool docstring and no parameter changed, so the Studio room did
+  not change.
+- **Flag off.** A word is the 422 `unknown_field` of before. Each other call
+  builds the SQL of before, to the byte, and its answer is the same.
+- **Not in this slice.** The overlay of a core entity (`overlay_where`) and
+  `custom.<key>` of the core lists take no word. A native query leaf takes no
+  word. An index for `.has` (no migration).
+- **Cost.** `.has` reads the one detoasted copy of each row. See the report
+  of task 3698 for the time over 30,000 rows of 3 KB.
+- **Fences.** `tests/unit/test_crm_filter_words.py` is hermetic. It holds the
+  parser, a key over a word, the matrix and the flag off. It pins the SQL of
+  before as hashes from the base commit. It also holds the escape, the limits
+  of `.in` and the tool text. `tests/unit/test_crm_filter_words_r8.py` runs on Postgres with hostile
+  and dirty values. It proves each word against an independent SQL count, on
+  the total and the list. It also proves org B, the flag off and the time
+  over 30,000 rows.
+
 ## 19. The daily-use UX (2026-10-12)
 
 **Bottom line.** The CRM reads its data correctly, but a sales rep cannot yet

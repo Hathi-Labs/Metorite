@@ -1210,7 +1210,8 @@ MODULE_FIND_OFF = "module_find_off"
 #: The last line of a search answer with a hit.
 FIELDS_SEARCH_HINT = (
     "Give a key to crm_aggregate with entity 'module:<api_name>', in field, "
-    "group_field or field_filters."
+    "group_field or field_filters. A key of field_filters may end in .has, .starts, "
+    ".not, .in (a,b) or .empty (true or false)."
 )
 
 
@@ -2161,7 +2162,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug}))
     # §18.16 part 7: each filter, and the values that it counted.
-    filters = [line for line in (filters_line(params, data), find_line(data)) if line]
+    filters = [line for line in (filters_line(params, data), find_line(data),
+                                 no_number_line(params, data)) if line]
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
     # CRM-Q25e part 4: a finding goes first, and the total gets its display.
@@ -3288,6 +3290,12 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
         if end is not None:
             ranges.setdefault(key[: -len(end)], {})[end] = str(value)
             continue
+        # CRM-Q34-5: a filter word. Only an org on CRM_MODULE_FIND_ORGS gets
+        # an answer with one: the route refuses it for each other org.
+        word = next((w for w in _FILTER_WORDS if key.endswith(w) and key != w), None)
+        if word is not None:
+            plain.append(_word_filter_words(key, word, value, matched))
+            continue
         pair_eq.add(key)
         plain.append(_eq_words(key, value, matched))
     # SEM-1b-2: the leaves of `query` read as the pairs read. No tool sends
@@ -3297,6 +3305,53 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     extra = _query_words(params.get("query"), matched, plain, ranges, pair_eq)
     parts = plain + [_range_words(k, ends) for k, ends in ranges.items()] + extra
     return f"Filters: {'; '.join(parts)}." if parts else ""
+
+
+#: CRM-Q34-5: each filter word of a module filter (``field_sql.FILTER_WORDS``)
+#: → its words in the filter line.
+_FILTER_WORDS: dict[str, str] = {
+    ".has": "contains", ".starts": "starts with", ".not": "is not", ".in": "is one of",
+    ".empty": "is empty",
+}
+
+
+def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]) -> str:
+    """"Status is one of Open, Won": one filter with a word (CRM-Q34-5),
+    with the stored values that it counted, as :func:`_eq_words` does."""
+    key = name[: -len(word)]
+    text = _query_text_value(value)
+    if word == ".empty":
+        return f"{key} {'has no value' if text.lower() == 'true' else 'has a value'}"
+    if word == ".in":
+        text = ", ".join(p.strip() for p in text.split(",") if p.strip())
+    elif word in (".has", ".starts"):
+        text = f"'{text}'"
+    line = f"{key} {_FILTER_WORDS[word]} {text}"
+    counted = [str(v) for v in matched.get(name) or []]
+    if counted:
+        line += f" ({'left out' if word == '.not' else 'counted'} {_names(counted)})"
+    return line
+
+
+def no_number_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
+    """CRM-Q34-5: how many matching records hold no plain number in the
+    measured field (``values`` against ``records``), or empty. Only for a
+    call with a filter word, so the text of each older call stays the same.
+    A text field read as numbers has its own line (CRM-Q34-11), and a split
+    names each field."""
+    if not isinstance(data, dict) or not any(
+            str(name).startswith("field.") and str(name).endswith(tuple(_FILTER_WORDS))
+            for name in params):
+        return ""
+    values, records = data.get("values"), data.get("records")
+    field = data.get("field")
+    if (values is None or records is None or not field or data.get("split")
+            or field in (data.get("text_numbers") or {}) or int(values) >= int(records)):
+        return ""
+    label = data.get("field_label") or field
+    gap = int(records) - int(values)
+    return (f"{gap:,} of {int(records):,} matching records hold no plain number in {label}, "
+            "so the total leaves them out.")
 
 
 def _eq_words(key: str, value: Any, matched: dict[str, Any]) -> str:
