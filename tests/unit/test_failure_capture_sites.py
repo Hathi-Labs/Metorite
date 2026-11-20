@@ -549,9 +549,14 @@ SQL_NAMES = re.compile(
     r"\b(failure_events|failure_org_days|failure_fingerprints|failure_daily|failure_config"
     r"|failure_reports|failure_tally|failure_org_band|failure_due|failure_set"
     r"|failure_prune_daily)\b")
-#: The modules that may name one: the writer and the sync job (TOF-2e).
-SQL_OWNERS = {"packages/acb_common/acb_common/failure_log.py",
-              "apps/services/gateway/gateway/failures/sync.py"}
+#: The writer, the sync job (TOF-2e) and the member purge. The purge deletes the
+#: failure_events rows of a member (``routes/admin/members._PURGE_DELETES``). It is
+#: no capture site and it writes no row.
+SQL_OWNERS = {
+    "packages/acb_common/acb_common/failure_log.py",
+    "apps/services/gateway/gateway/failures/sync.py",
+    "apps/services/gateway/gateway/routes/admin/members.py",
+}
 
 
 def _sources(word: re.Pattern[str] | str) -> Iterator[tuple[str, ast.Module]]:
@@ -604,7 +609,8 @@ def test_p6_only_the_listed_sites_call_the_writer() -> None:
 
 
 def test_p6_no_module_but_the_writer_names_a_failure_table() -> None:
-    """Code and SQL text only: a docstring and a comment may name a table."""
+    """Only the writer and the member purge name a table. Code and SQL text only: a
+    docstring and a comment may name a table."""
     named = set()
     for rel, tree in _sources(SQL_NAMES):
         docs = _docstrings(tree)
