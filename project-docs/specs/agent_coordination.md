@@ -2008,7 +2008,8 @@ They keep their own gates.
 - **Fence.** `tests/unit/test_agent_map_r8.py` (new), `tests/unit/test_observability_two_org_r8.py`, `tests/unit/test_projects_chat_coverage.py`.
 - **Risk.** HIGH (visibility across the organization, as SW-51). **Gate.** AGENT-SAFE, dark. **Depends on.** AGA-7 (built).
 - **Built and dark, 2026-11-20.** The route already holds a class A row in `skill_projects/manifest.py`, with the tool `agents_list` in `PLANNED`. The manifest keys on the method and the path, so the slice adds no new row and no new tool name. `lines` is an empty list until SW-107 stores `dispatched_by_run_id`.
-- **The flags.** `shape=map` needs `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. The route checks `AGENTS_VIEW_ORGS` first. With either flag off, the map answers the same 404, and the plain overview does not change. The quiet opt-in is `show_quiet=true`. The flip of `AGENT_MAP_ORGS` is OWNER-GATE (`enforcement-flip`).
+- **The flags.** `shape=map` needs `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. The route checks `AGENTS_VIEW_ORGS` first. With either flag off, the map answers the same 404, and the plain overview does not change. The flip of `AGENT_MAP_ORGS` is OWNER-GATE (`enforcement-flip`).
+- **The query.** The quiet opt-in is `show_quiet=true`. `truncated` counts the listed runs only, so many quiet runs can give a `count` over 300 with `truncated` false. A bad value of `shape`, `project_id` or `show_quiet` gets the same 404, after the flags.
 
 #### SW-103 · The Map view
 

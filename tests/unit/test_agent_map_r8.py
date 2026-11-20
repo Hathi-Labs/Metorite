@@ -18,6 +18,8 @@ R7, the mutations (each turns a test here red, see the SW-102 report):
   sub-project test.
 * **M4** ``agent_map_allowed`` answers True for each org -> the flag tests.
 * **M5** the fold drops the ``waiting`` arm -> the fold test.
+* **M6** the route takes ``show_quiet: bool`` again, so FastAPI checks it
+  before the flags -> the flag-off malformed test (a 422 echoes the input).
 """
 
 from __future__ import annotations
@@ -116,6 +118,30 @@ def test_the_map_reads_the_one_seen_text() -> None:
     assert m._SEEN_RUNS_SQL in m._MAP_SESSIONS_SQL
     assert m._SEEN_RUNS_SQL in m._MAP_RUNS_SQL
     assert m._SUBTREE_SQL in m._SUMMARY_SQL
+
+
+@pytest.mark.parametrize(
+    ("pid", "quiet", "want"),
+    [
+        (None, None, (None, False)),
+        (None, "true", (None, True)),
+        (None, "TRUE", (None, True)),
+        (None, "1", (None, True)),
+        (None, "False", (None, False)),
+        (None, "0", (None, False)),
+        (None, "maybe", None),
+        (None, "", None),
+        ("6a0c6c1e-6f8e-4a51-9a52-2f3b1b2e9d10", None,
+         ("6a0c6c1e-6f8e-4a51-9a52-2f3b1b2e9d10", False)),
+        ("not-a-uuid", None, None),
+        ("", None, None),
+        ("6" * 65, None, None),
+    ],
+)
+def test_the_map_query_parse(pid, quiet, want) -> None:
+    from gateway.routes.projects.agent_summary import parse_map_query
+
+    assert parse_map_query(pid, quiet) == want
 
 
 # ── R8: the world ───────────────────────────────────────────────────────────
@@ -418,6 +444,53 @@ class TestTheFlag:
         status, body, _ = await _get(w, w.admin_a)
         assert status == 200
         assert body["runs"] == [] and body["sessions"] == [] and body["count"] == 0
+
+
+#: The one 404 body. It echoes no input.
+NOT_FOUND = {"detail": "Not Found"}
+LONG_SHAPE = "m" * 17
+LONG_PID = "6" * 65
+
+
+@_DB_GATE
+class TestABadValueIsTheOne404:
+    async def _assert_404(self, w: Any, user: Any, query: str, needle: str) -> None:
+        status, body, raw = await _get(w, user, query)
+        assert status == 404, (query, raw)
+        assert body == NOT_FOUND, (query, raw)
+        assert needle not in raw
+
+    async def test_with_the_flags_off_a_bad_value_is_404_not_422(self, w, monkeypatch):
+        monkeypatch.setattr(_settings(), "agents_view_orgs", "")
+        monkeypatch.setattr(_settings(), "agent_map_orgs", "")
+        for query, needle in (
+            (PATH + "?show_quiet=maybe", "maybe"),
+            (PATH + "?shape=" + LONG_SHAPE, LONG_SHAPE),
+            (MAP + "&show_quiet=maybe", "maybe"),
+            (PATH + "?project_id=" + LONG_PID, LONG_PID),
+            (MAP + "&project_id=" + LONG_PID, LONG_PID),
+        ):
+            await self._assert_404(w, w.admin_a, query, needle)
+
+    async def test_with_only_the_map_flag_off_a_bad_map_value_is_404(self, w, monkeypatch):
+        monkeypatch.setattr(_settings(), "agent_map_orgs", "")
+        await self._assert_404(w, w.admin_a, MAP + "&show_quiet=maybe", "maybe")
+        await self._assert_404(w, w.admin_a, MAP + "&project_id=" + LONG_PID, LONG_PID)
+
+    async def test_with_the_flags_on_a_bad_value_is_404(self, w):
+        for query, needle in (
+            (MAP + "&show_quiet=maybe", "maybe"),
+            (PATH + "?shape=bogus", "bogus"),
+            (PATH + "?shape=" + LONG_SHAPE, LONG_SHAPE),
+            (MAP + "&project_id=" + LONG_PID, LONG_PID),
+            (MAP + "&project_id=not-a-uuid", "not-a-uuid"),
+        ):
+            await self._assert_404(w, w.admin_a, query, needle)
+
+    async def test_the_plain_overview_ignores_the_map_values(self, w):
+        """Base behaviour: the plain overview reads no map value."""
+        status, _, _ = await _get(w, w.admin_a, PATH + "?show_quiet=maybe")
+        assert status == 200
 
 
 @_DB_GATE

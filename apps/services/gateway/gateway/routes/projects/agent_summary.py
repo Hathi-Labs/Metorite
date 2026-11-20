@@ -116,7 +116,7 @@ from typing import Any
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import active_runs, get_settings
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException
 from gateway.routes.projects.authority import led_projects
 from gateway.routes.projects.core import (
     _tenant_session,
@@ -508,9 +508,9 @@ def _not_found() -> HTTPException:
 
 @router.get("/agents/overview")
 async def agents_overview(
-    shape: str | None = Query(None, max_length=16),
-    project_id: str | None = Query(None, max_length=64),
-    show_quiet: bool = False,
+    shape: str | None = None,
+    project_id: str | None = None,
+    show_quiet: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Every agent that the caller may see, its state and its last run (AGA-7).
@@ -521,6 +521,11 @@ async def agents_overview(
     ``shape=map`` is the map read of SW-102 (:func:`_agent_map`). It needs
     ``AGENT_MAP_ORGS`` too, and off it answers the same 404. ``project_id``
     and ``show_quiet`` act on the map only. Any other ``shape`` is 404.
+
+    The three query values are raw strings with no FastAPI check, so a bad
+    value never answers 422 before the flags. The flags come first, then
+    :func:`parse_map_query`. Each miss is the one 404 body, which echoes no
+    input.
     """
     org = getattr(user, "organization_id", None)
     if not agents_view_allowed(org):
@@ -528,7 +533,11 @@ async def agents_overview(
     if shape == "map":
         if not agent_map_allowed(org):
             raise _not_found()
-        return await _agent_map(user, project_id=project_id, show_quiet=show_quiet)
+        parsed = parse_map_query(project_id, show_quiet)
+        if parsed is None:
+            raise _not_found()
+        pid, quiet = parsed
+        return await _agent_map(user, project_id=pid, show_quiet=quiet)
     if shape not in (None, ""):
         raise _not_found()
     me = actor(user).strip().lower()
@@ -690,6 +699,40 @@ SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
 """
 
 
+#: The longest ``project_id`` of the map, in characters. A longer value is
+#: 404 before the parse, as :data:`AGENT_KEY_MAX` does for an agent key.
+MAP_PROJECT_ID_MAX = 64
+
+#: The values of ``show_quiet``, in lower case. Any other value is 404.
+_QUIET_VALUES = {"true": True, "1": True, "false": False, "0": False}
+
+
+def parse_map_query(project_id: Any, show_quiet: Any) -> tuple[str | None, bool] | None:
+    """``(project_id, show_quiet)`` of a map read, or ``None`` for a bad value.
+
+    *project_id* is absent, or a UUID after a length cap. *show_quiet* is
+    absent, or one of ``true``, ``false``, ``1`` and ``0`` in any case. The
+    check reads nothing, and it echoes nothing.
+    """
+    quiet = False
+    if show_quiet is not None:
+        if not isinstance(show_quiet, str):
+            return None
+        found = _QUIET_VALUES.get(show_quiet.strip().lower())
+        if found is None:
+            return None
+        quiet = found
+    pid: str | None = None
+    if project_id is not None:
+        if not isinstance(project_id, str) or len(project_id) > MAP_PROJECT_ID_MAX:
+            return None
+        try:
+            pid = str(uuid.UUID(project_id))
+        except ValueError:
+            return None
+    return pid, quiet
+
+
 def _map_sql(template: str, *, vis: Any, admin: bool, scoped: bool, fold: str = "true") -> str:
     """One map statement over the ONE ``seen`` text (§3.12.4 rule 1)."""
     return template.format(
@@ -732,14 +775,14 @@ async def _agent_map(
     People, session nodes and the open runs that the caller may see, through
     the ONE ``seen`` text. ``lines`` stays empty until SW-107 stores who
     dispatched whom. No value of the answer holds a session key, an address
-    or a model (§3.12.4 rules 4 and 5). A ``project_id`` that the caller
-    cannot see, or of a bad shape, answers the one 404 of :func:`_not_found`.
+    or a model (§3.12.4 rules 4 and 5). *project_id* is a checked UUID
+    (:func:`parse_map_query`). A project that the caller cannot see answers
+    the one 404 of :func:`_not_found`.
+
+    ``truncated`` counts the LISTED runs only. When more than
+    :data:`MAP_RUNS_MAX` runs are quiet and ``show_quiet`` is off,
+    ``truncated`` is False while ``count`` is over the cap.
     """
-    if project_id is not None:
-        try:
-            project_id = str(uuid.UUID(str(project_id)))
-        except ValueError:
-            raise _not_found() from None
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
