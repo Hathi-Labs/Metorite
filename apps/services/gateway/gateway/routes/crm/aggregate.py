@@ -40,6 +40,15 @@ Do not copy a filter here. Fence:
 A module takes only the field filters ``field.<key>=<value>`` and
 ``field.<key>.from`` / ``.to``.
 
+**One query** (WS-SEM SEM-1b-1, ``semantic_model.md`` §5.1). For an org on
+``SEMANTIC_MODEL_ORGS``, a module total also takes ``query``: a JSON list of
+conditions and ``any`` groups. ``field_sql.parse_query`` checks it, and
+``field_sql.query_where`` builds its clause with the builder of each
+``field.<key>`` filter. The clause joins the old filters by AND. A ``query``
+on a core entity, and from an org off the list, is a 422 that names a step
+that works. This module holds none of its SQL. Fence:
+``tests/unit/test_crm_query_grammar.py``.
+
 **The field SQL lives in ``field_sql.py``.** Each field name is checked
 against the field definitions there, and every key and value is bound. This
 module holds no jsonb operator. Fence:
@@ -154,10 +163,14 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    STATUS_WORD,
     ZONE_PARAM,
     Baseline,
     FieldRef,
     FieldScope,
+    QueryNode,
+    TextNumbers,
+    admit_text_numbers,
     baseline_range,
     check_group,
     check_measure,
@@ -166,10 +179,16 @@ from gateway.routes.crm.field_sql import (
     crm_zone,
     day_field,
     day_sql,
+    field_hint,
     field_pairs,
+    filter_probe,
+    find_near,
+    find_where,
+    find_words,
     from_source,
     group_sql,
     lookup_ids,
+    matched_values,
     measure_sql,
     module_measure,
     module_scope,
@@ -182,15 +201,29 @@ from gateway.routes.crm.field_sql import (
     overlay_stage,
     overlay_weighted,
     overlay_where,
+    parse_query,
     period_sql,
+    q_refusal,
+    query_core_refusal,
+    query_off_refusal,
+    query_ranges,
+    query_where,
     split_sql,
+    status_field,
     status_sql,
     text_matches,
+    text_number_keys,
     used_keys,
     widen,
+    word_names,
     zoned,
 )
-from gateway.routes.crm.flags import answer_first_allowed, long_read_allowed
+from gateway.routes.crm.flags import (
+    answer_first_allowed,
+    long_read_allowed,
+    module_find_allowed,
+    semantic_model_allowed,
+)
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.overlay import (
     SLOT_OF,
@@ -266,6 +299,8 @@ MODULE_PREFIX = "module:"
 MODULE_PARAMS = frozenset({
     "entity", "measure", "group_by", "group_field", "field", "bucket",
     "page", "page_size", "sort", "dir", "fields", "long_read",
+    # SEM-1b-1: `_compute` refuses it off SEMANTIC_MODEL_ORGS, never ignores it.
+    "query",
 })
 
 #: The groups that only a deal has.
@@ -488,12 +523,31 @@ class AggregateResponse(BaseModel):
     #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
     #: first one is also ``field`` and ``total``. Absent with no split.
     split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-11: each text field of a module that the call read as
+    #: numbers → its counts over the whole module (``numbers``, ``no_value``
+    #: and ``not_numbers``) and the most common ``shapes`` of the values that
+    #: are not numbers (``field_sql.TextNumbers.wire``). Absent when the call
+    #: read no text field, so the wire is the one of before.
+    text_numbers: dict[str, dict[str, Any]] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: CRM-Q25e part 4: what the reader must know before the total
     #: (``acb_common.number_sense``), for example one day that holds most
     #: records. Each has ``kind``, ``key``, ``records``, ``share`` and one
     #: ``sentence``. Absent with none.
     findings: list[dict[str, Any]] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-7: no record holds each word of ``q``, so the total counts
+    #: the records that hold one of these stored names, near spellings of a
+    #: word. Absent when the exact words matched.
+    near: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-7: ``q`` counted no record. At most 3 stored names nearest to
+    #: ``q``, for the next call. Absent otherwise.
+    nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-5: each ``field.<key>`` filter name that the route read as a
+    #: filter word (``field_sql.word_names``), so the tool words it. Absent
+    #: with none, so the answer of each older call stays the same.
+    filter_words: list[str] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
     #: NUM-2 (``number_sense.md`` §4.2): the findings of the kinds ``outlier``
     #: and ``coverage``, as ``Finding.wire()``. A ``concentration`` stays in
     #: ``findings``, so no finding is in both lists. Absent with none.
@@ -599,7 +653,9 @@ def _check(
     if bucket is not None and group_field is None:
         raise _refuse("'bucket' goes with group_field.")
     allowed = MODULE_GROUPS if module is not None else GROUPS
-    if group_by is not None and group_by not in allowed:
+    # CRM-Q34-2: `status` on a module groups by its status field (`@status`).
+    status_group = module is not None and group_by == "status"
+    if group_by is not None and group_by not in allowed and not status_group:
         raise _refuse(
             f"Unknown group_by '{group_by}'. One of: {list(allowed)}. To group "
             "by a field, give group_field=<key> instead, or give no group for "
@@ -639,9 +695,11 @@ def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]
         if pairs:
             raise _core_pairs_refusal()
         return pairs
+    # CRM-Q34-2: `q` passes here, and `_read` refuses it after it reads the
+    # fields of the module, so its 422 names the fields that work instead.
     other = sorted({
         k for k in request.query_params
-        if k not in MODULE_PARAMS and not k.startswith(FIELD_PREFIX)
+        if k not in MODULE_PARAMS and k != "q" and not k.startswith(FIELD_PREFIX)
     })
     if other:
         raise _refuse(
@@ -826,6 +884,15 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: CRM-Q34-7: the stored names that the near pass of ``q`` counted, and
+    #: the nearest stored names of a ``q`` that counted no record.
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    #: CRM-Q34-11: each text field that the read took as a number, with its
+    #: counts (``field_sql.admit_text_numbers``).
+    text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
+    #: CRM-Q34-5: each filter name that the read took as a filter word.
+    filter_words: list[str] = dc_field(default_factory=list)
     #: NUM-2: the asked date range in whole months, and the groups of each
     #: period before it (-1 to -6) from the same statement.
     base: Baseline | None = None
@@ -895,6 +962,7 @@ def number_sense_on() -> bool:
 def _sense_columns(
     scope: FieldScope | None, module: str | None, day: FieldRef | None, day_key: str,
     pairs: list[tuple[str, str]], bound: dict[str, Any], *, reads: bool,
+    nodes: tuple[QueryNode, ...] | None = None, words: bool = False,
 ) -> tuple[Baseline | None, str, tuple[str, ...], str]:
     """NUM-2: the baseline, its period SQL, the statuses that the statement
     counts, and their columns. Each bound value goes into *bound*.
@@ -910,10 +978,12 @@ def _sense_columns(
     reads the detoasted copy already (*reads*), as the day set."""
     if not number_sense_on():
         return None, "", (), ""  # dark: the statement is the one of before NUM-2
-    base = baseline_range(scope, day, pairs) if module is not None and day_key else None
+    base = (baseline_range(scope, day, pairs, nodes or (), words=words)
+            if module is not None and day_key else None)
+    if base is not None and not widen(bound, base):
+        base = None  # the start is not bound as asked, so the window stays
     period = ""
     if base is not None:
-        widen(bound, base)
         period, period_params = period_sql(day_key, base)
         bound.update(period_params)
     statuses: tuple[str, ...] = ()
@@ -973,35 +1043,73 @@ async def _read(
     group_field: str | None, bucket: str | None,
     pairs: list[tuple[str, str]], params: ListParams, user: UserContext | None,
     fields: str | None = None, timeout_ms: int | None = None,
+    status_group: bool = False, nodes: tuple[QueryNode, ...] | None = None,
 ) -> _Read:
     """Every statement of one aggregate, in the caller's tenant session.
     *fields* is the comma list of a split (CRM-Q25e part 2), and
     *timeout_ms* the budget of a long read: ONE deadline for all its
-    statements (:func:`_keep_deadline`)."""
+    statements (:func:`_keep_deadline`). *nodes* are the checked ``query``
+    of a module (SEM-1b-1), or None."""
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
     deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
     scope: FieldScope | None = None
     zone = ""
     field_measure = measure
+    text_numbers: dict[str, TextNumbers] = {}
+    filter_words: list[str] = []
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
+        # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
+        # CRM-Q34-7: an org on CRM_MODULE_FIND_ORGS finds `q` across the module.
+        finding = module_find_allowed(current_tenant())
+        if params.q is not None and not finding:
+            raise q_refusal(scope)
+        words = find_words(params.q if finding else None)
+        # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
+        if status_group:
+            status_field(scope)
         field_measure, field = module_measure(measure, field)
+        # SEM-1b-2: each range of `query` in the pair form, so the pair
+        # readers below (the text numbers, the day check) read it too.
+        queried = query_ranges(scope, nodes)
+        ranges = [*pairs, *queried]
+        # CRM-Q34-11: a measure or a range on a text field that holds
+        # numbers reads them. With no text field named, no statement runs.
+        # A key that only the query names gets the words of a query leaf.
+        scope, text_numbers = await admit_text_numbers(
+            db, scope, text_number_keys(field_measure, field, fields, ranges),
+            measured=text_number_keys(field_measure, field, fields, []),
+            queried=set(text_number_keys("count", None, None, queried))
+            - set(text_number_keys("count", None, None, pairs)))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
+        # CRM-Q34-5: an org on CRM_MODULE_FIND_ORGS takes the filter words.
+        # The probe holds the pairs that the two reads below take. Without
+        # the words, the probe IS the pairs.
+        probe, owners = filter_probe(scope, pairs, finding)
+        filter_words = word_names(scope, pairs, finding)
         # §18.16 part 6: a text filter counts each case and short form.
-        matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
+        matches = await text_matches(db, str(current_tenant()), scope, module, probe)
         # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
-        ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
-        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+        ids = await lookup_ids(db, str(current_tenant()), scope, probe)
+        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids,
+                             words=finding)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
-        matched = {pairs[i][0]: list(found) for i, found in matches.items()}
-        await _seed_aliases(db, module, pairs, matches)
+        matched = matched_values(pairs, owners, matches)
+        await _seed_aliases(db, module, probe, matches)
+        # SEM-1b-1: the query joins the old filters by AND.
+        where_sql, source = await _with_query(db, scope, module, nodes, zone, where_sql,
+                                              bound, source, matched)
+        # CRM-Q34-7: the near pass reads under the filters of the call, with no q.
+        plain = (where_sql, dict(bound))
+        where_sql, source = _with_words(scope, words, where_sql, bound, source)
     else:
         assert found is not None
-        matched = {}
+        matched, words, plain, ranges = {}, [], ("", {}), pairs
+        finding = False
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -1053,28 +1161,16 @@ async def _read(
     # a second grouping set. A module only, never a money read of deals, and
     # only when the statement reads the detoasted copy already: a count with
     # no field read never pays for a detoast of each row.
-    day, day_key, day_source = _day_of(scope, module, grouped, pairs, zone, bound,
+    day, day_key, day_source = _day_of(scope, module, grouped, ranges, zone, bound,
                                        reads=bool(source))
     source = from_source(source, day_source)
     days: list[tuple[Any, Any, int]] = []
     base, period, statuses, counted = _sense_columns(
-        scope, module, day, day_key, pairs, bound, reads=bool(source))
+        scope, module, day, day_key, pairs, bound, reads=bool(source), nodes=nodes,
+        words=finding)
     more += counted  # the status counts are more columns of the ONE statement
     periods: dict[int, list[_Acc]] = {}
-    # One scan, two groupings: the answer's own, and the day. With no group,
-    # the empty set gives its one row even when no record matches, as the
-    # plain statement does. With a baseline, both sets also group by the
-    # period, and only period 0 is the answer (`_rows_of`).
-    lead = f"{period}, " if period else ""
-    answer_set = (f"({lead}{key_sql})" if group_clause
-                  else f"({period})" if period else "()")
-    sets = (
-        f" GROUP BY GROUPING SETS ({answer_set}, ({lead}{day_key}))"
-        if day_key else group_clause
-    )
-    grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd" if day_key else ""
-    if period:
-        grouping += f", {period} AS agf_p"
+    sets, grouping = _grouping_sql(key_sql, group_clause, day_key, period)
 
     async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
         await _keep_deadline(db, deadline)
@@ -1105,18 +1201,118 @@ async def _read(
                                  deadline=deadline)
     else:
         values = await fetch(where_sql, bound)
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    if words and scope is not None and not sum(acc.rows for acc in values.values()):
+        values, near, nearest = await _near_kept(db, scope, words, plain, bound, fetch,
+                                                 values, periods, days)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
     )
     keys = (
         used_keys(scope, [field, group_field, *(r.key for r in split[1:]),
-                          *(name for name, _value in pairs)])
+                          *(name for name, _value in pairs),
+                          *(leaf.key for node in nodes or () for leaf in node)])
         if module is not None and scope is not None else {}
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
-                 base=base, periods=periods, statuses=statuses)
+                 near=near, nearest=nearest, text_numbers=text_numbers,
+                 filter_words=filter_words, base=base, periods=periods,
+                 statuses=statuses)
+
+
+async def _with_query(
+    db: Any, scope: FieldScope, module: str, nodes: tuple[QueryNode, ...] | None,
+    zone: str, where_sql: str, bound: dict[str, Any], source: str,
+    matched: dict[str, list[str]],
+) -> tuple[str, str]:
+    """SEM-1b-1: *where_sql* AND the clause of the checked ``query``
+    (``field_sql.query_where``), with its keys in *bound* and its counted
+    variants in *matched*, and the FROM text. With no query, both stay as
+    they are, so an answer with no query does not change."""
+    if not nodes:
+        return where_sql, source
+    found = await query_where(db, str(current_tenant()), scope, module, nodes, zone=zone)
+    bound.update(found.where.params)
+    for key, values in found.matched.items():
+        matched.setdefault(key, values)
+    # SEM-1b-2: an alias set of a text leaf is the org's fact, as for a pair.
+    await _seed_aliases(db, module, found.pairs, found.matches)
+    return f"{where_sql} AND {found.where.sql}", from_source(source, found.where.source)
+
+
+def _with_words(scope: FieldScope, words: list[str], where_sql: str,
+                bound: dict[str, Any], source: str) -> tuple[str, str]:
+    """CRM-Q34-7: *where_sql* AND the predicate of ``q`` across the module
+    (``field_sql.find_where``), with its keys in *bound*, and the FROM text.
+    With no word, both stay as they are."""
+    if not words:
+        return where_sql, source
+    found = find_where(scope, words)
+    bound.update(found.params)
+    return f"{where_sql} AND {found.sql}", from_source(source, found.source)
+
+
+def _grouping_sql(key_sql: str, group_clause: str, day_key: str,
+                  period: str) -> tuple[str, str]:
+    """The GROUP BY text and the more columns of the day set (CRM-Q25e part
+    4) and of the period of a baseline (NUM-2).
+
+    One scan, two groupings: the answer's own, and the day. With no group,
+    the empty set gives its one row even when no record matches, as the
+    plain statement does. With a baseline, both sets also group by the
+    period, and only period 0 is the answer (:func:`_rows_of`). With no
+    day key, the text is *group_clause*, as before."""
+    if not day_key:
+        return group_clause, ""
+    lead = f"{period}, " if period else ""
+    answer_set = (f"({lead}{key_sql})" if group_clause
+                  else f"({period})" if period else "()")
+    grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd"
+    if period:
+        grouping += f", {period} AS agf_p"
+    return f" GROUP BY GROUPING SETS ({answer_set}, ({lead}{day_key}))", grouping
+
+
+async def _near_kept(
+    db: Any, scope: FieldScope, words: list[str], plain: tuple[str, dict[str, Any]],
+    bound: dict[str, Any], fetch: Any, exact: dict[str | None, _Acc],
+    periods: dict[int, list[_Acc]], days: list[tuple[Any, Any, int]],
+) -> tuple[dict[str | None, _Acc], list[str] | None, list[str] | None]:
+    """:func:`_near_pass`, with the baseline periods and the days of the
+    pass whose groups the answer keeps (NUM-2). The near pass fills both
+    again, so the exact pass keeps its own only when the near pass counts
+    no record."""
+    kept = (dict(periods), list(days))
+    periods.clear()
+    days.clear()
+    values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch, exact)
+    if near is None:
+        periods.clear()
+        periods.update(kept[0])
+        days[:] = kept[1]
+    return values, near, nearest
+
+
+async def _near_pass(
+    db: Any, scope: FieldScope, words: list[str], plain: tuple[str, dict[str, Any]],
+    bound: dict[str, Any], fetch: Any, exact: dict[str | None, _Acc],
+) -> tuple[dict[str | None, _Acc], list[str] | None, list[str] | None]:
+    """CRM-Q34-7: no row holds each word of ``q``, so the near pass of
+    ``name_match`` (``field_sql.find_near``) reads under *plain*, the filters
+    with no ``q``. With near names, ONE more read of the same statement
+    counts their rows. The groups, the near names counted, and the nearest
+    names when still no row matches. *exact* is the answer of the exact
+    pass, which counted no row."""
+    hit = await find_near(db, scope, words, *plain)
+    if hit.near:
+        again = find_where(scope, words, hit.near)
+        values = await fetch(f"{plain[0]} AND {again.sql}", {**bound, **again.params})
+        if sum(acc.rows for acc in values.values()):
+            return values, hit.names(), None
+    return exact, None, list(hit.nearest)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -1272,6 +1468,7 @@ async def aggregate(
     bucket: str | None = None,
     fields: str | None = None,
     long_read: bool = False,
+    query: str | None = None,
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
@@ -1281,6 +1478,7 @@ async def aggregate(
     ``fields=a,b,c`` reads 2 to 5 number fields in ONE statement (CRM-Q25e
     part 2). ``long_read=true`` asks for the long read of an org on
     ``CRM_LONG_READ_ORGS`` (part 5). Off the list it changes nothing.
+    ``query`` is the one query grammar of a module (SEM-1b-1).
 
     The NUL guard of CRM-Q25c runs in ``ListParams``, which this route takes,
     before this body runs. A second call here would be a copy."""
@@ -1288,7 +1486,7 @@ async def aggregate(
     # (CRM-Q25 fix round). `group_field=` alone is then "no group": one total.
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
-    fields = fields or None
+    fields, query = fields or None, query or None
     _found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     # CRM-Q20-3a: a core entity passes its field.<key> filters on. With an
     # overlay they filter the module. With none, compute refuses them.
@@ -1297,7 +1495,7 @@ async def aggregate(
     return await compute(
         entity, measure=measure, group_by=group_by, field=field,
         group_field=group_field, bucket=bucket, pairs=pairs, params=params, user=user,
-        fields=fields, long_read=long_read,
+        fields=fields, long_read=long_read, query=query,
     )
 
 
@@ -1307,6 +1505,7 @@ async def compute(
     bucket: str | None = None, pairs: list[tuple[str, str]] | None = None,
     params: ListParams, user: UserContext | None = None,
     fields: str | None = None, long_read: bool = False,
+    query: str | None = None,
 ) -> AggregateResponse:
     """The ONE body of an aggregate. ``GET /crm/aggregate`` calls it, and so
     does the weekly digest of CRM-Q28 (``crm_sync/digest.py``), so a digest
@@ -1321,7 +1520,10 @@ async def compute(
 
     CRM-Q25e part 5: for an org on ``CRM_LONG_READ_ORGS``, the 503 of the
     10 s read carries ``long_read: true``, and a call with *long_read* runs
-    under :func:`long_read_slot` with up to :data:`LONG_READ_SECONDS`."""
+    under :func:`long_read_slot` with up to :data:`LONG_READ_SECONDS`.
+
+    SEM-1b-1: *query* is the JSON text of the one query grammar, for a
+    module of an org on ``SEMANTIC_MODEL_ORGS``. The digest passes none."""
     org = current_tenant()
     allowed = bool(org) and long_read_allowed(str(org))
     if long_read and allowed:
@@ -1330,21 +1532,35 @@ async def compute(
                 entity, measure=measure, group_by=group_by, field=field,
                 group_field=group_field, bucket=bucket, pairs=pairs, params=params,
                 user=user, fields=fields, timeout_ms=int(left * 1000),
-                timed_out=LONG_TIMEOUT_DETAIL,
+                timed_out=LONG_TIMEOUT_DETAIL, query=query,
             )
     return await _compute(
         entity, measure=measure, group_by=group_by, field=field, group_field=group_field,
         bucket=bucket, pairs=pairs, params=params, user=user, fields=fields,
         timeout_ms=None,
         timed_out={**TIMEOUT_DETAIL, "long_read": True} if allowed else TIMEOUT_DETAIL,
+        query=query,
     )
+
+
+def _query_nodes(query: str | None, module: str | None) -> tuple[QueryNode, ...] | None:
+    """SEM-1b-1: the checked nodes of *query*, or None with no query. From an
+    org off ``SEMANTIC_MODEL_ORGS``, and on a core entity, a query is a 422
+    that names a step that works, never a filter dropped in silence."""
+    if not query:
+        return None
+    if not semantic_model_allowed(current_tenant()):
+        raise query_off_refusal()
+    if module is None:
+        raise query_core_refusal()
+    return parse_query(query)
 
 
 async def _compute(
     entity: str, *, measure: str, group_by: str | None, field: str | None,
     group_field: str | None, bucket: str | None, pairs: list[tuple[str, str]] | None,
     params: ListParams, user: UserContext | None, fields: str | None,
-    timeout_ms: int | None, timed_out: dict[str, Any],
+    timeout_ms: int | None, timed_out: dict[str, Any], query: str | None = None,
 ) -> AggregateResponse:
     """The body of :func:`compute`, with the statement timeout of the read
     (None for the 10 s of :data:`STATEMENT_TIMEOUT_MS`) and the detail of
@@ -1354,6 +1570,12 @@ async def _compute(
     fields = fields or None
     found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     pairs = list(pairs or [])
+    # SEM-1b-1: a query is checked before any session opens.
+    nodes = _query_nodes(query, module)
+    # CRM-Q34-2: `group_by=status` on a module is `group_field=@status`.
+    status_group = module is not None and group_by == "status"
+    if status_group:
+        group_by, group_field = None, STATUS_WORD
     try:
         async with _tenant_session() as db:
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
@@ -1375,12 +1597,19 @@ async def _compute(
             else:
                 if module is None and pairs:
                     raise _core_pairs_refusal()
-                read = await _read(
-                    db, found, module, measure=measure, group_by=group_by,
-                    field=field, group_field=group_field, bucket=bucket,
-                    pairs=pairs, params=params, user=user, fields=fields,
-                    timeout_ms=timeout_ms,
-                )
+                try:
+                    read = await _read(
+                        db, found, module, measure=measure, group_by=group_by,
+                        field=field, group_field=group_field, bucket=bucket,
+                        pairs=pairs, params=params, user=user, fields=fields,
+                        timeout_ms=timeout_ms, status_group=status_group, nodes=nodes,
+                    )
+                except HTTPException as exc:
+                    # Task 3690: a field that is not on this module names
+                    # the other modules that hold it.
+                    if module is None:
+                        raise
+                    raise await field_hint(db, module, exc) from None
     except DBAPIError as exc:
         if _is_timeout(exc):
             raise HTTPException(status_code=503, detail=timed_out) from None
@@ -1470,7 +1699,11 @@ async def _compute(
         records=records,
         overlay=read.overlay,
         matched=read.matched or None,
+        near=read.near,
+        nearest=read.nearest,
+        filter_words=read.filter_words or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
+        text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),

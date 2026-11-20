@@ -49,14 +49,14 @@ def test_a_whole_month_gets_a_baseline_of_six_months() -> None:
     scope = _scope()
     base = fs.baseline_range(scope, scope.fields["Invoice_Date"], _october())
     assert base is not None
-    assert (base.start, base.end, base.months, base.index, base.wide) == (
-        date(2026, 10, 1), date(2026, 10, 31), 1, 0, date(2026, 4, 1))
+    assert (base.start, base.end, base.months, base.bound, base.wide) == (
+        date(2026, 10, 1), date(2026, 10, 31), 1, "agf_v0", date(2026, 4, 1))
     assert [base.label(p) for p in range(-6, 1)] == [
         "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
     # The key word names the same field, and a quarter reads 6 quarters back.
     quarter = fs.baseline_range(scope, scope.fields["Invoice_Date"], [
         ("@date.to", "2026-12-31"), ("@date.from", "2026-10-01")])
-    assert quarter is not None and (quarter.months, quarter.index) == (3, 1)
+    assert quarter is not None and (quarter.months, quarter.bound) == (3, "agf_v1")
     assert quarter.wide == date(2025, 4, 1)
     assert quarter.label(0) == "2026-10 to 2026-12" and quarter.label(-1) == "2026-07 to 2026-09"
     # February of a leap year ends on the 29th.
@@ -86,6 +86,68 @@ def test_no_whole_month_range_of_the_day_field_gets_no_baseline(pairs: list) -> 
     assert fs.baseline_range(scope, scope.fields["Invoice_Date"], pairs) is None
 
 
+def _leaf(key: str, op: str, value: Any) -> Any:
+    from gateway.routes.crm import field_sql as fs
+
+    return fs.QueryLeaf(key=key, op=op, value=value)
+
+
+def test_a_query_range_gets_the_baseline_and_widens_its_own_bound() -> None:
+    """SEM-1b: the range can arrive as ``gte`` and ``lte`` leaves of
+    ``query``. Each lone leaf binds ``agf_qv<n>_0``, and the start widens."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _scope()
+    day = scope.fields["Invoice_Date"]
+    nodes = ((_leaf("Total", "gte", 100),), (_leaf("Invoice_Date", "gte", "2026-10-01"),),
+             (_leaf("@date", "lte", "2026-10-31"),))
+    base = fs.baseline_range(scope, day, [], nodes)
+    assert base is not None and (base.bound, base.wide) == ("agf_qv1_0", date(2026, 4, 1))
+    where = fs.query_sql(scope, nodes, zone="UTC")
+    params = dict(where.params)
+    assert params["agf_qv1_0"] == date(2026, 10, 1)
+    assert fs.widen(params, base) and params["agf_qv1_0"] == date(2026, 4, 1)
+    assert params["agf_qv2_0"] == date(2026, 10, 31)
+    # One end as a pair and one as a leaf is one range too.
+    mixed = fs.baseline_range(scope, day, [("Invoice_Date.to", "2026-10-31")],
+                              ((_leaf("Invoice_Date", "gte", "2026-10-01"),),))
+    assert mixed is not None and mixed.bound == "agf_qv0_0"
+
+
+@pytest.mark.parametrize("pairs,nodes", [
+    # A third end on the day field, as a leaf.
+    (_october(), ((_leaf("Invoice_Date", "gte", "2026-09-01"),),)),
+    # A strict end, an eq, and a leaf inside an any group.
+    ([], ((_leaf("Invoice_Date", "gt", "2026-09-30"),),
+          (_leaf("Invoice_Date", "lte", "2026-10-31"),))),
+    (_october(), ((_leaf("Invoice_Date", "eq", "2026-10-05"),),)),
+    ([], ((_leaf("Invoice_Date", "gte", "2026-10-01"), _leaf("Total", "gte", 1)),
+          (_leaf("Invoice_Date", "lte", "2026-10-31"),))),
+    # An eq or a filter word on the day field, beside a whole month.
+    ([*_october(), ("Invoice_Date", "2026-10-05")], ()),
+    ([*_october(), ("Invoice_Date.not", "2026-10-05")], ()),
+    ([*_october(), ("Invoice_Date.in", "2026-10-05,2026-10-06")], ()),
+])
+def test_any_other_filter_on_the_day_field_gives_no_baseline(pairs: list, nodes: tuple) -> None:
+    """A wider start widens the window only when the one ``.from`` is the
+    only lower bound of the day. Else the periods before read partly
+    filtered, and an outlier against them would be false."""
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _scope()
+    assert fs.baseline_range(scope, scope.fields["Invoice_Date"], pairs, nodes,
+                             words=True) is None
+
+
+def test_a_filter_word_on_another_field_keeps_the_baseline() -> None:
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _scope()
+    pairs = [*_october(), ("Due_Date.empty", "false"), ("Total.not", "0")]
+    base = fs.baseline_range(scope, scope.fields["Invoice_Date"], pairs, words=True)
+    assert base is not None and base.bound == "agf_v0"
+
+
 def test_no_day_field_or_no_scope_gets_no_baseline() -> None:
     from gateway.routes.crm import field_sql as fs
 
@@ -102,8 +164,11 @@ def test_the_period_and_the_widened_start_are_bound() -> None:
     where = fs.module_where(scope, "Invoices", _october(), zone="UTC")
     params = dict(where.params)
     assert params["agf_v0"] == date(2026, 10, 1)
-    fs.widen(params, base)
+    assert fs.widen(params, base)
     assert params["agf_v0"] == date(2026, 4, 1) and params["agf_v1"] == date(2026, 10, 31)
+    # A start that is not bound as asked is never widened.
+    assert not fs.widen({"agf_v0": date(2026, 9, 1)}, base)
+    assert not fs.widen({}, base)
     sql, bound = fs.period_sql("DAY", base)
     assert bound == {"agf_bs": 2026 * 12 + 10, "agf_bk": 1}
     assert "2026" not in sql and sql.count("DAY") == 2

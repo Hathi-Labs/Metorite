@@ -1,7 +1,7 @@
 # Numbers that make sense — a plausibility check for every total
 
 **Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).
-NUM-2 is built (2026-11-17, task 3135), stacked on NUM-1.**
+NUM-2 is built dark (2026-11-20, task 3135), behind the answer-first flag.**
 `acb_common/number_sense.py` holds the pure checks `concentration`
 (CRM-Q25e, called by the CRM aggregate), `outlier`, `coverage`, `parts`,
 `part_period` and `grouping`. The CRM aggregate calls `concentration`,

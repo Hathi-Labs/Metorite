@@ -384,18 +384,27 @@ def _registry_writers() -> dict[str, set[str]]:
     server. :func:`_writer_files` fails when a new writer module appears."""
     from gateway.connections import github as gh
     from gateway.connections import mcp as mcp_registry
+    from gateway.routes import integrations_api_connect as api_connect
     from gateway.routes.crm import connection as crm
     from gateway.routes.knowledge import sources as drive
     from gateway.routes.tasks import calendar_connections as cal_routes
 
     return {
         "apps/services/gateway/gateway/connections/github.py": {gh.PROVIDER},
+        "apps/services/gateway/gateway/routes/integrations_api_connect.py": {api_connect.PROVIDER},
         "apps/services/gateway/gateway/connections/mcp.py": {mcp_registry.PREFIX},
         "apps/services/gateway/gateway/routes/crm/connection.py": {crm.PROVIDER},
         "apps/services/gateway/gateway/routes/knowledge/sources.py": {drive.GOOGLE_DRIVE},
         "apps/services/gateway/gateway/routes/tasks/calendar_connections.py":
             set(cal_routes.ROWS.values()),
     }
+
+
+#: A written provider that the connector list does not hold yet, with its
+#: reason. API-2 (``api_connections.md`` §2.11) writes the ``api:zoho_books``
+#: row, dark behind ``API_CONNECTIONS_ORGS``. API-5 adds its row to the
+#: connector list with the console rows, and then it leaves this set.
+_NOT_LISTED_YET: frozenset[str] = frozenset({"api:zoho_books"})
 
 
 def _calls_a_registry_write(text: str) -> bool:
@@ -480,7 +489,7 @@ def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> Non
     # as blocked by the route: keep every written provider on the list (or the `mcp:` family).
     from gateway.connections import mcp as mcp_registry
 
-    assert written <= set(rows) | {mcp_registry.PREFIX}, sorted(written - set(rows))
+    assert written <= set(rows) | {mcp_registry.PREFIX} | _NOT_LISTED_YET, sorted(written - set(rows))
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:
