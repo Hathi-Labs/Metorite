@@ -296,6 +296,7 @@
       "tests/unit/test_email_attach_shared_agent_r8.py",
       "tests/unit/test_email_card_precondition.py",
       "tests/unit/test_email_otp_token.py",
+      "tests/unit/test_email_send_files_precondition_r8.py",
       "tests/unit/test_email_signature_images_r8.py",
       "tests/unit/test_email_signature_settings_r8.py",
       "tests/unit/test_email_thread_changed.py",
