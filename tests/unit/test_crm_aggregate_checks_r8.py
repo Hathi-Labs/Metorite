@@ -39,10 +39,13 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import text
 
 from tests.unit.test_crm_aggregate_fields_r8 import (  # noqa: F401
+    _admin,
     _agg,
+    _call,
     _defs,
     _mirror_org,
     _module,
+    _path,
     ns,
 )
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -367,3 +370,291 @@ async def test_the_boundary_days_belong_to_their_own_month(dewin, app_engine) ->
     assert body["total"] == 1431 + 2  # the seeded October, and 10-01 and 10-31
     september = {row["period"]: row["records"] for row in body["baseline"]}["2026-09"]
     assert september == 100 + 1  # the seeded September, and 09-30
+
+
+# ── 8. The baseline composes with main's filters (SEM-1b, CRM-Q34-5, Q34-11) ──
+#
+# A second module, Bills, in org A only. Each month of 2026 from March to
+# November holds 10 + m bills. The asked range is October, so the window
+# reads April to October, and March and November are never read. Each case
+# reads one figure three ways: NUM-2 on, NUM-2 dark, and an independent SQL
+# oracle that names the jsonb keys by hand. The baseline only ADDS the
+# periods before: the figure of October is the same with and without it.
+
+_BILL_DEFS = [
+    ("Bill_Date", "date", None, False, False),
+    ("Amount", "currency", None, False, False),
+    ("Fee", "text", None, False, False),
+    ("Notes", "text", None, False, False),
+    ("Tag", "select", None, False, False),
+]
+
+
+def _bill(org: str, m: int, i: int) -> dict[str, Any]:
+    fields: dict[str, Any] = {"Bill_Date": f"2026-{m:02d}-{1 + i % 28:02d}"}
+    if i % 5:
+        fields["Amount"] = 100 + i
+    fields["Fee"] = "abc" if i % 7 == 0 else "" if i % 11 == 0 else str(10 * i)
+    if i % 3 != 2:
+        fields["Notes"] = "Rent for the office" if i % 3 == 0 else "monthly fee"
+    if i % 4 != 3:
+        fields["Tag"] = ("A", "B", "C")[(i // 2) % 3]
+    return {"o": org, "e": f"bill-{m}-{i}", "f": json.dumps(fields)}
+
+
+@pytest.fixture
+def bills(ns, monkeypatch):
+    """Org A mirrors Bills, with the flags of the query (SEM-1b), the filter
+    words (CRM-Q34-5) and NUM-2 on. ``ns.dark()`` turns NUM-2 off."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    for name in ("crm_catalogue_orgs", "crm_questions_orgs", "crm_answer_first_orgs",
+                 "semantic_model_orgs", "crm_module_find_orgs"):
+        monkeypatch.setattr(settings, name, "*", raising=False)
+    a = ns.org_a
+    _mirror_org(ns, a, [_module("Bills")])
+    _defs(ns, a, "module:Bills", _BILL_DEFS)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(_INSERT.replace("'Invoices'", "'Bills'")),
+                  [_bill(a, m, i) for m in range(3, 12) for i in range(10 + m)])
+        for key, *_rest in _BILL_DEFS:
+            c.execute(text(
+                "INSERT INTO crm_field_fill (organization_id, entity, key, filled, "
+                "total, distinct_count) VALUES (CAST(:o AS uuid), 'module:Bills', "
+                ":k, 3, 3, 3)"), {"o": a, "k": key})
+
+    def dark() -> None:
+        monkeypatch.setattr(settings, "crm_answer_first_orgs", "", raising=False)
+
+    def lit() -> None:
+        monkeypatch.setattr(settings, "crm_answer_first_orgs", "*", raising=False)
+
+    ns.dark, ns.lit = dark, lit
+    yield ns
+    with ns.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_field_fill WHERE organization_id = CAST(:o AS uuid)"),
+                  {"o": a})
+
+
+#: The measure of the oracle: the JSON number of Amount, or the plain
+#: digits of the text field Fee (each value of the seed is digits or not).
+_ORACLE_MEASURES = {
+    "Amount": "CASE WHEN jsonb_typeof(fields -> 'Amount') = 'number' "
+              "THEN (fields ->> 'Amount')::numeric END",
+    "Fee": "CASE WHEN btrim(fields ->> 'Fee') ~ '^[0-9]+$' "
+           "THEN btrim(fields ->> 'Fee')::numeric END",
+}
+
+
+def _oracle(p: Any, org: str, where: str, field: str) -> dict[str, tuple[float, int, int]]:
+    """``month → (sum, records, values)`` of the Bills of *org* from April to
+    October 2026 that hold *where*. The SQL is written here by hand, with no
+    builder of ``field_sql``. *where* is a literal of this test."""
+    measure = _ORACLE_MEASURES[field]
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            f"SELECT left(fields ->> 'Bill_Date', 7) AS m, coalesce(sum({measure}), 0) AS s, "
+            f"count(*) AS c, count({measure}) AS n FROM crm_module_records "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'Bills' "
+            "AND fields ->> 'Bill_Date' >= '2026-04-01' "
+            f"AND fields ->> 'Bill_Date' <= '2026-10-31' AND ({where}) GROUP BY 1"),
+            {"o": org}).fetchall()
+    return {r.m: (float(r.s), int(r.c), int(r.n)) for r in rows}
+
+
+_RANGE_PAIRS = {"field.Bill_Date.from": "2026-10-01", "field.Bill_Date.to": "2026-10-31"}
+_RANGE_LEAVES = [{"field": "Bill_Date", "op": "gte", "value": "2026-10-01"},
+                 {"field": "Bill_Date", "op": "lte", "value": "2026-10-31"}]
+
+#: ``(name, field, the call, the oracle predicate)``. Each call holds the
+#: range of October in one of its forms.
+_COMPOSED = [
+    ("pairs", "Amount", {**_RANGE_PAIRS}, "true"),
+    ("query range", "Amount", {"query": json.dumps(_RANGE_LEAVES)}, "true"),
+    ("query and pair", "Amount",
+     {"field.Bill_Date.to": "2026-10-31", "query": json.dumps(_RANGE_LEAVES[:1])}, "true"),
+    ("query eq", "Amount",
+     {"query": json.dumps([*_RANGE_LEAVES, {"field": "Tag", "op": "eq", "value": "A"}])},
+     "fields ->> 'Tag' = 'A'"),
+    ("in", "Amount", {**_RANGE_PAIRS, "field.Tag.in": "A,B"},
+     "fields ->> 'Tag' IN ('A', 'B')"),
+    ("has", "Amount", {**_RANGE_PAIRS, "field.Notes.has": "rent"},
+     "fields ->> 'Notes' ILIKE '%rent%'"),
+    ("not", "Amount", {**_RANGE_PAIRS, "field.Tag.not": "B"},
+     "fields ->> 'Tag' IS DISTINCT FROM 'B'"),
+    ("empty", "Amount", {**_RANGE_PAIRS, "field.Notes.empty": "true"},
+     "coalesce(btrim(fields ->> 'Notes'), '') = ''"),
+    ("text number", "Fee", {**_RANGE_PAIRS}, "true"),
+    ("text number and words", "Fee",
+     {"query": json.dumps(_RANGE_LEAVES), "field.Tag.in": "A,C"},
+     "fields ->> 'Tag' IN ('A', 'C')"),
+]
+
+
+@pytest.mark.parametrize(("name", "field", "call", "where"), _COMPOSED,
+                         ids=[c[0] for c in _COMPOSED])
+async def test_the_baseline_composes_with_each_filter(bills, app_engine, name: str,
+                                                      field: str, call: dict,
+                                                      where: str) -> None:
+    a = bills.org_a
+    oracle = _oracle(bills, a, where, field)
+    october = oracle.get("2026-10", (0.0, 0, 0))
+    lit = await _agg(bills, a, entity="module:Bills", measure="sum", field=field, **call)
+    bills.dark()
+    dark = await _agg(bills, a, entity="module:Bills", measure="sum", field=field, **call)
+    bills.lit()
+    # The asked range: the same figure with NUM-2, without it, and by hand.
+    assert (lit["total"], lit["records"], lit["values"]) == october, (name, lit)
+    for key in ("total", "records", "values", "groups", "findings", "matched",
+                "filter_words", "text_numbers", "field", "field_type"):
+        assert lit.get(key) == dark.get(key), (name, key)
+    for key in ("baseline", "checks", "coverage"):
+        assert key not in dark, (name, key)
+    # The 6 months before: each one the oracle's month, oldest first.
+    assert lit["baseline"] == [
+        {"period": f"2026-{m:02d}", "value": oracle[f"2026-{m:02d}"][0],
+         "records": oracle[f"2026-{m:02d}"][1]} for m in range(4, 10)], name
+    assert lit["coverage"]["records"] == october[1]
+    assert lit["coverage"]["no_value"] == october[1] - october[2]
+
+
+@pytest.mark.parametrize("call", [
+    # The day field in an any group: the start is no plain lower bound.
+    {"query": json.dumps([{"any": [_RANGE_LEAVES[0], {"field": "Tag", "op": "eq",
+                                                      "value": "A"}]},
+                          _RANGE_LEAVES[1]])},
+    # A strict end, and a filter word on the day field.
+    {"query": json.dumps([{"field": "Bill_Date", "op": "gt", "value": "2026-09-30"},
+                          _RANGE_LEAVES[1]])},
+    {**_RANGE_PAIRS, "field.Bill_Date.not": "2026-10-05"},
+    {**_RANGE_PAIRS, "query": json.dumps(_RANGE_LEAVES[:1])},
+], ids=["any group", "gt", "word on the day", "two starts"])
+async def test_any_other_filter_on_the_day_gives_no_baseline_and_the_same_figure(
+        bills, app_engine, call: dict) -> None:
+    a = bills.org_a
+    lit = await _agg(bills, a, entity="module:Bills", measure="sum", field="Amount", **call)
+    bills.dark()
+    dark = await _agg(bills, a, entity="module:Bills", measure="sum", field="Amount", **call)
+    assert "baseline" not in lit, call
+    for key in ("total", "records", "values", "groups", "findings"):
+        assert lit.get(key) == dark.get(key), (call, key)
+
+
+@pytest.mark.parametrize("q", ["rent", "office rent", "bill-10-3", "bil-10-3", "zzzz"])
+async def test_q_keeps_the_figure(bills, app_engine, q: str) -> None:
+    """CRM-Q34-7: ``q`` finds across the module, with a near pass when no
+    record holds each word. The figure of October is the same with NUM-2
+    on and off."""
+    a = bills.org_a
+    lit = await _agg(bills, a, entity="module:Bills", q=q, **_RANGE_PAIRS)
+    bills.dark()
+    dark = await _agg(bills, a, entity="module:Bills", q=q, **_RANGE_PAIRS)
+    for key in ("total", "records", "groups", "near", "nearest", "findings"):
+        assert lit.get(key) == dark.get(key), (q, key)
+    assert "baseline" in lit and "baseline" not in dark
+
+
+@pytest.mark.parametrize(("q", "month"), [("bill-9-3", 9), ("bill-4-12", 4)])
+async def test_the_near_pass_keeps_only_its_own_baseline(bills, app_engine, q: str,
+                                                         month: int) -> None:
+    """No bill of October holds *q*, so the near pass counts the near names
+    of October. The exact pass read *q* in an earlier month too. The
+    baseline is of the near pass only, so that month counts its one bill
+    ONCE (the oracle), never once for each pass."""
+    a = bills.org_a
+    lit = await _agg(bills, a, entity="module:Bills", q=q, **_RANGE_PAIRS)
+    assert lit["near"] and lit["records"] == len(lit["near"]), lit
+    names = ", ".join(_literal(name) for name in [q, *lit["near"]])
+    oracle = _oracle(bills, a, f"name IN ({names})", "Amount")
+    assert {row["period"]: row["records"] for row in lit["baseline"]} == {
+        f"2026-{m:02d}": oracle.get(f"2026-{m:02d}", (0, 0, 0))[1] for m in range(4, 10)}
+    assert oracle[f"2026-{month:02d}"][1] == 1
+
+
+# ── 9. Dark: the wire of origin/main, byte for byte ─────────────────────────
+
+#: The calls of the dark proof. Each holds a form that main serves: the
+#: pairs, a query, the filter words, a text number, a group, a bucket, q.
+_DARK_CALLS: dict[str, dict[str, str]] = {
+    "pairs": {"measure": "sum", "field": "Amount", **_RANGE_PAIRS},
+    "query": {"measure": "sum", "field": "Amount", "query": json.dumps(_RANGE_LEAVES)},
+    "words and text number": {"measure": "sum", "field": "Fee", "field.Tag.in": "A,C",
+                              "field.Notes.empty": "false", **_RANGE_PAIRS},
+    "group": {"group_field": "Tag", **_RANGE_PAIRS},
+    "bucket": {"measure": "avg", "field": "Amount", "group_field": "Bill_Date",
+               "bucket": "month", **_RANGE_PAIRS},
+    "q": {"q": "rent", **_RANGE_PAIRS},
+    "no range": {"measure": "max", "field": "Amount"},
+}
+
+#: The raw body of each call of :data:`_DARK_CALLS`, recorded with the
+#: files of origin/main (a4ca3ac60) copied into place, then restored.
+#: Set NUM2_RECORD=<path> to write the bodies of a run to that file.
+_MAIN_DARK: dict[str, str] = {
+    'bucket': (
+        '{"entity":"module:Bills","measure":"avg","group_by":null,"group_field":"Bill_Dat'
+        'e","field":"Amount","field_type":"currency","field_label":"Amount","group_field_'
+        'label":"Bill Date","keys":{},"group_field_type":"date","bucket":"month","groups"'
+        ':[{"key":"2026-10","label":"2026-10","value":110.0}],"total":110.0,"other":0.0,"'
+        'omitted":0,"zone":"UTC","values":16,"records":20}'
+    ),
+    'group': (
+        '{"entity":"module:Bills","measure":"count","group_by":null,"group_field":"Tag","'
+        'field":null,"field_type":null,"field_label":null,"group_field_label":"Tag","keys'
+        '":{},"group_field_type":"select","bucket":null,"groups":[{"key":"A","label":"A",'
+        '"value":6.0},{"key":null,"label":"(none)","value":5.0},{"key":"C","label":"C","v'
+        'alue":5.0},{"key":"B","label":"B","value":4.0}],"total":20.0,"other":0.0,"omitte'
+        'd":0,"zone":"UTC","values":null,"records":20}'
+    ),
+    'no range': (
+        '{"entity":"module:Bills","measure":"max","group_by":null,"group_field":null,"fie'
+        'ld":"Amount","field_type":"currency","field_label":"Amount","group_field_label":'
+        'null,"keys":{},"group_field_type":null,"bucket":null,"groups":[],"total":119.0,"'
+        'other":0.0,"omitted":0,"zone":"UTC","values":119,"records":153}'
+    ),
+    'pairs': (
+        '{"entity":"module:Bills","measure":"sum","group_by":null,"group_field":null,"fie'
+        'ld":"Amount","field_type":"currency","field_label":"Amount","group_field_label":'
+        'null,"keys":{},"group_field_type":null,"bucket":null,"groups":[],"total":1760.0,'
+        '"other":0.0,"omitted":0,"zone":"UTC","values":16,"records":20}'
+    ),
+    'q': (
+        '{"entity":"module:Bills","measure":"count","group_by":null,"group_field":null,"f'
+        'ield":null,"field_type":null,"field_label":null,"group_field_label":null,"keys":'
+        '{},"group_field_type":null,"bucket":null,"groups":[],"total":7.0,"other":0.0,"om'
+        'itted":0,"zone":"UTC","values":null,"records":7}'
+    ),
+    'query': (
+        '{"entity":"module:Bills","measure":"sum","group_by":null,"group_field":null,"fie'
+        'ld":"Amount","field_type":"currency","field_label":"Amount","group_field_label":'
+        'null,"keys":{},"group_field_type":null,"bucket":null,"groups":[],"total":1760.0,'
+        '"other":0.0,"omitted":0,"zone":"UTC","values":16,"records":20}'
+    ),
+    'words and text number': (
+        '{"entity":"module:Bills","measure":"sum","group_by":null,"group_field":null,"fie'
+        'ld":"Fee","field_type":"text","field_label":"Fee","group_field_label":null,"keys'
+        '":{},"group_field_type":null,"bucket":null,"groups":[],"total":800.0,"other":0.0'
+        ',"omitted":0,"zone":"UTC","values":8,"records":9,"matched":{"Tag.in":["A","C"]},'
+        '"text_numbers":{"Fee":{"numbers":119,"no_value":9,"not_numbers":25,"shapes":[{"s'
+        'hape":"a","words":"words only","count":25}]}},"filter_words":["Tag.in","Notes.em'
+        'pty"]}'
+    ),
+}
+
+
+async def test_a_dark_org_gets_the_wire_of_main_byte_for_byte(bills, app_engine) -> None:
+    import os
+
+    a = bills.org_a
+    bills.dark()
+    got = {}
+    for name, call in _DARK_CALLS.items():
+        res = await _call(bills, _admin(a), "GET", _path(entity="module:Bills", **call))
+        assert res.status_code == 200, (name, res.text)
+        got[name] = res.text
+    record = os.environ.get("NUM2_RECORD")
+    if record:
+        with open(record, "w", encoding="utf-8") as out:
+            json.dump(got, out, indent=1, sort_keys=True)
+    assert got == _MAIN_DARK
