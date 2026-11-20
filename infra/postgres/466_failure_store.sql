@@ -1,5 +1,5 @@
 -- ============================================================================
--- 462_failure_store.sql — the one failure store (WS-TOF TOF-2b, task 3543).
+-- 466_failure_store.sql — the one failure store (WS-TOF TOF-2b, task 3543).
 --
 -- What: five tables and five functions.
 --       Tenant tables, each with the tenant `organization_id` and FORCE row
@@ -71,8 +71,8 @@
 -- `REFERENCES` comes before `DEFAULT`, because the tenancy ratchet in
 -- tests/unit/test_tenancy_boundary.py matches the two with no comma between.
 --
--- The number is taken at build time (R1): 462 was booked for task 3543 with
--- ~/lanes/reserve_migration.sh on 2026-11-18. Check it again at merge.
+-- The number is taken at build time (R1): 466 was booked for task 3543 (it was 462 until 2026-11-20, below the ledger of main) with
+-- ~/lanes/reserve_migration.sh. Check it again at merge.
 -- Fences: tests/unit/test_failure_store_r8.py (R8: P3, P4, P5) and
 -- tests/unit/test_tenant_coverage.py (P8), which find this file by CONTENT,
 -- never by number (R1).
