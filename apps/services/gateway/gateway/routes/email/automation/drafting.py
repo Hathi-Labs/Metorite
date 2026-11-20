@@ -16,7 +16,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import honorifics
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
-from acb_skills.card_revise import draft_digest
+from acb_skills.card_revise import draft_digest, draft_files_digest
 from acb_skills.untrusted import UntrustedFrame
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.persist import TRUNCATION_MARKER
@@ -4068,6 +4068,17 @@ class DraftExpect(BaseModel):
     cc: list[str] = []
     bcc: list[str] = []
     text_digest: str | None = Field(default=None, max_length=64)
+    # HRD-10d-2 (``chat_failure_modes.md`` §6): ``acb_skills.card_revise.
+    # draft_files_digest`` of the read that the card showed. Only the email
+    # assistant sends it, and only with ``CHAT_CARD_PRECONDITION_ORGS`` on for
+    # its org. None, the default, checks no file, as before. Expand-only (R6):
+    # a schedule stored before it carries no key.
+    files_digest: str | None = Field(default=None, max_length=64)
+
+    def stored(self) -> dict[str, Any]:
+        """The ``expect`` that a schedule stores. With no ``files_digest`` it
+        is the dict of before, with no new key."""
+        return self.model_dump(exclude={"files_digest"} if self.files_digest is None else None)
 
 
 class DraftSendRequest(BaseModel):
@@ -4113,6 +4124,10 @@ def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
 DRAFT_TEXT_CHANGED_DETAIL = (
     "The subject or the text of this draft changed after the card showed it. "
     "Nothing was sent.")
+#: The answer when the files of the draft changed after the card (HRD-10d-2).
+#: The send-later job shows its own reason for it (``send_later._why``).
+DRAFT_FILES_CHANGED_DETAIL = (
+    "The files of this draft changed after the card showed them. Nothing was sent.")
 #: The answer when the provider did not give the text of the draft.
 DRAFT_TEXT_READ_FAILED_DETAIL = (
     "The mail provider did not give the text of this draft, so the send could "
@@ -4232,6 +4247,35 @@ async def _check_chat_send(
         await _check_text_seal(provider, drow, expect, signature)
 
 
+async def check_draft_files(db: Any, draft_id: str, expect: DraftExpect) -> None:
+    """409 when the files of the draft are not the files that the card showed.
+
+    HRD-10d-2 (``chat_failure_modes.md`` §6). Only an ``expect`` with
+    ``files_digest`` runs it, so each other caller runs the statements of
+    before. The route reads the stored row and its ``email_attachments``
+    rows in the shape of ``GET /email/messages/{id}``, and folds them with
+    the one function of the tool, ``card_revise.draft_files_digest``. It
+    never trusts a digest of the request for the files that are there now.
+    It runs before any provider call, so a 409 sends nothing."""
+    if expect.files_digest is None:
+        return
+    head = (await db.execute(text(
+        "SELECT has_attachments FROM email_messages WHERE id = CAST(:id AS uuid)"
+    ), {"id": str(draft_id)})).fetchone()
+    flagged = bool(head is not None and head.has_attachments)
+    files: list[dict[str, Any]] = []
+    if flagged:
+        rows = (await db.execute(text(
+            "SELECT id, filename, size_bytes FROM email_attachments "
+            "WHERE message_id = CAST(:id AS uuid)"
+        ), {"id": str(draft_id)})).fetchall()
+        files = [{"id": str(r.id), "filename": r.filename, "size_bytes": r.size_bytes}
+                 for r in rows]
+    now = draft_files_digest({"has_attachments": flagged, "attachments": files})
+    if now != expect.files_digest:
+        raise HTTPException(status_code=409, detail=DRAFT_FILES_CHANGED_DETAIL)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -4330,6 +4374,9 @@ async def send_draft_endpoint(
         if req.expect is not None and not _draft_matches(drow, req.expect):
             raise HTTPException(
                 status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
+        # HRD-10d-2: the files that the card showed, when it sent them.
+        if req.expect is not None:
+            await check_draft_files(db, req.draft_id, req.expect)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:

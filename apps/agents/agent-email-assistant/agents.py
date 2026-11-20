@@ -8079,19 +8079,17 @@ async def send_draft(account_id: str, draft_id: str) -> str:
         if _revised(approved):
             return _closed_by_message("send_draft")
         return _unapproved_line() or _not_done("The draft was not sent.")
+    # HRD-10d-2: with the flag on, ``expect`` holds the files that the card listed.
+    expect, files_version = _card_expect(lists, seal, draft)
     try:
         await _post(
             "/email/drafts/send",
-            {"account_id": account_id, "draft_id": draft_id,
-             "expect": {**lists, "text_digest": seal["text_digest"]}},
+            {"account_id": account_id, "draft_id": draft_id, "expect": expect},
         )
     except GatewayError as exc:
         if exc.status != 409:
             raise
-        return (
-            "Not sent. The draft changed after the card showed it. Read the "
-            "draft again, and ask the user before you send it."
-        )
+        return await _send_refusal(draft_id, draft, files_version)
     # Task 3594: the draft went. The route answers no provider id, so the
     # record names the draft's own id.
     await _note_sent(f"draft:{draft_id}", [a for v in lists.values() for a in v])
@@ -8229,6 +8227,7 @@ def _address_set(values: Any) -> set[str]:
 
 def _draft_changed_text(
     draft_id: str, before: dict[str, Any], now: dict[str, Any], *, with_text: bool,
+    act: str = "", with_files: bool = False,
 ) -> str:
     """The answer of ``edit_draft`` to a 412 (HRD-10d-1). Nothing was saved.
 
@@ -8237,11 +8236,16 @@ def _draft_changed_text(
     before the card (*before*), then the value of the 412 (*now*,
     ``detail.current``). The subject and the three address lists are on each
     card. The text is on the card only when the call gave ``body`` or
-    ``rewrite`` (*with_text*). The rest of the draft is never shown."""
+    ``rewrite`` (*with_text*). The rest of the draft is never shown.
+
+    HRD-10d-2: ``send_draft`` and ``schedule_send`` give their own *act*
+    sentence, and their card lists the files (*with_files*). Then *now* holds
+    ``has_attachments`` and ``attachments`` of a new read, and the files are
+    a field too, by the one digest of the send (``draft_files_digest``)."""
     subject = before.get("subject") or ""
     lines = [card_outcome_text(
         CARD_CHANGED_SINCE,
-        f"The changes on the card were not saved to the draft {_changed_value(subject)}.")]
+        act or f"The changes on the card were not saved to the draft {_changed_value(subject)}.")]
     if not now:
         lines.append("The new values could not be read.")
         lines.append(f"  draft_id: {draft_id}")
@@ -8261,6 +8265,9 @@ def _draft_changed_text(
                       != _folded(str(now.get("text") or "")[:_CHANGED_TEXT_MAX])):
         rows.append(f"  Text: {_changed_value(before.get('body_text'))} → "
                     f"{_changed_value(now.get('text'))}")
+    if with_files and _files_digest(before) != _files_digest(now):
+        rows.append(f"  Files: {_changed_value(_file_names(before))} → "
+                    f"{_changed_value(_file_names(now))}")
     if rows:
         lines.append("These fields on the card changed in the draft (then → now):")
         lines.extend(rows)
@@ -8268,6 +8275,122 @@ def _draft_changed_text(
         lines.append("No field on the card changed. Another part of the draft changed.")
     lines.append(f"  draft_id: {draft_id}")
     return "\n".join(lines)
+
+
+# ── HRD-10d-2: the send checks the files too ─────────────────────────────────
+#
+# `chat_failure_modes.md` §6 row HRD-10d-2. Behind the same flag, `send_draft`
+# and `schedule_send` send the digest of the files of the read that their
+# card lists (`files_digest` in `expect`). The route folds the stored rows
+# with the same function. A 409 of a changed draft then gives the HRD-7 words.
+
+#: The act sentence of a refused send, and of a refused schedule.
+_SEND_CHANGED_ACT = "Nothing was sent. The draft {subject} stays in Drafts."
+_SCHEDULE_CHANGED_ACT = "Nothing was scheduled. The draft {subject} stays in Drafts."
+
+
+def _files_digest(draft: dict[str, Any]) -> str:
+    """``acb_skills.card_revise.draft_files_digest`` of *draft*, the one
+    function that the send route folds the stored files with."""
+    from acb_skills.card_revise import draft_files_digest
+
+    return draft_files_digest(draft)
+
+
+def _draft_files_version(draft: dict[str, Any]) -> str:
+    """The ``files_digest`` of *draft*, the read that the card lists the
+    files of. ``""`` when the flag is off for the run's org. The org comes
+    from the run binding inside the reader, never from an argument (R5)."""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if not card_precondition_on():
+        return ""
+    return _files_digest(draft)
+
+
+def _file_names(draft: dict[str, Any]) -> list[str]:
+    """The files of *draft* as its card names them: each name with its size."""
+    if not draft.get("has_attachments"):
+        return []
+    out: list[str] = []
+    for f in draft.get("attachments") or []:
+        if isinstance(f, dict):
+            size = _size_text(f.get("size_bytes"))
+            name = str(f.get("filename") or "file")
+            out.append(f"{name} ({size})" if size else name)
+    return out
+
+
+async def _draft_now(draft_id: str) -> dict[str, Any]:
+    """The draft as it is now, in the shape of ``detail.current`` of a 412,
+    with its files. ``{}`` when the read fails or finds no draft."""
+    try:
+        row = await _get(f"/email/messages/{draft_id}") or {}
+    except GatewayError:
+        return {}
+    if not isinstance(row, dict) or not row:
+        return {}
+    now: dict[str, Any] = {key: _draft_list(row.get(column)) for key, _, column in _DRAFT_FIELDS}
+    now.update(subject=row.get("subject") or "", text=str(row.get("body_text") or ""),
+               has_attachments=row.get("has_attachments"),
+               attachments=row.get("attachments") or [])
+    return now
+
+
+#: The answer of ``send_draft`` to a 409 with the flag off: the text of before.
+_SEND_CHANGED_OFF = (
+    "Not sent. The draft changed after the card showed it. Read the "
+    "draft again, and ask the user before you send it.")
+
+
+def _card_expect(
+    lists: dict[str, list[str]], seal: dict[str, Any], draft: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """``(expect, files_version)`` of a send card. Flag off: the ``expect``
+    of before, with no ``files_digest`` key, and ``""``."""
+    expect: dict[str, Any] = {**lists, "text_digest": seal["text_digest"]}
+    files_version = _draft_files_version(draft)
+    if files_version:
+        expect["files_digest"] = files_version
+    return expect, files_version
+
+
+async def _send_refusal(draft_id: str, draft: dict[str, Any], files_version: str) -> str:
+    """The answer of ``send_draft`` to a 409: the HRD-7 words with the flag
+    on, the text of before with it off. Nothing was sent."""
+    if files_version:
+        return await _send_changed_text(draft_id, draft, _SEND_CHANGED_ACT)
+    return _SEND_CHANGED_OFF
+
+
+async def _schedule_refusal(
+    exc: GatewayError, draft_id: str, draft: dict[str, Any], files_version: str,
+) -> str | None:
+    """The answer of ``schedule_send`` to a refused schedule, or None to
+    raise. With the flag on, a 409 of a changed draft gives the HRD-7 words.
+    A 409 of a draft that is already scheduled keeps its text of before."""
+    if exc.status == 404 and "not on" in str(exc).lower():
+        return ("Not scheduled. Send later is not on for this organization "
+                "yet. Offer to keep the draft, or to snooze the mail.")
+    said = str(getattr(exc, "detail", "") or exc).lower()
+    if files_version and exc.status == 409 and "changed" in said:
+        return await _send_changed_text(draft_id, draft, _SCHEDULE_CHANGED_ACT)
+    if exc.status in (404, 409, 422):
+        return f"Not scheduled. {exc}"
+    return None
+
+
+async def _send_changed_text(draft_id: str, before: dict[str, Any], act: str) -> str:
+    """The answer of ``send_draft`` or ``schedule_send`` to a 409 of a changed
+    draft, with the flag on (HRD-10d-2). It reads the draft again and names
+    each field on the card that changed: the people, the subject, the text
+    and the files. Nothing was sent, and the text never says it was."""
+    now = await _draft_now(draft_id)
+    return _draft_changed_text(
+        draft_id, before, now, with_text=True, with_files=True,
+        act=act.format(subject=_changed_value(before.get("subject") or "")))
 
 
 @_annotate_risk(open_world=False, destructive=False)
@@ -9221,19 +9344,21 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
         if line:
             return line
         return _not_done("Nothing was scheduled. The draft stays in Drafts.")
+    # HRD-10d-2: with the flag on, ``expect`` holds the files that the card
+    # listed. The route then checks the people and the files before it
+    # stores the schedule.
+    expect, files_version = _card_expect(lists, seal, draft)
     try:
         res = await _post("/email/drafts/schedule", {
             "account_id": account_id, "draft_id": draft_id,
             "send_at": when.isoformat(),
-            "expect": {**lists, "text_digest": seal["text_digest"]},
+            "expect": expect,
         }) or {}
     except GatewayError as exc:
-        if exc.status == 404 and "not on" in str(exc).lower():
-            return ("Not scheduled. Send later is not on for this organization "
-                    "yet. Offer to keep the draft, or to snooze the mail.")
-        if exc.status in (404, 409, 422):
-            return f"Not scheduled. {exc}"
-        raise
+        answer = await _schedule_refusal(exc, draft_id, draft, files_version)
+        if answer is None:
+            raise
+        return answer
     return (f"Scheduled: the draft goes at {stamp} from {sender} "
             f"(schedule_id {res.get('id', '')}). It stays in Drafts until then.")
 
