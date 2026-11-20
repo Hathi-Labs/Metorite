@@ -116,31 +116,54 @@ aggregate is first (NUM-2, after task 3127). Then Projects reports and
 board_stats, email counts, Studio object totals and WhatsApp stats (NUM-9,
 one PR per app).
 
-**Built as (NUM-2, 2026-11-17, task 3135).** `GET /crm/aggregate` does this:
+**Built as (NUM-2, 2026-11-20, task 3135).** NUM-2 ships dark. Only an org
+that the answer-first flag serves gets it (`flags.answer_first_allowed`:
+`CRM_QUESTIONS_ORGS` and `CRM_ANSWER_FIRST_ORGS`). Any other org gets the
+statement and the wire of before, byte for byte. `GET /crm/aggregate` does
+this:
 
 - **The baseline.** A module answer gets one when it has one `.from` and one
-  `.to` filter on its day field, over 1 to 3 whole months. The one statement
-  widens the start bound by 6 periods, and each row names its period. The
-  scan reads every record of the module in both cases, because no index
-  serves a date in the jsonb. So the wider window reads no more rows. The
-  answer gives the 6 periods in `baseline`, oldest first.
+  `.to` on its day field, over 1 to 3 whole months. Each end can be a
+  `field.<key>.from` or `.to` pair, or a `gte` or `lte` leaf of `query`
+  (SEM-1b) alone in its node. The one statement widens the start bound by 6
+  periods, and each row names its period. The answer gives the 6 periods in
+  `baseline`, oldest first.
+- **No baseline** when any other filter names the day field. Examples are a
+  third end, a `gt`, a `lt`, an `eq`, a leaf in an `any` group, and a filter
+  word. A wider start would not widen that window.
+- **The same figure.** The baseline only adds periods before the asked
+  range. The total, the records and the groups of the asked range stay the
+  same with a `query`, the filter words, `q` and a text-number measure. The
+  near pass of `q` keeps the baseline of the pass that the answer keeps.
 - **Coverage.** `coverage` gives the records, the records with no value in
   the measure field, and the drafts and cancelled records. The status count
   needs the catalogue status (`@status`) of a module.
 - **`checks`.** It holds the kinds `outlier` (the asked range against the
   periods before it) and `coverage`. A `concentration` stays in `findings`
-  (CRM-Q25e), so no finding is in both lists.
+  (CRM-Q25e), so no finding is in both lists. F1 stays an owner point.
 - **The tool text.** `crm_tools._check_lines` puts each `warn` check before
   the total. The model must say it first and ask "Do you want me to check
   why?" The sentence can hold a field label, which is org text. So it sits
   in the one frame of `acb_skills/untrusted.py`, as data and not as an
-  instruction. The text shows the sentence only, never "0 of 0".
+  instruction. The text shows the sentence only, never "0 of 0". No tool
+  description or parameter changed.
 
 NUM-2 gives no baseline to a core entity or to the overlay of an empty core
 slot. A range that is not whole months gets none either. A core entity gets
-the coverage of its measure field only.
+the coverage of its measure field only. The three fields `checks`,
+`baseline` and `coverage` are absent when the route does not compute them.
+
+**The cost.** Over 30,000 rows of 3 KB, one October total took 0.27 s with
+the baseline and 0.16 s without it. One quarter took 0.52 s and 0.19 s. The
+statement timeout is 10 s. The scan reads the same rows. The extra time is
+the grouping of the 6 periods.
+
 Fences: `tests/unit/test_crm_aggregate_checks.py` and
-`tests/unit/test_crm_aggregate_checks_r8.py`.
+`tests/unit/test_crm_aggregate_checks_r8.py`. The R8 file proves each
+composed filter against a hand-written SQL oracle, and the dark wire
+against a literal recorded on the files of `main`.
+`evals/crm_founder_questions/recorded_routes.json` is the file of `main`,
+because the founder run reads NUM-2 dark.
 
 ### 4.3 The harness makes sure (NUM-3, NUM-6)
 
