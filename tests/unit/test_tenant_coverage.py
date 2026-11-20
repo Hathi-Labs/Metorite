@@ -216,6 +216,22 @@ def test_the_chat_join_log_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE chat_join_log FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_connection_semantic_models_table_is_tenant_scoped() -> None:
+    """WS-SEM SEM-12 (``semantic_model.md`` §10.4). ``connection_semantic_models``
+    holds the versions of the model of one connection of an org. It must never
+    be exempt, and the committed phases must carry it (R5). Mutation: remove
+    the table from ``generated/01``, and this fails."""
+    gen = _generator()
+    assert "connection_semantic_models" in gen.discover_tables()
+    assert "connection_semantic_models" not in gen.EXEMPT
+    assert "connection_semantic_models" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE connection_semantic_models\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE connection_semantic_models FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must

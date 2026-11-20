@@ -1777,3 +1777,18 @@ async def test_the_card_saves_carry_body_markdown_on_update(gw_drafts: Any) -> N
     await NM._held_act(held["card_id"], NM._answer(action="save", cc=()))
     assert [s.draft_id for s in gw_drafts.saves] == [D9, D9]
     assert all(s.body_markdown is True for s in gw_drafts.saves)
+
+
+def test_the_files_digest_folds_the_case_and_the_spaces_of_a_file_id() -> None:
+    """HRD-10d-2. The read and the route both give a file id as ``str(uuid)``,
+    which is lower case with no space today. The digest still folds the case
+    and the spaces of the id, so a reader that gives the id in another form
+    never makes a draft that did not change read as changed. This fences the
+    fold."""
+    fid = "f0000000-0000-4000-8000-0000000000f1"
+    one = {"has_attachments": True,
+           "attachments": [{"id": fid, "filename": "quote.pdf", "size_bytes": 10}]}
+    two = {"has_attachments": True,
+           "attachments": [{"id": f"  {fid.upper()} ", "filename": "quote.pdf",
+                            "size_bytes": 10}]}
+    assert cr.draft_files_digest(one) == cr.draft_files_digest(two)

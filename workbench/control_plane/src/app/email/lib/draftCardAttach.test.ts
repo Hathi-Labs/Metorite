@@ -20,3 +20,14 @@ describe("DraftCard attach", () => {
     expect(src).toContain("}, [body, quote, to, cc, bcc]);");
   });
 });
+
+import { attKey } from "../components/ConversationView";
+
+describe("attKey", () => {
+  it("tells two same-name same-size files apart, and keeps one file's key", () => {
+    const a = { filename: "image.png", mimeType: "image/png", contentB64: "AAAA" };
+    const b = { filename: "image.png", mimeType: "image/png", contentB64: "AAAB" };
+    expect(attKey(a)).not.toBe(attKey(b));
+    expect(attKey(a)).toBe(attKey({ ...a }));
+  });
+});

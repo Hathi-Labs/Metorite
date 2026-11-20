@@ -538,7 +538,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
     # WS-55 EA-14a. The holder, the run's member, an assignee or an admin gives
-    # a task up. The task keeps its status and its assignees, so class B.
+    # a task up. The assignees stay, and the task moves to its lane (task 3648), a
+    # status write on a task the caller holds, so class B.
     Route("POST", "/projects/agent-runs/{run_id}/release", "release_agent_run", "B"),
     # WS-55 SW-11a (spec §12.7). A person hands a stalled run back to an agent:
     # one member prompt, with the rule of Release. The task does not change, so

@@ -251,6 +251,11 @@ def semantic_facts(others: Sequence[Mapping[str, Any]], sources: Sequence[Any],
     by_module = {src.module: src for src in sources}
     kept = [o for o in others if cat.is_semantic(o) and cat.semantic_problem(o) is None
             and cat.semantic_ref_problem(o, by_module) is None]
+    # SEM-8: a query that names a measure which serves nothing is stale too
+    # (``verified_queries.stale_reason``), so it serves nothing.
+    measures = {o.get("key") for o in kept if o.get("kind") == cat.KIND_MEASURE}
+    kept = [o for o in kept if o.get("kind") != cat.KIND_QUERY
+            or (o.get("query") or {}).get("measure") in (None, *measures)]
     return [*measure_facts(kept, by_module, approved_at),
             *join_facts(kept, by_module, approved_at),
             *query_facts(kept, approved_at)]
