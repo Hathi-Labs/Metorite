@@ -232,6 +232,22 @@ def test_the_connection_semantic_models_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE connection_semantic_models FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_studio_skill_runs_table_is_tenant_scoped() -> None:
+    """WS-TOF TOF-3a F12a (``ai_studio_rows/F12.md``). ``studio_skill_runs``
+    holds the runs of a saved skill of an org. It must never be exempt, and
+    the committed phases must carry it (R5). Mutation: remove the table from
+    ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "studio_skill_runs" in gen.discover_tables()
+    assert "studio_skill_runs" not in gen.EXEMPT
+    assert "studio_skill_runs" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE studio_skill_runs\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE studio_skill_runs FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must

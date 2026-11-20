@@ -394,6 +394,23 @@ def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch
     assert not skill_offer_allowed("globex")
     assert not skill_offer_allowed(None)
 
+def test_studio_skill_tests_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-3b F4b, ai_studio_rows/F4.md. The reload list holds the key,
+    and the one reader of the test run switch sees a change with no restart.
+    The credit cap is no ``*_ORGS`` key, so a reload never applies it."""
+    from gateway.routes.studio.flags import skill_tests_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_TESTS_ORGS")
+    assert not fr.reloadable("STUDIO_SKILL_TESTS_CAP_CREDITS")
+    monkeypatch.setenv("STUDIO_SKILL_TESTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_tests_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_TESTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_TESTS_ORGS",)
+    assert skill_tests_allowed("acme")
+    assert not skill_tests_allowed("globex")
+    assert not skill_tests_allowed(None)
+
 def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
     the one reader of the logic module switch sees a change with no restart."""

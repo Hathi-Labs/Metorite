@@ -855,6 +855,22 @@ class Settings(BaseSettings):
     # flip in production is the gate `enforcement-flip`, after the owner
     # preview. Spec: ai_studio.md section 14 TOF-1d.
     studio_skill_offer_orgs: str = ""
+    # TOF-3b F4b: STUDIO_SKILL_TESTS_ORGS lists the org ids where a member may
+    # run the tests of a skill (`POST /studio/skills/{id}/tests/run`). Each
+    # test is a real model turn in a dry run, so it SPENDS CREDITS. `*` opens
+    # every org. Empty opens none, and the route answers 404. Reader:
+    # `gateway.routes.studio.flags.skill_tests_allowed`. A SIGHUP reload
+    # applies a change (docs/flag_reload.md). A flip is OWNER-ONLY, because it
+    # spends credits. Spec: ai_studio_rows/F4.md.
+    studio_skill_tests_orgs: str = ""
+    # TOF-3b F4b: STUDIO_SKILL_TESTS_CAP_CREDITS is the most credits that ONE
+    # run of a skill's tests may spend. It has NO default value: empty means
+    # unset, and then the runner refuses every test run with `cap_unset`
+    # before any model call. A value that is no finite number above 0 reads
+    # as unset. A request may only lower it. Reader:
+    # `gateway.routes.studio.flags.skill_tests_cap`. It is no `*_ORGS` key, so
+    # a change needs a restart. The owner sets it. Spec: ai_studio_rows/F4.md.
+    studio_skill_tests_cap_credits: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with
