@@ -569,7 +569,10 @@ def _keep_instructions(tool: Any, session: Any) -> None:
         result = await real(*args, **kwargs)
         with contextlib.suppress(Exception):
             text = getattr(result, "instructions", None)
-            tool.__dict__[_INSTRUCTIONS_KEY] = text if isinstance(text, str) else None
+            from acb_skills.server_brief import INSTRUCTIONS_RAW_MAX
+
+            tool.__dict__[_INSTRUCTIONS_KEY] = (
+                text[:INSTRUCTIONS_RAW_MAX] if isinstance(text, str) else None)
         return result
 
     _initialize.__csy6_kept__ = True  # type: ignore[attr-defined]

@@ -309,3 +309,29 @@ def test_the_instructions_reach_the_model_in_the_per_turn_block_end_to_end(monke
         persona = str(getattr(agent, "instructions", "") or "") + json.dumps(
             getattr(agent, "default_options", {}) or {}, default=str)
         assert "CSY6-RECIPE" not in persona
+
+
+def test_a_huge_text_is_read_only_in_a_bounded_window() -> None:
+    """Review P2: a server may send megabytes. Neither the fold nor the stored copy
+    reads past ``INSTRUCTIONS_RAW_MAX`` characters. The shown text is the cut of
+    the first window, so a hostile tail changes nothing."""
+    import asyncio
+    import time
+
+    head = "recipe " * 200
+    huge = head + "Z" * 5_000_000
+    start = time.monotonic()
+    shown = sb.server_text(huge)
+    assert time.monotonic() - start < 0.05, "the fold read the whole text"
+    assert shown == sb.server_text(huge[: sb.INSTRUCTIONS_RAW_MAX])
+    assert len(shown) == 600 and shown.endswith("…")
+
+    class _Session:
+        async def initialize(self) -> Any:
+            return SimpleNamespace(instructions=huge)
+
+    tool, session = SimpleNamespace(), _Session()
+    _maf_mcp._keep_instructions(tool, session)
+    asyncio.run(session.initialize())
+    kept = _maf_mcp.server_instructions(tool)
+    assert kept is not None and len(kept) == sb.INSTRUCTIONS_RAW_MAX
