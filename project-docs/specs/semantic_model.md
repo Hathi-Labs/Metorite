@@ -617,7 +617,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft. **Split (audit, 2026-11-19, task 3743)** into SEM-13a, SEM-13b and SEM-13c, the three rows below. This row is the umbrella, and it holds no code of its own | `connections/`, `decide_features.py` (see the three rows) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The fences of the three rows. No class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. The sealed eval of review gap 5 is in SEM-13c | SEM-12 |
 | **SEM-13a** | 3 | The profiler, first slice (task 3835): steps 1, 2 and 4 of §4.2, with no decide call and an empty `ai` section. No caller. The scope, the decision on approval and the code anchors are in §10.5 | `gateway/connections/profiler.py` (new), `gateway/connections/mcp_tools.py` (a no-member call entry and a live list read that also gives the input schemas), `tests/unit/test_connection_profiler.py` (new), `tests/unit/test_connection_semantic_model_r8.py` (one case) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, a fake lister and a fake caller, no network), `test_connection_semantic_model_r8.py` (one profiler draft case). These stay green: `test_studio_mcp_tools.py`, `test_studio_live_preview.py`, `test_studio_preview_sends_nothing.py`, `test_studio_mcp_approvals.py`, and the R8 files `test_studio_live_preview_r8.py` and `test_studio_mcp_approvals_r8.py`. The mutation of each is in §14 | SEM-12 (built) |
 | **SEM-13b** | 3 | The profiler, step 3 of §4.2 (task 3836): the decide step. A `connection.` prefix and the feature `connection.map_model`, with its own day counter. The payer is the `connected_by` member. The `ai` section gets the chosen closed words | `gateway/decide_features.py` (a new `Prefix`), `gateway/connections/profiler.py` | HIGH (model calls, credits) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (extended, with the decide call faked), `test_decide_seam.py` | SEM-13a |
-| **SEM-13c** | 3 | The profiler, last slice (task 3837): step 0 of §4.2 (the trigger), a map from a normalised key back to the source field, and **review gap 5**: a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline | `evals/semantic/profiler/` (new), the trigger, the key map | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The scripted eval (new), with its sealed held-out set. It reuses `splits.py` and `compare.py` of task 3649 after they merge. On 2026-11-19, `git ls-tree -r origin/main --name-only` holds neither file, so no text cites them as on `main` | SEM-13b, task 3649 on `main` |
+| **SEM-13c** | 3 | The profiler, last slice (task 3837): step 0 of §4.2 (the trigger), a map from a normalised key back to the source field, and **review gap 5**: a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline. Two notes of the SEM-13a review: the caller must retry with a backoff after `stopped:limited`. Two sources can give one entity name, and their records merge, for example a tool `invoices` and a key `invoices`, or `list-invoices` and `list_invoices`. The result is a less exact draft with no value. SEM-13c or SEM-15 owns the repeated or merged draft | `evals/semantic/profiler/` (new), the trigger, the key map | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The scripted eval (new), with its sealed held-out set. It reuses `splits.py` and `compare.py` of task 3649 after they merge. On 2026-11-19, `git ls-tree -r origin/main --name-only` holds neither file, so no text cites them as on `main` | SEM-13b, task 3649 on `main` |
 | **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended). **Review Q1:** this PR moves the pin test of CSY §3.1 and the figure in CSY §5 to 1,300 characters (the WS-CSY planner agrees to that edit) | CSY-1 (task 3400), D-CSY-1 |
 | **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model. **Review gap 3:** the provider runs the same grant check as the attach (`is_authorized`), and returns nothing in a run that holds an untrusted pack (CSY §3.6: a member never learns of a server they cannot use) | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | HIGH (grant) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended). Two fence cases: a member without the grant reads nothing, and a run with the email pack reads nothing | SEM-12 |
 | **SEM-16** | 3 | The panel: the draft as a diff, accept per part, "Read it again" | `ConnectionSheet.tsx` | STANDARD UI · captures before merge | `CONNECTION_MODEL_ORGS` | Vitest of `ConnectionSheet.tsx` (extended) | SEM-13, CSY-9 (task 3409) |
@@ -1018,20 +1018,28 @@ approved yet. Fences in `test_connection_profiler.py`:
   becomes `unknown`.
 - A `-` becomes `_` before the digit rule, so `list-invoices` becomes
   `list_invoices`. A dot and a space stay refused.
-- The run leaves out a key or a type word with 5 or more digits in a row in
-  its raw text, and counts it. A date, an account number and an amount have
-  5 or more digits in a row. The digit rule would hide that figure in a key. So `d20240115`, `acct_50012345` and `invoice_123456` are left out.
-- A run of 4 or fewer digits gets an `_` between each two digits. So
-  `Q4_2024_Target` becomes `Q4_2_0_2_4_Target`, and `cf_9001` becomes
-  `cf_9_0_0_1`.
+- The run leaves out a key or a type word that holds a figure in its raw
+  text, and counts it. A figure is 5 or more digits in a row, or 6 or more
+  digits that only `_` or `-` join. The pattern is
+  `\d{5,}|\d(?:[-_]?\d){5,}`, and it reads the raw text before the dash rule.
+  A date, an account number, a phone number and an amount take one of these
+  forms. The digit rule would hide that figure in a key.
+- So these are left out: `d20240115`, `acct_50012345`, `invoice_123456`,
+  `d2024-01-15`, `day_2024-01-15`, `p_12_345_678`, `ph_9876-543-210`,
+  `amt_4_500_000`, `acct_5001_2345` and `card_4111_1111_1111_1111`.
+- Each other key gets an `_` between each two digits. So `Q4_2024_Target`
+  (5 digits across one `_`) becomes `Q4_2_0_2_4_Target`, and `cf_9001`
+  becomes `cf_9_0_0_1`.
 - This rule applies to entity keys, field keys, column names, argument keys
   and type words.
 - A key that still fails the rule, or that is the same as a key already in the
   entity, is left out. The run counts it.
 
 A known limit (F3 of the verifier, 2026-11-20): a value or an instruction
-written as one identifier with no space passes as a key. So SEM-15 must review
-the keys before a key gets into a prompt.
+written as one identifier with no space passes as a key. A hostile server can
+also write a figure as letters, or as an identifier with fewer digits. No
+digit rule bounds that, so the digit rule is a guard, not a proof. SEM-15 must
+review the keys before a key gets into a prompt.
 
 **The plan and the caps (fix round, 2026-11-20).** The profiler plans its
 calls in one fixed order. First come the reads with no argument, in the order
@@ -1053,12 +1061,17 @@ then the key.
 - A result over 64 KB, or over the 1 MB budget of the client, skips that tool
   only. The tool gives no shape, the run counts it in `left_out`, and the
   run goes on.
-- Four events stop the run, and then the run writes nothing. They are the
-  30 s cap (`stopped:time`) and a cache that cannot count the org window
-  (`stopped:cache`). They are also a full org window (`stopped:limited`) and
-  a server that changed during the run (`stopped:changed`). The last one
-  covers `LIVE_CHANGED` and `LIVE_NO_SERVER`. Another refusal of one call
-  skips that call.
+- Three events stop the run, and then the run writes nothing. They are the
+  30 s cap (`stopped:time`), a cache that cannot count the org window
+  (`stopped:cache`) and a full org window (`stopped:limited`).
+- A call that raises `LIVE_CHANGED` or `LIVE_NO_SERVER` also stops the run
+  (`stopped:changed`), and the run writes nothing. Another refusal of one
+  call skips that call.
+- The entry checks the identity of the server once, at the list read, and
+  keeps that server for the calls. So it does not see a change after the
+  list read, and today no call raises `LIVE_CHANGED`. The cost is one stale
+  draft that an admin reviews. A later slice may check the identity from the
+  registry again before each call.
 - The run frees its `LIVE_PER_ORG` slot before it writes the draft.
 
 A known limit (F4 of the verifier, 2026-11-20): the B1b-3 `tool_text_hash`
@@ -1270,8 +1283,12 @@ names the mutation that must turn it red.
     `test_a_wrapper_takes_the_tool_name_and_fills_no_argument` (P1b),
     `test_a_tool_name_with_a_dash_gives_an_entity` (P2),
     `test_a_key_with_five_digits_in_a_row_is_left_out` (F2),
+    `test_a_figure_split_by_dashes_or_underscores_is_left_out` (G1),
+    `test_a_key_with_five_digits_or_fewer_across_a_mark_is_kept` (G1),
     `test_a_changed_server_during_the_run_stops_it` (F5) and
-    `test_the_write_holds_no_live_slot`.
+    `test_the_write_holds_no_live_slot`. The F5 case patches the call to
+    raise the refusal. So it proves the reaction only, because today no call
+    raises it (§10.5 "The plan and the caps").
   - No value. A value in a fake result does not get into the body.
     **Mutation:** keep a value, and the case fails.
   - The normalisation. `Custom_Field_10` and `int64` normalise, and
