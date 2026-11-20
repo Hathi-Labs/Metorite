@@ -83,6 +83,23 @@ RANGE_ENDS: dict[str, str] = {".from": ">=", ".to": "<="}
 #: :data:`RANGE_ENDS` splits a ``field.<key>`` name.
 _OPERATORS: dict[str, str] = {**RANGE_ENDS, ".gt": ">", ".lt": "<"}
 
+#: CRM-Q34-5: the filter words of a module filter, for an org on
+#: ``CRM_MODULE_FIND_ORGS``, each with the op of the query leaf that it
+#: lowers to (:func:`lower_pair`). :func:`filter_end` is the ONE parser of a
+#: word, and :func:`_word_filter` the ONE builder of its clause. ``starts``
+#: is no op of ``acb_common.studio_query``: only a lowered leaf carries it.
+FILTER_WORDS: dict[str, str] = {
+    ".has": "contains", ".starts": "starts", ".not": "ne", ".in": "in", ".empty": "is_empty",
+}
+#: CRM-Q34-5: the most values of one ``.in`` filter. More is a 422.
+IN_VALUES_MAX = 50
+#: CRM-Q34-5: the words that a number field, a date field and a boolean
+#: field take. A text, a picklist, a lookup and each other type take every
+#: word, and a range only when they hold numbers (CRM-Q34-11).
+NUMBER_WORDS: tuple[str, ...] = ("", ".from", ".to", ".not", ".in", ".empty")
+DATE_WORDS: tuple[str, ...] = NUMBER_WORDS
+BOOLEAN_WORDS: tuple[str, ...] = ("", ".not", ".empty")
+
 #: The types a field measure takes.
 MEASURE_TYPES: tuple[str, ...] = ("number", "decimal", "currency", "percent")
 
@@ -570,12 +587,14 @@ def module_measure(measure: str, field: str | None) -> tuple[str, str | None]:
 
 def used_keys(scope: FieldScope, names: list[str | None]) -> dict[str, str | list[str]]:
     """Each key word that *names* use, with the real key it read (CRM-Q31-2
-    item 5). A filter name may end in ``.from`` or ``.to``. A sum
+    item 5). A filter name may end in ``.from``, ``.to`` or a word of
+    :data:`FILTER_WORDS` (CRM-Q34-5). A sum
     (CRM-Q32-9) gives the list of its keys."""
     out: dict[str, str | list[str]] = {}
     for name in names:
         word = name or ""
-        for end in RANGE_ENDS:
+        # CRM-Q34-5: a word of FILTER_WORDS ends a name as a range end does.
+        for end in (*RANGE_ENDS, *FILTER_WORDS):
             if word.endswith(end) and word[: -len(end)] in KEY_WORDS:
                 word = word[: -len(end)]
         if word in KEY_WORDS and word in scope.fields:
@@ -1063,14 +1082,16 @@ def text_number_keys(measure: str, field_key: str | None, fields: str | None,
     return list(dict.fromkeys(keys))
 
 
-def _no_value(column: str, p: str) -> str:
+def _no_value(column: str, p: str, nv: str = _NO_VALUE) -> str:
     """True when the field holds no value: a missing key, a JSON null, or a
-    string that trims to one of :data:`NO_VALUE_WORDS` in any case."""
+    string that trims to one of the words bound as *nv* in any case: the
+    words of :data:`NO_VALUE_WORDS` by default. CRM-Q34-5 (:func:`_blank`)
+    binds its own words."""
     return (
         f"(jsonb_typeof({column} -> :{p}) IS NULL "
         f"OR jsonb_typeof({column} -> :{p}) = 'null' "
         f"OR (jsonb_typeof({column} -> :{p}) = 'string' "
-        f"AND lower({_trimmed(column, p)}) = ANY(CAST(:{_NO_VALUE} AS text[]))))"
+        f"AND lower({_trimmed(column, p)}) = ANY(CAST(:{nv} AS text[]))))"
     )
 
 
@@ -1385,21 +1406,39 @@ def _said(name: str) -> str:
     return f"'{FIELD_PREFIX}{name}'"
 
 
-def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
-    """The field and the range end of one filter name."""
-    if name not in scope.fields:
+def filter_end(name: str, keys: Collection[str], words: bool = False,
+               ) -> tuple[str, str | None]:
+    """THE parser of one filter name: its key, and its end or word, or None.
+
+    A key of *keys* wins over an end: a field whose key is ``Notes.has``
+    stays that field. Else a name that ends in ``.from`` or ``.to`` is a
+    range. With *words* (CRM-Q34-5, an org on ``CRM_MODULE_FIND_ORGS``), a
+    name that ends in a word of :data:`FILTER_WORDS` is that word. Without
+    *words*, ``Notes.has`` is a key, so it stays the 422 ``unknown_field``
+    of before. A word with no key before it (``.has``) is no word, so its
+    422 names the same key with the flag on or off. Pure."""
+    if name not in keys:
         for end in RANGE_ENDS:
             if name.endswith(end):
-                # A key word with no key field is the 422 `no_key_field`.
-                # Task 3690: an unknown base is the 422 `unknown_field` of
-                # the base, so its hint names the field, not `<key>.from`.
-                return scope.ref(name[: -len(end)]), end
-    return scope.ref(name), None
+                return name[: -len(end)], end
+        for end in FILTER_WORDS if words else ():
+            if name.endswith(end) and name[: -len(end)]:
+                return name[: -len(end)], end
+    return name, None
+
+
+def _split(scope: FieldScope, name: str, words: bool = False) -> tuple[FieldRef, str | None]:
+    """The field and the end of one filter name (:func:`filter_end`).
+    A key word with no key field is the 422 ``no_key_field``. Task 3690: an
+    unknown base is the 422 ``unknown_field`` of the base, so its hint names
+    the field, not ``<key>.from``."""
+    key, end = filter_end(name, scope.fields, words)
+    return scope.ref(key), end
 
 
 def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
             value: str, also: Sequence[str] = (),
-            ext: tuple[str, str] | None = None,
+            ext: tuple[str, Any] | None = None,
             said: str | None = None) -> tuple[str, Any, dict[str, Any], str]:
     """One filter clause, its bound value, its bound keys and its FROM text.
     *also* holds the stored values that a text filter counts too
@@ -1407,7 +1446,9 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
     id)`` of a lookup filter whose value is a Metorite id (task 3128,
     :func:`lookup_ids`). *said* names the value in a 422 of the value. None
     names the old parameter ``'field.<key>'`` (SEM-1b-2: a query leaf names
-    itself)."""
+    itself). A word of :data:`FILTER_WORDS` builds in :func:`_word_filter`."""
+    if end in FILTER_WORDS:
+        return _word_filter(scope, ref, end, k, v, value, also, ext, said)
     x = ext[0] if ext is not None and ref.type == "lookup" and end is None else None
     clause, bound = _filter_value(scope, ref, end, k, v, value, also, x, said)
     # CRM-Q34-11: a range on a text field that holds numbers reads the same
@@ -1504,6 +1545,154 @@ def _folded(text_value: Any) -> str:
     return str(text_value or "").strip().lower()
 
 
+# ── The filter words (CRM-Q34-5, crm_platform.md §18.17) ────────────────────
+#
+# For an org on CRM_MODULE_FIND_ORGS, a module filter also takes
+# ``field.<key>.has``, ``.starts``, ``.not``, ``.in`` and ``.empty``.
+# :func:`filter_end` parses each word, and :func:`_word_filter` builds it.
+# The module total and the module list both reach it through
+# :func:`module_where`, so they count the same records.
+#
+# * ``.has`` and ``.starts``: part of the text, in any case (``ILIKE``).
+#   :func:`like_pattern` escapes ``%``, ``_`` and ``\``. A lookup reads the
+#   name of its target, never the id. A JSON object of a text field reads
+#   its name, as ``q`` does, so the JSON text never matches.
+# * ``.not``: the exact negation of ``=``, so a record with no value matches.
+# * ``.in=a,b``: one of the values (``core.in_parts``), each as ``=`` takes it.
+# * ``.empty=true|false``: no value, or a value (:func:`_blank`). A number
+#   field reads each value that is no plain number as empty.
+# * Every key and every value is bound.
+
+
+def _word_refusal(scope: FieldScope, ref: FieldRef, end: str, allowed: Sequence[str],
+                  said: str | None) -> HTTPException:
+    """The 422 of a word that the type of *ref* does not take. It names
+    each word that the field takes, so the next call can pick one."""
+    word = scope.filter_word(ref.key)
+    kinds = ", ".join(f"{word}{w}" if w else f"{word}=<value>" for w in allowed[:-1])
+    return _refuse(
+        f"{said or _said(ref.key + end)} does not work: '{ref.key}' is a {ref.type} "
+        f"field. It takes {kinds} and {word}{allowed[-1]}.")
+
+
+def _allowed_words(ref: FieldRef) -> tuple[str, ...] | None:
+    """The words that *ref* takes, or None for every word."""
+    if ref.type in MEASURE_TYPES or ref.parts:
+        return NUMBER_WORDS
+    if ref.type in DATE_TYPES:
+        return DATE_WORDS
+    if ref.type == "boolean":
+        return BOOLEAN_WORDS
+    return None
+
+
+def _words_value(name: str, value: str, said: str | None, end: str) -> list[str]:
+    """The values of ``.in`` (:func:`core.in_parts`), or a 422: none, or
+    more than :data:`IN_VALUES_MAX`."""
+    from gateway.routes.crm.core import MAX_Q_CHARS, in_parts
+
+    parts = in_parts(value)
+    if not parts:
+        raise _refuse(f"{said or _said(name + end)} needs at least one value, as a,b.")
+    if len(parts) > IN_VALUES_MAX:
+        raise _refuse(f"{said or _said(name + end)} takes at most {IN_VALUES_MAX} values.")
+    if any(len(part) > MAX_Q_CHARS for part in parts):
+        raise _refuse(
+            f"{said or _said(name + end)} takes values of at most {MAX_Q_CHARS} characters.")
+    return parts
+
+
+def _blank(column: str, p: str, nv: str) -> str:
+    """True when the field holds no value: a missing key, a JSON null, a
+    string that trims to one of the bound words *nv*, or an empty JSON list.
+    ``.empty`` on a text field always binds ``[""]``, also for a text field
+    that holds numbers. Never NULL. The CASE keeps the length off a value that
+    is no list."""
+    return (
+        f"({_no_value(column, p, nv)} OR CASE WHEN jsonb_typeof({column} -> :{p}) = "
+        f"'array' THEN jsonb_array_length({column} -> :{p}) = 0 ELSE false END)"
+    )
+
+
+def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, value: str,
+                 also: Sequence[str], ext: tuple[str, Any] | None,
+                 said: str | None) -> tuple[str, Any, dict[str, Any], str]:
+    """One filter clause of a word of :data:`FILTER_WORDS` (CRM-Q34-5), with
+    the return of :func:`_filter`. *also* and *ext* are those of ``=``: the
+    stored variants of a text value, and the Zoho id of a lookup (a list of
+    them for ``.in``)."""
+    from gateway.routes.crm.core import MAX_Q_CHARS
+
+    allowed = _allowed_words(ref)
+    if allowed is not None and end not in allowed:
+        raise _word_refusal(scope, ref, end, allowed, said)
+    column = _reads(scope.column)
+    source = _source_of(scope.column)
+    keys: dict[str, Any] = {k: ref.key}
+    number = ref.type in MEASURE_TYPES or bool(ref.parts)
+    if end == ".not":
+        # The exact negation of `=`: a record where `=` is NULL matches too.
+        # A 422 of the value names `field.<key>.not`, not `field.<key>`.
+        clause, bound, keys, source = _filter(scope, ref, None, k, v, value, also, ext,
+                                              said or _said(ref.key + end))
+        return f"NOT coalesce(({clause}), false)", bound, keys, source
+    if end == ".empty":
+        word = value.strip().lower()
+        if word not in ("true", "false"):
+            raise _refuse(f"{said or _said(ref.key + end)} must be true or false.")
+        if number:
+            amount, keys, source = _amount(scope.column, ref, k)
+            return f"(({amount}) IS NULL) = CAST(:{v} AS boolean)", word == "true", keys, source
+        # ONE meaning on a text field, whatever else the call reads: only a
+        # blank text is empty. NA and `-` are no value only for the number
+        # read of CRM-Q34-11 (`_amount` above), never for `.empty`.
+        keys[f"{v}_nv"] = [""]
+        return (f"({_blank(column, k, f'{v}_nv')}) = CAST(:{v} AS boolean)",
+                word == "true", keys, source)
+    if end == ".in":
+        parts = _words_value(ref.key, value, said, end)
+        if number:
+            amount, keys, source = _amount(scope.column, ref, k)
+            wanted = list(dict.fromkeys(_decimal(ref.key + end, p, said) for p in parts))
+            return f"{amount} = ANY(CAST(:{v} AS numeric[]))", wanted, keys, source
+        if ref.type in DATE_TYPES:
+            days = list(dict.fromkeys(_iso_date(ref.key + end, p, said).isoformat()
+                                      for p in parts))
+            return f"left({column} ->> :{k}, 10) = ANY(CAST(:{v} AS text[]))", days, keys, source
+        if ref.type == "lookup":
+            ids = list(ext[1]) if ext is not None and isinstance(ext[1], list) else []
+            by_id = f" OR {_lookup_id(column, k)} = ANY(CAST(:{ext[0]} AS text[]))" if (
+                ext is not None and ids) else ""
+            if by_id and ext is not None:
+                keys[ext[0]] = ids
+            return (f"({_lookup_id(column, k)} = ANY(CAST(:{v} AS text[])) OR "
+                    f"{column} -> :{k} ->> 'name' = ANY(CAST(:{v} AS text[])){by_id})",
+                    parts, keys, source)
+        # A picklist, a text and each other type: the clause of `=`, with
+        # each value and its stored variants.
+        return _filter(scope, ref, None, k, v, parts[0], (*parts[1:], *also), None,
+                       said or _said(ref.key + end))
+    # `.has` and `.starts`: part of the text, in any case. The escape of
+    # like_pattern makes each `%`, `_` and `\` literal.
+    text_value = value.strip()
+    if not text_value:
+        raise _refuse(f"{said or _said(ref.key + end)} needs some text.")
+    if len(text_value) > MAX_Q_CHARS:
+        raise _refuse(f"{said or _said(ref.key + end)} takes at most {MAX_Q_CHARS} characters.")
+    pattern = like_pattern(text_value, starts=end == ".starts")
+    if ref.type == "lookup":
+        return (f"(CASE WHEN jsonb_typeof({column} -> :{k}) = 'object' THEN "
+                f"btrim({_name_text(f'{column} -> :{k}')}) ILIKE :{v} ELSE false END)",
+                pattern, keys, source)
+    return (
+        f"(btrim({_text_value(column, k)}) ILIKE :{v} OR "
+        f"CASE WHEN jsonb_typeof({column} -> :{k}) = 'array' THEN EXISTS (SELECT 1 FROM "
+        f"jsonb_array_elements({column} -> :{k}) agf_e WHERE btrim(CASE jsonb_typeof(agf_e) "
+        "WHEN 'string' THEN agf_e #>> '{}' WHEN 'number' THEN agf_e #>> '{}' "
+        f"WHEN 'object' THEN {_name_text('agf_e')} END) ILIKE :{v}) ELSE false END)",
+        pattern, keys, source)
+
+
 #: §18.16 part 6: the types whose filter value counts its stored variants.
 ALIAS_TYPES: tuple[str, ...] = ("text", "select")
 #: The most distinct values that one alias read takes.
@@ -1517,16 +1706,21 @@ async def text_matches(db: Any, org: str, scope: FieldScope, module: str,
     short forms, from the distinct values of the field
     (``crm_sync.terms.value_matches``). One grouped statement for each text
     filter, in the caller's tenant session. A range and each other type
-    take none."""
+    take none.
+
+    CRM-Q34-5: ONE read for each key. The values of an ``.in`` are each a
+    pair of the probe (:func:`filter_probe`), and they share the read."""
     from gateway.crm_sync.terms import value_matches
 
     out: dict[int, list[str]] = {}
+    read: dict[str, Any] = {}
     for index, (name, value) in enumerate(pairs):
         ref = scope.fields.get(name)
         if ref is None or ref.type not in ALIAS_TYPES or ref.parts or not str(value).strip():
             continue
-        distinct = await value_counts(db, org, module, ref.key, ALIAS_VALUES)
-        out[index] = value_matches(str(value), distinct)
+        if ref.key not in read:
+            read[ref.key] = await value_counts(db, org, module, ref.key, ALIAS_VALUES)
+        out[index] = value_matches(str(value), read[ref.key])
     return out
 
 
@@ -1599,10 +1793,67 @@ async def lookup_ids(db: Any, org: str, scope: FieldScope,
     return out
 
 
+def filter_probe(scope: FieldScope, pairs: Sequence[tuple[str, str]], words: bool = False,
+                 ) -> tuple[list[tuple[str, str]], list[tuple[int, ...]]]:
+    """The pairs that :func:`text_matches` and :func:`lookup_ids` read, and
+    the probe indices of each pair (CRM-Q34-5). Pure.
+
+    Without *words* the probe IS *pairs*, and pair ``i`` owns probe ``i``,
+    so each call of before reads the same. With *words*, ``.not`` reads its
+    key and value, as ``=`` does, and ``.in`` reads its key once for each
+    value, so both count the same variants and ids as ``=``. Each other
+    word and each range reads nothing (an empty key)."""
+    if not words:
+        return list(pairs), [(i,) for i in range(len(pairs))]
+    probe: list[tuple[str, str]] = []
+    owners: list[tuple[int, ...]] = []
+    for name, value in pairs:
+        key, end = filter_end(name, scope.fields, True)
+        if end is None:
+            parts = [(name, value)]
+        elif end == ".not":
+            parts = [(key, value)]
+        elif end == ".in":
+            # The limits of `.in` refuse here, before any read of the values.
+            parts = [(key, part) for part in _words_value(key, value, None, end)]
+        else:
+            parts = [("", value)]
+        owners.append(tuple(range(len(probe), len(probe) + len(parts))))
+        probe.extend(parts)
+    return probe, owners
+
+
+def word_names(scope: FieldScope, pairs: Sequence[tuple[str, str]],
+               words: bool = False) -> list[str]:
+    """Each filter name of *pairs* that :func:`filter_end` reads as a word
+    of :data:`FILTER_WORDS` (CRM-Q34-5), in order. The answer names them,
+    so the tool words a filter only when the route read it as a word. A key
+    of the scope wins, so ``Notes.has`` of a real field is never here."""
+    return [name for name, _value in pairs
+            if filter_end(name, scope.fields, words)[1] in FILTER_WORDS]
+
+
+def matched_values(pairs: Sequence[tuple[str, str]], owners: Sequence[tuple[int, ...]],
+                   matches: Mapping[int, Sequence[str]]) -> dict[str, list[str]]:
+    """Each filter name of *pairs* → the stored values that it counted (the
+    ``matched`` of the answer, §18.16 part 6). An ``.in`` joins the values
+    of its parts, each once (CRM-Q34-5). Without words, it is the map of
+    before: one entry for each pair with matches, in order."""
+    out: dict[str, list[str]] = {}
+    for index, (name, _value) in enumerate(pairs):
+        mine = [j for j in owners[index] if j in matches]
+        if not mine:
+            continue
+        found = [m for j in mine for m in matches[j]]
+        out[name] = list(dict.fromkeys(found)) if len(owners[index]) > 1 else list(found)
+    return out
+
+
 def module_where(
     scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
     matches: Mapping[int, Sequence[str]] | None = None,
     ids: Mapping[int, str] | None = None,
+    words: bool = False,
 ) -> WhereSql:
     """The WHERE clause of one module: the module, and each field filter.
 
@@ -1610,16 +1861,24 @@ def module_where(
     before any statement runs. A range on a datetime field reads *zone*,
     the CRM zone (CRM-Q25b). *ids* holds the Zoho id of each lookup filter
     whose value is a Metorite id (task 3128, :func:`lookup_ids`).
+
+    CRM-Q34-5: with *words* (``CRM_MODULE_FIND_ORGS``), a name may end in a
+    word of :data:`FILTER_WORDS`. *matches* and *ids* are keyed by the probe
+    of :func:`filter_probe`. Without words, the probe is *pairs*, so the SQL
+    is the SQL of before, to the byte.
     """
     clauses = [f"module = :{_MODULE}"]
     params: dict[str, Any] = {_MODULE: module, ZONE_PARAM: zone}
     sources: list[str] = []
+    _probe, owners = filter_probe(scope, pairs, words)
     for index, (name, value) in enumerate(pairs):
-        ref, end = _split(scope, name)
+        ref, end = _split(scope, name, words)
         k, v = f"agf_k{index}", f"agf_v{index}"
-        ext = (f"agf_x{index}", ids[index]) if ids and index in ids else None
-        clause, bound, keys, source = _filter(scope, ref, end, k, v, value,
-                                              (matches or {}).get(index, ()), ext)
+        mine = owners[index]
+        found = [ids[j] for j in mine if ids and j in ids]
+        ext = (f"agf_x{index}", found if end == ".in" else found[0]) if found else None
+        also = [m for j in mine for m in (matches or {}).get(j, ())]
+        clause, bound, keys, source = _filter(scope, ref, end, k, v, value, also, ext)
         clauses.append(clause)
         params.update(keys)
         params[v] = bound
@@ -1648,13 +1907,18 @@ async def module_field_where(
     ``tests/unit/test_crm_module_records_r8.py``. The caller names the module
     from the mirrored set, and RLS holds the session (R5)."""
     from gateway.routes.crm.core import current_tenant
+    from gateway.routes.crm.flags import module_find_allowed
 
     org = str(current_tenant())
     scope = await module_scope(db, module)
     zone = await crm_zone(db, current_tenant())
-    matches = await text_matches(db, org, scope, module, pairs)
-    ids = await lookup_ids(db, org, scope, pairs)
-    return module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+    # CRM-Q34-5: the filter words, read by the same probe as the total.
+    words = module_find_allowed(current_tenant())
+    probe, _owners = filter_probe(scope, pairs, words)
+    matches = await text_matches(db, org, scope, module, probe)
+    ids = await lookup_ids(db, org, scope, probe)
+    return module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids,
+                        words=words)
 
 
 # ── One query (WS-SEM SEM-1b-1, semantic_model.md §5.1) ─────────────────────
@@ -1700,7 +1964,10 @@ LOWERED: dict[str | None, str] = {None: "eq", ".from": "gte", ".to": "lte"}
 #: The op of a leaf → the range end that :func:`_filter` takes. ``gt`` and
 #: ``lt`` have ends of their own, which no old parameter takes.
 _QUERY_ENDS: dict[str, str | None] = {
-    **{op: end for end, op in LOWERED.items()}, "gt": ".gt", "lt": ".lt"}
+    **{op: end for end, op in LOWERED.items()}, "gt": ".gt", "lt": ".lt",
+    # CRM-Q34-5: the op of a lowered word → its word. No native leaf takes
+    # one of these ops yet (:data:`QUERY_OPS`), so only a lowered leaf does.
+    **{op: end for end, op in FILTER_WORDS.items()}}
 #: The bound names of a query leaf: node ``n``, leaf ``j``.
 _QUERY_KEY = "agf_qk"
 _QUERY_VALUE = "agf_qv"
@@ -1724,7 +1991,8 @@ DATETIME_EQ_RULES: tuple[str, ...] = ("native_zone", "stored_prefix")
 @dataclass(frozen=True)
 class QueryLeaf:
     """One leaf of a checked query: the key as the caller wrote it, the op
-    (never ``in``, which expands), and the JSON value. *lowered* is True
+    (never ``in`` in a native leaf, which expands), and the JSON value. A
+    lowered word (CRM-Q34-5) keeps its op, ``in`` too. *lowered* is True
     for a leaf of an old ``field.<key>`` parameter (:func:`lower_pair`): it
     keeps the clause and the 422 words of the old parameter."""
 
@@ -1734,14 +2002,20 @@ class QueryLeaf:
     lowered: bool = False
 
 
-def lower_pair(name: str, value: str) -> QueryLeaf:
+def lower_pair(name: str, value: str, keys: Collection[str] = (),
+               words: bool = False) -> QueryLeaf:
     """The leaf of one old pair ``field.<name>=<value>`` (:data:`LOWERED`):
     ``.from`` is ``gte``, ``.to`` is ``lte``, and each other name is ``eq``.
     The leaf is marked ``lowered``, so it builds the clause of the old
-    parameter. Pure."""
-    for end, op in LOWERED.items():
-        if end is not None and name.endswith(end) and name[: -len(end)]:
-            return QueryLeaf(name[: -len(end)], op, value, lowered=True)
+    parameter. Pure.
+
+    CRM-Q34-5: the name goes through :func:`filter_end`, the one parser. A
+    key of *keys* wins over an end. With *words*, a word of
+    :data:`FILTER_WORDS` lowers to its op (``.has`` is ``contains``), and
+    the leaf builds the clause of the word."""
+    key, end = filter_end(name, keys, words)
+    if end is not None and key:
+        return QueryLeaf(key, LOWERED.get(end) or FILTER_WORDS[end], value, lowered=True)
     return QueryLeaf(name, LOWERED[None], value, lowered=True)
 
 
@@ -1935,7 +2209,7 @@ def query_ranges(scope: FieldScope | None,
         for leaf in node:
             ref = _leaf_ref(scope, leaf.key)
             for end in _leaf_ends(ref, leaf):
-                if end is not None:
+                if end in _OPERATORS:
                     side = ".from" if end in (".from", ".gt") else ".to"
                     out.append((leaf.key + side, str(leaf.value)))
     return out
@@ -2091,12 +2365,13 @@ def find_words(q: str | None) -> list[str]:
     return words
 
 
-def like_pattern(word: str) -> str:
-    """*word* as an ``ILIKE`` pattern that finds it anywhere. ``\\``, ``%``
-    and ``_`` are escaped with ``\\``, the default escape of ``LIKE``, so
-    each is a literal character."""
+def like_pattern(word: str, *, starts: bool = False) -> str:
+    """*word* as an ``ILIKE`` pattern that finds it anywhere, or only at the
+    start with *starts* (CRM-Q34-5, ``.starts``). ``\\``, ``%`` and ``_``
+    are escaped with ``\\``, the default escape of ``LIKE``, so each is a
+    literal character."""
     escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
+    return f"{escaped}%" if starts else f"%{escaped}%"
 
 
 def find_keys(scope: FieldScope) -> tuple[FieldRef, ...]:
@@ -2108,13 +2383,23 @@ def find_keys(scope: FieldScope) -> tuple[FieldRef, ...]:
     return tuple(refs[:FIND_KEYS_MAX])
 
 
+def _name_text(obj: str) -> str:
+    """The ``name`` of the JSON object *obj* as text, only when that name is
+    a JSON string or number. A name that is an object, a list, a boolean or
+    null gives NULL, so its JSON text never matches (CRM-Q34-5 round 3).
+    *obj* is SQL of this module."""
+    return (f"(CASE WHEN jsonb_typeof({obj} -> 'name') IN ('string', 'number') "
+            f"THEN {obj} ->> 'name' END)")
+
+
 def _lookup_name(column: str, p: str) -> str:
     """The name of a lookup value ``{id, name}``, or the text of a string.
     An array, a number and each other value give NULL, so the JSON text of
-    a value never reaches the row text (fix round, F4)."""
+    a value never reaches the row text (fix round, F4). A name that is no
+    string or number gives NULL too (:func:`_name_text`)."""
     return (
         f"(CASE jsonb_typeof({column} -> :{p}) "
-        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' "
+        f"WHEN 'object' THEN {_name_text(f'{column} -> :{p}')} "
         f"WHEN 'string' THEN {column} ->> :{p} END)"
     )
 
@@ -2123,12 +2408,13 @@ def _text_value(column: str, p: str) -> str:
     """The text of a text field: a string or a number as it is, the name of
     an object (a Zoho type that the mapping keeps as ``text``), and NULL for
     an array or any other value. So ``q="id"`` never matches the JSON text
-    of an object (fix round, P2-2)."""
+    of an object (fix round, P2-2). A name that is no string or number
+    gives NULL too (:func:`_name_text`, CRM-Q34-5 round 3)."""
     return (
         f"(CASE jsonb_typeof({column} -> :{p}) "
         f"WHEN 'string' THEN {column} ->> :{p} "
         f"WHEN 'number' THEN {column} ->> :{p} "
-        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' END)"
+        f"WHEN 'object' THEN {_name_text(f'{column} -> :{p}')} END)"
     )
 
 
@@ -2790,5 +3076,6 @@ __all__ = [
     "text_numbers_sql",
     "used_keys",
     "value_counts",
+    "word_names",
     "zoned",
 ]
