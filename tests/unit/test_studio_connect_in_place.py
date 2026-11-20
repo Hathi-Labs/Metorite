@@ -400,13 +400,6 @@ def _registry_writers() -> dict[str, set[str]]:
     }
 
 
-#: A written provider that the connector list does not hold yet, with its
-#: reason. API-2 (``api_connections.md`` §2.11) writes the ``api:zoho_books``
-#: row, dark behind ``API_CONNECTIONS_ORGS``. API-5 adds its row to the
-#: connector list with the console rows, and then it leaves this set.
-_NOT_LISTED_YET: frozenset[str] = frozenset({"api:zoho_books"})
-
-
 def _calls_a_registry_write(text: str) -> bool:
     """True when *text* calls a registry write of the store: ``store.save_headers(...)``,
     a bare ``save_headers(...)`` after ``from ... import save_headers``, or a
@@ -489,7 +482,24 @@ def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> Non
     # as blocked by the route: keep every written provider on the list (or the `mcp:` family).
     from gateway.connections import mcp as mcp_registry
 
-    assert written <= set(rows) | {mcp_registry.PREFIX} | _NOT_LISTED_YET, sorted(written - set(rows))
+    assert written <= set(rows) | {mcp_registry.PREFIX}, sorted(written - set(rows))
+
+
+def test_the_api_connection_of_zoho_books_is_a_listed_org_row() -> None:
+    """API-5 (``api_connections.md`` §2.11, gap 4). The connect flow of API-2
+    writes ``api:zoho_books``, so the connector list holds it with no
+    exemption. It is an org connection of the console, and only a holder of
+    ``integrations:manage`` may connect it."""
+    from gateway.routes import integrations_api_connect as api_connect
+
+    row = cl.connector(api_connect.PROVIDER)
+    assert row is not None
+    assert (row["owning_app"], row["scope"], row["signin"]) == (
+        api_connect.OWNING_APP, "org", "admin_consent")
+    assert ic.setup_href_for(api_connect.PROVIDER) == "/integrations"
+    assert connections.checkable(api_connect.PROVIDER) is True
+    assert ic.may_connect(_user(grants=MEMBER), api_connect.PROVIDER) is False
+    assert ic.may_connect(_user(grants=ADMIN), api_connect.PROVIDER) is True
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:

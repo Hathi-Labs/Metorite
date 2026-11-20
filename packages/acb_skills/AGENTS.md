@@ -146,6 +146,8 @@ not write a second copy of that seam. A bare test file name is under
 5g-1. held_card.py -- the rules of a held send card. `held_card_send_enabled` is the ONE reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. The client mirrors the marks in `sendCard.ts`. Fence: `test_held_send_classes.py`.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`. Every tool of every in-repo agent states it. `risk_summary_block(own=)` reads the agent's own tool list, never the process-wide registry.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`, `RefuseTools`). Do not write a third copy of the pair.
+5i-1. builtin_tools.py -- `builtin_tool_names()`, the ONE set of built-in chat tool names for the failure fingerprint (WS-TOF TOF-2b, `tool_failure_log.md` §3.2 rule 1). It is the names of `skill_families` that match `^[a-z][a-z0-9_]{0,79}$`, and never an F3 skill pack, because a skill name is tenant text.
+   - At its import it gives the set to `acb_common.failure_log.set_builtin_names`. `__init__.py` imports it first, so each process that imports `acb_skills` has the set. Do not edit `tool_packs.py` for it. Fence: `test_failure_fingerprint.py`.
 5i-2. unknown_tool.py -- the ONE answer to a call of a tool that the turn did not load (HRD-1, `chat_failure_modes.md` §4.2 B1).
    - MAF runs no middleware for an unknown name. So `UnknownToolAnswer`, a `ChatMiddleware`, rewrites the raw "not found" tool result before the next request.
    - `_set_text` writes `result` and `items`. The OpenAI client sends `items`, so a rewrite of `result` alone never reaches the model.
@@ -320,6 +322,7 @@ not write a second copy of that seam. A bare test file name is under
    - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`, `test_studio_record_writes.py`, `test_studio_workflow_tools.py`, cases ap to as of `test_studio_action_door_r8.py` (R8).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
+7. skill_dry_run.py -- the dry-run door of a skill test (WS-STU F4a). `HoldAndRecord` runs a tool for real only when the registry says `read_only=True` and `open_world=False`. A member, extra-call, delegation or loader tool never runs. It records every other call with its arguments, and the model reads one fixed text. `dry_run_scope` is the ONE setter of the mark, and F4b wires it. Fences: `test_skill_dry_run.py`, `test_skill_tests.py`.
 
 ## Work Guidance
 

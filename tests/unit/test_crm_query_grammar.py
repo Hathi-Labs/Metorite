@@ -452,7 +452,11 @@ def test_the_aggregate_holds_no_sql_of_the_query() -> None:
                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
     assert not [s for s in strings if " OR " in s]
     # The aggregate reaches the query SQL through field_sql only.
-    assert "_with_query" in _calls(tree, "_read")
+    # CRM-Q34-10: the module steps live in `_module_filters`, which both
+    # module reads call, so both read the query.
+    assert "_with_query" in _calls(tree, "_module_filters")
+    assert "_module_filters" in _calls(tree, "_read")
+    assert "_module_filters" in _calls(tree, "_read_pages")
     assert "query_where" in _calls(tree, "_with_query")
     assert "_query_nodes" in _calls(tree, "_compute")
     assert "parse_query" in _calls(tree, "_query_nodes")
@@ -603,7 +607,9 @@ def test_there_is_one_strict_number_expression() -> None:
     assert "_number" in _calls_any(fs, "_numbers")
     # The total admits the text fields of the query ranges.
     agg = trees["aggregate.py"]
-    assert {"query_ranges", "text_number_keys", "admit_text_numbers"} <= _calls_any(agg, "_read")
+    # CRM-Q34-10: in the one helper of the module steps.
+    assert {"query_ranges", "text_number_keys", "admit_text_numbers"} <= _calls_any(
+        agg, "_module_filters")
     # The module LIST builder of CRM-Q34-4 is NOT changed here: a list range on
     # a text number stays a follow-up row of CRM-Q34-4 (it needs its own R8).
     assert "admit_text_numbers" not in _calls_any(fs, "module_field_where")

@@ -45,8 +45,13 @@ def test_the_list_builds_its_field_filters_with_the_calls_of_the_total() -> None
     the same three functions, and the list route reaches the helper."""
     helper = _calls_of(_CRM / "field_sql.py", "module_field_where")
     assert {"text_matches", "lookup_ids", "module_where"} <= helper
-    total = _calls_of(_CRM / "aggregate.py", "_read")
+    # CRM-Q34-10: the total builds its module filters in ONE helper,
+    # `_module_filters`, which the read of one page and the paged read
+    # both call. So the three calls live there.
+    total = _calls_of(_CRM / "aggregate.py", "_module_filters")
     assert {"text_matches", "lookup_ids", "module_where"} <= total
+    for read in ("_read", "_read_pages"):
+        assert "_module_filters" in _calls_of(_CRM / "aggregate.py", read)
     route = _calls_of(_CRM / "modules.py", "list_module_records")
     assert "module_field_where" in route and "field_filter_refusal" in route
 
