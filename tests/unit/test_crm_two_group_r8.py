@@ -866,7 +866,7 @@ def bits(invoices):
     a = invoices.org_a
     _bits(invoices, a, "Bits", [
         *((f"b{n}", f"s{n:02d}", f"B{n:02d}", "50") for n in range(49)),
-        ("a1", "ka", "Aaa", "31.005"), ("b1", "kb", "Bbb", "31.01")])
+        ("xa1", "ka", "Aaa", "31.005"), ("xb1", "kb", "Bbb", "31.01")])
     _bits(invoices, a, "Bavg", [
         ("a1", "ka", "Aaa", "31.0"), ("a2", "ka", "Aaa", "31.01"),
         ("b1", "kb", "Bbb", "31.01"), ("c1", "kc", "Ccc", "20")])
