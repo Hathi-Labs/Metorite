@@ -8665,7 +8665,12 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
   leaf: `contains`, `starts`, `ne`, `in` and `is_empty`. A lowered leaf builds
   the clause of its word through `_filter`. `starts` is no op of
   `acb_common.studio_query`, and that module did not change. No native query
-  leaf takes a word yet (`QUERY_OPS` did not change).
+  leaf takes a word yet (`QUERY_OPS` did not change). `lower_pair` has no
+  production caller: only tests call it, until SEM-1b-2.
+- **A trap for SEM-1b-2.** `_QUERY_ENDS` maps `ne`, `is_empty`, `contains` and
+  `in` to the word ends. The CRM `.not` holds the records with no value, and
+  the Studio `ne` does not. When SEM-1b-2 admits a native `ne`, it must not
+  reuse the end `.not` without a decision.
 - **The matrix.** A text field, a picklist, a lookup and each other type take
   `=` and the five words. A text field takes a range only when it holds
   numbers (CRM-Q34-11).
@@ -8682,28 +8687,37 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
   module find. So `%`, `_` and `\` are literal. Case folds in the collation of
   the database, as `q` does. Nothing removes an accent. A lookup reads the
   name of its target and never its id. A text field reads a string, a number
-  or the name of an object, and each element of a list. So the JSON text of a
-  value never matches. The text holds 1 to 200 characters.
+  or the name of an object. In a list it reads each string, number and
+  object name. It never reads an element that is a list. So the JSON text of
+  a value or of an element never matches. The text holds 1 to 200 characters.
 - **`.not`.** `NOT coalesce(<the clause of =>, false)`. A text value counts
   its stored variants, as `=` does. A lookup by a Metorite id also matches its
   Zoho id.
 - **`.in`.** The grammar of `custom.<key>.in`: `core.in_parts` splits on
-  commas, trims each part and drops an empty part. At most 50 values, and 51
-  is a 422. A comma cannot be inside a value.
+  commas, trims each part and drops an empty part. At most 50 values of at
+  most 200 characters. More is a 422 before any read. A comma cannot be
+  inside a value. `text_matches` reads the stored values of a key once, for
+  all the values of an `.in`.
 - **`.empty`.** No value is a missing key, a JSON null, a text that trims to
-  nothing, or an empty list. A text field that holds numbers also reads the
-  words of `NO_VALUE_WORDS` (`NA`, `-` and the rest) as no value. It holds
-  numbers only when the same call reads it as a number. A number field reads
-  each value that is no plain number as empty, through `_amount`. A date that
-  does not exist is a value.
-- **The answer.** `filters_line` says each word in words. After a call with a
-  word, the tool says how many matching records hold no plain number in the
-  measured field, from `values` against `records`. The text of each older
+  nothing, or an empty list. This is the one meaning on a text field, also
+  when the same call reads the field as numbers. `NA` and `-` are values for
+  `.empty`. The words of `NO_VALUE_WORDS` count only for the number read of
+  CRM-Q34-11. A number field reads each value that is no plain number as
+  empty, through `_amount`. A date that does not exist is a value.
+- **The answer.** The answer names the filters that the route read as words
+  (`filter_words`, absent with none). `filters_line` says only those in
+  words, so a real field `Notes.has` keeps its old text. `.not` reads "is not
+  X, or has no value". After a call with a word, the tool says how many
+  matching records hold no plain number in the measured field, from `values`
+  against `records`. The text of each older
   call does not change. The field search (`FIELDS_SEARCH_HINT`) names the
   words. No tool docstring and no parameter changed, so the Studio room did
   not change.
 - **Flag off.** A word is the 422 `unknown_field` of before. Each other call
   builds the SQL of before, to the byte, and its answer is the same.
+- **A range on a text field of numbers.** `.from` and `.to` on a CRM-Q34-11
+  text field work on the total only. The list never admits text numbers, so
+  there the range is the 422 of a text field. This is as before this slice.
 - **Not in this slice.** The overlay of a core entity (`overlay_where`) and
   `custom.<key>` of the core lists take no word. A native query leaf takes no
   word. This slice adds no index for `.has`, and no migration.

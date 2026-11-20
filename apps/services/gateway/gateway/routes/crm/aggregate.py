@@ -199,6 +199,7 @@ from gateway.routes.crm.field_sql import (
     text_matches,
     text_number_keys,
     used_keys,
+    word_names,
     zoned,
 )
 from gateway.routes.crm.flags import (
@@ -525,6 +526,11 @@ class AggregateResponse(BaseModel):
     #: CRM-Q34-7: ``q`` counted no record. At most 3 stored names nearest to
     #: ``q``, for the next call. Absent otherwise.
     nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-5: each ``field.<key>`` filter name that the route read as a
+    #: filter word (``field_sql.word_names``), so the tool words it. Absent
+    #: with none, so the answer of each older call stays the same.
+    filter_words: list[str] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -850,6 +856,8 @@ class _Read:
     #: CRM-Q34-11: each text field that the read took as a number, with its
     #: counts (``field_sql.admit_text_numbers``).
     text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
+    #: CRM-Q34-5: each filter name that the read took as a filter word.
+    filter_words: list[str] = dc_field(default_factory=list)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -948,6 +956,7 @@ async def _read(
     zone = ""
     field_measure = measure
     text_numbers: dict[str, TextNumbers] = {}
+    filter_words: list[str] = []
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
@@ -979,6 +988,7 @@ async def _read(
         # The probe holds the pairs that the two reads below take. Without
         # the words, the probe IS the pairs.
         probe, owners = filter_probe(scope, pairs, finding)
+        filter_words = word_names(scope, pairs, finding)
         # §18.16 part 6: a text filter counts each case and short form.
         matches = await text_matches(db, str(current_tenant()), scope, module, probe)
         # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
@@ -1108,7 +1118,8 @@ async def _read(
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
-                 near=near, nearest=nearest, text_numbers=text_numbers)
+                 near=near, nearest=nearest, text_numbers=text_numbers,
+                 filter_words=filter_words)
 
 
 async def _with_query(
@@ -1546,6 +1557,7 @@ async def _compute(
         matched=read.matched or None,
         near=read.near,
         nearest=read.nearest,
+        filter_words=read.filter_words or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
         text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(

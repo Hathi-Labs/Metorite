@@ -64,7 +64,23 @@ _DEFS = [
     ("Status", "select", None, False, False),
     ("Paid", "boolean", None, False, False),
     ("Due", "date", None, False, False),
+    # Fix round: a text field that holds Zoho objects (an unknown Zoho type
+    # such as a multi-user lookup maps to text), and a text field of numbers.
+    ("Tags", "text", None, False, False),
+    ("QtyT", "text", None, False, False),
 ]
+
+#: Fix round: the Tags and QtyT value of some rows of org A. A Zoho id in
+#: Tags is digits, so `.has=<digits>` would count an id if the JSON text
+#: of an object were read.
+_EXTRA: dict[str, dict[str, Any]] = {
+    "R01": {"Tags": [{"id": "9001", "name": "Red"}], "QtyT": "5"},
+    "R02": {"Tags": ["Blue", "Green"], "QtyT": "NA"},
+    "R03": {"Tags": {"id": "9002", "name": "Red Rose"}, "QtyT": "7"},
+    "R04": {"Tags": [[{"id": "9003", "name": "Red"}]], "QtyT": "-"},
+    "R05": {"Tags": [{"id": "9004"}, 42], "QtyT": "  "},
+    "R06": {"QtyT": "10"},
+}
 
 _FIVE_KB = "x" * 5000 + " needle"
 
@@ -109,6 +125,7 @@ def _but(*names: str) -> list[str]:
 def _seed(p: Any, org: str, rows: list[tuple[str, dict[str, Any]]]) -> None:
     with p.admin_engine.begin() as c:
         for i, (name, fields) in enumerate(rows):
+            fields = {**fields, **_EXTRA.get(name, {})} if org == p.org_a else fields
             c.execute(text(
                 "INSERT INTO crm_module_records (organization_id, module, ext_source, "
                 "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Invoices', 'zoho', "
@@ -299,6 +316,67 @@ async def test_a_word_that_the_type_does_not_take_is_a_422_on_both(
     for call in (_total, _list):
         res = await call(wd, wd.org_a, **query)
         assert res.status_code == 422 and says in res.text, res.text
+
+
+#: The member text of Tags: a string, a number or the name of an object,
+#: as the value or as an element of a list. Never the JSON text, and never
+#: an element that is itself a list.
+_TAG_TEXTS = (
+    "SELECT t FROM (SELECT CASE WHEN jsonb_typeof(fields -> 'Tags') = 'object' "
+    "THEN fields -> 'Tags' ->> 'name' WHEN jsonb_typeof(fields -> 'Tags') IN "
+    "('string', 'number') THEN fields ->> 'Tags' END AS t UNION ALL "
+    "SELECT CASE WHEN jsonb_typeof(e) = 'object' THEN e ->> 'name' "
+    "WHEN jsonb_typeof(e) IN ('string', 'number') THEN e #>> '{}' END FROM "
+    "jsonb_array_elements(CASE WHEN jsonb_typeof(fields -> 'Tags') = 'array' "
+    "THEN fields -> 'Tags' ELSE '[]'::jsonb END) e) AS agf_t WHERE t IS NOT NULL"
+)
+
+
+@pytest.mark.parametrize(("query", "names"), [
+    ({"field.Tags.has": "id"}, []),
+    ({"field.Tags.has": '"'}, []),
+    ({"field.Tags.has": ":"}, []),
+    ({"field.Tags.has": "9001"}, []),
+    ({"field.Tags.has": "900"}, []),
+    ({"field.Tags.has": "{"}, []),
+    ({"field.Tags.has": "red"}, ["R01", "R03"]),
+    ({"field.Tags.has": "42"}, ["R05"]),
+    ({"field.Tags.has": "green"}, ["R02"]),
+    ({"field.Tags.starts": "Red"}, ["R01", "R03"]),
+    ({"field.Tags.starts": "id"}, []),
+    ({"field.Tags.starts": "["}, []),
+])
+async def test_has_on_a_list_of_objects_reads_names_and_never_json(
+        wd, app_engine, query, names) -> None:
+    _t, listed = await _both(wd, wd.org_a, query)
+    assert listed == names
+    word = next(iter(query.values()))
+    starts = next(iter(query)).endswith(".starts")
+    where = (f"EXISTS ({_TAG_TEXTS} AND "
+             + ("left(lower(trim(t)), length(:w)) = lower(:w))" if starts
+                else "strpos(lower(t), lower(:w)) > 0)"))
+    assert await _independent(wd, wd.org_a, where, word) == names
+
+
+async def test_empty_on_a_text_field_has_one_meaning(wd, app_engine) -> None:
+    """QtyT holds numbers, so a sum of it reads them (CRM-Q34-11). Its
+    `.empty` still counts only a blank or a missing value: the same records
+    with a count, with a sum of QtyT and on the list."""
+    query = {"field.QtyT.empty": "true"}
+    _t, listed = await _both(wd, wd.org_a, query)
+    summed = await _total(wd, wd.org_a, measure="sum", field="QtyT", **query)
+    assert summed.status_code == 200, summed.text
+    expected = ["R05", *(n for n in _ALL if n >= "R07")]
+    assert listed == expected
+    assert summed.json()["records"] == len(expected)
+    assert await _independent(wd, wd.org_a, _no_value("QtyT"), "") == expected
+
+
+async def test_the_answer_names_the_words_it_read(wd, app_engine) -> None:
+    word = await _total(wd, wd.org_a, **{"field.Notes.has": "x", "field.Status": "Open"})
+    assert word.json()["filter_words"] == ["Notes.has"]
+    plain = await _total(wd, wd.org_a, **{"field.Status": "Open"})
+    assert "filter_words" not in plain.json()
 
 
 async def test_org_b_never_counts(wd, app_engine) -> None:

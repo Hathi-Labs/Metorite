@@ -1415,10 +1415,14 @@ def filter_end(name: str, keys: Collection[str], words: bool = False,
     range. With *words* (CRM-Q34-5, an org on ``CRM_MODULE_FIND_ORGS``), a
     name that ends in a word of :data:`FILTER_WORDS` is that word. Without
     *words*, ``Notes.has`` is a key, so it stays the 422 ``unknown_field``
-    of before. Pure."""
+    of before. A word with no key before it (``.has``) is no word, so its
+    422 names the same key with the flag on or off. Pure."""
     if name not in keys:
-        for end in (*RANGE_ENDS, *(FILTER_WORDS if words else ())):
+        for end in RANGE_ENDS:
             if name.endswith(end):
+                return name[: -len(end)], end
+        for end in FILTER_WORDS if words else ():
+            if name.endswith(end) and name[: -len(end)]:
                 return name[: -len(end)], end
     return name, None
 
@@ -1585,13 +1589,16 @@ def _allowed_words(ref: FieldRef) -> tuple[str, ...] | None:
 def _words_value(name: str, value: str, said: str | None, end: str) -> list[str]:
     """The values of ``.in`` (:func:`core.in_parts`), or a 422: none, or
     more than :data:`IN_VALUES_MAX`."""
-    from gateway.routes.crm.core import in_parts
+    from gateway.routes.crm.core import MAX_Q_CHARS, in_parts
 
     parts = in_parts(value)
     if not parts:
         raise _refuse(f"{said or _said(name + end)} needs at least one value, as a,b.")
     if len(parts) > IN_VALUES_MAX:
         raise _refuse(f"{said or _said(name + end)} takes at most {IN_VALUES_MAX} values.")
+    if any(len(part) > MAX_Q_CHARS for part in parts):
+        raise _refuse(
+            f"{said or _said(name + end)} takes values of at most {MAX_Q_CHARS} characters.")
     return parts
 
 
@@ -1625,7 +1632,9 @@ def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, val
     number = ref.type in MEASURE_TYPES or bool(ref.parts)
     if end == ".not":
         # The exact negation of `=`: a record where `=` is NULL matches too.
-        clause, bound, keys, source = _filter(scope, ref, None, k, v, value, also, ext, said)
+        # A 422 of the value names `field.<key>.not`, not `field.<key>`.
+        clause, bound, keys, source = _filter(scope, ref, None, k, v, value, also, ext,
+                                              said or _said(ref.key + end))
         return f"NOT coalesce(({clause}), false)", bound, keys, source
     if end == ".empty":
         word = value.strip().lower()
@@ -1634,7 +1643,10 @@ def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, val
         if number:
             amount, keys, source = _amount(scope.column, ref, k)
             return f"(({amount}) IS NULL) = CAST(:{v} AS boolean)", word == "true", keys, source
-        keys[f"{v}_nv"] = list(NO_VALUE_WORDS) if ref.text_number else [""]
+        # ONE meaning on a text field, whatever else the call reads: only a
+        # blank text is empty. NA and `-` are no value only for the number
+        # read of CRM-Q34-11 (`_amount` above), never for `.empty`.
+        keys[f"{v}_nv"] = [""]
         return (f"({_blank(column, k, f'{v}_nv')}) = CAST(:{v} AS boolean)",
                 word == "true", keys, source)
     if end == ".in":
@@ -1658,7 +1670,8 @@ def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, val
                     parts, keys, source)
         # A picklist, a text and each other type: the clause of `=`, with
         # each value and its stored variants.
-        return _filter(scope, ref, None, k, v, parts[0], (*parts[1:], *also), None, said)
+        return _filter(scope, ref, None, k, v, parts[0], (*parts[1:], *also), None,
+                       said or _said(ref.key + end))
     # `.has` and `.starts`: part of the text, in any case. The escape of
     # like_pattern makes each `%`, `_` and `\` literal.
     text_value = value.strip()
@@ -1674,8 +1687,9 @@ def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, val
     return (
         f"(btrim({_text_value(column, k)}) ILIKE :{v} OR "
         f"CASE WHEN jsonb_typeof({column} -> :{k}) = 'array' THEN EXISTS (SELECT 1 FROM "
-        f"jsonb_array_elements_text({column} -> :{k}) agf_e WHERE btrim(agf_e) ILIKE :{v}) "
-        "ELSE false END)",
+        f"jsonb_array_elements({column} -> :{k}) agf_e WHERE btrim(CASE jsonb_typeof(agf_e) "
+        "WHEN 'string' THEN agf_e #>> '{}' WHEN 'number' THEN agf_e #>> '{}' "
+        f"WHEN 'object' THEN agf_e ->> 'name' END) ILIKE :{v}) ELSE false END)",
         pattern, keys, source)
 
 
@@ -1692,16 +1706,21 @@ async def text_matches(db: Any, org: str, scope: FieldScope, module: str,
     short forms, from the distinct values of the field
     (``crm_sync.terms.value_matches``). One grouped statement for each text
     filter, in the caller's tenant session. A range and each other type
-    take none."""
+    take none.
+
+    CRM-Q34-5: ONE read for each key. The values of an ``.in`` are each a
+    pair of the probe (:func:`filter_probe`), and they share the read."""
     from gateway.crm_sync.terms import value_matches
 
     out: dict[int, list[str]] = {}
+    read: dict[str, Any] = {}
     for index, (name, value) in enumerate(pairs):
         ref = scope.fields.get(name)
         if ref is None or ref.type not in ALIAS_TYPES or ref.parts or not str(value).strip():
             continue
-        distinct = await value_counts(db, org, module, ref.key, ALIAS_VALUES)
-        out[index] = value_matches(str(value), distinct)
+        if ref.key not in read:
+            read[ref.key] = await value_counts(db, org, module, ref.key, ALIAS_VALUES)
+        out[index] = value_matches(str(value), read[ref.key])
     return out
 
 
@@ -1786,8 +1805,6 @@ def filter_probe(scope: FieldScope, pairs: Sequence[tuple[str, str]], words: boo
     word and each range reads nothing (an empty key)."""
     if not words:
         return list(pairs), [(i,) for i in range(len(pairs))]
-    from gateway.routes.crm.core import in_parts
-
     probe: list[tuple[str, str]] = []
     owners: list[tuple[int, ...]] = []
     for name, value in pairs:
@@ -1797,13 +1814,23 @@ def filter_probe(scope: FieldScope, pairs: Sequence[tuple[str, str]], words: boo
         elif end == ".not":
             parts = [(key, value)]
         elif end == ".in":
-            # At most one value past the cap: the 422 of the cap comes later.
-            parts = [(key, part) for part in in_parts(value)[: IN_VALUES_MAX + 1]]
+            # The limits of `.in` refuse here, before any read of the values.
+            parts = [(key, part) for part in _words_value(key, value, None, end)]
         else:
             parts = [("", value)]
         owners.append(tuple(range(len(probe), len(probe) + len(parts))))
         probe.extend(parts)
     return probe, owners
+
+
+def word_names(scope: FieldScope, pairs: Sequence[tuple[str, str]],
+               words: bool = False) -> list[str]:
+    """Each filter name of *pairs* that :func:`filter_end` reads as a word
+    of :data:`FILTER_WORDS` (CRM-Q34-5), in order. The answer names them,
+    so the tool words a filter only when the route read it as a word. A key
+    of the scope wins, so ``Notes.has`` of a real field is never here."""
+    return [name for name, _value in pairs
+            if filter_end(name, scope.fields, words)[1] in FILTER_WORDS]
 
 
 def matched_values(pairs: Sequence[tuple[str, str]], owners: Sequence[tuple[int, ...]],
@@ -3038,5 +3065,6 @@ __all__ = [
     "text_numbers_sql",
     "used_keys",
     "value_counts",
+    "word_names",
     "zoned",
 ]

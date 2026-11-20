@@ -3279,6 +3279,8 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     answer, so the member sees each variant that the total holds."""
     matched = (data or {}).get("matched") if isinstance(data, dict) else None
     matched = matched if isinstance(matched, dict) else {}
+    words = (data or {}).get("filter_words") if isinstance(data, dict) else None
+    words = [str(w) for w in words] if isinstance(words, list) else []
     plain: list[str] = []
     ranges: dict[str, dict[str, str]] = {}
     pair_eq: set[str] = set()
@@ -3290,10 +3292,11 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
         if end is not None:
             ranges.setdefault(key[: -len(end)], {})[end] = str(value)
             continue
-        # CRM-Q34-5: a filter word. Only an org on CRM_MODULE_FIND_ORGS gets
-        # an answer with one: the route refuses it for each other org.
-        word = next((w for w in _FILTER_WORDS if key.endswith(w) and key != w), None)
-        if word is not None:
+        # CRM-Q34-5: a filter word, only when the route read the name as one
+        # (`filter_words` of the answer). A real field `Notes.has`, and each
+        # call of an org off CRM_MODULE_FIND_ORGS, keeps the text of before.
+        word = next((w for w in _FILTER_WORDS if key.endswith(w)), None)
+        if word is not None and key in words:
             plain.append(_word_filter_words(key, word, value, matched))
             continue
         pair_eq.add(key)
@@ -3327,7 +3330,11 @@ def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]
     elif word in (".has", ".starts"):
         text = f"'{text}'"
     line = f"{key} {_FILTER_WORDS[word]} {text}"
-    counted = [str(v) for v in matched.get(name) or []]
+    if word == ".not":
+        # `.not` holds the records with no value too (``field_sql``).
+        line += ", or has no value"
+    # Each stored value is org data: one line, at most 60 characters.
+    counted = [" ".join(str(v).split())[:60] for v in matched.get(name) or []]
     if counted:
         line += f" ({'left out' if word == '.not' else 'counted'} {_names(counted)})"
     return line
@@ -3336,12 +3343,11 @@ def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]
 def no_number_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     """CRM-Q34-5: how many matching records hold no plain number in the
     measured field (``values`` against ``records``), or empty. Only for a
-    call with a filter word, so the text of each older call stays the same.
+    call that the route read with a filter word (``filter_words``), so the
+    text of each older call stays the same.
     A text field read as numbers has its own line (CRM-Q34-11), and a split
     names each field."""
-    if not isinstance(data, dict) or not any(
-            str(name).startswith("field.") and str(name).endswith(tuple(_FILTER_WORDS))
-            for name in params):
+    if not isinstance(data, dict) or not data.get("filter_words"):
         return ""
     values, records = data.get("values"), data.get("records")
     field = data.get("field")

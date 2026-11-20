@@ -198,6 +198,53 @@ def test_an_unknown_suffix_stays_the_unknown_field() -> None:
     assert _refused([("Amount.sideways", "1")])["key"] == "Amount.sideways"
 
 
+@pytest.mark.parametrize("name", [".has", ".not", ".in", ".empty", ".starts"])
+def test_a_word_with_no_key_is_the_same_422_on_and_off(name) -> None:
+    """``field..has=x``: the 422 names the key ``.has`` with the flag on, as
+    it does with the flag off."""
+    assert _refused([(name, "x")])["key"] == _refused([(name, "x")], words=False)["key"] == name
+
+
+#: Fix round: more old calls, as sha256, proven on the base commit with the
+#: base field_sql.py and core.py in place (git archive of origin/main).
+_SCOPE_MORE = fs.FieldScope(column="fields", owner="module:Invoices", fields={
+    "Tags": R("Tags", "multiselect", "Tags"), "When": R("When", "datetime", "When"),
+    "T": R("T", "text", "T", text_number=True)})
+_OLD_MORE = [
+    ([("Tags", "Red")], "4874f46ef0b15c160a0318e18f7fd4bb0fd587ec49c28dde82b5db6a01367696"),
+    ([("When", "2026-01-05")], "7ad865597a0845bc424b2651ef72f7fcbe785a9e642050391b05301bf8610f54"),
+    ([("T.from", "5"), ("T.to", "9")],
+     "fafe1d87753adf65abe115da944d485ed22f5cb178344b6260e3a214ddcdef5e"),
+]
+
+
+def _sha(value) -> str:
+    return hashlib.sha256(json.dumps(value, default=str, sort_keys=True).encode()).hexdigest()
+
+
+@pytest.mark.parametrize(("pairs", "digest"), _OLD_MORE)
+@pytest.mark.parametrize("words", [False, True])
+def test_more_old_calls_build_the_sql_of_before(pairs, digest, words) -> None:
+    w = fs.module_where(_SCOPE_MORE, "Invoices", pairs, zone="UTC", matches={0: ["red"]},
+                        words=words)
+    assert _sha([w.sql, w.params, w.source]) == digest
+
+
+def test_the_custom_in_filter_of_a_core_list_builds_the_sql_of_before() -> None:
+    from gateway.routes.crm.core import custom_value_clauses, in_parts
+
+    clauses, bound = custom_value_clauses(
+        "custom", {("Tags", True): in_parts(" a , b,,c "), ("Kind", False): ["x"]})
+    assert _sha([clauses, bound]) == (
+        "0376684cde8a67c861b6c44ceb0d58343cf77641bdaa97f80c2b5b806012ee5b")
+
+
+def test_the_tool_knows_the_words_of_the_route() -> None:
+    from acb_skills.crm_tools import _FILTER_WORDS
+
+    assert set(_FILTER_WORDS) == set(fs.FILTER_WORDS)
+
+
 def test_the_probe_of_an_old_call_is_the_pairs() -> None:
     pairs = [("Notes", "a"), ("Amount.from", "1")]
     for words in (False, True):
@@ -234,6 +281,7 @@ def test_has_on_a_lookup_reads_the_name_and_never_the_id() -> None:
     (",".join(f"v{i}" for i in range(50)), True),
     (",".join(f"v{i}" for i in range(51)), False),
     (" , ,", False),
+    ("a," + "x" * 201, False),
 ])
 def test_in_takes_one_to_fifty_values(value, ok) -> None:
     if ok:
@@ -262,6 +310,21 @@ def test_a_bad_value_is_a_422(pair, words) -> None:
     assert words in _refused([pair])["message"]
 
 
+@pytest.mark.parametrize(("pair", "said"), [
+    (("Amount.not", "NA"), "'field.Amount.not' must be a number."),
+    (("Amount.in", "1,NA"), "'field.Amount.in' must be a number."),
+    (("Paid.not", "maybe"), "'field.Paid.not' must be true or false."),
+    (("Due.not", "soon"), "'field.Due.not' must be an ISO date"),
+    (("Due.in", "soon"), "'field.Due.in' must be an ISO date"),
+    (("Notes.has", " "), "'field.Notes.has' needs some text."),
+    (("Notes.starts", " "), "'field.Notes.starts' needs some text."),
+    (("Notes.empty", "x"), "'field.Notes.empty' must be true or false."),
+    (("Status.in", " , "), "'field.Status.in' needs at least one value"),
+])
+def test_a_422_of_a_value_names_the_word(pair, said) -> None:
+    assert _refused([pair])["message"].startswith(said)
+
+
 def test_not_is_the_negation_of_eq_with_no_value_too() -> None:
     eq = _where([("Amount", "5")])
     no = _where([("Amount.not", "5")])
@@ -275,9 +338,38 @@ def test_empty_on_a_number_reads_the_guarded_number() -> None:
     assert built.params["agf_v0"] is True
     text = _where([("Notes.empty", "FALSE")])
     assert text.params["agf_v0"] is False and text.params["agf_v0_nv"] == [""]
+    # ONE meaning of `.empty` on a text field: a text field read as numbers
+    # in the same call binds the same blank words, never NA or `-`.
     numbers = fs.replace(SCOPE, fields={"T": R("T", "text", "T", text_number=True)})
     built = fs.module_where(numbers, "M", [("T.empty", "true")], zone="UTC", words=True)
-    assert built.params["agf_v0_nv"] == list(fs.NO_VALUE_WORDS)
+    assert built.params["agf_v0_nv"] == [""]
+
+
+def test_has_on_a_list_reads_strings_numbers_and_names_only() -> None:
+    sql = _where([("Tags.has", "id")]).sql
+    assert "jsonb_array_elements_text" not in sql
+    assert "WHEN 'object' THEN agf_e ->> 'name'" in sql
+
+
+async def test_in_reads_the_values_of_a_key_once(monkeypatch) -> None:
+    reads: list[str] = []
+
+    async def counted(_db, _org, _module, key, _cap):
+        reads.append(key)
+        return [("Open", 3), ("Won", 2)]
+
+    monkeypatch.setattr(fs, "value_counts", counted)
+    many = ",".join(f"v{i}" for i in range(50))
+    probe, _owners = fs.filter_probe(PLAIN, [("Status.in", many)], True)
+    found = await fs.text_matches(None, "org", PLAIN, "Invoices", probe)
+    assert len(found) == 50 and reads == ["Status"]
+    reads.clear()
+    with pytest.raises(HTTPException):
+        fs.filter_probe(PLAIN, [("Status.in", many + ",v50")], True)
+    assert reads == []
+    # The old single `=` still reads once.
+    await fs.text_matches(None, "org", PLAIN, "Invoices", [("Status", "Open")])
+    assert reads == ["Status"]
 
 
 @pytest.mark.parametrize("name", ["Notes.has", "Notes.not", "Amount.in", "Site.starts",
@@ -312,18 +404,32 @@ def test_the_filter_line_words_each_word() -> None:
     params = {"field.Notes.has": "50%", "field.Site.starts": "Ac", "field.Status.not": "Won",
               "field.Status.in": "Open, Lost", "field.Due.empty": "true",
               "field.Amount.empty": "false"}
-    line = filters_line(params, {"matched": {"Status.in": ["Open", "OPEN", "Lost"]}})
+    words = [name[len("field."):] for name in params]
+    line = filters_line(params, {"matched": {"Status.in": ["Open", "OPEN\n  x" * 20, "Lost"]},
+                                 "filter_words": words})
     assert line == (
-        "Filters: Notes contains '50%'; Site starts with 'Ac'; Status is not Won; "
-        "Status is one of Open, Lost (counted Open, OPEN and Lost); Due has no value; "
-        "Amount has a value.")
+        "Filters: Notes contains '50%'; Site starts with 'Ac'; Status is not Won, or has no "
+        f"value; Status is one of Open, Lost (counted Open, {('OPEN x' * 20)[:60]} and Lost); "
+        "Due has no value; Amount has a value.")
+
+
+def test_a_key_that_the_route_did_not_read_as_a_word_keeps_its_old_text() -> None:
+    """A real field ``Notes.has``, or any call of an org off the flag: the
+    answer names no word, so the line is the line of before."""
+    from acb_skills.crm_tools import filters_line
+
+    assert filters_line({"field.Notes.has": "keyed"}, {}) == "Filters: Notes.has is keyed."
+    assert filters_line({"field.Notes.has": "keyed"}, {"filter_words": ["Other.in"]}) == (
+        "Filters: Notes.has is keyed.")
 
 
 def test_the_no_number_line_needs_a_word() -> None:
     from acb_skills.crm_tools import no_number_line
 
-    data = {"field": "Amount", "field_label": "Amount", "values": 3, "records": 5}
-    assert no_number_line({"field.Status": "Open"}, data) == ""
+    plain = {"field": "Amount", "field_label": "Amount", "values": 3, "records": 5}
+    assert no_number_line({"field.Status.in": "Open"}, plain) == ""
+    data = {**plain, "filter_words": ["Status.in"]}
+    assert no_number_line({"field.Status": "Open"}, plain) == ""
     assert no_number_line({"field.Status.in": "Open"}, data) == (
         "2 of 5 matching records hold no plain number in Amount, so the total leaves "
         "them out.")
