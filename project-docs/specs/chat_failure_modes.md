@@ -75,8 +75,8 @@ email cards (HRD-10d-2 to HRD-10d-4) are not built.**
 `CHAT_CARD_PRECONDITION_ORGS`. The email tools `send_draft` and
 `schedule_send` send the digest of the files that their card lists, and the
 send and the schedule check it. A changed draft gets the HRD-7 words "Changed
-since the card". HRD-10d-3 (task 3824) and HRD-10d-4 (task 3825) are not
-built.**
+since the card". HRD-10d-3 (task 3824) is not built here. PR 2667 owns
+it.**
 
 **HRD-10d-4 (task 3825) is BUILT dark, 2026-11-20, behind the same flag
 `CHAT_CARD_PRECONDITION_ORGS`. The email tools `update_rule` and `copy_rules`

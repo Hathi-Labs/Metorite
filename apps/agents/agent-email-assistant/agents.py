@@ -8265,9 +8265,10 @@ def _rule_precondition_on() -> bool:
     from an argument (R5). A fault reads as off, so the old text stays."""
     try:
         from acb_skills.ask_tools import card_precondition_on
-    except ImportError:  # pragma: no cover — platform package absent in isolation
+
+        return bool(card_precondition_on())
+    except Exception:  # the platform package is absent, or the reader failed
         return False
-    return card_precondition_on()
 
 
 def _rule_field_rows(before: dict[str, Any], now: dict[str, Any], indent: str) -> list[str]:
@@ -8344,7 +8345,7 @@ def _rules_changed_text(
         if rid not in old_by:
             rows.append(f"  Rule {_changed_value(new.get('name'))}: it is on now")
     if len(rows) > 12:
-        rows = rows[:12] + [f"  ... and {len(rows) - 12} more lines"]
+        rows = [*rows[:12], f"  ... and {len(rows) - 12} more lines"]
     if rows:
         lines.append("These rules changed (then → now):")
         lines.extend(rows)

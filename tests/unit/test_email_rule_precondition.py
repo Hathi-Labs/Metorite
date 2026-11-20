@@ -18,6 +18,8 @@ Mutations (each must turn a test red), checked in a scratch worktree:
 from __future__ import annotations
 
 import importlib.util
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,7 @@ class _Gw:
             "id": "r1", "name": "Bank", "enabled": True, "instructions": "bank mail",
             "actions": [{"type": "LABEL", "label": "Finance"}]}
         self.on_card: Any = None
+        self.extra: list[dict[str, Any]] = []
         self.cards: list[dict[str, Any]] = []
         self.patches: list[tuple[str, dict[str, Any]]] = []
         self.posts: list[tuple[str, dict[str, Any]]] = []
@@ -71,9 +74,8 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> _Gw:
     g = _Gw()
 
     def rules() -> list[dict[str, Any]]:
-        if g.rule is None:
-            return []
-        return [{**g.rule, "actions": [dict(a) for a in g.rule["actions"]]}]
+        found = ([] if g.rule is None else [g.rule]) + g.extra
+        return [{**r, "actions": [dict(a) for a in r["actions"]]} for r in found]
 
     async def fake_get(path: str, params: Any = None) -> Any:
         if path == "/email/accounts":
@@ -124,6 +126,14 @@ def _edit(g: _Gw, **fields: Any) -> None:
     g.on_card = go
 
 
+def _claims(out: str) -> list[str]:
+    """The words of a write in *out*, apart from the values in « » and the
+    act sentence ("Nothing was ... ") that the table puts first."""
+    text = re.sub(r"«[^»]*»", "", out)
+    text = re.sub(r"Nothing was [^\n]*", "", text)
+    return [w for w in ("saved", "updated", "copied", "written", "is now") if w in text.lower()]
+
+
 # ── update_rule ──────────────────────────────────────────────────────────────
 
 async def test_update_on_a_changed_rule_gives_the_hrd7_words(gw: _Gw, monkeypatch) -> None:
@@ -139,8 +149,7 @@ async def test_update_on_a_changed_rule_gives_the_hrd7_words(gw: _Gw, monkeypatc
     assert "Read the rule again with get_rules_and_settings" in out
     assert "ask the member before you show a new card" in out
     # It never claims a write.
-    for claim in ("Updated rule", "is now enabled", "is now disabled", "Saved"):
-        assert claim not in out
+    assert _claims(out) == []
 
 
 async def test_update_names_a_changed_action(gw: _Gw, monkeypatch) -> None:
@@ -204,7 +213,7 @@ async def test_copy_on_a_changed_rule_gives_the_hrd7_words(gw: _Gw, monkeypatch)
     assert f"Instructions: «bank mail» → «{STRANGER}»" in out
     assert "Actions: " in out
     assert gw.posts == []
-    assert "Copied" not in out
+    assert _claims(out) == []
     assert "ask the member before you show a new card" in out
 
 
@@ -229,3 +238,74 @@ async def test_copy_flag_off_is_the_old_text(gw: _Gw, monkeypatch) -> None:
     out = await _bound(agents.copy_rules(BOX, BOX2))
     assert out.startswith(OLD_COPY)
     assert HEAD not in out and gw.posts == []
+
+
+# ── the then-value, the cap and the fault ───────────────────────────────────
+
+async def test_update_then_is_the_read_before_the_edit_and_now_the_reread(
+    gw: _Gw, monkeypatch,
+) -> None:
+    """The call renames the rule in memory. The THEN value is still the name
+    of the read before the call, and the NOW value is the re-read."""
+    _flag(monkeypatch, ORG)
+    _edit(gw, name="Bank two", instructions="other words")
+    out = await _bound(agents.update_rule(BOX, "r1", name="Renamed"))
+    assert "Name: «Bank» → «Bank two»" in out
+    assert "Renamed" not in out.split("Nothing was")[1].split("These fields")[1]
+    assert "Instructions: «bank mail» → «other words»" in out
+
+
+async def test_copy_caps_the_lines_at_twelve(gw: _Gw, monkeypatch) -> None:
+    _flag(monkeypatch, ORG)
+    gw.extra = [{"id": f"x{i}", "name": f"R{i}", "enabled": True,
+                 "actions": [{"type": "ARCHIVE"}]} for i in range(12)]
+
+    def edit_all() -> None:
+        assert gw.rule is not None
+        for r in [gw.rule, *gw.extra]:
+            r["name"] = r["name"] + " b"
+    gw.on_card = edit_all
+    out = await _bound(agents.copy_rules(BOX, BOX2))
+    body = out.split("These rules changed (then → now):\n")[1].splitlines()
+    rows = [ln for ln in body if ln.startswith("  ")]
+    assert len(rows) == 13, rows
+    assert rows[-1] == "  ... and 14 more lines"
+    assert gw.posts == []
+
+
+async def test_a_fault_of_the_reader_reads_as_off(monkeypatch) -> None:
+    _flag(monkeypatch, ORG)
+    token = bind_tenant(ORG)
+    try:
+        assert agents._rule_precondition_on() is True
+        monkeypatch.setitem(sys.modules, "acb_skills.ask_tools", None)  # import raises
+        assert agents._rule_precondition_on() is False
+    finally:
+        release_tenant(token)
+
+
+async def test_a_raising_reader_reads_as_off(monkeypatch) -> None:
+    def boom(org: object = None) -> bool:
+        raise RuntimeError("settings fault")
+    monkeypatch.setattr("acb_skills.ask_tools.card_precondition_on", boom)
+    assert agents._rule_precondition_on() is False
+
+
+async def test_copy_caps_at_the_edge_of_thirteen_lines(gw: _Gw, monkeypatch) -> None:
+    """Six rules that changed give 12 lines, and a rule that came on gives the
+    13th. The cap cuts it to 12 lines and a line that counts the rest."""
+    _flag(monkeypatch, ORG)
+    gw.extra = [{"id": f"x{i}", "name": f"R{i}", "enabled": True,
+                 "actions": [{"type": "ARCHIVE"}]} for i in range(5)]
+
+    def edit() -> None:
+        assert gw.rule is not None
+        for r in [gw.rule, *gw.extra]:
+            r["name"] = r["name"] + " b"
+        gw.extra.append({"id": "new", "name": "Fresh", "enabled": True,
+                         "actions": [{"type": "ARCHIVE"}]})
+    gw.on_card = edit
+    out = await _bound(agents.copy_rules(BOX, BOX2))
+    body = out.split("These rules changed (then → now):\n")[1].splitlines()
+    rows = [ln for ln in body if ln.startswith("  ")]
+    assert len(rows) == 13 and rows[-1] == "  ... and 1 more lines", rows
