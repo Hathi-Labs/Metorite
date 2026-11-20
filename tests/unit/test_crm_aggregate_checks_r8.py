@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 
@@ -658,3 +659,62 @@ async def test_a_dark_org_gets_the_wire_of_main_byte_for_byte(bills, app_engine)
         with open(record, "w", encoding="utf-8") as out:
             json.dump(got, out, indent=1, sort_keys=True)
     assert got == _MAIN_DARK
+
+
+# ── 10. The cost: 30,000 rows of 3 KB ─────────────────────────────────────
+
+#: 60 text values of 32 characters each, a day from 2025-01-01 on (700
+#: days), an amount and a status: about 3 KB a row, as CRM-Q34-7 seeds it.
+_BIG_DAYS_SQL = (
+    "INSERT INTO crm_module_records (organization_id, module, ext_source, ext_id, name, "
+    "fields) SELECT CAST(:o AS uuid), 'Ledger', 'zoho', 'l' || g, 'Ledger row ' || g, "
+    "(SELECT jsonb_object_agg('Field_' || k, md5(g::text || '-' || k)) "
+    " FROM generate_series(1, 60) k) || jsonb_build_object("
+    "'Bill_Date', to_char(DATE '2025-01-01' + (g % 700), 'YYYY-MM-DD'), "
+    "'Amount', g % 1000, 'Status', CASE WHEN g % 50 = 0 THEN 'Draft' ELSE 'Paid' END) "
+    "FROM generate_series(1, :n) g"
+)
+
+
+async def test_the_baseline_over_thirty_thousand_rows_answers_inside_the_timeout(
+        ns, app_engine, monkeypatch) -> None:
+    from acb_common import get_settings
+
+    from tests.unit.test_crm_module_find_r8 import _BIG, TIMEOUT_S, _timed
+
+    settings = get_settings()
+    for name in ("crm_catalogue_orgs", "crm_questions_orgs", "crm_answer_first_orgs",
+                 "crm_fill_rank_orgs", "semantic_model_orgs", "crm_module_find_orgs"):
+        monkeypatch.setattr(settings, name, "*", raising=False)
+    a = ns.org_a
+    _mirror_org(ns, a, [_module("Ledger")])
+    _defs(ns, a, "module:Ledger", [("Bill_Date", "date", None, False, False),
+                                   ("Amount", "currency", None, False, False),
+                                   ("Status", "select", None, False, False)]
+          + [(f"Field_{k}", "text", None, False, False) for k in range(1, 46)])
+    with ns.admin_engine.begin() as c:
+        c.execute(text(_BIG_DAYS_SQL), {"o": a, "n": _BIG})
+        c.execute(text("ANALYZE crm_module_records"))
+    agg = "/crm/aggregate?entity=module:Ledger&measure=sum&field=Amount&"
+    month = {"field.Bill_Date.from": "2026-10-01", "field.Bill_Date.to": "2026-10-31"}
+    quarter = {"field.Bill_Date.from": "2026-07-01", "field.Bill_Date.to": "2026-09-30"}
+    leaves = json.dumps([{"field": "Bill_Date", "op": "gte", "value": "2026-10-01"},
+                         {"field": "Bill_Date", "op": "lte", "value": "2026-10-31"}])
+    paths = {
+        "month": agg + urlencode(month),
+        "quarter": agg + urlencode(quarter),
+        "query": agg + urlencode({"query": leaves}),
+        "words": agg + urlencode({**month, "field.Field_7.has": "ab"}),
+    }
+    lit = await _timed(ns, a, paths)
+    monkeypatch.setattr(settings, "crm_answer_first_orgs", "", raising=False)
+    dark = await _timed(ns, a, paths)
+    print("\nNUM-2 30,000 rows of 3 KB, seconds, lit vs dark:",
+          {name: (round(lit[name][2], 3), round(dark[name][2], 3)) for name in paths})
+    for name in paths:
+        (s_lit, b_lit, t_lit), (s_dark, b_dark, _t) = lit[name], dark[name]
+        assert s_lit == s_dark == 200, (name, b_lit, b_dark)
+        assert t_lit < TIMEOUT_S, (name, t_lit)
+        assert len(b_lit["baseline"]) == 6 and "baseline" not in b_dark, name
+        for key in ("total", "records", "values"):
+            assert b_lit[key] == b_dark[key], (name, key)
