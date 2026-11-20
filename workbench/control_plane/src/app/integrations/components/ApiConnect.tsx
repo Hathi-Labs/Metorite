@@ -38,11 +38,12 @@ import {
   BOOKS_PROVIDER,
   CUSTOM_API_LINE,
   apiReturn,
+  chatLaterLine,
   apiRowState,
-  connectErrorText,
   pickErrorText,
   pickIsOver,
   resultCardView,
+  returnDecision,
   t1Apis,
   withoutApiReturn,
   type ApiRowState,
@@ -82,6 +83,11 @@ export function ApiConnectorRow({
             )}
           </div>
           <p className="break-words text-xs text-muted-foreground">{connector.unlocks}</p>
+          {chatLaterLine(connector) ? (
+            <p className="break-words text-xs text-muted-foreground" data-chat-later="">
+              {chatLaterLine(connector)}
+            </p>
+          ) : null}
         </div>
         <Button
           variant={state === "connected" ? "secondary" : "primary"}
@@ -107,7 +113,7 @@ export function ApiConnectorRow({
 /** The words of the modal: whose Zoho rights the connection carries (D-API-3). */
 export const CONNECT_API_NOTE =
   "Metorite signs in to Zoho as you. The connection reads what your Zoho account can read. " +
-  "Only admins can use it in the chat.";
+  "When the chat can read it, only admins can use it there.";
 
 /** The body of "Connect an API": the T1 list, then the old custom path. */
 export function ConnectApiBody({
@@ -189,7 +195,7 @@ export function ConnectApiModal({
         if (busyId === null) onClose();
       }}
       title="Connect an API"
-      description="Connect a system that Metorite knows. The chat can then read it."
+      description="Connect a system that Metorite knows."
       size="md"
       placement={isMobile ? "sheet" : "center"}
       closeLabel="Close Connect an API"
@@ -213,6 +219,7 @@ export function BooksPickBody({
   pickingId,
   error,
   over,
+  restarting,
   onPick,
   onStartAgain,
 }: {
@@ -221,6 +228,8 @@ export function BooksPickBody({
   error: string | null;
   /** True when the pick cannot go on, so the sheet offers a new connect. */
   over: boolean;
+  /** True while the new connect starts: the button waits, and a second click does nothing. */
+  restarting?: boolean;
   onPick: (id: string) => void;
   onStartAgain: () => void;
 }) {
@@ -260,7 +269,15 @@ export function BooksPickBody({
       ) : null}
       {over ? (
         <div>
-          <Button variant="primary" size="sm" icon="LogIn" onClick={onStartAgain}>
+          <Button
+            variant="primary"
+            size="sm"
+            icon="LogIn"
+            loading={restarting}
+            disabled={restarting}
+            onClick={onStartAgain}
+            data-books-start-again=""
+          >
             Connect Zoho Books again
           </Button>
         </div>
@@ -370,29 +387,18 @@ export function ApiConnectReturn({ onConnected }: { onConnected: () => void }) {
         status = null;
       }
       if (!live) return;
-      // The route is dark, or this member may not manage it: do nothing at all.
-      if (status === null) {
-        clear();
+      // `returnDecision` holds every rule. A null status (the route is dark,
+      // or this member may not manage it) does nothing at all.
+      const next = returnDecision(ret, status);
+      if (next.kind === "pick" && ret.kind === "pick") {
+        setPick({ handle: ret.pick, choices: next.choices });
         return;
       }
-      if (ret.kind === "pick") {
-        if (status.choices.length > 0) {
-          setPick({ handle: ret.pick, choices: status.choices });
-        } else {
-          toast.show({ key: "integrations-api-connect", variant: "error", title: pickErrorText("invalid_pick") });
-          clear();
-        }
-        return;
-      }
-      if (ret.kind === "connected" && status.connected && status.card) {
-        setCard(status.card);
+      if (next.kind === "card") {
+        setCard(next.card);
         onConnected();
-      } else {
-        toast.show({
-          key: "integrations-api-connect",
-          variant: "error",
-          title: connectErrorText(ret.kind === "error" ? ret.code : null),
-        });
+      } else if (next.kind === "toast") {
+        toast.show({ key: "integrations-api-connect", variant: "error", title: next.text });
       }
       clear();
     })();
@@ -402,6 +408,16 @@ export function ApiConnectReturn({ onConnected }: { onConnected: () => void }) {
     // `clear` and `toast` change on each render. The key holds the one return.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  // P2 of the review: a tab that closes with the sheet open asks the gateway
+  // to revoke the pending token. Best effort: a beacon, never a wait.
+  const openHandle = pick?.handle ?? null;
+  useEffect(() => {
+    if (openHandle === null) return;
+    const onHide = () => api.cancelBooksBeacon(openHandle);
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [openHandle]);
 
   async function choose(id: string) {
     if (!pick) return;
@@ -444,6 +460,9 @@ export function ApiConnectReturn({ onConnected }: { onConnected: () => void }) {
           open
           onClose={() => {
             if (pickingId !== null || restarting) return;
+            // P2: the admin leaves the pick, so the gateway revokes its token.
+            // Best effort: closing never waits for it.
+            if (pick && !pickOver) void api.cancelBooks(pick.handle);
             setPick(null);
             setPickError(null);
             setPickOver(false);
@@ -460,6 +479,7 @@ export function ApiConnectReturn({ onConnected }: { onConnected: () => void }) {
             pickingId={pickingId}
             error={pickError}
             over={pickOver}
+            restarting={restarting}
             onPick={(id) => void choose(id)}
             onStartAgain={() => void startAgain()}
           />

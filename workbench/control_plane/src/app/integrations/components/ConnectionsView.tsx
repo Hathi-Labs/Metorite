@@ -132,6 +132,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
         <p className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground">
           The connections list is not ready yet. Your API keys are below.
         </p>
+        {/* P3 of the API-5 review: a Zoho Books return never lands in silence. */}
+        <ApiConnectReturn onConnected={invalidateConnections} />
         <ApiKeysView />
       </div>
     );

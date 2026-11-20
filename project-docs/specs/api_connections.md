@@ -571,11 +571,16 @@ The R8 file must show no skip.
   organizations, the sealed credential waits in Redis for 600 seconds. If the
   admin leaves, Redis drops it, and nothing revokes the refresh token at Zoho.
   Zoho keeps 20 tokens for each user and client, so a stranded token can push
-  out the CRM mirror's token. **Closed by API-5.** A new start of the same
-  admin takes the older pending entry, revokes its token at Zoho and deletes
-  it (`_start_again`). A failed revoke does not stop the new start, and the
-  log line holds counts only. The gateway cannot revoke an entry that expired,
-  because Redis dropped the sealed credential with it.
+  out the CRM mirror's token. **Closed by API-5: start again, and cancel on
+  close.** Three events end a pending entry: a new start, a newer consent of
+  the same admin, and a close of the pick sheet. Each one revokes the pending
+  token at Zoho and deletes the entry (`_drop_pending`). The close calls
+  `POST /integrations/api/zoho_books/cancel`. A tab that
+  closes sends the cancel as a beacon. A failed revoke stops nothing, and the
+  log line holds counts only. **Accepted, named:** a tab that dies with no
+  cancel still strands the token until Redis drops the entry. The gateway
+  cannot revoke an entry that expired, because Redis dropped the sealed
+  credential with it.
 - **A dark org and `/pick`.** A malformed JSON body to `/pick` answers 422, not
   404, because FastAPI reads the body before the dependencies. The route shows
   that it exists. **Decided at API-5: accepted, low.** The BFF relay checks the

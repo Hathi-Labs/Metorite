@@ -738,6 +738,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "oauth",
         "API-5. Reads the state of the Zoho Books consent and the choices of the admin's own pending pick.",
     ),
+    "POST /api/integrations/api/zoho_books/cancel": (
+        "oauth",
+        "API-5. The admin leaves the Zoho Books consent: the gateway revokes the pending sign-in.",
+    ),
     "POST /api/integrations/api/zoho_books/pick": (
         "oauth",
         "API-5. The return step of the Zoho Books consent: the admin picks one Books organization.",

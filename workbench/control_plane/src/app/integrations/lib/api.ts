@@ -183,6 +183,34 @@ export async function pickBooks(pick: string, organizationId: string): Promise<B
   return parseBooksStatus(body);
 }
 
+/**
+ * P2 of the API-5 review: the admin closes the pick sheet, so the gateway
+ * revokes the pending token and drops the entry. Best effort: it never throws,
+ * and the sheet never waits for it. `keepalive` lets it finish after a reload.
+ */
+export async function cancelBooks(pick: string): Promise<void> {
+  try {
+    await fetch("/api/integrations/api/zoho_books/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pick }),
+      keepalive: true,
+    });
+  } catch {
+    // Redis drops the entry after 600 s anyway.
+  }
+}
+
+/** The same cancel, for a tab that closes (`pagehide`). A beacon is a POST. */
+export function cancelBooksBeacon(pick: string): void {
+  try {
+    const body = new Blob([JSON.stringify({ pick })], { type: "application/json" });
+    navigator.sendBeacon("/api/integrations/api/zoho_books/cancel", body);
+  } catch {
+    // Best effort, as above.
+  }
+}
+
 export async function addMcp(body: Record<string, unknown>): Promise<void> {
   const res = await fetch("/api/integrations/mcp", {
     method: "POST",

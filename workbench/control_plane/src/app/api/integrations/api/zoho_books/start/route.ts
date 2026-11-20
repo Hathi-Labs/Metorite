@@ -13,8 +13,9 @@
  *    at the gateway (R5).
  * 2. **Same origin only.** A start that another site sends gets 403.
  * 3. **The URL comes from the gateway, whole.** This route passes it on only
- *    when it is an absolute `https` URL with no user and no password. Any
- *    other answer is a 502. So the route never becomes an open redirect.
+ *    when it is an absolute `https` URL with no user and no password, on a
+ *    Zoho accounts host (`lib/zohoAccountsHosts.ts`). Any other answer is a
+ *    502. So the route never becomes an open redirect.
  * 4. **A refusal carries a short code.** A 404 with no code reads
  *    `not_available`. A gateway 3xx is a 502.
  * 5. **Nothing logs the answer.** The consent URL holds the state.
@@ -22,6 +23,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin } from "@/lib/accountsServer";
 import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { ZOHO_ACCOUNTS_HOSTS } from "@/lib/zohoAccountsHosts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +46,8 @@ function safeConsentUrl(raw: unknown): string | null {
     return null;
   }
   if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return null;
+  // P3 of the review: only a Zoho accounts host, on the default port.
+  if (url.port !== "" || !ZOHO_ACCOUNTS_HOSTS.includes(url.hostname)) return null;
   return url.toString();
 }
 

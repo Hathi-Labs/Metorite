@@ -49,10 +49,11 @@ export const CONNECTOR_ROWS: readonly Connector[] = [
     "label": "Zoho Books",
     "signin": "admin_consent",
     "owning_app": "integrations",
-    "unlocks": "Read invoices and totals from Zoho Books in the chat.",
+    "unlocks": "Connects the invoices and totals of your Zoho Books organization to Metorite.",
     "built_in_app_shows_data": false,
     "key_hint": "",
-    "scope": "org"
+    "scope": "org",
+    "chat_reads": false
   },
   {
     "id": "google_calendar",

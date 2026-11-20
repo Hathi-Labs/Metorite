@@ -14,7 +14,7 @@
 // row only after its test read worked, so this file never guesses a state.
 // Nothing here holds a token: the status carries none.
 
-import { connectorRows, type Connector } from "@/lib/connectors";
+import { chatReads, connectorRows, type Connector } from "@/lib/connectors";
 
 import type { Connection } from "./connections";
 
@@ -35,6 +35,8 @@ export interface ResultCard {
   works_now: { unlocks: string; owning_app: string; apps: string[]; mira: string };
   templates: string[];
   build_offer: boolean;
+  /** API-5: false while no chat tool reads the connection (`chat_reads`). Absent reads as false. */
+  chat_reads: boolean;
 }
 
 export interface BooksChoice {
@@ -77,6 +79,7 @@ function parseCard(v: unknown): ResultCard | null {
     },
     templates: texts(c.templates),
     build_offer: c.build_offer === true,
+    chat_reads: c.chat_reads === true,
   };
 }
 
@@ -109,6 +112,14 @@ export function apiRowState(status: BooksStatus | null): ApiRowState {
   if (status?.connected === true) return "connected";
   if (status?.status === "needs_reconnect" || status?.status === "needs_reset") return "needs_reconnect";
   return "not_connected";
+}
+
+/**
+ * The line of a T1 API that no chat tool reads yet, or "" (API-5). The
+ * dialog draws it under the row. It reads the ONE switch, `chat_reads`.
+ */
+export function chatLaterLine(c: Pick<Connector, "label" | "chat_reads">): string {
+  return chatReads(c) ? "" : `The chat cannot read ${c.label} yet. That comes in a later release.`;
 }
 
 /** The button of the row. */
@@ -169,7 +180,11 @@ export function connectErrorText(code: string | null | undefined): string {
 const PICK_TEXT: Record<string, string> = {
   invalid_pick: "This choice expired or belongs to another session. Connect Zoho Books again.",
   unknown_organization: "That organization is not in your Zoho account. Connect Zoho Books again.",
-  test_read_failed: "Metorite cannot read invoices of this organization, so nothing was saved. Check your Zoho Books role, or pick another one.",
+  // P1-A of the API-5 review: the gateway took the pending entry and revoked
+  // its token before it answered, so no second pick can work.
+  test_read_failed:
+    "Metorite cannot read invoices with this sign-in, so nothing was saved. " +
+    "Connect Zoho Books again with an account that can read invoices.",
   untrusted_host: "Zoho sent the sign-in from a server that Metorite does not trust. Nothing was saved.",
   pending_unavailable: "Metorite cannot finish the connection now. Try again in a few minutes.",
 };
@@ -181,7 +196,15 @@ export function pickErrorText(code: string | null | undefined): string {
 
 /** True when a refused pick ends the pick: the sheet then offers a new connect. */
 export function pickIsOver(code: string | null | undefined): boolean {
-  return code === "invalid_pick" || code === "unknown_organization" || code === "untrusted_host";
+  // Each refusal of the gateway's pick comes AFTER it took the pending entry
+  // (GETDEL), except a fault before the read. A failed test read also revokes
+  // the token. So only a new connect can go on.
+  return (
+    code === "invalid_pick" ||
+    code === "unknown_organization" ||
+    code === "untrusted_host" ||
+    code === "test_read_failed"
+  );
 }
 
 // ── The return from Zoho ──────────────────────────────────────────────────
@@ -244,7 +267,11 @@ export function resultCardView(card: ResultCard): CardView {
   );
   lines.push(w.mira);
   let next: CardView["next"] = null;
-  if (card.templates.length > 0) {
+  // API-5: while no chat tool reads the connection, an app cannot read it
+  // either, so the card offers no next step.
+  if (!card.chat_reads) {
+    // No step: the card says when the chat comes.
+  } else if (card.templates.length > 0) {
     next = { label: `Start from the template ${card.templates[0]}`, href: STUDIO_HREF };
   } else if (card.build_offer) {
     next = { label: `Build an app on ${card.label}`, href: STUDIO_HREF };
@@ -288,4 +315,30 @@ export function apiDisconnectCopy(row: Pick<Connection, "provider" | "label">): 
       "To use it again, connect it again in Integrations.",
     confirmLabel: "Disconnect",
   };
+}
+
+// ── The decision of a return (API-5 review, P3) ──────────────────────────
+
+export type ReturnDecision =
+  | { kind: "nothing" }
+  | { kind: "pick"; choices: BooksChoice[] }
+  | { kind: "card"; card: ResultCard }
+  | { kind: "toast"; text: string };
+
+/**
+ * What the Connections view does with a return, given the gateway status.
+ * A `null` status (the route is dark, or no right) does nothing at all. The
+ * card shows only when the status says `connected` and carries a card.
+ */
+export function returnDecision(ret: ApiReturn, status: BooksStatus | null): ReturnDecision {
+  if (ret === null || status === null) return { kind: "nothing" };
+  if (ret.kind === "pick") {
+    return status.choices.length > 0
+      ? { kind: "pick", choices: status.choices }
+      : { kind: "toast", text: pickErrorText("invalid_pick") };
+  }
+  if (ret.kind === "connected" && status.connected === true && status.card) {
+    return { kind: "card", card: status.card };
+  }
+  return { kind: "toast", text: connectErrorText(ret.kind === "error" ? ret.code : null) };
 }

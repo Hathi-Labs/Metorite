@@ -75,7 +75,11 @@ def test_each_row_names_an_owning_app_or_the_console() -> None:
 
 def test_row_shape_and_values() -> None:
     for r in cl.connector_rows():
-        assert set(r) == _KEYS_OF_ROW, r["id"]
+        # API-5: an api: row carries one more key, the switch ``chat_reads``.
+        api = r["id"].startswith("api:")
+        assert set(r) == (_KEYS_OF_ROW | {cl.CHAT_READS} if api else _KEYS_OF_ROW), r["id"]
+        if api:
+            assert isinstance(r[cl.CHAT_READS], bool), r["id"]
         assert r["signin"] in cl.SIGNIN_KINDS
         assert r["scope"] in cl.SCOPES
         assert isinstance(r["built_in_app_shows_data"], bool)

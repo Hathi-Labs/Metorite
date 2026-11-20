@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { connector } from "@/lib/connectors";
 
-import { BOOKS_PROVIDER, parseBooksStatus, type ResultCard } from "../lib/apiConnect";
+import { BOOKS_PROVIDER, parseBooksStatus, pickErrorText, pickIsOver, type ResultCard } from "../lib/apiConnect";
 import {
   ApiConnectorRow,
   BooksPickBody,
@@ -22,9 +22,15 @@ const html = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticM
 const CARD: ResultCard = {
   provider: BOOKS_PROVIDER,
   label: "Zoho Books",
-  works_now: { unlocks: books.unlocks, owning_app: "integrations", apps: [], mira: "Mira can now use Zoho Books when you ask." },
+  works_now: {
+    unlocks: books.unlocks,
+    owning_app: "integrations",
+    apps: [],
+    mira: "The chat cannot read Zoho Books yet. That comes in a later release.",
+  },
   templates: [],
-  build_offer: true,
+  build_offer: false,
+  chat_reads: false,
 };
 
 describe("the row of a T1 API", () => {
@@ -35,6 +41,13 @@ describe("the row of a T1 API", () => {
     expect(out).toContain('data-api-connect="not_connected"');
     expect(out).toContain(">Connect<");
     expect(out).not.toContain("Connected");
+  });
+
+  it("says that the chat cannot read Zoho Books yet (P1-B: chat_reads is false)", () => {
+    const out = html(createElement(ApiConnectorRow, { connector: books, state: "not_connected", onConnect: noop }));
+    expect(out).toContain("data-chat-later");
+    expect(out).toContain("The chat cannot read Zoho Books yet. That comes in a later release.");
+    expect(out).not.toMatch(/in the chat\./);
   });
 
   it("shows Connected only for the connected row, with Reconnect", () => {
@@ -95,6 +108,45 @@ describe("the pick sheet", () => {
     expect(out).not.toContain("Connect Zoho Books again");
   });
 
+  it("after a failed test read, disables every pick and offers a new connect (P1-A)", () => {
+    const out = html(
+      createElement(BooksPickBody, {
+        choices,
+        pickingId: null,
+        error: pickErrorText("test_read_failed"),
+        over: pickIsOver("test_read_failed"),
+        onPick: noop,
+        onStartAgain: noop,
+      }),
+    );
+    expect(out).toContain("Connect Zoho Books again with an account that can read invoices");
+    expect(out).not.toContain("pick another");
+    // Both "Use this one" buttons are off, and the new connect is on.
+    const uses = out.split("Use this one").slice(0, -1);
+    expect(uses).toHaveLength(2);
+    for (const before of uses) expect(before.slice(before.lastIndexOf("<button"))).toContain('disabled=""');
+    const again = out.slice(out.lastIndexOf("<button"));
+    expect(again).toContain("data-books-start-again");
+    expect(again).not.toContain('disabled=""');
+  });
+
+  it("holds the new connect against a second click while it starts", () => {
+    const out = html(
+      createElement(BooksPickBody, {
+        choices,
+        pickingId: null,
+        error: pickErrorText("invalid_pick"),
+        over: true,
+        restarting: true,
+        onPick: noop,
+        onStartAgain: noop,
+      }),
+    );
+    const again = out.slice(out.lastIndexOf("<button"));
+    expect(again).toContain("data-books-start-again");
+    expect(again).toContain('disabled=""');
+  });
+
   it("offers a new connect when the pick is over, and shows why", () => {
     const out = html(
       createElement(BooksPickBody, {
@@ -113,12 +165,15 @@ describe("the pick sheet", () => {
 });
 
 describe("the result card", () => {
-  it("says what works now, that nothing uses it yet, and one next step as a link", () => {
+  it("says what is true now, that nothing uses it yet, and offers no step", () => {
     const out = html(createElement(ConnectResultCardView, { card: CARD, onNext: noop, onDismiss: noop }));
     expect(out).toContain('role="status"');
     expect(out).toContain("Zoho Books is connected.");
     expect(out).toContain("No app or chat tool uses it yet.");
-    expect(out).toContain("Build an app on Zoho Books");
+    // P1-B: no Mira line and no build offer while the chat cannot read it.
+    expect(out).toContain("The chat cannot read Zoho Books yet. That comes in a later release.");
+    expect(out).not.toContain("Mira can now");
+    expect(out).not.toContain("Build an app");
     expect(out).toContain('aria-label="Close the result"');
     expect(out).not.toContain('role="dialog"');
   });

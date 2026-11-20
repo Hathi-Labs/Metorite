@@ -60,6 +60,11 @@ async function start(opts: { site?: string | null; body?: string } = {}) {
   return POST(post("/api/integrations/api/zoho_books/start?org=other", opts));
 }
 
+async function cancel(body: string | undefined, site: string | null = "same-origin") {
+  const { POST } = await import("./cancel/route");
+  return POST(post("/api/integrations/api/zoho_books/cancel", { site, body }));
+}
+
 async function pick(body: unknown, site: string | null = "same-origin") {
   const { POST } = await import("./pick/route");
   return POST(post("/api/integrations/api/zoho_books/pick", { site, body: JSON.stringify(body) }));
@@ -117,8 +122,27 @@ describe("POST the Zoho Books start", () => {
     expect(calls[0].init?.redirect).toBe("manual");
   });
 
+  it("passes a consent URL on each Zoho accounts host", async () => {
+    for (const host of ["accounts.zoho.in", "accounts.zoho.eu", "accounts.zohocloud.ca"]) {
+      const url = `https://${host}/oauth/v2/auth?state=zb.s`;
+      stubGateway(answer(200, { url }));
+      const res = await start();
+      expect(res.status, host).toBe(200);
+    }
+  });
+
   it("refuses a gateway URL that is not a plain absolute https URL", async () => {
-    for (const url of ["http://accounts.zoho.com/x", "javascript:alert(1)", "/integrations", "https://u:p@accounts.zoho.com/", 42]) {
+    for (const url of [
+      "http://accounts.zoho.com/x",
+      "javascript:alert(1)",
+      "/integrations",
+      "https://u:p@accounts.zoho.com/",
+      42,
+      // P3 of the review: a foreign https host, a look-alike, and another port.
+      "https://evil.example/oauth/v2/auth",
+      "https://accounts.zoho.com.evil.example/oauth/v2/auth",
+      "https://accounts.zoho.com:8443/oauth/v2/auth",
+    ]) {
       stubGateway(answer(200, { url }));
       const res = await start();
       expect(res.status, String(url)).toBe(502);
@@ -192,9 +216,41 @@ describe("POST the Zoho Books pick", () => {
   });
 });
 
-describe("the three relays", () => {
+describe("POST the Zoho Books cancel (review P2)", () => {
+  it("sends the pick handle only, also from a beacon body", async () => {
+    stubGateway(answer(200, { cancelled: true, extra: "dropped" }));
+    const res = await cancel(JSON.stringify({ pick: PICK, member: "eve", organization_id: "org-b" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ cancelled: true });
+    expect(calls[0].url).toBe("http://gw.test/integrations/api/zoho_books/cancel");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ pick: PICK });
+  });
+
+  it("refuses a bad handle or body with invalid_pick, and calls nothing", async () => {
+    for (const body of [JSON.stringify({ pick: "short" }), "not json", undefined, JSON.stringify({ pick: "x".repeat(600) })]) {
+      stubGateway(answer(200, {}));
+      const res = await cancel(body);
+      expect(res.status, String(body)).toBe(400);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("refuses a cancel that another site sends, before any call", async () => {
+    stubGateway(answer(200, {}));
+    expect((await cancel(JSON.stringify({ pick: PICK }), "cross-site")).status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("answers not_available for a dark org", async () => {
+    stubGateway(answer(404, { detail: "Not Found" }));
+    const res = await cancel(JSON.stringify({ pick: PICK }));
+    expect([res.status, await res.json()]).toEqual([404, { detail: "not_available" }]);
+  });
+});
+
+describe("the four relays", () => {
   it("never log", () => {
-    for (const file of ["./route.ts", "./start/route.ts", "./pick/route.ts"]) {
+    for (const file of ["./route.ts", "./start/route.ts", "./pick/route.ts", "./cancel/route.ts"]) {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
       expect(code, file).not.toMatch(/console\.|logger|\blog\(/);
