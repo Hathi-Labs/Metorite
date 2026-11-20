@@ -119,6 +119,7 @@ import functools
 import itertools
 import json
 import re
+import time
 import unicodedata
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
@@ -271,17 +272,49 @@ def _host(url: str) -> str:
         return ""
 
 
+#: Leaf classes that say nothing about the fault. anyio raises ``WouldBlock``
+#: inside each stream receive, so it is the deepest ``__context__`` of almost
+#: every fault of an MCP session. A 401 logged as ``WouldBlock`` on
+#: 2026-11-20 (Shaurrya's Zoho Books server). A cancel only says that a task
+#: group closed after the real fault.
+_NOISE_LEAVES = frozenset({"WouldBlock", "CancelledError"})
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status of the first answer in the chain of *exc* that carries
+    one (an ``httpx.HTTPStatusError``), or None. Reads numbers only."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack and len(seen) < 32:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        status = getattr(getattr(cur, "response", None), "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
+        for nxt in (cur.__cause__, cur.__context__, *list(getattr(cur, "exceptions", None) or [])):
+            if isinstance(nxt, BaseException):
+                stack.append(nxt)
+    return None
+
+
 def _reason(exc: BaseException) -> str:
     """A short reason for *exc*, safe to log.
 
-    An ``OutboundRefused`` anywhere in the chain gives its own reason. Other
-    faults give the class name of the deepest error, never its message, which
-    can hold a URL or a header."""
+    An ``OutboundRefused`` anywhere in the chain gives its own reason. An
+    answer with an HTTP status gives ``http_<status>``. A cap of
+    :func:`_cap_list_tools` gives ``too_many_tools`` or ``too_many_pages``.
+    Other faults give the class name of the deepest error that is not
+    :data:`_NOISE_LEAVES`, never its message, which can hold a URL or a
+    header."""
     from gateway.outbound_guard import OutboundRefused
 
     seen: set[int] = set()
     stack: list[BaseException] = [exc]
     leaf = type(exc).__name__
+    status: int | None = None
+    capped: str | None = None
     while stack and len(seen) < 32:
         cur = stack.pop()
         if id(cur) in seen:
@@ -289,12 +322,23 @@ def _reason(exc: BaseException) -> str:
         seen.add(id(cur))
         if isinstance(cur, OutboundRefused):
             return str(cur.reason)[:_REASON_CHARS]
+        if isinstance(cur, McpListTooLong) and capped is None:
+            capped = f"too_many_{cur.args[0] if cur.args else 'tools'}"
+        found = getattr(getattr(cur, "response", None), "status_code", None)
+        if status is None and isinstance(found, int) and not isinstance(found, bool):
+            status = found
         nested = list(getattr(cur, "exceptions", None) or [])
         for nxt in (cur.__cause__, cur.__context__, *nested):
             if isinstance(nxt, BaseException):
                 stack.append(nxt)
-        if cur.__cause__ is None and cur.__context__ is None and not nested:
-            leaf = type(cur).__name__
+        name = type(cur).__name__
+        if (cur.__cause__ is None and cur.__context__ is None and not nested
+                and name not in _NOISE_LEAVES):
+            leaf = name
+    if capped is not None:
+        return capped[:_REASON_CHARS]
+    if status is not None:
+        return f"http_{status}"
     return leaf[:_REASON_CHARS]
 
 
@@ -989,6 +1033,40 @@ def _watch_status(client: Any) -> list[int]:
     return codes
 
 
+#: A status that a healthy session also gets. The client opens the optional
+#: event stream with a GET, and a server with no stream answers 405 (MCP
+#: streamable HTTP). So a 405 never names the fault of a connect.
+_EXPECTED_STATUS = frozenset({405})
+
+
+def _refused_status(codes: list[int]) -> int | None:
+    """The last status of 400 to 599 in *codes* (:func:`_watch_status`) that is
+    not :data:`_EXPECTED_STATUS`, or None."""
+    for code in reversed(codes):
+        if 400 <= code <= 599 and code not in _EXPECTED_STATUS:
+            return code
+    return None
+
+
+def _note_unreachable(name: str, host: str, exc: BaseException, codes: list[int],
+                      failures: dict[str, str] | None) -> None:
+    """Log ``mcp.unreachable`` for a connect that failed, and set its CSY-5 reason.
+
+    The reason is :func:`_reason`. When that is only a class name, and an
+    answer refused the connect, the reason is ``http_<status>`` instead. A cap
+    and a guard refusal keep their own reason. A 401 or 403 is a sign-in that
+    the server refused, such as a key server that now wants an OAuth consent.
+    Its CSY-5 reason is ``reconnect``, so the chat says that an admin must
+    reconnect it, and not that it did not answer."""
+    reason = _reason(exc)
+    status = _refused_status(codes) or _http_status(exc)
+    if status and reason.isidentifier() and reason[:1].isupper():
+        reason = f"http_{status}"
+    _log.warning("mcp.unreachable", name=name, host=host, reason=reason)
+    if failures is not None:
+        failures[name] = "reconnect" if status in (401, 403) else "unreachable"
+
+
 async def _report_unauthorized(
     on_unauthorized: Callable[[McpServer], Awaitable[Any]], server: McpServer,
 ) -> None:
@@ -1077,8 +1155,10 @@ async def attach_mcp_tools(
                 failures[server.name] = "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
-        # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
-        codes = _watch_status(client) if server.oauth else []
+        # IN-8b, rule 9: the answers of each server, so a 401 is seen. An OAuth
+        # row acts on it below. Each row logs it, because MAF wraps the HTTP
+        # error and drops it from the chain (2026-11-20, Shaurrya's Zoho Books).
+        codes = _watch_status(client)
         tool = None
         try:
             # WS-8c item 30: progressive disclosure is experimental in MAF, and
@@ -1119,9 +1199,7 @@ async def attach_mcp_tools(
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
-            _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
-            if failures is not None:
-                failures[server.name] = "unreachable"
+            _note_unreachable(server.name, host, exc, codes, failures)
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue
@@ -1635,6 +1713,36 @@ async def _pass_or_refuse_loader(tools: list[Any], context: Any, function: Any,
     context.result = LOADER_REFUSED_TEXT.format(tool=name)
 
 
+# CSY-2 (task 3401, spec chat_connected_systems.md §3.3): one ``mcp.call`` line for
+# each call of an MCP function, on every path of the gate. The outcome comes from a
+# closed list. The line never holds an argument, a result, a header or a URL path.
+MCP_CALL_OUTCOMES = ("ok", "error", "timeout", "refused",
+                     "card_approved", "card_denied", "card_refused")
+# Surfaces that count as the chat. Any other run (a poll, a job) logs source=job,
+# so a background poll never adds to the chat-use count. The value comes from the
+# run's own log context, never from request input. Unknown fails to "job".
+_CHAT_SOURCES = frozenset({"chat", "shell"})
+
+
+def log_mcp_call(*, server: str, tool: str, outcome: str, read_only: bool, ms: int) -> None:
+    """Log the ``mcp.call`` line. An outcome outside the closed list is a bug."""
+    if outcome not in MCP_CALL_OUTCOMES:
+        outcome = "error"
+    try:
+        import structlog
+        ctx = structlog.contextvars.get_contextvars()
+        source = "chat" if str(ctx.get("source") or "chat").strip().lower() in _CHAT_SOURCES else "job"
+    except Exception:
+        source = "job"
+    try:
+        from acb_common.tenant_redis import current_organization, organization_bound
+        org = current_organization() if organization_bound() else ""
+    except Exception:
+        org = ""
+    _log.info("mcp.call", server=server, tool=tool, outcome=outcome, ms=ms,
+              read_only=read_only, org=org, source=source)
+
+
 def _make_gate_class() -> type:
     from agent_framework import FunctionMiddleware
 
@@ -1671,6 +1779,26 @@ def _make_gate_class() -> type:
             return _owner_of(self.tools, function)
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+            """Gate one call, and log ONE ``mcp.call`` line for it (CSY-2, task 3401)."""
+            rec: dict[str, Any] = {}
+            started = time.monotonic()
+            try:
+                await self._gate(context, call_next, rec)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                rec["outcome"] = "timeout"
+                raise
+            except Exception:
+                rec["outcome"] = "error"
+                raise
+            finally:
+                if rec.get("outcome"):
+                    log_mcp_call(server=rec.get("server", ""), tool=rec.get("tool", ""),
+                                 outcome=rec["outcome"], read_only=bool(rec.get("read_only")),
+                                 ms=int((time.monotonic() - started) * 1000))
+
+        async def _gate(self, context: Any, call_next: Callable[[], Any], rec: dict[str, Any]) -> None:
             from acb_skills.egress import _from_mcp
             from acb_skills.permission_policy import (
                 MCP_MEMBER_RUN,
@@ -1690,9 +1818,11 @@ def _make_gate_class() -> type:
             arguments = _arguments(context)
             if arguments is None:
                 _log.info("mcp.confirm", tool=name, outcome="unreadable_arguments")
+                rec.update(tool=name, outcome="refused")
                 context.result = UNREADABLE_ARGUMENTS_TEXT.format(tool=_shown_name(name))
                 return
             server, remote, meta = self.owner_of(function)
+            rec.update(server=server, tool=remote or name)
             # H-300: the admin's switch on the server. The owner holds it.
             owner = _owner_tool(self.tools, function)
             always = server_always_confirms(owner)
@@ -1719,15 +1849,19 @@ def _make_gate_class() -> type:
                 after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:
+                rec["outcome"] = "refused"
                 context.result = f"[blocked by permission policy: {reason}]"
                 return
             if reason in (MCP_READ_ONLY, MCP_READ_ONLY_KEY, MCP_MEMBER_RUN):
+                # "read_only" in the mcp.call line means that no card ran (spec section 3.3).
+                rec.update(read_only=True, outcome="ok")
                 await call_next()
                 return
             refusal = _card_refusal(self.member_present)
             if refusal is not None:
                 text, code = refusal
                 _log.info("mcp.confirm", server=server, tool=name, outcome=code)
+                rec["outcome"] = "card_refused"
                 context.result = text.format(tool=name)
                 return
             try:
@@ -1737,13 +1871,16 @@ def _make_gate_class() -> type:
                                  acts_as=server_acts_as(owner))
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
+                rec["outcome"] = "card_refused"
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
                 return
             if not await self._confirmed(card):
                 _log.info("mcp.confirm", server=server, tool=name, outcome="denied")
+                rec["outcome"] = "card_denied"
                 context.result = DENIED_TEXT.format(tool=name)
                 return
             _log.info("mcp.confirm", server=server, tool=name, outcome="approved")
+            rec["outcome"] = "card_approved"
             await call_next()
 
         @staticmethod
@@ -1773,6 +1910,7 @@ __all__ = [
     "DIRECT_TOOLS_MAX",
     "LOADER_REFUSED_TEXT",
     "MAX_SERVERS",
+    "MCP_CALL_OUTCOMES",
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",
     "REDACTED",
