@@ -321,6 +321,9 @@ async def decide(org: str, connected_by: Any, body: Mapping[str, Any], *,
     token = bind_tenant(org)
     try:
         out = await _decide(org, connected_by, body, mp._utc_date(now))
+    except Exception as exc:  # the draft of code still saves, with no ai item
+        _log.warning("connections.profiler.decide_failed", error_type=type(exc).__name__)
+        out = Decided(FAILED)
     finally:
         release_tenant(token)
     _log.info("connections.profiler.decide", organization_id=org, reason=out.reason,

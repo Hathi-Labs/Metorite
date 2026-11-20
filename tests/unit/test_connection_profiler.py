@@ -43,6 +43,32 @@ of a profiler draft on a real Postgres is in
 * Drop the flag check: ``test_with_the_flag_off_nothing_is_written`` goes red.
 * Drop the transport check of ``_server_of``:
   ``test_a_row_that_is_not_a_cloud_mcp_row_gets_no_profile`` goes red.
+
+**SEM-13b, the decide step (§10.7).** Each mutation ran on 2026-11-20 and
+was restored. Each turned its named test red.
+
+* Put a count in the state: ``test_the_decide_state_holds_no_value``.
+* Write a text that is not the text of ``ai_description``:
+  ``test_a_closed_word_builds_the_ai_text_and_shape_only_passes``.
+* Read any choice of the answer, with no closed list:
+  ``test_an_answer_outside_the_list_writes_no_ai_item`` (the case of a
+  ref of another part. For a word, ``ai_description`` is a second guard).
+* Drop the check of ``SURE`` and ``MARGIN``:
+  ``test_an_unsure_answer_writes_no_ai_item``.
+* Drop the ``@`` check: ``test_no_payer_spends_nothing``. Drop the
+  ``_member_left`` check: ``test_a_departed_payer_spends_nothing``.
+* Drop the ``namespace`` of the call: ``test_the_day_counter_is_its_own_key``.
+  Change the default of the keyword:
+  ``test_the_crm_day_counter_key_is_unchanged``.
+* Drop the run cap, the token cap or the day cap: the case of that cap in
+  ``test_the_caps_stop_the_decide_step``.
+* Run the step before the check of the hash: ``test_a_same_shape_asks_nothing``.
+* Drop the mode check: ``test_mode_off_asks_nothing``. Write the items in
+  ``shadow``: ``test_mode_shadow_writes_no_ai_item``.
+* Run the step inside the session of the read:
+  ``test_the_decide_runs_with_no_session_open``.
+* Give a field the meaning of two parts:
+  ``test_a_field_that_two_parts_choose_gets_no_meaning``.
 """
 
 from __future__ import annotations
