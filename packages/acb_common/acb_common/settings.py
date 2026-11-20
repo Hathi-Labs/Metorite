@@ -1591,7 +1591,23 @@ class Settings(BaseSettings):
     # A customer org on the list waits for the owner's answer to TOF-Q2.
     # Fences: tests/unit/test_failure_log_queue.py,
     # tests/unit/test_failure_store_r8.py.
+    #
+    # TOF-2e (tool_failure_log.md §7 and §11). `tool_failure_org_id` is the
+    # internal org that runs the sync job. `tool_failure_project_id` is the
+    # project "Tool failures" in that org, and GH-6 skips its tasks.
+    # `tool_failure_run_as` is the member that makes each task. With any of
+    # the three empty, the job does nothing. `tool_failure_external_min` is
+    # the day count of §7.2 for a code that we do not own.
+    # `tool_failure_close_days` is the watch of §7.4. The one reader of the
+    # five is `gateway.failures.sync.config`. A change needs a restart.
+    # 🔴 OWNER-GATE on a box (`env-write`, tool_failure_log.md §12).
+    # Fence: tests/unit/test_tool_failure_tasks_r8.py.
+    tool_failure_close_days: int = 7
+    tool_failure_external_min: int = 20
     tool_failure_log_orgs: str = ""
+    tool_failure_org_id: str = ""
+    tool_failure_project_id: str = ""
+    tool_failure_run_as: str = ""
     tool_failure_tasks: bool = False
 
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────

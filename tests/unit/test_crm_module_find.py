@@ -37,11 +37,14 @@ def _calls(source: str, name: str) -> set[str] | None:
     return None
 
 
-#: file → function → the calls it must make.
+#: file → function → the calls it must make. CRM-Q34-10 moved the flag,
+#: the refusal and the words of ``q`` into ``_module_filters``, which both
+#: module reads call. ``_read_pages`` adds the words, with no near pass.
 _PINS: dict[str, dict[str, set[str]]] = {
     "aggregate.py": {
-        "_read": {"find_words", "_with_words", "_near_pass", "q_refusal",
-                  "module_find_allowed"},
+        "_module_filters": {"find_words", "q_refusal", "module_find_allowed"},
+        "_read": {"_module_filters", "_with_words", "_near_pass"},
+        "_read_pages": {"_module_filters", "_with_words"},
         "_with_words": {"find_where"},
         "_near_pass": {"find_near", "find_where"},
     },
@@ -232,12 +235,17 @@ def test_a_value_reads_as_text_and_never_as_json() -> None:
 
     text_sql = fs._text_value("c", "p")
     assert "WHEN 'string' THEN c ->> :p" in text_sql
-    assert "WHEN 'object' THEN c -> :p ->> 'name'" in text_sql
+    # CRM-Q34-5 round 3: the name of an object reads only when it is a JSON
+    # string or number, so a name that is an object gives no JSON text.
+    guarded = ("WHEN 'object' THEN (CASE WHEN jsonb_typeof(c -> :p -> 'name') "
+               "IN ('string', 'number') THEN c -> :p ->> 'name' END)")
+    assert guarded in text_sql
     assert "ELSE" not in text_sql and "'array'" not in text_sql
     lookup_sql = fs._lookup_name("c", "p")
     assert "ELSE" not in lookup_sql and "WHEN 'string' THEN c ->> :p" in lookup_sql
+    assert guarded in lookup_sql
     doc = fs.find_where(_scope(), ["x"]).sql
-    assert doc.count("jsonb_typeof") == 4
+    assert doc.count("jsonb_typeof") == 8
 
 
 def test_the_list_find_runs_under_the_aggregate_timeout() -> None:

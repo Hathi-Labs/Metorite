@@ -547,14 +547,14 @@ CAPTURE_SITES = {
 #: The SQL names of the store (§9 P6). Whole words only.
 SQL_NAMES = re.compile(
     r"\b(failure_events|failure_org_days|failure_fingerprints|failure_daily|failure_config"
-    r"|failure_reports|failure_tally|failure_org_band|failure_due|failure_set"
+    r"|failure_reports|failure_tally|failure_org_band|failure_due(?:_v2)?|failure_set"
     r"|failure_prune_daily)\b")
-#: The modules that may name one. TOF-2e adds the sync job.
-#: The writer, and the member purge. The purge deletes the failure_events rows of a
-#: member (the 2591 purge fix, ``routes/admin/members._PURGE_DELETES``). It is no
-#: capture site and it writes no row.
+#: The writer, the sync job (TOF-2e) and the member purge. The purge deletes the
+#: failure_events rows of a member (``routes/admin/members._PURGE_DELETES``). It is
+#: no capture site and it writes no row.
 SQL_OWNERS = {
     "packages/acb_common/acb_common/failure_log.py",
+    "apps/services/gateway/gateway/failures/sync.py",
     "apps/services/gateway/gateway/routes/admin/members.py",
 }
 
