@@ -5,6 +5,18 @@
 holds each request of the control plane to one decision. Today's gaps sit in
 a debt list, so CI passes. P-1 (Calendar and Tasks) is the next slice.
 
+**PAR-1 (task 3099, no dead end) is BUILT, 2026-11-17, with no flag.**
+`show_in_app` opens every live page of `nav.ts`, the Admin pages too
+(`orchestrator/in_app_path.py`, `PANES`). `/settings/organization` opens for an
+admin of the org only, by the right of the verified run member, and a member
+who is no admin gets "Only an admin of your organization opens Organisation."
+The Organisation page reads `?tab=` once (`orgTab.ts`), so the chat lands on
+Members & roles. `acb_skills/chat_parity.py` gains `APP_PAGE`: the live page of
+each app, for an act that has no chat tool yet. `None` marks an app with no
+live pane (notes, memory, agents). The right of the admin gate (the chat needs
+`admin:members:manage`, the sidebar shows the page for `admin:members:read`) is
+task 3677 (PAR-1c).
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -113,6 +125,15 @@ a stale row, a false claim, a bad exemption and a new debt.
 `WAVES` in the parity module holds the waves. P-1 is Calendar and Tasks. The
 epic sets the order of the waves after it. Each wave moves its rows from
 `DEBT` to `COVERED`, and lowers the ceiling of its app.
+
+**The ratchet names its tasks (PAR-1b, task 3100, 2026-11-17).** Each wave of
+`WAVES` lists the board tasks that build it, and a wave with no task fails.
+`P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
+names the task that pays it in its comment, as "Paid by task N", and N is a
+task of the wave of that app. Eight ceilings had gone up since P-0 (calendar,
+chat, email, integrations, knowledge, settings, shell, studio), and each one
+names its task now. The CRM wave P-3 had no task, so task 3678 is its task.
+Fence: `tests/unit/test_chat_parity.py`.
 
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.

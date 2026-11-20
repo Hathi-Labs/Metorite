@@ -640,3 +640,19 @@ async def test_a_guessed_id_of_a_crm_agent_tool_is_text_and_sends_nothing(
     out = await tools["get_record"]("invoices", "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d")
     assert out.startswith(f"{REFUSED} Unknown CRM record type 'invoices'.")
     assert calls == [] and asked == []
+
+
+def test_crm_aggregate_costs_no_more_tokens_than_when_main_was_green() -> None:
+    """Main went red on 2026-11-17: the Studio chat at the pack cap
+    (``test_one_assistant_measure_search``) fits its found tools in 30,000
+    schema tokens, and a 49-token growth of this one tool broke it. 687 is
+    the size at the last green batch (99f1afcfe). A longer text must cut
+    words elsewhere, or raise the budget on purpose (R7)."""
+    import json
+
+    from acb_llm.context import count_message_tokens
+    from acb_skills.skill_families import tool_json_schema
+
+    used = count_message_tokens(
+        [{"role": "system", "content": json.dumps(tool_json_schema(_T.crm_aggregate))}])
+    assert used <= 687, used

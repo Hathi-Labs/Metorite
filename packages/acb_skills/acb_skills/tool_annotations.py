@@ -51,6 +51,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # projects_ai_chat.md §14.10: the same PDF seam, a report file in the
     # chat's outputs and one card. No network, no egress.
     "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # SBX-19: Python over the tool results of this chat, in the `compute` target of
+    # the sandbox broker. No network, no secret, no door. It writes files into
+    # this chat only, so it is no egress tool and it reaches nothing outside.
+    "compute_run":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-VOX VOX-3: an attached image to tier-vision through the Console. It
@@ -234,6 +238,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
     "whatsapp_ui",
+    # SBX-19: dark by org (`COMPUTE_RUN_ORGS`), so the risk block of every agent
+    # stays byte-identical.
+    "compute_run",
     # WS-67 OA-9b: only the orchestrator holds it, and only for an org on
     # SPAWN_SUBAGENTS_ORGS. No other agent's block names it, so every block
     # stays byte-identical.
