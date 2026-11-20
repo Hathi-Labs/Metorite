@@ -271,17 +271,49 @@ def _host(url: str) -> str:
         return ""
 
 
+#: Leaf classes that say nothing about the fault. anyio raises ``WouldBlock``
+#: inside each stream receive, so it is the deepest ``__context__`` of almost
+#: every fault of an MCP session. A 401 logged as ``WouldBlock`` on
+#: 2026-11-20 (Shaurrya's Zoho Books server). A cancel only says that a task
+#: group closed after the real fault.
+_NOISE_LEAVES = frozenset({"WouldBlock", "CancelledError"})
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status of the first answer in the chain of *exc* that carries
+    one (an ``httpx.HTTPStatusError``), or None. Reads numbers only."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack and len(seen) < 32:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        status = getattr(getattr(cur, "response", None), "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
+        for nxt in (cur.__cause__, cur.__context__, *list(getattr(cur, "exceptions", None) or [])):
+            if isinstance(nxt, BaseException):
+                stack.append(nxt)
+    return None
+
+
 def _reason(exc: BaseException) -> str:
     """A short reason for *exc*, safe to log.
 
-    An ``OutboundRefused`` anywhere in the chain gives its own reason. Other
-    faults give the class name of the deepest error, never its message, which
-    can hold a URL or a header."""
+    An ``OutboundRefused`` anywhere in the chain gives its own reason. An
+    answer with an HTTP status gives ``http_<status>``. A cap of
+    :func:`_cap_list_tools` gives ``too_many_tools`` or ``too_many_pages``.
+    Other faults give the class name of the deepest error that is not
+    :data:`_NOISE_LEAVES`, never its message, which can hold a URL or a
+    header."""
     from gateway.outbound_guard import OutboundRefused
 
     seen: set[int] = set()
     stack: list[BaseException] = [exc]
     leaf = type(exc).__name__
+    status: int | None = None
+    capped: str | None = None
     while stack and len(seen) < 32:
         cur = stack.pop()
         if id(cur) in seen:
@@ -289,12 +321,23 @@ def _reason(exc: BaseException) -> str:
         seen.add(id(cur))
         if isinstance(cur, OutboundRefused):
             return str(cur.reason)[:_REASON_CHARS]
+        if isinstance(cur, McpListTooLong) and capped is None:
+            capped = f"too_many_{cur.args[0] if cur.args else 'tools'}"
+        found = getattr(getattr(cur, "response", None), "status_code", None)
+        if status is None and isinstance(found, int) and not isinstance(found, bool):
+            status = found
         nested = list(getattr(cur, "exceptions", None) or [])
         for nxt in (cur.__cause__, cur.__context__, *nested):
             if isinstance(nxt, BaseException):
                 stack.append(nxt)
-        if cur.__cause__ is None and cur.__context__ is None and not nested:
-            leaf = type(cur).__name__
+        name = type(cur).__name__
+        if (cur.__cause__ is None and cur.__context__ is None and not nested
+                and name not in _NOISE_LEAVES):
+            leaf = name
+    if capped is not None:
+        return capped[:_REASON_CHARS]
+    if status is not None:
+        return f"http_{status}"
     return leaf[:_REASON_CHARS]
 
 
@@ -989,6 +1032,14 @@ def _watch_status(client: Any) -> list[int]:
     return codes
 
 
+def _refused_status(codes: list[int]) -> int | None:
+    """The last status of 400 or more in *codes* (:func:`_watch_status`), or None."""
+    for code in reversed(codes):
+        if 400 <= code <= 599:
+            return code
+    return None
+
+
 async def _report_unauthorized(
     on_unauthorized: Callable[[McpServer], Awaitable[Any]], server: McpServer,
 ) -> None:
@@ -1077,8 +1128,10 @@ async def attach_mcp_tools(
                 failures[server.name] = "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
-        # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
-        codes = _watch_status(client) if server.oauth else []
+        # IN-8b, rule 9: the answers of each server, so a 401 is seen. An OAuth
+        # row acts on it below. Each row logs it, because MAF wraps the HTTP
+        # error and drops it from the chain (2026-11-20, Shaurrya's Zoho Books).
+        codes = _watch_status(client)
         tool = None
         try:
             # WS-8c item 30: progressive disclosure is experimental in MAF, and
@@ -1119,9 +1172,14 @@ async def attach_mcp_tools(
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
-            _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
+            status = _refused_status(codes) or _http_status(exc)
+            _log.warning("mcp.unreachable", name=server.name, host=host,
+                         reason=f"http_{status}" if status else _reason(exc))
             if failures is not None:
-                failures[server.name] = "unreachable"
+                # A 401 or 403 is a sign-in that the server refused, such as a
+                # key server that now wants an OAuth consent. The chat then says
+                # that an admin must reconnect it, not that it did not answer.
+                failures[server.name] = "reconnect" if status in (401, 403) else "unreachable"
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue
