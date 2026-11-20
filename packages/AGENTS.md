@@ -60,12 +60,15 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - Provisioning fences: `tests/unit/test_org_provisioning.py`, `tests/unit/test_h6_rbac_rekey.py` and `tests/unit/test_signup_reconciler.py`.
 
 - **`app_manifests/` holds the ONE route manifest of each app** (MCP-P1a, D136, `external_agent_access.md` §19.3). Mira's chat client and the MCP door both read it. It is pure data and imports the standard library only, so `acb_auth`, the edge and the gateway can import it.
+  - `base.build_route_call` is the ONE builder of a call over one `Route` (API-1, `api_connections.md` §2.1). The door's `build_call` calls it with `open_query=True`. An API op row (`api=True`) calls it with a closed query: each key is a path key or a key of `query_shapes`. It refuses a path value with `/ \ ? # %`, a NUL or `..`, and it percent-encodes each path value. Do not add a second builder. Fences: `tests/unit/test_api_templates.py`, `tests/unit/test_app_door_coverage.py`.
+- `api_connections_flag.py`: `api_connections_allowed(org)` is the one reader of `API_CONNECTIONS_ORGS` (API-1, D-API-8). It fails closed. Fence: `tests/unit/test_api_templates.py`.
 - `base.py` holds the types and the readers. `build_call` is the one builder of a door call. `knowledge.py` holds the Knowledge rows, and `acb_skills/knowledge_manifest.py` re-exports them. Each A, B or C row names a door `op` or an `off_door` reason (AD-2), and an `App` with neither fails at import.
 - Fences: `tests/unit/test_app_door_coverage.py`, `tests/unit/test_knowledge_chat_coverage.py`.
 - `crm.py` holds the CRM rows: one for each route of `gateway.routes.crm`, all `off_door` until MCP-P2a sets the door ops (CRM-M2a, D136.1). `acb_skills/chat_parity.py` decides each `/api/crm` action from these rows. Fence: `tests/unit/test_crm_ui_actions.py`. A new CRM route needs a row, and the count of `planned` rows only goes down.
 - `projects.py` holds `PROJECTS_DOOR`, the door table of Projects (MCP-G24, D208, `external_agent_access.md` §19.16). It has one row for each row of `skill_projects/manifest.py`, with the same class and tool, and it adds the door op or the `off_door` reason. A new Projects route needs a row in both files, until MCP-G24c makes one table (D208.2). The table is not in `APPS`, so the door serves none of its ops yet. Fence: `tests/unit/test_projects_door_coverage.py`.
 
 - `tenant_redis.TenantRedis.delete_unless(k, value)` is the ONE compare-and-delete of the wrapper. It runs a fixed Lua script on one typed key, so a caller gives no script. Do not add a general `eval`. `acb_skills.late_approve.drop_offer` is its caller (task 3467). Fence: `tests/unit/test_tenant_redis.py`.
+- `tenant_redis.TenantPipeline` has `incr` and `expireat` (API-3). The daily budget of an API connection runs both in ONE MULTI block, so no counter key lives without an end. Fence: `tests/unit/test_api_call_limits.py`.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.

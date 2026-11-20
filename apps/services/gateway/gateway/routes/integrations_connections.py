@@ -521,7 +521,17 @@ def _not_found() -> HTTPException:
 
 
 def _split_id(connection_id: str) -> tuple[str, str]:
-    prefix, sep, rest = connection_id.partition(":")
+    """The provider and the key of a row id.
+
+    An API connection (API-2) has the provider ``api:<template>``, so its
+    row id is ``api:<template>:<uuid>``. It splits at the LAST colon. Each
+    other id splits at the first one, because an MCP server name and a key
+    service can hold no colon, and a registry id ends with a uuid.
+    """
+    if connection_id.startswith("api:"):
+        prefix, sep, rest = connection_id.rpartition(":")
+    else:
+        prefix, sep, rest = connection_id.partition(":")
     if not sep or not prefix or not rest:
         raise _not_found()
     return prefix, rest
@@ -557,6 +567,12 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
         await github_connection.disconnect(org)
         async with tenant_session(org) as db:
             after = await store.get_by_id(db, org, conn.id)
+    elif conn.provider == "api:zoho_books" and conn.owning_app == "integrations":
+        # API-2: revoke the refresh token at Zoho, then the store disconnect,
+        # under the connect lock of the Books flow.
+        from gateway.routes.integrations_api_connect import disconnect_books
+
+        after = await disconnect_books(org)
     else:
         async with tenant_session(org) as db:
             after = await store.disconnect(db, org, conn.id)

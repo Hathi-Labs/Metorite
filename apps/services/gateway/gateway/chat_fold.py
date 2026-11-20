@@ -414,6 +414,15 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 # ── Run-boundary memory extraction (P1-9) ──────────────────────────────────
 
+#: RESUME-2e (task 3818): the key of the text that the memory extraction reads
+#: in place of ``content``. Only the fold of a case A run that writes the
+#: whole replay sets it (:func:`persist_final_assistant_message`). That row
+#: holds part one and part two, and the end of the park already extracted
+#: part one. So the key holds the text of THIS run's events only. Each other
+#: fold has no key, and the extraction reads ``content`` as before.
+MEMORY_CONTENT_KEY = "memory_content"
+
+
 def build_extraction_conversation(
     history: list[dict[str, str]],
     message: str,
@@ -427,6 +436,10 @@ def build_extraction_conversation(
     tail of history), then the FOLDED ANSWER (``folded["content"]``) — the piece
     a client-side, reader-lifetime-bound extraction could never guarantee
     (review P1-9).  Returns ``[]`` when there is no user turn to anchor on.
+
+    RESUME-2e: a fold with :data:`MEMORY_CONTENT_KEY` gives the answer from
+    that key, also when its text is empty. Then part one of a case A run
+    does not go to memory a second time.
     """
     conv: list[dict[str, str]] = [
         {"role": str(m.get("role") or "user"),
@@ -439,7 +452,9 @@ def build_extraction_conversation(
         m["role"] == "user" and m["content"] == message for m in conv
     ):
         conv.append({"role": "user", "content": message})
-    answer = str((folded or {}).get("content") or "")
+    source = folded or {}
+    answer = str((source[MEMORY_CONTENT_KEY] if MEMORY_CONTENT_KEY in source
+                  else source.get("content")) or "")
     if answer.strip():
         conv.append({"role": "assistant", "content": answer})
     if not any(m["role"] == "user" for m in conv):
@@ -634,6 +649,17 @@ def same_reply_events(
     return (own, fallback_id) if started else ([], None)
 
 
+def _memory_of(
+    events: list[dict[str, Any]], run_id: str, parked_end_id: str | None,
+) -> dict[str, str]:
+    """``{MEMORY_CONTENT_KEY: text}`` for the whole replay *events* of a case
+    A run (RESUME-2e, task 3818). The text is the folded answer of THIS
+    run's events only (:func:`same_reply_own`), so part one does not reach
+    memory a second time. No event of this run gives an empty text."""
+    own = fold_run_events(same_reply_own(events, run_id, parked_end_id))
+    return {MEMORY_CONTENT_KEY: str((own or {}).get("content") or "")}
+
+
 async def persist_final_assistant_message(
     thread_id: str,
     message_id: str,
@@ -723,6 +749,8 @@ async def persist_final_assistant_message(
                 return None
         _authority: Any = _NOT_READ
         _skip_trace = False
+        #: RESUME-2e: the memory key, set only for a whole case A replay.
+        _memory: dict[str, str] = {}
         if same_reply_fallback_id:
             _run = expect_run_id or run_id
             events, target = same_reply_events(
@@ -750,6 +778,11 @@ async def persist_final_assistant_message(
                 # writes no trace. The trace is an upsert on the shared run
                 # id, so it would set part one's tool counts to zero.
                 _skip_trace = not any(_is_resumed_start(e, _run) for e in events)
+            # RESUME-2e (task 3818): a whole replay goes into the row, and the
+            # end of the park already extracted part one. So memory gets the
+            # text of THIS run's events only. The fallback row needs no key.
+            _memory = ({} if target == same_reply_fallback_id
+                       else _memory_of(events, _run, same_reply_parked_end))
             message_id = target
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
@@ -829,6 +862,10 @@ async def persist_final_assistant_message(
             author_from_run=True,
             organization_id=organization_id,
         )
+        # RESUME-2e: the row above got both parts. The caller's memory
+        # extraction reads the key (build_extraction_conversation).
+        # Each other fold returns the same dict as before.
+        folded = {**folded, **_memory} if _memory else folded
         if declined:
             # S13: the row is a human or system turn, or another member's run.
             # The row stays as it was. The run is still over, so the caller

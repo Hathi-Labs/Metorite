@@ -31,7 +31,9 @@ So a later :func:`add_version` reaches no other member until a holder
 approves a new ask. :func:`unshare` returns the skill to ``private``. The
 caller passes ``can_publish``, the check of the right that the route made,
 because a store does not read rights. A version stays immutable: the share
-writes columns of ``studio_skills`` only.
+writes columns of ``studio_skills`` only. The owner reads the share with
+:func:`get_share` (J2d). :data:`SHARED_WITH_ORG` is the one test of a skill
+that the org shares, and the member purge reads it.
 
 **A version is immutable.** No function here updates a version row. The
 trigger ``studio_skill_versions_immutable`` refuses each UPDATE on the
@@ -487,6 +489,22 @@ _SHARE_COLUMNS = (
     "share_requested_by, share_requested_at, share_decided_by, share_decided_at"
 )
 
+#: The one test of a skill that the org shares (J2c): a holder approved a
+#: version, so each member of the org loads it. The CHECK
+#: ``studio_skills_shared_version`` makes the second term imply the first,
+#: and the test names both. The member purge (``routes/admin/members.py``,
+#: J2d) keeps such a skill with the org and deletes each other skill of the
+#: member. The parentheses let a caller write ``NOT`` before it.
+SHARED_WITH_ORG = "(visibility = 'org' AND shared_version IS NOT NULL)"
+
+#: The owner's row, with no lock: the read of ``GET /skills/{id}/share``
+#: (J2d). A skill of another member gives no row.
+_SHARE_READ_SQL = (
+    f"SELECT {_SHARE_COLUMNS} FROM studio_skills "
+    f"WHERE organization_id = {_BOUND_ORG} AND owner_email = :m "
+    "AND id = CAST(:id AS uuid)"
+)
+
 #: The owner's row, locked. A skill of another member gives no row.
 _SHARE_OWNER_SQL = (
     f"SELECT {_SHARE_COLUMNS} FROM studio_skills "
@@ -640,6 +658,15 @@ def _share_right(can_publish: object) -> None:
     """Only ``True`` passes. A truthy value that is not a bool is refused."""
     if can_publish is not True:
         raise ShareRefused(NO_SHARE_RIGHT)
+
+
+async def get_share(db: Any, member: str, skill_id: str) -> Share | None:
+    """The share columns of the skill *skill_id* of *member*, for the owner's
+    read (J2d). Answers None when *member* owns no such skill in the bound
+    org. A read only: it takes no lock and writes nothing."""
+    row = (await db.execute(text(_SHARE_READ_SQL), {
+        "m": _member(member), "id": _skill_id(skill_id)})).first()
+    return None if row is None else _share(row)
 
 
 async def request_share(db: Any, member: str, skill_id: str, version: int) -> Share | None:

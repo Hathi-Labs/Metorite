@@ -148,6 +148,37 @@ def _typed_now() -> str:
     return typed_words()
 
 
+def _paste_frame_on() -> bool:
+    """``CHAT_PASTE_FRAME_ORGS`` for the bound tenant (HRD-14b). Fails closed."""
+    try:
+        from acb_skills.paste_frame import paste_frame_on
+
+        return paste_frame_on()
+    except Exception:
+        return False
+
+
+def _outside_block(words: str, framed: bool) -> str:
+    """*words*, which ``typed_text`` already passed, with only the words
+    outside a pasted block (HRD-14b, ``chat_failure_modes.md`` §4.7b, "The
+    order in member_turns").
+
+    ``typed_text`` runs on the whole turn FIRST: when it gives no words, the
+    turn gives none. Only then does ``paste_frame.split`` run, and only its
+    lead goes into the head. Else the lead of a long mail would enter the
+    head line "They outrank the task below". With the flag off, *words* come
+    back as they are. A split that fails gives no words (fail closed)."""
+    if not framed or not words.strip():
+        return words
+    try:
+        from acb_skills.paste_frame import split
+
+        lead, paste, _tail = split(words)
+    except Exception:
+        return ""
+    return lead if paste else words
+
+
 def member_turns(
     parent: Mapping[str, Any], payload: Mapping[str, Any], *, typed: str | None = None,
 ) -> list[str]:
@@ -166,14 +197,15 @@ def member_turns(
     if parent.get("run_id"):
         inherited = parent.get(MEMBER_TURNS)
         return [str(t) for t in inherited] if isinstance(inherited, (list, tuple)) else []
+    framed = _paste_frame_on()
     turns: list[str] = []
     history = payload.get("messages") if isinstance(payload, Mapping) else None
     for message in history if isinstance(history, list) else []:
         if isinstance(message, Mapping) and message.get("role") == "user":
-            text = _typed(_text(message.get("content")))
+            text = _outside_block(_typed(_text(message.get("content"))), framed)
             if text.strip():
                 turns.append(text)
-    current = _typed_now() if typed is None else _typed(typed)
+    current = _outside_block(_typed_now() if typed is None else _typed(typed), framed)
     # The browser can send the current message as the last history item too.
     if current.strip() and (not turns or turns[-1].strip() != current.strip()):
         turns.append(current)

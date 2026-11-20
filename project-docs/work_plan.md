@@ -6398,6 +6398,57 @@ Fence: SBX-F24 to SBX-F26 of `agent_sandbox.md` §11, advisory until their slice
 
 **Re-check this number at merge.** On 2026-11-19, main held D225 at most. Open PRs 2585 and 2599 hold D226. A scan of all 168 open PRs found, in the `work_plan.md` diff of each, no D227 to D229. Main holds no D226 to D229.
 
+### D228 — API connections: the owner accepts D-API-1 to D-API-9, and Zoho Books is the first template and an owner priority (DECIDED, 2026-11-19)
+
+The owner answered in chat on 2026-11-19, on task 3562 (answer `97b5d6ce`). `specs/api_connections.md` §8 holds each question and its answer.
+
+1. **D-API-1.** Reviewed templates (T1) and APIs by their OpenAPI address (T2) first. An API with no OpenAPI (T3) comes later, with admin approval of each operation.
+2. **D-API-2.** The operation list is closed. `api_connections.md` replaces TOF-5c and does not wait for IN-3.
+3. **D-API-3.** The admin role and each group that the admin grants may use a connection. For books, the admin role only.
+4. **D-API-4.** Read-only first. Then each write asks a card, also in a member's own run. The gateway refuses writes until then.
+5. **D-API-5.** Zoho Books comes first, with no wait for IN-3, as D122.1 decided. `semantic_model.md` rung 4 and D-SEM-8 follow.
+6. **D-API-6.** The discovery call of "Add API" and the plugin store retire when T2 lands.
+7. **D-API-7.** An API's data reaches the chat's model vendor under the same notice as MCP and LNK-Q2.
+8. **D-API-8.** The flag is `API_CONNECTIONS_ORGS`. It goes to all orgs after the rung 1 demo.
+9. **D-API-9.** An API answer does not mark the chat as untrusted, the same as an MCP answer today. The open risk of `api_connections.md` §2.5 stays: text in an answer can try to steer another tool of the chat.
+
+Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D228 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D227 at most.
+
+### D229 — Google Cloud resources take the name aroh, not Metorite (DECIDED, 2026-11-19)
+
+Ishaan Pilar runs the Google Cloud setup for the owner. He wrote in chat on 2026-11-19:
+
+```text
+"There is another company that wants to have this on their own system, and instead of Metorite, we're going to call it aroh. From now onwards, Metorite is replaced with aroh everywhere if we are setting up something with GCP."
+```
+
+1. Every Google Cloud resource takes the name `aroh`. This covers networks, firewall rules, VMs, disks and service accounts. It also covers snapshot policies, labels, host names and Tailscale names.
+2. Google never changes a project ID, so `metorite-513907` stays.
+3. The rule covers Google Cloud only. It renames no code, no repo and no product text.
+4. The agent rebuilt the first dev box under the rule on the same day. `docs/gcp_aroh.md` §1 holds the rule, and §3 and §4 hold the result.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D229 entries merge. **Re-check this number at merge.**
+
+### D230 — The first Google Cloud machine is the dev box `aroh-dev-1`, sized from measured load (DECIDED, 2026-11-19)
+
+Vijay Varada and Ishaan Pilar wrote in chat on 2026-11-19:
+
+```text
+Vijay: "get the VPSs sorted out also in the meanwhile to run the dev swarm"
+Ishaan: "Dev box approved"
+```
+
+1. **The machine.** `n2d-standard-16` (16 vCPU, 64 GB) in `asia-south1-a`, with Ubuntu 24.04 LTS. It has a 300 GB balanced disk and daily snapshots for 7 days. Shielded VM and deletion protection are on.
+2. **The size comes from `docs/dev_capacity.md` §3.** One full local CI run, one browser suite, one preview stack and eight lanes need about 54 GB together. Eight vCPU slowed the unit shards to 36 minutes on the home server.
+3. **The network.** `aroh-vpc`, subnet `aroh-dev` at `10.40.0.0/20`. Inbound SSH comes from Google IAP only. A temporary rule for the office IP lives until Tailscale works.
+4. **The service account.** `sa-aroh-dev`, attached to the VM. It holds no role until the admin grants the log and metric writer roles. It never holds a key file, because the org policy blocks key files.
+5. **The box holds no customer data, no production keys and no release timer.** The home server keeps the release timer.
+6. **The list price is about USD 365 a month**, and a stopped VM pays for its disk only.
+
+`docs/gcp_aroh.md` §4 to §6 hold the details and the traps. `project-docs/HANDOFF.md` H-445 to H-449 hold the open work.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D230 entries merge. **Re-check this number at merge.**
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
