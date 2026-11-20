@@ -842,8 +842,9 @@ async def test_filter_words_count_the_same_on_every_page(invoices, app_engine) -
 # ── 15. Off the list, page 1 keeps the order of before (verifier round 6) ───
 
 #: The answers of the base code, recorded with origin/main's aggregate.py,
-#: field_sql.py, core.py and crm_tools.py put in place (9bb67296a,
-#: 2026-11-20). Name → the response text.
+#: field_sql.py, core.py and crm_tools.py put in place: "avg", "deals" and
+#: "sum" on 9bb67296a, "mv" and "b50" on e1e1f4ba7 (2026-11-20). Name → the
+#: response text.
 _BASE_CUT: dict[str, str] = {
     "avg": (
         '{"entity":"module:Bavg","measure":"avg","group_by":null,"group_field":"Site","fi'
@@ -916,6 +917,64 @@ _BASE_CUT: dict[str, str] = {
         '","label":"B47","value":50.0},{"key":"s48","label":"B48","value":50.0},{"key":"k'
         'b","label":"Bbb","value":31.01}],"total":2512.01,"other":31.0,"omitted":1,"zone"'
         ':"UTC","values":51,"records":51}'
+    ),
+    "b50": (
+        '{"entity":"module:B50","measure":"sum","group_by":null,"group_field":"Site","fie'
+        'ld":"Amt","field_type":"number","field_label":"Amt","group_field_label":"Site","'
+        'keys":{},"group_field_type":"lookup","bucket":null,"groups":[{"key":"s00","label'
+        '":"B00","value":50.0},{"key":"s01","label":"B01","value":50.0},{"key":"s02","lab'
+        'el":"B02","value":50.0},{"key":"s03","label":"B03","value":50.0},{"key":"s04","l'
+        'abel":"B04","value":50.0},{"key":"s05","label":"B05","value":50.0},{"key":"s06",'
+        '"label":"B06","value":50.0},{"key":"s07","label":"B07","value":50.0},{"key":"s08'
+        '","label":"B08","value":50.0},{"key":"s09","label":"B09","value":50.0},{"key":"s'
+        '10","label":"B10","value":50.0},{"key":"s11","label":"B11","value":50.0},{"key":'
+        '"s12","label":"B12","value":50.0},{"key":"s13","label":"B13","value":50.0},{"key'
+        '":"s14","label":"B14","value":50.0},{"key":"s15","label":"B15","value":50.0},{"k'
+        'ey":"s16","label":"B16","value":50.0},{"key":"s17","label":"B17","value":50.0},{'
+        '"key":"s18","label":"B18","value":50.0},{"key":"s19","label":"B19","value":50.0}'
+        ',{"key":"s20","label":"B20","value":50.0},{"key":"s21","label":"B21","value":50.'
+        '0},{"key":"s22","label":"B22","value":50.0},{"key":"s23","label":"B23","value":5'
+        '0.0},{"key":"s24","label":"B24","value":50.0},{"key":"s25","label":"B25","value"'
+        ':50.0},{"key":"s26","label":"B26","value":50.0},{"key":"s27","label":"B27","valu'
+        'e":50.0},{"key":"s28","label":"B28","value":50.0},{"key":"s29","label":"B29","va'
+        'lue":50.0},{"key":"s30","label":"B30","value":50.0},{"key":"s31","label":"B31","'
+        'value":50.0},{"key":"s32","label":"B32","value":50.0},{"key":"s33","label":"B33"'
+        ',"value":50.0},{"key":"s34","label":"B34","value":50.0},{"key":"s35","label":"B3'
+        '5","value":50.0},{"key":"s36","label":"B36","value":50.0},{"key":"s37","label":"'
+        'B37","value":50.0},{"key":"s38","label":"B38","value":50.0},{"key":"s39","label"'
+        ':"B39","value":50.0},{"key":"s40","label":"B40","value":50.0},{"key":"s41","labe'
+        'l":"B41","value":50.0},{"key":"s42","label":"B42","value":50.0},{"key":"s43","la'
+        'bel":"B43","value":50.0},{"key":"s44","label":"B44","value":50.0},{"key":"s45","'
+        'label":"B45","value":50.0},{"key":"s46","label":"B46","value":50.0},{"key":"s47"'
+        ',"label":"B47","value":50.0},{"key":"kb","label":"Bbb","value":31.01},{"key":"ka'
+        '","label":"Aaa","value":31.0}],"total":2462.01,"other":0.0,"omitted":0,"zone":"U'
+        'TC","values":50,"records":50}'
+    ),
+    "mv": (
+        '{"entity":"module:Mv","measure":"sum","group_by":null,"group_field":"Site","fiel'
+        'd":"Amt","field_type":"number","field_label":"Amt","group_field_label":"Site","k'
+        'eys":{},"group_field_type":"lookup","bucket":null,"groups":[{"key":"s00","label"'
+        ':"B00","value":50.0},{"key":"s01","label":"B01","value":50.0},{"key":"s02","labe'
+        'l":"B02","value":50.0},{"key":"s03","label":"B03","value":50.0},{"key":"s04","la'
+        'bel":"B04","value":50.0},{"key":"s05","label":"B05","value":50.0},{"key":"s06","'
+        'label":"B06","value":50.0},{"key":"s07","label":"B07","value":50.0},{"key":"s08"'
+        ',"label":"B08","value":50.0},{"key":"s09","label":"B09","value":50.0},{"key":"s1'
+        '0","label":"B10","value":50.0},{"key":"s11","label":"B11","value":50.0},{"key":"'
+        's12","label":"B12","value":50.0},{"key":"s13","label":"B13","value":50.0},{"key"'
+        ':"s14","label":"B14","value":50.0},{"key":"s15","label":"B15","value":50.0},{"ke'
+        'y":"s16","label":"B16","value":50.0},{"key":"s17","label":"B17","value":50.0},{"'
+        'key":"s18","label":"B18","value":50.0},{"key":"s19","label":"B19","value":50.0},'
+        '{"key":"s20","label":"B20","value":50.0},{"key":"s21","label":"B21","value":50.0'
+        '},{"key":"s22","label":"B22","value":50.0},{"key":"s23","label":"B23","value":50'
+        '.0},{"key":"s24","label":"B24","value":50.0},{"key":"s25","label":"B25","value":'
+        '50.0},{"key":"s26","label":"B26","value":50.0},{"key":"s27","label":"B27","value'
+        '":50.0},{"key":"s28","label":"B28","value":50.0},{"key":"s29","label":"B29","val'
+        'ue":50.0},{"key":"s30","label":"B30","value":50.0},{"key":"s31","label":"B31","v'
+        'alue":50.0},{"key":"s32","label":"B32","value":50.0},{"key":"s33","label":"B33",'
+        '"value":50.0},{"key":"s34","label":"B34","value":50.0},{"key":"s35","label":"B35'
+        '","value":50.0},{"key":"kb","label":"Bbb","value":31.01},{"key":"ka","label":"Aa'
+        'a","value":31.0}],"total":1862.02,"other":0.0,"omitted":0,"zone":"UTC","values":'
+        '38,"records":38,"matched":{"Notes":["plain"]}}'
     ),
 }
 
@@ -1123,7 +1182,6 @@ async def test_fifty_groups_or_fewer_keep_the_order_of_before(few, app_engine) -
                     group_field="Site", **{"field.Notes": "plain"})
     b50 = await _get(few, a, entity="module:B50", measure="sum", field="Amt",
                      group_field="Site")
-    print("BASECUT", json.dumps({"mv": mv.text, "b50": b50.text}))
     for res, count in ((mv, 38), (b50, 50)):
         body = res.json()
         assert len(body["groups"]) == count and "next_group_page" not in body
