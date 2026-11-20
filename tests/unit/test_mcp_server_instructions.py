@@ -316,13 +316,22 @@ def test_a_huge_text_is_read_only_in_a_bounded_window() -> None:
     reads past ``INSTRUCTIONS_RAW_MAX`` characters. The shown text is the cut of
     the first window, so a hostile tail changes nothing."""
     import asyncio
-    import time
 
     head = "recipe " * 200
     huge = head + "Z" * 5_000_000
-    start = time.monotonic()
-    shown = sb.server_text(huge)
-    assert time.monotonic() - start < 0.05, "the fold read the whole text"
+    # The fold must be given the window and no more. A timing bound is too loose
+    # (the whole 5 MB folds in milliseconds), so the test reads what NFKC gets.
+    seen: list[int] = []
+    real_normalize = sb.unicodedata.normalize
+
+    def _spy(form: str, value: str) -> str:
+        seen.append(len(value))
+        return real_normalize(form, value)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sb.unicodedata, "normalize", _spy)
+        shown = sb.server_text(huge)
+    assert seen == [sb.INSTRUCTIONS_RAW_MAX], seen
     assert shown == sb.server_text(huge[: sb.INSTRUCTIONS_RAW_MAX])
     assert len(shown) == 600 and shown.endswith("…")
 
