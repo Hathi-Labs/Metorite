@@ -930,3 +930,22 @@ describe("RESUME-3d: the hook", () => {
     expect(hook).toContain("replayIdOf(target, pick.resumeId, nanoid)");
   });
 });
+
+describe("RESUME-2d: a withheld reconnect never attaches in a loop (review P1)", () => {
+  const hook = src("../hooks/useAgentChat.ts");
+
+  it("the attach loop reads the marker and tells the run state `attach_withheld`", () => {
+    expect(hook).toContain("withheldEnd = evt.withheld === true;");
+    const at = hook.indexOf('if (streamed && withheldEnd) dispatchRun(threadId, { type: "attach_withheld", at: Date.now() });');
+    expect(at).toBeGreaterThan(0);
+    // It comes before the normal `stream_end`, so a withheld end is no Done.
+    expect(at).toBeLessThan(hook.indexOf('else if (streamed) dispatchRun(threadId, { type: "stream_end"'));
+    // And it sets no "recovering" state: the run is not this reader's.
+    expect(hook).toContain("recovering: !recovered && !withheldEnd,");
+  });
+
+  it("the BFF keeps `withheld` on the done frame", () => {
+    const route = src("../app/api/agent/chat/route.ts");
+    expect(route).toContain("if (ev.withheld === true) out.withheld = true;");
+  });
+});

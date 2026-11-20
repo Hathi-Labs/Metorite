@@ -195,6 +195,13 @@ export interface RunStatus {
    */
   resumedAt: number;
   /**
+   * RESUME-2d (D-RES-10): the key of a run that the server keeps from this
+   * reader. The reconnect gave its end with `withheld: true`. A list that
+   * names this key changes nothing, so the chat never attaches to the run in
+   * a loop. A list without it, or a new run, clears it. Else null.
+   */
+  withheldKey: string | null;
+  /**
    * RESUME-3b: the key of the run that parked on its card, when the server
    * names it (the parked row's `parkedRunId`) or the Approve's 200 says
    * `sameReply`. A late Approve of case A goes on under that run id, in the
@@ -237,6 +244,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   phaseWord: null,
   afterPark: false,
   resumedAt: 0,
+  withheldKey: null,
   parkedRunKey: null,
   listedReplyId: null,
 }) as RunStatus;
@@ -301,6 +309,10 @@ export type RunEvent =
   /** A re-attach got no stream (refused, or no run to replay). The next one
    *  waits longer, so a run that cannot replay is never asked in a loop. */
   | { type: "attach_failed"; at: number }
+  /** RESUME-2d: the reconnect ended with `withheld: true`. The server keeps
+   *  this run from this reader, so the chat rests and does not attach to it
+   *  again while the server lists it. */
+  | { type: "attach_withheld"; at: number }
   /** The chat mounted over a state kept in the store, with no stream that
    *  reads it: show "checking" until the server answers. */
   | { type: "remount"; at: number; streamOpen: boolean }
@@ -544,6 +556,17 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
     case "attach_failed":
       return { ...s, attach: false, attachFails: s.attachFails + 1, attachedAt: e.at };
 
+    case "attach_withheld":
+      // RESUME-2d: no run key to hold, so act as a failed attach (back off).
+      if (!s.runKey) return { ...s, attach: false, attachFails: s.attachFails + 1, attachedAt: e.at };
+      // The run is not this reader's to watch. Rest, with no step and no
+      // reply, and keep its key: a list that names it changes nothing.
+      return to(s, "idle", e.at, {
+        step: null, attach: false, attachedAt: e.at, startedAt: null, messageId: null,
+        seq: 0, terminalAt: 0, cardOpen: false, staleTail: false,
+        writesAsked: [], writesDone: [], withheldKey: s.runKey,
+      });
+
     case "remount": {
       if (e.streamOpen) return s;
       // No stream reads now, so a re-attach may start at once. And no kept
@@ -584,6 +607,9 @@ function reduceServer(
 ): RunStatus {
   const { at, run, streamOpen } = e;
   if (run) {
+    // RESUME-2d: the server keeps this run from this reader. Its rows change
+    // nothing, so the chat never attaches to it in a loop.
+    if (s.withheldKey !== null && runKeyOf(run) === s.withheldKey) return s;
     // A list from before a Stop or a terminal event lags it. Only a list
     // taken well after names a NEW run.
     if (s.phase === "stopped" && at - s.stoppedAt < STOP_HOLD_MS) return s;
@@ -635,6 +661,7 @@ function reduceServer(
         attachFails: 0,
         attachedAt: 0,
         afterPark: false,
+        withheldKey: null,
       }
       : {};
     // RESUME-3b, case A: after its park, the SAME run goes on in the parked
@@ -694,6 +721,8 @@ function reduceServer(
   }
 
   // The server does not name this thread: no run, and no question waits.
+  // RESUME-2d: a withheld run has left the list, so its key goes.
+  if (s.withheldKey !== null) s = { ...s, withheldKey: null };
   // A blind rest is now a known one (§18.11, fix round 5).
   if (s.restBlind) return { ...s, restBlind: false };
   if (s.phase === "parked") {

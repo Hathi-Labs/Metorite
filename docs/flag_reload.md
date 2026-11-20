@@ -193,6 +193,12 @@ same reply. For an org on both lists, a park keeps the stream of the run 24
 hours (D-RES-7). The same flag turns on this case A, so it has two more
 preconditions.
 
+RESUME-5: the stop of a release parks each run that waits on a card
+(`POST /internal/drain/park`). It parks only the runs of an org on both
+lists, with `CHAT_DURABLE_ASKS` on. A wait reads the two lists when it starts, and
+the park reads them again. So a reload applies to the next card, and a
+removal also applies to a card that waits now.
+
 ⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
 
 1. RESUME-3b (task 3475), the chat side of the same reply.

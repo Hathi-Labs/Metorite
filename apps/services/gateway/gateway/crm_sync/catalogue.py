@@ -1272,8 +1272,13 @@ _SECRET_WORDS: tuple[str, ...] = ("header", "token", "url", "path", "host", "sec
                                   "password", "credential", "cookie")
 #: A key that names a figure of money. A body never holds one (§3.3 point 5).
 _FIGURE_WORDS = frozenset({"amount", "total", "balance", "figure", "sum"})
-#: A mark of money beside a digit: "₹ 5,000", "5000 $", "Rs. 400".
-_MONEY = re.compile(r"[₹$€£¥]\s*\d|\d\s*[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp)\.?\s*\d",
+#: A mark of money beside a digit, on either side: "₹ 5,000", "5000 $",
+#: "Rs. 400", "450000 INR", "5USD", "4500 rs". A code after a digit ends at a
+#: word boundary, so "5 usda" passes. ``rs`` after a digit needs a space
+#: first, so "3rs" passes and "3 rs" does not. Only the connection model
+#: (``shape_only``) reads this pattern. The CRM path (SEM-7) does not.
+_MONEY = re.compile(r"[₹$€£¥]\s*\d|\d\s*[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp)\.?\s*\d"
+                    r"|\d\s*(?:inr|usd|eur|gbp)\b|\d\s+rs\b",
                     re.IGNORECASE)
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: The grammar of a key of a connection model: an identifier of ASCII
