@@ -201,11 +201,14 @@ export async function cancelBooks(pick: string): Promise<void> {
   }
 }
 
-/** The same cancel, for a tab that closes (`pagehide`). A beacon is a POST. */
+/**
+ * The same cancel, for a tab that closes (`pagehide`). A beacon is a POST.
+ * The body is a plain string, so it goes as text/plain. Chrome refuses a Blob
+ * of type application/json (crbug 490015). The relay reads the text.
+ */
 export function cancelBooksBeacon(pick: string): void {
   try {
-    const body = new Blob([JSON.stringify({ pick })], { type: "application/json" });
-    navigator.sendBeacon("/api/integrations/api/zoho_books/cancel", body);
+    navigator.sendBeacon("/api/integrations/api/zoho_books/cancel", JSON.stringify({ pick }));
   } catch {
     // Best effort, as above.
   }

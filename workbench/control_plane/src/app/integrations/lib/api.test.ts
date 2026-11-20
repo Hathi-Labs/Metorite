@@ -60,3 +60,23 @@ describe("addMcp", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("cancelBooksBeacon", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  it("sends the pick handle as a plain string, so Chrome accepts the beacon", () => {
+    const sendBeacon = vi.fn(() => true);
+    vi.stubGlobal("navigator", { sendBeacon });
+    api.cancelBooksBeacon("abcdefghijklmnop1234");
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+    const [url, body] = sendBeacon.mock.calls[0] as unknown as [string, unknown];
+    expect(url).toBe("/api/integrations/api/zoho_books/cancel");
+    expect(typeof body).toBe("string");
+    expect(JSON.parse(body as string)).toEqual({ pick: "abcdefghijklmnop1234" });
+  });
+  it("never throws when the browser has no beacon", () => {
+    vi.stubGlobal("navigator", {});
+    expect(() => api.cancelBooksBeacon("abcdefghijklmnop1234")).not.toThrow();
+  });
+});
