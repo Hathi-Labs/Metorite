@@ -855,7 +855,7 @@ def _bits(p: Any, org: str, module: str, rows: list[tuple[str, str, str, str]]) 
                 "INSERT INTO crm_module_records (organization_id, module, ext_source, "
                 "ext_id, name, fields) VALUES (CAST(:o AS uuid), :m, 'zoho', :e, :e, "
                 "CAST(:f AS jsonb))"),
-                {"o": org, "m": module, "e": ext,
+                {"o": org, "m": module, "e": f"{module}-{ext}",
                  "f": f'{{"Site": {{"id": "{site}", "name": "{name}"}}, "Amt": {amt}}}'})
 
 
@@ -923,11 +923,11 @@ async def deals(promoted, monkeypatch):
                 "source, provider_api_name, position) VALUES (CAST(:o AS uuid), 'deal', "
                 ":k, :k, :t, 'native', :k, :p)"), {"o": a, "k": key, "t": ftype, "p": position})
         for n in range(49):
-            _deal(c, a, f"D{n}", "Proposal", 1, owner="x@q10.test",
+            _deal(c, a, f"D{n}", "Proposal", 1, owner="x@q10.test", clock_days=0,
                   custom={"region": f"r{n:02d}", "fee": 50})
-        _deal(c, a, "DA", "Proposal", 1, owner="x@q10.test",
+        _deal(c, a, "DA", "Proposal", 1, owner="x@q10.test", clock_days=0,
               custom={"region": "Aaa", "fee": 31.005})
-        _deal(c, a, "DB", "Proposal", 1, owner="x@q10.test",
+        _deal(c, a, "DB", "Proposal", 1, owner="x@q10.test", clock_days=0,
               custom={"region": "Bbb", "fee": 31.01})
     yield promoted
     with promoted.admin_engine.begin() as c:
