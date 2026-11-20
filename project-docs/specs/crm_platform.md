@@ -8706,9 +8706,12 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
   builds the SQL of before, to the byte, and its answer is the same.
 - **Not in this slice.** The overlay of a core entity (`overlay_where`) and
   `custom.<key>` of the core lists take no word. A native query leaf takes no
-  word. An index for `.has` (no migration).
-- **Cost.** `.has` reads the one detoasted copy of each row. See the report
-  of task 3698 for the time over 30,000 rows of 3 KB.
+  word. This slice adds no index for `.has`, and no migration.
+- **Cost.** `.has` reads the one detoasted copy of each row. The box measured
+  30,000 rows of 3 KB on 2026-11-20, and the statement ran in 89
+  milliseconds. A whole total answered in 0.11 seconds, and a list page in
+  0.20 seconds. The timeout of 10 seconds and the paging of 50 groups did not
+  change.
 - **Fences.** `tests/unit/test_crm_filter_words.py` is hermetic. It holds the
   parser, a key over a word, the matrix and the flag off. It pins the SQL of
   before as hashes from the base commit. It also holds the escape, the limits
