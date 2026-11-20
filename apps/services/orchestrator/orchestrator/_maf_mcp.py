@@ -1032,10 +1032,17 @@ def _watch_status(client: Any) -> list[int]:
     return codes
 
 
+#: A status that a healthy session also gets. The client opens the optional
+#: event stream with a GET, and a server with no stream answers 405 (MCP
+#: streamable HTTP). So a 405 never names the fault of a connect.
+_EXPECTED_STATUS = frozenset({405})
+
+
 def _refused_status(codes: list[int]) -> int | None:
-    """The last status of 400 or more in *codes* (:func:`_watch_status`), or None."""
+    """The last status of 400 to 599 in *codes* (:func:`_watch_status`) that is
+    not :data:`_EXPECTED_STATUS`, or None."""
     for code in reversed(codes):
-        if 400 <= code <= 599:
+        if 400 <= code <= 599 and code not in _EXPECTED_STATUS:
             return code
     return None
 
@@ -1044,14 +1051,17 @@ def _note_unreachable(name: str, host: str, exc: BaseException, codes: list[int]
                       failures: dict[str, str] | None) -> None:
     """Log ``mcp.unreachable`` for a connect that failed, and set its CSY-5 reason.
 
-    The reason is ``http_<status>`` when an answer refused the connect, else
-    :func:`_reason`. A 401 or 403 is a sign-in that the server refused, such
-    as a key server that now wants an OAuth consent. Its CSY-5 reason is
-    ``reconnect``, so the chat says that an admin must reconnect it, and not
-    that it did not answer."""
+    The reason is :func:`_reason`. When that is only a class name, and an
+    answer refused the connect, the reason is ``http_<status>`` instead. A cap
+    and a guard refusal keep their own reason. A 401 or 403 is a sign-in that
+    the server refused, such as a key server that now wants an OAuth consent.
+    Its CSY-5 reason is ``reconnect``, so the chat says that an admin must
+    reconnect it, and not that it did not answer."""
+    reason = _reason(exc)
     status = _refused_status(codes) or _http_status(exc)
-    _log.warning("mcp.unreachable", name=name, host=host,
-                 reason=f"http_{status}" if status else _reason(exc))
+    if status and reason.isidentifier() and reason[:1].isupper():
+        reason = f"http_{status}"
+    _log.warning("mcp.unreachable", name=name, host=host, reason=reason)
     if failures is not None:
         failures[name] = "reconnect" if status in (401, 403) else "unreachable"
 

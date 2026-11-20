@@ -74,6 +74,37 @@ def test_the_reason_never_holds_the_message() -> None:
     assert "SENTINEL" not in reason and "books.example" not in reason
 
 
+def test_a_405_of_the_optional_stream_never_names_the_fault() -> None:
+    """The client opens the optional event stream with a GET, and a server with
+    no stream answers 405. CI caught the first draft logging ``http_405`` for a
+    server with 129 tools."""
+    assert _maf_mcp._refused_status([200, 405]) is None
+    assert _maf_mcp._refused_status([405, 401, 405]) == 401
+
+
+def test_a_cap_keeps_its_reason_when_a_405_was_seen() -> None:
+    import structlog
+
+    failures: dict[str, str] = {}
+    with structlog.testing.capture_logs() as logs:
+        _maf_mcp._note_unreachable("huge", "huge.example", _in_the_sdk(
+            _maf_mcp.McpListTooLong("tools")), [200, 405], failures)
+    assert [e["reason"] for e in logs] == ["too_many_tools"]
+    assert failures == {"huge": "unreachable"}
+
+
+def test_a_watched_401_names_the_fault_and_asks_a_reconnect() -> None:
+    """MAF wraps the 401 in a bare class, so the watched code names it."""
+    import structlog
+
+    failures: dict[str, str] = {}
+    with structlog.testing.capture_logs() as logs:
+        _maf_mcp._note_unreachable("books", "books.example", RuntimeError("wrapped"),
+                                   [401, 405], failures)
+    assert [e["reason"] for e in logs] == ["http_401"]
+    assert failures == {"books": "reconnect"}
+
+
 def test_http_status_reads_the_chain_and_none_without_an_answer() -> None:
     assert _maf_mcp._http_status(_in_the_sdk(_status_error(403))) == 403
     assert _maf_mcp._http_status(_in_the_sdk(RuntimeError("no answer"))) is None
