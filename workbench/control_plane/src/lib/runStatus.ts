@@ -209,6 +209,13 @@ export interface RunStatus {
    * new, and it replays into the parked reply. Null until a park names it.
    */
   parkedRunKey: string | null;
+  /**
+   * RESUME-3d: the reply row that the server list names for a live
+   * continuation run (the row's `messageId`). The attach replays into this
+   * row, with no read of the saved rows. That is the parked reply in case A,
+   * and the new reply in case B. Null when the last list named none.
+   */
+  listedReplyId: string | null;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -239,6 +246,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   resumedAt: 0,
   withheldKey: null,
   parkedRunKey: null,
+  listedReplyId: null,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -254,6 +262,17 @@ export interface ServerRun {
   /** RESUME-3b: on a parked row, the id of the run that parked. Only a
    *  gateway with both resume flags on for the org sends it. */
   parkedRunId?: string | null;
+  /** RESUME-3d: on the row of a live continuation run, its reply row. Only a
+   *  gateway with both resume flags on for the org sends it. */
+  messageId?: string | null;
+}
+
+/** RESUME-3d: the reply row that a live row names, or null. A parked row
+ *  has no run, so it names none. */
+function listedReplyOf(run: ServerRun): string | null {
+  if (run.state === "needs_input" && run.live === false) return null;
+  const id = typeof run.messageId === "string" ? run.messageId.trim() : "";
+  return id || null;
 }
 
 /** RESUME-3b: the key of the run that a parked row names, or null. */
@@ -431,6 +450,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
           attachFails: 0,
           afterPark: false,
           resumedAt: e.at,
+          listedReplyId: null,
         });
       }
       return to(s, "working", e.at, {
@@ -448,6 +468,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         attachFails: 0,
         afterPark: false,
         resumedAt: e.at,
+        listedReplyId: null,
       });
     }
 
@@ -552,9 +573,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       // target is trusted: the run may have ended, and another may have
       // started, while the chat was away (re-review of #1171). The attach
       // finds the target again, by the server's rows.
-      const base = s.attachedAt === 0 && s.messageId === null && s.seq === 0 && s.step === null
+      const base = s.attachedAt === 0 && s.messageId === null && s.seq === 0 && s.step === null && s.listedReplyId === null
         ? s
-        : { ...s, attachedAt: 0, messageId: null, seq: 0, step: null };
+        : { ...s, attachedAt: 0, messageId: null, seq: 0, step: null, listedReplyId: null };
       // A live phase kept from before an unmount is not known to be live.
       // "Checking" until the server answers.
       if (!(s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you" || s.phase === "finishing")) return base;
@@ -664,15 +685,24 @@ function reduceServer(
     // only the run key found it (no `parkedRunId`), so the line of case A
     // draws under its reply (review of 2026-11-19, P2-1).
     const parked = { parkedRunKey: parkedKey ?? (continued ? key : isNew ? null : s.parkedRunKey) };
+    // RESUME-3d: a live continuation that the list names with its reply row
+    // replays into that row. A new run takes it as its reply. A known run
+    // keeps the reply that this tab holds, and takes the listed one when it
+    // holds none (after a remount). A list with no reply row clears it, so a
+    // gateway with a flag off gives the state of before.
+    const listed = listedReplyOf(run);
+    const reply: Partial<RunStatus> = listed
+      ? { listedReplyId: listed, ...(isNew || !s.messageId ? { messageId: listed } : {}) }
+      : s.listedReplyId === null ? {} : { listedReplyId: null };
     const startedAt = isNew ? fresh.startedAt! : continued ? goOn.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
     const since = isNew || continued ? 0 : s.attachedAt;
     const canAttach = !streamOpen && at - since >= attachGapMs(isNew || continued ? 0 : s.attachFails);
     if (run.state === "needs_input") {
       if (run.live === false) {
         // No run runs. The card waits, and an answer starts a new run.
-        return to(s, "parked", at, { ...fresh, ...seen, ...parked, step: null, attach: false, startedAt, afterPark: true });
+        return to(s, "parked", at, { ...fresh, ...seen, ...parked, ...reply, step: null, attach: false, startedAt, afterPark: true });
       }
-      return to(s, "waiting_for_you", at, { ...fresh, ...goOn, ...seen, ...parked, step: null, startedAt, attach: canAttach });
+      return to(s, "waiting_for_you", at, { ...fresh, ...goOn, ...seen, ...parked, ...reply, step: null, startedAt, attach: canAttach });
     }
     const step = run.lastStep?.trim() || (isNew || continued ? null : s.step);
     const phase: RunPhase = !isNew && s.phase === "waiting_for_you" && s.cardOpen ? "waiting_for_you" : "working";
@@ -681,6 +711,7 @@ function reduceServer(
       ...goOn,
       ...seen,
       ...parked,
+      ...reply,
       // The stream's own step is fresher than the list's while it reads.
       step: streamOpen && !isNew && s.step ? s.step : step,
       startedAt,
@@ -728,7 +759,7 @@ function sameRun(a: RunStatus, b: RunStatus): boolean {
     a.attach === b.attach && a.seq === b.seq && a.terminalAt === b.terminalAt &&
     a.messageId === b.messageId && a.cardOpen === b.cardOpen &&
     a.runKey === b.runKey && a.staleTail === b.staleTail && a.checking === b.checking &&
-    a.parkedRunKey === b.parkedRunKey
+    a.parkedRunKey === b.parkedRunKey && a.listedReplyId === b.listedReplyId
   );
 }
 

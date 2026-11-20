@@ -271,6 +271,7 @@
       "tests/unit/test_crm_change_history.py",
       "tests/unit/test_crm_lead_pipelines.py",
       "tests/unit/test_crm_pipelines_native.py",
+      "tests/unit/test_crm_query_grammar_r8.py",
       "tests/unit/test_customer_console_api.py",
       "tests/unit/test_customer_console_aroh_app.py",
       "tests/unit/test_customer_console_billing_checkout.py",

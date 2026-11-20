@@ -16,6 +16,13 @@
  *   * the BFF sends no `run_resumed` frame: "case A: the BFF" fails;
  *   * `run_resumed` does not open the end again: "case A: the end" fails;
  *   * `resumedOf` ignores `sameReply`: "case A: the answer POST" fails.
+ *
+ * RESUME-3d (task 3785) adds the reply row that the list names for a live
+ * continuation (`messageId`). Its mutations:
+ *   * `reduceServer` ignores the row's `messageId`: "RESUME-3d" fails;
+ *   * `attachPickOf` reads the saved rows with a listed reply: "RESUME-3d"
+ *     fails;
+ *   * the hook does not use `attachPickOf`: "RESUME-3d: the hook" fails.
  */
 
 import { readFileSync } from "node:fs";
@@ -27,6 +34,7 @@ import type { ChatMessage } from "@/lib/chatStore";
 import {
   REPLAY_OPEN,
   RUN_RESUMED_FRAME,
+  attachPickOf,
   goesOnInParkedReply,
   receiptAnchorBeforeRun,
   replayEndAfter,
@@ -408,7 +416,9 @@ describe("the hook: a park keeps the card and ends the slot (C3)", () => {
     expect(hook).toContain('if (end.parked) emitAgentEvent("onRunRested", { threadId });');
     expect(hook).toContain("terminal: end.terminal, ...(end.terminal && end.parked ? { parked: true } : {})");
     expect(hook).toContain("if (!end.terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));");
-    expect(hook).toContain("replayIdOf(target, st0.run.resumedAt > 0 ? st0.run.messageId : null, nanoid)");
+    // RESUME-3d: the id of the 200 now comes through `attachPickOf`, which
+    // keeps the rule `resumedAt > 0 ? messageId : null` (fenced below).
+    expect(hook).toContain("replayIdOf(target, pick.resumeId, nanoid)");
   });
 
   it("the attach loop's `run_resumed` makes the reply stream again (RESUME-3b)", () => {
@@ -790,6 +800,134 @@ describe("case A: the BFF sends `run_resumed` (the real route)", () => {
       delta("Another run."),
     ]);
     expect(other.map((f) => f.type)).toEqual(["delta"]);
+  });
+});
+
+// ── RESUME-3d: the list names the reply row of a continuation ──────────────
+
+describe("RESUME-3d: a listed continuation replays into its own reply row", () => {
+  /** What `useAgentChat.attach` does: the pick, then the saved rows only
+   *  when the pick asks for them, then the id. `saved` is the server's rows. */
+  function attachId(s: RunStatus, shown: ChatMessage[], saved: ChatMessage[] = shown): { id: string; readSaved: boolean } {
+    const pick = attachPickOf(s, shown, interrupted);
+    let target = pick.target;
+    if (pick.readSaved) target = planReplay(saved, shown, rejectFor(shown, s.doneMessageId, s.staleTail)).target ?? null;
+    return { id: replayIdOf(target, pick.resumeId, () => "placeholder"), readSaved: pick.readSaved };
+  }
+  /** A saved reply reads as interrupted when it is the last row. */
+  const interrupted = (m: ChatMessage | undefined) => m?.role === "assistant" && m.id.startsWith("cut-");
+  /** Part one of the parked reply, as a new tab reads it from the saved rows. */
+  const parkedShown = [
+    msg("u-1", "user", "Move Acme to Payment Complete", 1),
+    msg("reply-1", "assistant", "I need your answer first.", 2),
+  ];
+  const A_LISTED: ServerRun = { ...R1_AGAIN, messageId: "reply-1" };
+  const B_LISTED: ServerRun = { ...R2, messageId: "reply-r2" };
+
+  it("case A, a new tab: the run replays into the parked reply, with no read of the saved rows", () => {
+    const s = reduceRun(IDLE_RUN, server(T0 + 3_600_500, A_LISTED));
+    expect(s.listedReplyId).toBe("reply-1");
+    expect(s.messageId).toBe("reply-1");
+    expect(s.attach).toBe(true);
+    expect(attachId(s, parkedShown)).toEqual({ id: "reply-1", readSaved: false });
+    // The chat has not drawn the saved rows yet: the replay takes that id.
+    expect(attachId(s, [])).toEqual({ id: "reply-1", readSaved: false });
+  });
+
+  it("case B, a new tab: the run replays into the NEW reply, never the parked one", () => {
+    const s = reduceRun(IDLE_RUN, server(T0 + 9_000, B_LISTED));
+    expect(s.listedReplyId).toBe("reply-r2");
+    expect(attachId(s, parkedShown)).toEqual({ id: "reply-r2", readSaved: false });
+    // The server saved the new reply at a checkpoint: that row is the target.
+    const withNew = [...parkedShown, msg("reply-r2", "assistant", "Acme is now", 10)];
+    expect(attachPickOf(s, withNew, interrupted).target?.id).toBe("reply-r2");
+  });
+
+  it("case B with no messageId stays as before: the saved rows pick the parked reply (the gap of task 3785)", () => {
+    const s = reduceRun(IDLE_RUN, server(T0 + 9_000, R2));
+    expect(s.listedReplyId).toBeNull();
+    expect(attachId(s, parkedShown)).toEqual({ id: "reply-1", readSaved: true });
+  });
+
+  it("case B, the tab that watched the park: the new reply, and the stale tail settles", () => {
+    const s = reduceRun(parkedLive(), server(T0 + 3_600_500, B_LISTED));
+    expect(s.staleTail).toBe(true);
+    expect(s.messageId).toBe("reply-r2");
+    expect(attachId(s, parkedShown)).toEqual({ id: "reply-r2", readSaved: false });
+  });
+
+  it("case A, the tab that watched the park: the same run keeps its reply", () => {
+    const s = reduceRun(parkedLive(), server(T0 + 3_600_500, A_LISTED));
+    expect(goesOnInParkedReply(s)).toBe(true);
+    expect(s.staleTail).toBe(false);
+    expect(s.messageId).toBe("reply-1");
+    expect(attachId(s, parkedShown)).toEqual({ id: "reply-1", readSaved: false });
+  });
+
+  it("a known run keeps the reply that this tab holds, and takes the listed one after a remount", () => {
+    const own = run(IDLE_RUN, { type: "send", at: T0, messageId: "mine" }, server(T0 + 1_000, { ...R1, messageId: "listed" }, true));
+    expect(own.messageId).toBe("mine");
+    expect(own.listedReplyId).toBe("listed");
+    const back = run(own, { type: "remount", at: T0 + 2_000, streamOpen: false });
+    expect(back.listedReplyId).toBeNull();
+    expect(back.messageId).toBeNull();
+    expect(reduceRun(back, server(T0 + 3_000, { ...R1, messageId: "listed" })).messageId).toBe("listed");
+  });
+
+  it("a parked row names no reply, and a list with none clears it", () => {
+    const s = reduceRun(IDLE_RUN, server(T0 + 1_000, { ...PARKED_A, messageId: "reply-x" }));
+    expect(s.listedReplyId).toBeNull();
+    const named = reduceRun(IDLE_RUN, server(T0 + 1_000, A_LISTED));
+    expect(reduceRun(named, server(T0 + 6_000, R1_AGAIN)).listedReplyId).toBeNull();
+  });
+
+  it("an Approve's 200 forgets the reply of a list from before it", () => {
+    const named = reduceRun(IDLE_RUN, server(T0 + 1_000, B_LISTED));
+    const resumed = reduceRun(named, { type: "resumed", at: T0 + 2_000, runId: "r3", messageId: "reply-r3" });
+    expect(resumed.listedReplyId).toBeNull();
+    expect(resumed.messageId).toBe("reply-r3");
+  });
+
+  it("with no messageId, the pick is the rule of before, for each state", () => {
+    const states = [
+      reloadedA(),
+      reduceRun(reloadedA(), server(T0 + 3_600_500, R1_AGAIN)),
+      reduceRun(reloadedA(), server(T0 + 9_000, R2)),
+      parkedLive(),
+      reduceRun(IDLE_RUN, server(T0 + 1_000, R1)),
+      run(IDLE_RUN, { type: "send", at: T0, messageId: "reply-1" }, server(T0 + 1_000, R1, true)),
+      reduceRun(parkedLive(), { type: "resumed", at: T0 + 700_000, runId: "r2", messageId: "reply-r2" }),
+    ];
+    for (const s of states) {
+      expect(s.listedReplyId).toBeNull();
+      expect(attachId(s, caseAShown).id).toBe(replayTarget(s, caseAShown));
+    }
+    // An interrupted last reply is still the target when no stale tail holds.
+    const cut = [...parkedShown, msg("cut-1", "assistant", "Half", 3)];
+    expect(attachPickOf(IDLE_RUN, cut, interrupted)).toEqual({ target: cut[2], readSaved: false, resumeId: null });
+    // The id of the 200 counts only after this tab's Approve (RESUME-3a, C2).
+    expect(attachPickOf({ ...IDLE_RUN, resumedAt: T0, messageId: "m" }, [], interrupted).resumeId).toBe("m");
+    expect(attachPickOf({ ...IDLE_RUN, messageId: "m" }, [], interrupted).resumeId).toBeNull();
+  });
+
+  it("the same list with and without the field is one list to an old reader", () => {
+    // A server with the flags off sends no field: the run state is the state
+    // of before, field for field, except the new key, which stays null.
+    const before = reduceRun(IDLE_RUN, server(T0 + 9_000, R2));
+    const { listedReplyId, ...rest } = before;
+    expect(listedReplyId).toBeNull();
+    expect(rest.messageId).toBeNull();
+    expect(rest.staleTail).toBe(false);
+  });
+});
+
+describe("RESUME-3d: the hook", () => {
+  const hook = src("../hooks/useAgentChat.ts");
+
+  it("the attach takes its target from attachPickOf, and reads the saved rows only when it asks", () => {
+    expect(hook).toContain("attachPickOf(st0.run, st0.messages, isInterruptedReply)");
+    expect(hook).toContain("if (pick.readSaved) {");
+    expect(hook).toContain("replayIdOf(target, pick.resumeId, nanoid)");
   });
 });
 
