@@ -11,7 +11,8 @@ books connectors. This file only names what the mechanism carries.
   that names it is refused.
 * **Reads only.** Each op is class A. Writes wait for D-API-4.
 * **The total.** The gateway total adds the ``total`` field of each invoice
-  of ``list_invoices`` (§2.3).
+  of ``list_invoices`` (§2.3). It refuses a list of more than one
+  ``currency_code``.
 
 **No report op yet.** §2.10 asks whether Zoho Books has a report op, such as
 profit and loss. The spec and the code name no path of such an op. So API-1
@@ -45,12 +46,15 @@ _PAGE = r"[0-9]{1,4}"
 _WORD = r"[a-z_]{1,24}"
 _SORT_ORDER = r"[AD]{1}"
 
-#: Fifty invoices fit well inside the answer cap of 64 KiB.
-_PAGE_SIZE = 50
+#: 49 invoices fit well inside the answer cap of 64 KiB. The page size is
+#: the largest value that the size shape takes, so the gateway total (API-3)
+#: can send it on each page.
+_PAGE_SIZE = 49
 
-#: The size shape takes 0 to 49. The closed grammar cannot say "1 to 50", and
+#: The size shape takes 0 to 49. The closed grammar cannot say "1 to 49", and
 #: the validator refuses a size shape that allows a number above the page
-#: size. ``build`` also refuses a size above the page size at each call.
+#: size. ``build`` refuses a size outside 1 to the page size at each call, so
+#: it refuses ``0``.
 _PER_PAGE = r"[1-4]{0,1}[0-9]{1}"
 
 ZOHO_BOOKS = Template(
@@ -79,7 +83,7 @@ ZOHO_BOOKS = Template(
                 ("sort_order", _SORT_ORDER),
             ),
             paging=Paging(page_key="page", size_key="per_page", size=_PAGE_SIZE),
-            total=Total(items="invoices", field="total"),
+            total=Total(items="invoices", field="total", currency="currency_code"),
             shape_read=True,
         ),
         Operation(
@@ -92,9 +96,10 @@ ZOHO_BOOKS = Template(
         ),
     ),
     # Third-party guides give 100 calls a minute for each organization
-    # (§2.10). The daily cap depends on the Zoho plan. API-3 checks both
-    # against Zoho's own page, and sets the daily cap then.
-    limits=Limits(per_minute=100),
+    # (§2.10). The daily cap depends on the Zoho plan, and nobody has
+    # confirmed it against Zoho's own page (an owner check, §2.3a c). 1000 is
+    # a careful guess at the smallest plan, so the daily budget is 500.
+    limits=Limits(per_minute=100, per_day=1000),
 )
 
 __all__ = ["ZOHO_BOOKS"]
