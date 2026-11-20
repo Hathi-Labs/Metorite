@@ -96,6 +96,13 @@ The rules:
     ``connected_by`` of the row, and the attach keeps it on the tool
     (:func:`server_acts_as`). The card escapes both values as it escapes
     the names (item 19). A header server gets no line.
+11. **The failure log** (TOF-2d, ``tool_failure_log.md`` §4.2 C5 and C6,
+    §4.3). A failed call of an MCP tool (C5, around each ``call_next()`` of
+    the gate) and a failed connect (C6) write one record through
+    ``failure_log.record_tool_failure``, with the code of the map of §4.3.
+    The server name goes to the tenant column only. The capture changes no
+    answer and raises nothing. It is off unless ``TOOL_FAILURE_LOG_ORGS``
+    names the org. Fence: ``tests/unit/test_failure_capture_sites.py``.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
@@ -264,17 +271,49 @@ def _host(url: str) -> str:
         return ""
 
 
+#: Leaf classes that say nothing about the fault. anyio raises ``WouldBlock``
+#: inside each stream receive, so it is the deepest ``__context__`` of almost
+#: every fault of an MCP session. A 401 logged as ``WouldBlock`` on
+#: 2026-11-20 (Shaurrya's Zoho Books server). A cancel only says that a task
+#: group closed after the real fault.
+_NOISE_LEAVES = frozenset({"WouldBlock", "CancelledError"})
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status of the first answer in the chain of *exc* that carries
+    one (an ``httpx.HTTPStatusError``), or None. Reads numbers only."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack and len(seen) < 32:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        status = getattr(getattr(cur, "response", None), "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            return status
+        for nxt in (cur.__cause__, cur.__context__, *list(getattr(cur, "exceptions", None) or [])):
+            if isinstance(nxt, BaseException):
+                stack.append(nxt)
+    return None
+
+
 def _reason(exc: BaseException) -> str:
     """A short reason for *exc*, safe to log.
 
-    An ``OutboundRefused`` anywhere in the chain gives its own reason. Other
-    faults give the class name of the deepest error, never its message, which
-    can hold a URL or a header."""
+    An ``OutboundRefused`` anywhere in the chain gives its own reason. An
+    answer with an HTTP status gives ``http_<status>``. A cap of
+    :func:`_cap_list_tools` gives ``too_many_tools`` or ``too_many_pages``.
+    Other faults give the class name of the deepest error that is not
+    :data:`_NOISE_LEAVES`, never its message, which can hold a URL or a
+    header."""
     from gateway.outbound_guard import OutboundRefused
 
     seen: set[int] = set()
     stack: list[BaseException] = [exc]
     leaf = type(exc).__name__
+    status: int | None = None
+    capped: str | None = None
     while stack and len(seen) < 32:
         cur = stack.pop()
         if id(cur) in seen:
@@ -282,13 +321,100 @@ def _reason(exc: BaseException) -> str:
         seen.add(id(cur))
         if isinstance(cur, OutboundRefused):
             return str(cur.reason)[:_REASON_CHARS]
+        if isinstance(cur, McpListTooLong) and capped is None:
+            capped = f"too_many_{cur.args[0] if cur.args else 'tools'}"
+        found = getattr(getattr(cur, "response", None), "status_code", None)
+        if status is None and isinstance(found, int) and not isinstance(found, bool):
+            status = found
         nested = list(getattr(cur, "exceptions", None) or [])
         for nxt in (cur.__cause__, cur.__context__, *nested):
             if isinstance(nxt, BaseException):
                 stack.append(nxt)
-        if cur.__cause__ is None and cur.__context__ is None and not nested:
-            leaf = type(cur).__name__
+        name = type(cur).__name__
+        if (cur.__cause__ is None and cur.__context__ is None and not nested
+                and name not in _NOISE_LEAVES):
+            leaf = name
+    if capped is not None:
+        return capped[:_REASON_CHARS]
+    if status is not None:
+        return f"http_{status}"
     return leaf[:_REASON_CHARS]
+
+
+def _record_mcp_failure(exc: BaseException, name: str) -> None:
+    """Record one MCP failure of a chat run (TOF-2d, C5 and C6,
+    ``tool_failure_log.md`` §4.2 and §4.3). Never raises.
+
+    The code comes from the map of §4.3 (``failure_log.mcp_error_code``).
+    *name* is tenant text, the server and the tool, so the writer keeps it in
+    the tenant column ``tool_name`` only. The platform field is ``mcp``. The
+    surface and the pointers come from the run (``failure_log.run_fields``).
+    The writer reads the tenant of the run, never an argument (R5)."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="mcp_call", error_code=failure_log.mcp_error_code(exc),
+            tool=name, kind="mcp", **failure_log.run_fields())
+    except Exception as err:  # the class only: the run never sees it
+        _log.debug("mcp.capture_failed", error=type(err).__name__)
+
+
+def _maf_signal(exc: BaseException) -> bool:
+    """True for a control signal of MAF that a ``call_next()`` can raise: a
+    stop of the loop, a fatal middleware, a question to the member, or a
+    check of the arguments. None of them is a failure of the server."""
+    try:
+        from agent_framework.exceptions import MiddlewareException, UserInputRequiredException
+    except ImportError:  # pragma: no cover - MAF ships with the orchestrator
+        return False
+    if isinstance(exc, MiddlewareException | UserInputRequiredException):
+        return True
+    cls = type(exc)
+    return (str(getattr(cls, "__module__", "")).startswith("agent_framework")
+            and cls.__name__.startswith("_FunctionArgument"))
+
+
+def _with_call_capture(process: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    """The capture site C5 (TOF-2d, ``tool_failure_log.md`` §4.2): around each
+    ``call_next()`` of the gate, for a call of an MCP tool.
+
+    The wrap gives the gate a ``call_next`` that records an exception of the
+    call and raises it again. So the gate and MAF see the same exception, and
+    the answer of the run does not change. A loader, a function that is not
+    an MCP tool, and a control signal of MAF write nothing. It wraps the whole
+    ``process``, so the body of the gate stays as it is."""
+
+    @functools.wraps(process)
+    async def captured(self: Any, context: Any, call_next: Callable[[], Any]) -> None:
+        function = getattr(context, "function", None)
+        try:
+            from acb_skills.egress import _from_mcp
+
+            mcp_call = (function is not None and _from_mcp(function)
+                        and not is_mcp_loader(function))
+        except Exception:  # an unread function is not captured
+            mcp_call = False
+        if not mcp_call:
+            await process(self, context, call_next)
+            return
+
+        async def call_and_capture() -> Any:
+            try:
+                return await call_next()
+            except Exception as exc:
+                if not _maf_signal(exc):
+                    try:
+                        server, remote, _meta = self.owner_of(function)
+                        name = f"{server}/{remote}"
+                    except Exception:
+                        name = ""
+                    _record_mcp_failure(exc, name)
+                raise
+
+        await process(self, context, call_and_capture)
+
+    return captured
 
 
 async def _aclose_client(client: Any) -> None:
@@ -517,6 +643,9 @@ _ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
 _READ_ONLY_KEY_KEY = "_mcpc2_read_only_key"
 #: IN-8c: the key that holds ``(admin email, host)`` of an OAuth server.
 _ACTS_AS_KEY = "_in8c_acts_as"
+#: CSY-6: the key that holds the ``instructions`` of the server's ``initialize``
+#: answer, the raw string or None. Third-party text: only the brief reads it.
+_INSTRUCTIONS_KEY = "_csy6_instructions"
 
 
 def server_acts_as(tool: Any) -> tuple[str, str] | None:
@@ -538,6 +667,68 @@ def server_always_confirms(tool: Any) -> bool:
     The attach writes the flag from the registry row. A tool with no flag
     reads as false, as a row with no key does."""
     return getattr(tool, "__dict__", {}).get(_ALWAYS_CONFIRM_KEY) is True
+
+
+def server_instructions(tool: Any) -> str | None:
+    """The ``instructions`` that the server of *tool* sent in its ``initialize``
+    answer (CSY-6, ``chat_connected_systems.md`` §3.5), or None.
+
+    Third-party text. Its one reader is the brief (``_tool_injection._note_mcp_briefs``
+    to ``acb_skills.server_brief``), which caps, frames and escapes it. A log line
+    takes its length only. A value that is not a string reads as None."""
+    value = getattr(tool, "__dict__", {}).get(_INSTRUCTIONS_KEY)
+    return value if isinstance(value, str) else None
+
+
+def _keep_instructions(tool: Any, session: Any) -> None:
+    """Wrap ``initialize`` of ONE MCP session, so *tool* keeps the server's
+    ``instructions`` (CSY-6). MAF 1.19 reads only the capabilities of the answer.
+
+    The wrapper sits on the session object only: no class and no module changes.
+    It returns the answer unchanged, and a fault in the record loses the text
+    only, so the connect goes on."""
+    real = getattr(session, "initialize", None)
+    if real is None or getattr(real, "__csy6_kept__", False):
+        return
+
+    async def _initialize(*args: Any, **kwargs: Any) -> Any:
+        result = await real(*args, **kwargs)
+        with contextlib.suppress(Exception):
+            text = getattr(result, "instructions", None)
+            from acb_skills.server_brief import INSTRUCTIONS_RAW_MAX
+
+            tool.__dict__[_INSTRUCTIONS_KEY] = (
+                text[:INSTRUCTIONS_RAW_MAX] if isinstance(text, str) else None)
+        return result
+
+    _initialize.__csy6_kept__ = True  # type: ignore[attr-defined]
+    with contextlib.suppress(AttributeError, TypeError):
+        session.initialize = _initialize
+
+
+def _watch_sessions(tool: Any, stack: Any) -> None:
+    """Make *stack*, the exit stack of *tool*, pass each context that it enters
+    to :func:`_keep_instructions` (CSY-6).
+
+    MAF 1.19 makes the client session in ``MCPTool._connect_on_owner`` with
+    ``self._exit_stack.enter_async_context(ClientSession(...))``, and calls
+    ``session.initialize()`` before it sets ``self.session``. This stack is the
+    one place where the tool sees the session before that call. The wrapper sits
+    on this stack object only. A context with no ``initialize`` (the transport)
+    passes through."""
+    real = getattr(stack, "enter_async_context", None)
+    if real is None or getattr(real, "__csy6_kept__", False):
+        return
+
+    async def _enter(cm: Any) -> Any:
+        entered = await real(cm)
+        if callable(getattr(entered, "initialize", None)) and hasattr(entered, "send_request"):
+            _keep_instructions(tool, entered)
+        return entered
+
+    _enter.__csy6_kept__ = True  # type: ignore[attr-defined]
+    with contextlib.suppress(AttributeError, TypeError):
+        stack.enter_async_context = _enter
 
 
 def server_read_only_key(tool: Any) -> bool:
@@ -685,6 +876,12 @@ def _run_scoped_tool_class() -> type:
     Each session it opens gets the ``tools/list`` caps (:func:`_cap_list_tools`),
     and the tool keeps the hints of each listed tool (:func:`tool_meta`).
 
+    CSY-6: the tool keeps the server's ``instructions`` from the ``initialize``
+    answer (:func:`server_instructions`). The hook is the ``_exit_stack``
+    property (:func:`_watch_sessions`), as MAF 1.19 calls ``initialize`` before it
+    sets ``session``. A session that MAF finds already set gets the same wrap in
+    the ``session`` setter. Each reset of the session state clears the text.
+
     With progressive disclosure on (WS-8c items 25 and 26), each loader that
     MAF builds is marked (:func:`_mark_loaders`), and the list loader returns
     the index of :func:`mcp_index`, not the full schemas.
@@ -711,7 +908,22 @@ def _run_scoped_tool_class() -> type:
                 meta = self.__dict__.setdefault("_ws8c_tool_meta", {})
                 _cap_list_tools(value, functools.partial(
                     _record_tool_list, meta, server=str(getattr(self, "name", "") or "")))
+                _keep_instructions(self, value)
             self.__dict__["_ws8c_session"] = value
+
+        @property
+        def _exit_stack(self) -> Any:
+            return self.__dict__.get("_csy6_exit_stack")
+
+        @_exit_stack.setter
+        def _exit_stack(self, value: Any) -> None:
+            if value is not None:
+                _watch_sessions(self, value)
+            self.__dict__["_csy6_exit_stack"] = value
+
+        def _reset_session_state(self) -> None:
+            super()._reset_session_state()
+            self.__dict__.pop(_INSTRUCTIONS_KEY, None)
 
         async def __aenter__(self) -> Any:
             if self.is_connected:
@@ -725,6 +937,7 @@ def _run_scoped_tool_class() -> type:
             except Exception as exc:
                 _log.warning("mcp.unreachable", name=self.name, host=_host(self.url),
                              reason=_reason(exc))
+                _record_mcp_failure(exc, str(self.name))  # TOF-2d, C6
                 await _close_one(self, self._httpx_client, client_first=True)
             return self
 
@@ -819,6 +1032,40 @@ def _watch_status(client: Any) -> list[int]:
     return codes
 
 
+#: A status that a healthy session also gets. The client opens the optional
+#: event stream with a GET, and a server with no stream answers 405 (MCP
+#: streamable HTTP). So a 405 never names the fault of a connect.
+_EXPECTED_STATUS = frozenset({405})
+
+
+def _refused_status(codes: list[int]) -> int | None:
+    """The last status of 400 to 599 in *codes* (:func:`_watch_status`) that is
+    not :data:`_EXPECTED_STATUS`, or None."""
+    for code in reversed(codes):
+        if 400 <= code <= 599 and code not in _EXPECTED_STATUS:
+            return code
+    return None
+
+
+def _note_unreachable(name: str, host: str, exc: BaseException, codes: list[int],
+                      failures: dict[str, str] | None) -> None:
+    """Log ``mcp.unreachable`` for a connect that failed, and set its CSY-5 reason.
+
+    The reason is :func:`_reason`. When that is only a class name, and an
+    answer refused the connect, the reason is ``http_<status>`` instead. A cap
+    and a guard refusal keep their own reason. A 401 or 403 is a sign-in that
+    the server refused, such as a key server that now wants an OAuth consent.
+    Its CSY-5 reason is ``reconnect``, so the chat says that an admin must
+    reconnect it, and not that it did not answer."""
+    reason = _reason(exc)
+    status = _refused_status(codes) or _http_status(exc)
+    if status and reason.isidentifier() and reason[:1].isupper():
+        reason = f"http_{status}"
+    _log.warning("mcp.unreachable", name=name, host=host, reason=reason)
+    if failures is not None:
+        failures[name] = "reconnect" if status in (401, 403) else "unreachable"
+
+
 async def _report_unauthorized(
     on_unauthorized: Callable[[McpServer], Awaitable[Any]], server: McpServer,
 ) -> None:
@@ -899,14 +1146,18 @@ async def attach_mcp_tools(
             _log.warning("mcp.refused", name=server.name, host=exc.host, reason=exc.reason)
             if failures is not None:
                 failures[server.name] = "unreachable"
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
         except Exception as exc:  # a lookup fault is a refusal too
             _log.warning("mcp.refused", name=server.name, host=host, reason=_reason(exc))
             if failures is not None:
                 failures[server.name] = "unreachable"
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             continue
-        # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
-        codes = _watch_status(client) if server.oauth else []
+        # IN-8b, rule 9: the answers of each server, so a 401 is seen. An OAuth
+        # row acts on it below. Each row logs it, because MAF wraps the HTTP
+        # error and drops it from the chain (2026-11-20, Shaurrya's Zoho Books).
+        codes = _watch_status(client)
         tool = None
         try:
             # WS-8c item 30: progressive disclosure is experimental in MAF, and
@@ -947,9 +1198,8 @@ async def attach_mcp_tools(
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
-            _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
-            if failures is not None:
-                failures[server.name] = "unreachable"
+            _note_unreachable(server.name, host, exc, codes, failures)
+            _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue
         _choose_disclosure(tool)
@@ -985,6 +1235,9 @@ async def attach_mcp_tools(
         member_present=member_present and _person_present(),
     )]
     names = [t.name for t in tools]
+    # CSY-6: the length of each server's instructions, never the text.
+    _log.info("mcp.instructions",
+              instructions_len={t.name: len(server_instructions(t) or "") for t in tools})
     _log.info("mcp.attached", servers=names,
               always_confirm=[t.name for t in tools if server_always_confirms(t)],
               read_only_key=[t.name for t in tools if server_read_only_key(t)])
@@ -1582,6 +1835,8 @@ def _make_gate_class() -> type:
             except Exception:
                 return False
 
+    # TOF-2d, C5: each call_next() of the gate records the failure of its call.
+    _McpPermissionGate.process = _with_call_capture(_McpPermissionGate.process)
     return _McpPermissionGate
 
 

@@ -2301,3 +2301,59 @@ def test_a_twin_that_ran_takes_the_old_path_with_no_redis_mark(scene, monkeypatc
             await client.aclose()
 
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# RESUME-2e (task 3818): the memory extraction of case A, on the real stream
+# and rows
+# ---------------------------------------------------------------------------
+
+def test_the_case_a_extraction_reads_only_the_part_after_the_park(relay_scene, monkeypatch):
+    """The production sequence of case A, with a recorder for the run end's
+    memory extraction. The reply row gets both parts, as RESUME-2b built.
+    The fold that the extraction gets holds part two only, under
+    ``MEMORY_CONTENT_KEY``. The fold at the park has no key, so the end of
+    the park extracts part one as before. Mutation: drop the key in
+    ``persist_final_assistant_message`` -> part one reaches memory again ->
+    red."""
+    from gateway.chat_fold import MEMORY_CONTENT_KEY, build_extraction_conversation
+    from gateway.routes import agent as agent_routes
+
+    w = relay_scene
+    seen: list[tuple[Any, ...]] = []
+
+    async def _record(run_id, extract_user, history, message, folded, **_kw):
+        seen.append((run_id, history, message, folded))
+        return False
+
+    monkeypatch.setattr(agent_routes, "_extract_run_memory", _record)
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["sameReply"] is True, res
+            await _run_ends(tid)
+            rows = _assistant_rows(w, tid)
+            assert [r[0] for r in rows] == [mid], "ONE reply row"
+            assert "Let me move it." in rows[0][1] and "The deal moved." in rows[0][1]
+            (got,) = seen
+            assert got[0] == run_id and got[1] == [] and got[2] == "", "no words"
+            folded = got[3]
+            assert "Let me move it." in folded["content"], "the row's fold, both parts"
+            assert folded[MEMORY_CONTENT_KEY] == "The deal moved."
+            # No words: no user turn, so the run end extracts nothing.
+            assert build_extraction_conversation(got[1], got[2], folded) == []
+            # A replayed steer gives a user turn. Memory then reads part two.
+            conv = build_extraction_conversation([], "Also tell Bob.", folded)
+            assert [m["content"] for m in conv if m["role"] == "assistant"] == [
+                "The deal moved."]
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())

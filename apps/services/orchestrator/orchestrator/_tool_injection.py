@@ -2550,6 +2550,7 @@ def _inject_agent_tools(
             _apply_no_egress(agents, agent_name)
         else:
             _apply_chat_hold(agents, agent_name)
+        _apply_dry_run(agents)  # WS-STU F4b: a skill test fails closed here too
         return frozenset()  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
@@ -3041,6 +3042,8 @@ def _inject_agent_tools(
         _apply_no_egress(agents, agent_name, injected=_egress)
     else:
         _apply_chat_hold(agents, agent_name)
+    # WS-STU F4b: a skill test puts its hold first on each agent of the run.
+    _apply_dry_run(agents)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
     # HRD-14b: a paste is framed as data, in a copy of each model request.
@@ -3464,6 +3467,37 @@ def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
         if any(_is_held_off(tool, owner) for _label, pool in _own_tool_pools(agent)
                for tool in pool):
             agents[i] = agent_with_providers(agent, [ChatHoldProvider(owner=owner)])
+
+
+def _apply_dry_run(agents: list[Any]) -> None:
+    """The dry-run door of a skill test on ONE run (WS-STU F4b).
+
+    With no dry run on this frame it returns at once, so each other run is as
+    before. Else ``skill_dry_run.attach`` puts ``HoldAndRecord`` and
+    ``CapGuard`` FIRST in the ``middleware`` list of a per-run view of each
+    agent, and arms the record. MAF runs that list before each provider
+    middleware and before the MCP gate, so the hold sees each call first. A
+    Copilot agent or a plain object raises ``DryRunRefused``, so a skill test
+    never runs with no hold. Fence: ``tests/unit/test_skill_dry_run.py``.
+    """
+    from acb_skills.skill_dry_run import attach, current_dry_run
+
+    record = current_dry_run()
+    if record is None:
+        return
+    from agent_framework import Agent
+
+    attach(agents, record, native=Agent,
+           tools_of=lambda agent: [t for _label, pool in _own_tool_pools(agent) for t in pool])
+
+
+def _note_dry_run_loaded(skill_slugs: Sequence[str]) -> None:
+    """In a skill test, note whether the forced skill reached the run
+    (WS-STU F4b). With no dry run on this frame it does nothing."""
+    from acb_skills.skill_dry_run import current_dry_run
+
+    if (dry := current_dry_run()) is not None:
+        dry.loaded = dry.slug in skill_slugs
 
 
 # ── Tool packs: the guarded builder (WS-67 OA-7b, D117) ─────────────────────
@@ -4606,6 +4640,7 @@ async def _apply_tool_packs(
         planned_tools=planned_tools,
     )
     _log_skills_loaded(skills, choice.skills_skipped)
+    _note_dry_run_loaded(skill_slugs)  # WS-STU F4b
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
     if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
@@ -4650,10 +4685,16 @@ async def _turn_with_skills(turn: Any) -> Any:
     True. That one read of the flag also serves the build. The pass writes
     one ``executor.skill_matched`` line with the id and the hit count, and
     never a word of the text. The description adds nothing to the prompt:
-    ``skill_packs.build`` makes the same pack as for a match by name."""
+    ``skill_packs.build`` makes the same pack as for a match by name.
+
+    WS-STU F4b: in a skill test, the turn holds the forced pack of the test
+    and only that pack. The words choose nothing, and no store read runs."""
     from acb_common.db import current_tenant
     from acb_skills import skill_packs, tool_packs, tool_search
+    from acb_skills.skill_dry_run import current_dry_run
 
+    if (dry := current_dry_run()) is not None:
+        return dataclasses.replace(turn, skills=(dry.pack,))
     words = str(getattr(turn, "words", "") or "")
     if not words.strip() or not _studio_open():
         return turn
@@ -5409,20 +5450,26 @@ def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any, reasons: dic
     ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
     (``acb_skills.server_brief``). It reuses the rows that the read gave. The
     remote tool names come from the tool's own record. CSY-5: *reasons* adds one
-    fixed line for a server that is out of reach or asks a card. A fault never
+    fixed line for a server that is out of reach or asks a card. CSY-6: the
+    server's own ``instructions`` come from the tool that THIS run connected
+    (``_maf_mcp.server_instructions``), never from the row. A fault never
     blocks the run."""
     try:
         from acb_skills import server_brief
 
+        from orchestrator._maf_mcp import server_instructions
+
         names = {str(n) for n in (attached or [])}
         remote: dict[str, list[str]] = {}
+        said: dict[str, str | None] = {}
         for tool in tools or []:
             meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
             remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
+            said[str(getattr(tool, "name", ""))] = server_instructions(tool)
         briefs = [
             (str(s.name), server_brief.server_brief(
                 str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
-                remote.get(str(s.name), [])))
+                remote.get(str(s.name), []), said.get(str(s.name))))
             for s in servers if s.name and str(s.name) in names
         ]
         notes = [

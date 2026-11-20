@@ -185,17 +185,17 @@ class ApprovedModel:
     untrusted_origin: bool
 
 
-def _parse_orgs(raw: str) -> frozenset[str]:
-    """The entries of a comma list, trimmed and in lower case."""
-    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
-
-
 def connection_model_allowed(organization_id: str | None) -> bool:
     """True when ``CONNECTION_MODEL_ORGS`` holds the org, or holds ``*``.
     Default OFF.
 
-    The one reader of the setting. It reads the settings on each call, so a
-    reload (SIGHUP) applies a change with no restart. A fault reads as off.
+    One of the two readers of the setting. The other is
+    ``decide_features.mode_for``, through the ``connection.`` prefix, for the
+    decide step of the profiler (SEM-13b). Both use the one rule
+    ``decide_features.org_listed``: trim and lower-case each entry and the
+    org, ``*`` lists every org, and an empty list lists none. It reads the
+    settings on each call, so a reload (SIGHUP) applies a change with no
+    restart. A fault reads as off.
     The callers in this module give the org of the bound tenant, never
     request input (R5).
     """
@@ -208,8 +208,9 @@ def connection_model_allowed(organization_id: str | None) -> bool:
         raw = str(getattr(get_settings(), "connection_model_orgs", "") or "")
     except Exception:
         return False
-    listed = _parse_orgs(raw)
-    return "*" in listed or org in listed
+    from gateway.decide_features import org_listed
+
+    return org_listed(raw, org)
 
 
 def made_by(body: Mapping[str, Any]) -> str:

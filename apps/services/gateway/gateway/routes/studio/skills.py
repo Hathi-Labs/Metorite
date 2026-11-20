@@ -67,6 +67,16 @@ and the page is a later slice.
 **Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
 move waits for the first to commit, then reads the new state, and
 :data:`TRANSITIONS` decides on that state.
+
+**The test run (TOF-3b F4b).** ``POST /studio/skills/{id}/tests/run`` runs
+the tests of a skill on real turns, each in a dry run
+(``gateway.studio.skill_tests.run_suite``). Each test spends credits. The
+order is fixed: the switch ``STUDIO_ORGS`` and the switch
+``STUDIO_SKILL_TESTS_ORGS`` (404 before any other work), the request
+checks, the owner check, then the credit cap. With no cap set, the route
+answers 409 ``cap_unset`` and runs nothing. A second request of a member
+whose suite runs answers 429 ``suite_running`` and runs nothing. The answer
+holds codes and action names only, never an argument of a call.
 """
 
 from __future__ import annotations
@@ -75,6 +85,7 @@ import contextlib
 import re
 import uuid
 from collections.abc import Iterator, Sequence
+from decimal import Decimal
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -87,9 +98,10 @@ from fastapi import Body, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
+from gateway.studio import skill_tests
 from gateway.routes.studio.packages import SHARE_RIGHT
 from gateway.studio import skills_store as store
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, StrictInt, ValidationError
 
 __all__ = ["MAX_ACTIONS", "TRANSITIONS", "router", "slug_from_name"]
 
@@ -418,7 +430,10 @@ async def add_skill_version(
     await _check_body(new.body)
     async with _tenant_session() as db:
         with _store_errors():
-            stored = await store.add_version(db, user.email, sid, new.body)
+            # F4a: a body with no ``tests`` keeps the tests of the newest
+            # version. The undo copies a body exactly, so it skips this.
+            body = await store.carry_tests(db, user.email, sid, new.body)
+            stored = await store.add_version(db, user.email, sid, body)
             if stored is None:
                 raise HTTPException(status_code=404, detail=NOT_FOUND)
             # The UPDATE of add_version holds the row lock until the commit,
@@ -531,6 +546,124 @@ async def set_skill_state(
             if after is None or after.current_version != skill.current_version:
                 raise _refuse(409, CHANGED)
     return {"skill": _skill_out(after)}
+
+
+# ── The test run (TOF-3b F4b) ───────────────────────────────────────────────
+
+#: The most input-only runs of one request.
+MAX_TEST_INPUTS = 1
+#: A request cap: a decimal string of credits with at most 4 places.
+_CAP_TEXT = re.compile(r"[0-9]{1,9}(\.[0-9]{1,4})?")
+CAP_UNSET = "Skill tests have no credit cap yet. An owner must set the cap first."
+SUITE_RUNNING = "Your skill tests are running. Wait for them to end, then try again."
+SLOT_UNAVAILABLE = "Metorite cannot start skill tests now. Try again soon."
+
+
+class _RunTests(BaseModel):
+    version: StrictInt | None = None
+    body: dict[str, Any] | None = None
+    inputs: list[str] = []
+    cap: str | None = None
+
+
+def _request_cap(raw: str | None) -> Decimal | None:
+    """The cap of the request, or None. It can only lower the setting."""
+    if raw is None:
+        return None
+    if not _CAP_TEXT.fullmatch(raw) or Decimal(raw) <= 0:
+        raise _refuse(422, "The cap must be a number of credits above 0, with at most 4 places")
+    return Decimal(raw)
+
+
+def _check_inputs(inputs: list[str]) -> tuple[str, ...]:
+    if len(inputs) > MAX_TEST_INPUTS:
+        raise _refuse(422, f"A run takes at most {MAX_TEST_INPUTS} input")
+    for i, text in enumerate(inputs):
+        if not text.strip() or len(text) > skill_tests.MAX_INPUT_CHARS:
+            raise _refuse(422, f"inputs[{i}] must be a non-empty string of at most "
+                               f"{skill_tests.MAX_INPUT_CHARS} characters")
+    return tuple(inputs)
+
+
+def _test_out(result: skill_tests.TestResult) -> dict[str, Any]:
+    """One test result as the route answers it: codes and action names."""
+    return {
+        "test_id": result.test_id,
+        "passed": result.passed,
+        "reason": result.reason,
+        "detail": result.detail,
+        "writes": list(result.writes),
+        "calls": list(result.calls),
+        "credits": str(result.credits),
+        "model_calls": result.model_calls,
+    }
+
+
+def _suite_out(result: skill_tests.SuiteResult) -> dict[str, Any]:
+    return {
+        "skill_id": result.skill_id,
+        "version": result.version,
+        "content_hash": result.content_hash,
+        "passed": result.passed,
+        "credits": str(result.credits),
+        "cap": None if result.cap is None else str(result.cap),
+        "stopped": result.stopped,
+        "results": [_test_out(r) for r in result.results],
+    }
+
+
+@router.post("/skills/{skill_id}/tests/run")
+async def run_skill_tests(
+    skill_id: str,
+    payload: Any = Body(None),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run the tests of a skill of the caller, each on a real turn in a dry run.
+
+    The body is ``{version?, body?, inputs?, cap?}``. ``body`` is an unsaved
+    version, and it runs the three body checks first. ``inputs`` holds at most
+    one input-only run. ``cap`` is a decimal string, and it can only lower
+    the setting. The org and the member come from the session only."""
+    org = user.organization_id
+    if not flags.studio_allowed(org) or not flags.skill_tests_allowed(org):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    req = _parse(_RunTests, payload)
+    if req.version is not None and req.version < 1:
+        raise _refuse(422, "The version must be a whole number of 1 or more")
+    if req.version is not None and req.body is not None:
+        raise _refuse(422, "Send a version or a body, not both")
+    inputs = _check_inputs(req.inputs)
+    cap = _request_cap(req.cap)
+    if req.body is not None:
+        await _check_body(req.body)
+    async with _tenant_session() as db:
+        with _store_errors():
+            if await store.get_skill(db, user.email, sid) is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            if req.body is None and await store.get_version(
+                    db, user.email, sid, req.version) is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if flags.skill_tests_cap() is None:
+        raise HTTPException(status_code=409, detail={"code": "cap_unset", "message": CAP_UNSET})
+    from gateway.jobs.headless_turn import console_meter
+
+    try:
+        result = await skill_tests.run_suite(
+            org=str(org), member=user.email, skill_id=sid, version=req.version,
+            body=req.body, inputs=inputs, cap=cap, runner=skill_tests.agent_runner,
+            meter=console_meter)
+    except LookupError:
+        raise HTTPException(status_code=404, detail=NOT_FOUND) from None
+    except skill_tests.SkillTestError as exc:
+        raise _refuse(422, str(exc)) from None
+    except skill_tests.SuiteRunning:
+        raise HTTPException(status_code=429, detail={
+            "code": "suite_running", "message": SUITE_RUNNING}) from None
+    except skill_tests.SuiteSlotUnavailable:
+        raise HTTPException(status_code=503, detail={
+            "code": "slot_unavailable", "message": SLOT_UNAVAILABLE}) from None
+    return _suite_out(result)
 
 
 # ── The share with the org (WS-STU J2c) ────────────────────────────────────

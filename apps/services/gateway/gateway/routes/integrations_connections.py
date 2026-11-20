@@ -206,6 +206,21 @@ def _host_only(url: str | None) -> str:
 # ── The five sources ────────────────────────────────────────────────────────
 
 
+def _registry_label(provider: str) -> str:
+    """The name of a registry row. An API connection (``api:<template>``,
+    API-5) takes the label of its connector-list row, so the console says
+    "Zoho Books" and not "Api:Zoho Books". Each other row keeps its rule."""
+    if provider == "zoho":
+        return "Zoho CRM"
+    if provider.startswith("api:"):
+        from acb_common.connector_list import connector
+
+        row = connector(provider)
+        if row is not None:
+            return str(row["label"])
+    return provider.replace("_", " ").title()
+
+
 def _registry_row(conn: store.Connection, user: UserContext) -> Row:
     """A row of the registry table. The Zoho CRM row is the first."""
     app = _app_of(conn.owning_app)
@@ -220,7 +235,7 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         id=f"{conn.provider}:{conn.id}",
         kind="oauth",
         provider=conn.provider,
-        label="Zoho CRM" if conn.provider == "zoho" else conn.provider.replace("_", " ").title(),
+        label=_registry_label(conn.provider),
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,

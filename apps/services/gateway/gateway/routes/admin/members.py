@@ -808,6 +808,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # count is each row of the member.
     _PersonRows("chat_join_rows", "chat_join_log",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-TOF TOF-2b: the tool failure rows of THIS organization that name the
+    # member (``failure_events.member_email``, 30 days of retention). They go
+    # with the member. The clause names the bound org beside RLS. The platform
+    # tables hold no address and stay.
+    _PersonRows("failure_event_rows", "failure_events",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
@@ -864,6 +870,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # key to `brief_runs`.
     _PersonRows("brief_runs", "brief_runs",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-TOF TOF-3a (F12a): the runs of a skill that the member made in THIS
+    # organization: live turns, tests and repair proposals. A row holds codes,
+    # names and a hash, and it is the member's own record, so it goes with the
+    # member. The clause names the bound org beside RLS, as `studio_skills`
+    # does. It runs before `studio_skills`, whose cascade takes the runs of a
+    # deleted skill. So the count is each row of the member.
+    _PersonRows("studio_skill_runs", "studio_skill_runs",
+                f"lower(created_by) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-STU F1 and J2d (TOF-4b): the member's AI Studio skills of THIS
     # organization that the org does not share. Only the owner reads such a
     # skill, so a purged member leaves none behind: a private skill, and a
