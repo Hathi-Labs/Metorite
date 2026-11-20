@@ -11,6 +11,7 @@ D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`).**
   `routes/api_connections.py`, behind `API_CONNECTIONS_ORGS`. The write route
   refuses every call. §2.3a holds its decisions. No live call ran with a real
   credential.
+- **API-5 is built dark (task 3791).** The connector row of Zoho Books, "Connect an API", the pick sheet, the result card and the used-by line (§2.12). It also closes gaps 1, 3 and 4 of §2.11.
 - No chat tool calls a connection yet (API-4).
 
 Zoho Books is an owner priority and the first template. Verified
@@ -678,21 +679,61 @@ The R8 file must show no skip.
   organizations, the sealed credential waits in Redis for 600 seconds. If the
   admin leaves, Redis drops it, and nothing revokes the refresh token at Zoho.
   Zoho keeps 20 tokens for each user and client, so a stranded token can push
-  out the CRM mirror's token. No browser route reaches `start` or `pick` before
-  API-5, so the case is latent. API-5 adds a "start again" path that revokes
-  the old pending entry, or a revoke when the entry expires.
+  out the CRM mirror's token. **Closed by API-5: start again, and cancel on
+  close.** Three events end a pending entry: a new start, a newer consent of
+  the same admin, and a close of the pick sheet. Each one revokes the pending
+  token at Zoho and deletes the entry (`_drop_pending`). The close calls
+  `POST /integrations/api/zoho_books/cancel`. A tab that
+  closes sends the cancel as a beacon. A failed revoke stops nothing, and the
+  log line holds counts only. **Accepted, named:** a tab that dies with no
+  cancel still strands the token until Redis drops the entry. The gateway
+  cannot revoke an entry that expired, because Redis dropped the sealed
+  credential with it.
 - **A dark org and `/pick`.** A malformed JSON body to `/pick` answers 422, not
   404, because FastAPI reads the body before the dependencies. The route shows
-  that it exists. This is a low leak.
-- **`pick` takes the nonce first.** `pick_zoho_books` reads and deletes the
-  pending entry before it checks the member. Another admin of the same org who
-  holds the nonce can use it up. This is a denial only.
-- **The Studio fence.** `test_studio_connect_in_place.py` has an exemption,
-  `_NOT_LISTED_YET`, for `api:zoho_books`. API-5 lists the connector and
-  removes the exemption.
+  that it exists. **Decided at API-5: accepted, low.** The BFF relay checks the
+  two keys first, so a browser never sends a malformed body.
+- **`pick` takes the nonce first.** `pick_zoho_books` read and deleted the
+  pending entry before it checked the member. **Closed by API-5.** The pick
+  reads the member of the entry first. Another admin who holds the nonce gets
+  400, and the entry stays for its own admin.
+- **The Studio fence.** `test_studio_connect_in_place.py` had an exemption,
+  `_NOT_LISTED_YET`, for `api:zoho_books`. **Closed by API-5.** The connector
+  list holds the row `api:zoho_books`, and the exemption is gone. The Studio
+  grammar of a connection name takes `api:<template>`.
 - **A large `/organizations` answer.** An account with about 40 or more Books
   organizations can pass the 64 KiB guard cap. The flow then fails closed with
-  `context_unreadable`.
+  `context_unreadable`. **Decided at API-5: accepted.** The console tells the
+  admin that Metorite cannot read the organizations, and the gateway saves
+  nothing.
+
+### 2.12 The console (API-5)
+
+API-5 builds the console half of §2.11, dark behind `API_CONNECTIONS_ORGS`.
+
+- **The switch.** The console reads `GET /integrations/api/zoho_books`. That
+  route answers 404 for a dark org and 403 without `integrations:manage`.
+  Both read as "not open", and the console then shows the old "Add API". No
+  public flag reaches the browser.
+- **"Connect an API".** In the API keys view, the tile "Add API" becomes
+  "Connect an API". It opens a dialog with the T1 list first: the `api:` rows
+  of the connector list (IN-11). The old custom path stays below the list.
+- **Connect.** The button asks the BFF relay for the consent URL, and the
+  browser goes to Zoho. The CRM callback sends the marked state back to the
+  gateway (§2.11, choice 1).
+- **The return.** The Connections view reads the address. `api_pick` opens the
+  pick sheet with the choices that the gateway holds. `api_connected` reads the
+  status, and shows the result card only when the status says `connected`.
+  `api_connect_error` shows one sentence that says what to do. Each return does
+  nothing while the status route is 404.
+- **The result card (IN-9).** The gateway status carries the card of
+  `acb_common.connector_result_card`. The card is never a modal.
+- **Used by (IN-10).** The sheet of an API connection says that no app,
+  workflow or chat tool uses it yet. The chat tools come with API-4. The
+  disconnect asks once, and says that nothing stops.
+
+The BFF relays are under `src/app/api/integrations/api/zoho_books/`. The words
+and the rules are in `src/app/integrations/lib/apiConnect.ts`.
 
 ## 3. Options not taken
 
@@ -729,7 +770,7 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 | API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant. §2.11 | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
 | API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE. Built dark |
 | API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) | AGENT-SAFE to build dark |
-| API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD | AGENT-SAFE |
+| API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10). Built, dark (§2.12) | STANDARD | AGENT-SAFE |
 | API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW | AGENT-SAFE |
 
 **The OWNER-GATE acts of this spec.** An agent builds each slice dark and
@@ -768,6 +809,9 @@ The R8 suite skips with no `TENANT_LADDER_DATABASE_URL`. A skip is not a pass.
 | The connect flow: the flag, the permission, the state, the hosts, the test read before the save, the pick from the server list (§2.11, AC1 to AC7) | `tests/unit/test_api_connect_zoho_books.py` |
 | Org B cannot see or pick the connection of org A. A reconnect updates the one row. A failed test read keeps the older row (AC8) | `tests/unit/test_api_connect_r8.py` (R8) |
 | The BFF callback sends a marked state to the Books route, and passes only its three Location shapes | `workbench/control_plane/src/app/api/crm/oauth/zoho/callback/route.test.ts` |
+| API-5: a new start revokes the admin's own older pending pick. The pick reads the member before it takes the entry | The `test_gap1_*` and `test_gap3_*` cases of `test_api_connect_zoho_books.py` |
+| API-5: the connector list holds `api:zoho_books`, and the Studio fence has no exemption | `test_studio_connect_in_place.py::test_the_api_connection_of_zoho_books_is_a_listed_org_row`, `test_connector_list.py` |
+| API-5: the console shows `connected` only from the gateway status. A dark org sees "Add API". The relays pass only their own shapes | `src/app/integrations/lib/apiConnect.test.ts`, `components/ApiConnect.test.tsx`, `src/app/api/integrations/api/zoho_books/route.test.ts` |
 | The limiter and the daily budget stop a loop. A cut answer is refused | `tests/unit/test_api_call_limits.py` (new) |
 | The gate refuses a write op with no member and in WhatsApp | `tests/unit/test_maf_mcp_confirm.py` (extended) |
 | Find and describe carry no MCP marker and ask no card. Their T2 and T3 text is framed | `tests/unit/test_api_chat_tools.py` (new) |
