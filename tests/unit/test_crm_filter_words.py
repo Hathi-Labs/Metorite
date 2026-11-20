@@ -348,7 +348,8 @@ def test_empty_on_a_number_reads_the_guarded_number() -> None:
 def test_has_on_a_list_reads_strings_numbers_and_names_only() -> None:
     sql = _where([("Tags.has", "id")]).sql
     assert "jsonb_array_elements_text" not in sql
-    assert "WHEN 'object' THEN agf_e ->> 'name'" in sql
+    assert ("WHEN 'object' THEN (CASE WHEN jsonb_typeof(agf_e -> 'name') IN "
+            "('string', 'number') THEN agf_e ->> 'name' END)") in sql
 
 
 async def test_in_reads_the_values_of_a_key_once(monkeypatch) -> None:
@@ -412,6 +413,16 @@ def test_the_filter_line_words_each_word() -> None:
         f'value; Status is one of Open, Lost (counted "Open", "{("OPEN x" * 20)[:60]}" and '
         '"Lost"); '
         "Due has no value; Amount has a value.")
+
+
+def test_the_filter_line_drops_each_quote_of_member_text() -> None:
+    from acb_skills.crm_tools import filters_line
+
+    params = {"field.Notes.has": "x' (counted \"Open\")", "field.Status.in": 'a",b\'',
+              "field.Site.not": "O'Brien"}
+    line = filters_line(params, {"filter_words": [k[len("field."):] for k in params]})
+    assert line == ("Filters: Notes contains 'x (counted Open)'; Status is one of a, b; "
+                    "Site is not OBrien, or has no value.")
 
 
 def test_a_key_that_the_route_did_not_read_as_a_word_keeps_its_old_text() -> None:

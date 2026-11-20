@@ -8688,7 +8688,9 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
   the database, as `q` does. Nothing removes an accent. A lookup reads the
   name of its target and never its id. A text field reads a string, a number
   or the name of an object. In a list it reads each string, number and
-  object name. It never reads an element that is a list. So the JSON text of
+  object name. A name counts only when it is a JSON string or number
+  (`_name_text`), and `q` of CRM-Q34-7 reads the same guarded name. It never
+  reads an element that is a list. So the JSON text of
   a value or of an element never matches. The text holds 1 to 200 characters.
 - **`.not`.** `NOT coalesce(<the clause of =>, false)`. A text value counts
   its stored variants, as `=` does. A lookup by a Metorite id also matches its
@@ -8718,6 +8720,10 @@ merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
 - **A range on a text field of numbers.** `.from` and `.to` on a CRM-Q34-11
   text field work on the total only. The list never admits text numbers, so
   there the range is the 422 of a text field. This is as before this slice.
+- **Limit of the filter line.** `=` writes each counted stored value as it
+  is stored, so a newline or a quote in it reaches the line. This is old
+  text on main, and a quoted form would change the text of each older call.
+  A word quotes each counted value, and it drops each quote of member text.
 - **Not in this slice.** The overlay of a core entity (`overlay_where`) and
   `custom.<key>` of the core lists take no word. A native query leaf takes no
   word. This slice adds no index for `.has`, and no migration.

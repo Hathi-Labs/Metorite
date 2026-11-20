@@ -80,6 +80,15 @@ _EXTRA: dict[str, dict[str, Any]] = {
     "R04": {"Tags": [[{"id": "9003", "name": "Red"}]], "QtyT": "-"},
     "R05": {"Tags": [{"id": "9004"}, 42], "QtyT": "  "},
     "R06": {"QtyT": "10"},
+    # Round 3: hostile names. A name that is an object, a list, a boolean or
+    # null holds no member text, so its JSON text never matches.
+    "R07": {"Tags": [{"id": "t2", "name": {"id": "inner", "name": "Deep"}}]},
+    "R08": {"Tags": {"id": "9005", "name": {"x": "idq"}}},
+    "R09": {"Tags": [{"id": "9006", "name": None}]},
+    "R10": {"Tags": [{"name": ["xq"]}]},
+    "R11": {"Tags": [{"name": True}]},
+    "R12": {"Tags": {"id": "9007", "name": ["idz"]}},
+    "R13": {"Site": {"id": "s11", "name": {"id": "in2"}}},
 }
 
 _FIVE_KB = "x" * 5000 + " needle"
@@ -318,18 +327,45 @@ async def test_a_word_that_the_type_does_not_take_is_a_422_on_both(
         assert res.status_code == 422 and says in res.text, res.text
 
 
-#: The member text of Tags: a string, a number or the name of an object,
-#: as the value or as an element of a list. Never the JSON text, and never
-#: an element that is itself a list.
-_TAG_TEXTS = (
-    "SELECT t FROM (SELECT CASE WHEN jsonb_typeof(fields -> 'Tags') = 'object' "
-    "THEN fields -> 'Tags' ->> 'name' WHEN jsonb_typeof(fields -> 'Tags') IN "
-    "('string', 'number') THEN fields ->> 'Tags' END AS t UNION ALL "
-    "SELECT CASE WHEN jsonb_typeof(e) = 'object' THEN e ->> 'name' "
-    "WHEN jsonb_typeof(e) IN ('string', 'number') THEN e #>> '{}' END FROM "
-    "jsonb_array_elements(CASE WHEN jsonb_typeof(fields -> 'Tags') = 'array' "
-    "THEN fields -> 'Tags' ELSE '[]'::jsonb END) e) AS agf_t WHERE t IS NOT NULL"
-)
+def _member_texts(value: Any) -> list[str]:
+    """The member text of one stored value, by an independent definition in
+    Python: a string, a number, or the name of an object when that name is a
+    string or a number. In a list, each such element. Never JSON text, and
+    never an element that is itself a list."""
+    def plain(v: Any) -> str | None:
+        if isinstance(v, str):
+            return v
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            return json.dumps(v)
+        return None
+
+    def text_of(v: Any) -> str | None:
+        return plain(v.get("name")) if isinstance(v, dict) else plain(v)
+
+    items = value if isinstance(value, list) else [value]
+    if isinstance(value, list):
+        return [t for t in (text_of(e) for e in items if not isinstance(e, list)) if t is not None]
+    one = text_of(value)
+    return [one] if one is not None else []
+
+
+async def _oracle(p: Any, org: str, key: str, word: str, starts: bool) -> list[str]:
+    """The names of the rows whose *key* holds *word*, by :func:`_member_texts`.
+    The case folds as ``lower`` does, so the words of these tests are ASCII."""
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            "SELECT name, fields FROM crm_module_records WHERE organization_id = "
+            "CAST(:o AS uuid) AND module = 'Invoices' ORDER BY name"), {"o": org}).fetchall()
+    out = []
+    for name, fields in rows:
+        if key not in fields:
+            continue
+        texts = [t.strip().lower() for t in _member_texts(fields[key])]
+        hit = (any(t.startswith(word.lower()) for t in texts) if starts
+               else any(word.lower() in t for t in texts))
+        if hit:
+            out.append(name)
+    return out
 
 
 @pytest.mark.parametrize(("query", "names"), [
@@ -339,23 +375,43 @@ _TAG_TEXTS = (
     ({"field.Tags.has": "9001"}, []),
     ({"field.Tags.has": "900"}, []),
     ({"field.Tags.has": "{"}, []),
+    ({"field.Tags.has": "["}, []),
+    ({"field.Tags.has": "inner"}, []),
+    ({"field.Tags.has": "deep"}, []),
+    ({"field.Tags.has": "idq"}, []),
+    ({"field.Tags.has": "idz"}, []),
+    ({"field.Tags.has": "xq"}, []),
+    ({"field.Tags.has": "true"}, []),
+    ({"field.Tags.has": "null"}, []),
     ({"field.Tags.has": "red"}, ["R01", "R03"]),
     ({"field.Tags.has": "42"}, ["R05"]),
     ({"field.Tags.has": "green"}, ["R02"]),
     ({"field.Tags.starts": "Red"}, ["R01", "R03"]),
+    ({"field.Tags.starts": "R"}, ["R01", "R03"]),
     ({"field.Tags.starts": "id"}, []),
+    ({"field.Tags.starts": "{"}, []),
     ({"field.Tags.starts": "["}, []),
+    ({"field.Site.has": "in2"}, []),
+    ({"field.Site.has": "{"}, []),
 ])
 async def test_has_on_a_list_of_objects_reads_names_and_never_json(
         wd, app_engine, query, names) -> None:
     _t, listed = await _both(wd, wd.org_a, query)
     assert listed == names
-    word = next(iter(query.values()))
-    starts = next(iter(query)).endswith(".starts")
-    where = (f"EXISTS ({_TAG_TEXTS} AND "
-             + ("left(lower(trim(t)), length(:w)) = lower(:w))" if starts
-                else "strpos(lower(t), lower(:w)) > 0)"))
-    assert await _independent(wd, wd.org_a, where, word) == names
+    (name, word), = query.items()
+    key = name[len("field."):].rsplit(".", 1)[0]
+    assert await _oracle(wd, wd.org_a, key, word, name.endswith(".starts")) == names
+
+
+async def test_q_reads_no_json_text_of_a_name(wd, app_engine) -> None:
+    """The module find (CRM-Q34-7) reads the same guarded name: ``q`` finds
+    no row by the JSON text of a name that is an object or a list."""
+    for q in ("idq", "idz", "in2"):
+        total = await _total(wd, wd.org_a, q=q)
+        page = await _list(wd, wd.org_a, q=q)
+        assert total.json()["records"] == page.json()["total"] == 0, q
+    _t, page = await _total(wd, wd.org_a, q="Red"), await _list(wd, wd.org_a, q="Red")
+    assert sorted(r["name"] for r in page.json()["rows"]) == ["R01", "R03"]
 
 
 async def test_empty_on_a_text_field_has_one_meaning(wd, app_engine) -> None:

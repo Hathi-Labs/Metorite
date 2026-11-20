@@ -1604,9 +1604,9 @@ def _words_value(name: str, value: str, said: str | None, end: str) -> list[str]
 
 def _blank(column: str, p: str, nv: str) -> str:
     """True when the field holds no value: a missing key, a JSON null, a
-    string that trims to one of the bound words *nv* (``""``, and the words
-    of :data:`NO_VALUE_WORDS` for a text field that holds numbers), or an
-    empty JSON list. Never NULL. The CASE keeps the length off a value that
+    string that trims to one of the bound words *nv*, or an empty JSON list.
+    ``.empty`` on a text field always binds ``[""]``, also for a text field
+    that holds numbers. Never NULL. The CASE keeps the length off a value that
     is no list."""
     return (
         f"({_no_value(column, p, nv)} OR CASE WHEN jsonb_typeof({column} -> :{p}) = "
@@ -1682,14 +1682,14 @@ def _word_filter(scope: FieldScope, ref: FieldRef, end: str, k: str, v: str, val
     pattern = like_pattern(text_value, starts=end == ".starts")
     if ref.type == "lookup":
         return (f"(CASE WHEN jsonb_typeof({column} -> :{k}) = 'object' THEN "
-                f"btrim({column} -> :{k} ->> 'name') ILIKE :{v} ELSE false END)",
+                f"btrim({_name_text(f'{column} -> :{k}')}) ILIKE :{v} ELSE false END)",
                 pattern, keys, source)
     return (
         f"(btrim({_text_value(column, k)}) ILIKE :{v} OR "
         f"CASE WHEN jsonb_typeof({column} -> :{k}) = 'array' THEN EXISTS (SELECT 1 FROM "
         f"jsonb_array_elements({column} -> :{k}) agf_e WHERE btrim(CASE jsonb_typeof(agf_e) "
         "WHEN 'string' THEN agf_e #>> '{}' WHEN 'number' THEN agf_e #>> '{}' "
-        f"WHEN 'object' THEN agf_e ->> 'name' END) ILIKE :{v}) ELSE false END)",
+        f"WHEN 'object' THEN {_name_text('agf_e')} END) ILIKE :{v}) ELSE false END)",
         pattern, keys, source)
 
 
@@ -2383,13 +2383,23 @@ def find_keys(scope: FieldScope) -> tuple[FieldRef, ...]:
     return tuple(refs[:FIND_KEYS_MAX])
 
 
+def _name_text(obj: str) -> str:
+    """The ``name`` of the JSON object *obj* as text, only when that name is
+    a JSON string or number. A name that is an object, a list, a boolean or
+    null gives NULL, so its JSON text never matches (CRM-Q34-5 round 3).
+    *obj* is SQL of this module."""
+    return (f"(CASE WHEN jsonb_typeof({obj} -> 'name') IN ('string', 'number') "
+            f"THEN {obj} ->> 'name' END)")
+
+
 def _lookup_name(column: str, p: str) -> str:
     """The name of a lookup value ``{id, name}``, or the text of a string.
     An array, a number and each other value give NULL, so the JSON text of
-    a value never reaches the row text (fix round, F4)."""
+    a value never reaches the row text (fix round, F4). A name that is no
+    string or number gives NULL too (:func:`_name_text`)."""
     return (
         f"(CASE jsonb_typeof({column} -> :{p}) "
-        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' "
+        f"WHEN 'object' THEN {_name_text(f'{column} -> :{p}')} "
         f"WHEN 'string' THEN {column} ->> :{p} END)"
     )
 
@@ -2398,12 +2408,13 @@ def _text_value(column: str, p: str) -> str:
     """The text of a text field: a string or a number as it is, the name of
     an object (a Zoho type that the mapping keeps as ``text``), and NULL for
     an array or any other value. So ``q="id"`` never matches the JSON text
-    of an object (fix round, P2-2)."""
+    of an object (fix round, P2-2). A name that is no string or number
+    gives NULL too (:func:`_name_text`, CRM-Q34-5 round 3)."""
     return (
         f"(CASE jsonb_typeof({column} -> :{p}) "
         f"WHEN 'string' THEN {column} ->> :{p} "
         f"WHEN 'number' THEN {column} ->> :{p} "
-        f"WHEN 'object' THEN {column} -> :{p} ->> 'name' END)"
+        f"WHEN 'object' THEN {_name_text(f'{column} -> :{p}')} END)"
     )
 
 

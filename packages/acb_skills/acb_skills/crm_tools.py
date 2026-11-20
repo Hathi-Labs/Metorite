@@ -3322,7 +3322,9 @@ def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]
     """"Status is one of Open, Won": one filter with a word (CRM-Q34-5),
     with the stored values that it counted, as :func:`_eq_words` does."""
     key = name[: -len(word)]
-    text = _query_text_value(value)
+    # Member text: it loses each quote, so it cannot close the quotes of the
+    # line or look like a counted stored value.
+    text = _query_text_value(value).replace("'", "").replace('"', "")
     if word == ".empty":
         return f"{key} {'has no value' if text.lower() == 'true' else 'has a value'}"
     if word == ".in":
