@@ -269,17 +269,17 @@ async def test_org_b_never_shows(invoices, app_engine) -> None:
 # ── 6. Off the list ─────────────────────────────────────────────────────────
 
 #: The answer of a one-field call, recorded on the base code: origin/main
-#: cc9c0a584 on 2026-11-18, with the base aggregate.py and field_sql.py put
-#: back in place. Proved again on origin/main ecb879c69 on 2026-11-19, the
-#: same way. This slice must not change one byte of it.
+#: 9bb67296a on 2026-11-20, with its aggregate.py, field_sql.py, core.py and
+#: crm_tools.py put in place (first recorded on cc9c0a584, 2026-11-18). This
+#: slice must not change one byte of it.
 _BASE_ONE_FIELD = [
     (
         '{"entity":"module:Invoices","measure":"sum","group_by":null,"group_field":"Statu'
         's","field":"Amount","field_type":"currency","field_label":"Amount","group_field_'
         'label":"Status","keys":{},"group_field_type":"select","bucket":null,"groups":[{"'
-        'key":"Due","label":"Due","value":24164.0},{"key":"Paid","label":"Paid","value":1'
-        '2013.0}],"total":36177.0,"other":0.0,"omitted":0,"zone":"UTC","values":720,"reco'
-        'rds":720}'
+        'key":"Due","label":"Due","value":20703.0},{"key":"Paid","label":"Paid","value":1'
+        '2013.0},{"key":"Void","label":"Void","value":3461.0}],"total":36177.0,"other":0.'
+        '0,"omitted":0,"zone":"UTC","values":720,"records":720}'
     ),
     (
         '{"entity":"module:Invoices","measure":"count","group_by":null,"group_field":"Inv'
@@ -333,7 +333,6 @@ async def test_a_one_field_call_is_the_answer_of_the_base_code(
     month = await _get(invoices, a, entity="module:Invoices", group_field="Invoice_Date",
                        bucket="month")
     assert month.status_code == 200, month.text
-    print('BASEJSON', json.dumps([res.text, month.text]))
     assert [res.text, month.text] == _BASE_ONE_FIELD
 
 
