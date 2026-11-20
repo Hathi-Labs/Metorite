@@ -5707,6 +5707,7 @@ async def _inject_mcp_servers(
             tools = getattr(agent, "mcp_tools", None)
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
             _note_mcp_briefs(servers, attached, tools, reasons)
+            await _count_left_out(str(org), reasons)
         return
 
     for srv in servers:
@@ -5767,8 +5768,24 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
                 continue
             notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
         server_brief.set_attached([], notes)
+        await _count_left_out(str(org), {n: "mail" for n, _ in notes})
     except Exception as exc:
         _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
+    """CSY-8: add ONE to the daily count of each server and reason that left a server out
+    of this turn. The reasons come from the closed list of CSY-5, so a turn is counted
+    once for each server. Names and counts only. A fault never blocks the run."""
+    try:
+        if not org or not reasons:
+            return
+        from acb_common import mcp_use
+
+        for name, reason in reasons.items():
+            await mcp_use.count_left_out(org, str(name), str(reason))
+    except Exception as exc:  # the class only
+        _log.warning("mcp_use.counter_fault", op="count_left_out", error=type(exc).__name__)
 
 
 async def _mcp_reasons(org: str, maf_servers: list[Any], attached: Any, failures: dict[str, str],
