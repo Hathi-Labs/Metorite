@@ -106,6 +106,8 @@
       "tests/unit/test_sandbox_broker_seam.py",
       "tests/unit/test_semantic_shape_only.py",
       "tests/unit/test_sent_record.py",
+      "tests/unit/test_skill_dry_run.py",
+      "tests/unit/test_skill_tests.py",
       "tests/unit/test_sql_bindparam_jsonb_cast.py",
       "tests/unit/test_sql_interval_shape.py",
       "tests/unit/test_ssh_host_key_pin.py",
