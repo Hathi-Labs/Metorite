@@ -2,7 +2,7 @@
 
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
 D226). The rest stays PROPOSED. SEM-7 (task 3737) and the library half of SEM-8 (task 3738) are built, dark.
-SEM-12 is BUILT, dark (task 3742): migration 464, `connections/semantic_model.py`, and
+SEM-12 (task 3742) and its repair SEM-12b (task 3834) are BUILT, dark: migration 464, `connections/semantic_model.py`, and
 `shape_only` in `crm_sync/catalogue.py`, behind `CONNECTION_MODEL_ORGS`. Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
@@ -606,7 +606,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
 | **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` (built, dark, task 3737) | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
 | **SEM-8** | 2 | Verified queries: save with parameters, match, run, the "verified" mark, stale on a shape change, one repair | `routes/crm/` (a new module), `crm_tools.py` | HIGH · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` (built, dark, task 3738: the library half and the member routes match and lower. The admin routes for save and repair, and the chat offer, are SEM-8b) | `test_crm_verified_queries.py` and `_r8` (new) | SEM-7 |
-| **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
+| **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind. The recommended scope `two_kinds` holds the synonym and the measure only. The scope, the store, the caps, the accept, the Undo, D-SEM-7 and the done-when are in §10.6 | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` (the full list is in §10.6) | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS`, `SEMANTIC_MODEL_ORGS` and `WAITING_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py`. The mutation of each is in §14 | SEM-7. SEM-8b only for the verified-query kind (§10.6) |
 | **SEM-10** | 2 | Measures and Verified questions in "Your answers", with Undo | CRM settings UI | STANDARD UI · captures before merge | `SEMANTIC_MODEL_ORGS` | Vitest of the section (new) | SEM-8, SEM-9 |
 | **SEM-11** | 2 | The weekly counts of refusal codes go to the failure store | a job on the queue | STANDARD · AGENT-SAFE | none | `test_semantic_refusal_feed.py` (new) | SEM-4, TOF-2a (task 3416) |
 | **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py`, and the one `shape_only` function in `crm_sync/catalogue.py`. The body, the writer, the flag, the migration shape and the file list are in §10.4 | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, org B cannot name the connection of org A, cascade on delete, one approved version), `test_semantic_shape_only.py` (new), `test_flag_reload.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`. The mutation of each is in §14 | D-SEM-2, SEM-7 (PR 2599, task 3737) |
@@ -708,7 +708,7 @@ short code, or `None`.
 | Text in the `admin` section | Allows 1 to 300 characters that pass `clean_body`, with no digit that `_has_literal` finds |
 | A parameter name | Allows a name that matches the name pattern. Refuses a name that does not match the pattern, such as `Acme Ltd`, `2024` or `5.5`. The pattern is `_PARAM_NAME` of the catalogue. The `number_like` call is a second guard for a number-like name |
 | A verified query | Allows named parameters. Refuses a key such as `value`, and any literal in a condition |
-| An amount, a total, a balance or a figure of money | Refuses, in every section |
+| An amount, a total, a balance or a figure of money | Refuses a key that names a figure, in every section. Refuses a label or an option that reads as a number, or that holds a money mark beside a digit on either side. A mark is a symbol (`₹ $ € £ ¥`) or a code (`rs inr usd eur gbp`), such as `Rs. 400`, `450000 INR due` or `5USD`. After a digit, `rs` needs a space first, so `3rs` passes. A figure in plain words, such as `four thousand`, passes in a label by design |
 | Free text that the source or the model wrote, outside the cases above | Refuses |
 | A key outside the closed set, or a part in the wrong section | Refuses |
 | A key that names a secret: header, token, url, path or host (§8) | Refuses |
@@ -1011,6 +1011,307 @@ approved yet. Fences in `test_connection_profiler.py`:
 **The flag.** `profile` checks `connection_model_allowed(org)` first. With the
 flag off, it lists no tool, calls no tool and writes nothing.
 
+### 10.6 SEM-9 in detail: proposals from chat
+
+An audit of 2026-11-20 gave the SEM-9 row NO-GO. The row had no done-when
+that a test can check. It left five design choices open, and it did not cite
+D-SEM-7. This section closes those gaps. It adds no D-number. The SEM-9 row
+of §10.2 and §14 point here.
+
+**The status of each choice.** This section PROPOSES each choice below,
+with its reason. The owner must confirm a choice that has the mark OWNER-CONFIRM. The
+open questions at the end of this section list each of them. A builder may
+build a PROPOSED choice that has no OWNER-CONFIRM mark.
+
+**The scope: `two_kinds` (PROPOSED, OWNER-CONFIRM).** The task asks the owner
+to pick one of three options: `two_kinds` (recommended), `three_kinds` or
+`admin_only_vq`. This section is for `two_kinds`. A member's chat proposes a
+synonym or a measure. Only a CRM admin accepts the proposal.
+
+The verified-query kind is not in this slice. It joins after SEM-8b gives
+`save()` a route. It also needs the member's consent to show the question
+words (D-SEM-7).
+
+> **Note.** If the owner picks another option, this section changes before
+> dispatch. `three_kinds` adds a verified-query proposal, which needs SEM-8b
+> and a consent step. `admin_only_vq` adds the admin's own save of a verified
+> question from chat, which needs SEM-8b.
+
+**The code anchors (verified against `origin/main` at `d76bf192b`,
+2026-11-20).** Each path is under `apps/services/gateway/gateway/` unless it
+says otherwise.
+
+| Anchor | What the code shows |
+|---|---|
+| `crm_sync/questions.py` `KINDS` and `CHAT_KINDS` | Six kinds: `purpose`, `key_field`, `slot`, `stage_value`, `revenue` and `term`. A chat card asks four of them: `purpose`, `key_field`, `revenue` and `term` |
+| `crm_sync/questions.py` `REASON_OPEN` to `REASON_ANSWERED` | Why a question shows: `open`, `unsure`, `stale` or `answered`. The load computes the reason each time. No column holds it |
+| `crm_sync/questions.py` `PROPOSALS`, `with_proposal` and `PROPOSALS_KEEP` | The cursor row `zoho:questions` holds `proposals`: a question id, then a list of `{value, member, at}`. One member holds one pick for each question. The list keeps the 5 newest. No table and no migration (§18.14.3) |
+| `crm_sync/questions.py` `chat_choice` | A pick must be the key of an option that the server built. So the model cannot invent a value |
+| `routes/crm/questions.py` `reply_as` (`POST /crm/questions/{id}/reply`) | It decides by the permission of the caller, before any write. A CRM admin (`admin:access:manage`) writes the fact through the code of `/answer`. The pick of each other member becomes a proposal, and it writes nothing in the plan |
+| `routes/crm/questions.py` `term_pickers` and `write_term_answer` | A `term` answer is the field that a word means. `write_term_answer` merges `{field}` into the bucket `term_answers` of `zoho:questions`. It keeps no version, it writes no change-log row, and it has no Undo |
+| `routes/crm/questions.py` `clear_proposals` and `after_admin_write` | Each admin write of a part clears the proposals of that part |
+| `packages/acb_skills/acb_skills/crm_tools.py` `crm_propose_rule(text, scope)` | Today's chat path for a proposal. The text holds 1 to 300 characters. `member_said` refuses words that the member did not say. `/crm/rules/propose` holds the words in tenant Redis for 24 hours (`PENDING_TTL_S`) until the member confirms. The confirm writes `crm_business_rules` (migration 283). `BODY_MAX` of `routes/crm/rules.py` is 300 |
+| `apps/services/orchestrator/orchestrator/_tool_injection.py` | `crm_propose_rule` loads only for an org on `CRM_ANSWER_FIRST_ORGS`, with `org_facts` |
+| `tests/unit/test_tool_schema_diet.py` | It pins `crm_propose_rule` to the params `scope` and `text`. The pin requires `text` |
+| `crm_sync/catalogue.py` `semantic_problem`, `semantic_ref_problem` and `_MEASURE_KEYS` | The item checks of SEM-7. A measure holds only `kind`, `key`, `label`, `module`, `aggregate`, `fields`, `filters` and `unit`. Another key fails with `keys`. `semantic_ref_problem` checks a measure, a join or a query against the catalogue. It does not check a synonym, because a synonym is not a semantic kind |
+| `routes/crm/mapping_plans.py` `check_kinds`, `_check_semantic`, `merge_kinds(semantic=True)`, `commit` and `lock_plan` | The one path of a plan write. `commit` runs `check_kinds` and `_check_semantic_refs` under the lock of `lock_plan` |
+| `routes/crm/mapping_plans.py` `POST /crm/mapping/plans/{version}/restore` | The Undo of a plan change. It approves a copy of an old version |
+| `routes/crm/verified_queries.py` `save` | The pattern of an item write: `lock_plan`, then `merge_kinds`, then `commit`, then `carry_draft`. It is a library. No route calls it until SEM-8b |
+| `routes/crm/change_log.py` `log_change`, `undoes`, `AREAS` and `VIAS` | The ONE log of a change of the CRM set-up (migration 341). Each area registers its Undo. The `area` CHECK is a shape and not a list, so a new area needs no migration. `test_crm_change_history.py` lists the plan routes and the question routes as PENDING (CRM-M1 PR 2) |
+| `routes/shell/waiting.py` `KINDS` and `PROVIDERS` | Four kinds: `decision`, `chat_ask`, `app_request` and `held_write`. No CRM kind. `waiting_allowed` is the one reader of `WAITING_ORGS`. A provider calls the read of its app, and writes no SQL |
+| `routes/shell/needs.py` `Provider` | `admin=True` tests `admin:members:read`, the org admin of `routes/shell/intent.py`. That is NOT the CRM admin. The field `permission` names one more grant |
+
+**The store (PROPOSED).** SEM-9 adds no table and no migration (§18.14.3).
+Each sub-kind keeps the store that it has today.
+
+- **A synonym proposal is the CRM-Q32-8 proposal of a `term` question.** It
+  stays in `proposals` of `zoho:questions`, as `{value, member, at}`. The
+  value is a field key from the options that the server built.
+- **A measure proposal goes into a new bucket `measure_proposals` of
+  `zoho:questions`.** Its key is a hash of the canonical item (`_digest` of
+  `crm_sync/questions.py`). Its value is `{item, members, at}`. `item` is a
+  WHOLE SEM-7 `measure` item. `members` is a list of `{member, at}`.
+- Two members who propose the same item make ONE proposal, with a count of 2.
+  The canonical JSON of the item is the key, so the merge needs no compare.
+- Only `routes/crm/questions.py` and `crm_sync/questions.py` read either
+  bucket. The scan fence of CRM-Q32-8 grows to name `measure_proposals`.
+
+Why two buckets and not one new kind `proposal`? A `term` pick is already a
+proposal. A second shape for it would give one fact two readers. A measure
+needs a structured payload, so it gets its own bucket, keyed by its content.
+
+**Who proposes, and the tool (PROPOSED, OWNER-CONFIRM for the budget).**
+
+- **A synonym.** Each member with CRM access picks an option on a `term`
+  card. This path exists (CRM-Q32-8). SEM-9 adds no tool for it.
+- **A measure.** Each member with CRM access calls `crm_propose_rule` with a
+  new value of `scope`: `measure`. `text` is the name of the measure, in the
+  words of the member.
+- **The shape comes from the run, not from the model.** The tool takes the
+  module, the aggregate, the fields and the fixed filters from the last
+  `crm_aggregate` call of the same run. A ContextVar of `crm_tools` holds
+  that shape, as `_RUN_ASKS` holds the asks of a run.
+- **The cost.** The params stay `scope` and `text`, so the pin of
+  `test_tool_schema_diet.py` does not change. Only the docstring changes. The
+  builder rewrites it to cost 0 net tokens against `main`.
+- **The budget.** The audit says that the Studio token budget has a margin of
+  about 12 tokens. This draft did not find that budget with `grep`. The
+  builder names the fence that measures it before the first edit. If the
+  docstring cannot cost 0 net, the builder stops, and the owner decides a
+  budget raise.
+- **One more flag.** `crm_propose_rule` loads only for an org on
+  `CRM_ANSWER_FIRST_ORGS`. So a measure proposal from chat needs that flag
+  too.
+
+Why extend `crm_propose_rule`? A new tool costs schema tokens in each turn of
+the `crm` family. A new param costs tokens too. One new value of `scope` costs
+nothing, when the builder also makes the docstring shorter.
+
+**The flow of a measure proposal (PROPOSED).**
+
+1. The tool runs `member_said` on `text`. It refuses words from a tool result
+   (§6.2 rule 2), as it does for a rule.
+2. With no `crm_aggregate` call in the run, the tool gives one plain line
+   back, and it posts nothing.
+3. The tool posts `{label, shape}` to a new route,
+   `POST /crm/questions/propose`, behind `_CHAT_GUARDS`.
+4. The route builds the item. The `key` comes from the label (`_SLUG`). The
+   `unit` comes from a closed map of the aggregate and the field type.
+5. The route runs `semantic_problem` and `semantic_ref_problem`. A problem
+   refuses with a plain line, and the route holds nothing.
+6. The route holds the item in tenant Redis for 24 hours, as
+   `/crm/rules/propose` does. The tool raises the confirm card of
+   `_rule_card`, with the keys `save` and `skip`.
+7. On `save`, `/reply` decides by the permission of the caller. The confirm of
+   a CRM admin is an accept (see "The accept"). The confirm of each other
+   member writes the proposal into `measure_proposals`.
+
+**The caps (PROPOSED).**
+
+| Cap | Value | Where the server checks it | What the member reads |
+|---|---|---|---|
+| Open proposals of one member in one org | 10, synonyms and measures together (§6.2 rule 5) | The write of a proposal, under the lock of `zoho:questions` | "You have 10 open suggestions. A CRM admin must answer one first." |
+| Open measure proposals of one org | 50 | The same write | "Your CRM admin has many suggestions open. Try again later." |
+| Proposals of one member in one day | 5 | A daily counter in tenant Redis, with a TTL of 25 hours | "You made 5 suggestions today. Try again tomorrow." |
+| The text of `crm_propose_rule` | `BODY_MAX` (300 characters) | The tool | The refusal of today |
+| The name of a measure | `LABEL_MAX` (80 characters), with no digit that `_has_literal` finds | `semantic_problem` | A plain line that names the cap |
+| Words from a tool result | Refused | `member_said` in the tool | `RULE_NOT_MEMBER` |
+| The same item from a second member | One proposal, with a count | The key of the bucket | `CHANGE_WAITS` (exists) |
+| An item equal to a measure in use | Refused | The route, against the approved version | "Your team already uses this measure." |
+| A synonym pick equal to the answer in use | Drops | `live_proposals` (exists) | `CHANGE_WAITS` (exists) |
+
+**The payloads (PROPOSED).**
+
+- **A synonym.** The `term` question holds the word and the module. The pick
+  holds a field key. `chat_choice` admits only an option that the server
+  built from the catalogue. The server stores no record value (§6.2 rule 3, D-SEM-5).
+- **A measure.** A full SEM-7 `measure` item. `semantic_problem` and
+  `semantic_ref_problem` run at the propose. `commit` runs them again at the
+  accept. So a field that left the catalogue between the two refuses the
+  accept with `stale_measure`. The server stores no total and no figure
+  (§3.3 point 5).
+- **One checker.** SEM-9 adds no item check of its own. Each check is a call
+  of the SEM-7 functions. A hermetic scan fences this (§14).
+
+**The accept (PROPOSED).**
+
+- **Who.** Only a CRM admin (`admin:access:manage`, D-SEM-4). A member who is
+  not an admin gets 403, and the route writes nothing.
+- **A measure.** A new route, `POST /crm/questions/proposals/{id}/accept`,
+  behind `_GUARDS`. It runs the steps of `verified_queries.save`:
+  `lock_plan`, `merge_kinds(others, [item], semantic=True)`, `commit` with
+  `based_on`, and `carry_draft`. Then it drops the proposal from the bucket,
+  in the same transaction.
+- **A synonym.** The admin answers the `term` question through `/answer`, or
+  through `/reply` as an admin. This path exists. `after_admin_write` clears
+  the proposals of the question.
+- **A replay.** The route reads the bucket under the plan lock. A proposal
+  that is gone gets 409 `proposal_gone`, and the route writes no version. So a
+  replay writes one version only.
+- **A decline.** `POST /crm/questions/proposals/{id}/decline` drops the
+  proposal. It writes no plan and no change-log row.
+- **The provenance.** The keys of a measure item are a closed set, so the
+  provenance cannot sit on the item. The plan row keeps `approved_by`. Each
+  accept writes one change-log row through `log_change`, in the transaction
+  of the accept.
+- **The change-log row.** The area is `measure` or `term`, two new keys of
+  `AREAS`. The actor is the admin. `after` holds the item or the field, with
+  `source` `chat_proposal` and `proposed_by` (at most 5 members). The row
+  time is the time of the accept.
+
+**The Undo (PROPOSED).**
+
+- **A measure.** `@change_log.undoes("measure")` restores the version
+  `based_on` through the code of `POST /crm/mapping/plans/{version}/restore`.
+  It refuses with 409 when the version in use is not the version of the
+  accept. The admin can still restore any version from the plan history.
+- **A synonym.** `@change_log.undoes("term")` writes the `before` of the row
+  back. `before` is the old `{field}`, or no entry. With no entry, the Undo
+  calls `runs.drop_cursor_entry`. It refuses with 409 when the entry changed
+  since the accept.
+- **Why the change log.** The change log is the one Undo seam of the CRM
+  set-up (CRM-M1). A `versions` list in the bucket `term_answers` would be a
+  second Undo store. The `area` CHECK of migration 341 is a shape, so SEM-9
+  needs no migration. R6 holds.
+
+**The visibility (PROPOSED).**
+
+- **The admin.** A proposal shows as plain text. It shows the word or the
+  measure name, the module, the fields by label, the count of members and
+  the newest time. A member shows by display name, or as "A member" (`A_MEMBER`). An
+  email never shows.
+- **Before the accept.** A proposal never reaches the model brief,
+  `org_facts` or the answer of another member. `facts.semantic_facts` reads
+  only the approved version, so this holds by construction, and a test fences
+  it.
+- **After the accept.** An answer that uses the measure names the measure and
+  its plan version (§5.2: the answer names what it used). So an accepted
+  measure never changes a total in silence.
+- **D-SEM-7.** A synonym and a measure carry no question text of a member.
+  The measure name is words that the member proposed and confirmed on a card.
+  So the proposal itself is the consent that D-SEM-7 asks for. No other
+  words of the chat reach the admin. A verified-query proposal carries
+  question words, so it waits for a consent step (open question 2).
+
+**The waiting kind (PROPOSED).**
+
+- **The kind.** One new kind, `crm_proposal`, in `routes/shell/waiting.py`.
+  Add it to `KINDS`. Its provider calls ONE read in
+  `routes/crm/questions.py`, `waiting_proposals(user)`. That read gives one
+  row for each open measure proposal, and one for each `term` question with
+  a live proposal.
+- **The registration.** One line in `PROVIDERS`:
+  `Provider("crm_proposal", ("crm",), _crm_proposals, frozenset({"crm_proposal"}), permission="admin:access:manage", needs=False)`.
+  Do NOT set `admin=True`. That tests the org admin, not the CRM admin.
+- **The gates.** `WAITING_ORGS` gates the seam. `CRM_QUESTIONS_ORGS` and
+  `SEMANTIC_MODEL_ORGS` gate the read. With a CRM flag off, the read raises
+  `SourceAbsent`, and the source reads `absent`. A member who is not a CRM
+  admin gets no row.
+- **The row.** The provider sets a fixed title: "Members suggested a change to how the CRM
+  reads its data". The proposal text stays in the CRM section. The waiter is
+  the count of members. The one act is a link "Review" to "Your answers"
+  (CRM-Q32). SEM-10 draws the proposals there.
+- **`waiting_on_me.md`.** WS-AP owns it (epic 1615). The SEM-9 PR adds one
+  row for `crm_proposal` to §3.2, and adds the kind to the wire table of
+  §7.3. A kind of the seam that §3.2 does not list is a defect. The PR body
+  asks the WS-AP owner to review the two lines. SEM-9 adds no row to §8,
+  because SEM-9 owns the slice.
+
+**The tier and the gates.** HIGH, because SEM-9 writes facts: a plan version
+and a term answer. AGENT-SAFE to build dark. OWNER-GATE: a flip of
+`SEMANTIC_MODEL_ORGS`, `CRM_QUESTIONS_ORGS` or `WAITING_ORGS` for a live org,
+and each proposal that reaches a real admin in production. The owner previews
+the flow after SEM-10 draws it.
+
+**Non-goals.**
+
+- SEM-8b, the route of `save()` and the chat offer of a verified question.
+- SEM-10, the UI of "Your answers".
+- Learning across orgs (D-SEM-9). A proposal never leaves its org. Only
+  counts cross tenants.
+- A verified-query proposal, and a join, an instruction or a field-meaning
+  proposal (§6.2).
+- Any stored value (D-SEM-5).
+- A change of the scopes `me` and `org` of `crm_propose_rule`.
+
+**Done when.** Each line is a test of §14.
+
+1. A member confirms a measure. Then the bucket holds one proposal, and the
+   plan version does not change.
+2. A second member confirms the same item. The bucket holds one proposal,
+   with a count of 2.
+3. An admin accepts it. One new plan version holds the item, and one
+   change-log row holds `source` `chat_proposal`.
+4. A replay of the accept gets 409 `proposal_gone`, and writes no second
+   version.
+5. A member who is not an admin calls accept. The route answers 403, and the
+   plan version does not change.
+6. Org B cannot read, accept or decline a proposal of org A.
+7. The route refuses the 11th open proposal of a member, and the 6th of one
+   day.
+8. The propose refuses an item that fails `semantic_problem` or
+   `semantic_ref_problem`. After a catalogue change, the accept refuses it too.
+9. The Undo of a measure restores the version before. The Undo of a synonym
+   restores the old field, or drops the entry.
+10. `GET /shell/waiting` lists `crm_proposal` for a CRM admin of a flag org.
+    It never lists it for a member, or for another org.
+11. Before the accept, `org_facts` serves no proposed measure.
+12. The pin of `crm_propose_rule` in `test_tool_schema_diet.py` does not
+    change.
+
+**The files.** Edits: `routes/crm/questions.py`, `crm_sync/questions.py`,
+`routes/shell/waiting.py`, `routes/crm/change_log.py` (the areas `measure`
+and `term`), `packages/acb_skills/acb_skills/crm_tools.py`, the CRM manifest
+`packages/acb_common/acb_common/app_manifests/crm.py` (the new routes), and
+`project-docs/specs/waiting_on_me.md`. Tests: `test_crm_questions_chat.py`,
+`test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` and
+`test_crm_change_history.py` (the new routes). No migration and no new flag.
+SEM-9 calls the functions of `mapping_plans.py` and `catalogue.py`, and edits
+neither file.
+
+**The dependencies.** SEM-7 (built, task 3737). `two_kinds` does not need
+SEM-8b. `three_kinds` and `admin_only_vq` need SEM-8b.
+
+**Open questions for the owner.** Each has a recommended default.
+
+1. **The scope.** `two_kinds`, `three_kinds` or `admin_only_vq`? Default:
+   `two_kinds`, which this section describes.
+2. **D-SEM-7 consent for a verified-query proposal.** Default: a later slice,
+   after SEM-8b, with a consent line on the confirm card.
+3. **The tool budget.** If the docstring of `crm_propose_rule` cannot cost 0
+   net tokens, does the owner raise the budget? Default: the builder stops
+   and reports the measured cost, and the owner decides.
+4. **The daily cap.** Default: 5 proposals for each member in one day.
+5. **The open caps.** Default: 10 for each member (§6.2 rule 5), and 50
+   measure proposals for each org.
+6. **The `waiting_on_me.md` rows in the SEM-9 PR.** Default: yes, and the
+   WS-AP owner reviews them.
+7. **The Waiting title.** Default: a fixed title. The proposal text shows
+   only in the CRM section.
+8. **The fourth flag.** A measure proposal from chat also needs
+   `CRM_ANSWER_FIRST_ORGS`, because the tool loads only there. Default:
+   accept this, and add no new flag.
+
 ---
 
 ## 11. The WS-CSY planner's ten rules, mapped
@@ -1143,6 +1444,16 @@ uv run pytest tests/unit/test_connection_profiler.py tests/unit/test_semantic_sh
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_connection_semantic_model_r8.py \
   tests/unit/test_studio_live_preview_r8.py tests/unit/test_studio_mcp_approvals_r8.py -q
+
+# SEM-9 (hermetic first, then the R8 suites on a real database)
+uv run pytest tests/unit/test_crm_questions_chat.py tests/unit/test_crm_plan_kinds_semantic.py \
+  tests/unit/test_crm_verified_queries.py tests/unit/test_tool_schema_diet.py \
+  tests/unit/test_crm_change_history.py tests/unit/test_crm_answer_first.py -q
+# A lane with a private database sets DATABASE_URL and TENANT_LADDER_DATABASE_URL to it
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_questions_chat_r8.py tests/unit/test_waiting_seam_r8.py \
+  tests/unit/test_crm_questions_r8.py tests/unit/test_crm_verified_queries_r8.py \
+  tests/unit/test_crm_answer_first_r8.py -q
 ```
 
 **The SEM-12 fences (R7).** Each test names the mutation that must turn it red.
@@ -1154,6 +1465,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py \
   leaves exactly one approved row, and archives the old one in the same
   transaction. Two concurrent drafts get two numbers. A draft with `approved_at`
   set fails the CHECK. A write with the flag off refuses with "off".
+  A body over 262144 bytes of jsonb text refuses with `too_big` and writes no row.
+  A body at the cap is written, and `octet_length(body::text)` equals the count.
+  **Mutation (SEM-12b):** count the compact JSON in `body_bytes`, and the over-cap case fails.
   **Mutations:** drop the partial unique index, and the second-approved case
   fails. The cross-tenant case has two guards: the lock select, and the select
   in the INSERT. Each guard covers the other. So a drop of one guard keeps the
@@ -1174,6 +1488,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py \
   fails. Drop one place from `_key_values`, and the case of that place fails. The
   synonym target is the exception, because `_targets` already admits only keys
   that pass the key rule.
+  Drop the two code-after-digit forms of `_MONEY`, and `450000 INR due` passes.
+  Drop the org filter of a registry statement, and the advisory source case fails.
+  FORCE RLS is the first layer, and that filter is a second layer.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the
@@ -1245,3 +1562,54 @@ names the mutation that must turn it red.
     `test_an_approved_shape_with_the_same_hash_saves_no_draft`.
     **Mutation:** put a count in the hash, or drop a field type from it, and
     a case fails.
+
+**The SEM-9 fences (R7).** Each rule of §10.6 names its test, and each test
+names the mutation that must turn it red.
+
+- `test_crm_questions_chat_r8.py` (extended, R8). One case for each line of
+  the done-when of §10.6:
+  - Org B cannot read, accept or decline a proposal of org A. **Mutation:**
+    take the org of the accept from the request, and the case fails.
+  - The confirm of a member who is not an admin stores a proposal, and the
+    plan version does not change. **Mutation:** send the member branch of
+    `/reply` to the accept, and the case fails.
+  - A member who is not an admin gets 403 on accept. **Mutation:** drop the
+    `_GUARDS` of the accept route, and the case fails.
+  - A replay of the accept writes one version only. **Mutation:** drop the
+    read of the bucket under the plan lock, and a second version appears.
+  - The caps: the 11th open proposal, the 6th proposal of one day, and the
+    51st measure proposal of an org. **Mutation:** drop one cap, and its
+    case fails.
+  - Two members propose the same item, and the bucket holds one proposal with
+    a count of 2. **Mutation:** key the bucket by the member, and the case
+    fails.
+  - The propose refuses an item that fails `semantic_problem`. After a field
+    leaves the catalogue, the accept gets 422 `stale_measure`.
+    **Mutation:** skip the check at the propose, or call `commit` without
+    `SEMANTIC_MODEL_ORGS`, and its case fails.
+  - The accept writes one change-log row with `source` `chat_proposal`. The
+    Undo of a measure restores the version before. The Undo of a synonym
+    restores the old field. **Mutation:** drop the `log_change` call, or drop
+    the Undo of one area, and its case fails.
+  - Before the accept, `org_facts` serves no proposed measure. **Mutation:**
+    merge the item into the plan at the propose, and the case fails.
+- `test_waiting_seam_r8.py` (extended, R8). The kind `crm_proposal` comes for
+  a CRM admin of an org on the three flags. A member who is not a CRM admin
+  gets no row. Another org gets no row. With a CRM flag off, the source reads
+  `absent`. **Mutations:** register the provider with `admin=True` in place
+  of `permission`, and the member case fails. Then an org admin who is not a
+  CRM admin gets a row. Drop the flag check of the read, and the `absent`
+  case fails.
+- `test_crm_questions_chat.py` (extended, hermetic). A source scan finds no
+  item check of a measure outside `crm_sync/catalogue.py`. The scan looks for
+  a second `def semantic_problem`, a second `_MEASURE_KEYS` and a second
+  `LABEL_MAX`. The scan of CRM-Q32-8 names `measure_proposals` too.
+  **Mutations:** copy `_measure_problem` into `routes/crm/questions.py`, and
+  the scan fails. Read `measure_proposals` in a third module, and the scan of
+  CRM-Q32-8 fails.
+- `test_tool_schema_diet.py` (unchanged). The pin of `crm_propose_rule` keeps
+  the params `scope` and `text`. **Mutation:** add a param to the tool, and
+  the pin fails.
+- `test_crm_change_history.py` (extended). It lists each new route as logged,
+  PENDING or out. **Mutation:** add a write route with no entry, and the
+  inventory case fails.

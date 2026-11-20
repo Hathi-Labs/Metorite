@@ -413,6 +413,38 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
     return None
 
 
+def _paste_raw_parts(
+    sent_text: str,
+    taken_steers: list[dict[str, Any]],
+    *,
+    client_text: bool,
+    followup: bool,
+    resume_launch: bool,
+) -> tuple[str, ...]:
+    """The raw member parts of ONE turn, for ``paste_frame.RAW_PARTS`` (HRD-14b).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The raw binding". In order, as
+    the turn holds them: the raw text of each steer that the ENGAGE seam
+    replays (``steer.format_replayed`` skips an empty one too), then the sent
+    words while ``message`` is still the client's text. That covers a typed
+    turn, a pill, a retry, an API call, a card answer and a Continue with no
+    restart marker. A Continue whose note the server wrote adds nothing for
+    the note, and a steer follow-up sends no words. RESUME-2a sends no words
+    either, but it keeps the steers that ENGAGE replays: the executor puts
+    its note BEFORE them (``executor._set_run_note``), so a pasted steer
+    still reaches the model and must get its frame. So the tuple is empty
+    only for a RESUME-2a or a server Continue note with no replayed steer. An
+    empty tuple is still a bound run. The words are the RAW sent words, never
+    ``typed_text`` (the member-sent variable of the profile)."""
+    parts = [str(s.get("text") or "") for s in taken_steers
+             if isinstance(s, dict) and str(s.get("text") or "").strip()]
+    if resume_launch:
+        return tuple(parts)
+    if client_text and not followup and str(sent_text or "").strip():
+        parts.append(str(sent_text))
+    return tuple(parts)
+
+
 async def _resume_note_for(
     thread_id: str, member: str, organization_id: str | None,
 ) -> str | None:
@@ -3154,10 +3186,14 @@ async def run_agent_stream_endpoint(
         _typed_mark = False  # and its row is not typed (D-PZ-37)
         _prompt = None if _prompt is None else _prompt.model_copy(
             update={"member_typed": False})
+    # HRD-14b: True while `message` is still the client's text. The raw
+    # binding of the paste frame (`_raw_parts` below) reads it.
+    _client_text = True
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
             req.payload["message"] = _note
+            _client_text = False
 
     # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
     # The chat asks for it once the run it steered has ended. It carries no
@@ -3654,7 +3690,15 @@ async def run_agent_stream_endpoint(
         count_member_steers,
         member_typed,
     )
+    from acb_skills.paste_frame import bind_raw_parts  # noqa: PLC0415
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
+
+    # HRD-14b: the raw member parts of this turn, for the paste frame. Read
+    # after the ENGAGE seam took the steers it replays. Never the member-sent variable of the profile.
+    _raw_parts = _paste_raw_parts(
+        _sent_words, _taken_steers, client_text=_client_text,
+        followup=_followup, resume_launch=_resume_launch is not None,
+    )
 
     # The detached run of this turn: the same arguments for a run that this
     # request reads (`run_detached` below) and for a continuation run that no
@@ -3680,8 +3724,11 @@ async def run_agent_stream_endpoint(
         # for a turn, so the run reads no typed or sent words.
         from orchestrator.stream_relay import ParkedStreamGone, start_detached
 
-        # A continuation has no app of the dock, so it binds no surface.
-        with member_typed(_typed, sent=_sent_text), surface_scope(None):
+        # A continuation has no app of the dock, so it binds no surface. Its
+        # raw parts hold only the steers that ENGAGE replayed, which follow
+        # the server's note: a bound run with no member words.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None), \
+                bind_raw_parts(_raw_parts):
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
@@ -3739,8 +3786,10 @@ async def run_agent_stream_endpoint(
                 # typed steers that ENGAGE took count now, and a tool result
                 # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
-                async for chunk in _serve_run(timing):
-                    yield chunk
+                # HRD-14b: the raw parts of the turn ride the same scope.
+                with bind_raw_parts(_raw_parts):
+                    async for chunk in _serve_run(timing):
+                        yield chunk
         finally:
             _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
                       **timing.fields())
@@ -4659,10 +4708,12 @@ async def reconnect_agent_stream(
     # a second person watches a run work; ephemeral threads (no session row)
     # stay reachable for the person who started them.
     actor = getattr(user, "email", None) or "default"
-    if not await _asyncio.to_thread(
-        _thread_owner_ok, thread_id, actor,
-        getattr(user, "organization_id", None),
-    ):
+    # One room read serves the guard and the replay rule (RESUME-2d). It is
+    # the read of `_thread_owner_ok`, through `_thread_room`.
+    room = await _asyncio.to_thread(
+        _thread_room, thread_id, actor, getattr(user, "organization_id", None),
+    )
+    if not _room_readable(room):
         raise HTTPException(status_code=403, detail="Not your conversation")
 
     _log.info(
@@ -4706,6 +4757,14 @@ async def reconnect_agent_stream(
         except Exception:  # noqa: BLE001 — never block a replay on this check
             _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
+        # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
+        # not see the whole run gets no event of it, only the end frame with
+        # `withheld: true`, so the chat does not attach to the run again.
+        if not await _replay_ok(thread_id, room):
+            _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
+            yield _reconnect_end(thread_id, withheld=True)
+            return
+
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between
         # replay end and subscribe start.
@@ -4734,7 +4793,7 @@ async def reconnect_agent_stream(
             # Agent finished — emit RUN_FINISHED so the frontend translator
             # (translateAndPersistStream) maps it to {"type":"done"} and the
             # UI exits the reconnecting state.
-            yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': thread_id, 'threadId': thread_id})}\n\n"
+            yield _reconnect_end(thread_id)
 
     return StreamingResponse(
         _event_generator(),
@@ -4745,6 +4804,72 @@ async def reconnect_agent_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
+    """The end frame of a reconnect: the frame when nothing is left to replay.
+
+    The frontend translator maps it to ``{"type": "done"}``, and the chat
+    leaves the reconnecting state. RESUME-2d: a reader who may not see the
+    run gets the same frame with ``withheld: true``. The chat then does not
+    attach to that run again while the server lists it
+    (``runStatus.ts``, ``attach_withheld``). The frame with no marker keeps
+    its bytes."""
+    import json as _json
+
+    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": thread_id, "threadId": thread_id}
+    if withheld:
+        evt["withheld"] = True
+    return f"data: {_json.dumps(evt)}\n\n"
+
+
+async def _replay_ok(thread_id: str, room: Any) -> bool:
+    """RESUME-2d (D-RES-10): True when the reader of *room* may replay the
+    whole run in the stream of *thread_id*. ``gateway.rooms.replay_allowed``
+    holds the rule.
+
+    *room* is the ``RoomAccess`` of the guard (:func:`_thread_room`), so the
+    route reads the room once. The actor and the org of that read come from
+    the session (``UserContext``), never from the request (R5). A solo chat,
+    and ``None`` (no rooms layer), replay with no stream read, so a solo
+    reconnect costs nothing more. Else the run start is the head of the
+    stream (``stream_relay.stream_head_ms``). A Redis fault reads as an
+    unknown start, and fails closed for a shared room."""
+    if room is None:
+        return True
+    from gateway.rooms import replay_allowed, room_is_solo
+    from orchestrator.stream_relay import stream_head_ms
+
+    if room_is_solo(room):
+        return True
+    try:
+        start = await stream_head_ms(thread_id)
+    except Exception:  # an unknown start fails closed
+        _log.warning("agent.reconnect_head_failed", thread_id=thread_id[:12])
+        start = None
+    return replay_allowed(room, start)
+
+
+def _thread_room(
+    thread_id: str, user_id: str, organization_id: str | None,
+) -> Any:
+    """The ``RoomAccess`` of *user_id* in *thread_id*, or None when the rooms
+    layer is absent (an import failure: the pre-138 world, where each thread
+    was solo). :func:`_thread_owner_ok` reads it, and the reconnect route
+    reads it once for the guard and the replay rule (RESUME-2d)."""
+    try:
+        from gateway.rooms import resolve_room_access
+        return resolve_room_access(
+            thread_id, user_id, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
+        return None
+
+
+def _room_readable(room: Any) -> bool:
+    """The answer of :func:`_thread_owner_ok` for a room of
+    :func:`_thread_room`: True for no rooms layer, else ``can_read``."""
+    return room is None or bool(room.can_read)
 
 
 def _thread_owner_ok(
@@ -4772,13 +4897,7 @@ def _thread_owner_ok(
     The name is kept because it is the guard two endpoints already name; what
     it means is now "may read this room".
     """
-    try:
-        from gateway.rooms import resolve_room_access
-        return resolve_room_access(
-            thread_id, user_id, organization_id=organization_id,
-        ).can_read
-    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
-        return True
+    return _room_readable(_thread_room(thread_id, user_id, organization_id))
 
 
 def _thread_control_ok(
