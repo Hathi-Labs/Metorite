@@ -1,13 +1,17 @@
 # API connections: any outside API that a company connects, usable in the chat
 
 **Status: ACTIVE (owner in chat, 2026-11-19, D228). The owner accepted
-D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`). API-1
-is built (task 3787): the template grammar, the validator, the one builder and
-the Zoho Books template. API-2 is built (task 3788): the connect flow of §2.11,
-dark.**
+D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`).**
 
-**No chat tool and no call route exists yet (API-3, API-4). API-1 declares
-the flag `API_CONNECTIONS_ORGS`, and it is empty.**
+- **API-1 is built (task 3787).** The template grammar, the validator, the
+  one builder and the Zoho Books template. It declares the flag
+  `API_CONNECTIONS_ORGS`, and the flag is empty.
+- **API-2 is built dark (task 3788).** The connect flow of Zoho Books (§2.11).
+- **API-3 is built dark (task 3789).** The four gateway routes of §2.3 in
+  `routes/api_connections.py`, behind `API_CONNECTIONS_ORGS`. The write route
+  refuses every call. §2.3a holds its decisions. No live call ran with a real
+  credential.
+- No chat tool calls a connection yet (API-4).
 
 Zoho Books is an owner priority and the first template. Verified
 against the code on 2026-11-18 (`origin/main` at `7ec269e82`). §8 records each
@@ -90,7 +94,7 @@ month?" The chat answers from Zoho Books and names the source.
 | 12 | For a GET, `build_call` sends each argument that is not a path key as a query key. `Route` refuses `query` on a GET row, so the door cannot close the query keys of a GET. A path value goes into the path with no encoding. API-1 changed both: `query_shapes` closes the query keys of an API op, and the one builder encodes each path value | `app_manifests/base.py` `build_call` (line 414 before API-1, line 550 after it), `Route._check_door` (line 154 before API-1, line 199 after it) |
 | 13 | Packs are a static registry. A pack cannot hold tools for one org | `acb_skills/tool_packs.py` `PACKS`, `Pack` |
 | 14 | The Studio grammar already has `integration:<name>.<name>` and `mcp:<server>.<tool>`. `action_tool` answers None for both today | `acb_common/studio_manifest.py`. `acb_skills/skill_packs.py` `action_tool` |
-| 15 | The grant of a service is `integrations:use:<service>`. The admin, manager and member roles each hold `integrations:use:*`, so that grant alone keeps no member out. Only the admin role holds `integrations:manage` | `acb_auth/permissions.py`. Migrations 131, 179 and 200 |
+| 15 | The grant of a service is `integrations:use:<service>`. The admin, manager and member roles each hold `integrations:use:*`, so that grant alone keeps no member out. Only the admin role holds `integrations:manage`. The member role does not hold `feature:integrations` | `acb_auth/permissions.py`. Migrations 131, 179 and 200 |
 | 16 | The Studio live read limits calls: 10 for each member and 60 for each org, each minute. Over the limit is a 429 with `Retry-After` | `connections/mcp_tools.py` `MEMBER_CALLS_PER_WINDOW`, `ORG_CALLS_PER_WINDOW`, `_spend` |
 
 ## 2. The shape
@@ -226,9 +230,116 @@ other tools on that API.
 
 **The gateway total.** A template row can name a number field to **total**.
 `api_read` with `total` set makes the gateway read each page of that list op,
-up to 20 pages. It answers the sum, the row count, and whether it stopped at
+up to 10 pages (§2.3a, decision d). It answers the sum, the row count, and whether it stopped at
 the page limit. Each page spends one call from the limiter. The model never
 adds numbers itself (`semantic_model.md`).
+
+### 2.3a API-3: the decisions where §2.3 is silent
+
+The audit of API-3 (task 3789) found ten places where §2.3 says nothing. The
+build follows these decisions.
+
+- **(a) The grant.** The gateway asks for `integrations:use:api-<name>`. When
+  `provider_meta.grant` of the row is `admin`, it also asks for
+  `integrations:manage`. A grant value that it does not know counts as
+  `admin`. A refused name, a missing grant and an unknown name give the same
+  404 "Not Found". They take one code path, and each one reads the row, so
+  the time does not differ.
+- **(b) The name.** `{name}` is the template id, such as `zoho_books`. An org
+  has one row for each provider today.
+- **(c) The daily budget.** It is half of `Limits.per_day`. When the template
+  names no daily cap, the budget is `DEFAULT_DAILY_BUDGET`, 500 calls a day
+  for each connection. That is half of a careful guess of 1000. The Zoho
+  Books template names `per_day=1000`, so its budget is 500. ⚠️ Nobody has
+  confirmed the real daily cap of Zoho Books against Zoho's own page. It
+  depends on the plan. This is an owner check before the flag flip. The counter is a `tenant_redis` key of the connection
+  and the UTC day. One MULTI block does the INCR and an EXPIREAT at the end of
+  that day, so no key lives without a time limit. When Redis does not answer,
+  the call fails closed with 503.
+- **(d) The total.** The gateway reads the pages of the list op, up to
+  `MAX_TOTAL_PAGES` (10), the limiter and the daily budget. It adds only plain
+  numbers: a JSON number, or a text of ASCII digits with an optional minus
+  and an optional decimal part. No `NaN`, no `Infinity`, no exponent and no
+  comma. `acb_common` holds no reusable rule of CRM-Q34-11, so the gateway
+  uses `Decimal`. The answer names `total`, `pages_read`, `records`,
+  `numbers`, `not_numbers` and `incomplete`. When a limit stops the loop,
+  `incomplete` is true, and `total` is null. The sum so far is in
+  `partial_total`. When the total mark names a currency field and the pages
+  hold more than one currency, the gateway refuses with the list.
+  - A number with an exponent past `MAX_EXPONENT` (40), either way, counts
+    as `not_numbers`. It never raises.
+  - The gateway adds in its own `decimal` context of 80 digits. The context
+    traps a rounding, an overflow and an invalid operation. A sum that
+    cannot stay exact is refused with 422 `not_exact`. A sum never rounds in
+    silence.
+  - A figure longer than `MAX_FIGURE` (100) characters is refused as
+    `not_exact`. The answer of a total also keeps the answer cap of the op.
+- **(e) The caller.** The org and the member come from the session that
+  `resolve_identity` resolves. The gateway reads no org from the body, the
+  query or a header. A caller with no member or no org gets 404. A member of
+  another org reads in the tenant session of that org, so it never sees the
+  row of this org.
+- **(f) A cut answer.** The guard marks an answer that its 64 KiB cap cut
+  (`Answer.cut`). The guard never reads past its cap, so an answer of exactly 64 KiB counts as cut. The gateway refuses it with the name of the page argument.
+- **(g) The host.** `provider_meta.api_domain` must be a host of the template.
+  For a template with a client, it must also be a host of `CLIENT_HOSTS`. Each
+  call goes through `request_https`: https on 443 only. `send` refuses a 3xx.
+- **(h) Find and describe.** Each one checks the flag, the grant and the row,
+  and spends one call of the limiter. The answer is short: the op, the class
+  and one line. Describe adds the arguments and their shapes. While writes
+  are off, find and describe show class A ops only. `read` and `write` give
+  a hidden op the same 404 `operation_not_found` as an unknown op. So a
+  member cannot list the write ops. `write` spends one call of the limiter
+  before it answers.
+- **(i) The refresh.** The Zoho client of the CRM refreshes the token. API-2
+  reads that client through `routes/crm/connection.py::zoho_oauth_config`,
+  and API-3 reads it in the same place. The gateway makes no second reader of
+  its settings.
+- **(j) Error text.** Each error text passes the credential remover, and that
+  includes the reason of `OutboundRefused`. A transport fault gives only the
+  name of its class.
+
+**The credential remover.** It removes the access token, the refresh token
+and the client secret from each text of an answer and of an error.
+
+- Each character of a value matches as itself or percent-encoded, in upper
+  or lower case hex. So a value with each byte encoded, or only some, goes.
+- The `+` form, the JSON-escaped form and the form after the sign-in scheme
+  go too.
+- The match runs on a copy with no format character (category Cf, the
+  variation selectors). So a zero-width joiner inside a token does not hide
+  it. The span goes from the original text.
+- The first 16 and the last 16 characters of each value go too, so a
+  partial echo goes.
+- `MIN_SECRET` is 8. The gateway refuses with 503 `credential_unusable` a
+  row whose access token, refresh token or client secret is shorter, or is
+  not plain ASCII. An empty refresh token or client secret is absent. So a
+  value of one letter never removes each such letter of an answer.
+- A secret field of the template goes also when a hidden character hides
+  its key.
+
+**The flag off is 404 for any input.** `read` and `write` read the body
+after the flag dependency. So a dark route answers 404 for a body that is
+not JSON, an empty body or another content type. With the flag on, a bad
+body is 422 `bad_body`, and the error names no input.
+
+**The query shapes are open words on purpose.** The closed shape grammar of
+API-1 has no alternation. So `status` and `sort_column` take a short word of
+lower case letters and `_`, and Zoho refuses a word that it does not know.
+`per_page` takes 0 to 49 by its shape, and `template.build` refuses 0.
+
+**More decisions of the build.**
+
+- **The routes do not ask for `feature:integrations`.** The member role does
+  not hold it (§1, row 15), and a member reads through the chat.
+- **The approved ops.** `provider_meta.ops_hash` must equal the hash of the
+  template now. A changed template answers 409 `operations_changed`, until an
+  admin connects again (§2.2).
+- **The write route.** It runs steps 1 to 3, and then it refuses each call
+  with 403 `writes_off`. No setting, flag or column opens it in API-3.
+- **Find and describe spend no daily budget.** They make no outbound call.
+- **The answer of a read.** It is the JSON of the API, after the strips of
+  step 8 and step 9. The gateway refuses an answer that is not JSON.
 
 ### 2.4 The chat side
 
@@ -612,14 +723,36 @@ Each rung ends in a demo on production (D211).
 **Rung 1 slices.** Each ships dark behind `API_CONNECTIONS_ORGS`. No slice builds
 until the owner answers D-API-2, D-API-4 and D-API-9.
 
-| Id | What | Tier |
-|---|---|---|
-| API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD |
-| API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant. Built (§2.11) | HIGH (identity, a credential) |
-| API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) |
-| API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) |
-| API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD |
-| API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW |
+| Id | What | Tier | Label |
+|---|---|---|---|
+| API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD | AGENT-SAFE. Built |
+| API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant. §2.11 | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
+| API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE. Built dark |
+| API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) | AGENT-SAFE to build dark |
+| API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD | AGENT-SAFE |
+| API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW | AGENT-SAFE |
+
+**The OWNER-GATE acts of this spec.** An agent builds each slice dark and
+stops before these acts. The owner does them, or grants them by date in
+`.claude/OWNER_GRANTS.md`.
+
+- A real write through an API (D-API-4 opens writes, at API-9).
+- A call or a consent with a live credential of a real org.
+- The flip of `API_CONNECTIONS_ORGS` to a value that is not empty
+  (`enforcement-flip`).
+
+### 4.1 Verify API-3
+
+Run each command alone, with the private Postgres of the box up.
+
+```bash
+uv run python -m pytest tests/unit/test_api_call_egress.py tests/unit/test_api_call_limits.py tests/unit/test_api_no_env_credentials.py -q -p no:xdist
+DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5451/acb_tenant TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5451/acb_tenant uv run python -m pytest tests/unit/test_api_connections_r8.py -q -p no:xdist
+uv run python -m pytest tests/unit/test_api_templates.py tests/unit/test_api_connect_zoho_books.py tests/unit/test_studio_mcp_tools.py tests/unit/test_mcp_oauth_guard.py -q -p no:xdist
+uv run ruff check apps/services/gateway/gateway/routes/api_connections.py apps/services/gateway/gateway/connections/api
+```
+
+The R8 suite skips with no `TENANT_LADDER_DATABASE_URL`. A skip is not a pass.
 
 ## 5. Fences (R7)
 

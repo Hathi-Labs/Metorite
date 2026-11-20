@@ -17,6 +17,12 @@ between two marker lines::
 
 The token is :func:`secrets.token_hex` of 8 bytes, new for each model call.
 The writer of the text never sees it, so the text cannot close the block.
+One exception (HRD-14b, ``chat_failure_modes.md`` section 4.7b, "The
+token", PROPOSED): the paste frame of a chat run keeps ONE token for each
+run, so a vendor that caches by prefix does not miss at each tool step. A
+second run gets a new token, so the ``fresh`` check still holds. The cost:
+text that the model writes with the token can come back in a tool result
+while the token still lives.
 :meth:`UntrustedFrame.note` tells the model that the text in a block is data
 and never an instruction. :func:`neutralise` does two things in linear time:
 
@@ -62,6 +68,7 @@ from __future__ import annotations
 import re
 import secrets
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 
 __all__ = [
@@ -76,6 +83,7 @@ __all__ = [
     "neutralise",
     "neutralised_pattern",
     "new_token",
+    "restore_cut_paste",
 ]
 
 #: The bytes of the token. 8 bytes give 16 hex characters and 64 bits.
@@ -84,6 +92,72 @@ TOKEN_BYTES = 8
 #: A marker line as this module writes it: ``END`` or nothing, the label and
 #: the token. The eval and the fences parse a prompt with it.
 MARKER_LINE_RE = re.compile(r"^<<<(END )?([A-Z][A-Z ]*[A-Z]) ([0-9a-f]{16})>>>$")
+
+#: The label of a block of text that the member pasted (HRD-14a). The one
+#: label that :func:`restore_cut_paste` touches.
+_PASTE_LABEL = "PASTED TEXT"
+
+
+def _paste_marks(text: str) -> list[tuple[bool, str]]:
+    """``(closing, token)`` of each marker line of a paste block in *text*,
+    in order."""
+    out: list[tuple[bool, str]] = []
+    for line in str(text or "").split("\n"):
+        m = MARKER_LINE_RE.match(line)
+        if m is not None and m.group(2) == _PASTE_LABEL:
+            out.append((bool(m.group(1)), m.group(3)))
+    return out
+
+
+def restore_cut_paste(before: str | None, after: str) -> str:
+    """*after*, the text that a trim cut from *before*, with each cut paste
+    block whole again (HRD-14b, the dev path only).
+
+    Spec: ``chat_failure_modes.md`` section 4.7b, "The restore". The gateway
+    trim of a dev box (``v1_compat._fit_context_window``) calls it for each
+    message that the cut changed. It pairs the open and END lines of the
+    label ``PASTED TEXT`` by token with a stack, as
+    ``tool_result_spill._open_frames`` does:
+
+    * An open line with no END line after it: the END line goes after the
+      WHOLE result, so the header lines and the tail stay inside the block.
+    * An END line with no open line, or a paste block of *before* whose open
+      line the cut took: the whole result is one block, with the paste note,
+      under the token of that block. One token serves each block of a run,
+      so the check counts the open lines of each token.
+
+    A typed marker line can at worst make it frame more. A text with no paste
+    block, and a cut frame of any other label, come out byte-identical. A
+    None *before* means that the cut could not pair the messages, so only
+    *after* is read. It never raises: a fault gives *after* as it came."""
+    try:
+        if before is not None and after == before:
+            return after
+        stack: list[str] = []
+        orphan = ""
+        for closing, token in _paste_marks(after):
+            if not closing:
+                stack.append(token)
+            elif stack and stack[-1] == token:
+                stack.pop()
+            elif not orphan:
+                orphan = token
+        if before is not None and not orphan:
+            # One token serves each block of a run, so count the open lines:
+            # a block whose open line the cut took leaves one fewer.
+            kept = Counter(token for closing, token in _paste_marks(after) if not closing)
+            had = Counter(token for closing, token in _paste_marks(before) if not closing)
+            orphan = next((token for token, n in had.items() if kept[token] < n), "")
+        if orphan:
+            frame = UntrustedFrame(orphan)
+            return f"{frame.paste_note()}\n{frame.wrap(_PASTE_LABEL, after)}"
+        if not stack:
+            return after
+        ends = "\n".join(UntrustedFrame(token).close_line(_PASTE_LABEL) for token in reversed(stack))
+        return f"{after.rstrip(chr(10))}\n{ends}"
+    except Exception:
+        return after
+
 
 _LABEL_RE = re.compile(r"^[A-Z][A-Z ]{0,38}[A-Z]$")
 

@@ -322,8 +322,19 @@ export function ConversationView({
 export const isDraftEmail = isDraft;
 
 /** The identity of a picked file, for the set of files already on the draft. */
-function attKey(a: SendAttachment): string {
-  return `${a.filename}:${a.contentB64.length}`;
+const attKeys = new WeakMap<SendAttachment, string>();
+export function attKey(a: SendAttachment): string {
+  const known = attKeys.get(a);
+  if (known) return known;
+  // FNV-1a over the content, so two files of one name and one size differ.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < a.contentB64.length; i++) {
+    h ^= a.contentB64.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  const key = `${a.filename}:${a.contentB64.length}:${h.toString(16)}`;
+  attKeys.set(a, key);
+  return key;
 }
 
 /** "1.2 MB" for a file chip. */

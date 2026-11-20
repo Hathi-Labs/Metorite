@@ -742,6 +742,17 @@ class TenantPipeline:
         self._pipe.expire(TenantRedis._raw(k), seconds)
         return self
 
+    def incr(self, k: TenantKey, amount: int = 1) -> TenantPipeline:
+        self._pipe.incr(TenantRedis._raw(k), amount)
+        return self
+
+    def expireat(self, k: TenantKey, when: int) -> TenantPipeline:
+        """Set the key to end at the Unix time *when*. A counter of a fixed
+        period (API-3, the daily budget) sets one end each time, in the
+        same MULTI block as its INCR, so no key lives without an end."""
+        self._pipe.expireat(TenantRedis._raw(k), when)
+        return self
+
     async def execute(self) -> Any:
         return await self._pipe.execute()
 
