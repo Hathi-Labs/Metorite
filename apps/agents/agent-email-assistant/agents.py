@@ -8378,8 +8378,8 @@ def _thread_changed_text(subject: Any, newer: dict[str, Any], *, in_drafts: bool
     :func:`_changed_value` (a « » fence, one line, capped). *in_drafts* says
     that the card's draft stays in Drafts. A ``send_email`` card saved none."""
     reply = f"The reply to {_changed_value(subject)}"
-    kept = (f"{reply} stays in Drafts." if in_drafts
-            else f"{reply} was not saved in Drafts.")
+    kept = (f"{reply} stays in Drafts. Edits made on the card were not saved."
+            if in_drafts else f"{reply} was not saved in Drafts.")
     lines = [card_outcome_text(CARD_CHANGED_SINCE, f"Nothing was sent. {kept}")]
     who, when = newer.get("from"), newer.get("received_at")
     if who or when:

@@ -634,7 +634,7 @@ async def reply_card(
     # draft id never reached the record.
     card_id = await _write_reply_record(
         user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held,
-        draft_pending=bool(body.strip()))
+        draft_pending=bool(body.strip()), thread_head=head.get("thread_head", ""))
     # With no record, the card writes no draft (task 1526, fix round 1): the
     # act could not check that the draft left Drafts, and a send from the
     # Email app plus a Send on the card would mail each person twice.
@@ -1194,6 +1194,7 @@ def _reply_record_key(card_id: str) -> Any:
 async def _write_reply_record(
     user: UserContext, message_id: str, added: list[str], *,
     bcc: Sequence[str] = (), held: bool = False, draft_pending: bool = False,
+    thread_head: str = "",
 ) -> str:
     """Record the added people of one card under a card id that this server
     mints. Returns the id, or "" on a fault. With "" the card adds nobody
@@ -1215,6 +1216,10 @@ async def _write_reply_record(
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
            "added": list(added), "bcc": list(bcc), "held": bool(held),
            "made_at": time.time(), "draft_pending": bool(draft_pending)}
+    if thread_head:
+        # HRD-10d-3: the head of the thread that the card showed. Only a card
+        # that asked for it holds it, so the record of before is unchanged.
+        rec["thread_head"] = thread_head
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -1276,6 +1281,8 @@ class _CardRecord(NamedTuple):
     #: The held flag of the record, or None when no record was read. Only a
     #: record that says False sends HTML (task 3605).
     held: bool | None = None
+    #: HRD-10d-3: the head of the thread that the card showed, or "".
+    thread_head: str = ""
 
 
 async def _take_reply_record(
@@ -1320,6 +1327,7 @@ async def _take_reply_record(
         float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
         rec.get("draft_pending") is True,
         rec.get("held") is not False,
+        str(rec.get("thread_head") or "")[:64],
     )
 
 
@@ -1524,7 +1532,11 @@ async def reply_card_act(
                 account_id=mail.account_id, to=to, cc=cc or None, bcc=bcc or None,
                 subject=subject, body_text=body if html_ok else mail_text(body),
                 body_markdown=html_ok, reply_to_message_id=req.message_id,
-                expect_thread=req.expect_thread,
+                # HRD-10d-3: the record of THIS card wins. A request that
+                # leaves the field out cannot skip the check, and a request
+                # cannot name another head. Only a card with no head in its
+                # record takes the field of the request.
+                expect_thread=card.thread_head or req.expect_thread,
             ),
             background, user,
         )

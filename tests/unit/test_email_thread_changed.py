@@ -52,6 +52,16 @@ Mutations (R7). Each one turns the named tests red (checked 2026-11-20):
 * M7. ``send.THREAD_HEAD_SQL``: drop the account, the thread or the owner
   predicate. The R8 ``test_another_thread_and_another_mailbox_do_not_count``
   and ``test_the_head_is_the_members_own_and_this_tenants``.
+* M8. ``reply_card.reply_card_act``: take ``req.expect_thread`` before the
+  head of the record. ``test_the_act_takes_the_head_of_its_record`` and
+  ``test_the_request_cannot_name_another_head``.
+* M9. ``reply_card._write_reply_record``: keep no head.
+  ``test_the_act_takes_the_head_of_its_record``.
+* M10. ``agents._thread_changed_text``: drop the sentence of the lost edits.
+  ``test_only_the_reply_card_names_the_lost_edits``.
+
+A documented limit, not a goal: on IMAP each message is its own thread
+(``test_imap_threads_each_message_alone_so_no_refusal``).
 """
 
 from __future__ import annotations
@@ -367,9 +377,20 @@ async def test_on_a_409_of_the_act_says_the_draft_stays(gw: _Gw, monkeypatch) ->
     out = await _bound(agents.compose_reply(MAIL, BOX))
     assert out.startswith(at.card_outcome_text(
         at.CARD_CHANGED_SINCE,
-        "Nothing was sent. The reply to «Re: Quote» stays in Drafts."))
+        "Nothing was sent. The reply to «Re: Quote» stays in Drafts. Edits made on "
+        "the card were not saved."))
     assert f"from «ravi@contoso.test», at «{WHEN}»." in out
     assert not out.startswith("Sent")
+
+
+def test_only_the_reply_card_names_the_lost_edits() -> None:
+    """The draft in Drafts holds the text of the card as the card drew it,
+    not the edits of the member. A ``send_email`` card has no edits."""
+    newer = {"from": "a@b.test", "received_at": WHEN}
+    card = agents._thread_changed_text("Re: Quote", newer, in_drafts=True)
+    plain = agents._thread_changed_text("Re: Quote", newer, in_drafts=False)
+    assert "Edits made on the card were not saved." in card
+    assert "Edits made on the card" not in plain
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -517,15 +538,63 @@ async def test_a_new_mail_with_a_marker_reads_no_head(route) -> None:
     assert "head" not in route.events
 
 
+async def _act_through_the_record(monkeypatch, *, record: str, request: str) -> Any:
+    """Make the record of a card with *record* as its head, then act with
+    *request* as ``expect_thread`` (or no field). Returns the marker that
+    the act gave to the send."""
+    from tests.unit import test_reply_card_left_drafts as ld
+
+    w = ld._World(monkeypatch)
+    w.in_drafts = {ld.DRAFT}
+    card_id = await rc._write_reply_record(ld.USER, ld.MAIL, [], thread_head=record)
+    assert card_id
+    await rc._note_card_draft(ld.USER, card_id, ld.MAIL, ld.DRAFT)
+    text = ld._answer("send")
+    assert await rcard.record_reply_answer(ld.ORG, card_id, ld.MEMBER, text, ld.THREAD)
+    req = rc.ReplyCardActRequest(
+        message_id=ld.MAIL, card_request_id=card_id, card_thread_id=ld.THREAD,
+        answer=text, **({"expect_thread": request} if request else {}))
+    await rc.reply_card_act(req, types.SimpleNamespace(), ld.USER)
+    [sent] = w.sent
+    return sent.expect_thread
+
+
+async def test_the_act_takes_the_head_of_its_record(monkeypatch) -> None:
+    """A request that leaves the field out cannot skip the check."""
+    got = await _act_through_the_record(monkeypatch, record=HEAD, request="")
+    assert got == HEAD
+
+
+async def test_the_request_cannot_name_another_head(monkeypatch) -> None:
+    got = await _act_through_the_record(monkeypatch, record=HEAD, request=NEWER)
+    assert got == HEAD
+
+
+async def test_a_record_with_no_head_keeps_the_request_and_the_old_record(monkeypatch) -> None:
+    """Flag off: the card asked for no head, so its record has no
+    ``thread_head`` key, and an act with no field sends no marker."""
+    got = await _act_through_the_record(monkeypatch, record="", request="")
+    assert got is None
+    card_id = await rc._write_reply_record(
+        types.SimpleNamespace(email=MEMBER, organization_id=ORG), MAIL, [])
+    from acb_common.tenant_redis import organization_scope
+
+    store = rcard._tenant_redis()  # the fake store of the World
+
+    with organization_scope(ORG):
+        rec = json.loads(await store.get(rc._reply_record_key(card_id)))
+    assert "thread_head" not in rec
+
+
 def test_the_act_passes_the_marker_to_the_send() -> None:
     """The reply card act sends through ``send_email`` with the marker of its
     request. A source fence beside the behaviour above."""
     import inspect
 
     src = inspect.getsource(rc.reply_card_act)
-    assert "expect_thread=req.expect_thread" in src
+    assert "expect_thread=card.thread_head or req.expect_thread" in src
     # Only the Send branch passes it: a Save sends nothing.
-    assert src.index("expect_thread=req.expect_thread") < src.index("_save_draft(")
+    assert src.index("expect_thread=card.thread_head") < src.index("_save_draft(")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -775,6 +844,24 @@ class TestTheReplyOnARealDatabase:
         [body] = _send_bodies(sent)
         assert "expect_thread" not in body
         assert len(m.sends) == 1
+
+    async def test_imap_threads_each_message_alone_so_no_refusal(self, box):
+        """A documented limit, not a goal. The IMAP parser stores the
+        Message-ID of each message as its thread id, so a newer message of
+        the same talk has another thread id, and the check does not see it.
+        Gmail and Outlook keep one thread id for the talk."""
+        m = box
+        with m.p.admin_engine.begin() as c:
+            _msg(c, m.aid, m.p.org_a, thread="<newer-message-id@imap.test>",
+                 folder="inbox", frm=RAVI, when=m.now, tag="imap-newer")
+        app_dsn = m.p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(m.p.org_a)
+        try:
+            async with tenant_engine_scope(app_dsn), rc._tenant_session() as db:
+                await send.refuse_changed_thread(
+                    db, m.owner, m.aid, m.thread, None, m.mail)
+        finally:
+            release_tenant(token)
 
     async def test_the_head_is_the_members_own_and_this_tenants(self, box):
         """``GET /email/thread-head`` as the member gives the mail. As another
