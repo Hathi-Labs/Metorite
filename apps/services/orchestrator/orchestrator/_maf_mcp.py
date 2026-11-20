@@ -1040,6 +1040,22 @@ def _refused_status(codes: list[int]) -> int | None:
     return None
 
 
+def _note_unreachable(name: str, host: str, exc: BaseException, codes: list[int],
+                      failures: dict[str, str] | None) -> None:
+    """Log ``mcp.unreachable`` for a connect that failed, and set its CSY-5 reason.
+
+    The reason is ``http_<status>`` when an answer refused the connect, else
+    :func:`_reason`. A 401 or 403 is a sign-in that the server refused, such
+    as a key server that now wants an OAuth consent. Its CSY-5 reason is
+    ``reconnect``, so the chat says that an admin must reconnect it, and not
+    that it did not answer."""
+    status = _refused_status(codes) or _http_status(exc)
+    _log.warning("mcp.unreachable", name=name, host=host,
+                 reason=f"http_{status}" if status else _reason(exc))
+    if failures is not None:
+        failures[name] = "reconnect" if status in (401, 403) else "unreachable"
+
+
 async def _report_unauthorized(
     on_unauthorized: Callable[[McpServer], Awaitable[Any]], server: McpServer,
 ) -> None:
@@ -1172,14 +1188,7 @@ async def attach_mcp_tools(
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
-            status = _refused_status(codes) or _http_status(exc)
-            _log.warning("mcp.unreachable", name=server.name, host=host,
-                         reason=f"http_{status}" if status else _reason(exc))
-            if failures is not None:
-                # A 401 or 403 is a sign-in that the server refused, such as a
-                # key server that now wants an OAuth consent. The chat then says
-                # that an admin must reconnect it, not that it did not answer.
-                failures[server.name] = "reconnect" if status in (401, 403) else "unreachable"
+            _note_unreachable(server.name, host, exc, codes, failures)
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
             continue

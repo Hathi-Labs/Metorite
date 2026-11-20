@@ -21,9 +21,9 @@ import pytest
 
 pytest.importorskip("orchestrator._maf_mcp")
 
-from orchestrator import _maf_mcp  # noqa: E402
+from orchestrator import _maf_mcp
 
-SECRET_URL = "https://books.example/mcp/SENTINEL-KEY-645c42ba/message"
+SECRET_URL = "https://books.example/mcp/SENTINEL-KEY-0000/message"
 
 
 def _status_error(code: int) -> httpx.HTTPStatusError:
