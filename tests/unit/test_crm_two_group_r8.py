@@ -118,7 +118,8 @@ def invoices(ns, monkeypatch):
     a, b = ns.org_a, ns.org_b
     # Org A also mirrors Works, the module of item 9.
     _mirror_org(ns, a, [_module("Invoices"), _module("Works"), _module("Places"),
-                        _module("Twins"), _module("Halves")])
+                        _module("Twins"), _module("Halves"), _module("Bits"),
+                        _module("Bavg")])
     _mirror_org(ns, b, [_module("Invoices")])
     for org in (a, b):
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
@@ -835,3 +836,160 @@ async def test_filter_words_count_the_same_on_every_page(invoices, app_engine) -
                          "/crm/modules/Invoices/records?" + urlencode({**words, "page_size": 1}))
     assert listed.status_code == 200, listed.text
     assert listed.json()["total"] == first["records"]
+
+
+# ── 15. Off the list, page 1 keeps the order of before (verifier round 6) ───
+
+#: The answers of the base code, recorded with origin/main's aggregate.py,
+#: field_sql.py, core.py and crm_tools.py put in place (9bb67296a,
+#: 2026-11-20). Name → the response text.
+_BASE_CUT: dict[str, str] = {}
+
+
+def _bits(p: Any, org: str, module: str, rows: list[tuple[str, str, str, str]]) -> None:
+    """``(ext_id, site id, site name, Amount text)`` rows of *module*."""
+    _defs(p, org, f"module:{module}", _HALF_DEFS)
+    with p.admin_engine.begin() as c:
+        for ext, site, name, amt in rows:
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), :m, 'zoho', :e, :e, "
+                "CAST(:f AS jsonb))"),
+                {"o": org, "m": module, "e": ext,
+                 "f": f'{{"Site": {{"id": "{site}", "name": "{name}"}}, "Amt": {amt}}}'})
+
+
+@pytest.fixture
+def bits(invoices):
+    """Bits: 49 sites of 50, "Aaa" of 31.005 and "Bbb" of 31.01. Bavg: the
+    avg of "Aaa" is 31.005 exactly (31.0 and 31.01), "Bbb" 31.01, "Ccc" 20."""
+    a = invoices.org_a
+    _bits(invoices, a, "Bits", [
+        *((f"b{n}", f"s{n:02d}", f"B{n:02d}", "50") for n in range(49)),
+        ("a1", "ka", "Aaa", "31.005"), ("b1", "kb", "Bbb", "31.01")])
+    _bits(invoices, a, "Bavg", [
+        ("a1", "ka", "Aaa", "31.0"), ("a2", "ka", "Aaa", "31.01"),
+        ("b1", "kb", "Bbb", "31.01"), ("c1", "kc", "Ccc", "20")])
+    return invoices
+
+
+async def test_off_the_list_page_1_keeps_the_cut_of_before(bits, app_engine, monkeypatch) -> None:
+    """Off the list the answer of one page is the answer of the base code,
+    byte for byte: the larger "Bbb" (31.01) stays in the 50, and the
+    smaller "Aaa" (shown 31.0) folds into ``other``. An avg is in value
+    order. The exact cut of the list must not reach this answer."""
+    a = bits.org_a
+    _set(monkeypatch, "")
+    total = await _get(bits, a, entity="module:Bits", measure="sum", field="Amt",
+                       group_field="Site")
+    avg = await _get(bits, a, entity="module:Bavg", measure="avg", field="Amt",
+                     group_field="Site")
+    print("BASECUT", json.dumps({"sum": total.text, "avg": avg.text}))
+    body = total.json()
+    assert body["groups"][-1]["label"] == "Bbb" and body["other"] == 31.0
+    values = [g["value"] for g in avg.json()["groups"]]
+    assert values == sorted(values, reverse=True) == [31.01, 31.0, 20.0]
+    assert {"sum": total.text, "avg": avg.text} == {k: _BASE_CUT[k] for k in ("sum", "avg")}
+
+
+async def test_on_the_list_the_cut_continues_on_page_2(bits, app_engine) -> None:
+    """On the list, page 1 takes the exact cut, so page 2 holds the one
+    group past it and no group shows twice."""
+    a = bits.org_a
+    first = await _ok(bits, a, entity="module:Bits", measure="sum", field="Amt",
+                      group_field="Site")
+    second = await _ok(bits, a, entity="module:Bits", measure="sum", field="Amt",
+                       group_field="Site", group_page=2)
+    keys = [g["key"] for g in first["groups"]] + [g["key"] for g in second["groups"]]
+    assert len(keys) == len(set(keys)) == 51 and first["next_group_page"] == 2
+
+
+@pytest.fixture
+async def deals(promoted, monkeypatch):
+    """Org A in Native mode: deals with a select ``region`` and a number
+    ``fee`` of 49 regions of 50, "Aaa" of 31.005 and "Bbb" of 31.01."""
+    from tests.unit._crm_fakes import crm_switch_on
+    from tests.unit.test_crm_aggregate_r8 import _TABLES as DEAL_TABLES
+    from tests.unit.test_crm_aggregate_r8 import _deal
+
+    crm_switch_on(monkeypatch, "*")
+    a = promoted.org_a
+    res = await _call(promoted, _admin(a), "PATCH", "/crm/settings", {"mode": "native"})
+    assert res.status_code == 200, res.text
+    with promoted.admin_engine.begin() as c:
+        for position, (key, ftype) in enumerate((("region", "select"), ("fee", "number"))):
+            c.execute(text(
+                "INSERT INTO crm_field_defs (organization_id, entity, key, label, type, "
+                "source, provider_api_name, position) VALUES (CAST(:o AS uuid), 'deal', "
+                ":k, :k, :t, 'native', :k, :p)"), {"o": a, "k": key, "t": ftype, "p": position})
+        for n in range(49):
+            _deal(c, a, f"D{n}", "Proposal", 1, owner="x@q10.test",
+                  custom={"region": f"r{n:02d}", "fee": 50})
+        _deal(c, a, "DA", "Proposal", 1, owner="x@q10.test",
+              custom={"region": "Aaa", "fee": 31.005})
+        _deal(c, a, "DB", "Proposal", 1, owner="x@q10.test",
+              custom={"region": "Bbb", "fee": 31.01})
+    yield promoted
+    with promoted.admin_engine.begin() as c:
+        for org in (promoted.org_a, promoted.org_b):
+            for table in DEAL_TABLES:
+                c.execute(text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+                          {"o": org})
+
+
+@pytest.mark.parametrize("flag", ["", "*"])
+async def test_a_core_entity_keeps_the_cut_of_before(deals, app_engine, monkeypatch,
+                                                     flag: str) -> None:
+    """A core entity never pages, so its answer of one page keeps the cut of
+    the base code on and off the list."""
+    _set(monkeypatch, flag)
+    res = await _get(deals, deals.org_a, entity="deals", measure="sum", field="fee",
+                     group_field="region")
+    assert res.status_code == 200, res.text
+    print("BASECUT", json.dumps({"deals": res.text}))
+    body = res.json()
+    assert body["groups"][-1]["key"] == "Bbb" and body["other"] == 31.0
+    assert res.text == _BASE_CUT["deals"]
+
+
+# ── 16. The query of SEM-1b reaches the paged read (verifier round 6) ───────
+
+_QUERY = json.dumps([{"field": "Amount", "op": "gte", "value": 50},
+                     {"field": "Notes", "op": "eq", "value": "plain"}])
+
+
+def _query_truth(p: Any, org: str, *, by_month: bool) -> dict[Any, float]:
+    month = (", to_char(CAST(fields ->> 'Invoice_Date' AS date), 'YYYY-MM')"
+             if by_month else "")
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            f"SELECT fields -> 'Site' ->> 'id'{month}, count(*) FROM crm_module_records "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'Invoices' "
+            "AND CAST(fields ->> 'Amount' AS numeric) >= 50 AND fields ->> 'Notes' = 'plain' "
+            f"GROUP BY 1{', 2' if by_month else ''}"), {"o": org}).fetchall()
+    return {(tuple(r[:-1]) if by_month else r[0]): float(r[-1]) for r in rows}
+
+
+async def test_the_query_filters_every_paged_read(invoices, app_engine, monkeypatch) -> None:
+    """A two-field page and page 2 of one field both take the ``query``
+    leaves (a range and a text leaf): each group equals an independent
+    GROUP BY. A paged read that drops the query counts other records."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "*", raising=False)
+    a = invoices.org_a
+    two = {k: v for k, v in _TWO.items() if k != "field"}
+    two.update(measure="count", query=_QUERY)
+    groups, first = await _every_page(invoices, a, 200, **two)
+    truth = _query_truth(invoices, a, by_month=True)
+    assert {(g.get("key"), g.get("key2")): g["value"] for g in groups} == truth
+    assert first["group_count"] == len(truth)
+    one = {"entity": "module:Invoices", "measure": "count", "group_field": "Site",
+           "query": _QUERY}
+    page1 = await _ok(invoices, a, **one)
+    later = [await _ok(invoices, a, **one, group_page=p) for p in (2, 3)]
+    assert later[0]["groups"], later[0]
+    walk = [*page1["groups"], *later[0]["groups"], *later[1]["groups"]]
+    assert {g.get("key"): g["value"] for g in walk} == _query_truth(invoices, a,
+                                                                    by_month=False)
+    assert len(walk) == len({g.get("key") for g in walk})

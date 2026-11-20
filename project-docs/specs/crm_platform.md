@@ -8756,8 +8756,12 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
 - **Scope.**
   - A page of two fields is in the order of the value, largest first, then
     each key. A key ends the order, so two pages never share a group.
-  - Page 1 of one field is the answer of today, byte for byte. When it
-    leaves groups out on the list, it carries `next_group_page: 2`. The tool
+  - Page 1 of one field is the answer of today, byte for byte, with one
+    exception. On the list, a value group of a module cuts its 50 groups in
+    the order of page 2 (`aggregate.cut_key`), so page 2 continues it. Off
+    the list, on a core entity, and for a date group, a split, a key word or
+    `q`, page 1 keeps the order of today. When page 1 leaves groups out on the
+    list, it carries `next_group_page: 2`. The tool
     then ends its "Other" line with "Ask for page 2 for the next groups." in
     place of "Narrow the filter to see them."
   - Page 2 on of one field takes the order in which page 1 cut its 50
@@ -8788,12 +8792,12 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   says to narrow the filter. A paged answer has no findings of one day. Its
   `other` is None, and its `omitted` counts the groups that are not on the
   page. A `q` filters a two-field
-  answer by its exact words, with no near pass. Page 1 rounds the exact
-  numeric of each group, half away from zero, as page 2 does
-  (`aggregate.cents`). So two groups that differ by a half cent can change
-  places on page 1. The shown values and the totals do not change. A group
-  with no exact numeric, an overlay or a weighted total of deals, rounds the
-  text of its float. Such a group never has a page 2.
+  answer by its exact words, with no near pass. On the list, page 1 of a
+  value group of a module rounds the exact numeric of each group. It rounds
+  half away from zero, as page 2 does (`aggregate.cents`). There, two groups whose
+  values differ by under half a cent can change places on page 1. So can the
+  set of groups at the cut of 50, and `other`. The shown values and the
+  total do not change.
 - **Fences.** `tests/unit/test_crm_two_group.py` holds each refusal, the SQL
   of one group field, both orders and the tool text.
   `tests/unit/test_crm_two_group_r8.py` checks each group of each page
