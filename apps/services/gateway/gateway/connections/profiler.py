@@ -18,8 +18,9 @@ of the draft is empty.
    read fills. Never a value. The plan is cut to :data:`MAX_CALLS` calls in
    a fixed order. A result over :data:`RESULT_BYTES_MAX` bytes skips that
    tool. Both count in ``left_out``. The time cap of :data:`RUN_S` seconds,
-   a cache that cannot count and a changed server stop the run, and then
-   the run writes nothing.
+   a cache that cannot count, a full org window and a call that raises a
+   change of the server stop the run, and then the run writes nothing. The
+   server identity is checked once, at the list read.
 4. **Write the draft.** The body keeps keys, types, counts and the first and
    last date only, never a value. Each key and type is normalised to the
    grammar of §10.4 (:func:`normalise_key`, :func:`normalise_type`).
@@ -109,10 +110,13 @@ SAME = "same"
 EMPTY = "empty"
 
 _DIGITS = re.compile(r"(?<=\d)(?=\d)")
-#: A run of 5 or more digits in the raw text: a date, an account number or
-#: an amount. Such a key or type is left out, never normalised (F2, fail
-#: closed). A run of 4 or fewer digits gets the ``_`` of the digit rule.
-_LONG_DIGITS = re.compile(r"\d{5,}")
+#: A figure in the raw text: 5 or more digits in a row, or 6 or more digits
+#: that only ``-`` or ``_`` join (a date such as ``2024-01-15``, an account
+#: or card number, an amount such as ``4_500_000``). Such a key or type is
+#: left out, never normalised (F2 and G1, fail closed). The rule reads the
+#: RAW text, before the dash rule. Any other key gets the ``_`` of the digit
+#: rule. No digit rule can see a figure written as letters (§10.5 F3).
+_LONG_DIGITS = re.compile(r"\d{5,}|\d(?:[-_]?\d){5,}")
 _DATE_HEAD = re.compile(r"(\d{4}-\d{2}-\d{2})(?:$|[T ])")
 
 
@@ -163,8 +167,8 @@ def reduce_schema(schema: Any) -> dict[str, str] | None:
 def normalise_key(raw: Any) -> str | None:
     """*raw* as a key of §10.4, or ``None`` when it still fails the rule.
 
-    A raw key with a run of 5 or more digits is left out (:data:`_LONG_DIGITS`).
-    Else a ``-`` becomes ``_``, and a shorter run of digits gets an ``_``
+    A raw key that holds a figure is left out (:data:`_LONG_DIGITS`).
+    Else a ``-`` becomes ``_``, and a run of digits gets an ``_``
     between each two digits. So ``list-invoices`` becomes ``list_invoices``
     and ``Custom_Field_10`` becomes ``Custom_Field_1_0``. A dot and a space
     stay refused. The one key rule is ``catalogue.connection_key_problem``,
@@ -440,7 +444,9 @@ def _may_call(run: mcp_tools.OrgReadRun, tool: Mapping[str, Any],
 
 
 #: The refusals of one call that mean the server is not the server of the
-#: list: the run stops and writes nothing (F5).
+#: list: the run stops and writes nothing (F5). The entry checks the identity
+#: only at the list read, so today no call raises them. This is the reaction
+#: for when one does (``semantic_model.md`` §10.5 "The plan and the caps").
 _CHANGED = frozenset({mcp_tools.LIVE_CHANGED, mcp_tools.LIVE_NO_SERVER})
 
 
@@ -451,7 +457,7 @@ class _Reads:
     call cap never stops a run. :meth:`one` still refuses a 21st call (a hard
     guard). A result over :data:`RESULT_BYTES_MAX`, or over the byte budget
     of the client, skips that tool only. The time cap, a cache that cannot
-    count, a full org window and a changed server stop the run."""
+    count, a full org window and a call that raises a change stop the run."""
 
     def __init__(self, run: mcp_tools.OrgReadRun, start: float) -> None:
         self.run = run

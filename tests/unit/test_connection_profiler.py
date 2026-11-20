@@ -675,6 +675,43 @@ def test_a_key_with_five_digits_in_a_row_is_left_out(pw, raw) -> None:
     assert "12345" not in text and "1_2_3_4_5" not in text
 
 
+SEPARATED = ["d2024-01-15", "day_2024-01-15", "p_12_345_678", "ph_9876-543-210",
+             "amt_4_500_000", "acct_5001_2345", "card_4111_1111_1111_1111",
+             "n1_2_3_4_5_6_7_8"]
+
+
+@pytest.mark.parametrize("raw", SEPARATED)
+def test_a_figure_split_by_dashes_or_underscores_is_left_out(pw, raw) -> None:
+    """G1: 6 or more digits that only ``-`` or ``_`` join are a figure too.
+    The rule reads the raw text, before the dash rule. So the key is left
+    out as an entity, as a field and as a fill key, and a type word that
+    holds one reads as unknown."""
+    assert profiler.normalise_key(raw) is None
+    assert profiler.normalise_type(f"int_{raw}") == "unknown"
+    pw.tools = [_tool("modules"),
+                _tool("records", schema={"type": "object", "required": ["module"],
+                                         "properties": {"module": {"type": "string"}}}),
+                _tool("rows")]
+    pw.answers["modules"] = {"structuredContent": {"Leads": [{"id": 1}], raw: [{"id": 2}]}}
+    pw.answers["rows"] = {"structuredContent": {"columns": [
+        {"name": raw, "type": "int"}, {"name": "cf_9001", "type": "int"}], "rows": []}}
+    out = _run(pw)
+    assert out.outcome == profiler.SAVED and out.left_out == 2
+    assert [a["module"] for t, a in pw.calls if t == "records"] == ["Leads"]
+    body = pw.saved[0]["body"]
+    assert {e["key"] for e in body["code"]["entities"]} == {"Leads", "rows"}
+    assert {f["key"] for f in body["code"]["fields"] if f["entity"] == "rows"} == {"cf_9_0_0_1"}
+
+
+@pytest.mark.parametrize("raw,key", [
+    ("Custom_Field_10", "Custom_Field_1_0"), ("TDS_194C", "TDS_1_9_4C"),
+    ("cf_9001", "cf_9_0_0_1"), ("Q4_2024_Target", "Q4_2_0_2_4_Target"),
+    ("Q1_2024_Q3", "Q1_2_0_2_4_Q3"), ("GSTR_3B", "GSTR_3B"), ("fy-2024", "fy_2_0_2_4"),
+])
+def test_a_key_with_five_digits_or_fewer_across_a_mark_is_kept(raw, key) -> None:
+    assert profiler.normalise_key(raw) == key
+
+
 def test_the_normalisation_keeps_a_run_of_four_digits() -> None:
     assert profiler.normalise_key("Q4_2024_Target") == "Q4_2_0_2_4_Target"
     assert profiler.normalise_key("cf_9001") == "cf_9_0_0_1"
