@@ -228,6 +228,10 @@ async def test_org_b_cannot_see_or_pick_org_a(ns, app_engine) -> None:  # noqa: 
                           "/integrations/api/zoho_books/pick",
                           body={"pick": pick, "zoho_organization_id": "60002"})
     assert taken_b.status_code == 400 and taken_b.json()["detail"] == "invalid_pick"
+    # API-5 review, P2: org B cannot cancel org A's pending pick either.
+    cancel_b = await _call(ns, _admin(ADMIN_A, ns.org_b), "POST",
+                           "/integrations/api/zoho_books/cancel", body={"pick": pick})
+    assert cancel_b.status_code == 200 and cancel_b.json() == {"cancelled": False}
     assert _rows(ns, ns.org_b) == []
     done = await _call(ns, _admin(ADMIN_A, ns.org_a), "POST", "/integrations/api/zoho_books/pick",
                        body={"pick": pick, "zoho_organization_id": "60002"})

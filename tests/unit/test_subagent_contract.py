@@ -534,14 +534,14 @@ _CONTRACT_CALLERS = [
     # WS-AUTO AUTO-8a: the headless turn runs the worker with one bound read-only
     # job (`bind_job`), and `child_may_hold` is the one test of a tool it holds.
     "apps/services/gateway/gateway/jobs/headless_turn.py",
-    # TOF-3b F4: a skill test names the display tools of the contract, and
-    # the dry-run door reads the member and extra-call tool sets of it.
+    # TOF-3b F4: a skill test names the display tools of the contract. The
+    # dry-run door (`skill_dry_run.py`) no longer imports the contract, so it
+    # is not a caller here.
     "apps/services/gateway/gateway/studio/skill_tests.py",
     "apps/services/orchestrator/orchestrator/_tool_injection.py",
     "apps/services/orchestrator/orchestrator/agents.py",
     "apps/services/orchestrator/orchestrator/executor.py",
     "packages/acb_skills/acb_skills/agent_tools.py",
-    "packages/acb_skills/acb_skills/skill_dry_run.py",
     "packages/acb_skills/acb_skills/tier_policy.py",
     # WS-67 OA-8i: `pack_write_refusal` reads `annotated_read_only`, the one
     # read-only test of a pack tool, so no second read-only list exists.

@@ -419,10 +419,14 @@ class Settings(BaseSettings):
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
     # or `*`. Default empty means NO organization: each write
     # function of `gateway.connections.semantic_model` refuses with "off",
-    # and `read_approved` returns None. The one reader is
-    # `gateway.connections.semantic_model.connection_model_allowed`. It
-    # fails closed, and it takes the org of the bound tenant, never of the
-    # request. A `*_ORGS` key, so a SIGHUP reload applies it
+    # and `read_approved` returns None. It has two readers:
+    # `gateway.connections.semantic_model.connection_model_allowed` (the
+    # model) and `decide_features.mode_for` through the prefix `connection.`
+    # (the decide step of the profiler, SEM-13b). Both use the one rule
+    # `decide_features.org_listed`, and the fence is
+    # `test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree`.
+    # Both fail closed, and both take the org of the bound tenant, never of
+    # the request. A `*_ORGS` key, so a SIGHUP reload applies it
     # (`docs/flag_reload.md`). A name in the list spends nothing, so a flip
     # on a box is gate `enforcement-flip`. Fences:
     # tests/unit/test_connection_semantic_model_r8.py,
@@ -851,6 +855,22 @@ class Settings(BaseSettings):
     # flip in production is the gate `enforcement-flip`, after the owner
     # preview. Spec: ai_studio.md section 14 TOF-1d.
     studio_skill_offer_orgs: str = ""
+    # TOF-3b F4b: STUDIO_SKILL_TESTS_ORGS lists the org ids where a member may
+    # run the tests of a skill (`POST /studio/skills/{id}/tests/run`). Each
+    # test is a real model turn in a dry run, so it SPENDS CREDITS. `*` opens
+    # every org. Empty opens none, and the route answers 404. Reader:
+    # `gateway.routes.studio.flags.skill_tests_allowed`. A SIGHUP reload
+    # applies a change (docs/flag_reload.md). A flip is OWNER-ONLY, because it
+    # spends credits. Spec: ai_studio_rows/F4.md.
+    studio_skill_tests_orgs: str = ""
+    # TOF-3b F4b: STUDIO_SKILL_TESTS_CAP_CREDITS is the most credits that ONE
+    # run of a skill's tests may spend. It has NO default value: empty means
+    # unset, and then the runner refuses every test run with `cap_unset`
+    # before any model call. A value that is no finite number above 0 reads
+    # as unset. A request may only lower it. Reader:
+    # `gateway.routes.studio.flags.skill_tests_cap`. It is no `*_ORGS` key, so
+    # a change needs a restart. The owner sets it. Spec: ai_studio_rows/F4.md.
+    studio_skill_tests_cap_credits: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with
@@ -1570,6 +1590,41 @@ class Settings(BaseSettings):
     # nothing, so it is AGENT-SAFE. Fences:
     # tests/unit/test_tool_argument_shapes.py.
     tool_arg_shapes: bool = False
+
+    # ── The tool failure log (WS-TOF TOF-2b, D225) ──────────────────────────
+    #
+    # `tool_failure_log_orgs` lists the organization ids whose tool failures
+    # the capture sites record, or `*` for each one. Empty means off, and no
+    # site writes a row. The one reader is
+    # `acb_common.failure_log.failure_log_on`, and it fails closed. A SIGHUP
+    # reload applies a change (docs/flag_reload.md).
+    # `tool_failure_tasks` runs the sync job `failure.sync` and the prune of
+    # the failure rows (TOF-2e). Off by default, and a change needs a restart.
+    # Flip both together, or the event rows stay with no prune
+    # (tool_failure_log.md §5.4).
+    #
+    # 🔴 OWNER-GATE on a box (`enforcement-flip`, tool_failure_log.md §12).
+    # A customer org on the list waits for the owner's answer to TOF-Q2.
+    # Fences: tests/unit/test_failure_log_queue.py,
+    # tests/unit/test_failure_store_r8.py.
+    #
+    # TOF-2e (tool_failure_log.md §7 and §11). `tool_failure_org_id` is the
+    # internal org that runs the sync job. `tool_failure_project_id` is the
+    # project "Tool failures" in that org, and GH-6 skips its tasks.
+    # `tool_failure_run_as` is the member that makes each task. With any of
+    # the three empty, the job does nothing. `tool_failure_external_min` is
+    # the day count of §7.2 for a code that we do not own.
+    # `tool_failure_close_days` is the watch of §7.4. The one reader of the
+    # five is `gateway.failures.sync.config`. A change needs a restart.
+    # 🔴 OWNER-GATE on a box (`env-write`, tool_failure_log.md §12).
+    # Fence: tests/unit/test_tool_failure_tasks_r8.py.
+    tool_failure_close_days: int = 7
+    tool_failure_external_min: int = 20
+    tool_failure_log_orgs: str = ""
+    tool_failure_org_id: str = ""
+    tool_failure_project_id: str = ""
+    tool_failure_run_as: str = ""
+    tool_failure_tasks: bool = False
 
     # ── Dynamic sub-agents of the one assistant (WS-67 OA-9b, D117) ─────────
     #

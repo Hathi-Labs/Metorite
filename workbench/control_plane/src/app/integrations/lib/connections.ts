@@ -16,6 +16,8 @@ import { hasCapability } from "@/lib/access";
 import { safeStudioReturn } from "@/lib/studio/returnPath";
 import { relativeTime } from "@/lib/taskCard";
 
+import { apiDisconnectCopy } from "./apiConnect";
+
 export type ConnectionKind = "oauth" | "mailbox" | "whatsapp" | "mcp" | "api_key";
 /** WS-STU I8a: a calendar row and a Drive row name their own app (`_SETUP_HREF` of the gateway). */
 export type OwningApp = "crm" | "email" | "whatsapp" | "calendar" | "knowledge" | "integrations";
@@ -459,6 +461,8 @@ export function disconnectCopy(row: Connection): ConfirmCopy {
       confirmLabel: "Remove",
     };
   }
+  // API-5 (IN-10): an API connection names what uses it, and asks once.
+  if (row.provider.startsWith("api:")) return apiDisconnectCopy(row);
   if (row.provider === "zoho") {
     return {
       title: "Disconnect Zoho?",

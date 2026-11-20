@@ -69,6 +69,7 @@ from acb_common.priority import (
     level_names,
     task_cell,
 )
+from acb_common.tool_refusals import GatewayRefusal, response_body, route_template, safe_detail
 
 try:
     # MCP-style risk annotations (HH-2): the risk-aware permission handler and
@@ -178,13 +179,21 @@ def _headers() -> dict[str, str]:
     }
 
 
-class _GatewayError(RuntimeError):
+class _GatewayError(GatewayRefusal):
     """A gateway answer of 400 or more. ``status`` is the code, so a tool can
-    tell a 412 (a stale ``If-Match``) from a fault."""
+    tell a 412 (a stale ``If-Match``) from a fault.
 
-    def __init__(self, message: str, status: int) -> None:
-        super().__init__(message)
-        self.status = status
+    It is the shared ``GatewayRefusal`` (``acb_common.tool_refusals``), as
+    ``acb_skills.crm_tools._GatewayError`` is. So the C1 skip rule of the
+    failure log reads the status (``tool_failure_log.md`` §4.2, TOF-2c), and
+    a tool that ``refusals_as_text`` wraps answers it as "Refused:" text.
+    ``detail`` is the SAFE detail of the route (``safe_detail``). The message
+    keeps the route's words for a caller that reads it in code."""
+
+    def __init__(self, message: str, status: int, *, detail: str = "",
+                 fields: tuple[str, ...] = (), route: str = "") -> None:
+        super().__init__(message, status=status, detail=detail, fields=fields,
+                         route=route)
 
 
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
@@ -203,10 +212,13 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
                 detail = str(body.get("detail") or "")
         except Exception:
             detail = (resp.text or "")[:200]
+        safe, fields = safe_detail(
+            resp.status_code, response_body(resp), member=_current_user_email())
         raise _GatewayError(
             f"Tasks {method} {path} failed ({resp.status_code})"
             + (f": {detail}" if detail else ""),
             resp.status_code,
+            detail=safe, fields=fields, route=route_template(path),
         )
     return resp.json() if resp.text else None
 

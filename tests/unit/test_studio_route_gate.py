@@ -114,6 +114,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/studio/skills/{skill_id}/share"),
     # WS-STU J2d (TOF-4b), the owner's read of the share. It reads no right.
     ("GET", "/studio/skills/{skill_id}/share"),
+    # TOF-3b F4b, the test run of a skill.
+    ("POST", "/studio/skills/{skill_id}/tests/run"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.
