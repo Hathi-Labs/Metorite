@@ -5,7 +5,7 @@ that works. Database-free, so it never skips.
 Spec: ``project-docs/specs/crm_platform.md`` §18.17. The behaviour is proved
 in ``test_crm_rung0_r8.py``.
 
-The fence: ``aggregate._read`` reads the lookup ids, refuses ``q`` after it
+The fence: ``aggregate._module_filters`` reads the lookup ids, refuses ``q`` after it
 reads the fields of the module, and reads ``@status`` for a status group.
 ``aggregate._compute`` adds the field hint to each 422 of a module read.
 """
@@ -23,10 +23,15 @@ _CRM = (
     / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
 )
 
-#: function → the calls it must make, in ``aggregate.py``.
+#: function → the calls it must make, in ``aggregate.py``. CRM-Q34-10 moved
+#: the steps of a module read into ``_module_filters``, so the paged read
+#: (``_read_pages``) takes the same steps. Each read must call it.
 _PINS: dict[str, set[str]] = {
-    "_read": {"lookup_ids", "module_where", "q_refusal", "status_field"},
+    "_module_filters": {"lookup_ids", "module_where", "q_refusal", "status_field"},
+    "_read": {"_module_filters"},
+    "_read_pages": {"_module_filters"},
     "_compute": {"field_hint"},
+    "_compute_pages": {"field_hint"},
 }
 
 
@@ -58,7 +63,7 @@ def test_the_module_read_calls_each_rung0_step() -> None:
 
 def test_the_fence_sees_a_missing_step() -> None:
     source = (_CRM / "aggregate.py").read_text(encoding="utf-8")
-    assert "_read does not call q_refusal" in _offenders(
+    assert "_module_filters does not call q_refusal" in _offenders(
         source.replace("raise q_refusal(scope)", "pass"))
     assert "_compute does not call field_hint" in _offenders(
         source.replace("raise await field_hint(", "raise (lambda *a: a)("))

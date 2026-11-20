@@ -58,6 +58,7 @@ groups of ``aggregate.py`` take their month on that clock, through
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -238,6 +239,8 @@ MODULE_MEASURES: dict[str, tuple[str, str]] = {"sum_amount": ("sum", AMOUNT_WORD
 #: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
 _GROUP_KEY = "agf_g"
+#: CRM-Q34-10: the bound key of the second field of a two-field group.
+GROUP2_KEY = "agf_g2"
 _MODULE = "agf_module"
 
 
@@ -770,6 +773,53 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
     if bucket is not None:
         raise _refuse(f"A bucket goes with a date field, not with '{ref.key}'.")
     return ref
+
+
+def check_groups(scope: FieldScope, key: str | None, key2: str | None,
+                 bucket: str | None) -> tuple[FieldRef, FieldRef]:
+    """CRM-Q34-10: the two fields of a two-field group, or a 422. The two
+    are different fields, and at most one is a date. *bucket* goes to the
+    date field. With no date, it goes to the first field, which refuses it."""
+    first, second = scope.ref(key), scope.ref(key2)
+    if first.key == second.key:
+        raise _refuse("Give two different fields as group_field and group_field2.")
+    dated = (first.type in DATE_TYPES, second.type in DATE_TYPES)
+    if all(dated):
+        raise _refuse(
+            f"'{first.key}' and '{second.key}' are both dates. Give one date field, "
+            "and one picklist, boolean or lookup field.",
+        )
+    to_first = dated[0] or not dated[1]
+    return (check_group(scope, key, bucket if to_first else None),
+            check_group(scope, key2, None if to_first else bucket))
+
+
+#: CRM-Q34-10: the bound options of :func:`group_label_sql`.
+_OPTIONS_KEY = "agf_opts"
+#: The label of a group with no value, as ``aggregate._compute`` names it.
+NO_VALUE_LABEL = "(none)"
+
+
+def one_group_order(ref: FieldRef) -> tuple[str, dict[str, Any]]:
+    """CRM-Q34-10: the ORDER BY of a later page of ONE group field, over the
+    columns ``value``, ``label`` and ``key`` of the grouped rows.
+
+    It is the order in which ``aggregate._compute`` keeps its 50 largest
+    groups, so page 2 starts where the answer of one page stops: the value
+    rounded to 2 places, largest first, then the label as Python names it.
+    The label is the lookup name, else the option label, else the key, else
+    "(none)". An empty text falls through, as Python's ``or`` does.
+    ``COLLATE "C"`` orders it by code point, as Python sorts a ``str``. The
+    key ends the order by code point, a NULL key last, as Python breaks a tie
+    of value and label. So the order is total. The options are one bound
+    value."""
+    label = (
+        f"COALESCE(NULLIF(label, ''), NULLIF(CAST(:{_OPTIONS_KEY} AS jsonb) ->> key, ''), "
+        f"NULLIF(key, ''), '{NO_VALUE_LABEL}') COLLATE \"C\""
+    )
+    order = (f"round(CAST(value AS numeric), 2) DESC NULLS LAST, {label} ASC, "
+             'key COLLATE "C" ASC NULLS LAST')
+    return order, {_OPTIONS_KEY: json.dumps(ref.options or {})}
 
 
 # ── The expressions. Every key and value is a bound parameter. ──────────────
@@ -1307,15 +1357,18 @@ async def admit_text_numbers(
 
 def group_sql(
     scope: FieldScope, ref: FieldRef, bucket: str | None, *, zone: str,
+    prefix: str = _GROUP_KEY,
 ) -> GroupSql:
     """The group key of the field *ref*. A date groups by its bucket.
 
     A ``date`` keeps the day that Zoho wrote. A ``datetime`` reads the whole
     value with its offset, and takes its bucket on the clock of *zone*, the
     CRM zone (CRM-Q25b). So it agrees with ``created_month``. A module
-    group reads the detoasted copy (task 3127).
+    group reads the detoasted copy (task 3127). *prefix* names the bound
+    key. Only the second field of a two-field group (CRM-Q34-10) gives
+    another one, :data:`GROUP2_KEY`.
     """
-    column, p = _reads(scope.column), _GROUP_KEY
+    column, p = _reads(scope.column), prefix
     source = _source_of(scope.column)
     if ref.type in DATE_TYPES:
         unit, fmt = BUCKETS[bucket or ""]
