@@ -1095,6 +1095,11 @@ does not cover `inputSchema`. So a server can add a required argument to an
 approved tool, and the profiler acts on that schema. A later slice must hash
 the schema too.
 
+A known limit (merge with TOF-2d, 2026-11-20): `call_read_tool` writes one record to the
+tool failure log for a failed call. The no-member entry writes none. That record
+takes the tenant of the request and the surface `studio`, and the profiler has
+no request. The outcome of the run carries the reason of a failed call instead.
+
 **The flag.** `profile` checks `connection_model_allowed(org)` first. With the
 flag off, it lists no tool, calls no tool and writes nothing.
 

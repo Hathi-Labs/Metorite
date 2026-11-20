@@ -589,6 +589,29 @@ async def _two(a: str) -> str:
     return sid
 
 
+def test_r8_a_new_version_with_no_tests_keeps_them_and_an_undo_copies_exactly(world) -> None:
+    """F4a. The route carries ``tests`` forward on a real database. An empty
+    list clears them. The undo copies the old body exactly."""
+    a = world.org_a
+    tests = [{"id": "t1", "input": "Quote", "expect": []}]
+
+    async def go() -> str:
+        sid = (await _create(a, body={**_body([A1]), "tests": tests}))["skill"]["id"]
+        for payload in ({"body": _body([A2])}, {"body": {**_body([A1]), "tests": []}}):
+            status, got = await _call(a, ANA, skills.add_skill_version, sid, payload=payload)
+            assert status == 200, got
+        status, got = await _call(a, ANA, skills.undo_skill_version, sid,
+                                  payload={"expected_version": 3})
+        assert status == 200, got
+        return sid
+
+    sid = _run(world, go)
+    bodies = [json.loads(r[1]) for r in _versions(world, sid)]
+    assert bodies[1]["tests"] == tests
+    assert bodies[2]["tests"] == []
+    assert bodies[3] == bodies[1]
+
+
 def test_r8_undo_writes_a_new_version_and_changes_no_old_row(world) -> None:
     a = world.org_a
 
