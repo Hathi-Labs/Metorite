@@ -1204,8 +1204,10 @@ async def _read(
     near: list[str] | None = None
     nearest: list[str] | None = None
     if words and scope is not None and not sum(acc.rows for acc in values.values()):
-        values, near, nearest = await _near_kept(db, scope, words, plain, bound, fetch,
-                                                 values, periods, days)
+        kept = _set_aside(periods, days)
+        values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch,
+                                                  values)
+        _take_back(kept, near, periods, days)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
@@ -1276,24 +1278,26 @@ def _grouping_sql(key_sql: str, group_clause: str, day_key: str,
     return f" GROUP BY GROUPING SETS ({answer_set}, ({lead}{day_key}))", grouping
 
 
-async def _near_kept(
-    db: Any, scope: FieldScope, words: list[str], plain: tuple[str, dict[str, Any]],
-    bound: dict[str, Any], fetch: Any, exact: dict[str | None, _Acc],
-    periods: dict[int, list[_Acc]], days: list[tuple[Any, Any, int]],
-) -> tuple[dict[str | None, _Acc], list[str] | None, list[str] | None]:
-    """:func:`_near_pass`, with the baseline periods and the days of the
-    pass whose groups the answer keeps (NUM-2). The near pass fills both
-    again, so the exact pass keeps its own only when the near pass counts
-    no record."""
+def _set_aside(periods: dict[int, list[_Acc]], days: list[tuple[Any, Any, int]],
+               ) -> tuple[dict[int, list[_Acc]], list[tuple[Any, Any, int]]]:
+    """NUM-2: the baseline periods and the days of the exact pass of ``q``,
+    set aside before the near pass fills both again. Both start empty."""
     kept = (dict(periods), list(days))
     periods.clear()
     days.clear()
-    values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch, exact)
+    return kept
+
+
+def _take_back(kept: tuple[dict[int, list[_Acc]], list[tuple[Any, Any, int]]],
+               near: list[str] | None, periods: dict[int, list[_Acc]],
+               days: list[tuple[Any, Any, int]]) -> None:
+    """NUM-2: the baseline and the days are of the pass whose groups the
+    answer keeps. With no *near* name, the answer keeps the exact pass, so
+    its own periods and days come back (:func:`_set_aside`)."""
     if near is None:
         periods.clear()
         periods.update(kept[0])
         days[:] = kept[1]
-    return values, near, nearest
 
 
 async def _near_pass(
