@@ -5450,20 +5450,26 @@ def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any, reasons: dic
     ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
     (``acb_skills.server_brief``). It reuses the rows that the read gave. The
     remote tool names come from the tool's own record. CSY-5: *reasons* adds one
-    fixed line for a server that is out of reach or asks a card. A fault never
+    fixed line for a server that is out of reach or asks a card. CSY-6: the
+    server's own ``instructions`` come from the tool that THIS run connected
+    (``_maf_mcp.server_instructions``), never from the row. A fault never
     blocks the run."""
     try:
         from acb_skills import server_brief
 
+        from orchestrator._maf_mcp import server_instructions
+
         names = {str(n) for n in (attached or [])}
         remote: dict[str, list[str]] = {}
+        said: dict[str, str | None] = {}
         for tool in tools or []:
             meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
             remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
+            said[str(getattr(tool, "name", ""))] = server_instructions(tool)
         briefs = [
             (str(s.name), server_brief.server_brief(
                 str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
-                remote.get(str(s.name), [])))
+                remote.get(str(s.name), []), said.get(str(s.name))))
             for s in servers if s.name and str(s.name) in names
         ]
         notes = [
