@@ -23,9 +23,11 @@ then the ``ai`` section of the draft is empty.
    a cache that cannot count, a full org window and a call that raises a
    change of the server stop the run, and then the run writes nothing. The
    server identity is checked once, at the list read.
-3. **Decide (SEM-13b).** Only when the run saves a draft: one request for
-   each entity, with closed lists only, paid by the ``connected_by`` member
-   (``profiler_decide.decide``). It runs with no session open.
+3. **Decide (SEM-13b).** Only when the shape differs from the approved
+   version and the code body passes the local checks (``shape_only`` and the
+   size cap): one request for each entity, with closed lists only, paid by
+   the ``connected_by`` member (``profiler_decide.decide``). It runs with no
+   session open.
 4. **Write the draft.** The body keeps keys, types, counts and the first and
    last date only, never a value. Each key and type is normalised to the
    grammar of §10.4 (:func:`normalise_key`, :func:`normalise_type`).
@@ -63,7 +65,7 @@ from acb_common import get_logger
 
 from gateway.connections import mcp as mcp_registry
 from gateway.connections import mcp_tools, profiler_decide, semantic_model, store
-from gateway.crm_sync.catalogue import PART_ITEMS_MAX, connection_key_problem
+from gateway.crm_sync.catalogue import PART_ITEMS_MAX, connection_key_problem, shape_only
 from gateway.studio import mcp_actions
 
 _log = get_logger("connections.profiler")
@@ -580,6 +582,18 @@ async def _run(run: mcp_tools.OrgReadRun) -> Profile | tuple[dict[str, Any], str
     return body, digest, reads
 
 
+#: The reason of the decide step when its ai items would make the body
+#: fail ``shape_only`` or the size cap: the run saves the code draft.
+AI_DROPPED = "ai_dropped"
+
+
+def _fits(body: Mapping[str, Any]) -> bool:
+    """True when the writer would take *body*: it passes ``shape_only`` and
+    it is within ``semantic_model.BODY_BYTES_MAX`` (SEM-13b, §10.7)."""
+    return (shape_only(body) is None
+            and semantic_model.body_bytes(body) <= semantic_model.BODY_BYTES_MAX)
+
+
 async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str,
                  reads: _Reads, connected_by: Any = None) -> Profile:
     """Steps 3 and 4: no draft when the approved version has the same hash.
@@ -588,7 +602,10 @@ async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str
 
     Two short sessions, and the decide step between them with no session
     open (R5, §10.7 decision 9): the first reads ``read_approved``, the
-    second saves the draft."""
+    second saves the draft. The decide step runs only when the shape differs
+    from the approved version and the code body passes the local checks
+    (``shape_only`` and the size cap). When its ai items would make the body
+    fail, the run saves the code draft with an empty ``ai`` section."""
     from gateway.db import tenant_session
 
     done: dict[str, Any] = {"calls": reads.calls, "left_out": reads.left_out,
@@ -598,10 +615,20 @@ async def _write(org: str, connection_id: Any, body: dict[str, Any], digest: str
     if approved is not None and approved.shape_hash == digest:
         # An unchanged shape asks nothing and spends nothing.
         return Profile(SAME, **done)
-    decided = await profiler_decide.decide(org, connected_by, body)
-    body = {**body, "ai": decided.ai}
-    done.update(questions=decided.questions, requests=decided.requests,
-                decide=decided.reason)
+    if _fits(body):
+        # The decide spends credits, so it runs only for a code body that
+        # the writer can save (§10.7 decision 9). A code body that fails a
+        # local check asks nothing, and the writer refuses it below.
+        decided = await profiler_decide.decide(org, connected_by, body)
+        reason = decided.reason
+        full = {**body, "ai": decided.ai}
+        if decided.ai and not _fits(full):
+            # The ai items would make the body fail. Save the code draft, so
+            # the requests that went out still leave a draft.
+            _log.info("connections.profiler.ai_dropped", requests=decided.requests)
+            full, reason = {**body, "ai": {}}, AI_DROPPED
+        body = full
+        done.update(questions=decided.questions, requests=decided.requests, decide=reason)
     try:
         async with tenant_session(org) as db:
             version = await semantic_model.save_draft(db, connection_id, body, digest,

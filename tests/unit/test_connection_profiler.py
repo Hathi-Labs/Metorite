@@ -1132,3 +1132,122 @@ def test_the_decide_runs_with_no_session_open(dw, monkeypatch) -> None:
     assert _run(dw).outcome == profiler.SAVED
     assert opened == [1], "the read runs inside a session"
     assert dw.open_at_decide == [0, 0] and dw.open[0] == 0
+
+
+# ── SEM-13b fix round: one rule for the two readers, and the order ──────────
+
+UPPER_ID = "6F1C2D3E-4A5B-4C6D-8E7F-9A0B1C2D3E4F"
+
+#: (the list, the org): each form of the list and of the org.
+READER_ROWS = [
+    ("*", "abc"), (" * ", "abc"), ("", "abc"), ("ABC", "abc"), ("abc", "ABC"),
+    (" abc", "abc"), ("abc", " abc "), (UPPER_ID, UPPER_ID.lower()),
+    (UPPER_ID.lower(), UPPER_ID), (f" {UPPER_ID} , other-org ", UPPER_ID.lower()),
+    ("one-org , two-org", "two-org"), ("one-org , two-org", "three-org"),
+    ("abc", ""), ("*", ""),
+]
+
+
+@pytest.mark.parametrize("raw,org", READER_ROWS)
+def test_the_two_readers_of_connection_model_orgs_agree(monkeypatch, raw, org) -> None:
+    """``connection_model_allowed`` (the model) and ``mode_for`` through the
+    ``connection.`` prefix (the decide step) read ``connection_model_orgs``.
+    Both use the one rule of ``decide_features.org_listed``, so they agree on
+    each row. Mutation: drop the ``fold`` of the ``connection.`` prefix, and
+    the rows ``ABC``/``abc``, `` * `` and the upper-case UUID disagree."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway import decide_features as df
+    from gateway.connections import profiler_decide
+
+    monkeypatch.setattr(get_settings(), "connection_model_orgs", raw, raising=False)
+    monkeypatch.setattr(get_settings(), "decide_feature_modes",
+                        f"{profiler_decide.FEATURE}=on", raising=False)
+    model = semantic_model.connection_model_allowed(org)
+    token = bind_tenant(org) if org else None
+    try:
+        decide = df.mode_for(profiler_decide.FEATURE) == "on"
+    finally:
+        if token is not None:
+            release_tenant(token)
+    assert model == decide, (raw, org, model, decide)
+    assert model == df.org_listed(raw, org)
+
+
+def _letters(i: int) -> str:
+    out = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        out = chr(97 + r) + out
+    return out
+
+
+def _big_code_body(target: int) -> dict[str, Any]:
+    """A code body that passes ``shape_only``, grown in steps of about 270
+    bytes until its jsonb text is past *target*. No key holds two digits."""
+    entities: list[dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
+    body = {"v": 1, "code": {"entities": entities, "fields": fields}, "ai": {}, "admin": {}}
+    i = 0
+    while semantic_model.body_bytes(body) <= target:
+        key = f"e{_letters(i)}"
+        entities.append({"key": key, "label": "L" * 80, "records": 3})
+        fields.append({"entity": key, "key": "amount_due", "type": "number",
+                       "label": "F" * 80})
+        i += 1
+    assert shape_only(body) is None
+    return body
+
+
+def _sized_writer(dw, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake writer of ``pw`` with the size check of the real writer."""
+    fake = semantic_model.save_draft
+
+    async def _save(db: Any, cid: Any, body: Any, shape_hash: Any, untrusted_origin: Any) -> int:
+        semantic_model._json(body)
+        return await fake(db, cid, body, shape_hash, untrusted_origin)
+
+    monkeypatch.setattr(semantic_model, "save_draft", _save)
+
+
+def _write(dw, body: dict[str, Any]) -> profiler.Profile:
+    import asyncio
+
+    reads = SimpleNamespace(calls=1, left_out=0)
+    return asyncio.run(profiler._write(ORG, CID, body, "ab" * 32, reads, PAYER))
+
+
+def test_ai_items_over_the_cap_save_the_code_draft(dw, monkeypatch) -> None:
+    """A code body just under the cap passes the local checks, so the step
+    asks, within its bound. Its ai items would push the body over the cap,
+    so the run saves the code draft with an empty ``ai`` section."""
+    from gateway.connections import profiler_decide as pd
+
+    _sized_writer(dw, monkeypatch)
+    body = _big_code_body(semantic_model.BODY_BYTES_MAX - 700)
+    assert semantic_model.body_bytes(body) <= semantic_model.BODY_BYTES_MAX
+    dw.script = {"purpose": _answer("invoice")}
+    out = _write(dw, body)
+    assert out.outcome == profiler.SAVED and out.decide == profiler.AI_DROPPED
+    assert 1 <= len(dw.decides) <= pd.REQUESTS_CAP and out.requests == len(dw.decides)
+    [saved] = dw.saved
+    assert saved["body"]["ai"] == {} and saved["body"]["code"] == body["code"]
+
+
+def test_a_code_body_over_the_cap_asks_nothing(dw, monkeypatch) -> None:
+    _sized_writer(dw, monkeypatch)
+    body = _big_code_body(semantic_model.BODY_BYTES_MAX)
+    out = _write(dw, body)
+    assert out.outcome == "refused:model:too_big"
+    assert out.requests == 0 and out.decide is None
+    assert dw.decides == [] and dw.day.names == [] and dw.left_asked == []
+
+
+def test_a_code_body_that_fails_shape_only_asks_nothing(dw) -> None:
+    body = {"v": 1, "code": {"entities": [{"key": "bad key", "records": 1}]},
+            "ai": {}, "admin": {}}
+    assert shape_only(body) is not None
+    out = _write(dw, body)
+    assert out.outcome.startswith("refused:model:shape")
+    assert out.requests == 0 and out.decide is None
+    assert dw.decides == [] and dw.day.names == [] and dw.saved == []

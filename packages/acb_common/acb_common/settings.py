@@ -419,10 +419,14 @@ class Settings(BaseSettings):
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
     # or `*`. Default empty means NO organization: each write
     # function of `gateway.connections.semantic_model` refuses with "off",
-    # and `read_approved` returns None. The one reader is
-    # `gateway.connections.semantic_model.connection_model_allowed`. It
-    # fails closed, and it takes the org of the bound tenant, never of the
-    # request. A `*_ORGS` key, so a SIGHUP reload applies it
+    # and `read_approved` returns None. It has two readers:
+    # `gateway.connections.semantic_model.connection_model_allowed` (the
+    # model) and `decide_features.mode_for` through the prefix `connection.`
+    # (the decide step of the profiler, SEM-13b). Both use the one rule
+    # `decide_features.org_listed`, and the fence is
+    # `test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree`.
+    # Both fail closed, and both take the org of the bound tenant, never of
+    # the request. A `*_ORGS` key, so a SIGHUP reload applies it
     # (`docs/flag_reload.md`). A name in the list spends nothing, so a flip
     # on a box is gate `enforcement-flip`. Fences:
     # tests/unit/test_connection_semantic_model_r8.py,
