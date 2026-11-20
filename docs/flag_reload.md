@@ -578,6 +578,14 @@ org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
 at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
 the owner preview.
 
+`TOOL_FAILURE_LOG_ORGS` turns on the record of tool failures for each listed
+org (`tool_failure_log.md` §6, TOF-2b). A capture site writes one row in the
+org and adds one count to the platform rows of the failure store. `*` lists
+every org, and the default is empty. Its one reader is
+`acb_common.failure_log.failure_log_on`, and each record asks it. A reload
+applies a change, and the flip stays OWNER-GATE (`enforcement-flip`). Flip
+`TOOL_FAILURE_TASKS` with it and restart, or the event rows stay with no prune.
+
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`
 gives a pack. `*` lists every org, and the default is empty. Its one reader is
