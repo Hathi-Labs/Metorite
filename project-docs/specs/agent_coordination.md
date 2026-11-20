@@ -788,6 +788,8 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 
 **The answer.** §3.12 already plans the map: the person, the session, the task, the machine, the model and who dispatched whom. This ask adds four things. The map becomes a view of each project and sub-project. The machine gets a kind, and sub-agents get a writer. The MCP gets a read of the map, and the way into a session joins the map.
 
+**Who owns what.** This section owns the Agents canvas of each project (SW-112). `agents_view.md` (WS-AGA) still owns the member view and its read `GET /projects/agents/overview` (AGA-7). SW-102 adds `project_id` to that read, so a change to the route follows both specs.
+
 **What already serves the ask.** Read on 2026-11-19, from origin/main `fe470c832` and from a board search by another session.
 
 | The ask | Today | Slices |
