@@ -290,7 +290,7 @@ async def approve_suggestion(
                 db, org=org, fields=fields, others=merge_kinds(others, items), by=by,
                 based_on=int(approved.version),
             )
-            await carry_draft(db, draft, row)
+            await carry_draft(db, draft, row, org=org)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
         if conflict is not None:
@@ -329,7 +329,7 @@ async def undo_overlay(
             row = await commit(db, org=org, fields=fields, others=kept, by=by,
                                based_on=int(approved.version))
             if draft is not None:
-                await carry_draft(db, draft, row, drop_slot=slot)
+                await carry_draft(db, draft, row, drop_slot=slot, org=org)
             await map_pipeline.dismiss(db, org, slot, module)
     except DBAPIError as exc:
         conflict = _db_conflict(exc)
@@ -361,7 +361,7 @@ async def dismiss_suggestion(
             await map_pipeline.dismiss(db, org, slot, module)
             # The draft is the open draft (`_open_suggestion`), so the card
             # can never approve the items of the dismissed slot.
-            carried = await carry_draft(db, draft, approved, drop_slot=slot)
+            carried = await carry_draft(db, draft, approved, drop_slot=slot, org=org)
             if carried is None:
                 await db.execute(text(_DELETE_DRAFT_SQL), {"v": int(draft.version)})
     except DBAPIError as exc:

@@ -241,6 +241,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     _asyncio.ensure_future(_warm_clone_agents())
 
+    # TOF-1e: build the chat tools of the packs once, on a thread, so the
+    # first catalog read after a restart never builds them on the event loop.
+    # Only with the flag set for some org. A later flip warms on first read.
+    try:
+        if str(getattr(settings, "studio_chat_tools_orgs", "") or "").strip():
+            from gateway.studio import chat_tool_actions
+
+            chat_tool_actions.start_warm()
+    except Exception as exc:
+        _log.warning("gateway.chat_tools_warm_skipped", error=str(exc)[:200])
+
     # Load provider API keys from encrypted Postgres store into litellm SDK.
     #
     # H4: lifespan startup — there is no request, no session and no bound
@@ -564,6 +575,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway.kb_entities import graph as _kg_graph  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.graph_jobs_skipped", error=str(exc))
+    try:
+        # The AI vendor alert kind and its seed hook register at import (AO-2,
+        # gateway/provider_alerts.py). Dark: the seed needs PROVIDER_ALERT_ORGS.
+        # Its own try, for the reason above.
+        from gateway import provider_alerts as _provider_alerts  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.provider_alert_jobs_skipped", error=type(exc).__name__)
     try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
@@ -1712,6 +1730,27 @@ try:
     from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
 
     app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-2 — the connect flow of an API template (Zoho Books). Dark: while
+    # API_CONNECTIONS_ORGS does not hold the org, each route answers 404. The
+    # callback runs behind the member session through the BFF, so it is NOT
+    # in PUBLIC_ROUTES.
+    from gateway.routes.integrations_api_connect import router as _api_connect_router
+
+    app.include_router(_api_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-3 — the four call routes of an API connection (find, describe,
+    # read, write). Dark: while API_CONNECTIONS_ORGS does not hold the org,
+    # each route answers 404. The write route refuses every call (D-API-4).
+    from gateway.routes.api_connections import router as _api_connections_router
+
+    app.include_router(_api_connections_router)
 except Exception:  # pragma: no cover
     pass
 
