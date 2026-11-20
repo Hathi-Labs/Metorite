@@ -18,6 +18,8 @@ R7, the mutations (each turns a test here red, see the SW-102 report):
   sub-project test.
 * **M4** ``agent_map_allowed`` answers True for each org -> the flag tests.
 * **M5** the fold drops the ``waiting`` arm -> the fold test.
+* **M7** ``count`` comes from a read that skips ``{reach}`` -> the member
+  and lead count tests.
 * **M6** the route takes ``show_quiet: bool`` again, so FastAPI checks it
   before the flags -> the flag-off malformed test (a 422 echoes the input).
 """
@@ -214,6 +216,10 @@ def _seed(w: Any) -> None:
     w.r_quiet = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
                       "in_progress", via=VIA, last_activity="now() - interval '3 hours'")
     _label(p, w.r_quiet, label="sleeper", key=key(), conn=conn)
+    # A quiet run on the led project: the lead sees it, the member does not.
+    w.r_led_quiet = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.led), OTHER_A,
+                          "in_progress", via=VIA, last_activity="now() - interval '3 hours'")
+    _label(p, w.r_led_quiet, label="led-sleeper", key=key(), conn=conn)
     # A run that waits on an agent, with no event for 3 hours: it does not fold.
     w.r_wait = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
                      "in_progress", via=VIA, last_activity="now() - interval '3 hours'")
@@ -226,6 +232,10 @@ def _seed(w: Any) -> None:
     w.r_mine = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), MEMBER_A,
                      "in_progress", via=VIA)
     _label(p, w.r_mine, label=None, key=key(), conn=conn_m)
+    # The member's own quiet run, in a session of its own (no name).
+    w.r_mine_quiet = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), MEMBER_A,
+                           "in_progress", via=VIA, last_activity="now() - interval '3 hours'")
+    _label(p, w.r_mine_quiet, label=None, key=key(), conn=conn_m)
     # A run on the private project of OTHER_A.
     w.r_private = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.private), OTHER_A,
                         "in_progress", via=VIA)
@@ -287,8 +297,8 @@ class TestTheMap:
         assert body["viewer"] == "admin"
         assert _run_ids(body) == {w.r_own, w.r_led, w.r_sub, w.r_await, w.r_wait,
                                   w.r_mine, w.r_private}
-        # The quiet run counts, and the ended run does not.
-        assert body["count"] == 8
+        # The three quiet runs count, and the ended run does not.
+        assert body["count"] == 10
         assert body["lines"] == [] and body["truncated"] is False
         assert _people(body) == {OTHER_A, MEMBER_A}
         from gateway.routes.projects import agent_summary as m
@@ -327,10 +337,37 @@ class TestTheMap:
         node = next(s for s in body["sessions"] if s["name"] == LABEL_1)
         assert node["run_count"] == 1
 
+    async def test_the_count_of_a_member_holds_only_what_they_see(self, w):
+        """Three quiet runs exist in org A. The member sees one of them."""
+        _, body, _ = await _get(w, w.member_a)
+        assert body["count"] == 3
+        quiet = {s["id"]: s["quiet_count"] for s in body["sessions"]}
+        assert sorted(quiet.values()) == [0, 0, 1]
+        assert sum(s["run_count"] for s in body["sessions"]) == 3
+
     async def test_a_lead_sees_the_runs_of_the_projects_they_lead(self, w):
         _, body, _ = await _get(w, w.lead_a)
         assert body["viewer"] == "lead"
         assert _run_ids(body) == {w.r_led, w.r_sub}
+
+    async def test_the_count_of_a_lead_holds_only_what_they_see(self, w):
+        """The lead sees one quiet run (on the led project) of the three."""
+        _, body, _ = await _get(w, w.lead_a)
+        assert body["count"] == 3
+        by_name = {s["name"]: s for s in body["sessions"]}
+        assert by_name["led-sleeper"]["quiet_count"] == 1
+        assert by_name[LABEL_1]["quiet_count"] == 0
+        assert by_name["Unnamed session"]["quiet_count"] == 0
+        assert "sleeper" not in by_name
+
+    async def test_the_run_count_of_each_node_of_a_lead_is_its_open_visible_runs(self, w):
+        _, body, _ = await _get(w, w.lead_a, MAP + "&show_quiet=true")
+        assert _run_ids(body) == {w.r_led, w.r_sub, w.r_led_quiet}
+        listed: dict[str, int] = {}
+        for r in body["runs"]:
+            listed[r["session_id"]] = listed.get(r["session_id"], 0) + 1
+        assert {s["id"]: s["run_count"] for s in body["sessions"]} == listed
+        assert all(n == 1 for n in listed.values())
 
     async def test_a_person_with_no_visible_run_has_no_node(self, w):
         _, body, _ = await _get(w, w.lead_a)
@@ -391,7 +428,7 @@ class TestTheProjectScope:
     async def test_a_run_on_a_sub_project_shows_in_the_scope_of_its_parent(self, w):
         _, body, _ = await _get(w, w.admin_a, MAP + f"&project_id={w.led['id']}")
         assert _run_ids(body) == {w.r_led, w.r_sub}
-        assert body["count"] == 2
+        assert body["count"] == 3
         _, sub, _ = await _get(w, w.admin_a, MAP + f"&project_id={w.sub['id']}")
         assert _run_ids(sub) == {w.r_sub}
 
@@ -489,8 +526,13 @@ class TestABadValueIsTheOne404:
 
     async def test_the_plain_overview_ignores_the_map_values(self, w):
         """Base behaviour: the plain overview reads no map value."""
-        status, _, _ = await _get(w, w.admin_a, PATH + "?show_quiet=maybe")
-        assert status == 200
+        for user in (w.admin_a, w.member_a):
+            status, plain, _ = await _get(w, user, PATH)
+            assert status == 200
+            status, odd, _ = await _get(
+                w, user, PATH + "?show_quiet=maybe&project_id=anything-at-all")
+            assert status == 200
+            assert odd == plain
 
 
 @_DB_GATE
