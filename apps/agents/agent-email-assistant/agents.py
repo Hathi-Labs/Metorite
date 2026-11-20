@@ -471,6 +471,34 @@ class _DraftChanged(GatewayError):
         self.current = current
 
 
+class _ThreadChanged(GatewayError):
+    """A 409 ``thread_changed`` of ``POST /email/send`` (HRD-10d-3, task 3824):
+    a newer message came into the thread of the reply after its card showed,
+    and nothing was sent. ``newer`` is the route's ``detail.newer``: the From
+    address and the time of that message, or ``{}``. A stranger chooses the
+    From, so a caller fences each value. It is a :class:`GatewayError` with
+    ``reason``, so each ``except GatewayError`` keeps its path."""
+
+    def __init__(self, message: str, status: int, *, newer: dict[str, Any],
+                 **kwargs: Any) -> None:
+        super().__init__(message, status, **kwargs)
+        self.newer = newer
+
+
+def _thread_newer(status: int, body: Any) -> dict[str, Any] | None:
+    """``detail.newer`` of a 409 ``thread_changed``, ``{}`` when it holds none,
+    or None for each other response (HRD-10d-3)."""
+    from acb_skills.reply_card import THREAD_CHANGED
+
+    if status != 409 or not isinstance(body, dict):
+        return None
+    raw = body.get("detail")
+    if not isinstance(raw, dict) or raw.get("reason") != THREAD_CHANGED:
+        return None
+    newer = raw.get("newer")
+    return dict(newer) if isinstance(newer, dict) else {}
+
+
 def _changed_since(status: int, body: Any) -> dict[str, Any] | None:
     """The draft of a precondition 412 (``detail.error`` is
     ``precondition_failed``), ``{}`` when it holds no draft, or None for each
@@ -509,9 +537,11 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     reason = ""
     code = ""
     changed: dict[str, Any] | None = None
+    newer: dict[str, Any] | None = None
     try:
         body = resp.json()
         changed = _changed_since(resp.status_code, body)
+        newer = _thread_newer(resp.status_code, body)
         if isinstance(body, dict):
             code = str(body.get("code") or "")[:64]
             detail = str(body.get("detail") or body.get("error") or "")
@@ -528,6 +558,13 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         raise _DraftChanged(
             f"Email {method} {path} failed (412): the draft changed.", 412,
             current=changed, detail=safe, fields=fields, route=route_template(path),
+        )
+    if newer is not None:
+        # HRD-10d-3. The message names no value of the newer mail.
+        raise _ThreadChanged(
+            f"Email {method} {path} failed (409): the thread changed.", 409,
+            newer=newer, detail=safe, fields=fields, route=route_template(path),
+            reason=reason, code=code,
         )
     raise GatewayError(
         f"Email {method} {path} failed ({resp.status_code})"
@@ -3095,6 +3132,11 @@ async def compose_reply(
         # The run decides it, never the model. The record keeps it for a Bcc
         # that the member types on the card.
         steer["held"] = True
+    # HRD-10d-3: the flag is read once for this call. Off, the requests are
+    # the requests of before.
+    check_thread = _thread_check_on()
+    if check_thread:
+        steer["thread_head"] = True
     try:
         prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     except GatewayError as exc:
@@ -3119,6 +3161,8 @@ async def compose_reply(
     # run then shows the SAME text and the same Reply or Reply all, so the
     # server writes no new text and the card that it builds again matches.
     _pin_for_whatsapp(draft=form["body"], reply_all=bool(form["reply_all"]))
+    head = str(prep.get("thread_head") or "") if check_thread else ""
+    _bind_thread_head(head)
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
@@ -3145,12 +3189,19 @@ async def compose_reply(
         return refusal.replace("Not sent.", "Nothing was sent or saved.", 1)
     # 2026-11-03: a reply that already left (sent from the Email app, or a
     # reply in the thread after the card) comes back as a fact, not a dict.
-    res = await _act_or_left(_post("/email/reply-card/act", {
-        "message_id": email_id,
-        "card_request_id": answer.request_id,
-        "card_thread_id": answer.thread_id,
-        "answer": answer.answer,
-    }))
+    try:
+        res = await _act_or_left(_post("/email/reply-card/act", {
+            "message_id": email_id,
+            "card_request_id": answer.request_id,
+            "card_thread_id": answer.thread_id,
+            "answer": answer.answer,
+            **({"expect_thread": head} if head else {}),
+        }))
+    except _ThreadChanged as exc:
+        # HRD-10d-3: a newer message came into the thread. Nothing was sent,
+        # and the card's draft stays in Drafts.
+        return _thread_changed_text(form["subject"], exc.newer,
+                                    in_drafts=bool(form["draft_id"]))
     if isinstance(res, str):
         return res
     to, copied = _addr_text(res.get("to")), _addr_text(res.get("cc"))
@@ -6783,6 +6834,16 @@ async def send_email(
     # the words of a card that did nothing (HRD-7) instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     verb = "reply" if reply_to_email_id else "email"
+    head = ""
+    if reply_to_email_id and _thread_check_on():
+        # HRD-10d-3: the newest message of the thread, read before the card.
+        # A fault of the read escapes, so no card shows and nothing is sent.
+        head = str((await _get("/email/thread-head",
+                               {"message_id": reply_to_email_id}) or {}).get("message_id")
+                   or "")
+        if head:
+            payload["expect_thread"] = head
+    _bind_thread_head(head)
     approved = await request_confirmation(
         title=f"Send this {verb}?",
         # A mail body can ask the model to add a hidden recipient or a file.
@@ -6813,7 +6874,11 @@ async def send_email(
         if line:
             return line
         return _not_done(f"The {verb} was not sent.")
-    res = await _post("/email/send", payload)
+    try:
+        res = await _post("/email/send", payload)
+    except _ThreadChanged as exc:
+        # HRD-10d-3: this card saved no draft, so the text says so.
+        return _thread_changed_text(subject, exc.newer, in_drafts=False)
     # Task 3594: the mail went, so the chat keeps the record of the send.
     await _note_sent((res or {}).get("id"),
                      _not_refused([*to, *cc, *(bcc or [])], res))
@@ -8267,6 +8332,63 @@ def _draft_changed_text(
     else:
         lines.append("No field on the card changed. Another part of the draft changed.")
     lines.append(f"  draft_id: {draft_id}")
+    return "\n".join(lines)
+
+
+# ── HRD-10d-3: a newer message in the thread of a reply (task 3824) ────────
+#
+# `chat_failure_modes.md` §6 row HRD-10d-3. Behind the same flag, a reply of
+# `compose_reply` or `send_email` takes the head of its thread before the
+# card: the local id of the newest message that is not a draft. The send
+# then names it as `expect_thread`, and `POST /email/send` reads the thread
+# again. A newer message is a 409 `thread_changed`, and nothing is sent.
+
+
+def _thread_check_on() -> bool:
+    """True when ``CHAT_CARD_PRECONDITION_ORGS`` names the run's org
+    (``ask_tools.card_precondition_on``, THE reader). The org comes from the
+    run binding inside the reader, never from an argument (R5)."""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return False
+    return card_precondition_on()
+
+
+def _bind_thread_head(head: str) -> None:
+    """Put *head* into the facts of the next card as ``thread_head``, or
+    nothing when it is ``""`` (flag off). A late approve (HRD-22) or a stored
+    call (RESUME-2a) then holds it, so a replay after a newer message meets
+    another card text, and the grant does not match."""
+    if not head:
+        return
+    try:
+        from acb_skills.whatsapp_acts import card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    card_facts(thread_head=head)
+
+
+def _thread_changed_text(subject: Any, newer: dict[str, Any], *, in_drafts: bool) -> str:
+    """The answer of a reply that the send refused, because a newer message
+    came into the thread after the card (HRD-10d-3). Nothing was sent.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``). Then the
+    From and the time of the newer message, each through
+    :func:`_changed_value` (a « » fence, one line, capped). *in_drafts* says
+    that the card's draft stays in Drafts. A ``send_email`` card saved none."""
+    reply = f"The reply to {_changed_value(subject)}"
+    kept = (f"{reply} stays in Drafts." if in_drafts
+            else f"{reply} was not saved in Drafts.")
+    lines = [card_outcome_text(CARD_CHANGED_SINCE, f"Nothing was sent. {kept}")]
+    who, when = newer.get("from"), newer.get("received_at")
+    if who or when:
+        lines.append(f"A newer message is in the thread: from {_changed_value(who)}, "
+                     f"at {_changed_value(when)}.")
+    else:
+        lines.append("A newer message is in the thread. It could not be named.")
+    lines.append("Read the thread again with read_thread. Then ask the member what "
+                 "to do before you show a new card.")
     return "\n".join(lines)
 
 
