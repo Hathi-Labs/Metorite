@@ -808,6 +808,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # count is each row of the member.
     _PersonRows("chat_join_rows", "chat_join_log",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-TOF TOF-2b: the tool failure rows of THIS organization that name the
+    # member (``failure_events.member_email``, 30 days of retention). They go
+    # with the member. The clause names the bound org beside RLS. The platform
+    # tables hold no address and stay.
+    _PersonRows("failure_event_rows", "failure_events",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER

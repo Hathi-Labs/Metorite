@@ -1775,3 +1775,17 @@ DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;
 CREATE POLICY pm_epic_contracts_tenant_isolation ON pm_epic_contracts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE failure_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failure_events FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS failure_events_tenant_isolation ON failure_events;
+CREATE POLICY failure_events_tenant_isolation ON failure_events
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE failure_org_days ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failure_org_days FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS failure_org_days_tenant_isolation ON failure_org_days;
+CREATE POLICY failure_org_days_tenant_isolation ON failure_org_days
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

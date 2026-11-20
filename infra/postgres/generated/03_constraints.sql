@@ -3013,3 +3013,27 @@ ALTER TABLE pm_epic_contracts ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_epic_contracts ADD CONSTRAINT pm_epic_contracts_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_epic_contracts_org_idx ON pm_epic_contracts (organization_id);
+
+-- failure_events
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM failure_events WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: failure_events still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE failure_events ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE failure_events ADD CONSTRAINT failure_events_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS failure_events_org_idx ON failure_events (organization_id);
+
+-- failure_org_days
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM failure_org_days WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: failure_org_days still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE failure_org_days ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE failure_org_days ADD CONSTRAINT failure_org_days_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS failure_org_days_org_idx ON failure_org_days (organization_id);
