@@ -119,6 +119,7 @@ import functools
 import itertools
 import json
 import re
+import time
 import unicodedata
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
@@ -1712,6 +1713,36 @@ async def _pass_or_refuse_loader(tools: list[Any], context: Any, function: Any,
     context.result = LOADER_REFUSED_TEXT.format(tool=name)
 
 
+# CSY-2 (task 3401, spec chat_connected_systems.md §3.3): one ``mcp.call`` line for
+# each call of an MCP function, on every path of the gate. The outcome comes from a
+# closed list. The line never holds an argument, a result, a header or a URL path.
+MCP_CALL_OUTCOMES = ("ok", "error", "timeout", "refused",
+                     "card_approved", "card_denied", "card_refused")
+# Surfaces that count as the chat. Any other run (a poll, a job) logs source=job,
+# so a background poll never adds to the chat-use count. The value comes from the
+# run's own log context, never from request input. Unknown fails to "job".
+_CHAT_SOURCES = frozenset({"chat", "shell"})
+
+
+def log_mcp_call(*, server: str, tool: str, outcome: str, read_only: bool, ms: int) -> None:
+    """Log the ``mcp.call`` line. An outcome outside the closed list is a bug."""
+    if outcome not in MCP_CALL_OUTCOMES:
+        outcome = "error"
+    try:
+        import structlog
+        ctx = structlog.contextvars.get_contextvars()
+        source = "chat" if str(ctx.get("source") or "chat").strip().lower() in _CHAT_SOURCES else "job"
+    except Exception:
+        source = "job"
+    try:
+        from acb_common.tenant_redis import current_organization, organization_bound
+        org = current_organization() if organization_bound() else ""
+    except Exception:
+        org = ""
+    _log.info("mcp.call", server=server, tool=tool, outcome=outcome, ms=ms,
+              read_only=read_only, org=org, source=source)
+
+
 def _make_gate_class() -> type:
     from agent_framework import FunctionMiddleware
 
@@ -1748,6 +1779,26 @@ def _make_gate_class() -> type:
             return _owner_of(self.tools, function)
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+            """Gate one call, and log ONE ``mcp.call`` line for it (CSY-2, task 3401)."""
+            rec: dict[str, Any] = {}
+            started = time.monotonic()
+            try:
+                await self._gate(context, call_next, rec)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                rec["outcome"] = "timeout"
+                raise
+            except Exception:
+                rec["outcome"] = "error"
+                raise
+            finally:
+                if rec.get("outcome"):
+                    log_mcp_call(server=rec.get("server", ""), tool=rec.get("tool", ""),
+                                 outcome=rec["outcome"], read_only=bool(rec.get("read_only")),
+                                 ms=int((time.monotonic() - started) * 1000))
+
+        async def _gate(self, context: Any, call_next: Callable[[], Any], rec: dict[str, Any]) -> None:
             from acb_skills.egress import _from_mcp
             from acb_skills.permission_policy import (
                 MCP_MEMBER_RUN,
@@ -1767,9 +1818,11 @@ def _make_gate_class() -> type:
             arguments = _arguments(context)
             if arguments is None:
                 _log.info("mcp.confirm", tool=name, outcome="unreadable_arguments")
+                rec.update(tool=name, outcome="refused")
                 context.result = UNREADABLE_ARGUMENTS_TEXT.format(tool=_shown_name(name))
                 return
             server, remote, meta = self.owner_of(function)
+            rec.update(server=server, tool=remote or name)
             # H-300: the admin's switch on the server. The owner holds it.
             owner = _owner_tool(self.tools, function)
             always = server_always_confirms(owner)
@@ -1796,15 +1849,19 @@ def _make_gate_class() -> type:
                 after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:
+                rec["outcome"] = "refused"
                 context.result = f"[blocked by permission policy: {reason}]"
                 return
             if reason in (MCP_READ_ONLY, MCP_READ_ONLY_KEY, MCP_MEMBER_RUN):
+                # "read_only" in the mcp.call line means that no card ran (spec section 3.3).
+                rec.update(read_only=True, outcome="ok")
                 await call_next()
                 return
             refusal = _card_refusal(self.member_present)
             if refusal is not None:
                 text, code = refusal
                 _log.info("mcp.confirm", server=server, tool=name, outcome=code)
+                rec["outcome"] = "card_refused"
                 context.result = text.format(tool=name)
                 return
             try:
@@ -1814,13 +1871,16 @@ def _make_gate_class() -> type:
                                  acts_as=server_acts_as(owner))
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
+                rec["outcome"] = "card_refused"
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
                 return
             if not await self._confirmed(card):
                 _log.info("mcp.confirm", server=server, tool=name, outcome="denied")
+                rec["outcome"] = "card_denied"
                 context.result = DENIED_TEXT.format(tool=name)
                 return
             _log.info("mcp.confirm", server=server, tool=name, outcome="approved")
+            rec["outcome"] = "card_approved"
             await call_next()
 
         @staticmethod
@@ -1850,6 +1910,7 @@ __all__ = [
     "DIRECT_TOOLS_MAX",
     "LOADER_REFUSED_TEXT",
     "MAX_SERVERS",
+    "MCP_CALL_OUTCOMES",
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",
     "REDACTED",
