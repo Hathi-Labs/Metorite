@@ -128,9 +128,18 @@ this:
   (SEM-1b) alone in its node. The one statement widens the start bound by 6
   periods, and each row names its period. The answer gives the 6 periods in
   `baseline`, oldest first.
-- **No baseline** when any other filter names the day field. Examples are a
-  third end, a `gt`, a `lt`, an `eq`, a leaf in an `any` group, and a filter
-  word. A wider start would not widen that window.
+- **No baseline: the rule.** The day field may hold only its one `.from`
+  and its one `.to`. Any other filter on the day field gives no baseline.
+  Examples are a third end, a `gt`, a `lt`, an `eq`, a leaf in an `any`
+  group, and a filter word. Any filter on another date or datetime field gives none too,
+  in any form. These filters bound the periods before in time, and their
+  figures would be false. A filter on a field that is no date stays. It
+  holds each period in the same way, for example `.in` or a number range.
+- **The size guard.** The wider window costs about 3 times the asked
+  quarter alone. So a module with more than `BASELINE_MAX_RECORDS`
+  (100,000) records gets no baseline. The size is the `total` of
+  `crm_field_fill`, one read by the key of that table. A module with no
+  fill row gets no baseline either. The coverage and the figure stay.
 - **The same figure.** The baseline only adds periods before the asked
   range. The total, the records and the groups of the asked range stay the
   same with a `query`, the filter words, `q` and a text-number measure. The
@@ -141,12 +150,26 @@ this:
 - **`checks`.** It holds the kinds `outlier` (the asked range against the
   periods before it) and `coverage`. A `concentration` stays in `findings`
   (CRM-Q25e), so no finding is in both lists. F1 stays an owner point.
+- **A period that is not over.** When the asked range ends on today or
+  later, in the CRM zone, it has only part of its records. Then it gets no
+  `outlier`. A month or a quarter gets the `part_period` of NUM-1 in its
+  place. That is an `info`, and the tool does not say it first. The clock
+  is the one clock of the CRM routes (`core._now`), read in one place.
+- **Which measure.** Only a `count`, a `sum` and a `sum_amount` get an
+  `outlier`. A min, a max or an average of a period is no figure of the same
+  kind. `weighted` reads deals, which get no baseline.
+- **A coverage minimum.** An answer of fewer than 20 records gets no
+  `coverage` check (`COVERAGE_MIN_RECORDS`). That is the minimum of a
+  concentration in NUM-1. The `coverage` counts stay in the answer.
+- **One flag read.** The route reads the flag once for each request. So an
+  answer holds all three fields, or none of them.
 - **The tool text.** `crm_tools._check_lines` puts each `warn` check before
   the total. The model must say it first and ask "Do you want me to check
   why?" The sentence can hold a field label, which is org text. So it sits
   in the one frame of `acb_skills/untrusted.py`, as data and not as an
   instruction. The text shows the sentence only, never "0 of 0". No tool
-  description or parameter changed.
+  description or parameter changed. A grouped total whose measure field is
+  empty in each record says its checks first too.
 
 NUM-2 gives no baseline to a core entity or to the overlay of an empty core
 slot. A range that is not whole months gets none either. A core entity gets
@@ -156,7 +179,9 @@ the coverage of its measure field only. The three fields `checks`,
 **The cost.** Over 30,000 rows of 3 KB, one October total took 0.27 s with
 the baseline and 0.16 s without it. One quarter took 0.52 s and 0.19 s. The
 statement timeout is 10 s. The scan reads the same rows. The extra time is
-the grouping of the 6 periods.
+the grouping of the 6 periods. The time grows with the records, so the
+size guard above holds the baseline to modules of 100,000 records or fewer.
+Before the flag flip, the owner preview checks the size of each module.
 
 Fences: `tests/unit/test_crm_aggregate_checks.py` and
 `tests/unit/test_crm_aggregate_checks_r8.py`. The R8 file proves each
