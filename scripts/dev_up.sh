@@ -141,9 +141,9 @@ studio_key_env() {
   fi
 }
 
-# GATEWAY_URL (task 2455): the skill tools (studio, crm, knowledge, company
-# search, email context) call the gateway at GATEWAY_URL, and they default to
-# :8080. On a dev machine the local model router listens there, so each tool
+# GATEWAY_URL (task 2455): the skill tools of packages/acb_skills, the agents
+# in apps/agents and the skills in apps/skills call the gateway at GATEWAY_URL,
+# and they default to :8080. On a dev machine the local model router listens there, so each tool
 # call went to the router. The gateway of the stack names its own port.
 #
 # tool_packs_env (task 2455): the chat tool packs that DEV_UP_TOOL_PACKS names,
