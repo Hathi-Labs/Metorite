@@ -322,6 +322,12 @@ class TestTheSendCardsOnARealDatabase:
     async def test_a_file_removed_while_the_card_waited_sends_nothing(
         self, box, monkeypatch,
     ):
+        """A fence of the route logic, not of a production path. No path of
+        production deletes a row of ``email_attachments``, and
+        ``has_attachments`` stays true. So a file removed at the provider is
+        not seen today (spec row HRD-10d-2, known limits). The test deletes
+        the row as an admin, and proves that the route compares each stored
+        row."""
         m = box
         calls: list[dict[str, Any]] = []
 
@@ -446,6 +452,49 @@ class TestTheScheduleCardOnARealDatabase:
         assert out.startswith(_SCHEDULE_HEAD), out
         assert "  Bcc: (empty) → «eve@hrd10d2.test»" in out
         assert _schedules(m) == []
+
+    async def test_the_fire_of_a_schedule_refuses_a_file_added_after_it(
+        self, box, monkeypatch,
+    ):
+        """End to end: the tool stores the schedule with ``files_digest``. Then
+        a file goes onto the draft, and the schedule falls due. The job
+        (``send_later.run_tick``) builds ``DraftExpect`` from the stored row
+        and sends through the real ``send_draft_endpoint``. It refuses: the
+        row is ``failed`` with the files reason, and the provider sends
+        nothing."""
+        from acb_auth import UserContext, UserRole
+        from gateway.routes.email.automation import send_later as sl
+
+        m = box
+        calls: list[dict[str, Any]] = []
+        async with _Session(m) as s:
+            _tool(m, s, monkeypatch, calls, flag=True)
+            out = await _bound(m, agents.schedule_send(m.aid, m.draft, WHEN))
+            assert out.startswith("Scheduled:"), out
+            _add_terms(m)
+            _admin(m, "UPDATE email_scheduled_sends SET send_at = now() - interval '1 minute' "
+                      "WHERE draft_id = CAST(:d AS uuid)")
+
+            async def orgs() -> list[str]:
+                return [m.p.org_a]
+
+            async def member(owner: str, org: str) -> Any:
+                return UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=org)
+
+            monkeypatch.setattr(sl, "_orgs", orgs)
+            monkeypatch.setattr(sl, "_member", member)
+            assert await sl.run_tick() == {}
+        with m.p.admin_engine.connect() as c:
+            row = c.execute(text(
+                "SELECT status, error, expect FROM email_scheduled_sends "
+                "WHERE draft_id = CAST(:d AS uuid)"), {"d": m.draft}).one()
+        expect = row.expect if isinstance(row.expect, dict) else json.loads(row.expect)
+        assert expect["files_digest"]
+        assert row.status == "failed"
+        assert row.error == ("The files of the draft changed after it was scheduled, so "
+                             "it was not sent.")
+        assert m.sent == []
+        assert _draft_left(m)
 
     async def test_with_the_flag_off_the_schedule_stores_the_expect_of_before(
         self, box, monkeypatch,

@@ -1021,6 +1021,46 @@ async def test_a_draft_already_scheduled_keeps_its_text(send: _Gw, monkeypatch) 
     assert not out.startswith("Changed since the card")
 
 
+# ── A read that could not read the files: no card (review item 1) ───────────
+
+
+@pytest.mark.parametrize("tool, lead, act", [
+    ("send_draft", "Not sent.", "Nothing was sent."),
+    ("schedule_send", "Not scheduled.", "Nothing was scheduled."),
+])
+async def test_on_a_failed_file_read_shows_no_card_and_sends_nothing(
+    tool: str, lead: str, act: str, send: _Gw, monkeypatch,
+) -> None:
+    """The read answers ``attachments_status: failed`` and no file. A card
+    would show no file while the files go, so no card shows (fail closed)."""
+    _flag(monkeypatch, ORG)
+    send.draft = _draft(has_attachments=True, attachments=[], attachments_status="failed")
+    args = (BOX, "d1") if tool == "send_draft" else (BOX, "d1", _WHEN)
+    out = await _bound(getattr(agents, tool)(*args))
+    assert out == (f"{lead} {act} The files of the draft could not be read, so the "
+                   "card cannot show them. Try again in a moment.")
+    assert send.cards == []
+    assert [w for w in send.writes if w[0] == "POST"] == []
+    _claims_no_send(out)
+
+
+async def test_off_a_failed_file_read_shows_the_card_of_before(send: _Gw, monkeypatch) -> None:
+    _flag(monkeypatch, "")
+    send.draft = _draft(has_attachments=True, attachments=[], attachments_status="failed")
+    assert await _bound(agents.send_draft(BOX, "d1")) == "Draft sent."
+    assert len(send.cards) == 1
+
+
+async def test_on_a_draft_of_inline_pictures_only_still_shows_its_card(
+    send: _Gw, monkeypatch,
+) -> None:
+    """A read that worked and found no file (each part is an inline picture)
+    is not a failed read: the card shows, and the send goes."""
+    _flag(monkeypatch, ORG)
+    send.draft = _draft(has_attachments=True, attachments=[], attachments_status="ok")
+    assert await _bound(agents.send_draft(BOX, "d1")) == "Draft sent."
+
+
 # ── The route ───────────────────────────────────────────────────────────────
 
 

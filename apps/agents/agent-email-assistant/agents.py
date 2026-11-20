@@ -7947,6 +7947,9 @@ async def _sealed_card(
 ) -> tuple[str, str, dict[str, Any]] | str:
     """``(detail, context, seal)`` of a draft send card, with the text that
     the seal covers (§21 fix round 1, P1-b), or the tool's answer."""
+    unread = _files_unread(draft, lead)
+    if unread:
+        return unread
     seal = await _draft_seal(account_id, draft_id, lead)
     if isinstance(seal, str):
         return seal
@@ -7970,6 +7973,24 @@ async def _sealed_card(
     if not context or len(context) > _CARD_CONTEXT_LIMIT:
         return f"{lead}. {_DRAFT_TOO_LONG_ANSWER}"
     return detail, context, seal
+
+
+#: The act of a send card that shows no card, by the lead of the tool.
+_NOTHING_DONE = {"Not sent": "Nothing was sent.", "Not scheduled": "Nothing was scheduled."}
+
+
+def _files_unread(draft: dict[str, Any], lead: str) -> str:
+    """The answer when the read of the draft could not read its files, or "".
+
+    HRD-10d-2, with ``CHAT_CARD_PRECONDITION_ORGS`` on only. The read answers
+    ``attachments_status: "failed"`` and no file, so a card would show no
+    file while the files go with the draft. No card shows, and nothing goes.
+    Flag off: the card of before."""
+    if draft.get("attachments_status") != "failed" or not _draft_files_version(draft):
+        return ""
+    act = _NOTHING_DONE.get(lead, "Nothing was done.")
+    return (f"{lead}. {act} The files of the draft could not be read, so the card "
+            "cannot show them. Try again in a moment.")
 
 
 def _draft_files_block(files: Any) -> str:
