@@ -1724,16 +1724,39 @@ MCP_CALL_OUTCOMES = ("ok", "error", "timeout", "refused",
 _CHAT_SOURCES = frozenset({"chat", "shell"})
 
 
+def _call_source() -> str:
+    """``chat`` or ``job``, from the run's own log context (unknown reads ``job``)."""
+    try:
+        import structlog
+        ctx = structlog.contextvars.get_contextvars()
+        return "chat" if str(ctx.get("source") or "chat").strip().lower() in _CHAT_SOURCES else "job"
+    except Exception:
+        return "job"
+
+
+async def count_mcp_call(server: str) -> None:
+    """CSY-8 (task 3408): add ONE to the daily chat-call count of *server*, in the org
+    of this run. It counts what the ``mcp.call`` line counts with ``source=chat``: every
+    outcome. A job adds nothing. It never raises, and a fault never fails the call."""
+    try:
+        if _call_source() != "chat" or not server:
+            return
+        from acb_common import mcp_use
+        from acb_common.tenant_redis import current_organization, organization_bound
+
+        if organization_bound():
+            await mcp_use.count_call(current_organization(), server)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # the class only
+        _log.warning("mcp_use.counter_fault", op="count_mcp_call", error=type(exc).__name__)
+
+
 def log_mcp_call(*, server: str, tool: str, outcome: str, read_only: bool, ms: int) -> None:
     """Log the ``mcp.call`` line. An outcome outside the closed list is a bug."""
     if outcome not in MCP_CALL_OUTCOMES:
         outcome = "error"
-    try:
-        import structlog
-        ctx = structlog.contextvars.get_contextvars()
-        source = "chat" if str(ctx.get("source") or "chat").strip().lower() in _CHAT_SOURCES else "job"
-    except Exception:
-        source = "job"
+    source = _call_source()
     try:
         from acb_common.tenant_redis import current_organization, organization_bound
         org = current_organization() if organization_bound() else ""
@@ -1797,6 +1820,8 @@ def _make_gate_class() -> type:
                     log_mcp_call(server=rec.get("server", ""), tool=rec.get("tool", ""),
                                  outcome=rec["outcome"], read_only=bool(rec.get("read_only")),
                                  ms=int((time.monotonic() - started) * 1000))
+                    # CSY-8: the count follows the line, after the call ran.
+                    await count_mcp_call(rec.get("server", ""))
 
         async def _gate(self, context: Any, call_next: Callable[[], Any], rec: dict[str, Any]) -> None:
             from acb_skills.egress import _from_mcp

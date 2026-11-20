@@ -19,6 +19,12 @@ answer. The brief shows them after the admin's text, under "The server says
 escape, so the line is 4,847 bytes at most. The `mcp.instructions` line logs
 the length only. Fences: `test_mcp_server_instructions.py`, `test_server_brief.py`.
 
+**CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
+`McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
+days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
+`CONNECTED_SYSTEMS_ORGS` on. `GET /integrations/mcp/{name}/use` gives the 7 days, and it needs
+`integrations:manage`.
+
 **The seam owners.** This spec adds no second seam. It extends four owners:
 
 | Topic | Owner | What this spec adds |
@@ -439,7 +445,7 @@ model, so they ship with no flag.
 | **CSY-5** | 3405 | 2 | The reasons line of §3.6 | Each reason of the closed list gives its line. A server that the grant refuses gives no line. The `mail` line names no mail | `test_connected_systems_block.py`, extended | STANDARD · AGENT-SAFE dark | CSY-1 |
 | **CSY-6** | 3406 | 2 | BUILT dark, 2026-11-19. The server's instructions (§3.5), kept by `RunScopedMCPTool` and carried by the brief | A fake server's instructions reach the block, capped and framed. A control character is escaped. The log holds the length only | `test_mcp_server_instructions.py`, new. `test_server_brief.py` | HIGH: third-party text · AGENT-SAFE dark | CSY-1. Read CA-1 (task 1029) first |
 | **CSY-7** | 3407 | 3 | `PATCH /integrations/mcp/{name}` takes `description` and `words`. The Add form's hint (§3.7) | An admin with `integrations:manage` edits both. A member without it gets 403. Org B cannot touch org A's row | `test_integrations_connections.py`, `test_integrations_connections_r8.py`, extended | STANDARD · AGENT-SAFE | none |
-| **CSY-8** | 3408 | 3 | The daily use counter (§3.7), and its read for the panel | Each call adds one to its org and server. A key holds the tenant prefix. The read gives 7 days | `test_mcp_use_counter.py`, new | STANDARD · AGENT-SAFE | CSY-2 |
+| **CSY-8** | 3408 | 3 | The daily use counter (§3.7), and its read for the panel | Each call adds one to its org and server. A key holds the tenant prefix. The read gives 7 days | `test_mcp_use_counter.py`, new | STANDARD · AGENT-SAFE | CSY-2 · **BUILT 2026-11-20.** Keys: `mcp-use:<server>:<date>`, `mcp-use-last:<server>`, `mcp-left-out:<server>:<reason>:<date>`. Read: `GET /integrations/mcp/{name}/use` |
 | **CSY-9** | 3409 | 3 | The panel: what the chat reads, chat use, the left-out turns, the read-only nudge | Visual review in light and dark, compact density, a changed accent, and phone width. The nudge shows only for a destructive tool with no switch on | Vitest for `ConnectionSheet.tsx`, extended | STANDARD UI · the owner sees the captures before the merge | CSY-7, CSY-8 |
 | **CSY-10** | 3410 | 3 | The step and the tool row keep the server's label (§3.8) | A running MCP call reads "<label>: <tool in words>". A step never holds tool output | `test_run_last_step.py`, extended. Vitest for the tool row | STANDARD · AGENT-SAFE | none |
 
