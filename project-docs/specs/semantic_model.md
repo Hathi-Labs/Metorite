@@ -1512,7 +1512,9 @@ Each builder holds one closed list:
 step asked. `requests` is the count of requests that went out. `decide` is the
 reason that the step ended, or `None` when the step did not run. The reasons
 are `off`, `done`, `no_payer`, `member_left`, `cooldown`, `token_cap`,
-`run_cap`, `daily_cap` and `no_answer`.
+`run_cap`, `daily_cap`, `counter` (the day counter cannot count, so the step
+spends nothing), `no_answer` and `failed`. The reason `failed` keeps the items
+that came back before the fault.
 
 **The cost (a bound).** One entity costs one request. One run costs at most
 12 requests (`CATALOGUE_REQUESTS`) and 24,000 estimated tokens

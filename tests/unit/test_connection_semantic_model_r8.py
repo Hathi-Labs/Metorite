@@ -27,7 +27,10 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS), with two organizations:
     ``octet_length(body::text)`` equal to the count of ``body_bytes``;
 11. (SEM-13a) a draft of the profiler saves through ``save_draft`` with
     ``made_by`` ``code``, an empty ``ai`` section and ``untrusted_origin``
-    false, and its body passes ``shape_only``.
+    false, and its body passes ``shape_only``;
+12. (SEM-13b) with the decide step in ``on`` and a FAKE decide call, a
+    draft of the profiler saves its ``ai`` items through ``save_draft``,
+    with ``made_by`` ``ai``, and its body passes ``shape_only``.
 
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
@@ -635,3 +638,112 @@ async def test_11_a_profiler_draft_saves_through_the_writer(db, monkeypatch) -> 
         other = await profiler.profile(db.org_b, cid, lister=_lister, caller=_caller)
     assert other.outcome == "refused:connection"
     assert len(_rows(db, cid)) == 1
+
+
+# ── 12. A profiler draft with the decide step (SEM-13b) ─────────────────────
+
+
+async def test_12_a_profiler_draft_with_ai_items_saves_through_the_writer(
+        db, monkeypatch) -> None:
+    """SEM-13b (``semantic_model.md`` §10.7): with ``connection.map_model``
+    in ``on`` and a FAKE ``acb_llm.decide``, ``profiler.profile`` writes the
+    chosen closed words into the ``ai`` section through ``save_draft`` on a
+    real Postgres. The row has ``made_by`` ``ai``, and its body passes
+    ``shape_only``. No live call: the decide call, the payer check and the
+    day counter are fakes.
+
+    Mutation: write the text of an item from the answer and not from
+    ``ai_description``, and the writer refuses the body, so this case fails."""
+    import json
+    from types import MappingProxyType
+
+    import acb_llm
+    from acb_common import get_settings, tenant_redis
+    from acb_common.db import tenant_session
+    from acb_common.tenant_redis import TenantRedis
+    from gateway.connections import mcp_tools, profiler
+    from gateway.crm_sync import catalogue as cat
+    from gateway.crm_sync import map_pipeline as mp
+    from gateway.crm_sync import note_labels
+    from gateway.crm_sync.catalogue import shape_only
+    from gateway.studio import mcp_actions, mcp_approvals
+
+    from tests.unit.test_feed_decide import FakeRedis
+    from tests.unit.test_studio_mcp_tools import RawRedis
+
+    name = f"sem13b-{uuid.uuid4().hex[:8]}"
+    with db.admin_engine.begin() as c:
+        cid = c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, status, provider_meta, connected_by) VALUES (CAST(:o AS uuid), :p, "
+            "'integrations', 'org', 'connected', CAST(:m AS jsonb), 'admin@example.test') "
+            "RETURNING id::text"),
+            {"o": db.org_a, "p": f"mcp:{name}", "m": json.dumps({
+                "transport": "http", "url": "https://books.example.test/mcp",
+                "agent_scope": ["*"], "label": name})}).scalar_one()
+    db.made.append(cid)
+    tool = {"name": "vouchers", "description": "", "annotations": {"readOnlyHint": True},
+            "inputSchema": {"type": "object", "properties": {}}}
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(RawRedis()))
+    monkeypatch.setattr(mcp_tools, "_LIVE_IN_FLIGHT", {})
+    day = FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(day))
+    monkeypatch.setattr(get_settings(), "decide_feature_modes", "connection.map_model=on",
+                        raising=False)
+
+    async def _left(org: str, member: str) -> None:
+        return None
+
+    monkeypatch.setattr(note_labels, "_member_left", _left)
+
+    def _pick(choice: str) -> Any:
+        return acb_llm.ChoiceAnswer(choice=choice, probabilities={choice: 0.9, "none": 0.1},
+                                    confidence=0.9)
+
+    script = {"purpose": _pick("invoice"), "part.date": _pick("f2"), "unit.f1": _pick("count")}
+    calls: list[Any] = []
+
+    async def _decide(state: Any, questions: Any, **kw: Any) -> Any:
+        calls.append(state)
+        answers = {q: script.get(q, _pick("none")) for q in questions}
+        return acb_llm.Decision(answers=MappingProxyType(answers), request_id="r1")
+
+    monkeypatch.setattr(acb_llm, "decide", _decide)
+
+    async def _lister(server: Any) -> list[Any]:
+        return [tool]
+
+    async def _caller(server: Any, called: str, args: dict[str, Any]) -> Any:
+        return {"structuredContent": {
+            "columns": [{"name": "Custom_Field_10", "type": "int64"},
+                        {"name": "Voucher_Date", "type": "date"}],
+            "rows": [[1, "2024-04-01"], [2, "2025-03-31"]]}}
+
+    async with tenant_engine_scope(_app_dsn(db)):
+        async with tenant_session(db.org_a) as s:
+            await mcp_approvals.upsert(
+                s, server=name, tool="vouchers", member="admin@example.test",
+                text_hash=mcp_actions.tool_text_hash(mcp_tools.clean_tools([tool]).tools[0]))
+        out = await profiler.profile(db.org_a, cid, lister=_lister, caller=_caller)
+    assert out.outcome == profiler.SAVED, out
+    assert out.decide == "done" and out.requests == 1 and len(calls) == 1
+    assert calls[0] == {"entity": {"key": "vouchers"}, "fields": {
+        "f1": {"key": "Custom_Field_1_0", "type": "integer"},
+        "f2": {"key": "Voucher_Date", "type": "date"}}}
+    with db.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT organization_id::text, state, made_by, body "
+            "FROM connection_semantic_models WHERE connection_id = CAST(:c AS uuid)"),
+            {"c": cid}).one()
+    assert row.organization_id == db.org_a and row.state == "draft" and row.made_by == "ai"
+    body = row.body if isinstance(row.body, dict) else json.loads(row.body)
+    assert shape_only(body) is None
+    assert body["ai"]["entities"] == [{"key": "vouchers", "purpose": "invoice",
+                                       "text": cat.PURPOSE_MEANINGS["invoice"]}]
+    assert sorted(body["ai"]["fields"], key=lambda f: f["key"]) == [
+        {"entity": "vouchers", "key": "Custom_Field_1_0", "unit": "count",
+         "text": "Its unit is count."},
+        {"entity": "vouchers", "key": "Voucher_Date", "meaning": "date",
+         "text": "It is the main business date of a record."}]
+    assert day.store == {
+        f"cc:{db.org_a}:connection_map_model:requests:{mp._utc_date()}": "1"}

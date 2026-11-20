@@ -115,6 +115,11 @@ apps that came after email:
   (``acb_skills.decide_tools.ask_typed``) use the ``projects.`` area. The
   general System-1 ``decide`` tool starts no cool-down.
 
+WS-SEM SEM-13b (``project-docs/specs/semantic_model.md`` §10.7) adds the
+``connection.`` prefix and its one feature, ``connection.map_model``. It reads
+``connection_model_orgs``, bills ``integrations`` and starts the cool-down on
+a 402 only. It adds no flag.
+
 Fences: ``tests/unit/test_decide_seam.py``,
 ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
@@ -141,6 +146,8 @@ __all__ = [
     "ALL_ORGS",
     "CHOICE_OPTION_LIMIT",
     "CHOICE_TEXT_BUDGET",
+    "CONNECTION_FEATURES",
+    "CONNECTION_PREFIX",
     "CORRECTIONS_CLIP",
     "CRITERION_CLIP",
     "CRM_FEATURES",
@@ -280,6 +287,10 @@ FEATURE_TABLE: tuple[Feature, ...] = (
     Feature("projects.enrich", "projects", "mixed", on=True),
     Feature("projects.delegate_pick", "projects", "choice", on=True),
     Feature("projects.propose_picks", "projects", "choice", on=True),
+    # WS-SEM SEM-13b (`semantic_model.md` §10.7): step 3 of the profiler of a
+    # connection. It has no old path, so `on` is legal. It starts `off`, and a
+    # mode other than `off` is an owner flip.
+    Feature("connection.map_model", "connection", "choice", on=True),
 )
 
 
@@ -317,6 +328,10 @@ CRM_FEATURES: tuple[str, ...] = _group("crm")
 #: ``projects``.
 PROJECTS_FEATURES: tuple[str, ...] = _group("projects")
 
+#: WS-SEM SEM-13b: the features of the profiler of a connection. They read
+#: ``connection_model_orgs`` and bill ``integrations``.
+CONNECTION_FEATURES: tuple[str, ...] = _group("connection")
+
 #: A feature with this prefix takes its organization list from
 #: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
 MY_DAY_PREFIX = "my_day."
@@ -329,6 +344,11 @@ CRM_PREFIX = "crm."
 #: ``projects_decide_orgs`` (DEC-1).
 PROJECTS_PREFIX = "projects."
 
+#: A feature with this prefix takes its organization list from
+#: ``connection_model_orgs`` (``CONNECTION_MODEL_ORGS``, ``semantic_model.md``
+#: §10.7). It adds no flag of its own.
+CONNECTION_PREFIX = "connection."
+
 #: What each non-email prefix decides. A name with no prefix here is an email
 #: feature: it reads ``decide_feature_orgs`` and keeps the app of the run
 #: context, which is ``email``.
@@ -336,6 +356,9 @@ PREFIXES: tuple[Prefix, ...] = (
     Prefix(MY_DAY_PREFIX, "my_day_decide_orgs", "my_day", only_402=True),
     Prefix(CRM_PREFIX, "crm_decide_orgs", "crm", only_402=True),
     Prefix(PROJECTS_PREFIX, "projects_decide_orgs", "projects", only_402=True),
+    # SEM-13b: the app is `mcp.OWNING_APP`. A slug is an attribution label of
+    # `usage_event`, and it adds no price.
+    Prefix(CONNECTION_PREFIX, "connection_model_orgs", "integrations", only_402=True),
 )
 
 #: Every feature of the registry, in table order.

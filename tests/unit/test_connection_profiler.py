@@ -775,3 +775,334 @@ def test_the_write_holds_no_live_slot(pw, monkeypatch) -> None:
     monkeypatch.setattr(semantic_model, "save_draft", _save)
     assert _run(pw).outcome == profiler.SAVED
     assert held == [{}] and mcp_tools._LIVE_IN_FLIGHT == {}
+
+
+# ── SEM-13b: the decide step (§10.7) ────────────────────────────────────────
+#
+# Each test fakes ``acb_llm.decide``, as ``_fake`` of ``test_decide_seam.py``
+# does. No test makes a network call or a live call. The day counter is the
+# REAL ``map_pipeline.reserve_requests`` over a fake Redis.
+
+PAYER = "admin@example.test"
+
+
+def _answer(choice: str, p: float = 0.9, probabilities: Any = None) -> Any:
+    import acb_llm
+
+    probs = probabilities if probabilities is not None else {choice: p, "none": round(1 - p, 4)}
+    return acb_llm.ChoiceAnswer(choice=choice, probabilities=probs, confidence=p)
+
+
+def _mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from gateway.connections import profiler_decide
+
+    value = f"{profiler_decide.FEATURE}={mode}" if mode else ""
+    monkeypatch.setattr(get_settings(), "decide_feature_modes", value, raising=False)
+
+
+@pytest.fixture
+def dw(pw, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The world of ``pw``, with the decide step open: the mode ``on``, a
+    payer on the row, a fake ``_member_left``, the day counter over a fake
+    Redis, and a fake ``acb_llm.decide`` that answers from ``script``."""
+    import acb_llm
+    from acb_common import tenant_redis
+    from gateway import decide_features as df
+    from gateway.crm_sync import note_labels
+
+    from tests.unit.test_feed_decide import FakeRedis
+
+    pw.row.connected_by = PAYER
+    pw.day = FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(pw.day))
+    pw.left, pw.left_asked = None, []
+
+    async def _left(org: str, member: str) -> str | None:
+        pw.left_asked.append(member)
+        return pw.left
+
+    monkeypatch.setattr(note_labels, "_member_left", _left)
+    pw.script, pw.decides, pw.open_at_decide, pw.open = {}, [], [], [0]
+
+    async def _decide(state: Any, questions: Any, **kw: Any) -> Any:
+        pw.decides.append({"state": state, "questions": dict(questions), **kw})
+        pw.open_at_decide.append(pw.open[0])
+        answers = {qid: pw.script.get(qid, _answer("none")) for qid in questions}
+        return acb_llm.Decision(answers=answers, request_id=f"r{len(pw.decides)}")
+
+    monkeypatch.setattr(acb_llm, "decide", _decide)
+    _mode(monkeypatch, "on")
+    df._cooldown_until.clear()
+    yield pw
+    df._cooldown_until.clear()
+
+
+def _day_key(namespace: str) -> str:
+    from gateway.crm_sync import map_pipeline as mp
+
+    return f"cc:{ORG}:{namespace}:requests:{mp._utc_date()}"
+
+
+#: The fields of ``_rows()``, in the order of the draft: their refs.
+REFS = {"f1": ("id", "integer"), "f2": ("name", "string"), "f3": ("amount_due", "number"),
+        "f4": ("created", "date"), "f5": ("ref", "integer")}
+
+
+def test_the_decide_state_holds_no_value(dw) -> None:
+    dw.tools = [_tool("invoices"), _tool("parties")]
+    dw.answers["parties"] = {"structuredContent": {
+        "Customers": [{"Display_Name": PLANTED, "Balance_Note": "Rs. 4,500 due"}]}}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.requests == 2 and out.decide == "done"
+    states = [c["state"] for c in dw.decides]
+    assert [st["entity"]["key"] for st in states] == ["invoices", "parties"]
+    assert states[0] == {"entity": {"key": "invoices"}, "fields": {
+        ref: {"key": key, "type": kind} for ref, (key, kind) in REFS.items()}}
+    for state in states:
+        assert set(state) == {"entity", "fields"} and set(state["entity"]) == {"key"}
+        assert all(set(f) == {"key", "type"} for f in state["fields"].values())
+        text = json.dumps(state)
+        for value in (PLANTED, str(PLANTED_NUMBER), "10.5", "4,500", "Rs.", "2024",
+                      "records", "label", URL):
+            assert value not in text
+    # The questions name fields as objects, never a value.
+    asked = json.dumps([str(q) for c in dw.decides for q in c["questions"].values()])
+    for value in (PLANTED, str(PLANTED_NUMBER), "10.5"):
+        assert value not in asked
+
+
+def test_a_closed_word_builds_the_ai_text_and_shape_only_passes(dw) -> None:
+    from gateway.crm_sync import catalogue as cat
+
+    dw.tools = [_tool("invoices")]
+    dw.script = {"purpose": _answer("invoice"), "part.amount": _answer("f3"),
+                 "part.date": _answer("f4"), "unit.f3": _answer("currency"),
+                 "tax.f3": _answer("includes_gst"), "unit.f1": _answer("count")}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "done"
+    assert out.requests == 1 and out.questions == 11
+    [call] = dw.decides
+    assert call["member"] == PAYER and call["module_slug"] == "integrations"
+    body = dw.saved[0]["body"]
+    assert shape_only(body) is None and semantic_model.made_by(body) == "ai"
+    assert body["ai"]["entities"] == [{"key": "invoices", "purpose": "invoice",
+                                       "text": cat.PURPOSE_MEANINGS["invoice"]}]
+    fields = {f["key"]: f for f in body["ai"]["fields"]}
+    assert fields["amount_due"] == {
+        "entity": "invoices", "key": "amount_due", "meaning": "amount", "unit": "currency",
+        "tax": "includes_gst",
+        "text": "It is the main money field of a record. Its unit is currency. "
+                "Tax: Includes GST."}
+    assert fields["created"]["text"] == "It is the main business date of a record."
+    assert fields["id"] == {"entity": "invoices", "key": "id", "unit": "count",
+                            "text": "Its unit is count."}
+    assert set(fields) == {"amount_due", "created", "id"}
+
+
+def test_the_questions_bind_the_closed_lists(dw) -> None:
+    from gateway.connections import profiler_decide as pd
+    from gateway.crm_sync import catalogue as cat
+    from gateway.crm_sync.questions import EVIDENCE_WORDS
+
+    dw.tools = [_tool("invoices")]
+    _run(dw)
+    questions = dw.decides[0]["questions"]
+    assert set(questions["purpose"].criteria) == {*cat.PURPOSES, "none"}
+    assert set(questions["unit.f3"].criteria) == {*cat.UNITS, "none"}
+    assert set(questions["tax.f3"].criteria) == {*EVIDENCE_WORDS, "none"}
+    assert set(questions["part.amount"].criteria) == {"f1", "f3", "f5", "none"}
+    assert set(questions["part.date"].criteria) == {"f4", "none"}
+    assert set(questions["part.status"].criteria) == {"f2", "none"}
+    assert set(questions["part.parent"].criteria) == {"f1", "f2", "f5", "none"}
+    assert {q for q in questions if q.startswith(("unit.", "tax."))} == {
+        "unit.f1", "tax.f1", "unit.f3", "tax.f3", "unit.f5", "tax.f5"}
+    assert pd.NUMBER_FIELDS_MAX == 5 and len(questions) <= 16
+
+
+@pytest.mark.parametrize("qid,bad", [
+    ("purpose", _answer("boss")),
+    ("unit.f3", _answer("litres")),
+    ("tax.f3", _answer("vat")),
+    ("part.amount", _answer("f99")),
+    ("part.amount", _answer("f4")),
+    ("purpose", None),
+])
+def test_an_answer_outside_the_list_writes_no_ai_item(dw, qid, bad) -> None:
+    """An answer outside its closed list, an option of another question, a
+    refusal and garbage give no item. The run still saves the draft."""
+    import acb_llm
+
+    dw.tools = [_tool("invoices")]
+    dw.script = {qid: bad if bad is not None else acb_llm.BooleanAnswer(probability=0.99)}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "done"
+    assert dw.saved[0]["body"]["ai"] == {}
+
+
+@pytest.mark.parametrize("answer", [
+    _answer("invoice", p=0.6),
+    _answer("invoice", p=0.8, probabilities={"invoice": 0.8, "deal": 0.7}),
+    _answer("none"),
+])
+def test_an_unsure_answer_writes_no_ai_item(dw, answer) -> None:
+    dw.tools = [_tool("invoices")]
+    dw.script = {"purpose": answer}
+    assert _run(dw).outcome == profiler.SAVED
+    assert dw.saved[0]["body"]["ai"] == {}
+
+
+def test_a_field_that_two_parts_choose_gets_no_meaning(dw) -> None:
+    dw.tools = [_tool("invoices")]
+    dw.script = {"part.amount": _answer("f1"), "part.parent": _answer("f1")}
+    assert _run(dw).outcome == profiler.SAVED
+    assert dw.saved[0]["body"]["ai"] == {}
+
+
+@pytest.mark.parametrize("connected_by", [None, "", "migrated-from-mcp-servers", "admin"])
+def test_no_payer_spends_nothing(dw, connected_by) -> None:
+    dw.tools = [_tool("invoices")]
+    dw.row.connected_by = connected_by
+    dw.script = {"purpose": _answer("invoice")}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "no_payer"
+    assert out.requests == 0 and dw.decides == [] and dw.day.names == []
+    assert dw.left_asked == [] and dw.saved[0]["body"]["ai"] == {}
+
+
+@pytest.mark.parametrize("left", ["no_org", "other_org", "unverified"])
+def test_a_departed_payer_spends_nothing(dw, left) -> None:
+    dw.tools = [_tool("invoices")]
+    dw.left = left
+    dw.script = {"purpose": _answer("invoice")}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "member_left"
+    assert dw.left_asked == [PAYER]
+    assert out.requests == 0 and dw.decides == [] and dw.day.names == []
+    assert dw.saved[0]["body"]["ai"] == {}
+
+
+def test_the_day_counter_is_its_own_key(dw) -> None:
+    dw.tools = [_tool("bills"), _tool("invoices")]
+    out = _run(dw)
+    assert out.requests == 2
+    own = _day_key("connection_map_model")
+    assert set(dw.day.names) == {own} and dw.day.store == {own: "2"}
+    assert _day_key("crm_map_pipeline") not in dw.day.store
+
+
+def test_the_crm_day_counter_key_is_unchanged(monkeypatch) -> None:
+    """``reserve_requests`` with no ``namespace`` writes the CRM key of
+    before, and nothing else."""
+    import asyncio
+
+    from acb_common import tenant_redis
+    from gateway.crm_sync import map_pipeline as mp
+
+    from tests.unit.test_feed_decide import FakeRedis
+
+    raw = FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(raw))
+    assert mp.NAMESPACE == "crm_map_pipeline"
+    assert asyncio.run(mp.reserve_requests(ORG, "2026-11-20", 2)) is True
+    assert asyncio.run(mp.reserve_requests(ORG, "2026-11-20", 39)) is False
+    key = f"cc:{ORG}:crm_map_pipeline:requests:2026-11-20"
+    assert set(raw.names) == {key} and raw.store == {key: "2"}
+
+
+@pytest.mark.parametrize("cap", ["run_cap", "token_cap", "daily_cap"])
+def test_the_caps_stop_the_decide_step(dw, monkeypatch, cap) -> None:
+    """A cap stops the step. The run saves the draft with the items of the
+    requests that came back, and no other."""
+    from gateway.connections import profiler_decide as pd
+
+    dw.tools = [_tool("bills"), _tool("invoices")]
+    dw.script = {"purpose": _answer("invoice")}
+    if cap == "run_cap":
+        monkeypatch.setattr(pd, "REQUESTS_CAP", 1)
+    elif cap == "token_cap":
+        monkeypatch.setattr(pd, "TOKENS_CAP", 1)
+    else:
+        dw.day.store[_day_key("connection_map_model")] = str(pd.DAILY_CAP - 1)
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == cap
+    body = dw.saved[0]["body"]
+    assert shape_only(body) is None
+    if cap == "token_cap":
+        assert out.requests == 0 and dw.decides == [] and body["ai"] == {}
+    else:
+        assert out.requests == 1 and len(dw.decides) == 1
+        assert [e["key"] for e in body["ai"]["entities"]] == ["bills"]
+    if cap == "daily_cap":
+        assert dw.day.store[_day_key("connection_map_model")] == str(pd.DAILY_CAP)
+
+
+def test_a_same_shape_asks_nothing(dw) -> None:
+    dw.tools = [_tool("invoices")]
+    first = _run(dw)
+    assert first.outcome == profiler.SAVED and len(dw.decides) == 1
+    names = list(dw.day.names)
+    dw.approved = SimpleNamespace(shape_hash=first.shape_hash)
+    out = _run(dw)
+    assert out.outcome == profiler.SAME and out.requests == 0 and out.decide is None
+    assert len(dw.decides) == 1 and dw.day.names == names and len(dw.saved) == 1
+
+
+def test_mode_off_asks_nothing(dw, monkeypatch) -> None:
+    _mode(monkeypatch, "")
+    dw.tools = [_tool("invoices")]
+    dw.script = {"purpose": _answer("invoice")}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "off" and out.requests == 0
+    assert dw.decides == [] and dw.day.names == [] and dw.left_asked == []
+    assert dw.saved[0]["body"]["ai"] == {}
+
+
+def test_an_org_outside_the_list_asks_nothing(dw, monkeypatch) -> None:
+    """The mode is ``on``, but ``CONNECTION_MODEL_ORGS`` names another org.
+    The decide feature reads the same setting as the profiler, so the run
+    stops at the flag: no list, no ask and no write."""
+    monkeypatch.setattr(get_settings(), "connection_model_orgs", str(uuid.uuid4()),
+                        raising=False)
+    dw.tools = [_tool("invoices")]
+    out = _run(dw)
+    assert out.outcome == profiler.OFF and dw.decides == [] and dw.saved == []
+
+
+def test_mode_shadow_writes_no_ai_item(dw, monkeypatch) -> None:
+    _mode(monkeypatch, "shadow")
+    dw.tools = [_tool("invoices")]
+    dw.script = {"purpose": _answer("invoice"), "unit.f3": _answer("currency")}
+    out = _run(dw)
+    assert out.outcome == profiler.SAVED and out.decide == "done"
+    assert out.requests == 1 and len(dw.decides) == 1
+    body = dw.saved[0]["body"]
+    assert body["ai"] == {} and semantic_model.made_by(body) == "code"
+
+
+def test_the_decide_runs_with_no_session_open(dw, monkeypatch) -> None:
+    import gateway.db
+
+    real = gateway.db.tenant_session
+
+    @asynccontextmanager
+    async def _counted(org: str | None = None):
+        dw.open[0] += 1
+        try:
+            async with real(org) as db:
+                yield db
+        finally:
+            dw.open[0] -= 1
+
+    monkeypatch.setattr(gateway.db, "tenant_session", _counted)
+    opened: list[int] = []
+    read = semantic_model.read_approved
+
+    async def _read(db: Any, cid: Any) -> Any:
+        opened.append(dw.open[0])
+        return await read(db, cid)
+
+    monkeypatch.setattr(semantic_model, "read_approved", _read)
+    dw.tools = [_tool("bills"), _tool("invoices")]
+    assert _run(dw).outcome == profiler.SAVED
+    assert opened == [1], "the read runs inside a session"
+    assert dw.open_at_decide == [0, 0] and dw.open[0] == 0
