@@ -119,7 +119,8 @@ def invoices(ns, monkeypatch):
     # Org A also mirrors Works, the module of item 9.
     _mirror_org(ns, a, [_module("Invoices"), _module("Works"), _module("Places"),
                         _module("Twins"), _module("Halves"), _module("Bits"),
-                        _module("Bavg")])
+                        _module("Bavg"), _module("Mv"), _module("B50"),
+                        _module("Months")])
     _mirror_org(ns, b, [_module("Invoices")])
     for org in (a, b):
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
@@ -974,6 +975,10 @@ async def test_on_the_list_the_cut_continues_on_page_2(bits, app_engine) -> None
                        group_field="Site", group_page=2)
     keys = [g["key"] for g in first["groups"]] + [g["key"] for g in second["groups"]]
     assert len(keys) == len(set(keys)) == 51 and first["next_group_page"] == 2
+    # Round 7, the boundary of 51: the exact cut keeps "Aaa" (31.005, which
+    # rounds to 31.01 as SQL rounds it, and sorts first by its name), and
+    # page 2 holds "Bbb" alone.
+    assert first["groups"][-1]["key"] == "ka" and [g["key"] for g in second["groups"]] == ["kb"]
 
 
 @pytest.fixture
@@ -1064,3 +1069,76 @@ async def test_the_query_filters_every_paged_read(invoices, app_engine, monkeypa
     assert {g.get("key"): g["value"] for g in walk} == _query_truth(invoices, a,
                                                                     by_month=False)
     assert len(walk) == len({g.get("key") for g in walk})
+
+
+# ── 17. 50 groups or fewer keep the order of before, flag on (round 7) ───────
+
+_NOTE_DEFS = [*_HALF_DEFS, ("Notes", "text", None, False, False),
+              ("Visit_Date", "date", None, False, False)]
+
+
+def _note_rows(p: Any, org: str, module: str, rows: list[tuple[str, dict]]) -> None:
+    _defs(p, org, f"module:{module}", _NOTE_DEFS)
+    with p.admin_engine.begin() as c:
+        for ext, fields in rows:
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), :m, 'zoho', :e, 'Fiber', "
+                "CAST(:f AS jsonb))"),
+                {"o": org, "m": module, "e": f"{module}-{ext}", "f": json.dumps(fields)})
+
+
+def _site(site: str, name: str, amt: Any, notes: str = "plain") -> dict:
+    return {"Site": {"id": site, "name": name}, "Amt": amt, "Notes": notes}
+
+
+@pytest.fixture
+def few(invoices):
+    """Mv: 36 sites of 50, "Aaa" 31.005 and "Bbb" 31.01, all with Notes
+    "plain", and 40 more sites with Notes "other", so the filter leaves 38
+    groups. B50: 48 sites of 50, "Aaa" and "Bbb": exactly 50 groups.
+    Months: 60 records, one in each month from 2020-01."""
+    a = invoices.org_a
+    _note_rows(invoices, a, "Mv", [
+        *((f"s{n}", _site(f"s{n:02d}", f"B{n:02d}", 50)) for n in range(36)),
+        *((f"o{n}", _site(f"o{n:02d}", f"O{n:02d}", 70, "other")) for n in range(40)),
+        ("xa", _site("ka", "Aaa", 31.005)), ("xb", _site("kb", "Bbb", 31.01))])
+    _note_rows(invoices, a, "B50", [
+        *((f"s{n}", _site(f"s{n:02d}", f"B{n:02d}", 50)) for n in range(48)),
+        ("xa", _site("ka", "Aaa", 31.005)), ("xb", _site("kb", "Bbb", 31.01))])
+    _note_rows(invoices, a, "Months", [
+        (f"m{n}", {**_site(f"s{n:02d}", f"B{n:02d}", 1),
+                   "Visit_Date": f"{2020 + n // 12}-{1 + n % 12:02d}-15"})
+        for n in range(60)])
+    return invoices
+
+
+async def test_fifty_groups_or_fewer_keep_the_order_of_before(few, app_engine) -> None:
+    """Round 7: on the list, an answer of 50 groups or fewer has no page 2,
+    so it keeps main's order byte for byte: "Bbb" (31.01) before "Aaa"
+    (shown 31.0), and no ``next_group_page``. The verifier's Mv input (38
+    groups after the filter) and the boundary of exactly 50 groups."""
+    a = few.org_a
+    mv = await _get(few, a, entity="module:Mv", measure="sum", field="Amt",
+                    group_field="Site", **{"field.Notes": "plain"})
+    b50 = await _get(few, a, entity="module:B50", measure="sum", field="Amt",
+                     group_field="Site")
+    print("BASECUT", json.dumps({"mv": mv.text, "b50": b50.text}))
+    for res, count in ((mv, 38), (b50, 50)):
+        body = res.json()
+        assert len(body["groups"]) == count and "next_group_page" not in body
+        assert [g["key"] for g in body["groups"][-2:]] == ["kb", "ka"]
+    assert {"mv": mv.text, "b50": b50.text} == {k: _BASE_CUT[k] for k in ("mv", "b50")}
+
+
+async def test_q_or_a_date_group_never_offers_a_page_2(few, places, app_engine) -> None:
+    """Round 7: ``q`` (its near pass) and a date bucket cannot continue in
+    the order of the value. With more than 50 groups and the flag on, such
+    an answer carries no ``next_group_page``, and page 2 is page 1 again."""
+    a = few.org_a
+    for query in ({"entity": "module:Places", "group_field": "Site", "q": "Fiber"},
+                  {"entity": "module:Months", "group_field": "Visit_Date",
+                   "bucket": "month"}):
+        first = await _ok(few, a, **query)
+        assert first["omitted"] > 0 and "next_group_page" not in first, query
+        assert await _ok(few, a, **query, group_page=2) == first, query

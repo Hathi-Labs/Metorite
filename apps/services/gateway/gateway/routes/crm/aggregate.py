@@ -79,13 +79,14 @@ pair, such as a site and a month. At most one of the two is a date, and
 ``group_page_size`` (1 to :data:`GROUP_PAGE_MAX`, default :data:`MAX_GROUPS`),
 largest value first, then by each key. With ONE field, only a page past 1 of
 a value group is paged. Page 1 is the answer of one page. On the list, for a
-value group of a module, it cuts its 50 groups in the order of the paged
-read (``cut_key``, ``field_sql.one_group_order``), so page 2 starts where it
-stops, and it carries ``next_group_page``. There, two groups whose values
-differ by under half a cent can change places, and so can the set of groups
-at the cut and ``other``. Every other answer of one page (off the list, a
-core entity, a date group, a split, a ``group_by`` key word, ``q``) keeps the
-order of before, byte for byte. A paged answer adds ``group_count``, ``group_page`` and
+value group of a module with MORE than 50 groups, it cuts its 50 groups in
+the order of the paged read (``cut_key``, ``field_sql.one_group_order``), so
+page 2 starts where it stops, and it carries ``next_group_page``. There, two
+groups whose values differ by under half a cent can change places, and so
+can the set of groups at the cut and ``other``. Every other answer of one
+page (50 groups or fewer, off the list, a core entity, a date group, a
+split, a ``group_by`` key word, ``q``) keeps the order of before, byte for
+byte. A paged answer adds ``group_count``, ``group_page`` and
 ``group_pages``. ``total`` and ``records`` stay the answer over every group.
 It is dark behind ``CRM_MODULE_FIND_ORGS`` (``module_find_allowed``). Off the
 list, ``group_field2`` is a 422 that names the way without it, and the page
@@ -1911,8 +1912,8 @@ async def _compute(
     # The 50 largest groups stay. The rest fold into `other`. CRM-Q34-10:
     # only where page 2 can continue this cut does it take the exact order
     # of the paged read. Every other answer keeps the order of before.
-    groups.sort(key=_page1_key(_pages_on(module, group_field, fields, bucketed,
-                                         status_group, params.q)))
+    groups.sort(key=_page1_key(len(groups) > MAX_GROUPS and _pages_on(
+        module, group_field, fields, bucketed, status_group, params.q)))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     # With no group, the one row IS the total, so no group is shown.
     shown = [] if overall else [g for g, _acc in kept]
@@ -2027,9 +2028,10 @@ def cut_key(group: AggregateGroup, raw: Any = _SHOWN) -> tuple[Any, ...]:
 
 
 def _page1_key(exact: bool) -> Callable[[tuple[AggregateGroup, _Acc]], tuple[Any, ...]]:
-    """The sort key of the answer of one page. *exact* (:func:`_pages_on`)
-    takes the order of the paged read (:func:`cut_key`). Else the key of
-    before, on the shown value, byte for byte."""
+    """The sort key of the answer of one page. *exact* takes the order of the
+    paged read (:func:`cut_key`): only for more than :data:`MAX_GROUPS`
+    groups where page 2 can continue the cut (:func:`_pages_on`). Else the
+    key of before, on the shown value, byte for byte."""
     if exact:
         return lambda g: cut_key(g[0], _cut_value(g[1]))
     return lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label)

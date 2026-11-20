@@ -8757,10 +8757,11 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   - A page of two fields is in the order of the value, largest first, then
     each key. A key ends the order, so two pages never share a group.
   - Page 1 of one field is the answer of today, byte for byte, with one
-    exception. On the list, a value group of a module cuts its 50 groups in
-    the order of page 2 (`aggregate.cut_key`), so page 2 continues it. Off
-    the list, on a core entity, and for a date group, a split, a key word or
-    `q`, page 1 keeps the order of today. When page 1 leaves groups out on the
+    exception. On the list, a value group of a module with more than 50
+    groups cuts its 50 groups in the order of page 2 (`aggregate.cut_key`),
+    so page 2 continues it. With 50 groups or fewer, off the list, on a core
+    entity, and for a date group, a split, a key word or `q`, page 1 keeps
+    the order of today. When page 1 leaves groups out on the
     list, it carries `next_group_page: 2`. The tool
     then ends its "Other" line with "Ask for page 2 for the next groups." in
     place of "Narrow the filter to see them."
@@ -8793,7 +8794,8 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   `other` is None, and its `omitted` counts the groups that are not on the
   page. A `q` filters a two-field
   answer by its exact words, with no near pass. On the list, page 1 of a
-  value group of a module rounds the exact numeric of each group. It rounds
+  value group of a module with more than 50 groups rounds the exact numeric
+  of each group. It rounds
   half away from zero, as page 2 does (`aggregate.cents`). There, two groups whose
   values differ by under half a cent can change places on page 1. So can the
   set of groups at the cut of 50, and `other`. The shown values and the

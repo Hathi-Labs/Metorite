@@ -471,3 +471,39 @@ def test_a_row_keeps_its_exact_value(agg) -> None:
     assert agg._acc_of(SimpleNamespace(value=3, s=0, n=0, label=None, c=3), 1).raw == 3
     acc.value = None  # the field is empty in every row
     assert agg._cut_value(acc) is None
+
+
+def test_pages_on_is_the_whole_truth_table(agg, monkeypatch) -> None:
+    """Round 7: page 1 takes the exact cut, and offers page 2, only for a
+    module on the list, a value group of one field, no split, no bucket (a
+    date), no ``group_by`` key word and no ``q``. Each of the 128 cases."""
+    import itertools
+
+    for flag, module, field, split, bucketed, status, q in itertools.product(
+            (False, True), ("Invoices", None), ("Site", None), (None, "a,b"),
+            (False, True), (False, True), (None, "acme")):
+        _flag(agg, monkeypatch, flag)
+        want = (flag and module is not None and field is not None and split is None
+                and not bucketed and not status and q is None)
+        got = agg._pages_on(module, field, split, bucketed, status, q)
+        assert got is want, (flag, module, field, split, bucketed, status, q)
+        rest = [object()]
+        assert agg._next_page(module, field, split, rest, bucketed, status, q) == (
+            2 if want else None)
+        assert agg._next_page(module, field, split, [], bucketed, status, q) is None
+
+
+def test_the_key_of_before_is_main_byte_for_byte(agg) -> None:
+    """Round 7: with no exact cut, page 1 sorts on the shown value and the
+    label only, as main does, so "Bbb" (31.01) stays before "Aaa" (shown
+    31.0, exact 31.005)."""
+    from decimal import Decimal
+
+    from gateway.routes.crm.aggregate import AggregateGroup
+
+    aaa = (AggregateGroup(key="ka", label="Aaa", value=31.0),
+           agg._Acc(value=31.005, raw=Decimal("31.005")))
+    bbb = (AggregateGroup(key="kb", label="Bbb", value=31.01),
+           agg._Acc(value=31.01, raw=Decimal("31.01")))
+    assert [g[0].key for g in sorted([aaa, bbb], key=agg._page1_key(False))] == ["kb", "ka"]
+    assert [g[0].key for g in sorted([aaa, bbb], key=agg._page1_key(True))] == ["ka", "kb"]
