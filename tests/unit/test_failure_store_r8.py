@@ -78,7 +78,16 @@ def _migration() -> str:
     root = Path(__file__).resolve().parents[2] / "infra" / "postgres"
     [hit] = [f for f in root.glob("[0-9]*_*.sql")
              if "CREATE TABLE IF NOT EXISTS failure_events" in f.read_text(encoding="utf-8")]
-    return hit.read_text(encoding="utf-8")
+    # The sync slice adds a column and two function bodies in a second file (TOF-2e,
+    # 467): the store the job reads is the two files in order.
+    [more] = [f for f in root.glob("[0-9]*_*.sql")
+              if "ADD COLUMN IF NOT EXISTS last_release_at" in f.read_text(encoding="utf-8")]
+    assert more.name > hit.name
+    # The ledger runs each file once. A suite applies both again on a database that
+    # kept the later `failure_due`, and 466 makes the old return type again. So the
+    # drop of 467 comes first here.
+    return ("DROP FUNCTION IF EXISTS public.failure_due(integer);\n"
+            + hit.read_text(encoding="utf-8") + "\n" + more.read_text(encoding="utf-8"))
 
 
 def _fp(tool: str, code: str, exc: str = "-", site: str = "-") -> str:

@@ -60,11 +60,9 @@
 -- roles by name, and EXECUTE to `acb_app` only, when the role exists.
 --
 -- Expand only (R6): five new tables, their indexes, five new functions. No
--- rename, and no change of an old object. The one DROP is of this file's own
--- `failure_due`, before it is made again (its return type grew in TOF-2e).
--- Old code names no new object. Idempotent: CREATE TABLE IF NOT EXISTS, ADD
--- COLUMN IF NOT EXISTS, CREATE INDEX IF NOT EXISTS, CREATE OR REPLACE
--- FUNCTION, DROP FUNCTION IF EXISTS, an RLS block guarded on
+-- rename, no drop, and no change of an old object. Old code names no new
+-- object. Idempotent: CREATE TABLE IF NOT EXISTS, CREATE INDEX IF NOT
+-- EXISTS, CREATE OR REPLACE FUNCTION, an RLS block guarded on
 -- relforcerowsecurity, and REVOKE and GRANT, which a second run repeats with
 -- no change. The foreign keys to `organization` take a SHARE ROW EXCLUSIVE
 -- lock on it until COMMIT, so the file sets `lock_timeout` first.
@@ -210,10 +208,6 @@ CREATE TABLE IF NOT EXISTS failure_fingerprints (
     last_seen_at   TIMESTAMPTZ NOT NULL,
     first_release  TEXT,
     last_release   TEXT,
-    -- The hour of the newest count that named a release (TOF-2e). A count
-    -- with no release moves `last_seen_at` only, so it never reads as a
-    -- count of `last_release` (§7.4: a NULL release never holds the fix).
-    last_release_at TIMESTAMPTZ,
     total          BIGINT NOT NULL DEFAULT 0,
     state          TEXT NOT NULL DEFAULT 'new',
     -- A task of the internal org. No foreign key: pm_tasks is a tenant table.
@@ -265,9 +259,6 @@ CREATE TABLE IF NOT EXISTS failure_fingerprints (
     CONSTRAINT failure_fingerprints_counts CHECK (
         total >= 0 AND shown_total >= 0 AND reopened >= 0)
 );
-
--- A database that ran an earlier copy of this file gains the column too.
-ALTER TABLE failure_fingerprints ADD COLUMN IF NOT EXISTS last_release_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_failure_fingerprints_state
     ON failure_fingerprints (state, last_seen_at);
@@ -356,11 +347,9 @@ BEGIN
 
     INSERT INTO public.failure_fingerprints AS f
            (fingerprint, tool, error_code, exc_type, code_site, sources, surfaces,
-            first_seen_at, last_seen_at, first_release, last_release, last_release_at,
-            total)
+            first_seen_at, last_seen_at, first_release, last_release, total)
     VALUES (p_fingerprint, p_tool, p_error_code, p_exc_type, p_code_site,
-            ARRAY[p_source], ARRAY[p_surface], v_hour, v_hour, p_release, p_release,
-            CASE WHEN p_release IS NULL THEN NULL ELSE v_hour END, p_n)
+            ARRAY[p_source], ARRAY[p_surface], v_hour, v_hour, p_release, p_release, p_n)
     ON CONFLICT (fingerprint) DO UPDATE
        SET sources = CASE WHEN p_source = ANY (f.sources) THEN f.sources
                           ELSE f.sources || p_source END,
@@ -369,8 +358,6 @@ BEGIN
            last_seen_at = GREATEST(f.last_seen_at, EXCLUDED.last_seen_at),
            first_release = COALESCE(f.first_release, EXCLUDED.first_release),
            last_release = COALESCE(EXCLUDED.last_release, f.last_release),
-           last_release_at = CASE WHEN p_release IS NULL THEN f.last_release_at
-                                  ELSE GREATEST(f.last_release_at, v_hour) END,
            total = LEAST(f.total, v_top - p_n) + p_n;
 
     INSERT INTO public.failure_daily AS d
@@ -439,16 +426,11 @@ END
 $band$;
 
 -- 3. The platform rows that the sync job reads, with their counts.
--- The return type gained `last_release_at` (TOF-2e), and CREATE OR REPLACE
--- cannot change a return type. So the file drops its own function first. No
--- other object depends on it, and the grants below run again.
-DROP FUNCTION IF EXISTS public.failure_due(integer);
-CREATE FUNCTION public.failure_due(p_limit integer)
+CREATE OR REPLACE FUNCTION public.failure_due(p_limit integer)
 RETURNS TABLE (
     fingerprint text, fp_version text, tool text, error_code text, exc_type text,
     code_site text, sources text[], surfaces text[], first_seen_at timestamptz,
-    last_seen_at timestamptz, first_release text, last_release text,
-    last_release_at timestamptz, total bigint,
+    last_seen_at timestamptz, first_release text, last_release text, total bigint,
     state text, task_id uuid, fix_merged_at timestamptz, fix_live_at timestamptz,
     closed_at timestamptz, fix_release text, reopened integer, shown_total bigint,
     n_1d bigint, n_7d bigint, n_30d bigint, days jsonb)
@@ -474,17 +456,12 @@ BEGIN
         RAISE EXCEPTION 'failure_due: p_limit must be 1 to 1000' USING ERRCODE = '22023';
     END IF;
 
-    -- A row is due when it has counts that the job has not seen yet, while
-    -- the job watches its task (`open`, `fix_merged`, `fix_live`), and while
-    -- its task is muted (a person can move it back to Open). The watched rows
-    -- come first, then the rows with new counts, then the muted rows. So a
-    -- flood of rows that wait under the limit of §7.2 never starves a task
-    -- that the job watches (TOF-2e review).
+    -- A row is due when it has counts that its task does not show yet, or
+    -- while its state is not `closed`.
     RETURN QUERY
     SELECT f.fingerprint, f.fp_version, f.tool, f.error_code, f.exc_type, f.code_site,
            f.sources, f.surfaces, f.first_seen_at, f.last_seen_at, f.first_release,
-           f.last_release, f.last_release_at, f.total, f.state, f.task_id,
-           f.fix_merged_at, f.fix_live_at,
+           f.last_release, f.total, f.state, f.task_id, f.fix_merged_at, f.fix_live_at,
            f.closed_at, f.fix_release, f.reopened, f.shown_total,
            COALESCE(s.n_1d, 0), COALESCE(s.n_7d, 0), COALESCE(s.n_30d, 0),
            COALESCE(s.days, '[]'::jsonb)
@@ -502,13 +479,8 @@ BEGIN
              FROM public.failure_daily d
             WHERE d.fingerprint = f.fingerprint AND d.day > v_today - 30
       ) s ON true
-     WHERE f.state IN ('open', 'fix_merged', 'fix_live')
-        OR (f.state = 'muted' AND f.task_id IS NOT NULL)
-        OR f.total <> f.shown_total
-     ORDER BY CASE WHEN f.state IN ('open', 'fix_merged', 'fix_live') THEN 0
-                   WHEN f.total <> f.shown_total THEN 1
-                   ELSE 2 END,
-              f.last_seen_at DESC, f.fingerprint
+     WHERE f.state <> 'closed' OR f.total <> f.shown_total
+     ORDER BY (f.total <> f.shown_total) DESC, f.last_seen_at DESC, f.fingerprint
      LIMIT p_limit;
 END
 $due$;
