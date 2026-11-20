@@ -662,7 +662,62 @@ async def run_skill_tests(
     except skill_tests.SuiteSlotUnavailable:
         raise HTTPException(status_code=503, detail={
             "code": "slot_unavailable", "message": SLOT_UNAVAILABLE}) from None
+    await _record_test_failures(str(org), user.email, sid, result, req.body)
     return _suite_out(result)
+
+
+async def _record_test_failures(org: str, member: str, skill_id: str,
+                                result: skill_tests.SuiteResult,
+                                body: dict[str, Any] | None) -> None:
+    """The test writer of F12b (``ai_studio_rows/F12.md`` "The test writer").
+
+    One ``test`` row for each result that failed with a fault of the skill
+    (``skill_runs.REASONS["test"]``, the seven codes). A cap code,
+    ``bad_test``, ``not_run`` and each other stop write no row. It writes only
+    for an org on ``STUDIO_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``. With the
+    flag off it sends no statement.
+
+    A test of a body that is not saved writes no row. The row would name a
+    version that did not run (``run_suite`` reports ``current_version`` for
+    such a body). So a row names only a stored version that the suite ran,
+    and ``body_key`` is the key of that stored body.
+
+    *org* and *member* come from the session. A row holds codes, the test id
+    and action names, never an input or a value. Best effort: a fault logs
+    its class only, never its text, and never changes the answer of the
+    route."""
+    if body is not None:
+        return
+    if not flags.studio_allowed(org) or not flags.skill_repair_allowed(org):
+        return
+    from gateway.studio import skill_repair, skill_runs
+
+    failed = [r for r in result.results
+              if r.passed is False and r.reason in skill_runs.REASONS["test"]]
+    if not failed:
+        return
+    written = 0
+    try:
+        async with _tenant_session() as db:
+            ran = await store.get_version(db, member, skill_id, result.version)
+            if ran is None or int(ran.version) != int(result.version):
+                return
+            key = skill_repair.body_key(ran.body)
+            for found in failed:
+                try:
+                    await skill_runs.record_test(
+                        db, member, skill_id, version=result.version, reason=found.reason,
+                        body_key=key, test_id=str(found.test_id or ""), detail=found.detail,
+                        writes=skill_runs.safe_writes(
+                            {"action": a, "keys": []} for a in dict.fromkeys(found.writes)),
+                        run_id=found.run_id, credits=found.credits)
+                    written += 1
+                except skill_runs.SkillRunError as exc:  # a bad shape skips one row
+                    _log.warning("studio.skill_run.test_skipped", error_type=type(exc).__name__)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("studio.skill_run.test_unwritten", error_type=type(exc).__name__)
+        return
+    _log.info("studio.skill_run.test_written", skill=skill_id, rows=written)
 
 
 # ── The share with the org (WS-STU J2c) ────────────────────────────────────

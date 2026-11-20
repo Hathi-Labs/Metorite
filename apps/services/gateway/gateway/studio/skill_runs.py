@@ -11,10 +11,12 @@ or a repair ``proposal``. A row never changes after its INSERT. The store
 holds no UPDATE, and the trigger ``studio_skill_runs_immutable`` refuses
 each UPDATE on the database too.
 
-**No caller in F12a.** F12b calls :func:`record_live` and
-:func:`record_test`. F12c calls :func:`record_proposal` and the readers.
-F12b and F12c read the flag ``STUDIO_SKILL_REPAIR_ORGS`` before they call.
-This module reads no flag.
+**The callers.** F12b calls :func:`record_live` from the chat run
+(``orchestrator._tool_injection._write_skill_runs``) and :func:`record_test`
+from the test run route (``routes/studio/skills.py``). Both pass ``writes``
+through :func:`safe_writes` first. F12c calls :func:`record_proposal` and
+the readers. Each caller reads the flag ``STUDIO_SKILL_REPAIR_ORGS`` before
+it calls. This module reads no flag.
 
 **No input and no value.** No function stores the words of a member. A live
 row keeps :func:`input_hash` of the input, never the input. ``writes`` keeps
@@ -92,6 +94,7 @@ __all__ = [
     "record_proposal",
     "record_test",
     "repeats_a_failed_body",
+    "safe_writes",
     "writes_bytes",
 ]
 
@@ -384,6 +387,29 @@ def check_writes(writes: object) -> list[dict[str, Any]]:
         out.append({"action": action, "keys": sorted(set(names))})
     if writes_bytes(out) > MAX_WRITES_BYTES:
         raise SkillRunError("writes", f"writes holds at most {MAX_WRITES_BYTES} bytes.")
+    return out
+
+
+def safe_writes(items: Iterable[object]) -> list[dict[str, Any]]:
+    """The items of *items* that :func:`check_writes` takes, one by one, in
+    order (F12b). It never raises. An item that holds a value, or a name with
+    a space, leaves alone, and the other items stay. Each key that is no
+    name leaves its item too. At most :data:`MAX_WRITES` items stay, and an
+    item that would pass :data:`MAX_WRITES_BYTES` leaves. The writers of
+    F12b call it, so a name that a model made up never fails a row."""
+    out: list[dict[str, Any]] = []
+    try:
+        for item in items:
+            if len(out) >= MAX_WRITES:
+                break
+            try:
+                kept = check_writes([item])
+            except SkillRunError:
+                continue
+            if writes_bytes([*out, *kept]) <= MAX_WRITES_BYTES:
+                out.extend(kept)
+    except Exception:  # an unreadable iterable gives the items read so far
+        return out
     return out
 
 
