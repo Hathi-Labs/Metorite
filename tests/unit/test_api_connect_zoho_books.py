@@ -27,6 +27,11 @@ the state can refuse.
 | M8 | the pick takes any id, not one of the pending list | ``test_ac6_a_pick_outside_the_list_is_400_and_saves_nothing`` |
 | M9 | the pick reads the entry with GET and not GETDEL | ``test_ac6_a_pick_is_taken_once`` |
 | M10 | the test read sends no ``organization_id`` | ``test_the_test_read_sets_the_context_after_the_arguments`` |
+| M11 | API-5: the pick takes the entry before it reads the member | ``test_gap3_another_admin_with_the_nonce_does_not_use_up_the_pick`` |
+| M12 | API-5: the start does not call ``_start_again`` | ``test_gap1_a_new_start_revokes_the_old_pending_token_and_drops_it`` |
+| M13 | API-5 review: the cancel takes the entry before it reads the member | ``test_cancel_by_another_admin_changes_nothing`` |
+| M14 | API-5 review: ``_keep_pending`` does not drop the older entry | ``test_a_newer_consent_revokes_the_older_pending_token`` |
+| M15 | API-5 review: ``_start_again`` runs before ``sign_state`` | ``test_a_signing_fault_keeps_the_old_pending_pick`` |
 """
 
 from __future__ import annotations
@@ -341,6 +346,8 @@ _ROUTES = (
     ("POST", "/integrations/api/zoho_books/pick", None,
      {"pick": "A" * 22, "zoho_organization_id": "60001"}),
     ("GET", "/integrations/api/zoho_books", None, None),
+    # API-5 review, P2: the cancel of a pending pick.
+    ("POST", "/integrations/api/zoho_books/cancel", None, {"pick": "A" * 22}),
 )
 
 
@@ -561,8 +568,12 @@ async def test_ac6_several_organizations_save_nothing_and_wait_for_a_pick(world:
     pick = await _pending(world)
     assert world.registry.saves == []
     assert len(world.books.requests) == 1, "no test read before the pick"
-    keys = [k for k in world.redis.data if routes.PICK_NAMESPACE in k]
+    keys = [k for k in world.redis.data if f":{routes.PICK_NAMESPACE}:" in k]
     assert len(keys) == 1 and ORG_A in keys[0] and keys[0].endswith(pick)
+    # API-5: the index of the admin's newest pick names the nonce, and its key
+    # holds a hash of the member, never the address.
+    (index,) = [k for k in world.redis.data if f":{routes.PICK_MEMBER_NAMESPACE}:" in k]
+    assert world.redis.data[index] == pick and ADMIN not in index
     stored = world.redis.data[keys[0]]
     for sentinel in SENTINELS:
         assert sentinel not in stored, "the pending entry holds the token sealed only"
@@ -613,6 +624,139 @@ async def test_ac6_another_member_cannot_pick(world: World) -> None:
                       body={"pick": pick, "zoho_organization_id": "60001"})
     assert res.status_code == 400 and res.json()["detail"] == "invalid_pick"
     assert world.registry.saves == []
+
+
+async def test_gap3_another_admin_with_the_nonce_does_not_use_up_the_pick(world: World) -> None:
+    """API-5, gap 3 of §2.11 (M11). The pick reads the member of the entry
+    BEFORE it takes the entry. Another admin of the org who holds the nonce
+    gets 400, the entry stays, its token is not revoked, and the admin who
+    started the consent still picks."""
+    pick = await _pending(world)
+    for _ in range(2):
+        res = await _call(_user(OTHER_ADMIN), "POST", "/integrations/api/zoho_books/pick",
+                          body={"pick": pick, "zoho_organization_id": "60001"})
+        assert res.status_code == 400 and res.json()["detail"] == "invalid_pick"
+    assert [k for k in world.redis.data if k.endswith(pick)], "the entry stays"
+    assert world.revoked() == [] and world.registry.saves == []
+    own = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                      body={"pick": pick, "zoho_organization_id": "60001"})
+    assert own.status_code == 200, own.text
+    assert len(world.registry.saves) == 1
+
+
+def test_pending_member_reads_the_member_only() -> None:
+    record = connect.pending_record(ADMIN, "sealed-blob", [("60001", "A")])
+    assert connect.pending_member(record) == ADMIN
+    for bad in (None, "", "not json", "[]", '{"member": 3}', '{"x": 1}'):
+        assert connect.pending_member(bad) is None
+
+
+# ── API-5, gap 1: start again ───────────────────────────────────────────────
+
+
+def _pick_keys(world: World) -> list[str]:
+    return [k for k in world.redis.data if f":{routes.PICK_NAMESPACE}:" in k]
+
+
+async def test_gap1_a_new_start_revokes_the_old_pending_token_and_drops_it(world: World) -> None:
+    """API-5, gap 1 of §2.11 (M12). The admin leaves a pick, then starts
+    again. The new start revokes the OLD refresh token at Zoho, deletes the
+    entry, and still gives a consent URL. The old pick is then 400."""
+    pick = await _pending(world)
+    assert len(_pick_keys(world)) == 1 and world.revoked() == []
+    tokens_before = len(world.token_calls())
+    started = await _call(_user(), "POST", "/integrations/api/zoho_books/start")
+    assert started.status_code == 200, started.text
+    assert started.json()["url"].startswith("https://")
+    assert world.revoked() == [S_REFRESH], "the old pending token is revoked"
+    assert len(world.token_calls()) == tokens_before, "no new code exchange at the start"
+    assert _pick_keys(world) == []
+    old = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                      body={"pick": pick, "zoho_organization_id": "60001"})
+    assert old.status_code == 400 and old.json()["detail"] == "invalid_pick"
+    # The new consent still works to the end.
+    state = parse_qs(urlsplit(started.json()["url"]).query)["state"][0]
+    world.books.organizations = [{"organization_id": "60001", "name": "Acme"}]
+    done = await _callback(state)
+    assert done.headers["location"] == routes.RETURN_OK
+    assert len(world.registry.saves) == 1
+
+
+async def test_gap1_a_start_with_nothing_pending_revokes_nothing(world: World) -> None:
+    for _ in range(2):
+        assert (await _call(_user(), "POST", "/integrations/api/zoho_books/start")).status_code == 200
+    assert world.revoked() == []
+
+
+async def test_gap1_another_admin_start_leaves_my_pending_pick(world: World) -> None:
+    """The index is per member, so the start of another admin of the org
+    neither revokes nor drops my entry."""
+    pick = await _pending(world)
+    assert (await _call(_user(OTHER_ADMIN), "POST",
+                        "/integrations/api/zoho_books/start")).status_code == 200
+    assert world.revoked() == [] and len(_pick_keys(world)) == 1
+    res = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                      body={"pick": pick, "zoho_organization_id": "60002"})
+    assert res.status_code == 200, res.text
+
+
+async def test_gap1_a_failed_revoke_does_not_block_the_start_and_logs_a_count_only(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _pending(world)
+    calls: list[str] = []
+
+    async def failing_revoke(credential: Any, why: str) -> str | None:
+        calls.append(credential.refresh_token)
+        raise RuntimeError(f"Zoho refused {credential.refresh_token}")
+
+    monkeypatch.setattr(routes, "_revoke", failing_revoke)
+    caplog.set_level(logging.DEBUG)
+    with structlog.testing.capture_logs() as events:
+        started = await _call(_user(), "POST", "/integrations/api/zoho_books/start")
+    assert started.status_code == 200, started.text
+    assert calls == [S_REFRESH], "the revoke was asked with the OLD token"
+    assert _pick_keys(world) == [], "the entry is gone even when the revoke failed"
+    restarted = [e for e in events if e.get("event") == "api.connect_restarted"]
+    assert restarted == [{"event": "api.connect_restarted", "revoked": 0, "failed": 1,
+                          "log_level": "info"}]
+    logged = json.dumps(events, default=str) + "\n".join(r.getMessage() for r in caplog.records)
+    for sentinel in SENTINELS:
+        assert sentinel not in logged
+
+
+async def test_gap1_a_redis_fault_in_the_start_again_does_not_block_the_start(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+    real_take = routes._take
+
+    async def take_once_broken(org: str, namespace: str, nonce: str) -> Any:
+        if namespace == routes.PICK_MEMBER_NAMESPACE and calls["n"] == 0:
+            calls["n"] += 1
+            raise ConnectionError("redis down")
+        return await real_take(org, namespace, nonce)
+
+    monkeypatch.setattr(routes, "_take", take_once_broken)
+    started = await _call(_user(), "POST", "/integrations/api/zoho_books/start")
+    assert started.status_code == 200, started.text
+    assert calls["n"] == 1
+
+
+# ── API-5: the result card (IN-9) on the status ─────────────────────────────
+
+
+async def test_the_status_of_a_connected_row_carries_the_one_result_card(world: World) -> None:
+    from acb_common.connector_result_card import result_card
+
+    before = (await _call(_user(), "GET", "/integrations/api/zoho_books")).json()
+    assert before["connected"] is False and before["card"] is None
+    assert (await _callback(await _start())).status_code == 302
+    after = (await _call(_user(), "GET", "/integrations/api/zoho_books")).json()
+    assert after["connected"] is True
+    assert after["card"] == result_card("api:zoho_books")
+    assert after["card"]["label"] == "Zoho Books"
+    assert after["card"]["works_now"]["apps"] == []
 
 
 async def test_ac6_the_state_of_a_pending_consent_is_used_once(world: World) -> None:
@@ -685,3 +829,120 @@ async def test_no_code_token_or_secret_reaches_a_response_meta_or_a_log(
     haystack = "\n".join(bodies) + "\n" + logged + "\n" + metas
     for sentinel in SENTINELS:
         assert sentinel not in haystack, f"{sentinel} leaked"
+
+
+# ── API-5 review, P2: the cancel of a pending pick ──────────────────────────
+
+
+async def _cancel(pick: str, who: UserContext | None = None) -> httpx.Response:
+    return await _call(who or _user(), "POST", "/integrations/api/zoho_books/cancel",
+                       body={"pick": pick})
+
+
+def _index_keys(world: World) -> list[str]:
+    return [k for k in world.redis.data if f":{routes.PICK_MEMBER_NAMESPACE}:" in k]
+
+
+async def test_cancel_revokes_my_pending_token_once_and_drops_the_entry(world: World) -> None:
+    pick = await _pending(world)
+    first = await _cancel(pick)
+    assert first.status_code == 200 and first.json() == {"cancelled": True}
+    assert world.revoked() == [S_REFRESH]
+    assert _pick_keys(world) == [] and _index_keys(world) == []
+    again = await _cancel(pick)
+    assert again.status_code == 200 and again.json() == {"cancelled": False}
+    assert world.revoked() == [S_REFRESH], "a second cancel revokes nothing"
+    late = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                       body={"pick": pick, "zoho_organization_id": "60001"})
+    assert late.status_code == 400 and world.registry.saves == []
+
+
+async def test_cancel_by_another_admin_changes_nothing(world: World) -> None:
+    """The member check comes first (M13): another admin who holds the nonce
+    neither revokes nor drops my entry, and I still pick."""
+    pick = await _pending(world)
+    res = await _cancel(pick, _user(OTHER_ADMIN))
+    assert res.status_code == 200 and res.json() == {"cancelled": False}
+    assert world.revoked() == [] and len(_pick_keys(world)) == 1 and len(_index_keys(world)) == 1
+    own = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                      body={"pick": pick, "zoho_organization_id": "60001"})
+    assert own.status_code == 200, own.text
+
+
+async def test_cancel_with_a_failing_revoke_still_drops_and_logs_counts_only(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pick = await _pending(world)
+
+    async def failing_revoke(credential: Any, why: str) -> str | None:
+        raise RuntimeError(f"Zoho refused {credential.refresh_token}")
+
+    monkeypatch.setattr(routes, "_revoke", failing_revoke)
+    with structlog.testing.capture_logs() as events:
+        res = await _cancel(pick)
+    assert res.status_code == 200 and res.json() == {"cancelled": True}
+    assert _pick_keys(world) == []
+    assert [e for e in events if e.get("event") == "api.connect_cancelled"] == [
+        {"event": "api.connect_cancelled", "revoked": 0, "failed": 1, "log_level": "info"}]
+    for sentinel in SENTINELS:
+        assert sentinel not in json.dumps(events, default=str)
+
+
+async def test_cancel_of_an_unknown_or_bad_handle(world: World) -> None:
+    assert (await _cancel("Z" * 22)).json() == {"cancelled": False}
+    assert (await _cancel("short")).status_code == 422
+    assert world.revoked() == []
+
+
+async def test_a_newer_consent_revokes_the_older_pending_token(world: World) -> None:
+    """Two consents of one admin in flight (P3-3 of the review, M14). The
+    second pending pick replaces the index, so the older entry goes and its
+    token is revoked. The newer one stays and picks."""
+    _two_orgs(world)
+    first_state, second_state = await _start(), await _start()
+    assert (await _callback(first_state)).status_code == 302
+    older = _pick_keys(world)
+    assert len(older) == 1
+    world.zoho.token_body = {"access_token": S_ACCESS, "refresh_token": S_OLD_REFRESH,
+                             "expires_in": 3600, "api_domain": "https://www.zohoapis.in"}
+    second = await _callback(second_state)
+    newer = second.headers["location"][len(routes.RETURN_PICK):]
+    assert world.revoked() == [S_REFRESH], "the older pending token is revoked"
+    assert len(_pick_keys(world)) == 1 and _pick_keys(world)[0].endswith(newer)
+    res = await _call(_user(), "POST", "/integrations/api/zoho_books/pick",
+                      body={"pick": newer, "zoho_organization_id": "60002"})
+    assert res.status_code == 200, res.text
+    assert world.registry.saves[0]["credential"].refresh_token == S_OLD_REFRESH
+
+
+async def test_a_signing_fault_keeps_the_old_pending_pick(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_start_again`` runs only after the new state is signed (M15). A 503
+    ``signing_unavailable`` leaves the old pick and its token alone."""
+    pick = await _pending(world)
+
+    def no_signing(**_k: Any) -> str:
+        raise signing.SigningUnavailable("no key")
+
+    monkeypatch.setattr(routes, "sign_state", no_signing)
+    res = await _call(_user(), "POST", "/integrations/api/zoho_books/start")
+    assert res.status_code == 503 and res.json()["detail"] == "signing_unavailable"
+    assert world.revoked() == [] and len(_pick_keys(world)) == 1
+    assert _pick_keys(world)[0].endswith(pick)
+
+
+def test_the_bff_mirror_of_the_zoho_accounts_hosts_is_the_python_list() -> None:
+    """P3 of the review. The start relay sends the browser only to a Zoho
+    accounts host. Its list mirrors ``auth.ACCOUNTS_HOSTS``, the one list."""
+    import re
+    from pathlib import Path
+
+    from gateway.crm_sources.zoho import auth as zoho_auth
+
+    ts = (Path(__file__).resolve().parents[2]
+          / "workbench/control_plane/src/lib/zohoAccountsHosts.ts").read_text(encoding="utf-8")
+    body = ts.split("ZOHO_ACCOUNTS_HOSTS", 1)[1]
+    hosts = re.findall(r'"([a-z0-9.-]+)"', body)
+    assert sorted(hosts) == sorted(zoho_auth.ACCOUNTS_HOSTS)
+    assert len(hosts) == len(set(hosts))
