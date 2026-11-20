@@ -4094,11 +4094,18 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             return twice
         pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
         await _mark_pack_session(owner, ctx)
+        # TOF-3a F12b: a tool of a loaded skill notes its outcome on the run.
+        notes = _skill_notes_of(ctx, run_key, name)
+        _clear_card_outcome(notes)
         try:
             with owner_scope(owner, held_now):
                 result = await gated(*args, **kwargs)
+        except Exception as exc:
+            _note_skill_call(notes, name, fn, args, kwargs, raised=exc)
+            raise
         finally:
             _close_pack_profile_writes()
+        _note_skill_call(notes, name, fn, args, kwargs, result=result)
         await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
         if slug:
             await note_used(slug, ctx)
@@ -4238,13 +4245,21 @@ class PackApply:
     #: The value that keys the run check of each pack call. The server mints
     #: it for each run (condition 3).
     run_key: str
+    #: TOF-3a F12b: the notes of the skills of this run
+    #: (:class:`SkillRunNotes`), or None. Only an org on
+    #: ``STUDIO_SKILL_REPAIR_ORGS`` with a loaded skill gets notes.
+    skill_notes: Any = None
 
     def context(self) -> dict[str, Any]:
         """The keys that the executor derives into the run binding, after
-        ``bind_artifact_context``. A delegated run drops both."""
+        ``bind_artifact_context``. A delegated run drops each of them. The
+        notes key is there only when the run has notes."""
         from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
 
-        return {PACK_RUN_KEY: self.run_key, PACKS_KEY: self.record}
+        out = {PACK_RUN_KEY: self.run_key, PACKS_KEY: self.record}
+        if self.skill_notes is not None:
+            out[SKILL_RUN_NOTES_KEY] = self.skill_notes
+        return out
 
 
 def _as_agent_tools(tools: list[Any]) -> list[Any]:
@@ -4477,7 +4492,14 @@ async def _apply_tool_packs(
     allow = frozenset(allowed) - disabled
     # WS-STU F3: the published skills that the words of this turn name. G2: a
     # WhatsApp turn loads none.
-    turn = turn if read_only else await _turn_with_skills(turn)
+    # TOF-3a F12b: the facts of each skill that the turn reads, for the record
+    # of its run. ``_turn_with_skills`` fills them only for an org on the flag.
+    facts_token = _SKILL_FACTS.set({})
+    try:
+        turn = turn if read_only else await _turn_with_skills(turn)
+        facts = _SKILL_FACTS.get() or {}
+    finally:
+        _SKILL_FACTS.reset(facts_token)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
@@ -4641,7 +4663,9 @@ async def _apply_tool_packs(
     )
     _log_skills_loaded(skills, choice.skills_skipped)
     _note_dry_run_loaded(skill_slugs)  # WS-STU F4b
-    applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
+    applied = PackApply(builds=tuple(builds), record=record, run_key=run_key,
+                        skill_notes=_skill_run_notes(facts, skills, run_ctx, run_key,
+                                                     words=str(getattr(turn, "words", "") or "")))
     if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
     # TS-2a: with the search on, the run holds ``find_tools`` also with no
@@ -4729,6 +4753,7 @@ async def _turn_with_skills(turn: Any) -> Any:
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
     packs: list[Any] = []
+    bodies: list[tuple[Any, Any]] = []
     # TOF-1b: one read of the flag a turn, and only for a turn with a skill to
     # build. TOF-1c: the description pass may have read it already.
     chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
@@ -4742,7 +4767,319 @@ async def _turn_with_skills(turn: Any) -> Any:
                       reason=built)
             continue
         packs.append(built)
+        bodies.append((built, version.body))
+    _note_skill_facts(bodies)  # TOF-3a F12b
     return dataclasses.replace(turn, skills=tuple(packs)) if packs else turn
+
+
+# ── The record of skill runs (WS-TOF TOF-3a F12b) ───────────────────────────
+# ``ai_studio_rows/F12.md`` "The writers (F12b)". Dark behind
+# ``STUDIO_SKILL_REPAIR_ORGS`` (and ``STUDIO_ORGS``). Three hooks, and no new
+# chat hook:
+#
+# 1. The skill list of :func:`_turn_with_skills`. For an org on the flag it
+#    keeps the facts of each built skill (:func:`_note_skill_facts`): the id,
+#    the version, the repair key of the body, and the action of each tool.
+#    :func:`_apply_tool_packs` keeps the facts of the skills that the run
+#    holds at the end (:func:`_skill_run_notes`), in ``PackApply.skill_notes``.
+# 2. The pack tool guard. ``_pack_call`` hands each call of a tool of a
+#    loaded skill to :func:`_note_skill_call`: a raise or a refused answer
+#    is ``tool_error``, and a card that the member declined
+#    (``ask_tools.last_card_outcome``) is ``card_declined``.
+# 3. The end of the run. ``executor.run_agent_stream`` calls
+#    :func:`schedule_skill_runs` in its ``finally``. It starts ONE task that
+#    writes one ``live`` row for each loaded skill (:func:`_write_skill_runs`),
+#    so the write never slows the turn. A fault logs its class only.
+#
+# ``member_said_wrong`` is F12c: the repair route writes it.
+# The notes keep the words of the turn in memory only, to hash them. No log
+# line, no repr and no row holds them. Fence: ``tests/unit/test_skill_repair.py``
+# (``TestTheWriters``) and ``tests/unit/test_skill_run_writers_r8.py`` (R8).
+
+#: The key of the run context that holds the :class:`SkillRunNotes` of a run.
+SKILL_RUN_NOTES_KEY = "skill_run_notes"
+
+#: The facts of the skills that :func:`_turn_with_skills` built, by pack slug.
+#: :func:`_apply_tool_packs` binds an empty dict around the call, so a call
+#: from any other place keeps no fact. The default is None, never a mutable
+#: object.
+_SKILL_FACTS: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "acb_skill_run_facts", default=None)
+
+#: The live tasks of :func:`schedule_skill_runs`, so that no task is lost
+#: before it ends.
+_SKILL_RUN_TASKS: set[asyncio.Task[Any]] = set()
+
+
+@dataclasses.dataclass(frozen=True)
+class _LoadedSkill:
+    """The facts of one loaded skill that its row needs. Names and ids only."""
+
+    skill_id: str
+    version: int
+    body_key: str
+    #: The action of the skill for each chat tool of the skill.
+    actions: Mapping[str, str]
+
+
+def _skill_repair_open() -> bool:
+    """True when ``STUDIO_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS`` both hold
+    the org of this run. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It fails closed, and it logs nothing."""
+    try:
+        from gateway.routes.studio.flags import skill_repair_allowed, studio_allowed
+
+        org = _run_org_or_none()
+        return bool(studio_allowed(org) and skill_repair_allowed(org))
+    except Exception:  # fail closed
+        return False
+
+
+def _skill_actions(body: Any) -> dict[str, str]:
+    """The action of the skill for each chat tool of *body*. A tool that two
+    actions serve, or an action that is no plain name, takes ``tool:<name>``."""
+    from acb_skills import skill_packs
+    from acb_skills.hidden_text import strip_hidden
+
+    raw = body.get("actions") if isinstance(body, Mapping) else None
+    seen: dict[str, list[str]] = {}
+    for action in raw if isinstance(raw, list) else []:
+        clean = strip_hidden(str(action)).strip()
+        tool = skill_packs.action_tool(clean)
+        if tool:
+            seen.setdefault(tool, []).append(clean)
+    return {tool: (names[0] if len(names) == 1 and " " not in names[0] else f"tool:{tool}")
+            for tool, names in seen.items()}
+
+
+def _note_skill_facts(bodies: Sequence[tuple[Any, Any]]) -> None:
+    """Keep the facts of each built skill pack of *bodies* in
+    :data:`_SKILL_FACTS`. Only inside :func:`_apply_tool_packs`, only with a
+    skill, and only for an org on the flag. It never raises."""
+    facts = _SKILL_FACTS.get()
+    if facts is None or not bodies or not _skill_repair_open():
+        return
+    try:
+        from gateway.studio.skill_repair import body_key
+    except Exception:  # pragma: no cover - the gateway ships with the platform
+        return
+    for built, body in bodies:
+        try:
+            facts[str(built.slug)] = _LoadedSkill(
+                skill_id=str(built.skill_id), version=int(built.version),
+                body_key=body_key(body), actions=_skill_actions(body))
+        except Exception as exc:  # the class only: one bad body skips its row
+            _log.info("executor.skill_run_unnoted", skill=str(getattr(built, "skill_id", "")),
+                      error_type=type(exc).__name__)
+
+
+class SkillRunNotes:
+    """What one run did with each loaded skill (F12b). One object for each
+    run, shared by each tool call of the run, as ``assistant_profile``'s
+    steer holder is.
+
+    It holds the org, the member, the run and the chat of the run, the facts
+    of each loaded skill, the first failure of each skill, and the write
+    actions with their key names. The words of the turn stay in a private
+    slot, only to hash them at the write, and the repr never shows them."""
+
+    __slots__ = ("_words", "failures", "member", "org", "run_id", "run_key", "skills",
+                 "thread_id", "writes")
+
+    def __init__(self, *, org: str, member: str, run_id: str, thread_id: str | None,
+                 run_key: str, skills: Mapping[str, _LoadedSkill], words: str) -> None:
+        self.org = org
+        self.member = member
+        self.run_id = run_id
+        self.thread_id = thread_id
+        self.run_key = run_key
+        self.skills = dict(skills)
+        self._words = words
+        #: The slug of a skill to its reason and detail, as the row keeps them.
+        self.failures: dict[str, tuple[str, str]] = {}
+        #: The slug of a skill to each write action and its key names.
+        self.writes: dict[str, dict[str, set[str]]] = {}
+
+    def __repr__(self) -> str:
+        return f"SkillRunNotes(run_id={self.run_id!r}, skills={sorted(self.skills)!r})"
+
+    def holds(self, tool: str) -> bool:
+        """True when *tool* is a tool of a loaded skill of the run."""
+        return any(tool in s.actions for s in self.skills.values())
+
+    def saw(self, tool: str, *, error: str | None = None, declined: bool = False,
+            keys: Iterable[str] | None = None) -> None:
+        """Note one call of *tool*. *error* is the class of a raise, or the
+        kind of a refused answer. *declined* is a card that the member
+        declined. *keys* is the key names of a write call, or None for a
+        read. ``tool_error`` wins over ``card_declined``, and the first of
+        each kind stays."""
+        for slug, skill in self.skills.items():
+            action = skill.actions.get(tool)
+            if action is None:
+                continue
+            if error:
+                if self.failures.get(slug, ("",))[0] != "tool_error":
+                    self.failures[slug] = ("tool_error", f"{tool}: {error}")
+            elif declined and slug not in self.failures:
+                self.failures[slug] = ("card_declined", tool)
+            if keys is not None:
+                self.writes.setdefault(slug, {}).setdefault(action, set()).update(keys)
+
+    def row_of(self, slug: str) -> tuple[bool, str, str, list[dict[str, Any]]]:
+        """The ``passed``, the reason, the detail and the writes of the row
+        of the skill *slug*."""
+        reason, detail = self.failures.get(slug, ("passed", ""))
+        writes = [{"action": a, "keys": sorted(k)}
+                  for a, k in sorted(self.writes.get(slug, {}).items())]
+        return reason == "passed", reason, detail, writes
+
+    def words(self) -> str:
+        """The words of the turn, for the input hash only."""
+        return self._words
+
+
+def _skill_run_notes(facts: Mapping[str, _LoadedSkill], skills: Sequence[Any],
+                     run_ctx: Mapping[str, Any], run_key: str, *,
+                     words: str) -> SkillRunNotes | None:
+    """The notes of the run, or None. Only the skills that the run holds at
+    the end of the apply count (*skills*, after ``_skills_present`` and
+    ``_keep_skill_packs``). With no fact (the flag is off, or no skill
+    loaded), it reads nothing and gives None.
+
+    The org is the bound tenant, and the member is the verified member of
+    the run (``executor._verified_run_member``), never a request field (R5).
+    The run id and the chat come from the server-side run context. *words*
+    is ``PackTurn.words``: the pack read of the executor takes it from
+    ``assistant_profile.sent_words`` at the start of the run, before any
+    steer, so it is the sent text of the member. That is the ``content`` of
+    the member's ``chat_message`` row (``routes/agent.py`` saves the same
+    text). A turn with no sent text, such as a Continue, gets no notes."""
+    if not facts:
+        return None
+    try:
+        from acb_common.db import current_tenant
+
+        from orchestrator.executor import _verified_run_member
+
+        kept = {str(s.slug): facts[str(s.slug)] for s in skills if str(s.slug) in facts}
+        org = str(current_tenant() or "").strip().lower()
+        member = _verified_run_member()
+        run_id = str(run_ctx.get("run_id") or "").strip()
+        if not kept or not org or not member or not run_id or not str(words).strip():
+            return None
+        thread = str(run_ctx.get("session_id") or "").strip() or None
+        return SkillRunNotes(org=org, member=member, run_id=run_id, thread_id=thread,
+                             run_key=run_key, skills=kept, words=words)
+    except Exception as exc:  # the class only
+        _log.info("executor.skill_run_unnoted", error_type=type(exc).__name__)
+        return None
+
+
+def _skill_notes_of(ctx: Any, run_key: str, tool: str) -> SkillRunNotes | None:
+    """The notes of the run of *ctx* when *tool* is a tool of a loaded skill
+    of this run, else None. The notes of another run key never count, so a
+    pack tool of a child run notes nothing on the parent."""
+    notes = ctx.get(SKILL_RUN_NOTES_KEY) if isinstance(ctx, Mapping) else None
+    if isinstance(notes, SkillRunNotes) and notes.run_key == run_key and notes.holds(tool):
+        return notes
+    return None
+
+
+def _note_skill_call(notes: SkillRunNotes | None, tool: str, fn: Any, args: tuple[Any, ...],
+                     kwargs: dict[str, Any], *, raised: BaseException | None = None,
+                     result: Any = None) -> None:
+    """Note one call of a pack tool on the notes of its run (F12b). It never
+    raises and never changes the call.
+
+    A raise gives its class. A refused answer (``tool_refusals.is_refusal``)
+    gives ``Refused``. A card of this call that the member declined
+    (``ask_tools.last_card_outcome``) gives ``card_declined``. A write tool
+    (no read-only mark in the risk registry) adds its key names: the names
+    of the arguments of the owner's signature, never a value."""
+    if notes is None:
+        return
+    try:
+        from acb_common.tool_refusals import is_refusal
+        from acb_skills.ask_tools import CARD_DECLINED, last_card_outcome
+        from acb_skills.subagent_contract import DISPLAY_TOOLS, annotated_read_only
+
+        error = type(raised).__name__ if raised is not None else (
+            "Refused" if is_refusal(result) else None)
+        declined = raised is None and last_card_outcome() == CARD_DECLINED
+        keys = (None if tool in DISPLAY_TOOLS or annotated_read_only(tool)
+                else tuple(str(k) for k in _call_args(fn, args, kwargs)))
+        notes.saw(tool, error=error, declined=declined, keys=keys)
+    except Exception as exc:  # the class only: the call answers as before
+        _log.debug("executor.skill_run_note_failed", error_type=type(exc).__name__)
+
+
+def _clear_card_outcome(notes: SkillRunNotes | None) -> None:
+    """Before a call of a tool of a loaded skill, forget the outcome of an
+    earlier card of this frame, so a call with no card reads none."""
+    if notes is None:
+        return
+    with contextlib.suppress(Exception):
+        from acb_skills.ask_tools import clear_card_outcome
+
+        clear_card_outcome()
+
+
+async def _write_skill_runs(notes: SkillRunNotes) -> int:
+    """Write one ``live`` row for each loaded skill of the run (F12b), and
+    answer the count. Best effort: it never raises.
+
+    It reads the flag again, so a flip to off during the run writes nothing.
+    It opens ``tenant_session()`` on the bound tenant, as
+    :func:`_turn_with_skills` does, and the bound tenant must be the org of
+    the notes. ``skill_runs.record_live`` hashes the words with the org of
+    the session and keeps the hash only. A refused row (``SkillRunError``,
+    ``DuplicateFailure``) skips that row. Any other fault ends the write. A
+    log line names a class or a count, never a word of the turn."""
+    written = 0
+    try:
+        from acb_common.db import current_tenant, tenant_session
+        from gateway.studio import skill_runs
+
+        if str(current_tenant() or "").strip().lower() != notes.org or not _skill_repair_open():
+            return 0
+        async with tenant_session() as db:
+            for slug, skill in notes.skills.items():
+                passed, reason, detail, writes = notes.row_of(slug)
+                try:
+                    await skill_runs.record_live(
+                        db, notes.member, skill.skill_id, version=skill.version,
+                        passed=passed, reason=reason, body_key=skill.body_key,
+                        input_text=notes.words(), run_id=notes.run_id,
+                        thread_id=notes.thread_id, detail=detail,
+                        writes=skill_runs.safe_writes(writes))
+                    written += 1
+                except skill_runs.SkillRunError as exc:
+                    _log.info("executor.skill_run_skipped", skill=skill.skill_id,
+                              error_type=type(exc).__name__)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.skill_run_unwritten", error_type=type(exc).__name__)
+        return written
+    _log.info("executor.skill_run_written", rows=written)
+    return written
+
+
+def schedule_skill_runs(applied: Any) -> asyncio.Task[Any] | None:
+    """Start the write of the rows of the run of *applied* (a
+    :class:`PackApply`), and answer its task, or None. A run with no notes
+    starts nothing. The task runs on a copy of this context, so the bound
+    tenant stays. It never raises, so the end of a run never fails here."""
+    notes = getattr(applied, "skill_notes", None)
+    if not isinstance(notes, SkillRunNotes):
+        return None
+    try:
+        task = asyncio.get_running_loop().create_task(_write_skill_runs(notes))
+    except Exception as exc:  # no loop: no row
+        _log.info("executor.skill_run_unwritten", error_type=type(exc).__name__)
+        return None
+    _SKILL_RUN_TASKS.add(task)
+    task.add_done_callback(_SKILL_RUN_TASKS.discard)
+    return task
 
 
 def _skills_present(

@@ -10406,6 +10406,12 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        # TOF-3a F12b: the rows of the skills of this run, in their own task,
+        # while the tenant is still bound. No notes, no task (flag off).
+        if _pack_apply is not None:
+            from orchestrator._tool_injection import schedule_skill_runs
+
+            schedule_skill_runs(_pack_apply)
         if _tier_task is not None:
             if not _tier_task.done():
                 _tier_task.cancel()
