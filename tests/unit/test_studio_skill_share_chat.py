@@ -595,7 +595,8 @@ def test_the_tool_takes_no_org_or_member_and_its_description_is_one_sentence() -
     schema = sf.tool_json_schema(st.studio_skill_share)["function"]
     # act=shared needs no skill, so no parameter is required (J2d follow-up).
     assert schema["parameters"].get("required", []) == []
-    assert schema["parameters"]["properties"]["act"]["enum"] == list(st.SHARE_ACTS)
+    # The act names live in the refusal text, not in the schema (token room).
+    assert all(a in st._SHARE_ACT_BAD for a in st.SHARE_ACTS)
 
 
 def test_the_pack_holds_the_one_tool_and_stays_dark() -> None:
