@@ -3,7 +3,11 @@
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
 D226). The rest stays PROPOSED. SEM-7 (task 3737) and the library half of SEM-8 (task 3738) are built, dark.
 SEM-12 (task 3742) and its repair SEM-12b (task 3834) are BUILT, dark: migration 464, `connections/semantic_model.py`, and
-`shape_only` in `crm_sync/catalogue.py`, behind `CONNECTION_MODEL_ORGS`. Nothing else is built.**
+`shape_only` in `crm_sync/catalogue.py`, behind `CONNECTION_MODEL_ORGS`.**
+
+**SEM-13a (task 3835) is BUILT, dark, with no caller: `connections/profiler.py`,
+and the no-member entry and the live list with schemas in
+`connections/mcp_tools.py`. Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
