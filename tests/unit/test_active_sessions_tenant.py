@@ -32,6 +32,20 @@ Mutations this suite catches (R7):
 * the DB-error branch returning every id: ``test_db_error_lists_only_own``
   goes red.
 
+RESUME-3d (task 3785): the live row of a continuation run names its reply
+row (``messageId``). The mutations:
+
+* ``start_detached`` names the reply row of a plain run too:
+  ``test_start_detached_names_the_reply_row_only_for_a_continuation`` goes
+  red;
+* the route sends ``messageId`` with a flag off:
+  ``test_a_flag_off_sends_the_rows_of_before_byte_for_byte`` goes red;
+* a re-register drops the reply row:
+  ``test_a_re_register_of_the_same_run_keeps_its_reply_row`` goes red;
+* the route reads the reply row of a row it does not list:
+  ``test_a_reply_row_reaches_only_a_reader_who_may_see_the_chat`` (R8)
+  goes red.
+
 Run::
 
     TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<private_db> \\
@@ -631,3 +645,234 @@ def test_the_route_sends_the_run_id(fake_redis, db_down):
     ))
     rows = _list(_user(_ALICE, org))
     assert [(r["threadId"], r["runId"]) for r in rows] == [("t-r", "run-r")]
+
+
+
+# ---------------------------------------------------------------------------
+# RESUME-3d (task 3785): the live row of a continuation names its reply row
+# ---------------------------------------------------------------------------
+
+def _start_continuation(tid: str, org: str, actor: str, run_id: str, mid: str) -> None:
+    """What a continuation start does: the active flag, then an entry with
+    the run's reply row (``start_detached(continuation=True)``)."""
+    async def _go() -> None:
+        await stream_relay.mark_active(tid, reset=False, actor=actor)
+        await stream_relay.register_live_run(
+            tid, organization_id=org, actor=actor, token=f"tok-{tid}",
+            run_id=run_id, message_id=mid,
+        )
+    asyncio.run(_go())
+
+
+def _resume_flags(monkeypatch, *, resume: str, late: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", resume)
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", late)
+
+
+def test_a_continuation_entry_names_its_reply_row(fake_redis):
+    org = str(uuid.uuid4())
+    _start_continuation("t-c", org, _ALICE, "run-c", "reply-c")
+    meta = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-c"])
+    assert meta["messageId"] == "reply-c"
+    live = asyncio.run(stream_relay.list_live_runs(org))
+    assert live == [{
+        "threadId": "t-c", "actor": _ALICE, "startedAt": meta["startedAt"],
+        "runId": "run-c", "messageId": "reply-c",
+    }]
+
+
+def test_a_plain_entry_names_no_reply_row(fake_redis):
+    """A plain run's entry and its listed row are the shape of before."""
+    org = str(uuid.uuid4())
+    asyncio.run(stream_relay.mark_active("t-p", reset=True, actor=_ALICE))
+    for mid in (None, "", "   "):
+        asyncio.run(stream_relay.register_live_run(
+            "t-p", organization_id=org, actor=_ALICE, token="tok", run_id="run-p",
+            message_id=mid,
+        ))
+        meta = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-p"])
+        assert set(meta) == {"actor", "startedAt", "token", "runId"}
+        live = asyncio.run(stream_relay.list_live_runs(org))
+        assert [set(r) for r in live] == [{"threadId", "actor", "startedAt", "runId"}]
+
+
+def test_a_re_register_of_the_same_run_keeps_its_reply_row(fake_redis):
+    """The executor registers the SAME run again with no reply row. The entry
+    keeps the reply row that the continuation start wrote."""
+    org = str(uuid.uuid4())
+    _start_continuation("t-c", org, _ALICE, "run-c", "reply-c")
+    asyncio.run(stream_relay.register_live_run(
+        "t-c", organization_id=org, actor=_ALICE, token="run-c",
+        run_id="run-c", keep_run_facts=True,
+    ))
+    meta = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-c"])
+    assert meta["messageId"] == "reply-c" and meta["token"] == "run-c"
+
+
+def test_a_re_register_never_keeps_another_run_s_reply_row(fake_redis):
+    org = str(uuid.uuid4())
+    _start_continuation("t-c", org, _ALICE, "run-old", "reply-old")
+    asyncio.run(stream_relay.register_live_run(
+        "t-c", organization_id=org, actor=_ALICE, token="run-new",
+        run_id="run-new", keep_run_facts=True,
+    ))
+    meta = json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-c"])
+    assert meta["runId"] == "run-new" and "messageId" not in meta
+    # A plain register of a new run never keeps it either.
+    _start_continuation("t-d", org, _ALICE, "run-d", "reply-d")
+    asyncio.run(stream_relay.register_live_run(
+        "t-d", organization_id=org, actor=_ALICE, token="b", run_id="run-e",
+    ))
+    assert "messageId" not in json.loads(fake_redis.store[f"cc:{org}:liveruns"]["t-d"])
+
+
+@pytest.mark.parametrize("continuation", [True, False])
+def test_start_detached_names_the_reply_row_only_for_a_continuation(fake_redis, monkeypatch, continuation):
+    """The reply row comes from the run record (``messageId``), and only a
+    continuation start passes it to the index."""
+    calls: list[dict] = []
+
+    async def _reg(tid, **kw):
+        calls.append(kw)
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    async def _gen():
+        if False:  # pragma: no cover - a generator that yields nothing
+            yield ""
+
+    from orchestrator import run_liveness
+
+    monkeypatch.setattr(stream_relay, "register_live_run", _reg)
+    monkeypatch.setattr(stream_relay, "unregister_live_run", _noop)
+    monkeypatch.setattr(stream_relay, "mark_active", _noop)
+    monkeypatch.setattr(stream_relay, "mark_inactive", _noop)
+    monkeypatch.setattr(stream_relay, "is_active", lambda *_a, **_kw: _false())
+    monkeypatch.setattr(stream_relay, "_start_control_listener", lambda _t: None)
+    monkeypatch.setattr(run_liveness, "record_instance_run", _noop)
+    monkeypatch.setattr(run_liveness, "forget_instance_run", _noop)
+    stream_relay._DETACHED_TASKS.clear()
+
+    async def _go() -> None:
+        task = await stream_relay.start_detached(
+            "t-run", _gen(), actor=_ALICE, organization_id="org-a",
+            record={"runId": "run-1", "messageId": "reply-1"},
+            exclusive=continuation, continuation=continuation,
+        )
+        await task
+
+    try:
+        asyncio.run(_go())
+    finally:
+        stream_relay._DETACHED_TASKS.clear()
+        stream_relay._LOCAL_CONTROL_HANDLERS.clear()
+
+    assert calls, "the start registers the run"
+    assert calls[0]["run_id"] == "run-1"
+    assert calls[0]["message_id"] == ("reply-1" if continuation else None)
+
+
+async def _false() -> bool:
+    return False
+
+
+@pytest.mark.parametrize(("resume", "late"), [("", ""), ("*", ""), ("", "*")])
+def test_a_flag_off_sends_the_rows_of_before_byte_for_byte(fake_redis, db_empty, monkeypatch, resume, late):
+    """With either flag off, a continuation's row is the row of a plain run."""
+    _resume_flags(monkeypatch, resume=resume, late=late)
+    org = str(uuid.uuid4())
+    _start_continuation("t-c", org, _ALICE, "run-c", "reply-c")
+    with_reply = json.dumps(_list(_user(_ALICE, org)))
+    # The same entry, with no reply row: the shape of before.
+    k = f"cc:{org}:liveruns"
+    meta = json.loads(fake_redis.store[k]["t-c"])
+    meta.pop("messageId")
+    fake_redis.store[k]["t-c"] = json.dumps(meta)
+    assert with_reply == json.dumps(_list(_user(_ALICE, org)))
+    assert "messageId" not in with_reply
+
+
+def test_both_flags_on_send_the_reply_row_of_a_continuation_only(fake_redis, db_empty, monkeypatch):
+    org = str(uuid.uuid4())
+    _resume_flags(monkeypatch, resume=org, late=org)
+    _start_continuation("t-c", org, _ALICE, "run-c", "reply-c")
+    _start("t-p", org, _ALICE)
+    rows = {r["threadId"]: r for r in _list(_user(_ALICE, org))}
+    assert rows["t-c"]["messageId"] == "reply-c"
+    assert rows["t-c"]["runId"] == "run-c" and rows["t-c"]["live"] is True
+    assert "messageId" not in rows["t-p"]
+
+
+def test_a_flag_for_another_org_sends_no_reply_row(fake_redis, db_empty, monkeypatch):
+    org, other = str(uuid.uuid4()), str(uuid.uuid4())
+    _resume_flags(monkeypatch, resume=other, late=other)
+    _start_continuation("t-c", org, _ALICE, "run-c", "reply-c")
+    assert "messageId" not in json.dumps(_list(_user(_ALICE, org)))
+
+
+def test_no_reply_row_reads_no_flag(fake_redis, db_empty, monkeypatch):
+    """A list with no continuation entry reads neither flag."""
+    from acb_skills import late_approve, stored_call
+
+    read: list[str] = []
+    monkeypatch.setattr(late_approve, "late_approve_on", lambda *_a: read.append("late") or True)
+    monkeypatch.setattr(stored_call, "chat_resume_on", lambda *_a: read.append("resume") or True)
+    org = str(uuid.uuid4())
+    _start("t-p", org, _ALICE)
+    assert _ids(_list(_user(_ALICE, org))) == {"t-p"}
+    assert read == []
+
+
+@_DB_GATE
+def test_a_reply_row_reaches_only_a_reader_who_may_see_the_chat(live, monkeypatch):
+    """Real FORCE RLS. Both flags name org A only. Alice sees the reply row of
+    her own continuation. Bob's private chat and org B's chats never reach
+    her, and Carol's org has the flags off."""
+    w = live
+    _resume_flags(monkeypatch, resume=w.org_a, late=w.org_a)
+    for key, email, org in (
+        ("alice_row", _ALICE, w.org_a), ("bob_row", _BOB, w.org_a),
+        ("bob_norow", _BOB, w.org_a), ("carol_row", _CAROL, w.org_b),
+        ("carol_norow", _CAROL, w.org_b),
+    ):
+        _start_continuation(w.t[key], org, email, f"run-{key}", f"reply-{key}")
+
+    alice = _list(_user(_ALICE, w.org_a))
+    by_tid = {r["threadId"]: r for r in alice}
+    assert _ids(alice) == {w.t["alice_row"], w.t["alice_norow"]}
+    assert by_tid[w.t["alice_row"]]["messageId"] == "reply-alice_row"
+    assert "messageId" not in by_tid[w.t["alice_norow"]], "a plain run names no reply"
+    text_of = json.dumps(alice)
+    for key in ("bob_row", "bob_norow", "carol_row", "carol_norow"):
+        assert f"reply-{key}" not in text_of, key
+
+    carol = _list(_user(_CAROL, w.org_b))
+    assert _ids(carol) == {w.t["carol_row"], w.t["carol_norow"]}
+    assert "messageId" not in json.dumps(carol), "the flags do not name org B"
+
+
+@_DB_GATE
+def test_a_room_member_sees_the_reply_row_of_the_room_s_run(live, monkeypatch):
+    """The reader filter is unchanged: a member of the room sees the row,
+    and with it the reply row of its continuation."""
+    w = live
+    _resume_flags(monkeypatch, resume=w.org_a, late=w.org_a)
+    _start_continuation(w.t["bob_row"], w.org_a, _BOB, "run-bob", "reply-bob")
+    assert w.t["bob_row"] not in _ids(_list(_user(_ALICE, w.org_a)))
+    with w.admin_engine.begin() as c:
+        for who in (_BOB, _ALICE):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "organization_id) VALUES (:s, :u, 'member', :o) ON CONFLICT DO NOTHING"),
+                {"s": w.t["bob_row"], "u": who, "o": w.org_a})
+    try:
+        rows = {r["threadId"]: r for r in _list(_user(_ALICE, w.org_a))}
+        assert rows[w.t["bob_row"]]["messageId"] == "reply-bob"
+    finally:
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM chat_session_participant WHERE session_id = :s"),
+                {"s": w.t["bob_row"]})

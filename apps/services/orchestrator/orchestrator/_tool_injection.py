@@ -2476,8 +2476,13 @@ def _inject_agent_tools(
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
     no_egress: bool = False,
+    paste_frame: bool = False,
 ) -> frozenset[str]:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    ``paste_frame`` (HRD-14b) is True only for a top-level streamed run, which
+    the chat route can bind. A delegated run, a sub-agent and a batch run
+    pass nothing, so they get no paste middleware (:func:`_apply_paste_frame`).
 
     Returns the names of the platform tools this run holds after every
     narrowing (scope, skill toggles, D85, H-236, the floor opt-out and
@@ -3038,6 +3043,10 @@ def _inject_agent_tools(
         _apply_chat_hold(agents, agent_name)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # HRD-14b: a paste is framed as data, in a copy of each model request.
+    # Right after the steer turns, so its middleware sees them. Off for the
+    # org, or a run that the route cannot bind, it attaches nothing.
+    _apply_paste_frame(agents, attach=paste_frame)
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
@@ -3210,6 +3219,42 @@ def _apply_steer_turns(agents: list[Any]) -> None:
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [SteerTurnsProvider()])
+
+
+def _apply_paste_frame(agents: list[Any], *, attach: bool) -> None:
+    """A paste is framed as data on ONE run (HRD-14b, task 3667).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The seam". It replaces each
+    native MAF ``Agent`` in *agents* with a per-run view that carries
+    ``orchestrator.paste_turns.PasteFrameProvider``, as
+    :func:`_apply_progress_notice` does. It runs right after
+    :func:`_apply_steer_turns`, so the middleware sees each request after the
+    steer turns. With ``CHAT_PASTE_FRAME_ORGS`` off for the run's org it
+    attaches nothing, so the provider list, the first model request, the
+    stored session and each golden stay byte-identical. The org is the run
+    binding's (:func:`_run_org`), never request input. *attach* is False for
+    a delegated run, a sub-agent and a batch run: they get no middleware. A
+    Copilot SDK agent and a plain object stay as they are. Fence:
+    ``tests/unit/test_paste_frame_seam.py``.
+    """
+    if not attach:
+        return
+    from acb_skills.paste_frame import paste_frame_on
+
+    if not paste_frame_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+
+        from orchestrator.paste_turns import PasteFrameProvider
+    except ImportError as exc:  # pragma: no cover — both ship with the platform
+        _log.warning("executor.paste_frame_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [PasteFrameProvider()])
 
 
 def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
@@ -5195,6 +5240,7 @@ async def _inject_mcp_servers(
     from orchestrator import _maf_mcp
 
     _note_mcp_labels([], [], frozenset())  # CSY-10: no label of an older run stays
+    _note_mcp_briefs([], [], None)  # CSY-1: no brief of an older run stays
     if agent_name in UNTRUSTED_INPUT_AGENTS:
         # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
         # a server, and no check here can prove that a server cannot fetch.
@@ -5205,6 +5251,8 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # CSY-5: the model learns WHY the system is off (reason `mail`).
+        await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
 
     org = organization_id or _run_org_or_none()
@@ -5233,14 +5281,19 @@ async def _inject_mcp_servers(
         maf_servers = _maf_servers(servers, is_authorized)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
+            failures: dict[str, str] = {}
             attached = await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                failures=failures,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
+            tools = getattr(agent, "mcp_tools", None)
+            reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
+            _note_mcp_briefs(servers, attached, tools, reasons)
         return
 
     for srv in servers:
@@ -5269,6 +5322,122 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
     except Exception:  # the platform surface alone
         packs = set()
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
+
+
+async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str | None,
+                             is_authorized: Any) -> None:
+    """CSY-5, reason ``mail``: a run that holds an email pack reads no server, so the
+    registry read never ran. When the flag is on, one metadata read (``enabled_meta``:
+    no header, no token refresh, inside the org binding) names the servers that this
+    run could have used, and each gets the fixed ``mail`` line. A server that the
+    member's grant refuses gets no line. A fault never blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        from orchestrator import _maf_mcp
+
+        org = organization_id or _run_org_or_none()
+        if (not org or not _maf_mcp.is_native_maf_agent(agent)
+                or not _maf_mcp.maf_mcp_org_allowed(org)
+                or not _maf_mcp.connected_systems_org_allowed(org)):
+            return
+        from gateway.connections import mcp as mcp_registry
+
+        rows = await mcp_registry.enabled_meta(str(org))
+        notes = []
+        for srv in rows:
+            if not _keep_mcp_server(srv, agent_name):
+                continue
+            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+                continue
+            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+                continue
+            notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
+        server_brief.set_attached([], notes)
+    except Exception as exc:
+        _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _mcp_reasons(org: str, maf_servers: list[Any], attached: Any, failures: dict[str, str],
+                       tools: Any, member_present: bool) -> dict[str, str]:
+    """CSY-5: ``{server name: reason}`` for each server of this run that is out of reach or
+    asks a card, from the closed list of ``server_brief.REASONS``. Only for an org with
+    ``CONNECTED_SYSTEMS_ORGS`` on. A server that the grant refused never reached here
+    (:func:`_maf_servers` dropped it), so it gets no line. Never raises."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return {}
+        out = {str(n): r for n, r in failures.items() if r in ("unreachable", "reconnect")}
+        names = {str(n) for n in (attached or [])}
+        from acb_skills.egress import session_is_marked
+        from acb_skills.permission_policy import MCP_READ_ONLY, MCP_READ_ONLY_KEY, decide
+
+        marked = bool(await session_is_marked())
+        by_name = {str(getattr(t, "name", "")): t for t in tools or []}
+        for srv in maf_servers:
+            if str(srv.name) not in names:
+                continue
+            meta = getattr(by_name.get(str(srv.name)), "__dict__", {}).get("_ws8c_tool_meta") or {}
+            if not meta:
+                continue
+
+            def needs_card(hints: Any, after_mark: bool) -> bool:
+                _ok, code, _ = decide({
+                    "tool_name": f"{srv.name}_x", "mcp_tool": True, "mcp_annotations": hints,
+                    "mcp_always_confirm": srv.always_confirm, "mcp_read_only_key": srv.read_only_key,
+                    # MCP-NC1: a member's run needs no card, so the same fact as the gate.
+                    "mcp_member_present": bool(member_present),
+                    "after_untrusted_answer": after_mark,
+                })
+                return code not in (MCP_READ_ONLY, MCP_READ_ONLY_KEY)
+
+            hints = [getattr(m, "hints", None) for m in meta.values()]
+            if not member_present and all(needs_card(h, marked) for h in hints):
+                out[str(srv.name)] = "no_card"
+            elif marked and any(needs_card(h, True) and not needs_card(h, False) for h in hints):
+                out[str(srv.name)] = "asks_each_call"
+        return out
+    except Exception as exc:
+        _log.warning("mcp.reasons_unavailable", error=type(exc).__name__)
+        return {}
+
+
+def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any, reasons: dict[str, str] | None = None) -> None:
+    """CSY-1: record the brief of each server that attached (*attached* is what
+    ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
+    (``acb_skills.server_brief``). It reuses the rows that the read gave. The
+    remote tool names come from the tool's own record. CSY-5: *reasons* adds one
+    fixed line for a server that is out of reach or asks a card. CSY-6: the
+    server's own ``instructions`` come from the tool that THIS run connected
+    (``_maf_mcp.server_instructions``), never from the row. A fault never
+    blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        from orchestrator._maf_mcp import server_instructions
+
+        names = {str(n) for n in (attached or [])}
+        remote: dict[str, list[str]] = {}
+        said: dict[str, str | None] = {}
+        for tool in tools or []:
+            meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
+            remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
+            said[str(getattr(tool, "name", ""))] = server_instructions(tool)
+        briefs = [
+            (str(s.name), server_brief.server_brief(
+                str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
+                remote.get(str(s.name), []), said.get(str(s.name))))
+            for s in servers if s.name and str(s.name) in names
+        ]
+        notes = [
+            (str(s.name), server_brief.reason_line(str(s.label or s.name), str(s.name), reasons[str(s.name)]))
+            for s in servers if s.name and reasons and str(s.name) in reasons
+        ]
+        server_brief.set_attached(briefs, notes)
+    except Exception as exc:
+        _log.warning("mcp.briefs_unavailable", error=type(exc).__name__)
 
 
 def _note_mcp_labels(servers: list[Any], attached: Any, reserved: frozenset[str]) -> None:
@@ -5372,6 +5541,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # IN-8c (D98): the admin that an OAuth row acts as, for the card.
             acts_as=(str(getattr(srv, "connected_by", None) or "")
                      if getattr(srv, "oauth", False) is True else ""),
+            # CSY-1: the label and the admin's description, for the brief.
+            label=str(getattr(srv, "label", "") or ""),
+            description=str(getattr(srv, "description", "") or ""),
         ))
     return out
 

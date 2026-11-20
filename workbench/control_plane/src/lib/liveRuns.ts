@@ -51,6 +51,20 @@ export type LiveRun = {
    */
   runId?: string;
   /**
+   * RESUME-3b: on a parked row, the id of the run that parked on its card.
+   * A late Approve of case A goes on under that id, so the open chat reads
+   * the run that the list names next as the same run (`lib/runStatus.ts`).
+   * Only a gateway with both resume flags on for the org sends it.
+   */
+  parkedRunId?: string;
+  /**
+   * RESUME-3d: on the row of a live continuation run (a late Approve), its
+   * reply row. A tab that did not get the 200 replays the run into that row
+   * (`lib/runStatus.ts`). Only a gateway with both resume flags on for the
+   * org sends it.
+   */
+  messageId?: string;
+  /**
    * The run's latest step, such as "Search tasks" (WS-51 S3). Plain text that
    * the server caps at 60 characters. The panel draws it as text, never HTML.
    */
@@ -141,7 +155,7 @@ function _publish(runs: readonly LiveRun[]): void {
   // Same contents → same reference, so a subscriber that puts the list in a
   // dependency array does not loop (React #185, see useActiveSessions).
   const key = runs
-    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.live === false ? "parked" : ""}:${r.runId ?? ""}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
+    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.live === false ? "parked" : ""}:${r.runId ?? ""}:${r.startedAt ?? ""}:${r.lastStep ?? ""}:${r.parkedRunId ?? ""}:${r.messageId ?? ""}`)
     .sort()
     .join("\n");
   if (key === _key) return;
@@ -184,6 +198,8 @@ async function _poll(): Promise<void> {
               askKind: typeof d.askKind === "string" ? d.askKind : null,
               ...(typeof d.live === "boolean" ? { live: d.live } : {}),
               ...(typeof d.runId === "string" && d.runId ? { runId: d.runId } : {}),
+              ...(typeof d.parkedRunId === "string" && d.parkedRunId ? { parkedRunId: d.parkedRunId } : {}),
+              ...(typeof d.messageId === "string" && d.messageId ? { messageId: d.messageId } : {}),
               lastStep: _step(d.lastStep),
             })),
         );
