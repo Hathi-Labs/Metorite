@@ -204,6 +204,69 @@ def test_a_fixture_call_writes_one_event_row_and_one_count(world, monkeypatch) -
     assert "Ravi" not in repr(text_cols)
 
 
+def test_the_door_and_mcp_values_of_tof_2d_pass_the_store(world, monkeypatch) -> None:
+    """TOF-2d (R8): each value that the door sites D1 and D2 and the MCP sites
+    C5 to C7 write passes the CHECKs of the store, through the one writer. A
+    route template keeps its braces, and the server stays in the tenant
+    column ``tool_name`` only."""
+    from acb_common import get_settings
+
+    class Down:
+        async def incr(self, *a: Any, **k: Any) -> int:
+            raise ConnectionError("no redis in this suite")
+
+        expire = incr
+
+    fl._reset_for_tests()
+    monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", world.a)
+    monkeypatch.setattr(fl, "_redis", lambda: Down())
+    routes = frozenset({"/crm/deals/{deal_id}"})
+
+    async def go() -> int:
+        url = world.p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(url):
+            token = bind_tenant(world.a)
+            try:
+                try:
+                    raise KeyError("Amount for Ravi Kumar")
+                except KeyError as exc:
+                    fl.record_tool_failure(exc, source="door_5xx", error_code="unhandled_500",
+                                           tool="GET /crm/deals/{deal_id}", kind="route",
+                                           route_paths=routes, surface="mcp_edge")
+                for code, tool in (("route_500", "POST /crm/deals/{deal_id}"),
+                                   ("route_upstream", "GET /crm/deals/ravi-77")):
+                    fl.record_tool_failure(None, source="door_5xx", error_code=code, tool=tool,
+                                           kind="route", route_paths=routes, surface="app")
+                for code in ("mcp_timeout", "mcp_unreachable", "mcp_refused", "mcp_too_large",
+                             "mcp_tool_error"):
+                    fl.record_tool_failure(None, source="mcp_call", error_code=code,
+                                           tool="acme-erp/get_invoice", kind="mcp",
+                                           surface="studio")
+            finally:
+                release_tenant(token)
+            took = await fl.flush()
+            await fl.stop_drain()
+            return took
+
+    try:
+        assert asyncio.run(go()) == 8
+    finally:
+        fl._reset_for_tests()
+    events = _admin(world, "SELECT tool, error_code, source, surface, tool_name "
+                    "FROM failure_events ORDER BY error_code")
+    assert sorted(events) == sorted([
+        ("route:GET /crm/deals/{deal_id}", "unhandled_500", "door_5xx", "mcp_edge", None),
+        ("route:POST /crm/deals/{deal_id}", "route_500", "door_5xx", "app", None),
+        ("route:other", "route_upstream", "door_5xx", "app", None),
+        *[("mcp", code, "mcp_call", "studio", "acme-erp/get_invoice") for code in (
+            "mcp_timeout", "mcp_unreachable", "mcp_refused", "mcp_too_large",
+            "mcp_tool_error")],
+    ])
+    platform = _admin(world, "SELECT tool, exc_type, code_site FROM failure_fingerprints")
+    assert len(platform) == 8
+    assert "acme" not in repr(platform) and "ravi" not in repr(platform).lower()
+
+
 # ── b. Refusals (P3) ─────────────────────────────────────────────────────────
 
 
