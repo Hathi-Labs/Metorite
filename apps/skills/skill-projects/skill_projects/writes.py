@@ -319,6 +319,20 @@ def _not_confirmed() -> str:
     return parked_line() or card_not_done_text()
 
 
+def _act_ran(when: bool = True) -> None:
+    """The act of this call's card really ran (task 3595, PARK-LINE):
+    ``acb_skills.ask_tools.act_ran``, when *when* is True. A tool calls it at
+    its success site only, after the write landed in full, so the park line
+    of the reply may name the act. With no platform package, it does nothing."""
+    if not when:
+        return
+    try:
+        from acb_skills.ask_tools import act_ran
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return
+    act_ran()
+
+
 def _drop_card_facts() -> None:
     """Forget the facts bound for a card that was refused (HRD-22b item 5)."""
     try:
@@ -1303,6 +1317,9 @@ async def create_task(
     receipt = repeating.receipt(task, lines, saved, failed, new.extra)
     if chat_files:
         receipt += await _attach_new_files(task, chat_files, str(new.payload.get("description") or ""))
+    # Task 3595: the task exists and each write after it landed. A create
+    # with chat files is not named: a file may not have landed.
+    _act_ran(when=not chat_files and failed is None and bool(task.get("id")))
     return receipt
 
 
@@ -4764,6 +4781,7 @@ async def create_project(
     ):
         return _not_confirmed()
     row = await post("/projects/nodes", payload)
+    _act_ran(when=bool(row.get("id")))  # Task 3595: the node exists, with its id.
     return (
         f"Created {which} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
     )
@@ -7009,6 +7027,7 @@ async def set_reminder(
     row = await post(REMINDERS, payload) or {}
     if row.get("already") is True:
         return _reminder_receipt("Reminder already set", row, _ALREADY_SET)
+    _act_ran(when=bool(row.get("id")))  # Task 3595: a new reminder, with its id.
     return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 
