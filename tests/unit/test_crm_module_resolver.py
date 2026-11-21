@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from gateway.routes.crm import aggregate, fields, modules
 from gateway.routes.crm.modules import REFUSAL_MAX, resolve_module
+from gateway.routes.crm.records import ListParams
 
 ROOT = Path(__file__).resolve().parents[2]
 CRM = ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
@@ -279,7 +280,7 @@ async def test_the_aggregate_path_reads_the_api_name(
     monkeypatch.setattr(aggregate, "mirrored_modules", mirrored)
     monkeypatch.setattr(aggregate, "_read", read)
     with pytest.raises(_Stop):
-        await aggregate.compute(given, params=None)
+        await aggregate.compute(given, params=ListParams())
     assert seen == ["Sales_Orders"]
 
 
@@ -292,6 +293,6 @@ async def test_the_aggregate_path_refuses_an_unknown_module_with_close_names(
     monkeypatch.setattr(aggregate, "_tenant_session", _session)
     monkeypatch.setattr(aggregate, "mirrored_modules", mirrored)
     with pytest.raises(HTTPException) as exc:
-        await aggregate.compute("module:Sale Ordrs", params=None)
+        await aggregate.compute("module:Sale Ordrs", params=ListParams())
     assert exc.value.status_code == 404
     assert "Sales_Orders (Sales Orders)" in exc.value.detail["message"]
