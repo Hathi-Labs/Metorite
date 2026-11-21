@@ -4,7 +4,7 @@
 
 <!-- ste-tier: strict -->
 
-- **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **Reminders
+- **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **§8.4, invites from a connected inbox (CE-16 to CE-19, tasks 3771 to 3775, docs task 3776), is SPEC, 2026-11-18. The owner answers Q11 to Q13.** **Reminders
   (§5) are DECIDED, 2026-10-25 (D114).** **PN-1 (the web push platform) is
   BUILT, 2026-10-25, dark behind `WEB_PUSH_ENABLED`** (migration 306,
   `gateway/push/`, `public/sw.js`). **RM-1 (the reminder store and API) is
@@ -1573,7 +1573,9 @@ from the `--cat-1…12` ramp, `src/lib/categorical.ts` and
 | Reminder | A pin. A 2 px line across the day column at its minute, and a bell glyph in the gutter. No height. A `due` reminder has the accent. An `unconfirmed` one is muted | Drag moves the time. A click opens the chat with the reminder (§5.7) |
 
 A tentative event has a dashed border. The grid mutes a declined event and
-strikes its title. The stripe token is new, so it goes into `src/app/globals.css`
+strikes its title. **Amended 2026-11-18 (§8.4 rule 5):** an entry that I have
+not accepted (`needs_action` or `tentative`) draws light, with a dashed border
+and a light fill. A declined entry hides until "Show declined" is on. The stripe token is new, so it goes into `src/app/globals.css`
 and its mirror `lib/theme/themes.ts`, and `themes.test.ts` holds the two.
 Look at each kind in light mode, at compact density, under a changed
 accent, and beside the Tasks app (CLAUDE.md §4).
@@ -1843,6 +1845,42 @@ together. The owner gates of §8.3 still bind the live flips.
 | Turn `CALENDAR_SYNC_READ` on for a real member | Owner | D54.6 |
 | Turn `CALENDAR_SYNC_WRITE` on | Owner | The provider sends mail to real people (CLAUDE.md §3a rule 3) |
 
+### 8.4 Invites in a connected inbox (owner, 2026-11-18)
+
+The owner asked for this on 2026-11-18, in chat. The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+ability for the two way sync, if any of the connected email inboxes shows an
+invite for an online call or an event, etc., that should also show up in the
+calender, unless that is already synced from an external calendar.
+
+In case it's an event that I have not accepted yet, it should show up as
+probably some grayed-out or light UI/UX. That will make the user understand
+that that is an event that is not confirmed yet.
+```
+
+**What the code does on 2026-11-18.**
+
+- No code reads an invite in a mailbox. No code reads a `text/calendar` part, an `.ics` attachment or a `METHOD` line. The Gmail and Outlook ingestion keep the mail only.
+- `calendar_entries` takes the kinds `event` and `external`, and the sources `metorite`, `google` and `outlook` (migration 331, the checks `calendar_entries_kind` and `calendar_entries_source`). So an entry from a mail needs an expand migration.
+- No entry keeps the iCalendar UID. The Google provider does not map `iCalUID`, and the Graph provider does not map `iCalUId`. So nothing can match a mailed invite to the same event from a synced calendar.
+- The member's own answer to a synced event is not stored. CE-10 maps only the `tentative` status of the event. `calendar_entry_attendees.rsvp` exists (`needs_action`, `accepted`, `tentative`, `declined`), and only CE-9 plans to write it.
+- A tentative external entry has a dashed border (`externalLook.ts:16`) and the note "Not confirmed yet." It has no lighter fill.
+
+**The rules.**
+
+1. **Which invites.** The ingestion reads the `text/calendar` part or the `.ics` attachment of a mail in a connected mailbox of the member. It takes `METHOD:REQUEST` (a new or changed invite) and `METHOD:CANCEL`. It takes an invite only when an `ATTENDEE` of it is an address of the member's own mailbox. A shared mailbox adds no event to the calendar of any member.
+2. **One private entry.** The invite makes one entry of the member, with the new kind `invite` and the source `email`. The entry keeps the id of the mail, and the member's own attendee row with `rsvp = 'needs_action'`. It keeps the title, the time and zone, the organizer and the place. It keeps the call link (Zoom, Meet or Teams) in `conference_url`. The member cannot move it, because the organizer owns the time.
+3. **One event, not two.** Each entry keeps the iCalendar UID. For one instance of a series, it also keeps the `RECURRENCE-ID`. CE-10 writes both from the provider too. For one member, one UID gives one entry on the grid. The synced copy wins, because the provider holds the live state. When the synced copy arrives, it takes the place of the mailed entry and keeps the link to the mail.
+4. **Changes and cancels.** A later invite with the same UID and a higher `SEQUENCE` changes the entry. A `CANCEL` marks it cancelled. The grid shows a cancelled entry struck for 24 hours, and then hides it.
+5. **Not accepted yet.** An entry whose own answer is `needs_action` or `tentative` draws light: a dashed border and a light fill. The sheet says "You have not accepted this yet." This holds for a mailed invite and for a synced event. An accepted entry draws as normal. A declined entry hides by default, and "Show declined" shows it muted and struck (§6.2).
+6. **The answer from the provider.** CE-10 also reads the member's own answer from the provider into the member's attendee row. Google gives it in `attendees[].self` and `responseStatus`, and Graph gives it in `responseStatus.response`. So an accept in Gmail or Outlook draws the entry solid at the next sync.
+7. **Accept or decline in Metorite (CE-19).** The sheet has Accept, Maybe and Decline. With a synced calendar, the answer goes through the API of the provider. With no synced calendar, it goes as an iTIP `REPLY` from the member's own mailbox, after one confirm. Each path reaches a real person, so the live flip is the owner's.
+8. **Invites from strangers.** Anyone can send an invite, and calendar spam is a known attack. Some senders are strangers: not in the org, not in the contacts, and never mailed by the member. Their invites go to a "New invites" list, not onto the grid. Its call link shows its host, and it opens only after a click on **Open link**. The title, the place and the notes are untrusted text. The chat reads them framed (§6.7), and they never become an instruction.
+9. **Two-way sync stays as planned.** CE-10 reads Google and Outlook, CE-13 writes task blocks out, and CE-11 writes events out. The owner gates of §8.3 bind each live flip.
+
+**The demo of this rung (task 3775).** A member gets a Zoom invite by mail. It shows on the calendar, light, within 2 minutes, with **Join**. The member accepts it in Gmail. At the next sync it draws solid, and it shows once. The demo needs CE-10 live, so the owner gates of §8.3 come first.
+
 ## 9. Flags
 
 Every flag is OFF by default. Off gives today's behaviour.
@@ -1858,6 +1896,8 @@ Every flag is OFF by default. Off gives today's behaviour.
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both. `events_enabled()` in `routes/tasks/entries.py` is the one reader of the gateway flag. CE-5 reads the client flag | CE-4 to CE-9, CE-12 | No events. Each `/tasks/calendar/entries` route answers 404, and the read has no `entries` key. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
 | `CALENDAR_SYNC_WRITE` | Gateway | CE-11 | No write-out. 🔴 Owner flip |
+| `CALENDAR_INVITES_ORGS` | Gateway, a per-org list, or `*` | CE-16, CE-17 | No invite is read from a mailbox, and no UID match runs |
+| `CALENDAR_RSVP_ORGS` | Gateway, a per-org list | CE-19 | The sheet shows no Accept, Maybe or Decline. 🔴 Owner flip: a reply reaches a real person |
 
 ## 10. Tickets
 
@@ -1888,6 +1928,10 @@ needs no decision change.
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
 | **CE-15** The chat reads the events (task 3463, CHAT-REACH-1) | AGENT-SAFE to build, dark. The live effect needs `CALENDAR_EVENTS` and `feature:tasks`, an enforcement-flip, and D218 adds the owner preview. The untrusted-text ruling is decided: the read marks the chat | §6.7: one read tool `my_tasks_list_events` in `skill_my_tasks`, in the `calendar-day` pack. It reads the `entries` key of `GET /projects/my/calendar`. No SQL, no route, no flag | "What is on my calendar" lists the synced Google and Outlook events with the provider of each. With no `entries` key the tool gives one fixed line and sends one request. The titles and places sit in one `UntrustedFrame` block, and notes and links never show. The tool has no identity argument. The tool refuses a window above the cap. The pack holds 17 tools | `tests/unit/test_calendar_day_pack.py`, `test_calendar_day_held.py`, `test_pack_requests.py`, `test_studio_split_matrix.py`, `test_connector_chat_reach.py`, `test_read_tool_paging.py`, and a new `tests/unit/test_calendar_events_tool.py` |
+| **CE-16** Invites from a connected inbox (task 3772) | AGENT-SAFE, dark. After CE-4 and CE-17 | §8.4 rules 1, 2, 4 and 8: read the `text/calendar` part or the `.ics` attachment in the Gmail and Outlook ingestion. Write the `invite` entry with the source `email`. Change it by `SEQUENCE`, cancel it, and put a stranger's invite in "New invites" | A mailed invite to the member shows on the grid within 2 minutes, with its call link. A later change moves it, and a cancel strikes it. An invite in a shared mailbox adds nothing. A stranger's invite shows only in "New invites". A long or hostile field is cut and framed | `tests/unit/test_calendar_mail_invites.py` (R8, new), with recorded Gmail and Graph mails |
+| **CE-17** One event across sources (the UID) (task 3771) | AGENT-SAFE, dark. A migration (R1, R6): `ical_uid` and `recurrence_id` on `calendar_entries`, the kind `invite` and the source `email` in the two checks, and one index for the match. The other checks of migration 331 do not change | §8.4 rule 3: CE-10 writes the UID from the provider, and the match rule lets the synced copy win | The same meeting from the mail and from Google shows once. The synced copy keeps the link to the mail. A UID of org A never matches in org B | `tests/unit/test_calendar_uid_match_r8.py` (R8, new) |
+| **CE-18** My answer, and the "not accepted" look (task 3773) | AGENT-SAFE, dark. After CE-5a and CE-10a. The provider half rides `CALENDAR_SYNC_READ` | §8.4 rules 5 and 6: CE-10 writes my answer from the provider. A light fill token in `src/app/globals.css` and `lib/theme/themes.ts`. "Show declined" | An event that I have not answered draws dashed and light. An accept at the provider draws it solid at the next sync. A declined event hides by default | Vitest for `externalLook.ts`, `themes.test.ts`, `test_calendar_sync_read.py`, and a visual review in four contexts |
+| **CE-19** Accept or decline in Metorite (task 3774) | 🔴 OWNER-GATE for the live flip, because a reply reaches a real person. The code is AGENT-SAFE, dark. After CE-18, and CE-11 for the provider path | §8.4 rule 7 | Accept with a synced Google calendar changes my answer at Google and sends no mail of ours. Accept with no synced calendar sends one iTIP `REPLY` from my mailbox, after one confirm. The flag off sends nothing | `tests/unit/test_calendar_rsvp_reply.py` (new) |
 
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
@@ -2173,6 +2217,9 @@ directly.
 | Q8 | A guest with no connected account | Store the name and address. Send nothing. Offer Connect |
 | Q9 | Do task blocks go to the provider? | ✅ **DECIDED 2026-11-12 (D215): yes**, as events of the calendar "Metorite", two ways (§8.1a points 7 and 8) |
 | Q10 | The gate of the new acts | `feature:tasks`, as D54.1 |
+| Q11 | An invite from a stranger: on the grid, or in a "New invites" list? (§8.4 rule 8) | The list. Calendar spam is a known attack |
+| Q12 | A declined event: hide it by default? (§8.4 rule 5) | Yes, with "Show declined" |
+| Q13 | With no synced calendar, may Accept send an iTIP reply from the member's own mailbox? (§8.4 rule 7) | Yes, after one confirm. The flip of `CALENDAR_RSVP_ORGS` stays the owner's |
 
 ## 12. Out of scope
 
