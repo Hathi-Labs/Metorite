@@ -53,6 +53,40 @@ describe("StudioChart", () => {
   });
 });
 
+describe("StudioStat icon (STU-LOOK-2)", () => {
+  const draw = (data: unknown) => renderToStaticMarkup(createElement(StudioStat, { data, rows: [AGG] }));
+  it("draws an icon of the list before the heading", () => {
+    const html = draw({ label: "Deals", icon: "Truck" });
+    expect(html).toContain("<svg");
+    expect(html.indexOf("<svg")).toBeLessThan(html.indexOf("data-stat-heading"));
+    expect(html).toContain('data-stat-heading=""');
+  });
+  it("draws no icon for a name outside the list, a non-string or no icon", () => {
+    for (const icon of ["Skull", 5, null, undefined, ""]) {
+      const html = draw({ label: "Deals", icon });
+      expect(html.slice(0, html.indexOf("data-stat-heading"))).not.toContain("<svg");
+    }
+  });
+});
+
+describe("StudioStat target (STU-LOOK-2b)", () => {
+  const draw = (data: unknown) => renderToStaticMarkup(createElement(StudioStat, { data, rows: [AGG] }));
+  it("draws the share of the target as a bar: 25 of 50 is 50 percent", () => {
+    const html = draw({ label: "Deals", target: 50 });
+    expect(html).toContain("data-stat-progress");
+    expect(html).toContain('aria-valuenow="50"');
+    expect(html).toContain("Target 50");
+  });
+  it("caps the bar at 100 percent when the value passes the target", () => {
+    expect(draw({ label: "Deals", target: 10 })).toContain('aria-valuenow="100"');
+  });
+  it("draws no bar for no target, a target of 0 or less, or a value that is not a number", () => {
+    for (const target of [undefined, null, 0, -5, "50", Number.NaN]) {
+      expect(draw({ label: "Deals", target })).not.toContain("data-stat-progress");
+    }
+  });
+});
+
 describe("StudioStat", () => {
   it("shows the value and the trend", () => {
     const html = renderToStaticMarkup(createElement(StudioStat, { data: { label: "Deals" }, rows: [AGG] }));

@@ -297,6 +297,8 @@ export interface StatTile {
   trend: { delta: number; percent: number | null; text: string; against: string } | null;
   /** The value of each period, for the small line. Empty with no trend. */
   spark: number[];
+  /** The value as a number, in major units, for the share of a target. Null when the total has none. */
+  raw: number | null;
 }
 
 /** The groups that are periods (a day or a month), oldest first. */
@@ -313,8 +315,9 @@ export function statFromAggregate(agg: AggData | null, j = 0): StatTile | null {
   if (!agg || j < 0 || j >= agg.measures.length) return null;
   const label = agg.measures[j].label;
   const value = formatMeasure(agg, j, agg.total.values[j]);
+  const raw = scaled(agg, j, agg.total.values[j]);
   const ps = periods(agg);
-  if (ps.length < 2) return { label, value, trend: null, spark: [] };
+  if (ps.length < 2) return { label, value, trend: null, spark: [], raw };
   const spark = ps.slice(-12).map((g) => scaled(agg, j, g.values[j]) ?? 0);
   const last = spark[spark.length - 1];
   const prev = spark[spark.length - 2];
@@ -323,7 +326,7 @@ export function statFromAggregate(agg: AggData | null, j = 0): StatTile | null {
   const against = keyLabel(ps[ps.length - 2].key);
   const sign = delta > 0 ? "+" : delta < 0 ? "−" : "";
   const text = percent !== null ? `${sign}${Math.abs(percent)}%` : `${sign}${Math.abs(delta)}`;
-  return { label, value, trend: { delta, percent, text, against }, spark };
+  return { label, value, trend: { delta, percent, text, against }, spark, raw };
 }
 
 // --- the nodes the manifest mapper builds ----------------------------------
@@ -342,9 +345,9 @@ export function chartBlock(
 
 /** The node of a Stat block: the `sparkTrend` template, bound to an aggregate source. */
 export function statBlock(
-  source: AggregateSource, title?: string, measure = 0, good: "up" | "down" = "up",
+  source: AggregateSource, title?: string, measure = 0, good: "up" | "down" = "up", icon?: string, target?: number,
 ): { type: "template"; props: Record<string, unknown> } {
-  return { type: "template", props: { name: "sparkTrend", source, data: { label: title, measure, good } } };
+  return { type: "template", props: { name: "sparkTrend", source, data: { label: title, measure, good, ...(icon ? { icon } : {}), ...(target ? { target } : {}) } } };
 }
 
 // --- the mapper from a manifest view ---------------------------------------
@@ -359,6 +362,10 @@ export interface AggregateView {
   id: string;
   title?: string | null;
   source?: { object?: string | null; action?: string | null; args?: Record<string, unknown> | null } | null;
+  /** A stat view may name an icon of the icon list (STU-LOOK-2). */
+  icon?: string | null;
+  /** A stat view may name a target (STU-LOOK-2b). */
+  target?: number | null;
 }
 
 export type ViewBlock =
@@ -425,5 +432,5 @@ export function statViewBlock(view: AggregateView, ctx: ViewContext = {}): ViewB
   if (good !== "up" && good !== "down") {
     return { ok: false, reason: `“${label}” sets good to ${JSON.stringify(good)}. Use up or down.` };
   }
-  return { ok: true, node: statBlock(src.source, view.title ?? undefined, measure, good) };
+  return { ok: true, node: statBlock(src.source, view.title ?? undefined, measure, good, view.icon ?? undefined, view.target ?? undefined) };
 }

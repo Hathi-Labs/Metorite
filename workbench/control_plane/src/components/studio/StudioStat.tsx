@@ -11,10 +11,12 @@
 import { useMemo } from "react";
 
 import Icon from "@/components/Icon";
+import ProgressBar from "@/components/ui/ProgressBar";
 import { TYPE } from "@/lib/typeScale";
 import { accentForHue } from "@/lib/statusAccent";
 import { parseAggregate, statFromAggregate } from "@/lib/studio/aggregateModel";
 import type { Row } from "@/lib/studio/dataDoor";
+import { NAV_ICONS } from "@/lib/studio/manifest";
 
 const W = 120;
 const H = 32;
@@ -39,13 +41,21 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
       </div>
     );
   }
+  // An icon of the icon list before the heading (STU-LOOK-2). A name outside the list draws nothing.
+  const iconName = typeof d.icon === "string" && (NAV_ICONS as readonly string[]).includes(d.icon) ? d.icon : null;
+  // The share of a target (STU-LOOK-2b). A target of 0 or less, or a value that is not a number, draws no bar.
+  const target = typeof d.target === "number" && Number.isFinite(d.target) && d.target > 0 ? d.target : null;
+  const share = target !== null && tile.raw !== null ? (tile.raw / target) * 100 : null;
   const goodDown = d.good === "down";
   const t = tile.trend;
   const fine = t ? (t.delta > 0) !== goodDown : true;
   const tone = t && t.delta !== 0 ? accentForHue(fine ? "green" : "red").text : "text-muted-foreground";
   return (
     <div data-studio-stat="" className="min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4">
-      <div className="truncate text-xs text-muted-foreground" title={heading || tile.label}>{heading || tile.label}</div>
+      <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" title={heading || tile.label}>
+        {iconName ? <Icon name={iconName} size={14} className="shrink-0" aria-hidden /> : null}
+        <span className="truncate" data-stat-heading="">{heading || tile.label}</span>
+      </div>
       <div className="mt-1 flex items-end justify-between gap-3">
         <div className="min-w-0">
           <div data-stat-value="" className="truncate font-semibold tabular-nums text-foreground" style={{ fontSize: TYPE["2xl"] }}>
@@ -68,6 +78,11 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
           </svg>
         )}
       </div>
+      {share !== null ? (
+        <div data-stat-progress="" className="mt-2">
+          <ProgressBar percent={share} label={`${heading || tile.label}: share of the target`} detail={`Target ${target}`} />
+        </div>
+      ) : null}
     </div>
   );
 }

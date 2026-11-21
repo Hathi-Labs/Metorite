@@ -355,6 +355,18 @@ class Card(_Strict):
     meta: list[str] = Field(default_factory=list)
 
 
+#: The icon names of the icon list as a type (the same 42 names as `NAV_ICONS`, which is the tuple that the tests read).
+NavIconName = Literal[
+    "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+    "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+    "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+    "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+    "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+    "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+    "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+]  # fmt: skip
+
+
 class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
@@ -374,6 +386,10 @@ class ViewDef(_Strict):
     sort: str | None = None
     actions: list[str] = Field(default_factory=list)
     text: str | None = None
+    #: STU-LOOK-2: an icon of the icon list before the title of a stat tile. `_check_view` allows it on a stat view only.
+    icon: NavIconName | None = None
+    #: STU-LOOK-2b: a target for a stat tile. The tile draws the share of it as a bar. A stat view only.
+    target: float | None = Field(default=None, gt=0, le=1_000_000_000_000, strict=True)
 
 
 #: The caps of the page shape (STU-D11a). `pageModel.ts` holds the same numbers, and
@@ -466,15 +482,7 @@ NAV_ICONS: tuple[str, ...] = (
 class NavRow(_Strict):
     #: A page of `pages`. The check that it exists is `_check_nav`.
     page: str = Field(pattern=rf"^{_DASHED}$")
-    icon: Literal[
-        "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
-        "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
-        "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
-        "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
-        "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
-        "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
-        "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
-    ] | None = None  # fmt: skip
+    icon: NavIconName | None = None
     label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     #: `true` asks the client to show a count of the rows of the page. `_check_nav` needs a
     #: table or board view on the page. The filter and the sort stay on that view, never here.
@@ -896,6 +904,10 @@ def _check_view(
     out: list[ManifestError],
 ) -> None:
     p = f"$.views[{vi}]"
+    if v.icon is not None and v.block != "stat":
+        out.append(_err(f"{p}.icon", "An icon sits on a stat view. Remove it, or use a stat view."))
+    if v.target is not None and v.block != "stat":
+        out.append(_err(f"{p}.target", "A target sits on a stat view. Remove it, or use a stat view."))
     src_obj = v.source.object if v.source else None
     obj = v.object or src_obj
     if v.source and v.source.action and v.source.action not in action_ids:

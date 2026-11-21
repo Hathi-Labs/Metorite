@@ -283,3 +283,27 @@ describe("the mapper from a manifest view (D4c)", () => {
     expect(!out.ok && out.reason).toContain("“plain”");
   });
 });
+
+describe("statViewBlock icon (STU-LOOK-2)", () => {
+  const base = { id: "n", title: "Open", source: { object: "visit", args: {} } };
+  const withIcon = (icon?: string | null) => statViewBlock({ ...base, icon }, { actions: [] });
+  it("carries the icon of the view in the data of the node", () => {
+    const out = withIcon("Truck");
+    if (!out.ok) throw new Error(out.reason);
+    expect((out.node.props.data as Record<string, unknown>).icon).toBe("Truck");
+  });
+  it("leaves the key out when the view names no icon", () => {
+    for (const none of [undefined, null, ""]) {
+      const out = withIcon(none);
+      if (out.ok) expect("icon" in (out.node.props.data as object)).toBe(false);
+    }
+  });
+});
+
+describe("statBlock target (STU-LOOK-2b)", () => {
+  it("passes a target to the tile data only when it is set", () => {
+    const src = { action: "a" };
+    expect(statBlock(src, "T", 0, "up", undefined, 40).props.data).toMatchObject({ target: 40 });
+    expect(statBlock(src, "T").props.data).not.toHaveProperty("target");
+  });
+});

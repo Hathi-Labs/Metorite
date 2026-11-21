@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from acb_common.studio_manifest import (
+    NAV_ICONS,
     BLOCKS,
     FIELD_TYPES,
     LAYOUTS,
@@ -1727,3 +1728,50 @@ def test_the_region_table_matches_the_validator_and_the_names():
     assert {r for t in PRESET_REGIONS.values() for r in t} <= set(REGION_NAMES)
     schema = Manifest.model_json_schema()
     assert schema["$defs"]["PageDef"]["properties"]["layout"]["anyOf"][0]["enum"] == list(LAYOUTS)
+
+
+# ── The icon of a stat view (STU-LOOK-2, studio_layouts.md section 11.4) ──────────────────────
+
+
+def _stat_doc(**patch) -> dict:
+    d = doc()
+    d["views"] = [*d["views"], {"id": "n_open", "block": "stat", "source": {"object": "visit"}, **patch}]
+    return d
+
+
+def test_a_stat_view_may_carry_an_icon_of_the_list():
+    assert validate_manifest(_stat_doc(icon="Truck")) == []
+    assert validate_manifest(_stat_doc()) == []
+
+
+def test_an_icon_on_another_block_is_refused_in_one_sentence():
+    d = doc()
+    d["views"] = [*d["views"], {"id": "all_v", "block": "table", "source": {"object": "visit"}, "icon": "Truck"}]
+    one(d, f"$.views[{len(d['views']) - 1}].icon", contains="stat view")
+
+
+def test_a_target_sits_on_a_stat_view_and_is_a_positive_number():
+    assert validate_manifest(_stat_doc(target=40)) == []
+    assert validate_manifest(_stat_doc(target=12.5)) == []
+    assert validate_manifest(_stat_doc(target=None)) == []
+    for bad in (0, -3, "40", True, 1e15):
+        errs = validate_manifest(_stat_doc(target=bad))
+        assert errs and errs[0].path.endswith(".target"), (bad, errs)
+
+
+def test_a_target_on_another_block_is_refused_in_one_sentence():
+    d = doc()
+    d["views"] = [*d["views"], {"id": "all_v", "block": "table", "source": {"object": "visit"}, "target": 10}]
+    one(d, f"$.views[{len(d['views']) - 1}].target", contains="stat view")
+
+
+def test_an_icon_outside_the_list_is_refused():
+    errs = validate_manifest(_stat_doc(icon="NotAnIcon"))
+    assert errs and errs[0].path.endswith(".icon") and "icon list" in errs[0].message
+
+
+def test_the_icon_of_a_view_and_of_a_rail_row_share_one_list():
+    schema = Manifest.model_json_schema()
+    view = schema["$defs"]["ViewDef"]["properties"]["icon"]["anyOf"][0]["enum"]
+    row = schema["$defs"]["NavRow"]["properties"]["icon"]["anyOf"][0]["enum"]
+    assert view == row and view == list(NAV_ICONS)
