@@ -649,6 +649,8 @@ _DIRECT_ALLOWED = {
     _ACCESSOR: "the one caller-side reader",
     "packages/acb_auth/acb_auth/deps.py": "the gateway verifier (_get_internal_token)",
     "packages/acb_auth/acb_auth/agent_signing.py": "redacts the value; branch-0 digest pins it",
+    "packages/acb_common/acb_common/studio_residency.py":
+        "names the setting in NOT_A_RECORD_PATH, a set of names, and reads no value",
     "scripts/onboarding_preflight.py": "checks the env files of a box, sends nothing",
     "scripts/_test_memory_e2e.py": "a manual e2e script, with its E2E_TOKEN override first",
     "evals/coding_engine/run.py": "the harness sets the token of the run under test",

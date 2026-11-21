@@ -295,13 +295,6 @@ def _with_current_chat(params: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
-def _internal_token() -> str:
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """The bearer and the acting member. With no member, refuse."""
     user = _current_user_email()
@@ -1345,7 +1338,7 @@ def _names_headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(NAMES_SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
