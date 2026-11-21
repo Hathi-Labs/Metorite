@@ -390,11 +390,10 @@ class Link:
 
 def _fold(text: Any) -> str:
     """A label in one form: lower case in NFC, with each character that is not a
-    letter, a digit or a combining mark dropped (a variation selector too).
-    A combining vowel sign stays, so two words of an Indic script stay apart. ``%`` reads as :data:`PERCENT_WORD` first.
-    Apart from ``%``, it is the rule of ``fold_module`` in
-    ``routes/crm/modules.py`` (CRM-Q34-12). This module imports no route, so
-    it keeps its own copy."""
+    letter, a digit or a combining mark dropped (the variation selectors
+    U+FE00 to U+FE0F too). A combining vowel sign stays, so two words of an
+    Indic script stay apart. ``%`` reads as :data:`PERCENT_WORD` first. This
+    module imports no route, so it keeps its own copy of the rule."""
     text = str(text or "").replace("%", f" {PERCENT_WORD} ")
     text = unicodedata.normalize("NFC", text.lower())
     return "".join(ch for ch in text
@@ -444,7 +443,8 @@ def _link(found: Sequence[tuple[str, str, str]], step: str) -> Link:
 
 
 def link_field(fields: Iterable[Any], word: str, *, module: str = "",
-               answers: Mapping[str, str] | None = None) -> Link:
+               answers: Mapping[str, str] | None = None,
+               fills: Mapping[str, float] | None = None) -> Link:
     """The stored field that *word* names, or the fields it can mean.
 
     *fields* have ``key``, ``label`` and ``type``, as :func:`candidates`
@@ -459,7 +459,9 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
 
     1. ``exact``: the stored key;
     2. ``term``: the admin's answer of the term question of *word* in
-       *module*, first as in :func:`decide`. *answers* is
+       *module*, first as in :func:`decide`: the answer counts only when its
+       field is one of :func:`candidates` of *word* (*fills* is the fill of
+       each key, as the caller read it). *answers* is
        ``term_state(...).answers``, which the caller read. With no *module*
        or no *answers*, or a word that :func:`_own_term` refuses, the step
        does not run;
@@ -473,6 +475,7 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
     One field at steps 1 to 4 is the link (``linked``). Two or more give
     ``ambiguous`` and pick none. The result never holds *word*, and the
     function reads no database, no setting and no clock, and logs nothing."""
+    fields = list(fields)
     asked = word if isinstance(word, str) else ""
     trimmed = asked.strip()
     if trimmed.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in trimmed:
@@ -485,7 +488,8 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
         return _link(found, "exact")
     if module and answers and words(trimmed) and _own_term(trimmed):
         picked = answers.get(term_id(module, trimmed))
-        found = [f for f in pool if f[0] == picked]
+        allowed = {c.key for c in candidates(fields, fills, trimmed)}
+        found = [f for f in pool if f[0] == picked and f[0] in allowed]
         if found:
             return _link(found, "term")
     case = trimmed.casefold()
@@ -499,6 +503,8 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
         return _link(found, "case")
     found = by_label
     if found:
+        # A key that folds to the word is as certain as a label that does.
+        found = found + [f for f in pool if f not in found and _fold(f[0]) == folded]
         return _link(found, "label")
     wanted = [w for w in dict.fromkeys(words(trimmed)) if len(w) >= NEAR_MIN]
     if wanted:

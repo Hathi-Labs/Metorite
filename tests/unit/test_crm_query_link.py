@@ -277,6 +277,27 @@ def test_the_case_step_sees_the_label_of_a_second_field() -> None:
                                                 money=True)
 
 
+def test_the_label_step_names_a_second_field_whose_key_folds_to_the_word() -> None:
+    fields = [F("Amount_Due", "Balance Due", "currency"),
+              F("Amount_Due1", "Amount Due", "currency")]
+    assert link_field(fields, "amount_due") == hint("Amount_Due", "Amount_Due1",
+                                                    step="ambiguous", money=True)
+    both = link_field(fields, "amount due")
+    assert both.linked is False and both.step == "ambiguous"
+    assert set(both.keys) == {"Amount_Due", "Amount_Due1"}
+
+
+def test_an_admin_answer_needs_its_field_among_the_candidates_as_decide_does() -> None:
+    fields = [F("Fee_A", "Fee", "currency"), F("Fee_B", "Fee", "currency")]
+    answers = _answers("Invoices", "fee", "Fee_B")
+    fills = {"Fee_A": 0.9, "Fee_B": 0.0}
+    got = link_field(fields, "fee", module="Invoices", answers=answers, fills=fills)
+    assert got.step != "term" and "Fee_B" not in got.keys[:1]
+    with_fill = link_field(fields, "fee", module="Invoices", answers=answers,
+                           fills={"Fee_A": 0.9, "Fee_B": 0.5})
+    assert with_fill.step == "term" and with_fill.keys == ("Fee_B",)
+
+
 # ── 2. A close pair never picks ─────────────────────────────────────────────
 
 def test_two_fits_give_both_keys_and_pick_none() -> None:
