@@ -3062,7 +3062,7 @@ export default function AgentChat({
           {aboveComposer}
           {/* HRD-12b: the decisions this chat keeps, each with an Undo. The server
               says nothing while CHAT_CONSTRAINTS is off, so nothing draws. */}
-          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={() => inputRef.current?.focus()} />
+          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={focusQuietly} />
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}
