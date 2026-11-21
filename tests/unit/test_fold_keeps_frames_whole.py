@@ -18,12 +18,14 @@ Mutation table, measured on 2026-11-22.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap), measured again 2026-11-22 | 22 of 38 tests fail. The 16 that stay green test a fold that needs no close, or the label rules |
-| M2 | ``open_blocks`` reads only a whole marker line (``MARKER_LINE_RE`` per line) | 5 fail: the ``open-line-first`` and ``json-value`` rows, the two-results test, ``after-the-end-line`` and the two-END-lines test |
-| M3 | ``close_cut_blocks`` keeps a split marker (``split = None``) | the 6 rows of ``test_a_split_marker_of_a_frame_label_goes``, ``in-the-open-line`` and ``in-the-token`` fail |
+| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap), measured again in repair round 2 | 24 of 47 tests fail. The 23 that stay green test a fold that needs no close, or the label rules |
+| M2 | ``open_blocks`` reads only a whole marker line (``MARKER_LINE_RE`` per line), measured in round 1 | 5 fail: the ``open-line-first`` and ``json-value`` rows, the two-results test, ``after-the-end-line`` and the two-END-lines test |
+| M3 | ``_settled`` keeps a split marker (``split = None``) | 10 fail: the 6 rows of ``test_a_split_marker_of_a_frame_label_goes``, ``in-the-open-line``, ``in-the-token`` and both sweeps |
 | M4 | ``untrusted._label`` takes the label ``NAME`` | ``test_no_frame_takes_the_label_of_the_note`` fails |
 | M5 | the old blanket strip ``<<<[A-Z ]{0,47}(?: [0-9a-f]{0,16}>{0,2})?`` at the end of every cut | 8 of the 9 rows of ``test_a_plain_tail_that_is_no_frame_marker_stays_as_maf_cut_it`` (all but ``token-too-long``) and ``in-the-note-marker`` fail |
 | M6 | ``WEB PAGE`` leaves ``FRAME_LABELS`` | ``test_each_frame_label_of_the_tree_is_known`` and the ``whole-token`` row fail |
+| M7 | ``_settled`` keeps a run of ``<`` at the end (the code of ``cd3a2e60c``, which kept ``<<<`` after a cut back) | both sweeps fail. On that code 123 of the 23,274 cuts of one sweep end in ``<`` |
+| M8 | the label scan of ``cd3a2e60c`` (positional only, in a function only, a text filter first) | it stays green with 4 plants in the tree: ``wrap(label=...)``, ``frame_untrusted(kind=...)``, a module-level ``wrap`` and a file that names no frame word. The scan of now fails on each plant alone |
 """
 from __future__ import annotations
 
@@ -224,51 +226,113 @@ def test_a_split_marker_of_a_frame_label_goes(tail: str) -> None:
     _no_half_marker(ours)
 
 
-def _frame_labels_of_the_tree() -> tuple[set[str], list[str]]:
-    """Each label that a module of the tree gives to ``wrap``, ``open_line``,
-    ``close_line``, ``frame_untrusted`` or ``studio_tools._framed_json``. A
-    label is a string literal, or a name that the module sets to one. Each
-    other argument is a pass-through, listed by file and function."""
-    import ast
-    from pathlib import Path
+def _label_slots() -> dict[str, tuple[int, str]]:
+    """``name -> (position, keyword)`` of the label of each frame API, read
+    from the real signatures: ``UntrustedFrame.wrap``, ``open_line`` and
+    ``close_line``, ``frame_untrusted`` and ``studio_tools._framed_json``."""
+    import inspect
 
-    repo = Path(__file__).resolve().parents[2]
+    from acb_skills import studio_tools, untrusted
+
+    out: dict[str, tuple[int, str]] = {}
+    for name, fn, method in (
+        ("wrap", untrusted.UntrustedFrame.wrap, True),
+        ("open_line", untrusted.UntrustedFrame.open_line, True),
+        ("close_line", untrusted.UntrustedFrame.close_line, True),
+        ("frame_untrusted", untrusted.frame_untrusted, False),
+        ("_framed_json", studio_tools._framed_json, False),
+    ):
+        params = list(inspect.signature(fn).parameters)[1 if method else 0:]
+        keyword = next(p for p in params if p in ("label", "kind"))
+        out[name] = (params.index(keyword), keyword)
+    return out
+
+
+def _makes_a_frame(node: Any) -> bool:
+    """True for ``UntrustedFrame(...)`` or ``UntrustedFrame.new(...)``."""
+    import ast
+
+    if not isinstance(node, ast.Call):
+        return False
+    f = node.func
+    if isinstance(f, ast.Attribute) and f.attr == "new":
+        f = f.value
+    return (isinstance(f, ast.Name) and f.id == "UntrustedFrame") or (
+        isinstance(f, ast.Attribute) and f.attr == "UntrustedFrame")
+
+
+def _scan_source(source: str, rel: str) -> tuple[set[str], set[str]]:
+    """``(labels, unread)`` of one module. Each call node at any level
+    counts, in a function or at module level. A label is read from its
+    position or its keyword. ``.wrap`` counts only on a frame: a call that
+    makes one, a name set from such a call, or a name with ``frame`` in it.
+    So ``cv.wrap`` of ``pdf_render`` and ``textwrap.wrap`` do not count."""
+    import ast
+
+    slots = _label_slots()
+    tree = ast.parse(source)
+    consts = {
+        t.id: n.value.value
+        for n in tree.body if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)
+        for t in n.targets if isinstance(t, ast.Name)
+    }
+    frames = {
+        t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and _makes_a_frame(n.value)
+        for t in n.targets if isinstance(t, ast.Name)
+    }
+
+    def _is_frame(node: Any) -> bool:
+        if _makes_a_frame(node):
+            return True
+        if isinstance(node, ast.Name):
+            return node.id in frames or "frame" in node.id.lower()
+        return isinstance(node, ast.Attribute) and "frame" in node.attr.lower()
+
     labels: set[str] = set()
-    unread: list[str] = []
-    for root in ("apps", "packages"):
-        for path in (repo / root).rglob("*.py"):
-            if {"node_modules", "tests", ".venv", "__pycache__"} & set(path.parts):
-                continue
-            source = path.read_text(encoding="utf-8", errors="replace")
-            if "UntrustedFrame" not in source and "frame_untrusted" not in source:
-                continue
-            tree = ast.parse(source)
-            consts = {
-                t.id: n.value.value
-                for n in tree.body if isinstance(n, ast.Assign)
-                and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)
-                for t in n.targets if isinstance(t, ast.Name)
-            }
-            for fn in ast.walk(tree):
-                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
-                for call in ast.walk(fn):
-                    if not isinstance(call, ast.Call):
-                        continue
-                    f = call.func
-                    name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-                    at = {"wrap": 0, "open_line": 0, "close_line": 0, "frame_untrusted": 0,
-                          "_framed_json": 1}.get(name)
-                    if at is None or len(call.args) <= at:
-                        continue
-                    arg = call.args[at]
+    unread: set[str] = set()
+
+    def _visit(node: Any, where: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else where
+            if isinstance(child, ast.Call):
+                f = child.func
+                name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+                api = name in slots and not (
+                    name == "wrap" and not (isinstance(f, ast.Attribute) and _is_frame(f.value)))
+                if api:
+                    at, keyword = slots[name]
+                    arg = child.args[at] if len(child.args) > at else next(
+                        (k.value for k in child.keywords if k.arg == keyword), None)
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                         labels.add(arg.value)
                     elif isinstance(arg, ast.Name) and arg.id in consts:
                         labels.add(consts[arg.id])
                     else:
-                        unread.append(f"{path.relative_to(repo).as_posix()}:{fn.name}")
-    return labels, sorted(set(unread))
+                        unread.add(f"{rel}:{where}")
+            _visit(child, inner)
+
+    _visit(tree, "<module>")
+    return labels, unread
+
+
+def _frame_labels_of_the_tree() -> tuple[set[str], set[str]]:
+    """The labels and the unread calls of each ``.py`` file under ``apps/``
+    and ``packages/``, with no text filter first."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    labels: set[str] = set()
+    unread: set[str] = set()
+    for root in ("apps", "packages"):
+        for path in (repo / root).rglob("*.py"):
+            if {"node_modules", "tests", ".venv", "__pycache__"} & set(path.parts):
+                continue
+            got, missed = _scan_source(path.read_text(encoding="utf-8-sig", errors="replace"),
+                                       path.relative_to(repo).as_posix())
+            labels |= got
+            unread |= missed
+    return labels, unread
 
 
 #: The functions that pass a label from their caller. Their callers give a
@@ -294,9 +358,35 @@ def test_each_frame_label_of_the_tree_is_known() -> None:
 
     labels, unread = _frame_labels_of_the_tree()
     labels |= {_maf_mcp.RESULT_LABEL, _maf_mcp.INDEX_LABEL}
-    assert "MCP RESULT" in labels and "WEB PAGE" in labels, "the scan is blind"
+    assert {"MCP RESULT", "WEB PAGE", "STUDIO WORKFLOWS"} <= labels, "the scan is blind"
     assert labels - untrusted.FRAME_LABELS == set(), "add each new label to FRAME_LABELS"
-    assert set(unread) <= _PASS_THROUGH, f"a label the scan cannot read: {set(unread) - _PASS_THROUGH}"
+    assert unread <= _PASS_THROUGH, f"a label the scan cannot read: {unread - _PASS_THROUGH}"
+
+
+_PLANTS = {
+    "keyword-wrap": 'def f(frame):\n    return frame.wrap(label="NEW KIND", text="x")\n',
+    "keyword-frame-untrusted": 'def f():\n    return frame_untrusted(kind="NEW KIND", text="x")\n',
+    "module-level": '_PLANT = UntrustedFrame.new().wrap("NEW KIND", "x")\n',
+    "no-frame-word": 'def f(frame):\n    return frame.wrap("NEW KIND", "x")\n',
+    "named-frame": 'f = UntrustedFrame.new()\nX = f.close_line("NEW KIND")\n',
+    "keyword-framed-json": 'def f(frame):\n    return _framed_json(frame, label="NEW KIND", value=1)\n',
+}
+
+
+@pytest.mark.parametrize("plant", sorted(_PLANTS))
+def test_the_label_scan_sees_each_plant(plant: str) -> None:
+    labels, unread = _scan_source(_PLANTS[plant], "plant.py")
+    assert labels == {"NEW KIND"} and not unread, (labels, unread)
+
+
+def test_the_label_scan_skips_a_wrap_that_is_no_frame() -> None:
+    from pathlib import Path
+
+    pdf = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/pdf_render.py"
+    assert ".wrap(" in pdf.read_text(encoding="utf-8")
+    assert _scan_source(pdf.read_text(encoding="utf-8"), "pdf_render.py") == (set(), set())
+    other = 'import textwrap\nA = textwrap.wrap("SOME TEXT", 10)\nB = cv.wrap("TOTAL", 40)\n'
+    assert _scan_source(other, "other.py") == (set(), set())
 
 
 def test_two_framed_results_in_one_group() -> None:
@@ -370,6 +460,60 @@ def test_each_cut_point_gives_a_whole_frame_or_none(where: str) -> None:
         assert summary == mafs, "a fold with no open block and no split marker changed"
     else:
         assert _pairs(mafs)[1] or "<<<" in mafs[-60:], "MAF's own cut was whole, so the row proves nothing"
+
+
+def _check_cut(ours: str, mafs: str, token: str) -> None:
+    """One cut of the sweep: no open block, inside the cap, and no half
+    marker. A fold that is MAF's, byte for byte, may end in a bare ``<<<`` or
+    in a part of the note's ``NAME`` marker, because neither opens a block.
+    A fold that differs from MAF never ends in ``<``."""
+    assert len(ours) <= CAP, len(ours)
+    assert ours.startswith(PREFIX) and ours.endswith(SUFFIX)
+    assert not _pairs(ours)[1], "an open block in the fold"
+    body = ours[len(PREFIX):-len(SUFFIX)]
+    if ours != mafs:
+        _no_half_marker(ours)
+        assert not body.removesuffix(CUT_MARK).endswith("<"), f"a < run at the end: {body[-80:]!r}"
+        return
+    head = body.removesuffix(CUT_MARK)
+    for m in re.finditer("<<<", head):
+        if _ANY_MARKER.match(head, m.start()):
+            continue
+        rest = head[m.end():]
+        assert "\n" not in rest and any(
+            form.startswith(rest) for form in (f"NAME {token}>>>", f"END NAME {token}>>>")), (
+            f"MAF's fold kept a half marker of a frame: {head[m.start():m.start() + 60]!r}")
+
+
+def _sweep(label: str, *, two: bool) -> int:
+    """Each cut point of one framed result, from the start of its note to
+    past its END line. With *two*, a whole framed result comes first in the
+    same group. Returns the number of cuts."""
+    frame = UntrustedFrame.new()
+    result = f"{frame.note('W')}\n{frame.wrap(label, 'row one' + chr(10) + 'row two')}"
+    first = f"srv_a: {_mcp('a short answer')}; " if two else ""
+    name = "srv_b: "
+    for at in range(0, len(result) + 2):
+        pad = ALLOWED - len(first) - len(name) - at
+        items = [first.removesuffix("; ")] if two else []
+        items.append(f"{name}{'p' * (pad - 1)}\n{result}" + "tail\n" * 900)
+        ours = Framed._summary_text(items)
+        mafs = ToolResultCompactionStrategy._summary_text(items)
+        _check_cut(ours, mafs, frame.token)
+        if two:
+            assert first.removesuffix("; ") in ours, "the whole first result changed"
+    return len(result) + 2
+
+
+@pytest.mark.parametrize("two", [False, True], ids=["one-result", "two-results"])
+def test_every_cut_point_of_every_frame_label_gives_a_whole_frame_or_none(two: bool) -> None:
+    """The full sweep: each label of ``FRAME_LABELS``, each cut point from
+    the note to past the END line. A cut back can stop just after the
+    ``<<<`` of the real open line, and that bare ``<<<`` must go too."""
+    from acb_skills.untrusted import FRAME_LABELS
+
+    cuts = sum(_sweep(label, two=two) for label in sorted(FRAME_LABELS))
+    assert cuts > 20_000, cuts
 
 
 def test_the_end_lines_fit_inside_the_cap() -> None:

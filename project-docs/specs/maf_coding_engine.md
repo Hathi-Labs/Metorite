@@ -5040,7 +5040,8 @@ cut leaves an untrusted block open, `acb_skills.untrusted.close_cut_blocks`
 writes its END line inside the cap, or cuts back to before the block. It
 drops a split marker only when it is a part of a marker of a label of
 `untrusted.FRAME_LABELS`. Each other cut fold with no open block stays MAF's
-fold, byte for byte. Fence: `test_fold_keeps_frames_whole.py`.
+fold, byte for byte. A fold that it changes never ends in `<`. Fence:
+`test_fold_keeps_frames_whole.py`.
 
 **A byte backstop.** If `session_json` is still larger than
 `maf_session_max_bytes` (default 2 MiB) after the compaction, the store

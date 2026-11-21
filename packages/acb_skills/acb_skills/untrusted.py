@@ -440,9 +440,8 @@ def open_blocks(text: str) -> list[tuple[str, str]]:
     outermost first (task 3849).
 
     Unlike the line scan of ``tool_result_spill._open_frames``, it finds a
-    marker anywhere. MAF's fold of tool results glues a marker to the name
-    of the tool or to the next result, and a JSON value holds it with
-    ``\\n``. It skips the label ``NAME`` of the note. An END marker pops the
+    marker anywhere. MAF's fold glues a marker to the name of the tool or to
+    the next result. A JSON value holds a marker with ``\\n``. It skips the label ``NAME`` of the note. An END marker pops the
     stack down to its own block. An END marker of no open block counts for
     nothing."""
     stack: list[tuple[str, str]] = []
@@ -461,12 +460,12 @@ def open_blocks(text: str) -> list[tuple[str, str]]:
 def _split_marker_at(text: str) -> int | None:
     """Where a split marker starts at the end of *text*, or None.
 
-    A split marker is ``<<<`` with no ``<`` before it, then a part of an open
-    or END form of a label of :data:`FRAME_LABELS`. One letter of it is
-    enough. After a whole label, a space, a part of the token and at most two
-    ``>`` can follow. A bare ``<<<``, a label that the tree does not write
-    (``<<<EOF``, ``<<<ABC 12``) and a longer run of ``<`` are not split
-    markers."""
+    A split marker starts with ``<<<``, and no ``<`` comes before it. Then
+    comes a part of an open or END form of a label of :data:`FRAME_LABELS`.
+    One letter of it is enough. After a whole label, a space, a part of the
+    token and at most two ``>`` can follow. These are not split markers: a
+    bare ``<<<`` and a longer run of ``<``. A label that the tree does not
+    write is not one either, such as ``<<<EOF`` or ``<<<ABC 12``."""
     at = text.rfind("<<<", max(0, len(text) - _SPLIT_MAX))
     if at < 0 or (at > 0 and text[at - 1] == "<"):
         return None
@@ -481,37 +480,50 @@ def _split_marker_at(text: str) -> int | None:
     return None
 
 
+def _settled(part: str, head: str) -> str:
+    """*part*, a cut of *head*, with no split marker and no run of ``<`` at
+    its end. A run of ``<`` stays only when *part* is all of *head* and
+    opens no block. Then a head with no change stays byte for byte."""
+    while True:
+        split = _split_marker_at(part)
+        if split is not None:
+            part = part[:split]
+            continue
+        if part.endswith("<") and (part != head or open_blocks(part)):
+            part = part.rstrip("<")
+            continue
+        return part
+
+
 def close_cut_blocks(head: str, limit: int) -> str:
     """*head*, the head of a cut text, made to hold each of its blocks whole
     in at most *limit* characters (task 3849).
 
     1. A split marker at the end goes (:func:`_split_marker_at`). It is
        ``<<<`` and then a part of a marker of a label of
-       :data:`FRAME_LABELS`. Any other tail stays, ``<<<EOF`` or
-       ``<<<<<<< HEAD`` too.
-    2. Each block that the rest opens and does not close gets its END line,
-       on a line of its own, innermost first, and then one new line. A bare
-       ``<<<`` at the end goes only then, because the head changes anyway.
-    3. When those END lines do not fit in *limit*, the cut moves back. A
+       :data:`FRAME_LABELS`. Any other tail of the head as it came stays.
+    2. A head that changes must not end in ``<``. Remove a run of ``<`` at
+       the end when the head opens a block or the cut moved back. A cut that
+       moved back can stop just after the ``<<<`` of a real marker. Do steps
+       1 and 2 again until the head is stable.
+    3. Give each block that the rest opens and does not close its END line.
+       Each END line has a line of its own, innermost first. One new line
+       follows them.
+    4. When those END lines do not fit in *limit*, the cut moves back. A
        head that cannot hold a whole block holds no block.
 
     A head that opens no block and ends in no split marker comes back as it
-    is, byte for byte. So does a bare ``<<<`` at the end of such a head: it
-    opens no block. The caller puts its own text, such as a truncation mark,
-    after the result."""
+    is, byte for byte. Its tail can be ``<<<EOF``, ``<<<<<<< HEAD`` or a
+    bare ``<<<``, because none of them opens a block. The caller puts its
+    own text, such as a truncation mark, after the result."""
     text = str(head or "")
     cut = min(len(text), max(0, int(limit)))
     while cut > 0:
-        part = text[:cut]
-        split = _split_marker_at(part)
-        if split is not None:
-            part = part[:split]
+        part = _settled(text[:cut], text)
         ends = [UntrustedFrame(token).close_line(label)
                 for label, token in reversed(open_blocks(part))]
         tail = ""
         if ends:
-            if part.endswith("<<<") and not part.endswith("<<<<"):
-                part = part[:-3]
             lead = "" if part.endswith("\n") else "\n"
             tail = lead + "\n".join(ends) + "\n"
         if len(part) + len(tail) <= limit:
