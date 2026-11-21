@@ -4753,6 +4753,13 @@ async def update_rule(
         again = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
         now = next((r for r in again if r.get("id") == rule_id), None)
         if now is None or _rule_fingerprint(now) != first_read:
+            if _rule_precondition_on():
+                # HRD-10d-4: the HRD-7 words, with each field that changed.
+                before = json.loads(first_read)
+                return _rule_changed_text(
+                    "Nothing was changed. The rule "
+                    f"{_changed_value(before.get('name'))} was not updated.",
+                    before, now)
             return (
                 f"Not saved. The rule '{rule.get('name')}' changed while the card "
                 "waited. Read it again with get_rules_and_settings, and ask the "
@@ -5939,6 +5946,11 @@ async def copy_rules(from_account_id: str, to_account_id: str) -> str:
     # the route copies the rules of now, not the rules of the card.
     again = await _enabled_rules(src)
     if again is None or [_rule_fingerprint(r) for r in again] != first_read:
+        if _rule_precondition_on():
+            # HRD-10d-4: the HRD-7 words, with each rule that changed.
+            return _rules_changed_text(
+                f"Nothing was copied. No rule went from {names[src]} to {names[dst]}.",
+                [json.loads(f) for f in first_read], again)
         return ("Nothing changed. The rules of the mailbox changed while the card waited. "
                 "Ask the member again.")
     res = await _post("/email/rules/copy",
@@ -8299,6 +8311,113 @@ def _changed_value(value: Any) -> str:
     if len(text) > _CHANGED_MAX:
         text = f"{text[:_CHANGED_MAX - 1]}…"
     return _fenced(text)
+
+
+#: The fields of a mail rule that a member sees, and that a changed-since
+#: answer names (HRD-10d-4): the key of the rule, then its head.
+_RULE_FIELDS = (
+    ("name", "Name"), ("enabled", "On"), ("instructions", "Instructions"),
+    ("from_pattern", "From"), ("to_pattern", "To"),
+    ("subject_pattern", "Subject"), ("body_pattern", "Body"),
+    ("conditional_operator", "Operator"), ("automated", "Automatic"),
+    ("run_on_threads", "Threads"),
+)
+
+
+def _rule_precondition_on() -> bool:
+    """True when ``CHAT_CARD_PRECONDITION_ORGS`` names the org of the run
+    (HRD-10d-4). The org comes from the run binding inside the reader, never
+    from an argument (R5). A fault reads as off, so the old text stays."""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+
+        return bool(card_precondition_on())
+    except Exception:  # the platform package is absent, or the reader failed
+        return False
+
+
+def _rule_field_rows(before: dict[str, Any], now: dict[str, Any], indent: str) -> list[str]:
+    """One line for each field of a rule that differs, then → now. The values
+    go through :func:`_changed_value`: a rule can hold the words of a stranger
+    (a mail made it), so each one is fenced, on one line, and capped."""
+    rows: list[str] = []
+    for key, head in _RULE_FIELDS:
+        old, new = before.get(key), now.get(key)
+        if (old or None) != (new or None):
+            # A False reads as empty in `_changed_value`, so a flag says yes or no.
+            if isinstance(old, bool) or isinstance(new, bool):
+                old, new = ("yes" if old else "no"), ("yes" if new else "no")
+            rows.append(f"{indent}{head}: {_changed_value(old)} → {_changed_value(new)}")
+    if _rule_acts(before.get("actions")) != _rule_acts(now.get("actions")) or (
+            json.dumps(before.get("actions"), sort_keys=True, default=str)
+            != json.dumps(now.get("actions"), sort_keys=True, default=str)):
+        rows.append(f"{indent}Actions: {_changed_value(_rule_acts(before.get('actions')))}"
+                    f" → {_changed_value(_rule_acts(now.get('actions')))}")
+    return rows
+
+
+_RULE_READ_AGAIN = ("Read the rule again with get_rules_and_settings, and ask the "
+                    "member before you show a new card.")
+
+
+def _rule_changed_text(act: str, before: dict[str, Any], now: dict[str, Any] | None) -> str:
+    """The answer of ``update_rule`` to a rule that changed while its card
+    waited (HRD-10d-4). Nothing was saved.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``), then one
+    line for each field that changed (*before*, the read before the card,
+    then *now*, the read after it). *now* is None when the rule is gone. The
+    answer never claims a write."""
+    lines = [card_outcome_text(CARD_CHANGED_SINCE, act)]
+    if now is None:
+        lines.append("The rule is not in the mailbox now. Someone deleted it.")
+    else:
+        rows = _rule_field_rows(before, now, "  ")
+        if rows:
+            lines.append("These fields of the rule changed (then → now):")
+            lines.extend(rows)
+        else:
+            lines.append("No field that the card shows changed. Another part of the rule changed.")
+    lines.append(f"  rule_id: {before.get('id')}")
+    lines.append(_RULE_READ_AGAIN)
+    return "\n".join(lines)
+
+
+def _rules_changed_text(
+    act: str, before: list[dict[str, Any]], now: list[dict[str, Any]] | None,
+) -> str:
+    """The answer of ``copy_rules`` to rules that changed while the card
+    waited (HRD-10d-4). Nothing was copied. Same words and same value
+    helper as :func:`_rule_changed_text`, with one block for each rule."""
+    lines = [card_outcome_text(CARD_CHANGED_SINCE, act)]
+    if now is None:
+        lines.append("The rules of the mailbox could not be read again.")
+        lines.append(_RULE_READ_AGAIN)
+        return "\n".join(lines)
+    old_by = {str(r.get("id")): r for r in before}
+    new_by = {str(r.get("id")): r for r in now}
+    rows: list[str] = []
+    for rid, old in old_by.items():
+        label = _changed_value(old.get("name"))
+        if rid not in new_by:
+            rows.append(f"  Rule {label}: it is off, or deleted")
+            continue
+        fields = _rule_field_rows(old, new_by[rid], "    ")
+        if fields:
+            rows.append(f"  Rule {label}:")
+            rows.extend(fields)
+    for rid, new in new_by.items():
+        if rid not in old_by:
+            rows.append(f"  Rule {_changed_value(new.get('name'))}: it is on now")
+    if len(rows) > 12:
+        rows = [*rows[:12], f"  ... and {len(rows) - 12} more lines"]
+    if rows:
+        lines.append("These rules changed (then → now):")
+        lines.extend(rows)
+    else:
+        lines.append("No field that the card shows changed. Another part of a rule changed.")
+    lines.append(_RULE_READ_AGAIN)
+    return "\n".join(lines)
 
 
 def _folded(value: Any) -> str:

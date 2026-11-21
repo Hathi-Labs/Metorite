@@ -871,6 +871,16 @@ class Settings(BaseSettings):
     # `gateway.routes.studio.flags.skill_tests_cap`. It is no `*_ORGS` key, so
     # a change needs a restart. The owner sets it. Spec: ai_studio_rows/F4.md.
     studio_skill_tests_cap_credits: str = ""
+    # TOF-3a F12b: STUDIO_SKILL_REPAIR_ORGS lists the org ids where a chat run
+    # that loaded a saved skill writes one row of the run in the store of
+    # skill runs, and a test run writes one row for each test that
+    # failed with a fault of the skill. F12c adds the repair routes behind it.
+    # `*` opens every org. Empty opens none: no writer writes a row. Reader:
+    # `gateway.routes.studio.flags.skill_repair_allowed`, and each writer also
+    # needs STUDIO_ORGS. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # A flip is OWNER-ONLY, because a repair spends credits. Spec:
+    # ai_studio_rows/F12.md.
+    studio_skill_repair_orgs: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with

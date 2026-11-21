@@ -584,6 +584,17 @@ org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
 at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
 the owner preview.
 
+`STUDIO_SKILL_REPAIR_ORGS` opens the record of skill runs
+(`ai_studio_rows/F12.md`, TOF-3a F12b). For each listed org, a chat run that
+loaded a saved skill writes one row in `studio_skill_runs` for each skill. A
+test run writes one row for each test that failed with a fault of the skill.
+`*` lists every org, and the default is empty. Empty means that no writer
+writes a row. Its one reader is
+`gateway.routes.studio.flags.skill_repair_allowed`.
+
+Each writer of skill runs also needs `STUDIO_ORGS`. A reload applies a change. Any value other than empty is
+OWNER-ONLY, because the repair of F12c spends credits.
+
 `STUDIO_SKILL_TESTS_ORGS` opens the test run of a skill
 (`ai_studio_rows/F4.md`, TOF-3b F4b). For each listed org, a member may call
 `POST /studio/skills/{id}/tests/run`. Each test is a real model turn in a dry
