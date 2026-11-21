@@ -138,6 +138,8 @@ class _BridgeMCP(FastMCP):
             if not isinstance(cause, ValidationError):
                 raise
             fields = sorted({str(e["loc"][0]) for e in cause.errors() if e.get("loc")})
+            if not fields:
+                raise ToolError("Check the inputs of this call.") from None
             raise ToolError(f"Check these inputs: {', '.join(fields)}.") from None
 
 
