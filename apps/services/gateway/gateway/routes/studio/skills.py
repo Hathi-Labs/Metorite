@@ -50,7 +50,8 @@ skill share needs no install. The owner asks with ``POST
 /skills/{id}/versions/{n}/share`` (202 ``pending``). A second ask of the same
 version writes nothing. Another member, another org and no such version get
 404. A holder of ``studio:publish`` reads ``GET /skill-shares?state=pending``
-(each other caller gets 403, before any session). A holder approves or
+and ``?state=approved``, the skills that the org shares (each other caller
+gets 403, before any session). A holder approves or
 rejects one version with ``POST .../share/approve`` or ``.../share/reject``.
 The handler passes ``user.has_permission(SHARE_RIGHT)`` to the store as
 ``can_publish``, and the store refuses the rest (403). The owner cannot
@@ -1127,12 +1128,18 @@ async def approve_skill_repair(
 #: The 409 of a share move that the state of the ask does not allow (J2c).
 SHARE_CONFLICT = "share_conflict"
 FORBIDDEN = "forbidden"
-#: The one state that ``GET /skill-shares`` reads.
+#: The two states that ``GET /skill-shares`` reads. ``pending`` is the
+#: default: the asks that wait for a holder. ``approved`` is each skill that
+#: the org shares (J2d follow-up), so a holder can find one to unshare.
 PENDING = "pending"
-BAD_SHARE_STATE = ("state is pending, the one state that this list reads. Send it, or "
-                   "leave it out.")
+APPROVED = "approved"
+BAD_SHARE_STATE = ("state is pending or approved, the two states that this list reads. "
+                   "Leave it out for pending.")
 NO_SHARE_LIST_RIGHT = ("Only a holder of studio:publish reads the skills that wait for a "
                        "share. Ask the owner of your organization for that right.")
+NO_SHARED_LIST_RIGHT = ("Only a holder of studio:publish reads the skills that the "
+                        "organization shares. Ask the owner of your organization for that "
+                        "right.")
 
 
 @contextlib.contextmanager
@@ -1162,6 +1169,22 @@ def _share_out(share: store.Share) -> dict[str, Any]:
         "requested_at": share.requested_at,
         "decided_by": share.decided_by,
         "decided_at": share.decided_at,
+    }
+
+
+def _shared_skill_out(found: store.SharedSkill) -> dict[str, Any]:
+    """One row of the holder's list of shared skills. It holds no body."""
+    return {
+        "skill_id": found.skill_id,
+        "name": found.name,
+        "slug": found.slug,
+        "description": found.description,
+        "owner_email": found.owner_email,
+        "shared_version": found.shared_version,
+        "share_state": found.share_state,
+        "share_version": found.share_version,
+        "approved_by": found.approved_by,
+        "approved_at": found.approved_at,
     }
 
 
@@ -1230,18 +1253,27 @@ async def list_skill_shares(
     state: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """The asks of the bound org that wait for a holder (J2c), oldest first,
-    each with the full body of the asked version. Only a holder of
-    ``studio:publish`` reads it, and each other caller gets 403 before any
-    session. ``truncated`` is True when more asks wait past the page."""
+    each with the full body of the asked version. With ``state=approved``,
+    each skill that the org shares, by name, with no body (J2d follow-up).
+    Only a holder of ``studio:publish`` reads either list, and each other
+    caller gets 403 before any session. ``truncated`` is True when more rows
+    are past the page. Each other state is 422."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
-    if state is not None and state != PENDING:
+    if state is not None and state not in (PENDING, APPROVED):
         raise _refuse(422, BAD_SHARE_STATE)
     # D180.3: the holder of the share verb reads what waits for it. Fail closed.
     can = user.has_permission(SHARE_RIGHT)
     if not can:
         raise HTTPException(status_code=403, detail={
-            "code": FORBIDDEN, "message": NO_SHARE_LIST_RIGHT})
+            "code": FORBIDDEN,
+            "message": NO_SHARED_LIST_RIGHT if state == APPROVED else NO_SHARE_LIST_RIGHT})
+    if state == APPROVED:
+        async with _tenant_session() as db:
+            with _store_errors(), _share_errors():
+                shared, more = await store.list_shared_skills(db, can_publish=can)
+        return {"state": APPROVED, "shares": [_shared_skill_out(r) for r in shared],
+                "truncated": more}
     async with _tenant_session() as db:
         with _store_errors(), _share_errors():
             rows, more = await store.list_pending_shares(db, can_publish=can)
