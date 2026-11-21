@@ -2019,20 +2019,31 @@ async def record_message_feedback(
     req: MessageFeedbackRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Persist a 👍/👎 vote as an audit event (actor = the voting user)."""
+    """Persist a 👍/👎 vote as an audit event (actor = the voting user).
+
+    The row lands in the org of the voter (task 2221). The org is
+    ``user.organization_id``, which ``get_current_user`` resolved from the
+    identity, never a request field (R5). This frame reads it before the
+    thread hop. With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_audit_writers_org_r8.py`` (R8).
+    """
     if req.vote not in ("up", "down"):
         raise HTTPException(status_code=400, detail="vote must be 'up' or 'down'")
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent, record, refuse_tenantless  # noqa: PLC0415
+
+    org = user.organization_id
+    event = AuditEvent(
+        actor=f"human:{user.email or 'anonymous'}",
+        action="message_feedback",
+        target=f"message:{req.message_id}",
+        payload={"vote": req.vote, "session_id": req.session_id},
+        organization_id=str(org) if org else None,
+    )
 
     def _write() -> None:
-        record(
-            AuditEvent(
-                actor=f"human:{user.email or 'anonymous'}",
-                action="message_feedback",
-                target=f"message:{req.message_id}",
-                payload={"vote": req.vote, "session_id": req.session_id},
-            )
-        )
+        if not refuse_tenantless(event):
+            record(event)
 
     await asyncio.to_thread(_write)
     return {"ok": True}
