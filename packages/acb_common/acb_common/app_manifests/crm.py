@@ -174,6 +174,7 @@ CRM = App(
         Route("DELETE", "/crm/lost-reasons/{reason_id}", "", "C",
               planned="CRM-M2e", off_door=_SETUP),
         # ── fields ──
+        Route("GET", "/crm/fields-search", "crm_list_fields", "A", off_door=_DOOR_READ),
         Route("GET", "/crm/fields/{entity}", "crm_list_fields", "A", off_door=_DOOR_READ),
         Route("POST", "/crm/fields/{entity}", "", "B", planned="CRM-M2f", off_door=_SETUP),
         Route("PATCH", "/crm/fields/{entity}/{key}", "", "B", planned="CRM-M2f", off_door=_SETUP),
