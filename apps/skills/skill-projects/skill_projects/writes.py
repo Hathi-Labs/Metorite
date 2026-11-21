@@ -4784,6 +4784,15 @@ async def create_project(
         parent = await get(f"/projects/nodes/{pid}")
         payload["parent_project_id"] = pid
         parent_label = data(parent.get("name"))
+        # Task 3596, the production case (session a8296fc6): the helper made
+        # a project, then made a second one of the SAME name under the first.
+        # A node never takes the name of its own parent: point to the parent.
+        if str(parent.get("name") or "").strip().casefold() == label.casefold():
+            return (
+                f"{parent_label} already exists, and a {which} cannot sit under a parent of "
+                f"the same name, so I made no second one.\n  full_id: {pid}\n"
+                "Use it, or ask for a different name."
+            )
     if description.strip():
         payload["description"] = description.strip()
     if lead.strip():

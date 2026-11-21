@@ -47,3 +47,37 @@ def test_other_parent_or_archived_does_not_block(monkeypatch):
 async def _twin(monkeypatch, rows):
     fake_gateway(monkeypatch, _tree(rows))
     return await W._same_name_sibling("Alpha", None)
+
+
+def test_a_node_never_takes_the_name_of_its_own_parent(monkeypatch):
+    """The production case (session a8296fc6): the first create made a project
+    Horizon, and the second create put a project Horizon under it."""
+    def answers(call):
+        if call["path"].endswith("/projects/tree"):
+            return {"rows": [], "total": 0}
+        if call["path"].endswith(f"/projects/nodes/{PARENT}"):
+            return {"id": PARENT, "name": "Horizon Industrial Park"}
+        return {}
+
+    calls = fake_gateway(monkeypatch, answers)
+    approve(monkeypatch)
+    out = asyncio.run(W.create_project(" horizon industrial park ", parent_project_id=PARENT))
+    assert "already exists" in out and PARENT in out
+    assert writes(calls) == []
+
+
+def test_a_different_name_under_a_parent_still_creates(monkeypatch):
+    def answers(call):
+        if call["path"].endswith("/projects/tree"):
+            return {"rows": [], "total": 0}
+        if call["path"].endswith(f"/projects/nodes/{PARENT}"):
+            return {"id": PARENT, "name": "Horizon Industrial Park"}
+        if call["method"] == "POST" and call["path"].endswith("/projects/nodes"):
+            return {"id": "new1", "name": "Phase 1"}
+        return {}
+
+    calls = fake_gateway(monkeypatch, answers)
+    approve(monkeypatch)
+    out = asyncio.run(W.create_project("Phase 1", parent_project_id=PARENT))
+    assert "Created" in out
+    assert len(writes(calls)) == 1
