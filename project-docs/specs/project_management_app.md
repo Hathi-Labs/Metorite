@@ -9798,6 +9798,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
 | **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
+| **T-8** | 3758 | The access panel of a space or a project: who can see it, and a change to everyone, one or more teams, or named people. It uses the grants routes and D-OP-11, and it warns before the last grant goes (owner ask, 2026-11-18, `one_projects_app.md` §9d.2) | Later. A lead changes who sees a space from the panel, and the change shows in the team view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-3 |
 
 **Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
 

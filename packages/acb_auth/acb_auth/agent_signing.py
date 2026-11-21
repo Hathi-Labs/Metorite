@@ -44,6 +44,15 @@ the client echoes in ``Mcp-Session-Id`` with :func:`mint_mcp_session`, and
 reads it back with :func:`read_mcp_session`. The id binds the connection and
 carries an HMAC, so a client cannot make up the id of another session.
 
+**An approved door write adds an approval line (MCP-P1b-2, AD-6).** A door
+write that spends the member's approval carries ``X-Agent-Approval``, the
+request id in the lower-case form of a UUID. The signed string then ends
+with one more line, ``approval:<request id>``, after the nonce and the
+session line. Only a write carries it, so a GET with an approval is refused.
+A request with no approval has no such line, so its string is byte for byte
+the string before MCP-P1b-2. The order of the optional lines is fixed:
+the session, then the approval, then any later line.
+
 **The keys.** ``agent_edge_signing_key`` and ``agent_edge_signing_key_previous``.
 A key under 32 bytes, or equal to ``GATEWAY_INTERNAL_TOKEN`` or to
 ``LITELLM_MASTER_KEY``, counts as unset. With no usable key, branch 0 refuses
@@ -81,6 +90,13 @@ HEADER_SESSION = "X-Agent-Session"
 
 #: The prefix of the last line of the signed string of a call in a session.
 SESSION_LINE_PREFIX = "session:"
+
+#: MCP-P1b-2 (AD-6). The approval that a door write spends: the id of the
+#: request that the member approved. Signed, optional, and on a write only.
+HEADER_APPROVAL = "X-Agent-Approval"
+
+#: The prefix of the line of the signed string of an approved door write.
+APPROVAL_LINE_PREFIX = "approval:"
 
 #: The version prefix of an ``Mcp-Session-Id`` that the edge mints.
 MCP_SESSION_VERSION = "s1"
@@ -122,6 +138,7 @@ SIGNED_BODY_SCOPE_KEY = "acb.agent_signed_body"
 
 _KID = re.compile(r"[0-9a-f]{8}")
 _NONCE = re.compile(r"[A-Za-z0-9_-]{22}")
+_APPROVAL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 _DIGITS = re.compile(r"[0-9]{1,12}")
 
@@ -239,6 +256,7 @@ def canonical_string(
     body: bytes = b"",
     nonce: str | None = None,
     session: str | None = None,
+    approval: str | None = None,
 ) -> str:
     """The ONE signed string of spec §10.1. Both sides call this function.
 
@@ -246,9 +264,14 @@ def canonical_string(
     well-formed *nonce* as the 9th line (EA3-28). A mismatch raises
     ``ValueError``, so neither side can sign a write without a nonce.
 
-    SW-7: a well-formed *session* adds the last line ``session:<key>``. With
+    SW-7: a well-formed *session* adds the line ``session:<key>``. With
     no session the string does not change. A bad session raises
     ``ValueError``.
+
+    MCP-P1b-2 (AD-6): a well-formed *approval* adds the line
+    ``approval:<request id>`` after the session line. Only a write takes
+    one. With no approval the string does not change. An approval on a GET,
+    or a bad approval, raises ``ValueError``.
     """
     lines = [
         VERSION,
@@ -271,6 +294,12 @@ def canonical_string(
         if not session_key_is_well_formed(session):
             raise ValueError("a session key has the shape of a nonce")
         lines.append(SESSION_LINE_PREFIX + session)
+    if approval is not None:
+        if method.upper() == "GET":
+            raise ValueError("a GET carries no approval")
+        if not approval_is_well_formed(approval):
+            raise ValueError("an approval is the id of a request")
+        lines.append(APPROVAL_LINE_PREFIX + approval)
     return "\n".join(lines)
 
 
@@ -288,6 +317,13 @@ def session_key_is_well_formed(value: str | None) -> bool:
     """True when *value* has the shape of a session key: 22 base64url
     characters, the shape of a nonce (SW-7)."""
     return nonce_is_well_formed(value)
+
+
+def approval_is_well_formed(value: str | None) -> bool:
+    """True when *value* has the shape of an approval: the id of a request
+    as a lower-case UUID with its four dashes (MCP-P1b-2). One shape only,
+    so one request id has one signed line."""
+    return isinstance(value, str) and _APPROVAL.fullmatch(value) is not None
 
 
 def _session_mac(key: str, connection_id: str, session: str) -> str:
@@ -386,13 +422,15 @@ def signed_headers(
     now: float | None = None,
     nonce: str | None = None,
     session: str | None = None,
+    approval: str | None = None,
 ) -> dict[str, str]:
     """The headers of one signed gateway request (spec §10.1).
 
     The four signed headers, and for a write the fifth, ``X-Agent-Nonce``
     (EA3-28). A write with no *nonce* gets a fresh one. The edge (EA-3b)
     calls this with :func:`signing_key`. It sends no ``Authorization``
-    header and no ``X-User-Email``.
+    header and no ``X-User-Email``. MCP-P1b-2: an approved door write also
+    sends *approval* as the signed ``X-Agent-Approval``.
     """
     timestamp = str(int(time.time() if now is None else now))
     write = method.upper() != "GET"
@@ -409,6 +447,7 @@ def signed_headers(
         body=body,
         nonce=nonce,
         session=session,
+        approval=approval,
     )
     headers = {
         HEADER_CONNECTION: f"{organization_id}.{connection_id}",
@@ -420,13 +459,17 @@ def signed_headers(
         headers[HEADER_NONCE] = str(nonce)
     if session is not None:
         headers[HEADER_SESSION] = session
+    if approval is not None:
+        headers[HEADER_APPROVAL] = approval
     return headers
 
 
 __all__ = [
     "AGENT_HEADER_PREFIX",
+    "APPROVAL_LINE_PREFIX",
     "EMPTY_BODY_SHA256",
     "HEADER_ACTOR_VIA",
+    "HEADER_APPROVAL",
     "HEADER_CONNECTION",
     "HEADER_NONCE",
     "HEADER_SESSION",
@@ -442,6 +485,7 @@ __all__ = [
     "SESSION_LINE_PREFIX",
     "SIGNED_BODY_SCOPE_KEY",
     "VERSION",
+    "approval_is_well_formed",
     "canonical_string",
     "canonical_target",
     "key_id",
