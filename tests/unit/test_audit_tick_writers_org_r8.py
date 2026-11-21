@@ -1,10 +1,12 @@
-"""Task 2221, slice 2 — no system tick or webhook row lands under the operator org.
+"""Task 2221, slice 2 — no tick or webhook row with tenant data lands under the operator org.
 
-Eight writers record an event with no ``organization_id`` and no tenant
+Twelve writers record an event with no ``organization_id`` and no tenant
 source (``test_audit_tick_writers_org.py`` names them and says why). With
 ``ACB_GRAPH_TENANT_BIND`` on, ``acb_audit._persist`` filed each row under the
-OPERATOR org (Option-A). The fix sends each one through a local ``_audit``,
-so ``refuse_tenantless`` skips it.
+OPERATOR org (Option-A). Ten rows hold tenant data. The fix sends each of
+them through a local ``_audit``, so ``refuse_tenantless`` skips it. Two rows
+hold no tenant data (the Zoho ``run_ok`` and ``scheduler_started``), and they
+keep Option-A.
 
 This file also holds the verifier F1 fence of slice 1: an HTTP vote with a
 forged org header lands in the org of the voter.
@@ -12,10 +14,13 @@ forged org header lands in the org of the voter.
 Fences (R7):
 
 * ``audit-tick-no-operator-org`` (R8, phase-4 two-org catalog, non-priv role
-  ``acb_app_h3rls``): one case for each of the eight events. No row reaches
-  the seam, and the table holds no row for the event in any org. RED when the
-  guard of that one writer is dropped: the row then lands under the operator
-  org.
+  ``acb_app_h3rls``): one case for each of the ten tenant-data events. No row
+  reaches the seam, and the table holds no row for the event in any org. RED
+  when the guard of that one writer is dropped: the row then lands under the
+  operator org.
+* ``audit-tick-system-row-option-a`` (R8): each of the two system rows lands
+  under the operator org, and its stored payload holds no tenant data. RED
+  when the row is guarded, or when it gains a tenant field.
 * ``audit-vote-ignores-org-header`` (R8): ``POST /chat/feedback`` as a member
   of one org, with three headers that name the other org. The row lands in
   the voter's org only. RED when the route drops the stamp, or reads the org
@@ -30,6 +35,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,7 +45,14 @@ pytest.importorskip("sqlalchemy")
 from acb_audit import log as audit
 from sqlalchemy import text
 
-from tests.unit.test_audit_tick_writers_org import CASE_IDS, CASES, spy_on_writers
+from tests.unit.test_audit_tick_writers_org import (
+    CASE_ARGS,
+    GUARDED_CASES,
+    SYSTEM_CASES,
+    assert_no_tenant_payload,
+    matching,
+    spy_on_writers,
+)
 
 # ``graph_on_promoted`` and ``promoted`` are used by name for fixture injection.
 from tests.unit.test_audit_writers_org_r8 import (  # noqa: F401
@@ -92,12 +105,13 @@ def _rows_since(admin_engine, since: datetime, actor: str, action: str,
 
 
 # ==========================================================================
-# 1. The eight writers: no row under the operator org, and no row at all.
+# 1. The ten tenant-data rows: no row under the operator org, and no row.
 # ==========================================================================
 class TestTickWritersUnderRls:
-    @pytest.mark.parametrize(("case", "drive", "actor", "action", "target"), CASES, ids=CASE_IDS)
+    @pytest.mark.parametrize(CASE_ARGS, GUARDED_CASES, ids=[c[0] for c in GUARDED_CASES])
     def test_no_row_lands_under_the_operator_org(
-        self, graph_on_promoted, written, monkeypatch, case, drive, actor, action, target,  # noqa: F811
+        self, graph_on_promoted, written, monkeypatch,  # noqa: F811
+        case, drive, actor, action, target, kind,
     ):
         p = graph_on_promoted
         operator = _default_org(p.admin_engine)
@@ -106,20 +120,55 @@ class TestTickWritersUnderRls:
         rows: list[tuple[str, str]] = []
         try:
             got_target = drive(monkeypatch)
-            rows = _rows_since(p.admin_engine, since, actor, action, target or got_target)
-            ids = [str(e.id) for e in written]
+            want = target or got_target
+            rows = _rows_since(p.admin_engine, since, actor, action, want)
+            hits = matching(written, actor, action, want)
+            ids = [str(e.id) for e in hits]
             leaked = _orgs_of(p.admin_engine, ids) if ids else []
             assert operator not in leaked and operator not in [o for _i, o in rows], (
                 f"{case}: a row with no tenant landed under the OPERATOR org — "
                 "cross-tenant leak"
             )
-            assert written == [], (
-                f"{case}: a row with no tenant reached the audit seam: "
-                f"{[(e.actor, e.action) for e in written]}"
+            assert hits == [], (
+                f"{case}: a row with tenant data and no tenant reached the "
+                "audit seam"
             )
             assert rows == [], f"{case}: the table holds a row for the event: {rows}"
         finally:
             _delete(p.admin_engine, [str(e.id) for e in written] + [i for i, _o in rows])
+
+    # ======================================================================
+    # 2. The two pure system rows keep Option-A, with no tenant data.
+    # ======================================================================
+    @pytest.mark.parametrize(CASE_ARGS, SYSTEM_CASES, ids=[c[0] for c in SYSTEM_CASES])
+    def test_a_system_row_lands_under_the_operator_org_with_no_tenant_data(
+        self, graph_on_promoted, written, monkeypatch,  # noqa: F811
+        case, drive, actor, action, target, kind,
+    ):
+        p = graph_on_promoted
+        operator = _default_org(p.admin_engine)
+        hits: list[Any] = []
+        try:
+            drive(monkeypatch)
+            hits = matching(written, actor, action, target)
+            assert len(hits) == 1, f"{case}: the system row did not reach the seam"
+            [hit] = hits
+            assert _orgs_of(p.admin_engine, [str(hit.id)]) == [operator], (
+                f"{case}: the system row is not under the operator org"
+            )
+            stored = _payload_of(p.admin_engine, str(hit.id))
+            assert_no_tenant_payload(case, SimpleNamespace(payload=stored))
+            assert _visible_as(p.app_url, operator, [str(hit.id)]) == 1
+            assert _visible_as(p.app_url, p.org_b, [str(hit.id)]) == 0
+        finally:
+            _delete(p.admin_engine, [str(e.id) for e in written])
+
+
+def _payload_of(admin_engine, event_id: str) -> dict:
+    with admin_engine.connect() as c:
+        return c.execute(
+            text("SELECT payload FROM audit_event WHERE id::text = :i"), {"i": event_id},
+        ).scalar_one()
 
 
 # ==========================================================================

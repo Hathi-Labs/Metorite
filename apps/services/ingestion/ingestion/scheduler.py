@@ -36,10 +36,16 @@ def _audit(event: AuditEvent) -> None:
     Task 2221 slice 2. This process binds no tenant: the jobs open the
     unbound ``get_session``, and no run or session names an org. A failure
     row holds error text from a tenant's data, and a count row counts a
-    tenant's records. ``acb_audit`` has no system marker. So with no org and
-    ``ACB_GRAPH_TENANT_BIND`` on, ``refuse_tenantless`` skips each row, and it
-    never lands under the operator org. With the bind off, the row stays as
-    before. The structlog line keeps each run visible. Fence:
+    tenant's records. So with no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips each of these rows, and it never lands under
+    the operator org. With the bind off, the row stays as before. The
+    structlog line keeps each run visible.
+
+    Two rows hold no tenant data, and they call ``record`` directly: the
+    Zoho ``run_ok`` (an empty payload) and ``scheduler_started`` (the job ids
+    and the cron triggers). ``acb_audit`` keeps the operator org for a real
+    system event (Option-A), so these two stay there. Do not add tenant data
+    to them. Fences: ``tests/unit/test_audit_tick_writers_org.py`` and
     ``tests/unit/test_audit_tick_writers_org_r8.py`` (R8).
     """
     if not refuse_tenantless(event):
@@ -52,7 +58,8 @@ async def _run_zoho() -> None:
     _log.info("scheduler.zoho_sync.start")
     try:
         await zoho_sync.main()
-        _audit(AuditEvent(actor="job:scheduler", action="run_ok", target="job:zoho_sync", payload={}))
+        # A pure system row: no tenant data, so it keeps Option-A (task 2221).
+        record(AuditEvent(actor="job:scheduler", action="run_ok", target="job:zoho_sync", payload={}))
     except Exception as exc:
         _log.exception("scheduler.zoho_sync.failed")
         _audit(
@@ -108,7 +115,9 @@ def build_scheduler(*, tz: str = "Asia/Kolkata") -> AsyncIOScheduler:
 async def _serve() -> None:
     sched = build_scheduler()
     sched.start()
-    _audit(
+    # A pure system row: the job ids and the cron triggers only, so it keeps
+    # Option-A (task 2221). Do not add tenant data here.
+    record(
         AuditEvent(
             actor="job:scheduler",
             action="scheduler_started",
