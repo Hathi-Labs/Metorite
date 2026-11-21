@@ -115,6 +115,15 @@ CLEAR_ALPHA = 128
 #: truncated PNG as a blank image and only warns ("missing pixel data in png
 #: image; possibly truncated", measured 2026-11-07), so the child reads the
 #: warnings after each render and refuses with ``broken``.
+#:
+#: ⚠️ A JPEG with only its end marker (EOI) missing is refused too, for every
+#: kind (task 2186, measured 2026-11-21). MuPDF gives the same one warning,
+#: "premature end of file in jpeg", for that file and for a JPEG cut at 60 %
+#: or 90 %. It renders all of them to the end, and an appended EOI clears the
+#: warning for all of them. A second probe added filler bytes, then EOI, and
+#: compared the pixels. It passed the missing-EOI file, and it also passed
+#: cuts at 60 %, 90 %, 99 % and 3 bytes short. No test here tells the two
+#: apart, so the child refuses both.
 _DAMAGE_WORDS = ("truncated", "missing pixel data", "corrupt", "premature end",
                  "zlib error")
 

@@ -47,6 +47,10 @@ import asyncio
 import base64
 from typing import Any
 
+from acb_common import get_logger
+
+_log = get_logger("gateway.avatar")
+
 #: The stored edge, in pixels. A constant rather than a setting: the whole
 #: point is that every avatar is the same size, and a tunable would be a way to
 #: stop that being true.
@@ -106,9 +110,16 @@ class AvatarError(ValueError):
     """A refusal, with the reason as its text.
 
     A plain ``ValueError`` so this module imports no web framework; the route
-    turns it into a 400 that repeats the sentence, because the person choosing
-    the file is the person who has to choose a different one.
+    turns it into an HTTP answer that repeats the sentence, because the person
+    choosing the file is the person who has to choose a different one.
+
+    ``status`` is that answer: 400 for the image, 503 when this server cannot
+    read it now (no slot, no start, no confinement, or the time bound).
     """
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 #: The name of each sniffed type, as :data:`ACCEPTED` spells it.
@@ -198,11 +209,12 @@ async def normalise_async(
     a ``size``x``size`` JPEG each become one plain refusal.
     """
     if len(data) > MAX_UPLOAD_BYTES:
+        # The route reads at most the cap plus one byte, so the size of the
+        # upload itself is not known here. The sentence names the limit.
         raise AvatarError(
-            f"That image is {len(data) // (1024 * 1024)} MB. The limit is "
-            f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB - most phone photos are "
-            "under it, and the stored picture is resized to "
-            f"{size}x{size} either way.")
+            f"That image is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
+            "limit - most phone photos are under it, and the stored picture is "
+            f"resized to {size}x{size} either way.")
     sniff(data)
     # Imported here: signature_image imports this module for sniff().
     from gateway import signature_image as si
@@ -216,14 +228,23 @@ async def normalise_async(
             max_pixels=MAX_SOURCE_PIXELS, max_output_bytes=MAX_OUTPUT_BYTES,
             jpeg_quality=JPEG_QUALITY)
     except si.SignatureImageError as exc:
+        # busy, no_start or unavailable: this server, not the image.
+        _server_refusal(exc.code or "failed")
         if exc.code == "unavailable":
-            raise AvatarError(_CHILD_REFUSALS["unavailable"]) from exc
-        raise AvatarError(str(exc)) from exc
+            raise AvatarError(_CHILD_REFUSALS["unavailable"], 503) from exc
+        raise AvatarError(str(exc), exc.status) from exc
     if timed_out:
+        _server_refusal("timeout")
         raise AvatarError(
             f"Reading that image took longer than {si.TIMEOUT_S:g} seconds, so it "
-            "was stopped. Upload a smaller picture.")
-    return _stored_image(si.read_answer(answer), size)
+            "was stopped. Upload a smaller picture.", 503)
+    return _stored_image(si.read_answer(answer, kind="avatar"), size)
+
+
+def _server_refusal(reason: str) -> None:
+    """Log a refusal of this server, so a 503 is seen in the log and not only
+    by the member. The image is not logged."""
+    _log.warning("avatar.server_refusal", reason=reason)
 
 
 def _stored_image(item: tuple[str, Any], size: int) -> bytes:
@@ -231,6 +252,9 @@ def _stored_image(item: tuple[str, Any], size: int) -> bytes:
     that read hostile bytes: the type, the size and the magic must hold."""
     name, value = item
     if name != "ok":
+        if value == "unavailable":
+            # read_answer logged it, with the kind.
+            raise AvatarError(_CHILD_REFUSALS["unavailable"], 503)
         raise AvatarError(_CHILD_REFUSALS.get(value, _UNREADABLE))
     width, height = value.get("width"), value.get("height")
     if (value.get("content_type") != "image/jpeg" or type(width) is not int

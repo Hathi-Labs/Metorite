@@ -164,7 +164,7 @@ async def encode(data: bytes, kind: str) -> Encoded:
     answer, timed_out = await run_worker(kind, data)
     if timed_out:
         raise SignatureImageError(_TIMED_OUT, 503)
-    return _parse(answer)
+    return _parse(answer, kind)
 
 
 async def run_worker(kind: str, data: bytes, **extra: Any) -> tuple[bytes | None, bool]:
@@ -388,12 +388,15 @@ def _was_confined(value: dict[str, Any]) -> bool:
     return sys.platform != "linux" and value.get("unconfined_os") == sys.platform
 
 
-def read_answer(answer: bytes | None) -> tuple[str, Any]:
+def read_answer(answer: bytes | None, *, kind: str = "") -> tuple[str, Any]:
     """The child's answer as ``("ok", fields)`` or ``("refused", code)``.
 
     It never raises. A missing, garbled or odd answer is ``("refused",
     "failed")``, and an ``ok`` that the child did not decode confined is
-    ``("refused", "unavailable")``. The caller checks each field of ``ok``."""
+    ``("refused", "unavailable")``. The caller checks each field of ``ok``.
+
+    Each ``unavailable`` is logged with ``kind``: it is a fault of this
+    server, and the member sees only a sentence."""
     if not answer:
         return "refused", "failed"
     # The answer is the LAST line. A native library that prints a line of its
@@ -410,20 +413,23 @@ def read_answer(answer: bytes | None) -> tuple[str, Any]:
         return "refused", "failed"
     (name, value), = item.items()
     if name == "refused":
-        return "refused", value if isinstance(value, str) else "failed"
+        code = value if isinstance(value, str) else "failed"
+        if code == "unavailable":
+            _log.warning("signature_image.unavailable", kind=kind, platform=sys.platform)
+        return "refused", code
     if name != "ok" or not isinstance(value, dict):
         return "refused", "failed"
     if not _was_confined(value):
-        _log.warning("signature_image.unconfined_answer", platform=sys.platform)
+        _log.warning("signature_image.unconfined_answer", kind=kind, platform=sys.platform)
         return "refused", "unavailable"
     return "ok", value
 
 
-def _parse(answer: bytes | None) -> Encoded:
+def _parse(answer: bytes | None, kind: str = "") -> Encoded:
     """The child's one line, checked field by field. The parent trusts no
     value of a child that read hostile bytes: the type, the size, the shares,
     and the magic bytes of the image must each hold."""
-    name, value = read_answer(answer)
+    name, value = read_answer(answer, kind=kind)
     if name != "ok":
         message, status = _REASONS.get(value, _REASONS["failed"])
         raise SignatureImageError(message, status)
