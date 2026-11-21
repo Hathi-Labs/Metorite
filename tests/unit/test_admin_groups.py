@@ -340,6 +340,9 @@ def test_clean_slug_refuses_the_reserved_slug(reserved: str) -> None:
         groups._clean_slug(reserved)
     assert exc.value.status_code == 400
     assert "reserved" in str(exc.value.detail)
+    # The create dialog has no slug field: the slug comes from the name. So
+    # the message names the step that the admin can take.
+    assert "another name" in str(exc.value.detail)
 
 
 @pytest.mark.parametrize("allowed", ["all-hands", "allies", "all_staff", "small"])
@@ -361,9 +364,40 @@ async def test_create_group_refuses_the_reserved_slug_and_writes_nothing(
 
 
 def test_the_reserved_slugs_are_one_set() -> None:
-    """The team filter of T-1 imports this set, so the word lives once."""
+    """The word lives in one set. The T-1 team filter must import it (task 2886)."""
     assert "all" in groups.RESERVED_GROUP_SLUGS
     assert not set(groups.RESERVED_GROUP_SLUGS) & set(CENTER_GROUP_SLUGS)
+
+
+async def test_a_legacy_all_group_stays_readable_editable_and_deletable(
+    db: _FakeDB,
+) -> None:
+    """A group with the slug "all" from a release before task 2886 stays reachable.
+
+    The routes look a group up by the path slug as it is. If a change sends the
+    path slug through ``_clean_slug``, this row returns 400, and no admin can
+    edit, empty or delete it.
+    """
+    db.seed_group("g-all", "all", "All")
+    db.seed_user("u-1", "priya@fracktal.in", "Priya")
+
+    listed = await list_groups(admin=FULL_ADMIN)
+    assert "all" in {g.slug for g in listed}
+
+    entry = await update_group(
+        "all", GroupPatch(description="An old team"), admin=FULL_ADMIN,
+    )
+    assert entry.slug == "all" and entry.description == "An old team"
+
+    await add_group_member(
+        "all", GroupMemberAdd(email="priya@fracktal.in"), admin=FULL_ADMIN,
+    )
+    out = await remove_group_member("all", "priya@fracktal.in", admin=FULL_ADMIN)
+    assert out["status"] == "removed"
+
+    out = await delete_group("all", admin=FULL_ADMIN)
+    assert out["status"] == "deleted"
+    assert db._group_by_slug("all") is None
 
 
 async def test_update_group_edits_name_and_description_only(db: _FakeDB) -> None:

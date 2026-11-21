@@ -20,7 +20,8 @@
 > SP-8b, the form in the app, is open.
 > 🟢 **WS-39 task 2886, part 1 BUILT 2026-11-21, not merged** (§14.9). No group may take the slug `all`.
 > `routes/admin/groups.py` refuses it with 400, and `RESERVED_GROUP_SLUGS` holds the word once. No table and no flag.
-> Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`, is open. Its consumers need a decision first.
+> The T-1 team filter must import that set. Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`,
+> is task 3852. Its consumers need a decision first.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
