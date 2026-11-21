@@ -284,6 +284,28 @@ async def test_the_aggregate_path_reads_the_api_name(
     assert seen == ["Sales_Orders"]
 
 
+async def test_the_paged_groups_path_reads_the_api_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    async def mirrored(_db):
+        return ORG_A
+
+    async def pages(module, **_kw):
+        seen.append(module)
+        raise _Stop
+
+    monkeypatch.setattr(aggregate, "_tenant_session", _session)
+    monkeypatch.setattr(aggregate, "mirrored_modules", mirrored)
+    monkeypatch.setattr(aggregate, "_compute_pages", pages)
+    monkeypatch.setattr(aggregate, "_paging", lambda *_a, **_k: (2, 50))
+    with pytest.raises(_Stop):
+        await aggregate.compute("module:Sales Orders", group_field="Stage", group_page=2,
+                                params=ListParams())
+    assert seen == ["Sales_Orders"]
+
+
 async def test_the_aggregate_path_refuses_an_unknown_module_with_close_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

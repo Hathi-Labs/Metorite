@@ -1832,6 +1832,9 @@ async def _compute(
     paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size,
                      status_group=status_group, q=params.q)
     if paging is not None and module is not None and group_field is not None:
+        # CRM-Q34-12: the paged path takes the API name too.
+        async with _tenant_session() as db:
+            module = resolve_module(await mirrored_modules(db), module)
         paged = await _compute_pages(
             module, measure=measure, field=field, group_field=group_field,
             group_field2=group_field2, bucket=bucket, pairs=pairs, params=params,
