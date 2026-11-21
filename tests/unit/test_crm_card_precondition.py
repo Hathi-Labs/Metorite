@@ -170,6 +170,9 @@ def _head() -> str:
 
 
 async def test_off_the_patch_and_the_card_are_those_of_before(monkeypatch) -> None:
+    # WS-24c slice 2: an empty internal token sends no Authorization header,
+    # so this test sets one to check the full header set of before.
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "test-internal-token")
     _flag(monkeypatch, "")
     bound: list[dict] = []
     monkeypatch.setattr(_M, "_bind_card_facts", lambda **f: bound.append(f))
@@ -180,6 +183,7 @@ async def test_off_the_patch_and_the_card_are_those_of_before(monkeypatch) -> No
     assert _if_match(sent) is None
     assert set(sent["headers"]) == {"Authorization", "Content-Type", "X-User-Email",
                                     "X-Actor-Via"}
+    assert sent["headers"]["Authorization"] == "Bearer test-internal-token"
     assert sent["json"] == {"amount": 300000}
     assert bound == []
     assert out == "Changed Acme AMC: Amount 250000 → 300000."
