@@ -677,7 +677,9 @@ def test_the_columns_of_a_browser_read_leave_the_stored_call_out():
     assert "stored_call" not in pending_ask._COLUMNS
     src = inspect.getsource(pending_ask)
     reads = [line for line in src.splitlines() if "SELECT" in line and "chat_pending_ask" in line]
-    assert reads and all("_COLUMNS" in line or "stored_call" in line for line in reads), reads
+    # ``SELECT 1`` (HRD-22b ``_TWIN_APPROVED_SQL``) reads no column at all.
+    assert reads and all("_COLUMNS" in line or "stored_call" in line or '"SELECT 1 ' in line
+                         for line in reads), reads
     one = inspect.getsource(pending_ask.read_stored_call)
     assert "SELECT stored_call FROM chat_pending_ask" in one
 

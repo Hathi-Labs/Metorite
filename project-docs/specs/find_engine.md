@@ -41,10 +41,27 @@ Mira, and never the current chat. A hit names the title, the date of the last
 change of the chat and the link that opens the chat. With the flag empty, the
 answer is the answer of before, byte for byte, and so is the 422 of an unknown
 app, `chat` too. The flip waits for the owner's preview.
+
 **FIND-5 is built** (task 3242, 2026-11-16). Behind `FIND_ORGS`, the core tool
 `resolve_name` reads the new route `GET /search/names`. It gives each person,
 contact, lead, company and mail sender that holds one name, exact or near.
 §5.2 holds the shape as built.
+
+**FIND-6 is built** (task 3243, 2026-11-17, see "As built" in §5.3 and
+§5.4). Behind `FIND_ORGS`, with company search on, the core list holds
+`search_company` and `resolve_name`. Each find tool of the core list answers
+a failure as text. With `CONTEXT_RECENCY` on too, a zero of `search_crm`,
+`query_inbox` and `find_tasks` ends with the pointer, and the persona holds
+the standing rule. `resolve_person` stays in the core list, because the
+parity of D-FIND-3 does not hold yet (§5.3).
+
+**FIND-11 is built, dark** (task 3710, 2026-11-18, see §9.2). The mirrored
+CRM modules (`crm_module_records`, such as Operator_Associates and Products)
+are a source of the engine. `search_company` finds their records, and
+`resolve_name` gives their record names, exact and near. The records join the
+`crm` source, so the registry and the order of the apps do not change. Two
+flags must name the org: `FIND_ORGS` and `CRM_MODULE_FIND_ORGS`. The predicate
+is the one of the module list (`field_sql.find_where`, CRM-Q34-7).
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -731,8 +748,9 @@ person.
   sender alone never gives `one`.
 - **The cap of a request.** The pack cap counts the orchestrator's own tools.
   For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
-  `studio-more`, and keeps email and studio. Nothing fails. FIND-6 gives the
-  place back when `resolve_person` leaves the core list. The fence is
+  `studio-more`, and keeps email and studio. Nothing fails. FIND-6 kept
+  `resolve_person` in the core list (§5.3), so this trade holds. Its exit
+  gives a place back only to an org with the profile on. The fence is
   `test_resolve_name_tool.py`.
 
 ### 5.3 How the app search tools wrap the engine
@@ -744,10 +762,68 @@ person.
 | `query_inbox` (pack `email`) | Each filter | A sender name tries its near spelling, in the email app's own function. The same zero line | HRD-18b, FIND-6 |
 | `find_contact` (pack `email`) | The address lookup | The one matcher | HRD-18a |
 | `find_tasks` (pack `projects`) | The task filters | Most of the words on a miss. The same zero line | HRD-4, FIND-6 |
-| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3) | HRD-18a, FIND-6 |
+| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the parity gaps | HRD-18a, FIND-6, FIND-6b |
 
 No app tool gets a second matcher, and no tool reads a second store. So no
 second read path exists.
+
+**As built (FIND-6, task 3243, 2026-11-17).**
+
+- **The zero line.** `company_search_tools.with_zero_pointer` ends a zero
+  answer with `FIND_POINTER`, the sentence of the table, on its own line.
+  `search_crm` gives it after "Nothing in … matches". `find_tasks` gives it
+  after "No task matches". `query_inbox` gives it only when the route sends
+  the integer 0 as the total. A page past the end of a total gets none. The
+  tool also gives no pointer for a missing total, `None`, a text or a bool.
+- **The gates.** Each gate fails closed. The call is a pack call of the one
+  assistant (`egress._in_pack_call`). `COMPANY_SEARCH_ENABLED` is on.
+  `CONTEXT_RECENCY` is on (`company_search_tools.context_recency_enabled`).
+  `FIND_ORGS` names the org of the run (`company_search_tools.find_on`, which
+  asks `find.find_allowed`). A sub-run of a specialist holds no
+  `search_company`, so it gets no line. A spawn child is the one exception
+  (see the limits).
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on
+  (`company.py`, `find_on`). With it off, `search_company` tries no near
+  spelling and no linked record, so the pointer would not be true.
+- **A failure is no zero.** A read that fails raises before the zero branch.
+  The HRD-3 guard of the pack call then answers it, with no pointer.
+- **A near answer is no zero.** A `search_crm` answer with near spellings
+  only shows rows that the member can open, so it gets no pointer.
+- **The failure text.** For an org of `FIND_ORGS`, `build_orchestrator_agent`
+  wraps `search_company`, `resolve_name` and `resolve_person` in
+  `pack_tool_guard.guard`, the one guard of HRD-3. A failure then reads "The
+  tool failed (<class>). Nothing changed.", with a next step. The text names
+  the class of the error, never its message. The guard needs no
+  `CONTEXT_RECENCY`, and neither does `resolve_name`: `GET /search/names`
+  does not read it. Each other org keeps the tool objects of before, so MAF
+  answers its failure as before.
+- **`resolve_person` stays (D-FIND-3).** The parity does not hold.
+  `resolve_name` has no source that gives a member (`app_user`). It does not
+  read the member's saved aliases. A person row prints no address.
+  `resolve_person` gives all three, and the table gives it the colleague
+  address for an act. So FIND-6 keeps it in the core list, with the guard.
+- **How `resolve_person` leaves (decided by the planner, 2026-11-17).** Option
+  (a). FIND-6b (task 3665) gives `GET /search/names` the kind `member`, the
+  saved aliases (tier 1, `matched_by` alias) and the address of a person row.
+  One release after FIND-6b merges, a second PR takes `resolve_person` out of
+  `core_tools` and gives the pack cap its place back. The owner can override.
+  `test_find_tools.py` names the gaps, so the slice that closes them must
+  update the fence.
+
+**Limits of FIND-6.**
+
+- A spawn child (OA-9c) holds the read tools of its packs and no
+  `search_company`. Its pack call still opens the gate, so its zero line
+  names a tool that it does not hold. The parent reads the answer, and the
+  parent holds the tool.
+- The row FIND-6 says that no find tool answers "Error: Function failed.".
+  As built, the text covers the core find tools of the one assistant, and its
+  pack calls through the HRD-3 guard. A delegated sub-run of a specialist
+  keeps the text of MAF for an exception that is no refusal, because its
+  tools have `refusals_as_text` only. An org off `FIND_ORGS` also keeps the
+  text of MAF for the find tools of its core list.
+- `failure_text` names the class of the error, such as `RuntimeError`. That
+  is the choice of HRD-3.
 
 ### 5.4 The standing rule
 
@@ -761,8 +837,28 @@ is a lead: say the spelling or the link you used. Before you say that a record
 does not exist, read the "Where else" line.
 ```
 
-A change to the persona moves the preamble goldens (`evals/trajectories`,
-`test_native_session_persistence.py`).
+A change to the persona moves its fences in the same PR.
+
+**As built (FIND-6).** `orchestrator/agents.py` holds the rule as
+`FIND_STANDING_RULE`, in the words above. One exact swap (`_FIND_SWAP`) puts
+it at the end of rule 1, right before rule 2. So it closes the grounding
+paragraph, after the sentences of CX-1. It needs `FIND_ORGS`,
+`COMPANY_SEARCH_ENABLED` and `CONTEXT_RECENCY`. With one of them off, the
+persona is the persona of before, byte for byte, and `test_find_tools.py`
+pins its hash.
+
+- **The goldens.** The preamble goldens did not move. `test_native_session_persistence.py`
+  and `evals/trajectories/test_native_structured_history_trajectory.py` pin
+  the per-turn context with a stand-in persona, not this persona. The new
+  `evals/trajectories/test_find_family_trajectory.py` pins the rule and the
+  tool list of the real run.
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on, and
+  only the dated tool prints how a hit matched and the "Where else" line.
+  With it off, the rule would name lines that the answer does not print. So
+  an org of `FIND_ORGS` with it off gets `resolve_name` and no rule.
+- **Two texts differ.** The docstring of `search_company` says "put one name
+  in each call". The rule says to call it once, with all the words. The
+  slice kept the docstring, because every org reads it.
 
 ### 5.5 The harness checks a "not found" claim
 
@@ -1060,6 +1156,7 @@ Seven limits stay, and the review must know them:
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
 | `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
+| `CRM_MODULE_FIND_ORGS` | empty | Owned by CRM-Q34-7 and `crm_platform.md` §18.17. FIND-11 reads it too: the engine reads the mirrored modules only when this flag AND `FIND_ORGS` name the org. Either empty gives the answer of before, byte for byte | AGENT-SAFE. It spends nothing |
 | `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte, and the 422 of before for `apps=chat` and each other unknown app. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
@@ -1097,8 +1194,10 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
-| **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
+| **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." Its fences move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
+| **FIND-6b** | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, `matched_by` alias) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. The pins of the gaps in `test_find_tools.py` change | `test_find_tools.py`, `test_resolve_name_tool.py` | STANDARD | FIND-6 |
 | **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
+| **FIND-11** (built, dark) | 3710 | 3 | The mirrored CRM modules as a source: `modules.find_module_names` (the predicate `field_sql.find_where` of the module list) and `modules.near_module_names` (`name_match.near_lookup` over the record names), called by the `crm` source and its `near` and `named` abilities. A hit has the kind `module_record`, the module label in its hint and a link. `resolve_name` gives the kind in its rows, with the module, outside the closed list of kinds. No tool description grows (task 3725) | "Operater Associates" finds the record «Operator Associates Pvt Ltd» by the near rung. Exact comes before near. A module that the profile does not mirror, a member with no CRM and org B never show. With `FIND_ORGS` or `CRM_MODULE_FIND_ORGS` empty, the answer and the tool text are byte-identical | `test_find_module_source.py`, new. `test_find_module_source_r8.py`, new | STANDARD · AGENT-SAFE | CRM-Q34-7, FIND-5 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
 | **FIND-9** | 3247 | 3 | The Studio source of §4.5: one source for each install that declares `contributes.search`, over the object query of C2a, as the member | A near name finds a Studio record. A member outside the scope of the install gets nothing. Org B gets nothing | `test_find_studio_source_r8.py`, new | HIGH · AGENT-SAFE. It follows `STUDIO_ORGS` | FIND-8 |

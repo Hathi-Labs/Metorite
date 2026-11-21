@@ -171,6 +171,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # SBX-19 (agent_sandbox.md rung 6a'): Python over the tool results of the
+    # chat, in the sealed `compute` target. A family that no org toggles: the
+    # flag COMPUTE_RUN_ORGS decides, and `_tool_injection._compute_withheld`
+    # drops the tool for an org that is off.
+    "compute": {
+        "label": "Compute",
+        "summary": "Run Python over the tool results of this chat, with no network.",
+        "description": (
+            "compute_run writes Python and runs it on tool results that the "
+            "chat already holds, by reference. The code has no network, no "
+            "secret and no access to Metorite. Files it writes show as cards."
+        ),
+        "tools": ("compute_run",),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "history": {
         "label": "Conversation history",
         "summary": (
@@ -967,6 +984,29 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_workflow_publish",
             "studio_workflow_live",
         ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
+    # small pack of the same owner. It has no surface, so a plain Studio turn
+    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on).
+    "studio-share": {
+        "label": "AI Studio skill share",
+        "summary": (
+            "Share a skill with the organization, read or end its share, or approve or "
+            "reject a skill share that waits for you."
+        ),
+        "description": (
+            "A tool pack: the one tool that shares a skill of a member with the "
+            "organization, for the main assistant to load when a turn asks to share a "
+            "skill. The owner asks, and a holder of studio:publish approves or rejects "
+            "the ask. Each write shows one card first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_share",),
         "owner": "studio-builder",
         "core": False,
         "scope_governed": True,
