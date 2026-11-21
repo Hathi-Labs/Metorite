@@ -4339,8 +4339,9 @@ text, and it holds the host shell tools.
 1. `sandbox_broker.py`: the target `email` in `MAF_CODING_TARGETS`,
    `target_for_agent`, the `covers()` branch, `lifts_shell_block` and the
    mounts of §16.4.
-2. `_tool_injection.py`: the email rule of `_withheld_shell_tools`, and
-   `target_binds_no_egress` in `_run_covered` (§16.4).
+2. `_tool_injection.py`: `target_binds_no_egress` in `_run_covered` (§16.4).
+   Since D129 `_withheld_shell_tools` needs no email rule. `lifts_shell_block`
+   answers `False` for `email` (item 1).
 3. `apps/agents/agent-email-assistant/config.json`: the six tool names join
    `tool_scope`.
 4. `apps/agents/agent-email-assistant/instructions.md`: a short section that
@@ -4372,15 +4373,15 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 9. Two members of one organization run email-assistant with one session id.
    Neither container sees the staged bytes of the other.
 
-**Fences (R7).** WS43-F29 (new). WS43-F23 gains the email case of the shell
-rule. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
+**Fences (R7).** WS43-F29 (new). WS43-F23 gains the case that a cover of the
+`email` target lifts no shell tool. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
 the `email` target.
 
 **R8.** None. The slice touches no Postgres.
 
 **Mutations.**
 
-- M1 drops the email rule of `_withheld_shell_tools`, and done-when 1 fails.
+- M1 makes `lifts_shell_block` answer `True` for `email`, and done-when 1 fails.
 - M2 makes `target_binds_no_egress` true for `email`, and done-when 4 fails.
 - M3 mounts `/workspace` read-write for `email`, and WS43-F2 fails.
 - M4 adds the hand-off line in an uncovered run, and done-when 8 fails.
