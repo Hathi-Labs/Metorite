@@ -420,7 +420,7 @@ async def test_the_revise_keeps_every_safety_write_before_the_spend(env) -> None
     # Fix round 3: the link keeps the To of the revised card, in lower case.
     # HRD-8b: and its act kind and its Cc, so the next card can say what changed.
     assert link == {"owner": F.MEMBER, "card_id": cid, "draft": 2, "to": [F.KNOWN],
-                    "act": "new", "cc": [F.COLLEAGUE]}
+                    "act": "new", "cc": [F.COLLEAGUE], "bcc": []}
 
 
 async def test_an_answer_to_a_revised_card_sends_nothing(env) -> None:

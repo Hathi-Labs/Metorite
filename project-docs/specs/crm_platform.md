@@ -8549,6 +8549,11 @@ Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
   sum against an independent SQL sum, the gate, org B, and a number field
   as before.
 
+**SEM-6 · The scripted replay of the refusal shapes.** Status: built 2026-11-17
+(task 3723), no flag, no model. `evals/semantic/` sends the shapes of
+CRM-Q34-1 to CRM-Q34-3 to the real routes on a synthetic org, and asks 20 fixed
+questions. Its fence is `tests/unit/test_semantic_eval_scripted.py`.
+
 #### 18.17.2 Rung 1
 
 `q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter

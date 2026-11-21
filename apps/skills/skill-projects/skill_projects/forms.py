@@ -60,6 +60,7 @@ from skill_projects.writes import (
     MAX_BATCH,
     AgentAssigneeRefused,
     _access_lines,
+    _act_ran,
     _address_check,
     _cannot_open,
     _confirm,
@@ -1909,6 +1910,10 @@ async def _write_batch(
             after = ("assignees", exc)
         if after is not None:
             out.unsaved.append(_unsaved(task, after[1]))
+    if out.made and len(out.made) == len(chosen) and not out.unsaved and not left:
+        # Task 3595: a FULL batch only. Each row of the card is ticked, and
+        # each one exists with its follow-ups. A partial is never named.
+        _act_ran()
     lanes = await _lane_names(pid)
     return _batch_receipt(node, chosen, left, out, lanes, names or {})
 
@@ -1971,7 +1976,8 @@ def _batch_receipt(
         made = len(out.made)
         lines.append(
             f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
-            "create them again. To retry a failed row, call create_tasks with that row alone."
+            "create them again. To retry a row that is not in this list, call create_tasks "
+            "with that row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.title)}, {_left_why(p)}." for p in left
@@ -2279,6 +2285,8 @@ async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
             (refused if known else unknown).append(line)
             continue
         made.append((p, row if isinstance(row, dict) else {}))
+    if made and len(made) == len(chosen) and not left:
+        _act_ran()  # Task 3595: a FULL batch only, each row ticked and made.
     return _vocab_receipt(plan, chosen, left, made, refused, unknown)
 
 
@@ -2315,7 +2323,8 @@ def _vocab_receipt(
     if made:
         lines.append(
             f"The {len(made)} {spec.nouns(len(made))} listed above exist. Never create them "
-            f"again. To retry a failed row, call {spec.tool} with that row alone."
+            f"again. To retry a row that is not in this list, call {spec.tool} with that "
+            "row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.name)}, unticked on the card"
