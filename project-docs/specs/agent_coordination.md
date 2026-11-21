@@ -674,7 +674,7 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 #### 3.11.9 Notes on slices of other lanes
 
 - **SW-39 (task 3799 since 2026-11-19, with its row in §5.12), child runs.** The index `pm_agent_runs_one_open_per_task` allows one open run for each task. A child run of a sub-agent needs a `parent_run_id` and a `kind`. The index must exclude `kind = 'child'`, in the same migration. Dispatch SW-39 with that constraint. A child holds no lease and no claim, and it shows under its parent only.
-- **SW-38 (task 1064) and SW-42 (task 1068)** have no spec text. SW-95 uses the stop signal of SW-38, and SW-98 builds on SW-42. Both wait until SW-0c (task 1069) or their own slice writes the text.
+- **SW-38 (task 1064)** has a short row in §5.11 since SW-0d. **SW-42 (task 1068)** has no spec text. SW-98 builds on SW-42, and it waits until SW-0c (task 1069) or its own slice writes the text.
 - **SW-0c (task 1069)** copies the Hyperagent research into the section that task 1069 names. P10 does not do that work.
 - **SW-60 (task 1902).** SW-66 reads its column `waiting_ref_id` as a built-in condition. SW-60 needs no change. SW-66 has its own flag.
 - **DX-11** of `external_agent_dispatch.md` is the local runner. One line there now points to SW-78.
@@ -846,6 +846,43 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 - **A link that another person opens.** The Remote Control docs name no way for another account to open a local session. A cloud session of a Team or Enterprise plan with Team visibility opens for teammates. For a local session, the steer of SW-64 is the way in for another person.
 - **The model of a sub-agent.** The hook input has no model. A child run reads "Not reported" unless its agent definition names a model.
 - **The tasks of SW-64 and SW-86.** A board search on 2026-11-19 did not find tasks 1910 and 1931. Read task 3378 before rung M5 starts, and file new tasks if the slices are gone.
+
+### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
+
+**Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from the English README, the protocol doc, the Claude plugin and the MCP command of that repository.
+
+**What it does.** One local hub runs command-line agents (Claude Code, Codex, ACP) in rounds. A cron time, a webhook or an issue becomes an event. A rule in `rules.json` picks the agent, the folder, the skill and the access. A worker runs one round as `claude -p --resume <session> --output-format stream-json`. Then the process exits. The last message of the agent is a receipt. An answer or a timer starts the next round in the same session. SQLite holds all state as an append-only fact log.
+
+**What we already plan.**
+
+| agent-autoloop | Metorite |
+|---|---|
+| An `ask` card. The answer resumes the session | `ask_on_task` and the answer watcher of CIV-14f (task 1731) |
+| "A round never waits". The agent exits during a wait | SW-60 (CI park, task 1902) and SW-66 (park on a merge, a run or a time, task 1912) |
+| Each round ends with one receipt | SW-61 dispositions (task 1903) |
+| The worker starts the rounds | SW-78 runner (task 1924) and SW-79 recover (task 1925) |
+| An `ask` key: no second card while one is open | SW-74 merged questions (task 1920) |
+| Pause a rule | SW-96 kill switch (task 1942) |
+| Outside text never enters the prompt | `untrusted_text` on each MCP field |
+| Delivery: review, CI, merge, deploy, check the live version | lane-merge, `stop_the_line.sh`, SW-71 and SW-72 |
+
+**What we take.** Each item changes one slice. §5.11 holds the text.
+
+1. **A hop limit (SW-95).** An event that an agent causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap, the hub records the event, starts nothing and sends one notice. The old guards catch a repeated call and a write rate. They do not catch a chain of agent, task and agent. SW-30a and SW-65 make that chain possible.
+2. **Retry in the same session, with backoff (SW-78).** A failed round retries after 5 minutes. The wait doubles up to 1 hour. The owner hears at the 3rd failure in a row. The retries stop at the 10th. A round that resumed and then broke retries in the SAME session, so done work is not done again.
+3. **Usage for each round (SW-38).** The `result` line of `stream-json` gives `usage` and `total_cost_usd`. On a resumed session, Claude Code reports the cost of the whole session. So the runner subtracts the total from before the round. A field that is not reported stays unknown, never zero.
+4. **Rules decide where an agent runs (SW-67 and SW-78).** The hub refuses an event that carries `cwd`, `agent` or `access`. For SW-78, the lane record sets the worktree, the model and the permission mode. The task text never sets them.
+
+**What we do not take.**
+
+- **The tool itself.** It is a second system for cards, channels and dispatch. Metorite owns all three, and the owner approves only in Metorite.
+- **Its install path and its access.** The installer pipes a script from GitHub into the shell. Its `full` access runs Claude Code with `bypassPermissions`.
+- **Its delivery plugin.** It merges on a label. Our gate forbids `--auto` and needs a green check that someone read.
+- **Its deterministic kernel and simulation suite.** The engineering is good. We do not need it.
+
+**Not verified.** We did not install or run it. The star count (about 4.2k) and its test claims come from its README.
+
+**Fence.** Advisory (R7). The slices above name their own fences.
 
 ---
 
@@ -1775,9 +1812,9 @@ They keep their own gates.
 #### SW-78 · The runner
 
 - **Metorite task.** 1924.
-- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
+- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. **Retry (widened by SW-0d, §3.13).** A failed round retries in the same session, with backoff: 5 minutes, doubling up to 1 hour. The owner gets a notice at the 3rd failure in a row, and the retries stop at the 10th. The runner does not stop the old session until the new start succeeds. The lane record sets the worktree, the model and the permission mode. The task text never sets them. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
 - **Workstation order (D195 Q7).** The first path for a non-developer is one workstation with this runner (path B of the design): EA-19 first, then this slice. Cloud agents (WS-56) come later. Advisory (R7).
-- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll. **Pull start (SW-100, task 2527).** A fake queue of three ready slices and a lane with two free slots gives two starts. An empty queue gives none. A queue that reads `account_limit`, `box_memory` or `review_cap` gives none. The runner test of SW-100 holds these cases, and release 2 is not done until it passes.
+- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll. A fake `claude` that fails 3 times gives one notice. It fails 10 times and then gets no new start. Each retry uses the same session id. **Pull start (SW-100, task 2527).** A fake queue of three ready slices and a lane with two free slots gives two starts. An empty queue gives none. A queue that reads `account_limit`, `box_memory` or `review_cap` gives none. The runner test of SW-100 holds these cases, and release 2 is not done until it passes.
 - **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path. The pull-start cases above run in the runner test of SW-100.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. Minting the second token on a live box is an owner act. The install on the home box is `deploy`. **Depends on.** Release 1: task 1731 and EA-19. Release 2: also SW-77, SW-64, SW-67 and SW-68.
 
@@ -1922,12 +1959,20 @@ They keep their own gates.
   - **Pause.** A member writes `agents_paused` for self with the value true only. A resume or a clear by a member gets 403, so a member cannot lift a pause that an admin holds. An admin writes both.
   - **Not yet.** `agent_policies.FLAGS_NOT_YET` names each master flag that is not a `Settings` field yet. The slice that adds the field takes its name off the list.
 
+#### SW-38 · Usage for each round
+
+- **Metorite task.** 1064.
+- **Scope.** Run-time and credit caps for each agent, a stop signal, and cost on the roster (§3.13, SW-0d). The runner reads the usage of a round from the `result` line of `stream-json`: `usage` (input, output and cache tokens) and `total_cost_usd`. On a resumed session, Claude Code reports the cost of the whole session. So the runner subtracts the session total from before the round. A field that is not reported stays unknown, never zero. SW-95 uses the stop signal of this slice.
+- **Done when.** A fake `stream-json` of a resumed session gives the cost of the round and not of the session. A result line with no cost gives "unknown".
+- **Fence.** Advisory (R7) until the slice writes its test. The slice names the test file at dispatch.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** SW-78.
+
 #### SW-95 · Day budgets and loop guards
 
 - **Metorite task.** 1941.
-- **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store.
-- **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed.
-- **Fence.** `test_agent_budgets_r8.py` (new).
+- **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store. **A hop limit (widened by SW-0d, §3.13).** A run or a task that an agent's action causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap from the policy store, Metorite starts no run and writes one notice.
+- **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed. A chain of runs past the hop cap starts no run, and writes one notice.
+- **Fence.** `test_agent_budgets_r8.py` (new). The hop cases run in the same file.
 - **Risk.** HIGH (it stops runs). **Gate.** AGENT-SAFE dark. The master flag is `AGENT_BUDGET_MODES`, default off, and the policy `budget_mode` is at or below it. The flip to `stop` is OWNER-GATE `enforcement-flip`, and the slice registers the flag in `work_plan.md` §6. **Depends on.** SW-38 (task 1064), SW-94, SW-67.
 
 #### SW-96 · A kill switch
@@ -2326,6 +2371,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-92 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py` |
 | SW-93 | The analytics tests beside `analytics_agent_runs.py` |
 | SW-94 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_policies_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
+| SW-38 | None yet. The text is advisory (R7) |
 | SW-95 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_budgets_r8.py` (new) |
 | SW-96 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_pause_r8.py tests/unit/test_mcp_edge_coverage.py` (new file first) |
 | SW-97 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_audit_export_r8.py` (new) |
@@ -2542,3 +2588,4 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-09.** Replan (task 2518). It sets the queue order of SW-68, the lane scope of SW-67 and the pull start of SW-100 (new). It parks nine slices (Later epic, task 2543). SW-51 takes the member view of agents (WS-AGA).
 - **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
+- **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.
