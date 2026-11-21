@@ -299,6 +299,11 @@ ALLOWED: dict[str, str] = {
     "packages/acb_skills/acb_skills/studio_tools.py::_frame_lines::names[:MAX_OUTLINE_PAGES_SHOWN]":
         "No page is lost: the Pages line of the outline names four pages, says 'and N more', and "
         "gives the total in the same line. The manifest keeps every page (STU-AF-8a).",
+    "packages/acb_skills/acb_skills/org_facts_tools.py::verified_lines::' '.join(_member_words().split())[:MATCH_WORDS_MAX]":
+        "One string, not rows: the member's own words, cut to MATCH_WORDS_MAX characters before "
+        "the match call. No row is behind the cut (SEM-8).",
+    "apps/agents/agent-email-assistant/agents.py::_rules_changed_text::rows[:12]":
+        "No row is lost: the text of a refused copy names at most 12 changed lines and says 'and N more lines'. The copy writes nothing, and the model reads the rules again (HRD-10d-4).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -326,8 +331,9 @@ ALLOWED: dict[str, str] = {
 #: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
 #: delete card names ten tables and counts the rest, and the delete takes every
 #: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
-#: says 'and N more' (89).
-ALLOWED_CEILING = 90
+#: says 'and N more' (89). SEM-8 added one: the member's words, cut as one string (91).
+#: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
+ALLOWED_CEILING = 92
 
 
 def _stringy(node: ast.AST) -> bool:

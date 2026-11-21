@@ -69,6 +69,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
         pass
 
+    # The release of each failure row of this process (TOF-2e,
+    # tool_failure_log.md §6 "The release"): the SHA that build_sha() cached
+    # at start. With no SHA, a row holds NULL.
+    try:
+        from acb_common import failure_log as _failure_log
+        _failure_log.set_release(build_sha())
+    except Exception:  # a row with no release only
+        pass
+
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
     # shells).  Point VIRTUAL_ENV at this venv and put its bin first on PATH, so
     # a child finds the venv's python and tools.  Agent dependency installs do
@@ -576,6 +585,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.graph_jobs_skipped", error=str(exc))
     try:
+        # The failure sync kind, its seed hook and its prune hook register at
+        # import (WS-TOF TOF-2e, gateway/failures/sync.py). Dark: each needs
+        # TOOL_FAILURE_TASKS and the three ids. Its own try, for the reason above.
+        from gateway.failures import sync as _failure_sync  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.failure_jobs_skipped", error=type(exc).__name__)
+    try:
         # The AI vendor alert kind and its seed hook register at import (AO-2,
         # gateway/provider_alerts.py). Dark: the seed needs PROVIDER_ALERT_ORGS.
         # Its own try, for the reason above.
@@ -774,6 +790,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway.jobs.worker import stop_job_worker
         await stop_job_worker()
     except Exception:
+        pass
+
+    # Stop the drain of the failure log, and write the records that wait
+    # (TOF-2e, acb_common/failure_log.py). It never raises.
+    try:
+        from acb_common import failure_log as _failure_log
+        await _failure_log.stop_drain()
+    except Exception:  # a lost record is a lower count only
         pass
 
     # Stop the Knowledge embed sweep and wait for a tick in progress.
@@ -1261,6 +1285,126 @@ async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
 # inherit another's binding" true on any server task model, not just uvicorn's
 # task-per-request. Jobs and consumers get no scope from this; they bind
 # explicitly or fail closed with TenantUnbound (H4).
+#
+# TOF-2d: the door sites of the failure log (tool_failure_log.md §4.2, D225).
+# * D1: a route that raises writes one `unhandled_500`. The tenant of the
+#   request is still bound here. `_db_unavailable` runs after the release.
+#   An exception that `db_busy` names writes none (a 503 is an answer).
+# * D2: a route that ANSWERS 500 writes `route_500`, and 502 or 504 writes
+#   `route_upstream`. A request that a capture site already recorded writes
+#   none (the request mark), so one failure has one writer.
+# The record is a queue put that never raises. The door reads the status of
+# the answer and the matched route template only: never the concrete path,
+# the query or the body. The org comes from the tenant seam only (R5).
+# Fence: tests/unit/test_failure_capture_sites.py.
+import weakref  # noqa: E402
+from contextlib import suppress  # noqa: E402
+
+from acb_common import failure_log  # noqa: E402
+
+#: D2: the status that a route answers on purpose, and its failure code.
+_DOOR_CODES = {500: "route_500", 502: "route_upstream", 504: "route_upstream"}
+_ROUTE_PATHS: weakref.WeakKeyDictionary[Any, frozenset[str]] = weakref.WeakKeyDictionary()
+
+
+#: The deepest level of included routers that the walk reads.
+_ROUTE_WALK_DEPTH = 32
+
+
+def _node_paths(node: Any) -> list[str]:
+    """The template of one route node. A plain route has `.path`. A route of
+    an included router is an effective context of FastAPI, whose `.path`
+    holds the whole template with each prefix. Its other routes keep the
+    template on `.starlette_route`. Never raises."""
+    out = []
+    for holder in (node, getattr(node, "starlette_route", None)):
+        try:
+            path = getattr(holder, "path", None)
+        except Exception:  # a node that cannot say its path names none
+            continue
+        if isinstance(path, str) and path.startswith("/"):
+            out.append(path)
+    return out
+
+
+def _walk_routes(nodes: Any, out: set[str], depth: int = 0) -> None:
+    """Add the template of each route under *nodes* to *out*.
+
+    FastAPI keeps an included router as ONE node with no `.path`
+    (`fastapi.routing._IncludedRouter`). Its `effective_candidates()` gives
+    the routes and the nested routers, and `effective_low_priority_routes()`
+    gives the rest. A node of an unknown kind is left out, and the walk goes
+    on. Never raises."""
+    if depth > _ROUTE_WALK_DEPTH:
+        return
+    try:
+        items = list(nodes or ())
+    except Exception:  # nodes that cannot be read add nothing
+        return
+    for node in items:
+        out.update(_node_paths(node))
+        for reader in ("effective_candidates", "effective_low_priority_routes"):
+            try:
+                read = getattr(node, reader, None)
+                children = read() if callable(read) else None
+            except Exception:  # an unknown node: keep going
+                continue
+            if children:
+                _walk_routes(children, out, depth + 1)
+
+
+def _route_paths(app_obj: Any) -> frozenset[str]:
+    """The template of each route of the app, read once and kept for each
+    app (§3.2 rule 1). It walks each included router. Only a template in
+    this set names a route. Any other gives `route:other`. Never raises."""
+    try:
+        found = _ROUTE_PATHS.get(app_obj)
+    except TypeError:  # an app that takes no weak reference: no cache
+        found = None
+    if found is not None:
+        return found
+    paths: set[str] = set()
+    with suppress(Exception):  # the walk never fails the door
+        _walk_routes(getattr(app_obj, "routes", None), paths)
+    found = frozenset(paths)
+    with suppress(TypeError):  # an app that takes no weak reference: no cache
+        _ROUTE_PATHS[app_obj] = found
+    return found
+
+
+def _route_template(scope: Any) -> str | None:
+    """The template of the route that answered. FastAPI puts the effective
+    context of a route of an included router in `scope["fastapi"]`, and its
+    `.path` holds the whole template. `scope["route"].path` holds only the
+    part of the router, so it is the second choice. Never the concrete
+    path."""
+    fastapi_scope = scope.get("fastapi")
+    context = fastapi_scope.get("effective_route_context") if isinstance(fastapi_scope, dict) else None
+    paths = _node_paths(context) if context is not None else []
+    if paths:
+        return paths[0]
+    path = getattr(scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
+
+
+def _door_record(scope: Any, app_obj: Any, exc: BaseException | None, code: str) -> None:
+    """Record one door failure (D1 or D2). Never raises. An exception that
+    `db_busy` names writes none: its 503 is an answer (§4.1)."""
+    try:
+        if exc is not None and db_busy.is_db_unavailable(exc):
+            return
+        template = _route_template(scope)
+        method = scope.get("method")
+        tool = f"{method} {template}" if isinstance(template, str) and isinstance(method, str) else ""
+        actor = next((v for k, v in scope.get("headers") or () if k == b"x-actor-via"), b"")
+        failure_log.record_tool_failure(
+            exc, source="door_5xx", error_code=code, tool=tool, kind="route",
+            route_paths=_route_paths(app_obj),
+            surface=failure_log.door_surface(actor[:64].decode("latin-1")))
+    except Exception as err:  # the class only: the answer never changes
+        _log.debug("failure_log.door_failed", extra={"door_error": type(err).__name__})
+
+
 class TenantScopeMiddleware:
     def __init__(self, asgi_app):  # noqa: ANN001 — ASGI protocol shape
         self.asgi_app = asgi_app
@@ -1270,9 +1414,30 @@ class TenantScopeMiddleware:
             await self.asgi_app(scope, receive, send)
             return
         token = clear_tenant()
+        # FastAPI sets `scope["app"]` before its middleware. A mounted app
+        # can write over it lower down, so the door reads it here.
+        app_obj = scope.get("app")
+        mark, mark_token = failure_log.open_request_mark()
+        status = 0
+
+        async def send_status(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message.get("status", 0)
+            await send(message)
+
         try:
-            await self.asgi_app(scope, receive, send)
+            await self.asgi_app(scope, receive, send_status)
+        except Exception as exc:
+            # D1. It records, then raises again, so every handler runs as before.
+            _door_record(scope, app_obj, exc, "unhandled_500")
+            raise
+        else:
+            code = _DOOR_CODES.get(status)
+            if code is not None and not mark.recorded:
+                _door_record(scope, app_obj, None, code)  # D2
         finally:
+            failure_log.close_request_mark(mark_token)
             release_tenant(token)
 
 
@@ -1730,6 +1895,27 @@ try:
     from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
 
     app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-2 — the connect flow of an API template (Zoho Books). Dark: while
+    # API_CONNECTIONS_ORGS does not hold the org, each route answers 404. The
+    # callback runs behind the member session through the BFF, so it is NOT
+    # in PUBLIC_ROUTES.
+    from gateway.routes.integrations_api_connect import router as _api_connect_router
+
+    app.include_router(_api_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-3 — the four call routes of an API connection (find, describe,
+    # read, write). Dark: while API_CONNECTIONS_ORGS does not hold the org,
+    # each route answers 404. The write route refuses every call (D-API-4).
+    from gateway.routes.api_connections import router as _api_connections_router
+
+    app.include_router(_api_connections_router)
 except Exception:  # pragma: no cover
     pass
 

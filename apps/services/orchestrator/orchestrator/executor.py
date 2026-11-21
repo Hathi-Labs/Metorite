@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator
 
 from acb_audit import AuditEvent, record
-from acb_common import get_logger, get_settings
+from acb_common import failure_log, get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
 from acb_llm.run_errors import classify_run_error, run_error_event
@@ -2427,6 +2427,24 @@ def _pack_left_block(agent_name: str) -> str:
         return ""
 
 
+def _connected_systems_block() -> str:
+    """CSY-1 (``chat_connected_systems.md`` §3.2): the "Connected systems" block of
+    the servers that THIS run attached, or "". Only for an org in
+    ``CONNECTED_SYSTEMS_ORGS``. The org comes from the run binding, never the
+    payload (R5). With no server or the flag off it is "", so the context keeps
+    its bytes. Never raises."""
+    try:
+        from acb_skills.server_brief import attached_block
+
+        from orchestrator._maf_mcp import connected_systems_org_allowed
+
+        if not connected_systems_org_allowed(_current_run_org()):
+            return ""
+        return attached_block()
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -2662,12 +2680,19 @@ def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
 
     WS-67 OA-9c: a spawn child (*agent_name* is the worker) gets the run key
     that the spawn minted for the pack tools of its job instead
-    (:func:`_job_pack_keys`). It never gets the parent's key or the record."""
+    (:func:`_job_pack_keys`). It never gets the parent's key or the record.
+
+    TOF-3a F12b: it drops the notes of the skill runs of the parent too
+    (``_tool_injection.SKILL_RUN_NOTES_KEY``), so a call of a child never
+    notes on the run of its parent."""
     try:
         from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+
+        from orchestrator._tool_injection import SKILL_RUN_NOTES_KEY
     except ImportError:
         return {}
-    return {PACK_RUN_KEY: None, PACKS_KEY: None, **_job_pack_keys(agent_name)}
+    return {PACK_RUN_KEY: None, PACKS_KEY: None, SKILL_RUN_NOTES_KEY: None,
+            **_job_pack_keys(agent_name)}
 
 
 def _job_pack_keys(agent_name: str, ctx: Any = None) -> dict[str, Any]:
@@ -3229,6 +3254,12 @@ async def wait_user_future(
     the run 419 s on that card. A refused early park tries again at the
     normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
     there is no late path, and the wait is as before.
+
+    RESUME-5 (``chat_run_continuity.md`` §4.12.5): where both resume flags
+    name the run's org, the gateway's stop wakes this wait once
+    (``pending_ask.stop_wait``), and the run parks here, in its own task
+    (``pending_ask.park_for_stop``). A refused park keeps waiting. Fences:
+    ``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -3241,6 +3272,11 @@ async def wait_user_future(
     early = park_after is not None and park_after < normal
     window = park_after if early else normal
     park_at = loop.time() + window if rid else None
+    # RESUME-5 (chat_run_continuity.md §4.12.5): the gateway's stop can wake
+    # this wait, and the run then parks HERE, in its own task, so the park
+    # reads the run's ContextVars. None unless both resume flags name the
+    # run's org, and with no request id: then each slice is as before.
+    stop = pending_ask.stop_wait(rid or "", tid)
     answer: str | None = None
     try:
         while True:
@@ -3251,9 +3287,14 @@ async def wait_user_future(
             if park_at is not None:
                 wait = max(0.0, min(wait, park_at - loop.time()))
             try:
-                # Shield: a slice timeout must not cancel the shared future —
-                # the next slice keeps waiting on it.
-                result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+                if await _wait_slice(fut, stop, wait):
+                    # The stop woke the wait. One attempt: a refusal keeps
+                    # waiting, as before.
+                    woken, stop = stop, None
+                    if await _park_at_stop(rid or "", tid, fut, woken):
+                        raise asyncio.CancelledError
+                    continue
+                result = fut.result()
                 answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
@@ -3281,8 +3322,48 @@ async def wait_user_future(
                         pass
     finally:
         if rid:
+            # RESUME-5: sync, before the first await, so a cancel cannot skip
+            # it. The stop reads True only when this run parked.
+            pending_ask.end_stop_wait(rid)
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+async def _wait_slice(
+    fut: "asyncio.Future[dict[str, Any]]", stop: "asyncio.Future[None] | None",
+    wait: float,
+) -> bool:
+    """One slice of :func:`wait_user_future`. False when *fut* is done, and
+    True when the stop woke the wait first (RESUME-5). Raises
+    ``asyncio.TimeoutError`` when the slice ends.
+
+    With no *stop*, the slice is the slice of before. Neither awaitable is
+    cancelled when the slice ends: the next slice waits on the same ones."""
+    if stop is None:
+        # Shield: a slice timeout must not cancel the shared future.
+        await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+        return False
+    await asyncio.wait((fut, stop), timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+    if fut.done():
+        return False
+    if stop.done():
+        return True
+    raise asyncio.TimeoutError
+
+
+async def _park_at_stop(
+    rid: str, tid: str, fut: Any, woken: "asyncio.Future[None] | None",
+) -> bool:
+    """RESUME-5: park the run of this wait at the stop, in this task. True
+    when parked. False ends the stop's entry, so the route reads the outcome,
+    and the wait goes on. A cancelled *woken* is no stop."""
+    from orchestrator import pending_ask
+
+    if (woken is not None and not woken.cancelled() and rid and tid
+            and await pending_ask.park_for_stop(rid, tid, fut)):
+        return True
+    pending_ask.end_stop_wait(rid)
+    return False
 
 
 def _settled_answer(result: Any) -> str | None:
@@ -6738,6 +6819,12 @@ async def _run_agent_inner(
                 # The run's platform tools after every narrowing, for
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
+                # TOF-2c: the surface that a failure record of this run takes.
+                # A delegated run keeps the channel of the run that asked.
+                channel=failure_log.run_channel(
+                    _parent_ctx.get("channel"), _batch_source,
+                    agent=agent_name, batch=True,
+                ),
                 # WS-67 OA-9b hardening: a run with a parent is a sub-run.
                 **({"sub_run": True} if _parent_ctx.get("run_id") else {}),
                 # WS-67 OA-9c: a spawn child's own pack tools act in this run,
@@ -7804,6 +7891,11 @@ async def run_agent_stream(
     _member_turns = _member_turns_for_run(artifact_context(), event_payload)
     # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
     _inherited_constraints = _inherited_chat_constraints(artifact_context())
+    # TOF-2c: the surface of this run for the failure log. A delegated run
+    # keeps the channel of the run that asked (tool_failure_log.md §4.2).
+    _run_channel = failure_log.run_channel(
+        artifact_context().get("channel"), _corr_source, agent=agent_name,
+    )
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -8043,6 +8135,9 @@ async def run_agent_stream(
                 agent_name=agent_name,
                 agent_config=loaded.config,  # D85: the sharing block
                 no_egress=_stream_no_egress,  # H-236
+                # HRD-14b: only a top-level streamed run gets the paste frame.
+                # A delegated run's input is a task that a model wrote.
+                paste_frame=not _delegated_run,
             )  # inject call_agent / call_agent_background
             _laps.lap("inject")
             # CRM-Q32-5: the CRM facts block, read as the member.
@@ -8182,6 +8277,8 @@ async def run_agent_stream(
                 # The run's platform tools after every narrowing, for
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
+                # TOF-2c: the surface that a failure record of this run takes.
+                channel=_run_channel,
             )
             if _pack_apply is not None:
                 # WS-67 OA-7c: the bind above replaced the context, so the
@@ -8627,6 +8724,13 @@ async def run_agent_stream(
                     agent_name, run_id, event_payload, integrations,
                     native=True, session_turn=_session_turn,
                     agent=agent,
+                )
+                # HRD-14b: the shape of the input, in the run binding, and
+                # ONE log line for the run, with the flag off too.
+                _note_paste_shape(
+                    _native_input, _session_turn, agent_name=agent_name,
+                    run_id=run_id, thread_id=_caller_thread_id,
+                    solo_room=solo_room, delegated=_delegated_run,
                 )
                 _laps.lap("compose")
                 # PZ-20b: the compose step read the profile, so the cache
@@ -10171,6 +10275,13 @@ async def run_agent_stream(
                         session_turn=_session_turn,
                         agent=agent,
                     )
+                    # HRD-14b: this compose records its own shape. A run that
+                    # fell back from Tier 1 logs no second line.
+                    _note_paste_shape(
+                        _run_input, _session_turn, agent_name=agent_name,
+                        run_id=run_id, thread_id=_caller_thread_id,
+                        solo_room=solo_room, delegated=_delegated_run,
+                    )
                     response = await _with_tier_policy(
                         _agent_for_run(
                             agent, _run_ctx,
@@ -10302,6 +10413,15 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        # TOF-3a F12b: the rows of the skills of this run, in their own task,
+        # while the tenant is still bound. No notes, no task (flag off).
+        # It never raises into this finally: only an ``Exception`` is held,
+        # so a ``CancelledError`` still stops the run.
+        if _pack_apply is not None:
+            with contextlib.suppress(Exception):
+                from orchestrator._tool_injection import schedule_skill_runs
+
+                schedule_skill_runs(_pack_apply)
         if _tier_task is not None:
             if not _tier_task.done():
                 _tier_task.cancel()
@@ -10843,6 +10963,12 @@ async def _run_with_maf_agent(
     else:
         # Webhook / event path: single string prompt.
         run_input = _build_event_message(agent_name, run_id, event_payload, integrations)
+    # HRD-14b: the log line of the shape. A batch run gets no paste frame
+    # (`_inject_agent_tools(paste_frame=False)`), so it records no shape.
+    _note_paste_shape(
+        run_input, None, agent_name=agent_name, run_id=run_id,
+        thread_id=thread_id, solo_room=None, delegated=None, record=False,
+    )
 
     # Inject resolved integration credentials into os.environ so that tool
     # subprocesses (e.g. zoho_crm.py calling os.getenv("ZOHO_CLIENT_ID")) can
@@ -11001,6 +11127,64 @@ def _native_sessions_enabled() -> bool:
         return bool(getattr(get_settings(), "maf_native_sessions", False))
     except Exception:
         return False
+
+
+def _note_paste_shape(
+    run_input: Any,
+    session_turn: Any,
+    *,
+    agent_name: str,
+    run_id: str,
+    thread_id: str | None,
+    solo_room: bool | None,
+    delegated: bool | None,
+    record: bool = True,
+) -> None:
+    """Record the shape of a run input, and write ONE log line (HRD-14b).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The measure". The shape is
+    ``string`` for a string input (each fall back and each failed compose
+    too), ``session`` for a list with a usable stored session, and ``list``
+    for any other list. *record* puts it in the run binding
+    (``paste_frame.record_shape``), which the paste middleware reads for THIS
+    run id only. The line writes with ``CHAT_PASTE_FRAME_ORGS`` off too, so
+    the owner reads the coverage before the flip: the shape, ``bound`` (False
+    is a door that binds nothing), the room, a delegated run and the door. A
+    run that composes twice (a Tier 1 fall back) writes one line. Never
+    raises.
+
+    The batch door (``record=False``, ``_run_with_maf_agent``) never gets the
+    middleware, so its line says ``bound=False`` and ``door="batch"``, also
+    when it inherits the raw parts of a parent run. A *delegated* of None
+    reads the run binding: a sub-run (``sub_run``) is delegated. So a
+    delegated run never counts as covered. A self-anneal retry of a batch run
+    writes a second line."""
+    try:
+        from acb_skills import paste_frame
+        from acb_skills.write_artifact import artifact_context
+
+        if isinstance(run_input, str):
+            shape = "string"
+        elif session_turn is not None and getattr(session_turn, "usable", False):
+            shape = "session"
+        else:
+            shape = "list"
+        first = paste_frame.record_shape(run_id, shape) if record else True
+        if not first:
+            return
+        if delegated is None:
+            delegated = artifact_context().get("sub_run") is True
+        room = "solo" if solo_room is True else "shared" if solo_room is False else "unknown"
+        _log.info(
+            "paste_frame.shape", agent=agent_name, run_id=run_id,
+            thread_id=str(thread_id or "")[:40], shape=shape,
+            bound=record and not delegated and paste_frame.raw_parts() is not None,
+            room=room, delegated=delegated, door="stream" if record else "batch",
+            flag=paste_frame.paste_frame_on(_current_run_org()),
+        )
+    except Exception as exc:  # a log line never fails a run
+        with contextlib.suppress(Exception):
+            _log.warning("paste_frame.shape_failed", error=type(exc).__name__)
 
 
 def _compose_maf_run(
@@ -12312,6 +12496,9 @@ def _context_preamble_parts(
     # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
     # so each block above keeps its place and its bytes.
     parts.extend(filter(None, [_sent_acts_block(agent_name)]))
+    # CSY-1: the connected systems of this run, LAST (after the sent-acts block of task 3594): after every stable part,
+    # so the cache keeps its prefix. The same attached set gives the same bytes.
+    parts.extend(filter(None, [_connected_systems_block()]))
     return parts
 
 

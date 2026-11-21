@@ -122,6 +122,24 @@ def test_empty_values_drop_out_and_no_key_sends_nothing() -> None:
     assert client.calls == []
 
 
+def test_a_skill_test_saves_no_key() -> None:
+    """WS-STU F4b. A token in the model text is no tool call, so the hold of a
+    dry run never sees it. With a dry-run record bound, the one writer makes
+    NO request. Mutation: drop the ``current_dry_run`` test in
+    ``save_setup_vars`` → a configure and a token request go out → red."""
+    from acb_skills.skill_dry_run import DryRun, dry_run_scope
+
+    client = FakeClient()
+    with dry_run_scope(DryRun(pack="skill:x")):
+        note = _save(client, f"<<<SETUP:github:GITHUB_TOKEN={TOKEN}>>> "
+                             "<<<SETUP:serpapi:SERPAPI_API_KEY=abc123>>>")
+    assert client.calls == [] and note == setup_tokens.DRY_RUN_NOTE
+    assert TOKEN not in note
+    # With no record bound, the same text saves as before.
+    _save(client, "<<<SETUP:serpapi:SERPAPI_API_KEY=abc123>>>")
+    assert [c[0] for c in client.calls] == ["POST"]
+
+
 def test_both_callers_use_the_shared_rule() -> None:
     executor = (ROOT / "apps/services/orchestrator/orchestrator/executor.py").read_text(
         encoding="utf-8")

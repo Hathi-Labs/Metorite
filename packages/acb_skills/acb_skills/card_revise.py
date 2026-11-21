@@ -177,6 +177,37 @@ def draft_digest(row: Any) -> str:
     return hashlib.sha256(f"{subject}\x00{body}\x00{people}".encode()).hexdigest()[:32]
 
 
+def draft_files_digest(row: Any) -> str:
+    """The digest of the files of a stored draft (HRD-10d-2). THE one rule.
+
+    *row* is the draft as ``GET /email/messages/{id}`` answers it: the flag
+    ``has_attachments`` and the list ``attachments``, each with its ``id``,
+    ``filename`` and ``size_bytes``. The send route folds the rows of
+    ``email_attachments`` in the same shape. The read lists the files only
+    when the flag is true, so the flag is a part of the digest too, and the
+    files of a row whose flag is false do not count. The order of the files
+    does not count. A file that is added, removed or stored again as a new
+    row changes the digest.
+
+    It is a separate function, so :func:`draft_digest` (HRD-8c and
+    HRD-10d-1) keeps its value for each draft."""
+    row = row if isinstance(row, dict) else {}
+    flagged = bool(row.get("has_attachments"))
+    items: list[str] = []
+    for f in (row.get("attachments") or []) if flagged else []:
+        if not isinstance(f, dict):
+            continue
+        size = f.get("size_bytes")
+        try:
+            size_text = "" if size is None else str(int(size))
+        except (TypeError, ValueError):
+            size_text = str(size)
+        items.append("\x1f".join((str(f.get("id") or "").strip().lower(),
+                                  str(f.get("filename") or ""), size_text)))
+    files = "\x1e".join(sorted(items))
+    return hashlib.sha256(f"{int(flagged)}\x00{files}".encode()).hexdigest()[:32]
+
+
 # ── The record ───────────────────────────────────────────────────────────────
 
 def _hash(value: str) -> str:

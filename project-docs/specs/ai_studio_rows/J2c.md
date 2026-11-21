@@ -26,7 +26,9 @@ Gate: AGENT-SAFE. Dark behind `STUDIO_ORGS`
 
 **The state of the skill.** A skill must still be `published` to load. The route of a new version returns the skill to `draft`. Then the other members load nothing until the owner publishes again, and after that they load the pinned version.
 
-**Not built.** No chat tool or card to ask, approve or unshare (TOF-4b). No member page and no admin page. No Needs row for a holder (the J2b-4a pattern). No audit table: the four columns of who and when are the record. The routes write a log line with the id and the version only. No share to a group or to named people. **Known limit:** the member purge (`routes/admin/members.py`) still deletes each skill of the member, a shared skill too. A later slice decides if a shared skill stays with the org.
+**Not built here.** J2d (TOF-4b) adds the chat tool and its cards, the Needs row of a holder and the owner's read of the share. No member page and no admin page. No audit table: the four columns of who and when are the record. The routes write a log line with the id and the version only. No share to a group or to named people.
+
+**The member purge** keeps a skill that the org shares, since J2d. It deletes each other skill of the member, as before.
 
 ## Done when
 
