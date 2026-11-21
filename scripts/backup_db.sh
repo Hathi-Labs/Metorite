@@ -31,6 +31,10 @@
 #   scripts/backup_db.sh --offbox         # ALSO send the night to Supabase
 #                                         # Storage (H-123). ONLY
 #                                         # acb-backup.service passes it.
+#   scripts/backup_db.sh --console-only   # ONLY the Customer Console database
+#                                         # (H-170). vps_apply.sh runs it before
+#                                         # the Console ladder. It takes no
+#                                         # other argument. See "Console only".
 #
 # 🔴 **BH-6a: the root run trusts no value from the env (WS-49).**
 # acb-backup.service runs this as ROOT. Its env comes from /etc/acb/root.env
@@ -77,6 +81,7 @@
 #   CUSTOMER_CONSOLE_DATABASE_URL   VALIDATED. A postgresql:// URL whose only
 #                   options are sslmode, connect_timeout and application_name.
 #                   libpq has options that make root read or write a file.
+#                   --console-only needs it. Unset, that run exits 1.
 #   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, PGSSLMODE, PGCONNECT_TIMEOUT
 #                   ALLOWED. They choose WHICH data is backed up, so the root
 #                   file PINS the target when it holds BACKUP_PG_HOST and
@@ -131,13 +136,22 @@ VERIFY_RESTORE=0
 # runs this script too, and it must never upload. The fence over every caller
 # is `test_only_the_nightly_unit_passes_offbox`.
 offbox_requested=0
+# --console-only (H-170): the Console database and nothing else. The deploy
+# runs it before the Console ladder. Lower case on purpose: it is not an env
+# name (see "Scratch databases" below).
+console_only=0
 for arg in "$@"; do
   case "$arg" in
     --verify-restore) VERIFY_RESTORE=1 ;;
     --offbox) offbox_requested=1 ;;
-    *) echo "ERROR: unknown argument '$arg'. Known: --verify-restore, --offbox." >&2; exit 2 ;;
+    --console-only) console_only=1 ;;
+    *) echo "ERROR: unknown argument '$arg'. Known: --verify-restore, --offbox, --console-only." >&2; exit 2 ;;
   esac
 done
+if [ "$console_only" = "1" ] && { [ "$VERIFY_RESTORE" = "1" ] || [ "$offbox_requested" = "1" ]; }; then
+  echo "ERROR: --console-only takes no other argument. It runs no verify and no off-box copy." >&2
+  exit 2
+fi
 
 say()  { printf "\n==> %s\n" "$*"; }
 warn() { printf "  !! %s\n" "$*" >&2; }
@@ -413,6 +427,239 @@ if [ "$env_guard" = "1" ]; then
   fi
 fi
 
+# --- The Customer Console's own cluster (H-98) -------------------------------
+# 🔴 **The Console database has NEVER been covered here, and the owner lost
+# Console data on 2026-09-01 with no backup to restore.** Everything above
+# enumerates `pg_database` on ONE connection. The Console is a SEPARATE
+# Supabase project reached with its own credentials, so it can never appear in
+# that listing however many databases the app's cluster grows.
+#
+# ⚠️ **Skipped LOUDLY when the DSN is absent.** A box without the Console must
+# still back up the app database rather than fail the whole unit — but a silent
+# skip is exactly how this gap survived. The warning below is the evidence.
+#
+# ⚠️ **`pg_dump` takes the URL directly.** Re-deriving PGHOST and PGUSER from
+# it would be a second parser for a string libpq already understands, and
+# getting the pooler's user format wrong is a failure that shows up at restore.
+#
+# 🔴 **VALIDATED (BH-6a).** Root passes this DSN to pg_dump, and libpq takes
+# options from it that read or write a FILE as root (passfile, sslkey,
+# service, and sslkeylogfile from PostgreSQL 18). So a postgresql:// URL, and
+# its only options may be sslmode, connect_timeout and application_name. Any
+# other shape is a failed Console dump, and the run exits 1 at the end.
+#
+# The section is two functions, and they are defined HERE, before any app
+# step, because the console-only run below uses them (H-170). The nightly run
+# calls them at the same point as before: after the app dump and the verify.
+#
+# Set to 1 when the Customer Console dump failed or was corrupt. Checked LAST,
+# so a Console failure never costs the off-box copy of the app dump.
+console_failed=0
+# The last sentence of each Console failure. A console-only run has no app
+# dump, so it has nothing to go on to.
+if [ "$console_only" = "1" ]; then
+  cc_fail_tail="The run exits 1."
+else
+  cc_fail_tail="The run goes on, and exits 1 at the end."
+fi
+cc_dsn_ok() {
+  local dsn="$1" query kv auth
+  local -a kvs
+  [[ "$dsn" =~ ^postgres(ql)?(\+psycopg|\+asyncpg)?://[^[:space:]]+$ ]] || return 1
+  # ONE host (fix round 2). libpq takes a comma list of hosts in the authority
+  # and fails over to the next one, so `@cc.example:1,evil.example:5432` would
+  # pass the host pin below and then dump evil.example. A `host=` or
+  # `hostaddr=` option is refused by the option list below.
+  auth="${dsn#*://}"
+  auth="${auth%%[/?]*}"
+  case "$auth" in
+    *,*) return 1 ;;
+  esac
+  case "$dsn" in
+    *\?*) query="${dsn#*\?}" ;;
+    *) return 0 ;;
+  esac
+  IFS='&' read -r -a kvs <<< "$query"
+  [ "${#kvs[@]}" -gt 0 ] || return 1
+  for kv in "${kvs[@]}"; do
+    case "${kv%%=*}" in
+      sslmode|connect_timeout|application_name) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# console_target_check — the shape of the DSN, then the Console's own server
+# pins. When the DSN may not be dumped, it says why and sets console_failed=1.
+# It never exits, so the caller decides.
+console_target_check() {
+  local cc_auth cc_user cc_host cc_target_ok=1
+  if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && ! cc_dsn_ok "$CUSTOMER_CONSOLE_DATABASE_URL"; then
+    say "Customer Console cluster (separate project)"
+    warn "CUSTOMER_CONSOLE_DATABASE_URL is not a postgresql:// URL with ONE host and only"
+    warn "the options sslmode, connect_timeout and application_name."
+    warn "The Console database is NOT in this backup. $cc_fail_tail"
+    console_failed=1
+  fi
+  # The Console's own server pins (see "The server that the dump reads" above).
+  # A mismatch skips the Console dump only: the app night is real, so it stays,
+  # and the run exits 1 at the end. The host and the user come from the URL:
+  # postgresql://<user>[:<password>]@<host>[:<port>]/<db>.
+  if [ "$env_guard" = "1" ] && [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && [ "$console_failed" = "0" ]; then
+    cc_auth="${CUSTOMER_CONSOLE_DATABASE_URL#*://}"
+    cc_auth="${cc_auth%%/*}"
+    cc_auth="${cc_auth%%\?*}"
+    case "$cc_auth" in
+      *@*) cc_user="${cc_auth%@*}"; cc_host="${cc_auth##*@}" ;;
+      *) cc_user=""; cc_host="$cc_auth" ;;
+    esac
+    cc_user="${cc_user%%:*}"
+    cc_host="${cc_host%%:*}"
+    if [ -z "${BACKUP_CC_PG_HOST:-}" ] || [ -z "${BACKUP_CC_PG_USER_SUFFIX:-}" ]; then
+      warn "BACKUP_CC_PG_HOST or BACKUP_CC_PG_USER_SUFFIX is not set in $offbox_key_file."
+      warn "A changed Console .env can point the Console dump at another server."
+    fi
+    if [ -n "${BACKUP_CC_PG_HOST:-}" ] && [ "$cc_host" != "$BACKUP_CC_PG_HOST" ]; then
+      cc_target_ok=0
+    fi
+    if [ -n "${BACKUP_CC_PG_USER_SUFFIX:-}" ] && ! pg_user_matches "$cc_user" "$BACKUP_CC_PG_USER_SUFFIX"; then
+      cc_target_ok=0
+    fi
+    if [ "$cc_target_ok" = "0" ]; then
+      say "Customer Console cluster (separate project)"
+      echo "ERROR: CUSTOMER_CONSOLE_DATABASE_URL is not the server that BACKUP_CC_PG_HOST" >&2
+      echo "       and BACKUP_CC_PG_USER_SUFFIX in $offbox_key_file pin. The Console" >&2
+      echo "       database is NOT in this backup. $cc_fail_tail" >&2
+      console_failed=1
+    fi
+  fi
+}
+
+# console_dump — dump the Console into $DEST, read the archive back with
+# pg_restore --list, and add its sha256 line to $DEST/MANIFEST.txt. A failure
+# sets console_failed=1. It never exits. Run console_target_check first.
+console_dump() {
+  local CC_DSN
+  say "Customer Console cluster (separate project)"
+  # The app's DSN carries a SQLAlchemy driver suffix libpq does not understand.
+  CC_DSN="${CUSTOMER_CONSOLE_DATABASE_URL/postgresql+psycopg:/postgresql:}"
+  CC_DSN="${CC_DSN/postgresql+asyncpg:/postgresql:}"
+  printf "    - %-16s ... " "customer_console"
+  # ⚠️ stderr to a FILE, never the console: pg_dump echoes the whole connection
+  # string on failure, password included. That has reached a transcript here.
+  if pg_dump -d "$CC_DSN" -Fc > "$DEST/customer_console.dump" \
+       2> "$DEST/customer_console.err"; then
+    if pg_restore --list > /dev/null < "$DEST/customer_console.dump" 2>/dev/null; then
+      echo "ok ($(du -h "$DEST/customer_console.dump" | cut -f1))"
+      rm -f "$DEST/customer_console.err"
+      (cd "$DEST" && sha256sum ./customer_console.dump >> MANIFEST.txt)
+    else
+      echo "CORRUPT"
+      warn "pg_restore could not read customer_console.dump — the Console backup FAILED."
+      warn "$cc_fail_tail"
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.corrupt"
+      console_failed=1
+    fi
+  else
+    echo "FAILED"
+    if [ "$console_only" = "1" ]; then
+      warn "Could not dump the Customer Console database. See $DEST/customer_console.err"
+    else
+      warn "Could not dump the Customer Console database. The app database above"
+      warn "IS backed up; the Console's is NOT. See $DEST/customer_console.err"
+    fi
+    warn "— that file holds the DSN, so do not paste it anywhere."
+    warn "$cc_fail_tail"
+    if [ -e "$DEST/customer_console.dump" ]; then
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.failed"
+    fi
+    console_failed=1
+  fi
+}
+
+# --- The one delete guard ----------------------------------------------------
+# rm_night <path> — `rm -rf` ONE path, and only when it is "$BACKUP_DIR/<stamp>",
+# "$BACKUP_DIR/<stamp>/offbox.work" (BH-6a) or "$BACKUP_DIR/<stamp>-console"
+# (H-170). The prefix is the literal BACKUP_DIR, which the root run pins, and
+# the stamp has no `/`. So an empty or odd value can never widen a delete.
+# Each `rm -rf` of this script goes through here. A symlink named like a stamp
+# loses the link, never its target. Defined here, because the console-only run
+# below prunes too.
+rm_night() {
+  case "$1" in
+    "$BACKUP_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z \
+    | "$BACKUP_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z/offbox.work \
+    | "$BACKUP_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-console)
+      rm -rf -- "$1" ;;
+    *)
+      warn "refusing to delete a path that is not a night under $BACKUP_DIR."
+      return 1 ;;
+  esac
+}
+
+# --- Console only (H-170) ----------------------------------------------------
+# 🔴 The deploy applies the Console ladder to the Console's own database
+# (vps_apply.sh). No backup of that database came first. The pre-migration
+# backup has no Console DSN, and it does not run when no tenant migration is
+# pending. So the deploy runs this mode first, and a failure here stops the
+# deploy before the ladder. The fence is tests/unit/test_console_backup_gate.py.
+#   1. It asks the APP cluster nothing: no require_postgres, no app dump, no
+#      verify, no nightly retention and no off-box copy.
+#   2. It exits 1 on ANY Console failure, and on an unset DSN. It prints
+#      "Console backup complete: <dir>" only on success.
+#   3. It writes into "$BACKUP_DIR/<stamp>-console". The nightly retention glob
+#      [0-9]*Z does not match that name, so a deploy never pushes a night out
+#      of KEEP_DAILY.
+#   4. It keeps the newest $console_keep Console dirs. The prune runs only
+#      after a good dump. A failed prune is a WARN, never a failed backup.
+#   5. A root run keeps every guard above: the clean start, the fixed paths,
+#      the key file and the server pins.
+console_keep=5
+if [ "$console_only" = "1" ]; then
+  if [ -z "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
+    echo "ERROR: --console-only needs CUSTOMER_CONSOLE_DATABASE_URL, and it is unset." >&2
+    echo "       Nothing was dumped." >&2
+    exit 1
+  fi
+  console_target_check
+  if [ "$console_failed" = "1" ]; then
+    echo "ERROR: the Console backup did NOT run. See the lines above. Nothing was dumped." >&2
+    exit 1
+  fi
+  STAMP="$(date -u '+%Y-%m-%dT%H%M%SZ')"
+  DEST="$BACKUP_DIR/$STAMP-console"
+  mkdir -p "$DEST"
+  {
+    echo "taken_utc:        $STAMP"
+    echo "host:             $(hostname)"
+    echo "mode:             console-only (H-170)"
+    echo "databases:        customer_console"
+    echo ""
+    echo "# sha256"
+  } > "$DEST/MANIFEST.txt"
+  console_dump
+  if [ "$console_failed" = "1" ]; then
+    echo "ERROR: the Customer Console backup FAILED. See the lines above. $DEST" >&2
+    echo "       holds no good dump." >&2
+    exit 1
+  fi
+  say "Console retention (keeping $console_keep most recent)"
+  shopt -s nullglob
+  cc_dirs=("$BACKUP_DIR"/[0-9]*Z-console)
+  shopt -u nullglob
+  cc_i=0
+  while [ "$cc_i" -lt "$(( ${#cc_dirs[@]} - console_keep ))" ]; do
+    echo "    pruning ${cc_dirs[$cc_i]##*/}"
+    if ! rm_night "${cc_dirs[$cc_i]}" 2>/dev/null; then
+      warn "could not prune ${cc_dirs[$cc_i]##*/}. The Console backup itself SUCCEEDED."
+    fi
+    cc_i=$((cc_i + 1))
+  done
+  say "Console backup complete: $DEST"
+  exit 0
+fi
+
 require_postgres
 
 # ── Scratch databases of the deep verify ────────────────────────────────────
@@ -472,9 +719,7 @@ verify_failed=0
 # setting, the key, the encryption, the upload, the deadline or the bucket
 # retention. Checked LAST too.
 offbox_failed=0
-# Set to 1 when the Customer Console dump failed or was corrupt. Checked LAST,
-# so a Console failure never costs the off-box copy of the app dump.
-console_failed=0
+# (console_failed is set with the Console functions, near the top.)
 
 # psql and libpq can echo a connection string, password included, into an
 # error. Apply this to every error text before it reaches a log. It is the
@@ -998,126 +1243,14 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
 fi
 
 # --- The Customer Console's own cluster (H-98) -------------------------------
-# 🔴 **The Console database has NEVER been covered here, and the owner lost
-# Console data on 2026-09-01 with no backup to restore.** Everything above
-# enumerates `pg_database` on ONE connection. The Console is a SEPARATE
-# Supabase project reached with its own credentials, so it can never appear in
-# that listing however many databases the app's cluster grows.
-#
-# ⚠️ **Skipped LOUDLY when the DSN is absent.** A box without the Console must
-# still back up the app database rather than fail the whole unit — but a silent
-# skip is exactly how this gap survived. The warning below is the evidence.
-#
-# ⚠️ **`pg_dump` takes the URL directly.** Re-deriving PGHOST and PGUSER from
-# it would be a second parser for a string libpq already understands, and
-# getting the pooler's user format wrong is a failure that shows up at restore.
-#
-# 🔴 **VALIDATED (BH-6a).** Root passes this DSN to pg_dump, and libpq takes
-# options from it that read or write a FILE as root (passfile, sslkey,
-# service, and sslkeylogfile from PostgreSQL 18). So a postgresql:// URL, and
-# its only options may be sslmode, connect_timeout and application_name. Any
-# other shape is a failed Console dump, and the run exits 1 at the end.
-cc_dsn_ok() {
-  local dsn="$1" query kv auth
-  local -a kvs
-  [[ "$dsn" =~ ^postgres(ql)?(\+psycopg|\+asyncpg)?://[^[:space:]]+$ ]] || return 1
-  # ONE host (fix round 2). libpq takes a comma list of hosts in the authority
-  # and fails over to the next one, so `@cc.example:1,evil.example:5432` would
-  # pass the host pin below and then dump evil.example. A `host=` or
-  # `hostaddr=` option is refused by the option list below.
-  auth="${dsn#*://}"
-  auth="${auth%%[/?]*}"
-  case "$auth" in
-    *,*) return 1 ;;
-  esac
-  case "$dsn" in
-    *\?*) query="${dsn#*\?}" ;;
-    *) return 0 ;;
-  esac
-  IFS='&' read -r -a kvs <<< "$query"
-  [ "${#kvs[@]}" -gt 0 ] || return 1
-  for kv in "${kvs[@]}"; do
-    case "${kv%%=*}" in
-      sslmode|connect_timeout|application_name) ;;
-      *) return 1 ;;
-    esac
-  done
-  return 0
-}
-if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && ! cc_dsn_ok "$CUSTOMER_CONSOLE_DATABASE_URL"; then
-  say "Customer Console cluster (separate project)"
-  warn "CUSTOMER_CONSOLE_DATABASE_URL is not a postgresql:// URL with ONE host and only"
-  warn "the options sslmode, connect_timeout and application_name."
-  warn "The Console database is NOT in this backup. The run goes on, and exits 1 at the end."
-  console_failed=1
-fi
-# The Console's own server pins (see "The server that the dump reads" above).
-# A mismatch skips the Console dump only: the app night is real, so it stays,
-# and the run exits 1 at the end. The host and the user come from the URL:
-# postgresql://<user>[:<password>]@<host>[:<port>]/<db>.
-cc_target_ok=1
-if [ "$env_guard" = "1" ] && [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && [ "$console_failed" = "0" ]; then
-  cc_auth="${CUSTOMER_CONSOLE_DATABASE_URL#*://}"
-  cc_auth="${cc_auth%%/*}"
-  cc_auth="${cc_auth%%\?*}"
-  case "$cc_auth" in
-    *@*) cc_user="${cc_auth%@*}"; cc_host="${cc_auth##*@}" ;;
-    *) cc_user=""; cc_host="$cc_auth" ;;
-  esac
-  cc_user="${cc_user%%:*}"
-  cc_host="${cc_host%%:*}"
-  if [ -z "${BACKUP_CC_PG_HOST:-}" ] || [ -z "${BACKUP_CC_PG_USER_SUFFIX:-}" ]; then
-    warn "BACKUP_CC_PG_HOST or BACKUP_CC_PG_USER_SUFFIX is not set in $offbox_key_file."
-    warn "A changed Console .env can point the Console dump at another server."
-  fi
-  if [ -n "${BACKUP_CC_PG_HOST:-}" ] && [ "$cc_host" != "$BACKUP_CC_PG_HOST" ]; then
-    cc_target_ok=0
-  fi
-  if [ -n "${BACKUP_CC_PG_USER_SUFFIX:-}" ] && ! pg_user_matches "$cc_user" "$BACKUP_CC_PG_USER_SUFFIX"; then
-    cc_target_ok=0
-  fi
-  if [ "$cc_target_ok" = "0" ]; then
-    say "Customer Console cluster (separate project)"
-    echo "ERROR: CUSTOMER_CONSOLE_DATABASE_URL is not the server that BACKUP_CC_PG_HOST" >&2
-    echo "       and BACKUP_CC_PG_USER_SUFFIX in $offbox_key_file pin. The Console" >&2
-    echo "       database is NOT in this backup. The run goes on, and exits 1 at the end." >&2
-    console_failed=1
-  fi
-fi
+# console_target_check and console_dump are defined near the top, beside the
+# console-only run (H-170). The nightly run calls them HERE, after the app dump
+# and the deep verify, as before. The rules of the section are there.
+console_target_check
 if [ "$console_failed" = "1" ]; then
   :
 elif [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
-  say "Customer Console cluster (separate project)"
-  # The app's DSN carries a SQLAlchemy driver suffix libpq does not understand.
-  CC_DSN="${CUSTOMER_CONSOLE_DATABASE_URL/postgresql+psycopg:/postgresql:}"
-  CC_DSN="${CC_DSN/postgresql+asyncpg:/postgresql:}"
-  printf "    - %-16s ... " "customer_console"
-  # ⚠️ stderr to a FILE, never the console: pg_dump echoes the whole connection
-  # string on failure, password included. That has reached a transcript here.
-  if pg_dump -d "$CC_DSN" -Fc > "$DEST/customer_console.dump" \
-       2> "$DEST/customer_console.err"; then
-    if pg_restore --list > /dev/null < "$DEST/customer_console.dump" 2>/dev/null; then
-      echo "ok ($(du -h "$DEST/customer_console.dump" | cut -f1))"
-      rm -f "$DEST/customer_console.err"
-      (cd "$DEST" && sha256sum ./customer_console.dump >> MANIFEST.txt)
-    else
-      echo "CORRUPT"
-      warn "pg_restore could not read customer_console.dump — the Console backup FAILED."
-      warn "The run goes on, and exits 1 at the end."
-      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.corrupt"
-      console_failed=1
-    fi
-  else
-    echo "FAILED"
-    warn "Could not dump the Customer Console database. The app database above"
-    warn "IS backed up; the Console's is NOT. See $DEST/customer_console.err"
-    warn "— that file holds the DSN, so do not paste it anywhere."
-    warn "The run goes on, and exits 1 at the end."
-    if [ -e "$DEST/customer_console.dump" ]; then
-      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.failed"
-    fi
-    console_failed=1
-  fi
+  console_dump
 else
   warn "CUSTOMER_CONSOLE_DATABASE_URL is unset — the Console database is NOT in"
   warn "this backup. If this box serves the Console, that is H-98: the unit is"
@@ -1125,26 +1258,14 @@ else
 fi
 
 # --- Retention ---------------------------------------------------------------
-# rm_night <path> — `rm -rf` ONE path, and only when it is "$BACKUP_DIR/<stamp>"
-# or "$BACKUP_DIR/<stamp>/offbox.work" (BH-6a). The prefix is the literal
-# BACKUP_DIR, which the root run pins, and the stamp has no `/`. So an empty
-# or odd value can never widen a delete. Each `rm -rf` of this script goes
-# through here. A symlink named like a stamp loses the link, never its target.
-rm_night() {
-  case "$1" in
-    "$BACKUP_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z \
-    | "$BACKUP_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z/offbox.work)
-      rm -rf -- "$1" ;;
-    *)
-      warn "refusing to delete a path that is not a night under $BACKUP_DIR."
-      return 1 ;;
-  esac
-}
-
+# Every delete goes through rm_night, the one delete guard near the top.
 say "Retention (keeping $KEEP_DAILY most recent)"
 cd "$BACKUP_DIR"
 # `ls -1d` over timestamped dirs sorts correctly because the stamp is
 # ISO-8601 UTC with a fixed width — lexical order IS chronological order.
+# ⚠️ The glob `[0-9]*Z` does not match a "<stamp>-console" dir (H-170). The
+# deploy makes one before each Console ladder, and it must never take the
+# place of a night in KEEP_DAILY. The console-only run prunes those dirs.
 total="$(ls -1d [0-9]*Z 2>/dev/null | wc -l)"
 if [ "$total" -gt "$KEEP_DAILY" ]; then
   # Pruning failure must NOT fail the backup. Under `set -e` a bare `rm -rf`
