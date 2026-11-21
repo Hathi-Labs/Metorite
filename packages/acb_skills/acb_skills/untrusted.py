@@ -75,6 +75,7 @@ __all__ = [
     "MARKER_LINE_RE",
     "TOKEN_BYTES",
     "UntrustedFrame",
+    "close_cut_blocks",
     "collapse",
     "defang_trusted",
     "frame_untrusted",
@@ -83,6 +84,7 @@ __all__ = [
     "neutralise",
     "neutralised_pattern",
     "new_token",
+    "open_blocks",
     "restore_cut_paste",
 ]
 
@@ -400,6 +402,69 @@ def neutralised_pattern(text: str) -> re.Pattern[str]:
         else:
             parts.append(re.escape(ch))
     return re.compile("".join(parts))
+
+
+#: A marker of this module anywhere in a text: at the start of a line, glued
+#: to other text, or inside a JSON string, where a new line is ``\n``.
+_MARKER_ANYWHERE_RE = re.compile(r"<<<(END )?([A-Z][A-Z ]{0,38}[A-Z]) ([0-9a-f]{16})>>>")
+#: The start of a marker that a cut split at the end of a text: the three
+#: brackets, the label or a part of it, a part of the token, and at most two
+#: closing brackets.
+_SPLIT_MARKER_RE = re.compile(r"<<<[A-Z ]{0,47}(?: [0-9a-f]{0,16}>{0,2})?\Z")
+#: The label that :meth:`UntrustedFrame.note` and :meth:`UntrustedFrame.paste_note`
+#: name in a sentence. No block of the tree has it, so the scan skips it.
+_NOTE_LABEL = "NAME"
+
+
+def open_blocks(text: str) -> list[tuple[str, str]]:
+    """``(label, token)`` of each block that *text* opens and does not close,
+    outermost first (task 3849).
+
+    Unlike the line scan of ``tool_result_spill._open_frames``, it finds a
+    marker anywhere. MAF's fold of tool results glues a marker to the name
+    of the tool or to the next result, and a JSON value holds it with
+    ``\\n``. It skips the label ``NAME`` of the note. An END marker pops the
+    stack down to its own block. An END marker of no open block counts for
+    nothing."""
+    stack: list[tuple[str, str]] = []
+    for match in _MARKER_ANYWHERE_RE.finditer(str(text or "")):
+        ends, label, token = match.groups()
+        if label == _NOTE_LABEL:
+            continue
+        if not ends:
+            stack.append((label, token))
+        elif (label, token) in stack:
+            while stack and stack.pop() != (label, token):
+                pass
+    return stack
+
+
+def close_cut_blocks(head: str, limit: int) -> str:
+    """*head*, the head of a cut text, made to hold each of its blocks whole
+    in at most *limit* characters (task 3849).
+
+    1. A marker that the cut split at the end goes, so no half marker stays.
+    2. Each block that the rest opens and does not close gets its END line,
+       on a line of its own, innermost first, and then one new line.
+    3. When those END lines do not fit in *limit*, the cut moves back. A
+       head that cannot hold a whole block holds no block.
+
+    A head that opens no block and splits no marker comes back as it is.
+    The caller puts its own text, such as a truncation mark, after it."""
+    text = str(head or "")
+    cut = min(len(text), max(0, int(limit)))
+    while cut > 0:
+        part = _SPLIT_MARKER_RE.sub("", text[:cut])
+        ends = [UntrustedFrame(token).close_line(label)
+                for label, token in reversed(open_blocks(part))]
+        tail = ""
+        if ends:
+            lead = "" if part.endswith("\n") else "\n"
+            tail = lead + "\n".join(ends) + "\n"
+        if len(part) + len(tail) <= limit:
+            return part + tail
+        cut = min(cut - 1, len(part) - 1, limit - len(tail))
+    return ""
 
 
 def has_marker_shape(text: str) -> bool:

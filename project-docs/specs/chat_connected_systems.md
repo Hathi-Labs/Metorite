@@ -25,6 +25,11 @@ untrusted frame (§3.5). Two paths are not covered: the repo `.mcp.json` server
 of a Copilot agent, and the gateway's Studio preview client
 (`connections/mcp_tools.py`). Fence: `test_mcp_result_untrusted_frame.py`.
 
+**Task 3849 is BUILT, 2026-11-22, with no flag.** A cut fold of the native
+session keeps each untrusted frame whole. The exact spill footer of the ref of
+the call sits after the END line (§3.5). Fences: `test_fold_keeps_frames_whole.py`,
+`test_mcp_result_untrusted_frame.py`.
+
 **CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
 `McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
 days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
@@ -321,10 +326,20 @@ then call it". The chat needs that recipe.
   Metorite writes stays outside the frame. The frame changes no card and
   marks no session, so MCP-NC1 stays. Fences:
   `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
-- **What sits after the END line.** Of the lines after a server's answer,
-  only the compute marker, in its exact shape, sits after the END line. With
-  `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the frame. This is a
-  known limit, and task 3849 follows it up.
+- **What sits after the END line** (task 3849). Two lines of Metorite can
+  sit after the END line: the spill footer, then the compute marker in its
+  exact shape. `SpillToolResults` records the ref that it wrote for the call
+  (`tool_result_spill.recording_spill`). The frame lifts a last line only when
+  it is exactly the footer of that ref, with ASCII numbers of at most 15
+  digits (`is_spill_footer`). Any other line that looks like a footer stays
+  inside. Fence: `test_mcp_result_untrusted_frame.py`.
+- **A fold keeps each frame whole** (task 3849). With `MAF_NATIVE_SESSIONS`
+  on, MAF folds an older tool group into one message and cuts it at 4,096
+  characters. `native_session_store.FramedToolResultCompactionStrategy`
+  closes each block that the cut leaves open, inside the cap. If no room is
+  left, it cuts back to before the block. This covers each frame kind of
+  `acb_skills.untrusted`, not only the MCP frame. Fence:
+  `test_fold_keeps_frames_whole.py`.
 - **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
   server and the gateway's Studio preview client (`connections/mcp_tools.py`)
   get no frame.

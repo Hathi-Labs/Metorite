@@ -36,10 +36,13 @@ The logs hold the tool name, counts and flags. They hold no result text.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import re
 import secrets
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -347,6 +350,59 @@ def _footer(ref: str, text_len: int, text: str, shown: int, stored: int) -> str:
     )
 
 
+#: A number of :func:`_footer`, with a comma in each group of three digits.
+#: ASCII digits only, and at most 15 of them.
+_FOOTER_NUMBER = r"[0-9]{1,3}(?:,[0-9]{3}){0,4}"
+
+
+def is_spill_footer(line: str, ref: str) -> bool:
+    """True when *line* is exactly the footer that :func:`_footer` writes for
+    *ref* (task 3849).
+
+    The ref stands in both places, and each number field holds at most 15
+    ASCII digits. A word in place of a number, another ref or more text
+    gives False. The shape alone proves nothing, because a server can write
+    it too. So a caller asks only for the ref that the spill of its own
+    call wrote (:func:`recording_spill`)."""
+    key = str(ref or "")
+    if not _REF.match(key):
+        return False
+    r = re.escape(key)
+    n = _FOOTER_NUMBER
+    pattern = (
+        rf"\[Stored result {r}: {n} chars, ~{n} tokens, {n} lines\. "
+        rf"Shown: chars 0-{n}\.(?: Only the first {n} chars are stored\.)? "
+        rf'Call {READ_TOOL}\(ref="{r}", offset=[0-9]{{1,15}}\) to read on\.\]'
+    )
+    return re.fullmatch(pattern, str(line or "")) is not None
+
+
+#: Task 3849: the refs that the spill wrote in ONE call. The MCP gate sets a
+#: new list for each call (:func:`recording_spill`). A list, so a copy of the
+#: context still writes the same one. Outside such a call it is None.
+_SPILLED_REFS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "_tool_result_spilled_refs", default=None)
+
+
+@contextlib.contextmanager
+def recording_spill() -> Iterator[list[str]]:
+    """A new list of the refs that :class:`SpillToolResults` writes inside
+    this block (task 3849). ``_maf_mcp._call_and_frame`` opens it around ONE
+    call, so the frame lifts out only the footer of that call's own ref."""
+    refs: list[str] = []
+    token = _SPILLED_REFS.set(refs)
+    try:
+        yield refs
+    finally:
+        _SPILLED_REFS.reset(token)
+
+
+def _record_spill(ref: str) -> None:
+    refs = _SPILLED_REFS.get()
+    if refs is not None:
+        refs.append(ref)
+
+
 def preview(text: str, ref: str, limit: int) -> str:
     """The preview of *text*: its head, an END line for each open frame, and
     the footer. The head is the text exactly as it was."""
@@ -438,6 +494,7 @@ class SpillToolResults(FunctionMiddleware):
             if ref is None:  # larger than the total cap: the result stays whole
                 return
             context.result = preview(text, ref, self.preview_chars)
+            _record_spill(ref)
         except Exception as exc:  # a spill fault leaves the result whole
             _log.warning("tool_result.spill_failed", tool=name, error=type(exc).__name__)
 
@@ -625,9 +682,11 @@ __all__ = [
     "SpillToolResults",
     "ToolResultSpillProvider",
     "clear_store",
+    "is_spill_footer",
     "peek",
     "peek_entry",
     "preview",
     "read_tool_result",
+    "recording_spill",
     "spill_result",
 ]

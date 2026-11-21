@@ -892,7 +892,11 @@ def test_the_compaction_is_the_one_that_15_9_6_names() -> None:
 
     src = inspect.getsource(store)
     assert "TokenBudgetComposedStrategy(" in src
-    assert src.index("ToolResultCompactionStrategy(") < src.index("SlidingWindowStrategy(")
+    # Task 3849: the tool result strategy is MAF's, with whole frames in a cut fold.
+    assert issubclass(store.FramedToolResultCompactionStrategy,
+                      agent_framework.ToolResultCompactionStrategy)
+    assert (src.index("FramedToolResultCompactionStrategy(keep_last_tool_call_groups")
+            < src.index("SlidingWindowStrategy(keep_last_groups"))
     names = {
         node.id if isinstance(node, ast.Name) else node.attr
         for node in ast.walk(ast.parse(src))

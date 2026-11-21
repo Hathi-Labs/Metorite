@@ -114,7 +114,8 @@ The rules:
     image or a file part stays as it is. A text that Metorite writes stays
     outside the frame: each refusal of the gate, a refusal of an inner step,
     and the compute marker line in its exact shape only. The spill footer
-    stays inside the frame (task 3849). The native MAF path is the only one:
+    leaves the frame only when it is the exact footer of the ref that the
+    spill of the same call wrote (task 3849). The native MAF path is the only one:
     a Copilot agent's repo ``.mcp.json`` server and the gateway's own MCP client
     (``gateway.connections.mcp_tools``) are not framed here. The gate frames
     only when the remote call answered (:func:`_note_server_answer`). The frame changes no card and marks no
@@ -1412,24 +1413,39 @@ def _text_of(value: Any) -> str:
         return str(value)
 
 
-def _framed_text(frame: Any, note: str, label: str, text: str) -> str:
+def _framed_text(frame: Any, note: str, label: str, text: str, spill_ref: str = "") -> str:
     """*text* in one block of *frame*, with *note* before it.
 
-    The compute marker line (``tool_result_spill.KeepForCompute``) is
-    Metorite's text, and ``event_translator.tool_result_fields`` strips it
-    from the last line. So it goes after the END line. Its pattern admits a
-    ref only, so a server line in that shape carries no other text. No other
-    line leaves the block: with ``TOOL_RESULT_SPILL`` ``on``, the spill
-    footer stays inside the frame (a known limit, task 3849)."""
-    from acb_skills.tool_result_spill import strip_compute_marker
+    Two lines of Metorite's own text go after the END line, in this order:
+
+    * The spill footer (task 3849). *spill_ref* is the ref that the spill of
+      THIS call wrote (``tool_result_spill.recording_spill``). Only a last
+      line that is exactly the footer of that ref leaves the block
+      (``tool_result_spill.is_spill_footer``). A footer shape with another
+      ref, a word for a number or more text stays inside. With no ref, no
+      footer leaves the block, so a server cannot write one that does.
+    * The compute marker line (``tool_result_spill.KeepForCompute``).
+      ``event_translator.tool_result_fields`` strips it from the last line,
+      so it stays last. Its pattern admits a ref only, so a server line in
+      that shape carries no other text.
+
+    No other line leaves the block."""
+    from acb_skills.tool_result_spill import is_spill_footer, strip_compute_marker
 
     body = strip_compute_marker(text)
     marker = text.rstrip().rpartition("\n")[2].strip() if body != text else ""
-    framed = f"{note}\n{frame.wrap(label, body)}"
-    return f"{framed}\n{marker}" if marker else framed
+    after: list[str] = []
+    if spill_ref:
+        head, sep, last = body.rstrip().rpartition("\n")
+        if sep and is_spill_footer(last, spill_ref):
+            body = head
+            after.append(last)
+    if marker:
+        after.append(marker)
+    return "\n".join([f"{note}\n{frame.wrap(label, body)}", *after])
 
 
-def _framed(result: Any, what: str, label: str) -> Any:
+def _framed(result: Any, what: str, label: str, spill_ref: str = "") -> Any:
     from acb_skills.untrusted import UntrustedFrame
     from agent_framework import Content
 
@@ -1438,7 +1454,7 @@ def _framed(result: Any, what: str, label: str) -> Any:
     frame = UntrustedFrame.new()
     note = frame.note(what)
     if isinstance(result, str):
-        return _framed_text(frame, note, label, result)
+        return _framed_text(frame, note, label, result, spill_ref)
     if isinstance(result, Content):
         if result.type == "function_approval_request":
             return result  # MAF passes it through to the approval flow
@@ -1468,7 +1484,7 @@ def _framed(result: Any, what: str, label: str) -> Any:
 
 
 def frame_mcp_result(result: Any, what: str, *, label: str = RESULT_LABEL,
-                     tool: str = "") -> Any:
+                     tool: str = "", spill_ref: str = "") -> Any:
     """*result*, the answer of an MCP server, in ONE frame of
     ``acb_skills.untrusted`` (task 1444).
 
@@ -1480,10 +1496,14 @@ def frame_mcp_result(result: Any, what: str, *, label: str = RESULT_LABEL,
       text.
     * None stays None.
 
+    *spill_ref* is the ref that the spill of this call wrote, or empty. Only
+    the exact footer of that ref leaves the block of a string answer
+    (:func:`_framed_text`, task 3849).
+
     A fault gives :data:`RESULT_UNFRAMED_TEXT` for *tool*, never the raw
     answer."""
     try:
-        return _framed(result, what, label)
+        return _framed(result, what, label, spill_ref)
     except Exception as exc:  # the class only: no text of the answer
         _log.warning("mcp.result_frame_failed", tool=tool, error=type(exc).__name__)
         return RESULT_UNFRAMED_TEXT.format(tool=tool or "the tool")
@@ -1495,16 +1515,22 @@ async def _call_and_frame(context: Any, call_next: Callable[[], Any], *,
 
     An inner step that answers for the tool (a held chat, the turn budget)
     writes Metorite's text and calls no server, so its text stays outside
-    the frame."""
+    the frame. The spill runs inside the gate. ``recording_spill`` keeps
+    the ref that it wrote in THIS call, so only that footer leaves the
+    block (task 3849)."""
+    from acb_skills.tool_result_spill import recording_spill
+
     flag = [False]
     token = _SERVER_ANSWERED.set(flag)
     try:
-        await call_next()
+        with recording_spill() as spilled:
+            await call_next()
     finally:
         _SERVER_ANSWERED.reset(token)
     if flag[0]:
         context.result = frame_mcp_result(
-            getattr(context, "result", None), what, label=label, tool=tool)
+            getattr(context, "result", None), what, label=label, tool=tool,
+            spill_ref=spilled[-1] if spilled else "")
 
 #: The value that takes the place of a sensitive argument on the card.
 REDACTED = "[redacted]"

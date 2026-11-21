@@ -5033,6 +5033,13 @@ in the structured branch of WS-43t1, and before each save of WS-43t2.
 runs with the cap, over two strategies in this order:
 `ToolResultCompactionStrategy`, then `SlidingWindowStrategy`.
 
+**A cut fold keeps each frame whole** (task 3849). The store uses
+`FramedToolResultCompactionStrategy`, a subclass of
+`ToolResultCompactionStrategy`. MAF cuts a fold at 4,096 characters. When that
+cut leaves an untrusted block open, `acb_skills.untrusted.close_cut_blocks`
+writes its END line inside the cap, or cuts back to before the block. Fence:
+`test_fold_keeps_frames_whole.py`.
+
 **A byte backstop.** If `session_json` is still larger than
 `maf_session_max_bytes` (default 2 MiB) after the compaction, the store
 refuses the save and logs it. The next turn uses the text history.

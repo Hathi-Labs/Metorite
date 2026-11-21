@@ -45,7 +45,10 @@ and takes no ambient tenant, so a worker thread could not resolve it.
    ``TokenBudgetComposedStrategy`` runs over ``ToolResultCompactionStrategy``
    and then ``SlidingWindowStrategy``. ``SummarizationStrategy`` is excluded,
    because it calls a model. A ``session_json`` above
-   ``maf_session_max_bytes`` is refused.
+   ``maf_session_max_bytes`` is refused. The tool result strategy is
+   :class:`FramedToolResultCompactionStrategy` (task 3849). When MAF's fold
+   cuts its text at 4,096 characters, each block of ``acb_skills.untrusted``
+   in it stays whole or goes.
 8. **One outcome line per load**: ``hit``, ``no_row``, ``digest_drop`` or
    ``fingerprint_drop``. A load that fails falls back to the text history and
    never fails the run.
@@ -515,13 +518,51 @@ async def mark_stale(*, organization_id: str, thread_id: str) -> str:
 # ── The compaction ──────────────────────────────────────────────────────────
 
 
+class FramedToolResultCompactionStrategy(ToolResultCompactionStrategy):
+    """MAF's ``ToolResultCompactionStrategy``, with whole frames in a cut fold
+    (task 3849, ``chat_connected_systems.md`` §3.5).
+
+    MAF folds an older tool group into one assistant message. It cuts that
+    text at ``_SUMMARY_MAX_CHARS`` and ends it with ``... [truncated]``. A
+    cut can drop the END line of an untrusted frame, and the next turn then
+    reads an open block. This class changes only the cut text:
+    ``acb_skills.untrusted.close_cut_blocks`` drops a split marker, and it
+    closes each open block inside the cap. A fold that fits, and a cut fold
+    with no open block, stay as MAF writes them. A fault gives MAF's form
+    with no text, never the raw cut.
+    """
+
+    @classmethod
+    def _summary_text(cls, tool_results: list[str]) -> str:
+        text = super()._summary_text(tool_results)
+        try:
+            label = "; ".join(tool_results) if tool_results else "no results"
+            if len(f"{cls._SUMMARY_PREFIX}{label}{cls._SUMMARY_SUFFIX}") <= cls._SUMMARY_MAX_CHARS:
+                return text
+            from acb_skills.untrusted import close_cut_blocks
+
+            allowed = (cls._SUMMARY_MAX_CHARS - len(cls._SUMMARY_PREFIX)
+                       - len(cls._SUMMARY_TRUNCATION_MARKER) - len(cls._SUMMARY_SUFFIX))
+            head = label[:max(0, allowed)].rstrip()
+            whole = close_cut_blocks(head, allowed)
+            if whole == head:
+                return text
+        except Exception as exc:  # the class only: no text of a result
+            _log.warning("native_session.fold_frame_failed", error=type(exc).__name__)
+            whole = ""
+        return (f"{cls._SUMMARY_PREFIX}{whole}"
+                f"{cls._SUMMARY_TRUNCATION_MARKER}{cls._SUMMARY_SUFFIX}")
+
+
 async def compact_history(messages: Sequence[Message], token_budget: int) -> list[Message]:
     """Hold *messages* inside *token_budget* with the compaction of §15.9.6.
 
     ``TokenBudgetComposedStrategy`` over ``ToolResultCompactionStrategy`` and
     then ``SlidingWindowStrategy``. No ``SummarizationStrategy``: it calls a
     model, and no run pays for that call. The newest tool call group stays
-    whole, so a confirm turn keeps the proposal it confirms.
+    whole, so a confirm turn keeps the proposal it confirms. The tool result
+    strategy is :class:`FramedToolResultCompactionStrategy`, so a cut fold
+    keeps each untrusted frame whole (task 3849).
     """
     working = list(messages)
     if not working:
@@ -530,7 +571,7 @@ async def compact_history(messages: Sequence[Message], token_budget: int) -> lis
         token_budget=max(1, int(token_budget)),
         tokenizer=CharacterEstimatorTokenizer(),
         strategies=[
-            ToolResultCompactionStrategy(keep_last_tool_call_groups=1),
+            FramedToolResultCompactionStrategy(keep_last_tool_call_groups=1),
             SlidingWindowStrategy(keep_last_groups=_SLIDING_WINDOW_GROUPS),
         ],
     )
