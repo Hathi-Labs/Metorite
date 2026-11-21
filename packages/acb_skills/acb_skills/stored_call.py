@@ -35,6 +35,10 @@ question card is RESUME-1b, and a generative UI stores none.
 * ``call_id`` is the MAF call id of the tool call (C4), or null.
   :class:`CallIdMiddleware` reads it from ``context.metadata["call_id"]``.
 * No org, member or thread: the columns of the row hold them (C6).
+* ``message_id`` (RESUME-2b, optional): the id of the reply row of the card.
+  ``pending_ask._record`` adds it from the run's own record, after this
+  function. Version 1 stays, and each reader allows a call with none. The
+  gateway reads it to go on in the same reply (case A).
 
 The org is the run's own (``executor._current_run_org``), never request
 input (R5, R11).

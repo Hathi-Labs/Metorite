@@ -11,7 +11,10 @@ written the reference's new state first, in the same transaction, and calls
 pull request:
 
 1. skip a task that is archived, or whose status category is ``done``,
-   ``cancelled`` or ``triage``;
+   ``cancelled`` or ``triage``. Skip a task of the project
+   ``TOOL_FAILURE_PROJECT_ID`` in the org ``TOOL_FAILURE_ORG_ID`` while
+   ``TOOL_FAILURE_TASKS`` is on, because the failure sync job is the one
+   closer there (``tool_failure_log.md`` §7.5);
 2. skip a task that people run: ``agent_worked.reason`` is ``None``;
 3. skip a task that a person took back: its newest ``status_change`` row has
    no ``mcp:`` or ``github`` via, was not written by a ``system:`` actor, and
@@ -138,6 +141,16 @@ async def _person_took_it_back(db: Any, task_id: str, work: agent_worked.AgentWo
     return not by_machine_via and not by_system and row.created_at > work.latest_at
 
 
+def _is_failure_task(task: Any) -> bool:
+    """True for a task of the project "Tool failures" while its sync job is
+    on (§12.3 step 1a, ``failures.sync.is_failure_task``).
+
+    Imported here, because the sync module imports the task routes."""
+    from gateway.failures.sync import is_failure_task
+
+    return is_failure_task(task.organization_id, task.project_id)
+
+
 def _repo_and_number(ref: str) -> tuple[str, int | None]:
     repo, _, number = ref.partition("#")
     return repo, (int(number) if number.isdigit() else None)
@@ -227,6 +240,11 @@ async def _rule_for_task(
     # 1. A closed or held task.
     if task.archived_at is not None or task.status_category in (
             CLOSING_CATEGORIES | {TRIAGE_CATEGORY}):
+        return
+    # 1a. A task of the project "Tool failures" (WS-TOF TOF-2e,
+    # tool_failure_log.md §7.5). The failure sync job is the one closer there.
+    if _is_failure_task(task):
+        _log.info("github.merge.failure_task", task_id=task_id)
         return
     # 2. A task that people run.
     work = await agent_worked.reason(db, task_id, at)

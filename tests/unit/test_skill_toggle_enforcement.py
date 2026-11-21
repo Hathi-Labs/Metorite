@@ -193,6 +193,7 @@ def _injection_env(monkeypatch):
     settings loader."""
     # WS-VOX VOX-3: analyze_image is per org. This suite pins the lit surface.
     monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
+    monkeypatch.setattr(ti, "_compute_withheld", lambda: frozenset())  # SBX-19: a lit org
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     fake_apps = types.ModuleType("orchestrator.app_tools")
     fake_apps.load_app_action_tools = lambda name: []  # type: ignore[attr-defined]

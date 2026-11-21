@@ -38,6 +38,20 @@ message proves that the member withdrew THIS item, and a stranger's text
 can ask the model to call the tool. A run with no card channel drops
 nothing.
 
+DECISIONS (HRD-12a, ``chat_failure_modes.md`` §4.5 E2 and §6). Each item
+has a kind: :data:`LIMIT` (a correction or a limit) or :data:`DECISION` (a
+decision of the member, such as "TEDx is done."). ``keep_correction`` takes
+the kind as an argument, default :data:`LIMIT`, so an old call keeps a
+limit. A decision passes the same guard as a limit, and the card drop
+removes it the same way. The two kinds share the one cap of
+:data:`MAX_ITEMS`. EXPAND ONLY: the store keeps a limit as a plain string,
+the shape before HRD-12a, and only a decision as ``{"kind", "text"}``
+(:func:`_stored`). :func:`clean` reads both shapes. So a reader from before
+HRD-12a, after a flip and a roll back, keeps each limit and skips only the
+decisions, and it never raises. The per-turn block and a task's head show the
+decisions after the limits, under their own line, in the same frame. With
+no decision kept, each text is the OA-4 text, byte for byte.
+
 R5. The key is ``cc:<org>:chat-limits:<session>:<member hash>`` through the
 tenant Redis wrapper. The org is the run's bound tenant, and the session and
 the member come from the run's bound artifact context. No part comes from a
@@ -62,7 +76,7 @@ from typing import Any
 
 import structlog
 
-from acb_skills.handoff import CONSTRAINTS_MARK
+from acb_skills.handoff import CONSTRAINTS_MARK, DECISIONS_LINE
 
 _log = structlog.get_logger(__name__)
 
@@ -74,12 +88,22 @@ TTL_S = 30 * 24 * 3600
 #: The longest wait for Redis. A slow Redis costs the record, never the turn.
 REDIS_TIMEOUT_S = 1.0
 
-#: The most items of one chat. A new item pushes out the oldest.
+#: The most items of one chat, of both kinds together. A new item pushes out
+#: the oldest, of either kind (HRD-12a, Q3).
 MAX_ITEMS = 10
 #: The most characters of one item.
 ITEM_CHARS = 300
 #: The fewest characters of one item.
 MIN_CHARS = 3
+
+#: The kind of an item that corrects a fact or sets a limit (OA-4). A stored
+#: plain string, the shape before HRD-12a, reads as this kind.
+LIMIT = "limit"
+#: The kind of an item that records a decision of the member (HRD-12a). It
+#: holds for the rest of the chat.
+DECISION = "decision"
+#: The kinds of an item, in the order that the blocks show them.
+KINDS = (LIMIT, DECISION)
 
 #: The artifact-context key of the items that a run read at its start. A
 #: delegated run inherits its parent's items under this key.
@@ -150,24 +174,58 @@ def _folded(value: Any) -> str:
     return " ".join(text.split())
 
 
-def clean(items: Any) -> list[str]:
-    """Only text items of :data:`MIN_CHARS` to :data:`ITEM_CHARS` characters,
-    each one line, each once (the newest copy wins), newest last, and
-    :data:`MAX_ITEMS` at most."""
+def _item(raw: Any) -> dict[str, str] | None:
+    """One item as ``{"kind", "text"}``, or None (HRD-12a).
+
+    A plain string is the shape before HRD-12a, and it reads as a
+    :data:`LIMIT`. A mapping needs a kind of :data:`KINDS` and a string text.
+    The text is one line of :data:`MIN_CHARS` to :data:`ITEM_CHARS`
+    characters, with a letter and no strike mark."""
+    if isinstance(raw, str):
+        kind, text = LIMIT, raw
+    elif isinstance(raw, Mapping):
+        kind, text = raw.get("kind"), raw.get("text")
+        if kind not in KINDS or not isinstance(text, str):
+            return None
+    else:
+        return None
+    text = one_line(text)
+    if (not (MIN_CHARS <= len(text) <= ITEM_CHARS) or not _LETTER.search(text)
+            or struck(text)):
+        return None
+    return {"kind": str(kind), "text": text}
+
+
+def clean(items: Any) -> list[dict[str, str]]:
+    """Each item as ``{"kind", "text"}`` (:func:`_item`), each text once
+    whatever its kind (the newest copy wins), newest last, and
+    :data:`MAX_ITEMS` at most for both kinds together. Always new dicts."""
     if not isinstance(items, (list, tuple)):
         return []
-    out: list[str] = []
+    out: list[dict[str, str]] = []
     for raw in items:
-        if not isinstance(raw, str):
+        item = _item(raw)
+        if item is None:
             continue
-        text = one_line(raw)
-        if (not (MIN_CHARS <= len(text) <= ITEM_CHARS) or not _LETTER.search(text)
-                or struck(text)):
-            continue
-        key = _folded(text)
-        out = [i for i in out if _folded(i) != key]
-        out.append(text)
+        key = _folded(item["text"])
+        out = [i for i in out if _folded(i["text"]) != key]
+        out.append(item)
     return out[-MAX_ITEMS:]
+
+
+def texts(items: Any, kind: str | None = None) -> list[str]:
+    """The texts of the items of *kind*, or of both kinds when *kind* is
+    None, in the order of :func:`clean`."""
+    return [i["text"] for i in clean(items) if kind is None or i["kind"] == kind]
+
+
+def _stored(items: list[dict[str, str]]) -> list[Any]:
+    """*items* in the JSON shape of the store (HRD-12a, expand only).
+
+    A limit stays a plain string, the shape before HRD-12a, so a reader of
+    that release keeps every limit. Only a decision is ``{"kind", "text"}``,
+    and that reader skips it."""
+    return [i["text"] if i["kind"] == LIMIT else dict(i) for i in items]
 
 
 #: Common abbreviations, folded. A dot after one of them ends no sentence, so
@@ -267,7 +325,7 @@ def _typed_words() -> str:
 
 # ── The store ───────────────────────────────────────────────────────────────
 
-_LISTS: OrderedDict[tuple[str, str, str], list[str]] = OrderedDict()
+_LISTS: OrderedDict[tuple[str, str, str], list[dict[str, str]]] = OrderedDict()
 _LISTS_LOCK = threading.Lock()
 
 
@@ -319,36 +377,41 @@ def _batch(ctx: Mapping[str, Any] | None) -> bool:
     return bool(_context(ctx).get("batch_thread") is True)
 
 
-def _cache_put(slot: tuple[str, str, str], items: list[str]) -> None:
+def _cache_put(slot: tuple[str, str, str], items: list[dict[str, str]]) -> None:
     with _LISTS_LOCK:
-        _LISTS[slot] = list(items)
+        _LISTS[slot] = [dict(i) for i in items]
         _LISTS.move_to_end(slot)
         while len(_LISTS) > _CACHE_MAX:
             _LISTS.popitem(last=False)
 
 
-def _cache_get(slot: tuple[str, str, str]) -> list[str] | None:
+def _cache_get(slot: tuple[str, str, str]) -> list[dict[str, str]] | None:
     with _LISTS_LOCK:
         hit = _LISTS.get(slot)
         if hit is not None:
             _LISTS.move_to_end(slot)
-            return list(hit)
+            return [dict(i) for i in hit]
     return None
 
 
-def cached_constraints(ctx: Mapping[str, Any] | None = None) -> list[str]:
-    """The list of this frame's chat from the process cache, for sync code."""
+def cached_constraints(ctx: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
+    """The list of this frame's chat from the process cache, for sync code.
+    Each item is ``{"kind", "text"}``."""
     slot = _slot(ctx)
     if slot is None:
         return []
     return _cache_get(slot) or []
 
 
-async def load_constraints(ctx: Mapping[str, Any] | None = None) -> list[str]:
+async def load_constraints(
+    ctx: Mapping[str, Any] | None = None,
+) -> list[dict[str, str]]:
     """The list of this frame's chat: the process cache, then Redis.
 
-    Never raises. A frame with no slot, a miss, or a Redis fault gives
-    ``[]``, and the turn goes on as it did before this record existed.
+    Each item is ``{"kind", "text"}``. A stored list of plain strings, the
+    shape before HRD-12a, reads as limits (:func:`clean`). Never raises. A
+    frame with no slot, a miss, or a Redis fault gives ``[]``, and the turn
+    goes on as it did before this record existed.
     """
     slot = _slot(ctx)
     if slot is None:
@@ -383,7 +446,9 @@ async def save_constraints(
 ) -> bool:
     """Keep *items* for this frame's chat. Returns False when nothing was kept
     in Redis (no slot, a batch session, or a fault). Never raises. The process
-    cache always takes the new list, so the rest of the turn reads it."""
+    cache always takes the new list, so the rest of the turn reads it. Redis
+    keeps one JSON list: a limit as a plain string and a decision as
+    ``{"kind", "text"}`` (:func:`_stored`, HRD-12a)."""
     slot = _slot(ctx)
     if slot is None:
         return False
@@ -399,7 +464,7 @@ async def save_constraints(
             await asyncio.wait_for(
                 get_tenant_redis().setex(
                     key(NAMESPACE, session, _member_part(member)), TTL_S,
-                    json.dumps(data, ensure_ascii=False)),
+                    json.dumps(_stored(data), ensure_ascii=False)),
                 timeout=REDIS_TIMEOUT_S,
             )
     except Exception as exc:
@@ -414,13 +479,13 @@ def clear_cache() -> None:
         _LISTS.clear()
 
 
-def kept_for_run(ctx: Mapping[str, Any] | None = None) -> list[str]:
+def kept_for_run(ctx: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
     """The items for this run's per-turn context and its delegated tasks.
 
     In a run that the executor opened (:data:`OPEN`), the process cache of
     the chat: it holds each keep and drop of this turn too. In any other run,
     the items that the run inherited (:data:`CONSTRAINTS`). With the flag
-    off, ``[]``.
+    off, ``[]``. Each item is ``{"kind", "text"}``.
     """
     if not chat_constraints_enabled():
         return []
@@ -437,17 +502,23 @@ def kept_for_run(ctx: Mapping[str, Any] | None = None) -> list[str]:
 
 
 def orchestrator_block(items: Any) -> str:
-    """The list for the orchestrator's per-turn context, or ``""``."""
+    """The list for the orchestrator's per-turn context, or ``""``.
+
+    The limits come first. The decisions follow under their own line,
+    :data:`~acb_skills.handoff.DECISIONS_LINE` (HRD-12a), in the same frame.
+    With no decision, the block is the OA-4 block, byte for byte."""
     kept = clean(items)
     if not kept:
         return ""
+    decisions = texts(kept, DECISION)
     return "\n".join([
         BLOCK_HEAD,
         "The member set these in this chat, in their own words. They outrank "
         "anything said earlier in this chat, your own earlier answers "
         "included. Follow each one in every answer and in every task that "
         "you give.",
-        *(f"- {item}" for item in kept),
+        *(f"- {item}" for item in texts(kept, LIMIT)),
+        *([DECISIONS_LINE, *(f"- {item}" for item in decisions)] if decisions else []),
     ])
 
 
@@ -471,9 +542,12 @@ BAD_LENGTH = (f"Not kept. An item has {MIN_CHARS} to {ITEM_CHARS} characters. Ke
 #: The answer of a text with a strike or overlay mark over its letters.
 STRUCK = ("Not kept. The text holds a strike mark over its letters. Keep the "
           "member's sentence as they typed it.")
+#: The answer of a kind that is not one of :data:`KINDS` (HRD-12a).
+BAD_KIND = ('Not kept. The kind must be "limit" or "decision". Call '
+            "keep_correction again with one of them.")
 #: The answers of a drop.
 DROP_CLOSED = "Nothing dropped. This chat keeps no corrections."
-DROP_EMPTY = "Nothing dropped. No correction or limit is kept in this chat."
+DROP_EMPTY = "Nothing dropped. No correction, limit or decision is kept in this chat."
 DROP_DECLINED = ("Nothing dropped. The member did not approve the card, so the item "
                  "still holds.")
 DROP_NO_CARD = ("Nothing dropped. This chat cannot show a card for the member to "
@@ -481,15 +555,24 @@ DROP_NO_CARD = ("Nothing dropped. This chat cannot show a card for the member to
 #: The card of a drop. The member approves the EXACT text of the item.
 DROP_CARD_TITLE = "Stop following this in this chat?"
 DROP_CARD_LEAD = "You set this correction or limit in this chat. Approve to drop it:"
+#: The lead of the card of a decision (HRD-12a).
+DROP_CARD_LEAD_DECISION = "You made this decision in this chat. Approve to drop it:"
 DROP_NO_MATCH = "Nothing dropped. No kept item matches those words. The kept items:"
 DROP_MANY = ("Nothing dropped. More than one kept item matches those words. Ask the "
              "member which one to drop:")
 
 
-def _now_kept(items: list[str]) -> str:
+def _now_kept(items: list[dict[str, str]]) -> str:
     if not items:
-        return "No correction or limit is kept in this chat now."
-    return "The member's corrections and limits in this chat are now:\n" + _listed(items)
+        return "No correction, limit or decision is kept in this chat now."
+    limits, decisions = texts(items, LIMIT), texts(items, DECISION)
+    lines: list[str] = []
+    if limits:
+        lines.append("The member's corrections and limits in this chat are now:\n"
+                     + _listed(limits))
+    if decisions:
+        lines.append("The member's decisions in this chat are now:\n" + _listed(decisions))
+    return "\n".join(lines)
 
 
 def _risk(name: str) -> dict[str, bool]:
@@ -498,8 +581,8 @@ def _risk(name: str) -> dict[str, bool]:
     return TOOL_ANNOTATIONS[name]
 
 
-async def keep_correction(text: str) -> str:
-    """Keep a correction or a limit that the member set for THIS chat.
+async def keep_correction(text: str, kind: str = LIMIT) -> str:
+    """Keep a correction, a limit or a decision that the member set for THIS chat.
 
     Call it when the member corrects you ("the files are only references")
     or sets a limit for this chat ("no tables", "answer in two lines"). Pass
@@ -510,12 +593,21 @@ async def keep_correction(text: str) -> str:
     keeps 10 items at most, and a new one pushes out the oldest. Tell the
     member in one short line what you will keep to.
 
+    When the member makes a decision for this chat ("TEDx is done"), pass
+    kind "decision". A decision holds for the rest of this chat.
+
     Args:
         text: The member's own sentences, 3 to 300 characters.
+        kind: "limit" for a correction or a limit, or "decision" for a
+            decision of the member. The default is "limit".
     """
     ctx = _context(None)
     if not chat_constraints_enabled() or ctx.get(OPEN) is not True or _slot(ctx) is None:
         return CLOSED
+    kind = str(kind or LIMIT).strip().lower()
+    if kind not in KINDS:
+        _log.info("chat_constraints.keep_refused", reason="bad_kind")
+        return BAD_KIND
     item = one_line(text)
     if not (MIN_CHARS <= len(item) <= ITEM_CHARS) or not _LETTER.search(item):
         return BAD_LENGTH
@@ -526,11 +618,13 @@ async def keep_correction(text: str) -> str:
         _log.info("chat_constraints.keep_refused", reason="not_said")
         return NOT_SAID
     before = await load_constraints(ctx)
-    after = clean([*before, item])
+    after = clean([*before, {"kind": kind, "text": item}])
     await save_constraints(after, ctx)
-    pushed = [i for i in before if i not in after and _folded(i) != _folded(item)]
-    _log.info("chat_constraints.kept", count=len(after))
-    lines = [f'Kept for this chat: "{item}".']
+    kept = {_folded(i["text"]) for i in after}
+    pushed = [i["text"] for i in before if _folded(i["text"]) not in kept]
+    _log.info("chat_constraints.kept", count=len(after), kind=kind)
+    lines = [f'Kept this decision for this chat: "{item}".' if kind == DECISION
+             else f'Kept for this chat: "{item}".']
     if pushed:
         lines.append(f'The oldest item went, to stay at {MAX_ITEMS}: "{pushed[0]}".')
     lines += [_now_kept(after), "Tell the member in one short line what you will keep to."]
@@ -538,7 +632,7 @@ async def keep_correction(text: str) -> str:
 
 
 async def drop_correction(text: str) -> str:
-    """Drop a correction or a limit that the member withdrew in this chat.
+    """Drop a correction, a limit or a decision that the member withdrew in this chat.
 
     Call it when the member says that a kept item no longer holds ("you can
     use the file names now"). Pass words that match one kept item. The
@@ -555,14 +649,16 @@ async def drop_correction(text: str) -> str:
     if not items:
         return DROP_EMPTY
     want = _folded(one_line(text))
-    hits = [i for i in items if _folded(i) == want]
+    hits = [i for i in items if _folded(i["text"]) == want]
     if not hits:
-        hits = [i for i in items if want and want in _folded(i)]
+        hits = [i for i in items if want and want in _folded(i["text"])]
     if not hits:
-        return f"{DROP_NO_MATCH}\n{_listed(items)}\nAsk the member which one to drop."
+        return (f"{DROP_NO_MATCH}\n{_listed(texts(items))}\n"
+                "Ask the member which one to drop.")
     if len(hits) > 1:
-        return f"{DROP_MANY}\n{_listed(hits)}"
-    gone = hits[0]
+        return f"{DROP_MANY}\n{_listed(texts(hits))}"
+    gone = hits[0]["text"]
+    lead = DROP_CARD_LEAD_DECISION if hits[0]["kind"] == DECISION else DROP_CARD_LEAD
     # Fix round 2: no word of a message proves that the member withdrew
     # THIS item, and a stranger's text can ask the model to call this tool.
     # So the member approves the exact item on the one card gate. It fails
@@ -570,7 +666,7 @@ async def drop_correction(text: str) -> str:
     from acb_skills.ask_tools import confirmation_channel_open, request_confirmation
 
     approved = await request_confirmation(
-        DROP_CARD_TITLE, detail=gone, context=f"{DROP_CARD_LEAD}\n\n{gone}",
+        DROP_CARD_TITLE, detail=gone, context=f"{lead}\n\n{gone}",
         non_interactive_default="deny",
     )
     if approved is not True:
@@ -582,7 +678,7 @@ async def drop_correction(text: str) -> str:
     # The card can wait a while. Read the list again, and drop the item
     # that the member approved, by its exact text.
     current = await load_constraints(ctx)
-    after = [i for i in current if _folded(i) != _folded(gone)]
+    after = [i for i in current if _folded(i["text"]) != _folded(gone)]
     await save_constraints(after, ctx)
     _log.info("chat_constraints.dropped", count=len(after))
     return "\n".join([f'Dropped: "{gone}".', _now_kept(after),
@@ -598,13 +694,17 @@ TOOLS = (keep_correction, drop_correction)
 __all__ = [
     "BLOCK_HEAD",
     "CONSTRAINTS",
+    "DECISION",
     "ITEM_CHARS",
+    "KINDS",
+    "LIMIT",
     "MAX_ITEMS",
     "NAMESPACE",
     "OPEN",
     "TOOLS",
     "TTL_S",
     "cached_constraints",
+    "carry_decisions",
     "chat_constraints_enabled",
     "clean",
     "clear_cache",
@@ -616,4 +716,46 @@ __all__ = [
     "said_by_member",
     "save_constraints",
     "struck",
+    "texts",
 ]
+
+
+async def carry_decisions(org: str, source: str, target: str, member: str) -> int:
+    """Copy the DECISIONS of *member* in chat *source* to the new chat *target*
+    (HRD-19a, ``chat_failure_modes.md`` E3). Returns how many it copied.
+
+    It copies the member's own record key to key, in this store, and writes
+    no text into the new chat. Only the ``decision`` kind goes: a limit stays
+    with the old chat until the spec says otherwise. Each item passes
+    :func:`clean` again on the way. It copies nothing while
+    ``CHAT_CONSTRAINTS`` is off, and it never raises: a Redis fault copies
+    nothing, and the caller's route still answers. The caller gives the org
+    and the member from the verified session, never from a request field.
+    """
+    if not chat_constraints_enabled():
+        return 0
+    org, source, target = str(org or ""), str(source or ""), str(target or "")
+    member = str(member or "").strip().lower()
+    if not (org and source and target and member) or source == target:
+        return 0
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        part = _member_part(member)
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            raw = await asyncio.wait_for(
+                redis.get(key(NAMESPACE, source, part)), timeout=REDIS_TIMEOUT_S)
+            if not raw:
+                return 0
+            items = [i for i in clean(json.loads(raw)) if i["kind"] == DECISION]
+            if not items:
+                return 0
+            await asyncio.wait_for(
+                redis.setex(key(NAMESPACE, target, part), TTL_S,
+                            json.dumps(_stored(items), ensure_ascii=False)),
+                timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("chat_constraints.carry_failed", error=type(exc).__name__)
+        return 0
+    return len(items)
