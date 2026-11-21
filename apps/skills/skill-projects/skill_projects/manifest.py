@@ -1005,7 +1005,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "include_subtasks": "complete.include_subtasks",
     },
     ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
-    ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
+    ("GET", "/projects/search"): {
+        "q": "find_tasks.query", "limit": "find_tasks.limit",
+        # reads.py sends it with every search, so it is not an argument.
+        "most_words": "find_tasks",
+    },
     # ── activity ─────────────────────────────────────────────────────────
     ("GET", "/projects/tasks/{task_id}/timeline"): {
         "kind": "render_timeline.kind",
@@ -1700,7 +1704,6 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/search"): {
         "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
         "include_triage": _TRIAGE_READ_REASON,
-        "most_words": "The picker's ranking switch in the app. find_tasks ranks by its own words.",
     },
     ("PATCH", "/projects/comments/{activity_id}"): {
         "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
@@ -2028,9 +2031,6 @@ UI_ACTIONS: dict[str, str] = {
     "attentionApi.list": "needs_attention",
     # The Needs attention lens of My tasks: the same route with `mine=true`.
     "attentionApi.mine": "needs_attention",
-    "agentsOverviewApi.read": "agents_list",
-    "agentRecentRunsApi.read": "agent_recent_runs",
-    "questionsApi.list": "agent_questions",
     # The decisions of one task and the answer of one decision (D173).
     "decisionsApi.forTask": "my_decisions",
     "decisionsApi.answer": "answer_decision",
