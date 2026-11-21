@@ -3874,10 +3874,58 @@ async def _drop_pack_unless_studio(
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
     :func:`_studio_member_open`). For an open member, the second filter
-    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b), and
+    then the third, :func:`_drop_studio_repair_unless_open` (TOF-3a F12c)."""
     if await _studio_member_open():
-        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        tools, dropped = await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        return _drop_studio_repair_unless_open(tools, dropped)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+#: The pack of the two repair tools (TOF-3a F12c).
+REPAIR_PACK = "studio-repair"
+
+
+def _skill_repair_tools_open() -> bool:
+    """True when the run's org is on ``STUDIO_ORGS``,
+    ``STUDIO_SKILL_TESTS_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``: the switches
+    of the repair route (F12.md check 1). The org is the run's own, never an
+    argument (R5). It fails closed."""
+    try:
+        from gateway.routes.studio.flags import skill_tests_allowed
+
+        return _skill_repair_open() and bool(skill_tests_allowed(_run_org_or_none()))
+    except Exception:  # fail closed
+        return False
+
+
+def _without_closed_repair(allow: frozenset[str]) -> frozenset[str]:
+    """*allow* less :data:`REPAIR_PACK` while the org of the run is off the
+    switches of the repair (TOF-3a F12c). Then ``tool_packs.choose`` and the
+    loader plan never offer it, also where the owner pack list names it. An
+    *allow* with no repair pack reads no flag."""
+    if REPAIR_PACK in allow and not _skill_repair_tools_open():
+        return allow - {REPAIR_PACK}
+    return allow
+
+
+def _drop_studio_repair_unless_open(
+    tools: list[Any], dropped: list[str],
+) -> tuple[list[Any], list[str]]:
+    """Take the two repair tools out of a ``studio-repair`` pack while the org
+    is off the switches of the repair (TOF-3a F12c,
+    :func:`_skill_repair_tools_open`). A pack with no repair tool reads no
+    flag. The names are ``acb_skills.studio_tools.STUDIO_REPAIR_NAMES``, the
+    one list. Fence: ``tests/unit/test_skill_repair.py``."""
+    from acb_skills.studio_tools import STUDIO_REPAIR_NAMES
+
+    if not any(_tool_name(t) in STUDIO_REPAIR_NAMES for t in tools):
+        return tools, dropped
+    if _skill_repair_tools_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_REPAIR_NAMES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_REPAIR_NAMES]
+    return kept, [*dropped, *gone]
 
 
 def _studio_requests_open() -> bool:
@@ -4484,6 +4532,9 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # TOF-3a F12c: the repair pack is off for an org off the switches of the
+    # repair, so neither ``choose`` nor the loader offers it there.
+    allow = _without_closed_repair(allow)
     # WS-STU F3: the published skills that the words of this turn name. G2: a
     # WhatsApp turn loads none.
     # TOF-3a F12b: the facts of each skill that the turn reads, for the record
