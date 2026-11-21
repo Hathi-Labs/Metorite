@@ -64,6 +64,13 @@ of one skill (J2d), with the 404 of each other caller. The chat tool
 ``studio_skill_share`` (J2d, ``acb_skills.studio_tools``) sends these routes,
 and the page is a later slice.
 
+**The match read (TOF rung 1, task 3830).** ``POST /skills/match`` answers
+``{"matched": bool}``: would a skill of the caller load on a turn with these
+words. The offer card "Save this as a skill?" reads it, so it shows no offer
+for a turn that ran a skill. It needs ``STUDIO_SKILL_OFFER_ORGS`` too. It uses
+the two matchers of the turn, and it reads no body. Fence:
+``tests/unit/test_studio_skill_match.py``.
+
 **Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
 move waits for the first to commit, then reads the new state, and
 :data:`TRANSITIONS` decides on that state.
@@ -91,6 +98,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from acb_common.studio_manifest import MAX_DEPTH
+from acb_skills import skill_packs, tool_search
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.skill_slug import slug_from_name  # the one shared slug (STU-F8a)
 from acb_skills.tool_packs import MAX_PACK_TOOLS
@@ -119,6 +127,10 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "archived": frozenset({"draft"}),
 }
 
+#: The most characters of the words that the match reads. A turn reads the
+#: words that the member typed, and the matcher cuts them the same way.
+_MATCH_WORDS_MAX = 4000
+
 ADD_A_VERSION = "Add a version first"
 CHANGED = "The skill changed while it moved. Load it again, then try again."
 
@@ -140,6 +152,10 @@ class _NewSkill(BaseModel):
     slug: str | None = None
     description: str = ""
     body: dict[str, Any] | None = None
+
+
+class _MatchWords(BaseModel):
+    words: str
 
 
 class _NewVersion(BaseModel):
@@ -332,6 +348,36 @@ async def list_skills(user: UserContext = Depends(get_current_user)) -> dict[str
         with _store_errors():
             skills = await store.list_for(db, user.email)
     return {"skills": [_skill_out(s) for s in skills]}
+
+
+@router.post("/skills/match")
+async def match_skill(
+    payload: Any = Body(None),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, bool]:
+    """Would a skill of the caller load on a turn with these *words*? (TOF
+    rung 1, task 3830.) The card "Save this as a skill?" asks it, so it shows
+    no offer for a turn that ran a skill. It runs the matcher of the turn
+    itself (``orchestrator._tool_injection._turn_with_skills``): the name pass
+    first, then, with ``STUDIO_CHAT_TOOLS_ORGS`` on, the description pass. It
+    reads the heads of the skills that the caller may load, and no body. It
+    answers a boolean only, never an id, a name or a word of a skill. Dark:
+    404 unless ``STUDIO_ORGS`` and ``STUDIO_SKILL_OFFER_ORGS`` hold the org.
+    The org and the member come from the session (R5)."""
+    if not (flags.studio_allowed(user.organization_id)
+            and flags.skill_offer_allowed(user.organization_id)):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    asked = _parse(_MatchWords, payload)
+    words = asked.words[:_MATCH_WORDS_MAX]
+    async with _tenant_session() as db:
+        with _store_errors():
+            heads = await store.list_loadable(db, user.email)
+    if any(skill_packs.matches(h.name, h.slug, words) for h in heads):
+        return {"matched": True}
+    if flags.chat_tools_allowed(user.organization_id) and any(h.description for h in heads):
+        found = tool_search.match_skill_descriptions(words, {h.id: h.description for h in heads})
+        return {"matched": found is not None}
+    return {"matched": False}
 
 
 @router.post("/skills", status_code=201)
