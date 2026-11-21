@@ -332,6 +332,40 @@ async def test_create_group_rejects_bad_slugs(db: _FakeDB, bad: str) -> None:
     assert exc.value.status_code == 400
 
 
+# Task 2886. The team scope uses the word "all" for every team, so no group
+# may take the slug "all", in any case and with any space around it.
+@pytest.mark.parametrize("reserved", ["all", "ALL", " All ", "aLl"])
+def test_clean_slug_refuses_the_reserved_slug(reserved: str) -> None:
+    with pytest.raises(HTTPException) as exc:
+        groups._clean_slug(reserved)
+    assert exc.value.status_code == 400
+    assert "reserved" in str(exc.value.detail)
+
+
+@pytest.mark.parametrize("allowed", ["all-hands", "allies", "all_staff", "small"])
+def test_clean_slug_allows_a_slug_that_only_holds_the_word(allowed: str) -> None:
+    assert groups._clean_slug(allowed) == allowed
+
+
+async def test_create_group_refuses_the_reserved_slug_and_writes_nothing(
+    db: _FakeDB,
+) -> None:
+    with pytest.raises(HTTPException) as exc:
+        await create_group(GroupCreate(slug=" All ", display_name="All"), admin=FULL_ADMIN)
+    assert exc.value.status_code == 400
+    assert db._group_by_slug("all") is None
+    # The positive control: the same call with a slug that only holds the word.
+    entry = await create_group(GroupCreate(slug="All Hands"), admin=FULL_ADMIN)
+    assert entry.slug == "all-hands"
+    assert db._group_by_slug("all-hands") is not None
+
+
+def test_the_reserved_slugs_are_one_set() -> None:
+    """The team filter of T-1 imports this set, so the word lives once."""
+    assert "all" in groups.RESERVED_GROUP_SLUGS
+    assert not set(groups.RESERVED_GROUP_SLUGS) & set(CENTER_GROUP_SLUGS)
+
+
 async def test_update_group_edits_name_and_description_only(db: _FakeDB) -> None:
     _seed_center_world(db)
     entry = await update_group(
