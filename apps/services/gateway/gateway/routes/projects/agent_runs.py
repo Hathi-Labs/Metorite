@@ -2417,14 +2417,12 @@ async def set_run_dispatcher(db: Any, run_id: str | None,
     for row in chain:
         if str(row.id) == run_id:
             return "self" if int(row.step) == 1 else "loop"
-    await db.execute(text("SAVEPOINT sw107_dispatcher"))
     try:
-        await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
+        async with _savepoint(db):
+            await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
     except IntegrityError:
         # The dispatcher went after the chain read (23503). Drop, never fail.
-        await db.execute(text("ROLLBACK TO SAVEPOINT sw107_dispatcher"))
         return "unknown"
-    await db.execute(text("RELEASE SAVEPOINT sw107_dispatcher"))
     return None
 
 

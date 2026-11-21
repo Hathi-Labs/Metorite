@@ -1,13 +1,14 @@
 -- ============================================================================
--- 471_agent_run_dispatched_by.sql - the run that dispatched an agent run
+-- 472_agent_run_dispatched_by.sql - the run that dispatched an agent run
 -- (WS-MCP SW-107, Metorite task 3628)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md §3.12.3 ("Who dispatched
 --   whom"), §3.12.4 rule 2, SW-107 and Q20 · R1 · R5 · R6.
 --
--- R1: main held 468 on 2026-11-21. Open pull request 2505 held 469, and
---   open pull request 2692 (SW-104) held 470. So this file takes 471. Check
---   the number again at merge (scripts/premerge.sh).
+-- R1: on 2026-11-21 main held 470 (pull request 2692, SW-104, merged).
+--   Open pull request 2505 held 469, and open pull request 2696 held 471.
+--   So this file takes 472. Check the number again at merge
+--   (scripts/premerge.sh).
 --
 -- Why: the orchestration map draws a line from an orchestrator to each lane
 --   that it dispatched. A lane names the run of its dispatcher when it claims

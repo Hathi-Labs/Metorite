@@ -805,7 +805,8 @@ async def _agent_map(
     (:func:`parse_map_query`). A project that the caller cannot see answers
     the one 404 of :func:`_not_found`.
 
-    ``truncated`` counts the LISTED runs only. When more than
+    ``truncated`` is True when the runs, the session nodes or the lines pass
+    their cap. For the runs it counts the LISTED runs only. When more than
     :data:`MAP_RUNS_MAX` runs are quiet and ``show_quiet`` is off,
     ``truncated`` is False while ``count`` is over the cap.
     """
