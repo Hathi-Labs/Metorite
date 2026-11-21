@@ -95,6 +95,10 @@ token through `acb_common.settings.internal_service_token()` only. It sends
 token is empty. The scanner of `test_no_llm_key_identity_fence.py` moved into
 `test_service_identity_and_webhook_auth.py`, and no known-debt set stays. The
 follow-ups are in HANDOFF H-450. ·
+**Task 3847 BUILT 2026-11-22:** `write_artifact` and `documents` no longer
+default ctx `gateway_token` to the dev LLM key. A ctx with no token sends no
+`Authorization` header. The fence now refuses a placeholder key of
+`.env.example` as a code default. ·
 **Board row:** WS-24 ·
 **Owner:** vjvarada · **Date:** 2026-08-05 ·
 **Verified against code on 2026-08-05** (branch `ws-24-onboarding-readiness`,

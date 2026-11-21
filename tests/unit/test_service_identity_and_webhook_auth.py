@@ -853,6 +853,315 @@ def test_no_header_gets_a_clean_401_from_the_gateway(unprovisioned) -> None:
     assert _client().get("/identity", headers=internal_auth_headers()).status_code == 401
 
 
+# ── No placeholder key as a code default (task 3847) ────────────────────────
+#
+# ``write_artifact`` and ``documents`` read ``ctx.get("gateway_token",
+# "sk-local-dev-change-me")``. That literal is the dev ``LITELLM_MASTER_KEY``
+# of ``.env.example``. A ctx with no token sent the LLM key as the service
+# identity, and the regexes above cannot see a literal. Two rules, over the
+# code trees (tests and docs are not scanned):
+#
+# 1. ``literal``: the dev LLM key value, anywhere in the raw text of a file.
+# 2. ``placeholder``: a string literal that equals the value of a ``*_KEY``,
+#    ``*_TOKEN`` or ``*_SECRET`` line of ``.env.example``. In a ``.py`` file
+#    this is an AST string constant (a docstring does not count). In another
+#    file it is the value as a whole token.
+#
+# ``_PLACEHOLDER_ALLOWED`` holds each (file, value) that may stay, with its
+# reason. An entry that no longer hits is stale, and a test fails on it.
+
+_ENV_EXAMPLE = ROOT / ".env.example"
+_KEYLIKE = re.compile(r"^[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|SECRET)$")
+_PLACEHOLDER_TREES = (*(t for t in _TREES if not t.startswith("tests")), "infra")
+_PLACEHOLDER_SUFFIXES = _SUFFIXES | {".yml", ".yaml", ".toml", ".json"}
+#: The value of ``LITELLM_MASTER_KEY`` in ``.env.example``.
+_DEV_LLM_KEY = "sk-local-dev-change-me"
+
+#: The (file, value) pairs that may stay, each with its reason.
+_PLACEHOLDER_ALLOWED = {
+    ("packages/acb_common/acb_common/settings.py", "change-me-dev-only"):
+        "the gateway_session_secret default. Each reader refuses it through "
+        "member_proof.PUBLIC_DEFAULT_SECRETS, and test_member_proof.py pins that",
+    ("packages/acb_auth/acb_auth/member_proof.py", "change-me-dev-only"):
+        "PUBLIC_DEFAULT_SECRETS, the deny set that refuses the public default",
+    ("evals/_runner.py", _DEV_LLM_KEY):
+        "a /v1 eval client. The LLM key is a legal /v1 bearer, and it never "
+        "goes to an identity route",
+    ("scripts/feature_check.py", _DEV_LLM_KEY):
+        "a manual dev harness, not product code. Deferred: task 3847 report",
+    ("scripts/run_chat_tests.sh", _DEV_LLM_KEY):
+        "a manual dev harness, not product code. Deferred: task 3847 report",
+    ("scripts/test_chat.py", _DEV_LLM_KEY):
+        "a manual dev harness, not product code. Deferred: task 3847 report",
+    ("scripts/_audit_ui.py", _DEV_LLM_KEY):
+        "a manual dev harness, not product code. Deferred: task 3847 report",
+}
+
+
+def env_placeholders(text: str) -> dict[str, str]:
+    """``{name: value}`` of each non-empty key-like line of an env file.
+
+    A commented line does not count, and an inline `` #`` comment goes.
+    """
+    out = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.removeprefix("export ").strip()
+        value = re.sub(r"\s+#.*$", "", value).strip().strip("\"'")
+        if _KEYLIKE.match(name) and value:
+            out[name] = value
+    return out
+
+
+def _placeholder_values() -> frozenset[str]:
+    return frozenset(env_placeholders(_ENV_EXAMPLE.read_text(encoding="utf-8")).values())
+
+
+def placeholder_hits(rel: str, text: str, values: frozenset[str]) -> list[tuple[int, str]]:
+    """Every (line, value) hit of the two rules in one file."""
+    import ast
+
+    hits: set[tuple[int, str]] = set()
+    for n, line in enumerate(text.splitlines(), 1):
+        if _DEV_LLM_KEY in line:
+            hits.add((n, _DEV_LLM_KEY))
+    if rel.endswith(".py"):
+        mod = ast.parse(text, rel)
+        docstrings = {
+            id(n.body[0].value) for n in ast.walk(mod)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and n.body and isinstance(n.body[0], ast.Expr)
+            and isinstance(n.body[0].value, ast.Constant)
+        }
+        for node in ast.walk(mod):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and node.value.strip() in values and id(node) not in docstrings):
+                hits.add((node.lineno, node.value.strip()))
+    else:
+        for value in values:
+            rx = re.compile(rf"(?<![\w.-]){re.escape(value)}(?![\w.-])")
+            for m in rx.finditer(text):
+                hits.add((text.count("\n", 0, m.start()) + 1, value))
+    return sorted(hits)
+
+
+def _placeholder_files() -> list[Path]:
+    out = []
+    for tree in _PLACEHOLDER_TREES:
+        base = ROOT / tree
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if (p.suffix in _PLACEHOLDER_SUFFIXES and p.is_file()
+                    and not _SKIP_PARTS & set(p.parts)):
+                out.append(p)
+    return sorted(out)
+
+
+def _tree_placeholder_hits() -> list[tuple[str, int, str]]:
+    values = _placeholder_values()
+    found = []
+    for p in _placeholder_files():
+        rel = p.relative_to(ROOT).as_posix()
+        text = p.read_text(encoding="utf-8-sig", errors="replace")
+        found += [(rel, line, value) for line, value in placeholder_hits(rel, text, values)]
+    return found
+
+
+def test_the_env_example_parse_finds_the_dev_llm_key() -> None:
+    """An empty parse must not let rule 2 pass with nothing to look for."""
+    got = env_placeholders(_ENV_EXAMPLE.read_text(encoding="utf-8"))
+    assert got.get("LITELLM_MASTER_KEY") == _DEV_LLM_KEY, got
+    assert not any(name.endswith("TOKENS") for name in got), got
+
+
+def test_the_env_parse_reads_only_key_like_lines() -> None:
+    text = (
+        "A_API_KEY=sk-a\n"
+        "#B_TOKEN=commented\n"
+        "C_SECRET='quoted' # note\n"
+        "export D_TOKEN=exported\n"
+        "MAX_OUTPUT_TOKENS=32000\n"
+        "E_KEY=\n"
+        "PLAIN=value\n"
+    )
+    assert env_placeholders(text) == {
+        "A_API_KEY": "sk-a", "C_SECRET": "quoted", "D_TOKEN": "exported",
+    }
+
+
+#: Each sample must hit. ``values`` is the set that the test passes in.
+PLACEHOLDER_SAMPLES = {
+    "ctx default": ("a.py", 'tok = ctx.get("gateway_token", "sk-local-dev-change-me")\n'),
+    "bearer string": ("a.py", 'h = {"Authorization": "Bearer sk-local-dev-change-me"}\n'),
+    "comment": ("a.py", "# falls back to sk-local-dev-change-me\n"),
+    "arg default": ("a.py", 'def f(secret="change-me-dev-only"):\n    return secret\n'),
+    "getenv default": ("a.py", 'k = os.getenv("X_SECRET", "change-me-dev-only")\n'),
+    "ts nullish": ("a.ts", 'const k = process.env.K ?? "change-me-dev-only";\n'),
+    "shell default": ("a.sh", 'KEY="${SESSION_SECRET:-change-me-dev-only}"\n'),
+}
+
+#: Each sample must not hit.
+PLACEHOLDER_CLEAN = {
+    "empty default": ("a.py", 'tok = ctx.get("gateway_token") or ""\n'),
+    "other value": ("a.py", 'secret = getattr(s, "gateway_session_secret", "change-me")\n'),
+    "docstring": ("a.py", 'def f():\n    """Refuses change-me-dev-only."""\n'),
+    "longer name": ("a.ts", 'const k = "change-me-dev-only-2";\n'),
+}
+
+_SAMPLE_VALUES = frozenset({_DEV_LLM_KEY, "change-me-dev-only"})
+
+
+@pytest.mark.parametrize("name", sorted(PLACEHOLDER_SAMPLES))
+def test_each_placeholder_shape_is_caught(name: str) -> None:
+    rel, text = PLACEHOLDER_SAMPLES[name]
+    assert placeholder_hits(rel, text, _SAMPLE_VALUES), name
+
+
+@pytest.mark.parametrize("name", sorted(PLACEHOLDER_CLEAN))
+def test_a_clean_shape_is_not_a_placeholder_hit(name: str) -> None:
+    rel, text = PLACEHOLDER_CLEAN[name]
+    assert placeholder_hits(rel, text, _SAMPLE_VALUES) == [], name
+
+
+def test_no_code_uses_a_placeholder_key_as_a_default() -> None:
+    """R7 (task 3847). No ``.env.example`` placeholder key in the code trees.
+
+    Mutations, each red: the literal default put back at one site of
+    ``write_artifact.py``, and the dev LLM key planted in another module.
+    """
+    found = [
+        f"{rel}:{line} ({value})" for rel, line, value in _tree_placeholder_hits()
+        if (rel, value) not in _PLACEHOLDER_ALLOWED
+    ]
+    assert found == [], (
+        "These lines hold a placeholder key from .env.example. A missing "
+        "token sends no Authorization header, never a fallback key. Send "
+        f"internal_auth_headers() for a service call: {found}"
+    )
+
+
+def test_each_placeholder_allowance_still_hits() -> None:
+    """A stale allowance hides nothing today, and hides a new hit tomorrow."""
+    hit = {(rel, value) for rel, _line, value in _tree_placeholder_hits()}
+    stale = sorted(set(_PLACEHOLDER_ALLOWED) - hit)
+    assert stale == [], stale
+
+
+# The behaviour of each site that read the literal default. A ctx with no
+# ``gateway_token`` must send no Authorization header, and no LLM key.
+
+@pytest.fixture
+def gateway_calls(monkeypatch):
+    """The headers of each call that ``_notify`` makes, with no network."""
+    import importlib
+
+    import httpx
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    sent: list[dict] = []
+
+    class _Client:
+        def __init__(self, **_kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+        async def patch(self, _url, **kw): sent.append(dict(kw["headers"]))
+        async def post(self, _url, **kw): sent.append(dict(kw["headers"]))
+
+    async def _no_mirror(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(wa, "mirror_to_blob_store", _no_mirror)
+    return sent
+
+
+async def _settle() -> None:
+    """Wait for the ``_notify`` tasks that the site spawned."""
+    import asyncio
+
+    me = asyncio.current_task()
+    for _ in range(20):
+        rest = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
+        if not rest:
+            return
+        await asyncio.wait(rest, timeout=5)
+
+
+def _run_ctx(workspace: Path, token: str | None) -> dict:
+    ctx = {"session_id": "s-3847", "agent_name": "agent-x", "run_id": "r-3847",
+           "workspace_root": str(workspace), "instance": "", "member": "",
+           "gateway_url": "http://gw"}
+    if token is not None:
+        ctx["gateway_token"] = token
+    return ctx
+
+
+async def _site_announce_file(wa, tmp: Path) -> None:
+    assert wa.announce_file("outputs/a.md", 2, "ab") is not None
+
+
+async def _site_deliver(wa, tmp: Path) -> None:
+    dest = {"workspace_root": str(tmp / "chat"), "session_id": "s-chat"}
+    (tmp / "chat").mkdir()
+    out = await wa._deliver(wa.artifact_context(), dest, "outputs/a.md", b"hi",
+                            overwrite=False)
+    assert "error" not in out, out
+
+
+async def _site_write_artifact(wa, tmp: Path) -> None:
+    out = await wa.write_artifact("outputs/a.md", "hi")
+    assert "error" not in out, out
+
+
+async def _site_share_artifact(wa, tmp: Path) -> None:
+    (tmp / "outputs").mkdir()
+    (tmp / "outputs" / "a.md").write_text("hi", encoding="utf-8")
+    out = await wa.share_artifact("outputs/a.md")
+    assert "error" not in out, out
+
+
+async def _site_documents_announce(wa, tmp: Path) -> None:
+    from acb_skills import documents
+
+    dest = {"workspace_root": str(tmp), "session_id": "s-3847"}
+    file = {"path": "outputs/a.md", "size": 2, "sha256": "ab", "mime_type": "text/markdown"}
+    documents._announce(wa.artifact_context(), dest, file)
+
+
+_SITES = {
+    "write_artifact.announce_file": _site_announce_file,
+    "write_artifact._deliver": _site_deliver,
+    "write_artifact.write_artifact": _site_write_artifact,
+    "write_artifact.share_artifact": _site_share_artifact,
+    "documents._announce": _site_documents_announce,
+}
+
+
+@pytest.mark.parametrize("site", sorted(_SITES))
+@pytest.mark.parametrize(("token", "want"), [(None, None), ("tok-svc", "Bearer tok-svc")])
+async def test_a_site_sends_no_llm_key_when_ctx_has_no_token(
+    site, token, want, gateway_calls, tmp_path, monkeypatch,
+) -> None:
+    """No token in ctx: no Authorization header, and no LLM key in any header.
+    A token in ctx: its exact bearer, so a site that drops it goes red."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", IDENTITY)  # the ctx alone decides
+    with wa.artifact_context_scope():
+        wa.bind_artifact_context(**_run_ctx(tmp_path, token))
+        await _SITES[site](wa, tmp_path)
+        await _settle()
+    assert gateway_calls, f"{site} made no gateway call"
+    assert all(h.get("Authorization") == want for h in gateway_calls), gateway_calls
+    assert not any(_DEV_LLM_KEY in v or LLM_KEY in v
+                   for h in gateway_calls for v in h.values()), gateway_calls
+
+
 # ── The guards ──────────────────────────────────────────────────────────────
 
 def _client() -> TestClient:

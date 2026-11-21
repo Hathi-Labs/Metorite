@@ -468,7 +468,7 @@ def _announce(ctx: Any, dest: Any, file: dict[str, Any], *, mirror_task: Any = N
                   "mime_type": file["mime_type"],
                   "modified_at": datetime.now(tz=UTC).isoformat(), "is_dir": False},
         gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
-        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+        gateway_token=ctx.get("gateway_token") or "",
         mirror_task=mirror_task,
         announce=announce,
     ))

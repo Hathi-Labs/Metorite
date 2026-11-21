@@ -432,7 +432,7 @@ def announce_file(
         workspace_root=workspace_root,
         artifact=artifact,
         gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
-        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+        gateway_token=ctx.get("gateway_token") or "",
     ))
     return workspace_file_url(session_id, rel)
 
@@ -710,7 +710,7 @@ async def _deliver(
             "modified_at": datetime.now(tz=UTC).isoformat(), "is_dir": False,
         },
         gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
-        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+        gateway_token=ctx.get("gateway_token") or "",
     ))
     return {
         "path": rel, "size": len(data), "sha256": _sha256(data), "mime_type": mime,
@@ -808,7 +808,7 @@ async def write_artifact(
     workspace_root = ctx.get("workspace_root")
     session_id = ctx.get("session_id")
     gateway_url = ctx.get("gateway_url", "http://127.0.0.1:8000")
-    gateway_token = ctx.get("gateway_token", "sk-local-dev-change-me")
+    gateway_token = ctx.get("gateway_token") or ""
 
     if not workspace_root:
         # H-201: fail closed. A frame with no run context writes nothing and
@@ -1086,7 +1086,7 @@ async def share_artifact(path: str) -> dict:
     workspace_root = ctx.get("workspace_root")
     session_id = ctx.get("session_id")
     gateway_url = ctx.get("gateway_url", "http://127.0.0.1:8000")
-    gateway_token = ctx.get("gateway_token", "sk-local-dev-change-me")
+    gateway_token = ctx.get("gateway_token") or ""
 
     if not workspace_root:
         return {"error": "No workspace is configured for this run.", "artifacts": []}
@@ -1249,6 +1249,11 @@ async def _notify(
     (``lib/artifactCards.ts``). A report file has its own ``report`` card
     (``reports.make_report``), so its files get no second card
     (``projects_ai_chat.md`` §14.10). Code passes it, never a tool argument.
+
+    *gateway_token* is the service token that the executor binds as ctx
+    ``gateway_token``. A caller with no such key passes ``""``, and the call
+    then goes with no ``Authorization`` header. No caller falls back to a
+    literal key, because the dev LLM key is not an identity (task 3847).
     """
     artifact_id = None
     if mirror_task is not None and _registry_on():
