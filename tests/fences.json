@@ -321,6 +321,7 @@
       "tests/unit/test_member_of_org_read.py",
       "tests/unit/test_my_day_loop_r8.py",
       "tests/unit/test_no_person_present_r8.py",
+      "tests/unit/test_notes_tenant_isolation_r8.py",
       "tests/unit/test_observability_two_org_r8.py",
       "tests/unit/test_operator_activity.py",
       "tests/unit/test_operator_admin.py",
