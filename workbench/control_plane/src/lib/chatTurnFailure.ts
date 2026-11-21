@@ -14,6 +14,7 @@
 import { setSessionState } from "@/lib/chatStore";
 import { runErrorView } from "@/lib/runErrors";
 import { nanoid } from "@/lib/chatStream";
+import { SAVED_FAILURE_CODES } from "@/lib/chatRunFailed";
 import { isSessionRefusal, isSessionRefusalText } from "@/lib/sessions";
 
 /**
@@ -104,7 +105,9 @@ export function settleFailedTurn(t: FailedTurn): "recovered" | "capped" | "error
     messages: prev.messages
       .filter((m) => m.id !== t.assistantId)
       .concat({
-        id: nanoid(),
+        // A failure that is saved (AO-3b) keeps the id of the saved reply, so
+        // a poll that merges the saved row by id adds no second card.
+        id: SAVED_FAILURE_CODES.has(view.code) ? t.assistantId : nanoid(),
         role: "system",
         content: `__ERROR__${JSON.stringify(view)}`,
         timestamp: Date.now(),
