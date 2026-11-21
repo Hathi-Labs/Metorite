@@ -57,6 +57,7 @@ session that the router binds, never from the request. Each read runs in one
 
 from __future__ import annotations
 
+import difflib
 import json
 from typing import Any
 
@@ -154,6 +155,10 @@ class ModuleListResponse(ListResponse):
     as columns by the CRM-Q4 rules."""
 
     field_defs: list[ModuleFieldDef] = Field(default_factory=list)
+    #: The API name that the path resolved to (CRM-Q34-12), so a label in
+    #: the path answers with the name of the store.
+    module: str | None = None
+
     #: CRM-Q34-7: no record holds each word of ``q``, so the rows hold one of
     #: these stored names, near spellings of a word. Each such row carries
     #: ``near: true`` and its stored name in ``matched``. Absent otherwise.
@@ -294,30 +299,130 @@ def _summary(row: dict[str, Any], count: int = 0) -> ModuleSummary:
 
 #: The most module names that one 404 names.
 MODULE_CHOICES_MAX = 20
+#: The most close modules that a refusal names (CRM-Q34-12).
+CLOSE_MAX = 3
+#: The longest refusal text, in characters. The chat reads it as tool text.
+REFUSAL_MAX = 400
+#: The least ``difflib`` ratio of a close module.
+CLOSE_CUTOFF = 0.6
+
+
+def fold_module(text: Any) -> str:
+    """A module name in one form: lower case, with no space, ``_`` or ``-``
+    and no other mark. So "Sales Orders", "sales_orders" and "SalesOrders"
+    fold to the same word."""
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def _forms(api_name: str, row: dict[str, Any]) -> tuple[str, ...]:
+    """The folded label, plural label and singular label of a module."""
+    return tuple(
+        f for f in (fold_module(row.get("label")), fold_module(row.get("singular_label")),
+                    fold_module(row.get("plural_label")))
+        if f
+    )
+
+
+def _refusal(mirrored: dict[str, dict[str, Any]], module: str, close: list[str],
+             ambiguous: list[str] | None = None) -> HTTPException:
+    """The 404 ``unknown_module``. It names the close modules, or the two
+    modules that a name fits, each with its API name and label. The text is
+    at most :data:`REFUSAL_MAX` characters."""
+    def shown(name: str) -> str:
+        label = str((mirrored.get(name) or {}).get("label") or "")
+        return f"{name} ({label})" if label and label != name else name
+
+    asked = " ".join(str(module).split())[:60]
+    if ambiguous:
+        head = (f"'{asked}' fits more than one module: "
+                f"{', '.join(shown(n) for n in ambiguous)}. Use the API name.")
+    elif close:
+        head = (f"This module is not mirrored. Did you mean: "
+                f"{', '.join(shown(n) for n in close)}?")
+    else:
+        head = "This module is not mirrored."
+    names = sorted(str(k) for k in mirrored)
+    more = len(names) - MODULE_CHOICES_MAX
+    listed = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
+    if more > 0:
+        listed += f", and {more} more"
+    message = f"{head} The mirrored modules are: {listed}."
+    if len(message) > REFUSAL_MAX:
+        room = REFUSAL_MAX - len(head) - len(" The mirrored modules are: , and more.")
+        kept = listed[:max(room, 0)].rsplit(", ", 1)[0] if room > 0 else ""
+        message = f"{head} The mirrored modules are: {kept}, and more." if kept else head
+    return HTTPException(status_code=404, detail={
+        "code": "unknown_module", "message": message[:REFUSAL_MAX],
+    })
+
+
+def _ladder(mirrored: dict[str, dict[str, Any]], module: str) -> list[str]:
+    """The modules that the first fitting step of the ladder finds."""
+    folded = fold_module(module)
+    if module in mirrored:
+        return [module]
+    if not folded:
+        return []
+    for found in (
+        [n for n in mirrored if fold_module(n) == folded],
+        [n for n, row in mirrored.items() if folded in _forms(n, row)],
+    ):
+        if found:
+            return found
+    return []
+
+
+def _miss(mirrored: dict[str, dict[str, Any]], module: str) -> HTTPException:
+    """The 404 of a name that no module owns, or that two modules fit."""
+    found = _ladder(mirrored, module)
+    if len(found) > 1:
+        return _refusal(mirrored, module, [], found[:CLOSE_MAX])
+    keyed: dict[str, str] = {}
+    for name, row in mirrored.items():
+        for form in (fold_module(name), *_forms(name, row)):
+            keyed.setdefault(form, name)
+    close = list(found)
+    for form in difflib.get_close_matches(
+        fold_module(module), list(keyed), n=CLOSE_MAX * 3, cutoff=CLOSE_CUTOFF,
+    ):
+        if keyed[form] not in close:
+            close.append(keyed[form])
+    return _refusal(mirrored, module, close[:CLOSE_MAX])
+
+
+def resolve_module(mirrored: dict[str, dict[str, Any]], module: str) -> str:
+    """The API name of the module that *module* names, or a 404 that names
+    the close modules (CRM-Q34-12). The ONE resolver of every ``module:<X>``
+    path: the fields, list, record and timeline routes, the field search and
+    the term route. A chat says the label that people use, and the store keys
+    a module by its API name.
+
+    The ladder: the API name; then the API name folded (:func:`fold_module`);
+    then the label, the plural label or the singular label, folded. The first
+    step that finds a module decides. One module wins. Two modules are not
+    guessed: the 404 names both. No module: the 404 names up to
+    :data:`CLOSE_MAX` close ones. *mirrored* is the org's own set
+    (:func:`mirrored_modules`), so a module of another org never resolves.
+    """
+    found = _ladder(mirrored, module)
+    if len(found) == 1:
+        return found[0]
+    raise _miss(mirrored, module)
 
 
 def _require_module(mirrored: dict[str, dict[str, Any]], module: str) -> dict[str, Any]:
     """The profile row of *module*, or 404. Runs before any read of a record,
     so a name outside the mirrored set never reaches a statement.
 
-    The 404 names the mirrored modules (at most :data:`MODULE_CHOICES_MAX`),
-    so a model that guessed a name can pick a real one. ``GET /crm/modules``
-    gives the same names to the same member."""
+    It checks the API name only: a caller that goes on with *module* as its
+    key must not pass a label. A route that takes a label calls
+    :func:`resolve_module` first and goes on with the name that it gives.
+    The 404 is the one of :func:`resolve_module`: it names the close modules
+    and the mirrored ones, so a model that guessed a name can pick a real
+    one. ``GET /crm/modules`` gives the same names to the same member."""
     row = mirrored.get(module)
     if row is None:
-        names = sorted(str(k) for k in mirrored)
-        more = len(names) - MODULE_CHOICES_MAX
-        shown = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
-        if more > 0:
-            shown += f", and {more} more"
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "unknown_module",
-                "message": f"This module is not mirrored. The mirrored modules "
-                           f"are: {shown}.",
-            },
-        )
+        raise _miss(mirrored, module)
     return row
 
 
@@ -542,7 +647,7 @@ async def list_module_records(
     if request is not None:
         refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
-        _require_module(await mirrored_modules(db), module)
+        module = resolve_module(await mirrored_modules(db), module)
         extra_where, extra_params = await _field_filters(
             db, module, updated_from, updated_to,
             custom_pairs(request.query_params if request is not None else None),
@@ -583,7 +688,7 @@ async def list_module_records(
         defs = await _field_defs(db, module, user.organization_id)
     return ModuleListResponse(
         rows=[_record(r).model_dump() for r in rows], total=int(total),
-        field_defs=defs,
+        field_defs=defs, module=module,
     )
 
 
@@ -687,7 +792,7 @@ async def _find_rows(
             nearest = list(hit.nearest)
     defs = await _field_defs(db, module, user.organization_id)
     return ModuleListResponse(rows=wired, total=total, field_defs=defs, near=near,
-                              nearest=nearest)
+                              nearest=nearest, module=module)
 
 
 # ── The company search reads the mirrored modules (FIND-11) ─────────────────
@@ -779,7 +884,8 @@ async def get_module_record(
     link of each lookup. 404 for an unknown module or record."""
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
-        row = _require_module(mirrored, module)
+        module = resolve_module(mirrored, module)
+        row = mirrored[module]
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_ONE_SQL), {"id": wanted, "module": module},
@@ -819,7 +925,7 @@ async def get_module_record_timeline(
     strict = offset is not None
     want = (offset or 0) + limit + 1 if strict else limit
     async with _tenant_session() as db:
-        _require_module(await mirrored_modules(db), module)
+        module = resolve_module(await mirrored_modules(db), module)
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_EXISTS_SQL), {"id": wanted, "module": module},
@@ -904,7 +1010,8 @@ async def patch_module_record(
         refuse_nul_tree(given)
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
-        row = _require_module(mirrored, module)
+        module = resolve_module(mirrored, module)
+        row = mirrored[module]
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_ONE_SQL), {"id": wanted, "module": module},
