@@ -25,7 +25,9 @@ export function mayPurgeOrg(
   if (operatorRank(who.role) < operatorRank("admin")) {
     return "purging an organization needs the admin role";
   }
-  if (elevation?.required === true && !elevation.elevated) {
+  // Fail closed: only an explicit `required: false` skips the window. A missing
+  // or odd `required` reads as required. The Console always sends the boolean.
+  if (elevation?.required !== false && elevation?.elevated !== true) {
     return "purging an organization needs an open elevation window";
   }
   return null;

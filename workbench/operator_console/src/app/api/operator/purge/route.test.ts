@@ -108,6 +108,14 @@ describe("the order", () => {
     expect(calls).toEqual(["session", "elevate", "list", "tenant", "registry"]);
   });
 
+  // The rank is the CALLER's: a read with no token reaches the Console as the
+  // shared break-glass token, which the rule admits. Fails if an edit drops `d`.
+  it("reads the rank with the caller's session token, never the shared one", async () => {
+    await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(readOperatorSession).toHaveBeenCalledWith({ authToken: "cc_sess_test_token" });
+    expect(readElevation).toHaveBeenCalledWith({ authToken: "cc_sess_test_token" });
+  });
+
   it("an org outside `deleted` stops BEFORE any destruction", async () => {
     listOrganizations.mockResolvedValue({
       status: 200,
@@ -194,6 +202,13 @@ describe("the caller's rank (H-313)", () => {
     const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
     expect(res.status).toBe(403);
     expect(calls).toEqual(["session", "elevate"]);
+    expect(purgeTenantOrg).not.toHaveBeenCalled();
+  });
+
+  it("a missing `required` reads as required, and an admin with no window is refused", async () => {
+    readElevation.mockResolvedValue({ status: 200, body: JSON.stringify({}) });
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(403);
     expect(purgeTenantOrg).not.toHaveBeenCalled();
   });
 
