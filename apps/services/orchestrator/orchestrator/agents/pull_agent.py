@@ -7,7 +7,7 @@ endpoint stays useful while the graph is still being populated.
 """
 from __future__ import annotations
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_llm import LLMTier, complete
 from acb_llm.guardrails import CitationError, repair_citations, require_citations
 from acb_llm.voice import voice_prompt
@@ -30,6 +30,12 @@ _SYSTEM_UNGROUNDED = (
 )
 
 
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a tenant event with no org (task 2221)."""
+    if not refuse_tenantless(event):
+        record(event)
+
+
 async def answer(query: str, *, user_email: str | None = None, trace_id: str | None = None) -> str:
     """Run the full Phase-0 Pull pipeline and return the answer string."""
     # WS-29 acb_graph slice 7: bind the run's tenant so the FORCE-RLS'd
@@ -37,8 +43,13 @@ async def answer(query: str, *, user_email: str | None = None, trace_id: str | N
     # (event-loop) frame. flag OFF → the unbound get_session (byte-identical);
     # flag ON + no resolvable org → fail closed to no hits (the Phase-0 graceful
     # ungrounded path handles it), never an unbound read on a FORCE-RLS'd catalog.
-    from orchestrator.executor import _graph_session_opener_current
+    from orchestrator.executor import _current_run_org, _graph_session_opener_current
     _open = _graph_session_opener_current()
+    # Task 2221: the query and the raw answer are tenant text, so each audit
+    # row takes the run's tenant, from the run binding on this frame. It is
+    # never a payload field. With no tenant and ACB_GRAPH_TENANT_BIND on,
+    # refuse_tenantless skips the row. Fence: test_audit_writers_org_r8.py.
+    org = _current_run_org()
     if _open is None:
         hits = []
         context_block = ""
@@ -47,12 +58,13 @@ async def answer(query: str, *, user_email: str | None = None, trace_id: str | N
             hits = retrieve(s, query)
             context_block = format_context(hits)
 
-    record(
+    _audit(
         AuditEvent(
             actor=f"user:{user_email or 'anonymous'}",
             action="pull_query",
             target="agent:pull",
             payload={"query": query, "hits": len(hits), "trace_id": trace_id},
+            organization_id=org,
         )
     )
 
@@ -81,12 +93,13 @@ async def answer(query: str, *, user_email: str | None = None, trace_id: str | N
         repaired = repair_citations(raw, [(h.kind, str(h.id)) for h in hits])
         return require_citations(repaired)
     except CitationError as exc:
-        record(
+        _audit(
             AuditEvent(
                 actor="agent:pull",
                 action="guardrail_block",
                 target="agent:pull",
                 payload={"reason": str(exc), "raw": raw, "trace_id": trace_id},
+                organization_id=org,
             )
         )
         return (
