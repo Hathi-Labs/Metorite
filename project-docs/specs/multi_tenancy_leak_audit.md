@@ -357,7 +357,9 @@ rather than each INSERT site remembering.
 **Task 2324 (2026-11-21).** Under FORCE RLS the trigger cannot read a parent of another
 organization. The 161 body then returned in silence. The child kept the org that the writer
 named, or got it from its other attachment. RLS WITH CHECK accepted that bound org, and the
-foreign key ignores RLS. So a child could name that parent. A new migration (470 at build)
+foreign key ignores RLS. So a child could name that parent.
+
+A new migration (470 at build)
 makes the trigger refuse such a parent with SQLSTATE 23503. It refuses on an INSERT, and on an
 UPDATE that changes the link or the org. An UPDATE that keeps the link keeps the old return,
 because the cascade of a delete runs one. Fence: `tests/unit/test_pm_org_from_parent_r8.py`.
