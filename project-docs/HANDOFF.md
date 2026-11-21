@@ -1481,12 +1481,6 @@ line — never reclaim a number by deleting the other entry.
   → a hit, and no retry of the start-label removal, means the entry is still open.
 - **Added:** 2026-10-03 · WS-43c, the sandbox broker
 
-### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
-- **Metorite:** #808. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
-  → a hit means a personal agent still keeps its host shell tools.
-- **Added:** 2026-10-03 · the D85 interim block
-
 ### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
 - **Metorite:** #615. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
