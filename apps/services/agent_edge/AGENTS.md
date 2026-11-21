@@ -117,8 +117,8 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 - SW-113 (`agent_coordination.md` §3.12.7 rule 12) adds the read `get_agent_map`, with the optional `project_id` and `show_quiet`. It sends `shape=map` to `GET /projects/agents/overview`, the map read of SW-102, under the session of the member.
   - The edge never reads `AGENT_MAP_ORGS`. The gateway gives one 404 for a flag that is off and for a hidden project, so the tool gives one text for both (`tools.TEXT_MAP_NOT_FOUND`).
   - `tools.agent_map` keeps the pinned keys only. Each person, session name, client and task title leaves as untrusted text. A new key of the gateway, such as a machine or a model, does not leave until a slice maps it as untrusted text.
-  - The edge passes `lines` through by the rule of AD-10 (`door_value`). It cuts at 300 runs (`tools.AGENT_MAP_RUNS_MAX`) and sets `truncated`.
-  - The tip `prompts.MAP_RULE` is in the work step of `work_on_task`.
+  - A line keeps `from` and `to` only (`tools.AGENT_MAP_LINE_KEYS`), each a node id. The edge drops every other key of a line. It cuts at 300 runs and at 300 lines (`tools.AGENT_MAP_RUNS_MAX`), and sets `truncated`.
+  - The tip `prompts.MAP_RULE` is held back, and no prompt shows it. The edge does not read `AGENT_MAP_ORGS`, so it cannot show the tip only where the map works. The slice that flips `AGENT_MAP_ORGS` adds the tip to the work step of `work_on_task`.
   - Fences: `test_mcp_edge_coverage.py`, `test_agent_map_r8.py` (`TestTheMapThroughTheEdge`) and `test_mcp_edge_prompts.py` (`TestTheMapTip`).
 
 - SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
