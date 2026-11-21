@@ -1932,6 +1932,18 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: a restart can bill a prompt twice (spec
     # §13.1). Fence: tests/unit/test_turn_kind_parallel.py.
     ai_turn_kind_parallel: str = ""
+    # Chat speed (task 3592): the orgs whose DELEGATED runs ask no turn-kind
+    # question. A comma list of organization ids, or `*`. Empty means OFF,
+    # and a delegated run waits for the answer as before (up to 3 s). With
+    # it on, the run starts at once on the `chat` kind, so a `plan`,
+    # `analysis` or `code` task no longer raises its tier. The one reader is
+    # `acb_skills.tier_policy.turn_kind_nowait_on`, and it fails closed.
+    # Spec: ai_tier_routing.md §4.3. It reloads with no restart
+    # (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-GATE on production: it changes the tier that a delegated run
+    # pays for. Fence: tests/unit/test_turn_kind_nowait.py.
+    ai_turn_kind_nowait_orgs: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #

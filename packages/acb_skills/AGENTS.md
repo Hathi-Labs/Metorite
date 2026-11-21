@@ -108,6 +108,7 @@ not write a second copy of that seam. A bare test file name is under
 5b-2. tier_policy.py -- the ONE home of the tier policy (D90) and the ONE reader of `AI_TIER_ROUTING` (`tier_routing_on`, which fails closed).
    - `TierPolicyMiddleware` sets only `options["model"]`. Each `TOOL_HINTS` name must be a real tool. Fence: `test_tier_policy.py`.
    - `turn_kind_parallel_on` is the ONE reader of `AI_TURN_KIND_PARALLEL`, and it fails closed. `RunTierPolicy.seal` and `settle` own the window of a restart. `ToolHintRecorder` seals before a tool runs. Fence: `test_turn_kind_parallel.py`.
+   - `turn_kind_nowait_on` is the ONE reader of `AI_TURN_KIND_NOWAIT_ORGS`, and it fails closed (task 3592). `turn_kind(ask=False)` sends no question and keeps the cheap sources. Fence: `test_turn_kind_nowait.py`.
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.

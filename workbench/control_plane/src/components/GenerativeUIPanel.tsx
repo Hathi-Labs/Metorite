@@ -102,6 +102,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // A closed card. The chat translator saves every custom event on the
   // message, so a reloaded thread carries this one too.
   "confirmation_resolved",
+  // A refused approve (task 3827): saved on the message like the one above.
+  "confirmation_not_done",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",
