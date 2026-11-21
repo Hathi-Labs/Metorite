@@ -989,6 +989,29 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-TOF TOF-3a F12c: the repair of a skill and its undo, two tools in a
+    # small pack of the same owner. The spec placed them in ``studio-more``, but
+    # that pack counts against the cap of a request (MAX_REQUEST_TOOLS), and two
+    # more tools there drop ``studio-more`` from a Studio turn with email words
+    # (test_exact_tool_count.py, D222 decision 13). So, as ``studio-share``, the
+    # pack has no surface and is not in FOLLOWS. The pack filter of the owner
+    # also drops both tools while the org is off STUDIO_SKILL_REPAIR_ORGS
+    # (_tool_injection._drop_studio_repair_unless_open).
+    "studio-repair": {
+        "label": "AI Studio skill repair",
+        "summary": "Fix a skill that failed, with nothing saved until you approve, or undo a version.",
+        "description": (
+            "A tool pack: the tools that try a fix of a skill of a member on a "
+            "failed run, with each change held, and save it after one card. The "
+            "undo goes back one version. A run loads a pack only where tool packs "
+            "are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_repair", "studio_skill_undo"),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
     # small pack of the same owner. It has no surface, so a plain Studio turn
     # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it

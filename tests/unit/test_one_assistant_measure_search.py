@@ -301,7 +301,9 @@ def test_a_studio_tool_belongs_to_the_studio_builder() -> None:
     names = pack.studio_tool_names()
     assert {"studio_skill_list", "studio_draft", "studio_workflow_publish"} <= names
     # WS-STU J2d: the share tool of the fourth pack of the owner.
-    assert "studio_skill_share" in names and len(names) == 26
+    # TOF-3a F12c: the two tools of the repair pack.
+    assert "studio_skill_share" in names and "studio_skill_repair" in names
+    assert len(names) == 28
     for name in names:
         assert run.owner_of_tool(name) == pack.STUDIO, name
     assert run.owner_of_tool("read_email") == pack.EA
@@ -317,6 +319,7 @@ def test_the_studio_names_come_from_the_skill_families() -> None:
         | frozenset(SKILL_FAMILIES["studio-more"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-workflows"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-share"]["tools"])
+        | frozenset(SKILL_FAMILIES["studio-repair"]["tools"])
     )
     assert pack.STUDIO not in pack.OWNERS  # no specialist, no config.json
 
