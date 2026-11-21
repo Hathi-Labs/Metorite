@@ -171,6 +171,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # SBX-19 (agent_sandbox.md rung 6a'): Python over the tool results of the
+    # chat, in the sealed `compute` target. A family that no org toggles: the
+    # flag COMPUTE_RUN_ORGS decides, and `_tool_injection._compute_withheld`
+    # drops the tool for an org that is off.
+    "compute": {
+        "label": "Compute",
+        "summary": "Run Python over the tool results of this chat, with no network.",
+        "description": (
+            "compute_run writes Python and runs it on tool results that the "
+            "chat already holds, by reference. The code has no network, no "
+            "secret and no access to Metorite. Files it writes show as cards."
+        ),
+        "tools": ("compute_run",),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "history": {
         "label": "Conversation history",
         "summary": (
@@ -967,6 +984,52 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_workflow_publish",
             "studio_workflow_live",
         ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-TOF TOF-3a F12c: the repair of a skill and its undo, two tools in a
+    # small pack of the same owner. The spec placed them in ``studio-more``, but
+    # that pack counts against the cap of a request (MAX_REQUEST_TOOLS), and two
+    # more tools there drop ``studio-more`` from a Studio turn with email words
+    # (test_exact_tool_count.py, D222 decision 13). So, as ``studio-share``, the
+    # pack has no surface and is not in FOLLOWS. The pack filter of the owner
+    # also drops both tools while the org is off STUDIO_SKILL_REPAIR_ORGS
+    # (_tool_injection._drop_studio_repair_unless_open).
+    "studio-repair": {
+        "label": "AI Studio skill repair",
+        "summary": "Fix a skill that failed, with nothing saved until you approve, or undo a version.",
+        "description": (
+            "A tool pack: the tools that try a fix of a skill of a member on a "
+            "failed run, with each change held, and save it after one card. The "
+            "undo goes back one version. A run loads a pack only where tool packs "
+            "are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_repair", "studio_skill_undo"),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
+    # small pack of the same owner. It has no surface, so a plain Studio turn
+    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on).
+    "studio-share": {
+        "label": "AI Studio skill share",
+        "summary": (
+            "Share a skill with the organization, read or end its share, or approve or "
+            "reject a skill share that waits for you."
+        ),
+        "description": (
+            "A tool pack: the one tool that shares a skill of a member with the "
+            "organization, for the main assistant to load when a turn asks to share a "
+            "skill. The owner asks, and a holder of studio:publish approves or rejects "
+            "the ask. Each write shows one card first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_share",),
         "owner": "studio-builder",
         "core": False,
         "scope_governed": True,

@@ -43,6 +43,7 @@ __all__ = [
     "ALSO",
     "APPS",
     "APP_OF",
+    "APP_PAGE",
     "COVERED",
     "DEBT",
     "DEBT_CEILING",
@@ -77,6 +78,35 @@ APPS: dict[str, str] = {
     "admin": "Admin, members and billing",
     "integrations": "Integrations",
     "studio": "AI Studio",
+}
+
+#: An app -> the live page where its member does the acts that no chat tool does
+#: yet (PAR-1, ``chat_parity.md`` §6). When a member asks for an act that has no
+#: tool, the chat opens this page with ``show_in_app`` and says what to press.
+#: ``None`` is an app with no live page (its pane is a preview pane in ``nav.ts``),
+#: so the chat says that there is none. ``test_chat_parity.py`` holds each page
+#: equal to ``orchestrator.in_app_path`` (an admin may open it) and holds the
+#: ``None`` apps to the apps with no live pane: an app that goes live needs a page.
+APP_PAGE: dict[str, str | None] = {
+    "projects": "/projects",
+    "tasks": "/projects",  # My work is a section of Projects; /tasks redirects there
+    "calendar": "/calendar",
+    "email": "/email",
+    "crm": "/crm",
+    "notes": None,  # preview in nav.ts
+    "whatsapp": "/whatsapp",
+    "people": "/people",
+    "knowledge": "/knowledge",
+    "memory": None,  # preview in nav.ts
+    "workflows": "/studio",  # apps, workflows and skills are one library (D179)
+    "apps": "/studio",
+    "agents": None,  # the Agent Registry is an operator concern, preview in nav.ts
+    "chat": "/chat",
+    "shell": "/",
+    "settings": "/settings/appearance",
+    "admin": "/settings/organization",
+    "integrations": "/integrations",
+    "studio": "/studio",
 }
 
 #: A BFF path prefix -> its app. The longest prefix that matches wins.
@@ -194,6 +224,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
+    "packages/acb_skills/acb_skills/org_facts_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -701,6 +733,22 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/agent-access/box-tokens/{}/rotate": (
         "secret",
         "Gives a box a new token and shows it once. A secret never goes through the chat.",
+    ),
+    "GET /api/integrations/api/zoho_books": (
+        "oauth",
+        "API-5. Reads the state of the Zoho Books consent and the choices of the admin's own pending pick.",
+    ),
+    "POST /api/integrations/api/zoho_books/cancel": (
+        "oauth",
+        "API-5. The admin leaves the Zoho Books consent: the gateway revokes the pending sign-in.",
+    ),
+    "POST /api/integrations/api/zoho_books/pick": (
+        "oauth",
+        "API-5. The return step of the Zoho Books consent: the admin picks one Books organization.",
+    ),
+    "POST /api/integrations/api/zoho_books/start": (
+        "oauth",
+        "API-5. Starts the Zoho Books consent. The browser goes to Zoho, and the admin approves it there.",
     ),
     "POST /api/integrations/configure": (
         "secret",

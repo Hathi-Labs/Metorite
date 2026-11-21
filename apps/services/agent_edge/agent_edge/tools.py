@@ -9570,7 +9570,8 @@ ASK_ON_TASK = Tool(
         " The my_work text holds the rule."
         " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
-        " record_outside_decision at once.[[ASK_IMAGES]]" + _UNTRUSTED_NOTE
+        " record_outside_decision at once.[[ASK_IMAGES]]"
+        + prompts.LANE_ASK_RULE + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -10161,7 +10162,36 @@ _RELEASE_INPUT: dict[str, Any] = {
     "required": ["run_id"],
     "additionalProperties": False,
 }
-_RELEASE_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "released": {"type": "boolean"}})
+#: Task 3648. The lane of the task after the release: its name (text that
+#: people wrote), its category, whether the release moved it, and why. The
+#: reasons are the closed list ``agent_runs.RELEASE_REASONS``, and a pin test
+#: compares the two.
+RELEASE_REASONS: tuple[str, ...] = (
+    "already_released", "not_started_lane", "archived",
+    "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
+    "no_status_before_claim", "no_task",
+)
+_TASK_STATUS_SCHEMA: dict[str, Any] = _object({
+    "name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
+    "moved": {"type": "boolean"}, "reason": {"type": "string", "enum": list(RELEASE_REASONS)},
+})
+_RELEASE_OUTPUT: dict[str, Any] = _object({
+    "run": _RUN_SCHEMA, "released": {"type": "boolean"}, "task_status": _TASK_STATUS_SCHEMA})
+
+
+def _task_status(body: Any) -> dict[str, Any]:
+    """The lane of the released task, from the answer of the gateway. The
+    name is text that people wrote, so it is ``untrusted_text``."""
+    found = body.get("task_status") if isinstance(body, dict) else None
+    found = found if isinstance(found, dict) else {}
+    name = found.get("name")
+    reason = found.get("reason")
+    return {
+        "name": untrusted(str(name)) if name is not None else None,
+        "category": found.get("category") if isinstance(found.get("category"), str) else None,
+        "moved": found.get("moved") is True,
+        "reason": reason if reason in RELEASE_REASONS else "no_task",
+    }
 
 
 async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -10173,7 +10203,8 @@ async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         texts={409: TEXT_RUN_CONFLICT},
         details={(403, "You may not release this agent run."): TEXT_RELEASE_FORBIDDEN,
                  (422, HANDOFF_NEEDS_NEXT_DETAIL): TEXT_HANDOFF_NEEDS_NEXT})
-    return {"run": agent_run(_run_body(body)), "released": True}
+    return {"run": agent_run(_run_body(body)), "released": True,
+            "task_status": _task_status(body)}
 
 
 RELEASE_TASK = Tool(
@@ -10184,10 +10215,19 @@ RELEASE_TASK = Tool(
         " task that you claimed and you will not finish it. Send the run_id"
         " from claim_task or start_agent_run. Send handoff {done, left, evidence,"
         " next} so the next agent starts with a note. If left has text, next is"
-        " required. The run becomes released. The"
-        " task keeps its status and its assignees, and another AI session may"
-        " claim it. Use finish_agent_run when the work is done. You can"
-        " release only your own run." + _UNTRUSTED_NOTE
+        " required. The run becomes released. The assignees stay, and another"
+        " AI session may claim the task. The release undoes your claim: when"
+        " your claim moved the task into In progress, it moves again, and"
+        " task_status names the lane. An open pull request keeps it in"
+        " progress, in a review lane when the board has one. Started work (a"
+        " handoff done, a branch, a commit or a pull request) puts it in To Do."
+        " A task that nobody started goes back to the lane it had. A started"
+        " task never goes to Backlog. A task that was already In progress"
+        " before your claim is the live work of a person, and the release"
+        " leaves it alone. So attach each branch and pull request with"
+        " add_task_reference, or send a handoff done, before you release:"
+        " a task with neither reads as not started. Use finish_agent_run when"
+        " the work is done. You can release only your own run." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_RELEASE_INPUT,

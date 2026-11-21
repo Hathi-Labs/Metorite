@@ -1181,7 +1181,7 @@ NAMES_CUT = "The answer has more records than it shows. Ask the member for the f
 NAME_APPS: dict[str, str] = {"crm": "CRM", "people": "People", "email": "Email"}
 NAME_KINDS: dict[str, str] = {
     "person": "person", "contact": "contact", "lead": "lead", "company": "company",
-    "sender": "mail sender",
+    "sender": "mail sender", "module_record": "record",
 }
 NAME_SKIPS: dict[str, str] = {
     "timed_out": "ran out of time", "failed": "failed", "refused": "not open to you",
@@ -1272,6 +1272,9 @@ def _name_lines(row: Any) -> list[str]:
     status = str(row.get("status") or "")
     noun = NAME_KINDS[kind] + (f", {status}" if kind == "person" and status in NAME_STATUSES
                                else "")
+    if kind == "module_record" and _name_text(row.get("module"), 40):
+        # FIND-11: the label of the module, as a name, so the member sees where it is.
+        noun += f", {_name_text(row.get('module'), 40)}"
     name = _name_text(row.get("name")) or "(no name)"
     href = str(row.get("href") or "")
     link = f" {href}" if href.startswith("/") and not href.startswith("//") \

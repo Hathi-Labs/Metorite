@@ -57,10 +57,25 @@ tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
 writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
 the column out, so no browser read returns it. :func:`read_stored_call` is the
 one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
+:func:`claim_declined_call` is the claim of a late decline (RESUME-4a-2).
 :func:`restore_stored_call` gives a claim back when its run never started. A move to
 ``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
 each row is as before.
+
+**The same reply** (RESUME-2b, §4.12.4 item 2, case A). :func:`_record` adds
+the id of the run's reply row to the stored call (``message_id``), from the
+run's ``run_liveness`` record. :func:`park` keeps the stream of the parked run
+for 24 hours (D-RES-7, ``stream_relay.keep_parked_stream``) when both resume
+flags name the org. So a late Approve can go on in the same reply.
+
+**Park at the stop** (RESUME-5, §4.12.5). The gateway's stop step calls
+:func:`park_at_stop` once, through ``POST /internal/drain/park``. Each wait
+that took an entry (:func:`stop_wait`) parks in its own task, with
+:func:`park_for_stop`. Only where ``CHAT_DURABLE_ASKS`` is on and both resume
+flags name the org. A card that opens after the call does not park. Fences:
+``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``
+and ``tests/unit/test_resume_continuation.py``.
 
 **Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
 reader takes a row past ``expires_at``, and no move changes one. So
@@ -499,7 +514,7 @@ def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | 
 #: RETURNING, so the CTE is the one way to read the old value in the move.
 #: The org predicate stands beside RLS (R5). A row of another member, another
 #: thread, a row that expired, and a row with no stored call never move.
-_CLAIM_SQL = (
+_CLAIM_OLD = (
     "WITH old AS ("
     "  SELECT organization_id, request_id, stored_call FROM chat_pending_ask "
     "  WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
@@ -508,8 +523,25 @@ _CLAIM_SQL = (
     "    AND stored_call IS NOT NULL "
     "  FOR UPDATE"
     ") "
+)
+_CLAIM_SQL = _CLAIM_OLD + (
     "UPDATE chat_pending_ask AS p SET state = 'answered', answered_at = now(), "
     "  answer = :answer, stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: RESUME-4a-2 (task 3478, D-RES-9): the claim of a late decline, in ONE
+#: statement. The same CTE as :data:`_CLAIM_SQL` locks the row and keeps its
+#: stored call, under the same predicates. The UPDATE moves the row to
+#: ``closed`` (a decline is no answer, as ``move_ask(to="closed")``), sets
+#: the column to NULL, and gives back the old stored call. No tool runs it:
+#: the continuation only tells the model that nothing was done.
+_CLAIM_DECLINED_SQL = _CLAIM_OLD + (
+    "UPDATE chat_pending_ask AS p SET state = 'closed', "
+    "  answered_at = COALESCE(p.answered_at, now()), stored_call = NULL "
     "FROM old "
     "WHERE p.organization_id = old.organization_id "
     "  AND p.request_id = old.request_id "
@@ -552,6 +584,36 @@ def claim_stored_call(
     timeout give None: no claim. It adds no state: ``answered`` is one of the
     four states of ``chat_pending_ask_state_known``.
     """
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_SQL, extra={"answer": (answer or "")[:_ANSWER_CHARS]})
+
+
+def claim_declined_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row for a late DECLINE, ONCE.
+
+    RESUME-4a-2 (task 3478, D-RES-9). ``gateway.routes.agent._resume_from_row``
+    is the one caller. One statement (:data:`_CLAIM_DECLINED_SQL`) moves the
+    row from ``parked`` or ``open`` to ``closed`` and gives back the stored
+    call that it held. Nothing runs the call: the continuation only tells
+    the model that nothing was done. The predicates are those of
+    :func:`claim_stored_call`, and so are the "no claim" codes. It adds no
+    state: ``closed`` is one of the four states."""
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_DECLINED_SQL, extra={})
+
+
+def _claim(
+    organization_id: str, request_id: str, *, member: str, thread_id: str,
+    sql: str, extra: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Run ONE claim statement (:data:`_CLAIM_SQL` or
+    :data:`_CLAIM_DECLINED_SQL`), and give back the old stored call."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
@@ -564,11 +626,11 @@ def claim_stored_call(
         with tenant_session(organization_id) as s:
             s.execute(text(f"SET LOCAL lock_timeout = '{_CLAIM_LOCK_TIMEOUT}'"))
             r = s.execute(
-                text(_CLAIM_SQL),
+                text(sql),
                 {
                     "org": organization_id, "rid": request_id,
                     "waiting": list(WAITING), "member": who, "tid": thread_id,
-                    "answer": (answer or "")[:_ANSWER_CHARS],
+                    **extra,
                 },
             ).first()
     except DBAPIError as exc:
@@ -591,7 +653,9 @@ def claim_stored_call(
 #: stored call that the claim took. The WHERE is the claim's own: the org
 #: beside RLS, the request id, the member, the thread, a row that has not
 #: expired, and a column that the claim set to NULL. No run waits on the card
-#: (the thread was at rest), so ``parked`` is its true state.
+#: (the thread was at rest), so ``parked`` is its true state. A declined
+#: claim (:func:`claim_declined_call`) is never given back: its ``closed``
+#: row never matches (review of RESUME-4a-2, P2-1).
 _RESTORE_SQL = (
     "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
     "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
@@ -811,14 +875,19 @@ def _remember_parked(request_id: str) -> None:
         _PARKED.pop(next(iter(_PARKED)))
 
 
-async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None, str]:
-    """``(org, run_id, agent, actor)`` of the run on *thread_id*, server side."""
+async def _run_facts(
+    thread_id: str,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
+    """``(org, run_id, agent, actor, message_id)`` of the run on *thread_id*,
+    server side. ``message_id`` is the id of the run's reply row, from the
+    ``run_liveness`` record of the run (RESUME-2b). :func:`_record` reads the
+    first four by position, so a stand-in that gives four still works."""
     org: str | None = None
     with contextlib.suppress(Exception):
         from acb_common.db import current_tenant
 
         org = current_tenant()
-    run_id = agent = None
+    run_id = agent = message_id = None
     with contextlib.suppress(Exception):
         from orchestrator import run_liveness, stream_relay
 
@@ -829,21 +898,29 @@ async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None
             org = org or (str(rec.get("org")) if rec.get("org") else None)
             run_id = str(rec.get("runId") or "") or None
             agent = str(rec.get("agent") or "") or None
+            message_id = str(rec.get("messageId") or "") or None
     actor = ""
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import get_run_actor
 
         actor = (await get_run_actor(thread_id) or "").strip().lower()
-    return org, run_id, agent, actor
+    return org, run_id, agent, actor, message_id
 
 
 async def _record(thread_id: str, ask: CardAsk,
                   stored: dict[str, Any] | None = None) -> str | None:
-    org, run_id, agent, actor = await _run_facts(thread_id)
+    facts = await _run_facts(thread_id)
+    org, run_id, agent, actor = facts[:4]
     if not org:
         # No tenant, so no row: the fail-closed answer (a run with no org has
         # no tenant to be listed under, as in ``register_live_run``).
         return None
+    message_id = facts[4] if len(facts) > 4 else None
+    if stored is not None and message_id:
+        # RESUME-2b: the stored call names the reply row of the card, from
+        # the run's own record, never from an event field. The key is
+        # additive: version 1 stays, and each reader allows a call with none.
+        stored = {**stored, "message_id": message_id}
     row = {
         "request_id": ask.request_id, "thread_id": thread_id, "run_id": run_id,
         "actor_email": actor, "agent_name": agent, "kind": ask.kind,
@@ -961,8 +1038,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.
@@ -1089,6 +1168,16 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })
+    # D-RES-7 (RESUME-2b): the park ends the stream here, so the stream lives
+    # 24 hours from now. Only where a late Approve can go on in the same
+    # reply: CHAT_RESUME_ORGS and CHAT_LATE_APPROVE_ORGS both name the org.
+    # Off, the stream keeps the life of before. It never raises.
+    with contextlib.suppress(Exception):
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        if chat_resume_on(org) and late_approve_on(org):
+            await stream_relay.keep_parked_stream(thread_id)
     _log.info("pending_ask.parked", request_id=request_id[:12], thread_id=thread_id[:12])
     # The drain's finally saves the reply so far (on_complete), marks the run
     # inactive and clears its live-run entry. That save is the checkpoint.
@@ -1096,11 +1185,163 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
     return True
 
 
+# ── RESUME-5: park at the stop (chat_run_continuity.md §4.12.5) ─────────────
+#
+# The gateway's stop step calls ``POST /internal/drain/park`` once, before its
+# first count (``gateway.routes.drain``). That route calls :func:`park_at_stop`.
+# It wakes each wait that took an entry here, and each wait then parks IN ITS
+# OWN TASK (``executor.wait_user_future``). The park must run there, because
+# it reads two ContextVars of the run: the HRD-22 offer reads the card of the
+# wait (``ask_tools.waiting_card``), and the "Not done" line reads the closed
+# cards of the run (``ask_tools.take_closed_card_line``). A call from the route
+# task would lose both.
+#
+# Only a wait whose org both resume flags name takes an entry, and the park
+# checks the flags again with the org of the row (:func:`park_for_stop`). With
+# a flag off, no entry exists and each wait is the wait of before.
+#
+# The stop wakes only the entries that exist when it runs. A card that opens
+# after that does not park: it takes the restart path of before (the owner's
+# decision of 2026-11-19).
+
+#: The waits that can park at the stop, by request id: ``(wake, outcome,
+#: thread id)``. The stop sets ``wake`` once. The wait sets ``outcome`` to
+#: True when its run parked, and to False when it did not.
+_STOP_WAITS: dict[str, tuple[asyncio.Future[None], asyncio.Future[bool], str]] = {}
+
+#: How long :func:`park_at_stop` waits for the parks that it woke. A park is
+#: one UPDATE and a few Redis writes. The stop script waits longer for the
+#: answer (``GATEWAY_DRAIN_PARK_SECONDS`` in ``gateway-drain.sh``).
+STOP_PARK_SECONDS = 5.0
+
+
+def resume_flags_on(org: str | None) -> bool:
+    """True when ``CHAT_RESUME_ORGS`` and ``CHAT_LATE_APPROVE_ORGS`` both name
+    *org*. A missing org reads False, also for ``*``. Never raises."""
+    if not org:
+        return False
+    try:
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        return bool(chat_resume_on(org) and late_approve_on(org))
+    except Exception:
+        return False
+
+
+def stop_wait(request_id: str, thread_id: str) -> asyncio.Future[None] | None:
+    """The Future that the stop sets for the wait on *request_id* (RESUME-5),
+    or None for no park at the stop.
+
+    ``executor.wait_user_future`` is the one caller, once, at the start of a
+    durable wait, in the run's own task. The org is the tenant that the run
+    bound, never an event field. None unless both resume flags name that org,
+    and None for a second wait on one request id. Sync, and never raises.
+    """
+    if not request_id or not thread_id or request_id in _STOP_WAITS:
+        return None
+    try:
+        from acb_common.db import current_tenant
+
+        if not resume_flags_on(current_tenant()):
+            return None
+        loop = asyncio.get_running_loop()
+    except Exception:
+        return None
+    wake: asyncio.Future[None] = loop.create_future()
+    _STOP_WAITS[request_id] = (wake, loop.create_future(), thread_id)
+    return wake
+
+
+def end_stop_wait(request_id: str) -> None:
+    """Drop the entry of *request_id*, and give the stop its outcome: True
+    when this process parked the request. The wait calls it on each way out,
+    and after a park at the stop that did not park. Sync, and never raises."""
+    entry = _STOP_WAITS.pop(str(request_id or ""), None)
+    if entry is None:
+        return
+    wake, outcome, _thread = entry
+    with contextlib.suppress(Exception):
+        if not wake.done():
+            wake.cancel()
+    with contextlib.suppress(Exception):
+        if not outcome.done():
+            outcome.set_result(request_id in _PARKED)
+
+
+def parking_threads() -> set[str]:
+    """The threads whose wait the stop woke, and whose park has not ended.
+
+    ``GET /internal/drain`` counts each of them as a running run, and not as
+    a run that waits on a person. Until its park pops the Future, the thread
+    reads as waiting (``executor.threads_waiting_on_a_person``). Without
+    this, a first count of 0 lets the stop cut a park in the middle, before
+    the drain of the run saves the reply.
+
+    Each entry gives the thread of its wait AND the owner thread that the
+    Future recorded (``_pending_user_input.owner_of``), the key of that skip
+    set. So the two can never differ."""
+    try:
+        from orchestrator.executor import _pending_user_input
+
+        owner_of = _pending_user_input.owner_of
+    except Exception:
+        def owner_of(_request_id: str) -> str | None:
+            return None
+    out: set[str] = set()
+    for request_id, (wake, outcome, thread) in list(_STOP_WAITS.items()):
+        if wake.done() and not wake.cancelled() and not outcome.done():
+            out.add(thread)
+            owner = owner_of(request_id)
+            if owner:
+                out.add(owner)
+    return out
+
+
+async def park_for_stop(request_id: str, thread_id: str, fut: Any = None) -> bool:
+    """Park the run that waits on *request_id*, at the stop (RESUME-5). True
+    when parked.
+
+    The org is the org of the card's row (the insert), as :func:`park` reads
+    it. Both resume flags must name it, else nothing changes. Then it is
+    :func:`park`, unchanged: the row goes to ``parked``, the stream ends with
+    the parked ``RUN_FINISHED``, the stream lives 24 hours (D-RES-7), and the
+    run ends. The drain of the run saves the reply and forgets its record, so
+    the next process writes no ``run_interrupted`` mark."""
+    org = await _insert_org(request_id, pop=False)
+    if not resume_flags_on(org):
+        return False
+    return await park(request_id, thread_id, fut)
+
+
+async def park_at_stop(bound: float = STOP_PARK_SECONDS) -> dict[str, int]:
+    """Wake each wait that can park at the stop, and wait at most *bound*
+    seconds for their outcomes (RESUME-5). ``{"tried", "parked"}``.
+
+    ``gateway.routes.drain`` is the one caller. It wakes only the entries that
+    exist now: a card that opens later does not park. Never raises.
+    """
+    entries = list(_STOP_WAITS.values())
+    for wake, _outcome, _thread in entries:
+        if not wake.done():
+            wake.set_result(None)
+    outcomes = [outcome for _wake, outcome, _thread in entries]
+    if outcomes:
+        with contextlib.suppress(Exception):
+            await asyncio.wait(outcomes, timeout=max(0.0, float(bound)))
+    parked = sum(
+        1 for o in outcomes if o.done() and not o.cancelled() and o.result() is True
+    )
+    _log.info("pending_ask.parked_at_stop", tried=len(entries), parked=parked)
+    return {"tried": len(entries), "parked": parked}
+
+
 def _reset_for_tests() -> None:
     _INSERTS.clear()
     _THREAD_OF.clear()
     _PARKED.clear()
     _STORED.clear()
+    _STOP_WAITS.clear()
 
 
 register_prune()

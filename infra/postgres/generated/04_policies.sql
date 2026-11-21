@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 200
+-- Tables in this phase: 203
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -180,6 +180,13 @@ CREATE POLICY chat_card_record_tenant_isolation ON chat_card_record
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE chat_join_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_join_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_join_log_tenant_isolation ON chat_join_log;
+CREATE POLICY chat_join_log_tenant_isolation ON chat_join_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE chat_message ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_message FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_message_tenant_isolation ON chat_message;
@@ -226,6 +233,13 @@ ALTER TABLE chat_topic ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_topic FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_topic_tenant_isolation ON chat_topic;
 CREATE POLICY chat_topic_tenant_isolation ON chat_topic
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE connection_semantic_models ENABLE ROW LEVEL SECURITY;
+ALTER TABLE connection_semantic_models FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS connection_semantic_models_tenant_isolation ON connection_semantic_models;
+CREATE POLICY connection_semantic_models_tenant_isolation ON connection_semantic_models
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1538,6 +1552,13 @@ CREATE POLICY studio_skill_versions_tenant_isolation ON studio_skill_versions
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE studio_skill_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_skill_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_skill_runs_tenant_isolation ON studio_skill_runs;
+CREATE POLICY studio_skill_runs_tenant_isolation ON studio_skill_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE package_install ENABLE ROW LEVEL SECURITY;
 ALTER TABLE package_install FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS package_install_tenant_isolation ON package_install;
@@ -1752,5 +1773,19 @@ ALTER TABLE pm_epic_contracts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;
 CREATE POLICY pm_epic_contracts_tenant_isolation ON pm_epic_contracts
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE failure_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failure_events FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS failure_events_tenant_isolation ON failure_events;
+CREATE POLICY failure_events_tenant_isolation ON failure_events
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE failure_org_days ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failure_org_days FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS failure_org_days_tenant_isolation ON failure_org_days;
+CREATE POLICY failure_org_days_tenant_isolation ON failure_org_days
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
