@@ -549,7 +549,8 @@ PROJECTS_DOOR = App(
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
               off_door=LATER),
-        Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=LATER),
+        # SW-113: the typed tool `get_agent_map` reads the map shape.
+        Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=TYPED),
         Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A",
               off_door=LATER),
         Route("GET", "/projects/needs-attention", "needs_attention", "A", off_door=LATER),
