@@ -212,3 +212,33 @@ def test_the_log_file_rotates_daily_and_keeps_90_days(tmp_path):
 
 def test_no_log_dir_means_no_file():
     assert open_call_log("") is None
+
+
+def test_status_with_tally_down_logs_tally_down(caplog_calls):
+    class Down(Reader):
+        async def is_up(self) -> bool:
+            return False
+
+    result = call(build_read_server(Down(), ONE), "status", {})
+    assert result.content[0].text == "TallyPrime is not running on the office machine."
+    [line] = lines(caplog_calls)
+    assert line["result"] == "tally_down"
+
+
+def test_a_crash_logs_error_and_answers_one_plain_sentence(caplog_calls):
+    class Crash(Reader):
+        async def post(self, envelope: bytes):
+            raise RuntimeError("secret internal detail")
+
+    result = call(build_read_server(Crash(), ONE), "find_ledgers", {"query": "a"})
+    assert result.isError is True
+    assert result.content[0].text == "The bridge failed on this call. Try again."
+    [line] = lines(caplog_calls)
+    assert line["result"] == "error"
+
+
+def test_an_unknown_tool_logs_unknown_tool(caplog_calls):
+    result = call(build_read_server(Reader(), ONE), "no_such_tool", {})
+    assert result.isError is True
+    [line] = lines(caplog_calls)
+    assert line["result"] == "unknown_tool"

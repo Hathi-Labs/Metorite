@@ -21,6 +21,7 @@ grow the ``tools/list`` answer.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Annotated, Any
 
@@ -31,13 +32,19 @@ from pydantic import Field, ValidationError
 
 from tally_bridge import __version__, calllog
 from tally_bridge.calllog import CallLimiter
-from tally_bridge.reader import TallyAnswerError, TallyReader, TallyRefused, envelope, records
+from tally_bridge.reader import (
+    TallyAnswerError,
+    TallyDown,
+    TallyReader,
+    TallyRefused,
+    envelope,
+    records,
+)
 from tally_bridge.reader.values import Amount
 from tally_bridge.settings import Settings
 from tally_bridge.tools.common import (
     CALL_CODE,
     READ_ONLY,
-    TALLY_DOWN,
     TEXT_LIMIT,
     Refusal,
     guarded,
@@ -47,6 +54,8 @@ from tally_bridge.tools.common import (
 from tally_bridge.tools.reports import register_report_tools
 
 FIND_LIMIT = 50
+
+log = logging.getLogger("tally_bridge.tools")
 
 Company = Annotated[str | None, Field(description="Company name. Optional with one company.")]
 
@@ -67,7 +76,7 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
     async def status() -> CallToolResult:
         async def work() -> dict[str, Any]:
             if not await reader.is_up():
-                raise Refusal(TALLY_DOWN)
+                raise TallyDown
             try:
                 root = await reader.post(envelope.collection("BridgeCompanies", company=None))
                 open_now: set[str] | None = set(records.company_names(root))
@@ -160,9 +169,17 @@ class _BridgeMCP(FastMCP):
             code = CALL_CODE.get()
             rows = _row_count(result)
             return result
-        except ToolError:
+        except _InputError:
             code = "bad_input"
             raise
+        except ToolError as exc:
+            if str(exc).startswith("Unknown tool"):
+                code = "unknown_tool"
+                raise
+            # A crash inside a tool. The member gets one plain sentence, and the
+            # log keeps the detail.
+            log.exception("tool %s failed", name)
+            raise ToolError("The bridge failed on this call. Try again.") from None
         finally:
             calllog.record(name, arguments, code, (time.monotonic() - start) * 1000, rows)
 
@@ -175,8 +192,12 @@ class _BridgeMCP(FastMCP):
                 raise
             fields = sorted({str(e["loc"][0]) for e in cause.errors() if e.get("loc")})
             if not fields:
-                raise ToolError("Check the inputs of this call.") from None
-            raise ToolError(f"Check these inputs: {', '.join(fields)}.") from None
+                raise _InputError("Check the inputs of this call.") from None
+            raise _InputError(f"Check these inputs: {', '.join(fields)}.") from None
+
+
+class _InputError(ToolError):
+    """A missing or wrong input, as one plain sentence."""
 
 
 def _row_count(result: Any) -> int | None:
