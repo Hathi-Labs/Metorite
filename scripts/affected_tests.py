@@ -577,6 +577,8 @@ ACB_COMMON_SEAMS = frozenset({
     "packages/acb_common/acb_common/placement.py",
     "packages/acb_common/acb_common/provisioning.py",
     "packages/acb_common/acb_common/object_store.py",
+    # The failure store writer (TOF-2b): a session of the DB seam for each org.
+    "packages/acb_common/acb_common/failure_log.py",
 })
 # env_guard.py: `    "NAME",` or `    "A", "B",`. A settings.py field is read with `ast`.
 _GUARD_FLAG = re.compile(r'^    ((?:"[A-Z][A-Z0-9_]*",\s*)+)$')

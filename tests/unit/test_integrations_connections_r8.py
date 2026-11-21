@@ -644,3 +644,72 @@ async def test_a_member_without_manage_gets_403_and_nothing_changes(ns, app_engi
     res = await _patch_mcp(ns, reader, a.mcp, {"description": "After."})
     assert res.status_code == 403, res.text
     assert _meta_description(ns, ns.org_a, a.mcp) == "Before."
+
+
+# -- CSY-8: the use counts of an MCP server, for the panel -------------------------
+
+
+@pytest.fixture
+def use_redis(monkeypatch):
+    """A fake Redis under the tenant wrapper. The database half is real."""
+    from acb_common import mcp_use
+    from acb_common.tenant_redis import TenantRedis
+
+    from tests.unit.test_mcp_use_counter import FakeRedis
+
+    fake = FakeRedis()
+    monkeypatch.setattr(mcp_use, "_client", lambda: TenantRedis(fake))
+    return fake
+
+
+async def _use(p: Any, user: Any, name: str) -> Any:
+    from gateway.routes import integrations as integrations_routes
+
+    return await _call(p, user, "GET", f"/integrations/mcp/{name}/use",
+                       router_module=integrations_routes)
+
+
+async def test_an_admin_reads_the_seven_days_of_a_server_of_the_org(ns, app_engine, use_redis) -> None:  # noqa: F811
+    from acb_common import mcp_use
+
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    await mcp_use.count_call(ns.org_a, a.mcp)
+    await mcp_use.count_call(ns.org_a, a.mcp)
+    await mcp_use.count_left_out(ns.org_a, a.mcp, "mail")
+    res = await _use(ns, _user(ADMIN_A, ns.org_a), a.mcp)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["available"] is True and len(body["days"]) == 7
+    assert body["calls_7d"] == 2 and body["left_out_7d"]["mail"] == 1
+    assert body["days"][-1]["calls"] == 2 and body["last_call_at"]
+
+
+async def test_org_b_gets_404_for_a_server_of_org_a_and_reads_no_count(ns, app_engine, use_redis) -> None:  # noqa: F811
+    from acb_common import mcp_use
+
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    await _seed(ns, ns.org_b, "b")
+    await mcp_use.count_call(ns.org_a, a.mcp)
+    res = await _use(ns, _user(ADMIN_B, ns.org_b), a.mcp)
+    assert res.status_code == 404, res.text
+    assert not [k for op, k in use_redis.log if op == "mget" and ns.org_b in k], "no read for a 404"
+
+
+async def test_the_use_read_is_403_without_manage_on_the_real_database(ns, app_engine, use_redis) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    reader = _user("reader-a@in1-r8.test", ns.org_a, ["feature:integrations", "admin:members:read"])
+    res = await _use(ns, reader, a.mcp)
+    assert res.status_code == 403, res.text
+    assert use_redis.log == []
+
+
+async def test_a_redis_fault_gives_zeros_and_not_available_with_200(ns, app_engine, use_redis) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    use_redis.fail.add("mget")
+    res = await _use(ns, _user(ADMIN_A, ns.org_a), a.mcp)
+    assert res.status_code == 200, res.text
+    assert res.json()["available"] is False and res.json()["calls_7d"] == 0

@@ -40,6 +40,10 @@ OVER_BUDGET: dict[str, str] = {
     "tests/unit/test_no_person_present.py": "task 3074, every test is a scan",
     "tests/unit/test_flag_reload.py": "task 3074, every test is a scan",
     "tests/unit/test_email_self_reader_tenant_fence.py": "task 3074, every test is a scan",
+    # Over the budget in the refresh of 2026-11-19 (CIV-33b). Each needs its scan fence in a small file.
+    "tests/unit/test_auto_revert.py": "task 3074, dated 2026-11-19, 61 s",
+    "tests/unit/test_console_dependency_boundary.py": "task 3074, dated 2026-11-19, 38 s",
+    "tests/unit/test_merge_bot.py": "task 3074, dated 2026-11-19, 36 s",
 }
 
 

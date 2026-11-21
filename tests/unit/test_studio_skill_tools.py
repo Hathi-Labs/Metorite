@@ -1147,7 +1147,7 @@ async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None
 
 async def test_a_version_with_only_instructions_keeps_the_rest_of_the_body(gw, card) -> None:
     """Mutation: an omitted field is sent empty, or the copy drops a key -> red."""
-    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [1, 2]}
+    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [{"id": "t1", "input": "x", "expect": []}]}
     sid = gw.seed(body=stored)
     out = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.", based_on=await _based_on(sid))
     assert out["ok"], out
