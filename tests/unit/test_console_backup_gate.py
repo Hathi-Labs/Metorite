@@ -412,3 +412,15 @@ def test_the_preflight_skips_console_dirs_when_it_picks_the_newest_night():
         encoding="utf-8"
     )
     assert 'not p.name.endswith("-console")' in text
+
+
+def test_the_console_only_run_sets_umask_077_and_never_prunes_its_own_dir():
+    """H-170 review: a dump at 0644 or a pruned fresh dump are both defects."""
+    import pathlib
+
+    text = (pathlib.Path(__file__).resolve().parents[2] / "scripts" / "backup_db.sh").read_text(encoding="utf-8")
+    block = text.split('if [ "$console_only" = "1" ]; then', 2)[2] if text.count('if [ "$console_only" = "1" ]; then') > 1 else text
+    start = text.index('console_keep=5')
+    block = text[start:]
+    assert block.index("umask 077") < block.index('mkdir -p "$DEST"')
+    assert '= "$DEST" ]; then cc_i=$((cc_i + 1)); continue; fi' in block

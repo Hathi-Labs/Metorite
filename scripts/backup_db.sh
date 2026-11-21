@@ -617,6 +617,8 @@ rm_night() {
 #      the key file and the server pins.
 console_keep=5
 if [ "$console_only" = "1" ]; then
+  # The dump and its error file hold data and a DSN. Only the owner may read them.
+  umask 077
   if [ -z "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
     echo "ERROR: --console-only needs CUSTOMER_CONSOLE_DATABASE_URL, and it is unset." >&2
     echo "       Nothing was dumped." >&2
@@ -650,6 +652,8 @@ if [ "$console_only" = "1" ]; then
   shopt -u nullglob
   cc_i=0
   while [ "$cc_i" -lt "$(( ${#cc_dirs[@]} - console_keep ))" ]; do
+    # Never prune the dir this run just wrote, even when the clock stepped back.
+    if [ "${cc_dirs[$cc_i]}" = "$DEST" ]; then cc_i=$((cc_i + 1)); continue; fi
     echo "    pruning ${cc_dirs[$cc_i]##*/}"
     if ! rm_night "${cc_dirs[$cc_i]}" 2>/dev/null; then
       warn "could not prune ${cc_dirs[$cc_i]##*/}. The Console backup itself SUCCEEDED."
