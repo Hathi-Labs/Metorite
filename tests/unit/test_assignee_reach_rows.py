@@ -133,3 +133,33 @@ async def test_a_member_who_can_open_the_task_has_no_row(monkeypatch) -> None:
     await skill_projects.create_task(UUID, "Survey the site", assignees=KNOWN)
     for key in ("cannot open the task", "not in the directory"):
         assert key not in asked[0]["context"]
+
+
+async def test_the_plan_card_names_an_owner_who_cannot_open(monkeypatch) -> None:
+    """``propose_plan``: the plan card carries the same row (task 3636)."""
+    import json
+
+    from tests.unit._projects_agent_fakes import form_stub
+    from tests.unit.test_projects_agent_writes import _plan_gateway, _plan_submit
+
+    rows = [{"key": "t1", "title": "Order the steel", "owner": OFF, "effort_mins": 60,
+             "due": "2026-10-10"},
+            {"key": "t2", "title": "Weld the frame", "owner": KNOWN, "effort_mins": 60,
+             "due": "2026-10-12"},
+            {"key": "t3", "title": "Paint the frame", "owner": STRANGER, "effort_mins": 60,
+             "due": "2026-10-14"}]
+    form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    plan = _plan_gateway()
+
+    def both(call: dict) -> Any:
+        if call["path"].startswith("/projects/people/"):
+            return _directory(call)
+        return plan(call)
+
+    fake_gateway(monkeypatch, both)
+    await skill_projects.propose_plan("Frame", json.dumps(rows))
+    context = asked[0]["context"]
+    assert f"cannot open the task: «{OFF}»" in context
+    assert f"not in the directory: «{STRANGER}»" in context
+    assert KNOWN not in context.split("cannot open the task")[1].split("»")[0]
