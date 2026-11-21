@@ -42,11 +42,12 @@
 --
 --   * `organization_id` of each pm_* table. It names the org itself.
 --   * The 29 attachments of `pm_organization_from_parent` (161, 402 and 471).
+--     One of them, `pm_epic_contracts.task_id`, also has its own guard (402).
 --   * The keys that already have a named same-org guard: `pm_cycles.project_id`
 --     and `pm_cycle_tasks.task_id` (372), `pm_project_authorities.project_id`
---     and `.page_id` (339), `pm_project_updates.project_id` (383),
+--     and `.page_id` (339), `pm_project_updates.project_id` (383), and
 --     `pm_templates.source_project_id` and `pm_template_applies.template_id`
---     and `.project_id` (384), and `pm_epic_contracts.task_id` (402).
+--     and `.project_id` (384).
 --   * The composite keys `(organization_id, cycle_id)` of `pm_cycle_tasks`,
 --     `pm_cycle_committed` and `pm_cycle_capacity` (372). The org is part of
 --     the key, so the row is of the same org by construction.
@@ -108,9 +109,21 @@
 -- the bound org, so it still passes. Idempotent per infra/postgres/README.md:
 -- CREATE OR REPLACE FUNCTION and CREATE OR REPLACE TRIGGER (the form of 402).
 -- CREATE OR REPLACE TRIGGER takes SHARE ROW EXCLUSIVE, not the ACCESS
--- EXCLUSIVE of a DROP TRIGGER. Every task write takes `pm_tasks`, so the
--- file sets `lock_timeout` first, as 401 does. On a lock timeout the runner
--- tries the whole file again.
+-- EXCLUSIVE of a DROP TRIGGER.
+--
+-- ── One transaction for each statement (no deadlock) ───────────────────────
+--
+-- The file is 20 blocks: the function first, then one block for each
+-- attachment. Each block is `BEGIN; SET LOCAL lock_timeout = '5s'; <one
+-- statement>; COMMIT;`. So the file holds the lock of one table at a time. A
+-- single transaction held ten table locks at once. An agent activity write
+-- takes `pm_agent_run_activities` and then `pm_activities`, in the other
+-- order, so the deploy could deadlock (40P01). The runner retries only a lock
+-- timeout, so a deadlock stops the release. The runner pipes the file to
+-- `psql -v ON_ERROR_STOP=1` with no `--single-transaction`, so the blocks
+-- commit in turn. On an error the file stops, and the blocks before it stay
+-- committed. Each statement is idempotent, so the retry of the runner and
+-- the next deploy run the whole file again with no harm.
 --
 -- No new table, so no `gen_tenant_migration.EXEMPT` row and no generated
 -- policy change. No database connection site (R5).
@@ -129,9 +142,7 @@
 -- ============================================================================
 
 BEGIN;
-
 SET LOCAL lock_timeout = '5s';
-
 CREATE OR REPLACE FUNCTION pm_same_org_ref() RETURNS trigger
 LANGUAGE plpgsql AS $pm_ref$
 DECLARE
@@ -156,7 +167,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    EXECUTE format('SELECT organization_id FROM %I WHERE id = $1', ref_table)
+    EXECUTE format('SELECT organization_id FROM public.%I WHERE id = $1', ref_table)
         INTO ref_org USING ref_id;
     GET DIAGNOSTICS ref_rows = ROW_COUNT;
 
@@ -170,81 +181,137 @@ BEGIN
     RETURN NEW;
 END;
 $pm_ref$;
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_projects_same_org_archived_root_id
     BEFORE INSERT OR UPDATE OF archived_root_id, organization_id ON pm_projects
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_projects', 'archived_root_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_parent_task_id
     BEFORE INSERT OR UPDATE OF parent_task_id, organization_id ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'parent_task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_merged_into_task_id
     BEFORE INSERT OR UPDATE OF merged_into_task_id, organization_id ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'merged_into_task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_status_id
     BEFORE INSERT OR UPDATE OF status_id, organization_id ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_task_statuses', 'status_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_type_id
     BEFORE INSERT OR UPDATE OF type_id, organization_id ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_task_types', 'type_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_recurrence_id
     BEFORE INSERT OR UPDATE OF recurrence_id, organization_id ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_recurrences', 'recurrence_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_activities_same_org_parent_id
     BEFORE INSERT OR UPDATE OF parent_id, organization_id ON pm_activities
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_activities', 'parent_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_notifications_same_org_activity_id
     BEFORE INSERT OR UPDATE OF activity_id, organization_id ON pm_notifications
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_activities', 'activity_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_task_refs_same_org_task_id
     BEFORE INSERT OR UPDATE OF task_id, organization_id ON pm_task_refs
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_runs_same_org_task_id
     BEFORE INSERT OR UPDATE OF task_id, organization_id ON pm_agent_runs
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_runs_same_org_connection_id
     BEFORE INSERT OR UPDATE OF connection_id, organization_id ON pm_agent_runs
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('agent_connection', 'connection_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_activities_same_org_run_id
     BEFORE INSERT OR UPDATE OF run_id, organization_id ON pm_agent_run_activities
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_agent_runs', 'run_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_activities_same_org_task_id
     BEFORE INSERT OR UPDATE OF task_id, organization_id ON pm_agent_run_activities
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_activities_same_org_in_reply_to
     BEFORE INSERT OR UPDATE OF in_reply_to, organization_id ON pm_agent_run_activities
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_agent_run_activities', 'in_reply_to');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_activities_same_org_pm_activity_id
     BEFORE INSERT OR UPDATE OF pm_activity_id, organization_id ON pm_agent_run_activities
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_activities', 'pm_activity_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_strands_same_org_run_id
     BEFORE INSERT OR UPDATE OF run_id, organization_id ON pm_agent_run_strands
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_agent_runs', 'run_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_run_strands_same_org_task_id
     BEFORE INSERT OR UPDATE OF task_id, organization_id ON pm_agent_run_strands
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'task_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_guidance_same_org_project_id
     BEFORE INSERT OR UPDATE OF project_id, organization_id ON pm_agent_guidance
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_projects', 'project_id');
+COMMIT;
 
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_policies_same_org_project_id
     BEFORE INSERT OR UPDATE OF project_id, organization_id ON pm_agent_policies
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_projects', 'project_id');
-
 COMMIT;

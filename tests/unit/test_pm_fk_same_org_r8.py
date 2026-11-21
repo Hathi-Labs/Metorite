@@ -20,6 +20,11 @@ A session bound to org A could set such a key to the id of a row of org B.
 * The same INSERT that names the row of org A works and gets org A, with the
   org named and with no org named.
 * A NULL key works, for each key where NULL makes a valid row.
+* A superuser that names the row of org B is refused too. The guard compares
+  the orgs, and does not rely on RLS to hide the row.
+* The file has 20 transactions: the function, then one for each attachment.
+  So a deploy holds the lock of one table at a time, and cannot deadlock with
+  a write that takes two of the tables.
 * An UPDATE that sets the key to the row of org B is refused (23503). An
   UPDATE that sets the key to the same value works. ``pm_agent_guidance`` and
   ``pm_agent_policies`` are left out: their own guard refuses each UPDATE.
@@ -61,6 +66,7 @@ fixture hashes the ladder files, so the next run builds a new template.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -96,6 +102,25 @@ def _migration() -> str:
             found.append(body)
     assert len(found) == 1, f"expected one migration with the guard, found {len(found)}"
     return found[0]
+
+
+def _sql_blocks_text() -> str:
+    """The SQL of the file after its header: from the first ``BEGIN;`` line."""
+    body = _migration().replace("\r\n", "\n")
+    return body[body.index("\nBEGIN;\n"):]
+
+
+def _sql_blocks() -> list[str]:
+    """The body of each ``BEGIN; ... COMMIT;`` block, in file order."""
+    rest = _sql_blocks_text()
+    out = []
+    while "\nBEGIN;\n" in rest:
+        start = rest.index("\nBEGIN;\n") + len("\nBEGIN;\n")
+        end = rest.index("\nCOMMIT;\n", start)
+        out.append(rest[start:end + 1])
+        rest = rest[end + len("\nCOMMIT;"):]
+    assert rest.strip() == "", f"SQL outside a block: {rest.strip()[:80]}"
+    return out
 
 
 def _message(table: str, column: str, parent: str) -> str:
@@ -298,11 +323,26 @@ class TestTheMigration:
         assert "IS NOT DISTINCT FROM ref_id::text" in flat
         assert "NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id" in flat
         assert "ref_org IS DISTINCT FROM NEW.organization_id" in flat
-        body = flat.split("BEGIN;", 1)[1]
+        body = " ".join(_sql_blocks_text().split())
         assert "SECURITY DEFINER" not in body
         # The guard never derives an org: no assignment to NEW.
         assert "NEW.organization_id :=" not in body
         assert "pm_organization_from_parent" not in body
+        # The lookup names the schema, so a search_path cannot redirect it.
+        assert "SELECT organization_id FROM public.%I WHERE id = $1" in body
+
+    def test_each_statement_runs_in_its_own_transaction(self) -> None:
+        """No deadlock at deploy: the file holds the lock of one table at a
+        time. 20 blocks: the function, then one block for each attachment."""
+        blocks = _sql_blocks()
+        assert len(blocks) == 1 + len(PROBES), len(blocks)
+        assert "CREATE OR REPLACE FUNCTION pm_same_org_ref()" in blocks[0]
+        for block in blocks:
+            assert block.startswith("SET LOCAL lock_timeout = '5s';\n"), block
+            assert block.count("CREATE OR REPLACE ") == 1, block
+        for block in blocks[1:]:
+            assert block.startswith(
+                "SET LOCAL lock_timeout = '5s';\nCREATE OR REPLACE TRIGGER "), block
 
     def test_the_database_runs_the_472_body(self, world) -> None:
         promoted_, _eng, _a, _b = world
@@ -369,8 +409,8 @@ class TestTheFence:
             )).all()
             guarded = (_attachments(c, "pm_organization_from_parent")
                        | _attachments(c, "pm_same_org_ref"))
-            named = {(r[0], r[1]) for r in c.execute(text(
-                "SELECT c.relname, t.tgname FROM pg_trigger t "
+            named = {(r[0], r[1]): r[2] for r in c.execute(text(
+                "SELECT c.relname, t.tgname, pg_get_triggerdef(t.oid) FROM pg_trigger t "
                 "JOIN pg_class c ON c.oid = t.tgrelid WHERE NOT t.tgisinternal "
                 "AND c.relname LIKE 'pm\\_%'")).all()}
         by_key = {(t, col): parent for t, col, parent in guarded}
@@ -381,7 +421,15 @@ class TestTheFence:
             assert len(columns) == 1, f"{table}{columns}: a composite key with no org"
             key = (table, columns[0])
             if key in NAMED_GUARDS:
-                assert (table, NAMED_GUARDS[key]) in named, f"{key}: guard gone"
+                definition = named.get((table, NAMED_GUARDS[key]))
+                assert definition is not None, f"{key}: guard gone"
+                # The guard fires on an INSERT, and on an UPDATE of the key
+                # and of the org.
+                assert "BEFORE INSERT OR UPDATE" in definition, definition
+                listed = re.search(r"UPDATE OF ([\w, ]+) ON ", definition)
+                if listed is not None:
+                    cols = {col.strip() for col in listed.group(1).split(",")}
+                    assert {columns[0], "organization_id"} <= cols, definition
             elif key not in by_key:
                 missing.append(f"{table}.{columns[0]} -> {parent}")
             elif by_key[key] != parent:
@@ -466,6 +514,23 @@ class TestTheInsertProbes:
         promoted_ = world[0]
         org = _insert_own(world, table, column, explicit=True, null_key=True)
         assert org == promoted_.org_a
+
+    def test_a_role_that_bypasses_rls_is_refused_too(self, world) -> None:
+        """The admin is a superuser, so it reads the type of org B. The guard
+        compares the orgs, and does not rely on RLS to hide the row."""
+        promoted_, _eng, a, b = world
+        row = _row("pm_tasks", "type_id", a, b)
+        row["organization_id"] = uuid.UUID(promoted_.org_a)
+        with promoted_.admin_engine.connect() as c:
+            tx = c.begin()
+            try:
+                with pytest.raises(DBAPIError) as caught:
+                    c.execute(text(_insert_sql("pm_tasks", row)), row)
+            finally:
+                tx.rollback()
+        state, message = _pg_error(caught.value)
+        assert state == "23503", message
+        assert _message("pm_tasks", "type_id", "pm_task_types") in message, message
 
 
 # ── The UPDATE probes ───────────────────────────────────────────────────────
