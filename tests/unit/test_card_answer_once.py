@@ -92,12 +92,32 @@ def test_steers_with_different_ids_both_count():
     steer.clear_guidance("tid-two")
 
 
+def _route_calls() -> dict[str, list[int]]:
+    """Line numbers of the calls inside ``respond_user_input``, by name.
+
+    Read from the syntax tree, not from text offsets: a docstring that names
+    ``_resume_from_row`` earlier in the file moved the old text offsets.
+    """
+    import ast
+
+    path = pathlib.Path("apps/services/gateway/gateway/routes/agent.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, list[int]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "respond_user_input":
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call):
+                    fn = call.func
+                    name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+                    found.setdefault(name, []).append(call.lineno)
+    return found
+
+
 def test_route_checks_the_mark_before_the_restart_path():
-    src = pathlib.Path("apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
-    i = src.index("was_answered(_org_id")
-    j = src.index("_resume_from_row(req, user)")
-    assert i < j
-    assert "mark_answered(_org_id" in src
+    calls = _route_calls()
+    assert calls.get("was_answered") and calls.get("_resume_from_row")
+    assert min(calls["was_answered"]) < min(calls["_resume_from_row"])
+    assert calls.get("mark_answered")
 
 
 def test_repeat_answer_is_a_409_not_a_false_success():
