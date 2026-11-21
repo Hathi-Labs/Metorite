@@ -1,5 +1,5 @@
 -- ============================================================================
--- 470_pm_org_from_parent_refuses_hidden_parent.sql — the pm_* tenant trigger
+-- 471_pm_org_from_parent_refuses_hidden_parent.sql — the pm_* tenant trigger
 -- refuses a parent that it cannot read (Metorite task 2324).
 --
 -- What: one CREATE OR REPLACE of the function `pm_organization_from_parent()`
@@ -57,8 +57,8 @@
 -- infra/postgres/README.md: CREATE OR REPLACE FUNCTION. No trigger is
 -- re-created, because a trigger names the function and not its body.
 --
--- The number is taken at build time (R1). The lane booked 471 on 2026-11-21.
--- PR 2692 then merged its own 471, so this file moved to 471 (booked
+-- The number is taken at build time (R1). The lane booked 470 on 2026-11-21.
+-- PR 2692 then merged its own 470, so this file moved to 471 (booked
 -- 14:43 UTC). Check it again at merge.
 --
 -- Fence (R7): tests/unit/test_pm_org_from_parent_r8.py. It probes each

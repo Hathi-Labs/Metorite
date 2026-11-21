@@ -39,7 +39,7 @@ Run::
   ``test_get_task_over_the_real_edge_returns_the_contract``.
 * M5. The migration loses ``trg_pm_epic_contracts_same_org``.
   ``test_the_numbered_migration_writes_its_policy_and_its_guard``. Since
-  task 2324 (471 at build) the 161 trigger refuses each cross-tenant write
+  task 2324 (470 at build, 471 at merge) the 161 trigger refuses each cross-tenant write
   of ``test_the_database_refuses_a_contract_across_tenants`` first, so M5
   leaves that test green. Its fence is ``test_pm_org_from_parent_r8.py``.
 * M6. ``G/epic_contract.py``: ``epic_contract_of`` skips ``task_is_epic``.

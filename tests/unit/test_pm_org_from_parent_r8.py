@@ -2,7 +2,7 @@
 
 Migration: the file that replaces ``pm_organization_from_parent()`` with the
 refusal of a parent that the caller cannot read. This file finds it by its
-CONTENT, never by number (R1). It was 471 at build time.
+CONTENT, never by number (R1). It was 470 at build time and 471 at merge.
 
 **The gap.** Under FORCE row level security a parent of another organization
 is a row that the trigger cannot read. The 161 body then returned in silence.
