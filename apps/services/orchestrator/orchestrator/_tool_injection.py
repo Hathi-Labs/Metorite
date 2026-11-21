@@ -2125,7 +2125,7 @@ def _drop_own_shell_tools(
         return
     try:
         from acb_skills.egress import _platform_owned
-    except Exception:  # noqa: BLE001 - no identity check means no exemption
+    except Exception:  # no identity check means no exemption
         def _platform_owned(item: Any, name: str) -> bool:  # type: ignore[misc]
             return False
     for agent in agents:
@@ -2138,7 +2138,7 @@ def _drop_own_shell_tools(
                         broker_tool = (
                             name in _BROKER_ONLY_SHELL_TOOLS and _platform_owned(item, name)
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         broker_tool = False
                     if not broker_tool:
                         _log.warning(

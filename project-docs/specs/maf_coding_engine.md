@@ -1221,7 +1221,7 @@ owner kept delegation (§16.3).
   installed the missing module on the host for every run. Now it asks
   `executor._run_may_install_dependency`, which reads the
   `shell_tools_withheld` binding. Only an explicit `False` lets it install:
-  the root agent, a personal agent or a covered run. A shared run installs
+  an agent that D85 leaves alone, or a covered run. A shared run installs
   nothing. A frame with no binding, or a fault of the reader, installs
   nothing too. The executor logs
   `executor.tool_dep_selfheal_refused`, and the tool result tells the model
@@ -1237,8 +1237,9 @@ owner kept delegation (§16.3).
 
 What these do not reach: MCP tools and the tools of a context provider are
 not own tool pools. The loader still installs the declared dependencies of
-an agent repo at load time, with wheels only (BO-7). That runs before the
-run binding exists, and the model does not choose the packages.
+an agent repo at load time, with wheels only (BO-7). That runs inside the
+load, before the executor binds the D85 flags from the loaded config. The
+model does not choose those packages.
 
 **Fence.** WS43-F23, `tests/unit/test_shared_agent_shell_tools.py`.
 

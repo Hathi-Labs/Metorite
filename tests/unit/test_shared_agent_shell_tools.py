@@ -1128,9 +1128,8 @@ class _SelfHealTier2Agent(_Tier2Agent):
         self.tools = [needs_pkg]
 
     async def run(self, *_a: Any, **_k: Any) -> Any:
-        from types import SimpleNamespace
-
         import contextlib
+        from types import SimpleNamespace
 
         tool_fn = next(t for t in self.tools if getattr(t, "__name__", "") == "needs_pkg")
         with contextlib.suppress(ImportError):
@@ -1247,19 +1246,23 @@ def test_a_withheld_run_drops_an_own_tool_named_like_a_shell_tool() -> None:
     assert "my_report" in names, names
 
 
-def test_app_builder_keeps_the_broker_run_command(monkeypatch) -> None:
+@pytest.mark.filterwarnings("ignore::Warning")
+def test_app_builder_keeps_the_broker_run_command() -> None:
     """app-builder is shared and uncovered, so D85 withholds all four names.
-    Its harness agent still holds the broker's ``run_command`` (§7.8)."""
-    from acb_skills import sandbox_tools
+    Its REAL harness agent (§7.8) still holds the broker's ``run_command``."""
+    from orchestrator.code_session import build_app_builder_agent
 
     cfg = _config("app-builder")
     assert ti._withheld_shell_tools("app-builder", cfg) == SHELL_TOOLS
-    _store, broker = sandbox_tools.app_builder_session_parts()
-    agent = _FakeNativeAgent()
-    agent.default_options["tools"] = list(broker)
+    agent = build_app_builder_agent(instructions="Build the app.", model="tier-balanced")
+
+    def _own(a: Any) -> list[str]:
+        return [ti._tool_name(t) for _lbl, pool in ti._own_tool_pools(a) for t in pool]
+
+    assert "run_command" in _own(agent), "the harness holds no run_command to keep"
     ti._inject_agent_tools([agent], tool_scope=cfg.get("tool_scope") or None,
                            agent_name="app-builder", agent_config=cfg)
-    assert any(t is broker[0] for t in agent.default_options["tools"])
+    assert "run_command" in _own(agent), "D85 took the broker's run_command away"
 
 
 def test_a_withheld_copilot_agent_drops_its_own_shell_tool() -> None:
@@ -1273,15 +1276,18 @@ def test_a_withheld_copilot_agent_drops_its_own_shell_tool() -> None:
     assert "run_script" not in names and "my_report" in names, names
 
 
-@pytest.mark.parametrize("case", ["covered", "personal"])
+@pytest.mark.parametrize("case", ["covered", "root"])
 def test_a_run_that_holds_the_shell_tools_keeps_its_own(monkeypatch, case: str) -> None:
-    cfg = _config("crm-assistant")
+    """A run that D85 leaves alone keeps its own tools. The case is the root
+    agent and not a personal agent, because task 808 extends D85 to those."""
+    cfg: dict[str, Any] | None = _config("crm-assistant")
     slug = "crm-assistant"
     if case == "covered":
         monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
         monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_A)
     else:
-        cfg, slug = {"name": "coach", "sharing": {"instancing": "personal"}}, "coach"
+        cfg, slug = None, "metorite"
+    assert ti._withheld_shell_tools(slug, cfg) == frozenset()
     agent = _FakeNativeAgent()
     agent.default_options["tools"] = [_named("run_script"), _named("run_command")]
     ti._inject_agent_tools([agent], tool_scope=None, agent_name=slug, agent_config=cfg)

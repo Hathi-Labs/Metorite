@@ -242,9 +242,9 @@ def _run_may_install_dependency() -> bool:
     """True when the run on this frame may install a package on the host.
 
     The TOOL half of D85: the executor binds ``shell_tools_withheld`` for each
-    run. Only an explicit ``False`` opens the install: the root ``metorite``
-    agent, a personal agent, or a run that the broker covers. A shared agent
-    reads ``True``. A frame with no binding, or a reader that fails, reads
+    run. Only an explicit ``False`` opens the install: an agent that D85
+    leaves alone (the root ``metorite`` agent), or a run that the broker
+    covers. A shared agent reads ``True``. A frame with no binding, or a reader that fails, reads
     ``False``, so it fails closed. The self-heal and its error text both ask
     this one function (task 3848).
     """
