@@ -628,6 +628,34 @@ class TestTheImageRule:
         assert "get_attachment" in tools.TOOLS
 
 
+class TestTheMapTip:
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12, R7). The
+    work step of the prompt tells an orchestrator to read the agent map
+    before it dispatches. ``get_agent_map`` is a read, so the tip shows with
+    the runs flag off too. Mutation: drop ``MAP_RULE`` from ``_work_steps``
+    in ``prompts.py``, and ``test_the_work_step_holds_the_tip`` fails."""
+
+    def test_the_tip_names_the_map_tool(self):
+        assert "Before you dispatch a sub-agent or another session" in prompts.MAP_RULE
+        assert "call get_agent_map" in prompts.MAP_RULE
+        assert "get_agent_map" in tools.TOOLS
+
+    @pytest.mark.parametrize("runs", [True, False])
+    async def test_the_work_step_holds_the_tip(self, armed, monkeypatch, runs):
+        if not runs:
+            _runs_off(monkeypatch)
+        texts = [await _prompt_text({"task": TASK})]
+        if runs:
+            texts.append(await _prompt_text())  # the queued form of my_work
+        tip = prompts.MAP_RULE.strip()
+        for text in texts:
+            # The tip is in the work step, so the numbers of the steps do
+            # not change.
+            line = next(ln for ln in text.splitlines()
+                        if "Do the work that the description of the task asks for." in ln)
+            assert tip in line, text
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # P11, P12: the checks of §9.6 and the other methods
 # ═══════════════════════════════════════════════════════════════════════════

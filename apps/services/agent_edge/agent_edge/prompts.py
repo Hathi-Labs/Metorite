@@ -145,6 +145,16 @@ LANE_ASK_RULE = (
 IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
               " you start.")
 
+#: WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tip for an
+#: orchestrator. It goes in the work step of the prompt, so the numbers of the
+#: steps do not change. ``get_agent_map`` is a read, so the tip shows in both
+#: states of the runs flag. Fence: ``test_mcp_edge_prompts.py``
+#: ``TestTheMapTip``.
+MAP_RULE = (
+    " Before you dispatch a sub-agent or another session, call get_agent_map"
+    " for the project of the task. It shows which sessions already work on"
+    " which tasks, so that two agents do not take one task.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -475,7 +485,7 @@ WAITING_RULE = (
 def _work_steps(*, runs: bool) -> list[str]:
     """The steps after the context: the work, the progress, the links, the
     review, the done, and the end with one disposition."""
-    steps = ["Do the work that the description of the task asks for."]
+    steps = ["Do the work that the description of the task asks for." + MAP_RULE]
     if runs:
         steps.append(
             "Report progress. While a run is open, send a thought with"
@@ -532,6 +542,7 @@ __all__ = [
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
+    "MAP_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
     "PR_RULE",
