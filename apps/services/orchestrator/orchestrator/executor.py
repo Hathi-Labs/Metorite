@@ -7346,6 +7346,18 @@ def _closed_card_events(line: str, run_id: str = "") -> list[dict[str, Any]]:
     return closed_card_text_events(line)
 
 
+def _open_approved_acts(delegated: bool) -> Any:
+    """Open the record of the approved acts of this reply (task 3595), or
+    None for a delegated run. A child run opens no record, so each act of
+    the child goes into its parent's record, and one park line names both.
+    ``release_approved_acts`` takes the token, None too."""
+    if delegated:
+        return None
+    from acb_skills.ask_tools import open_approved_acts_for_run
+
+    return open_approved_acts_for_run()
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -7891,6 +7903,11 @@ async def run_agent_stream(
     # another run is a delegation. Read it BEFORE this run opens its own. A
     # delegated run neither loads nor saves a native session.
     _delegated_run = bool(artifact_context().get("run_id"))
+    # Task 3595 (PARK-LINE): the approved acts that ran in this reply. Only
+    # a run that is not delegated opens the record, so a child run writes
+    # into its parent's record. Released in the same finally.
+    from acb_skills.ask_tools import release_approved_acts
+    _approved_acts_token = _open_approved_acts(_delegated_run)
     # CRM-Q29: the member's own words of this turn, a source of the number
     # check. A delegated run takes its parent's words, never its payload.
     _member_words = _member_words_for_run(artifact_context(), event_payload)
@@ -10489,6 +10506,7 @@ async def run_agent_stream(
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
             release_closed_cards(_closed_cards_token)
+            release_approved_acts(_approved_acts_token)
             _active_run_model.reset(_model_token)
             _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
