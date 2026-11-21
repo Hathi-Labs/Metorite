@@ -11310,6 +11310,105 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
+### 6A.17a A billing refusal reads as a 402 — BUILT (task 3681, AO-1)
+
+The 402 rule of 2026-09-29 says an empty vendor account falls over to the next
+vendor. On 2026-11-17 the Anthropic account ran empty. Anthropic answered
+HTTP 400, not 402, so the walk stopped and the DeepSeek steps never ran.
+
+- `router.effective_status(exc, vendor)` gives the status that the walk reads.
+  It gives 402 for a 400, 403 or 429 whose message holds a phrase that
+  `BILLING_PHRASES` lists for THAT vendor. Any other error keeps its status.
+- The phrases are whole vendor sentences, scoped by vendor. Anthropic has "credit
+  balance is too low" and "you have reached your specified api usage limits".
+  OpenAI has "exceeded your current quota". Gemini sends that sentence on a
+  per-minute 429, so it never lifts there. No bare word such as "billing"
+  appears, because a vendor 400 can quote the request back.
+- `walk_chain` calls the function in one place. `on_refusal` gets 402, so
+  `provider_balance` shows the vendor `out` with cause `payment`.
+- A vendor with no balance probe (Anthropic, OpenAI) clears a 402 or a 401 when
+  a call it served is newer than the refusal. A vendor with a probe keeps the
+  probe rule.
+- Native handlers send fixed text and are never lifted. Their own status holds.
+- The refusal log line adds the hint `billing` when the status is 402. The
+  message is matched and never logged, stored or returned.
+
+### 6A.17b An empty vendor account tells the operator's admins — BUILT, dark (task 3683, AO-2)
+
+On 2026-11-17 the Anthropic account ran empty, and nobody knew for more than
+2 hours. AO-1 shows the vendor `out`, but only on a panel that nobody watched.
+The owner chose the channel on 2026-11-18: a Metorite notification, the bell
+and a phone push.
+
+**The direction.** The Console judges, and the gateway tells. The gateway
+reads the Console through the one Console client, because every arrow between
+the planes runs from the box to the Console (`placed_orgs` says why). The
+Console calls no box.
+
+- **The door.** `POST /registry/providers/health` takes the deployment key
+  with the `serve` capability. A box that holds `serve` sends its chat through
+  the Router, so it may ask if the Router's vendors serve. No new capability.
+  The operator arm gets 400.
+- **The answer.** One row for each live platform credential, with four keys:
+  `provider`, `label`, `signal` and `days_left`. The label is the display name
+  of `provider_registry`. `provider_balance.alert_signal` gives the signal.
+  No reason, no probe error and no balance cross, so no vendor text reaches the
+  box.
+- **The signals.** `out` and `low` are the statuses of the same name.
+  `serving` is `ok`, or `unknown` with a served call newer than the last
+  refusal. A vendor with no probe never reads `ok`. `clear` is `unknown` with
+  no such call. `other` is `refusing`, `rate_limited` or `probe_failed`.
+- **The client.** `console_resolve.provider_health_on_console` keeps only the
+  four keys, in a closed shape. It drops a row with an unknown signal.
+- **The job.** `gateway/provider_alerts.py` adds a seed hook to the job queue.
+  For each org that `PROVIDER_ALERT_ORGS` lists, the detached job
+  `provider_alerts.check` reads the door once in each 15-minute bucket.
+- **When it sends.** A change into `out` or `low` sends that alert. `serving`
+  after `out` or `low` sends one "serves again". `clear` and `other` send
+  nothing and keep the alert.
+- **Once an hour.** Before a send, the job claims
+  `key("provider_alerts", "slot", <vendor>, <state>)` with `SET NX EX 3600`.
+  A failed claim sends nothing and keeps the old state, so the alert goes when
+  the hour ends, if the state still holds.
+- **A restart.** The last alert sent for each vendor stays in the tenant Redis
+  of the org, `key("provider_alerts", "sent")`, with no TTL. A new process
+  reads it and finds no change.
+- **A vendor that leaves the answer.** When the Console stops listing a vendor
+  (its credential was revoked), the next pass drops it from the stored state
+  and sends nothing. Its bell row goes. An empty answer drops every vendor.
+- **Who hears it.** The active members of the listed org who pass the shell's
+  admin test (`admin:members:read`). The `owner`, `admin` and `manager` roles
+  hold it. The member list is `kb_access.resolve.load_members` in
+  `tenant_session(org)`. Each grant comes from `resolve_access_in_org` in
+  strict mode. The org comes from the flag and the job worker, never from
+  request input. `OPERATOR_ORG_ID` is not read: the flag is the one config.
+- **A read fault.** The job reads the admins before it claims a slot or
+  writes a state. A fault there stops the pass, and the next bucket tries
+  again. A Redis fault after a slot claim can delay that alert by an hour.
+  The worker gives each job one try (`max_attempts=1`), because the job sends.
+- **The bell.** The needs source `providers` (`routes/shell/needs.py`, kind
+  `provider_alert`) reads the stored state. It shows each vendor that is `out`
+  or `low`, and each "serves again" for 24 hours. The row links to the
+  provider page of the Operator Console. It writes no table.
+- **The push.** `push.sender.send_to_member`, one tag for each vendor, when
+  `WEB_PUSH_ENABLED` is on and the keys are set. The push opens the app,
+  because the sender takes an app path only.
+- **The words.** "Anthropic is out of credit." with "The chat now uses the
+  next model in the chain. Top up the Anthropic account." Then "DeepSeek
+  credit is low: about 2.5 days left." A recovery from `out` says "Anthropic
+  serves again." A recovery from `low` says "DeepSeek has credit again.",
+  because a vendor that was low never stopped serving.
+
+**The flag.** `PROVIDER_ALERT_ORGS` lists the org ids whose admins hear the
+alert. Empty is the default, and it sends nothing. The reader refuses `*`, and
+`env_guard.PLATFORM_ENV_PREFIXES` names `PROVIDER_ALERT_`, so a tenant cannot set
+it. A SIGHUP
+reload applies a change. To turn it on, the box needs `JOB_QUEUE` on, and its
+deployment key needs `serve`.
+
+**Fences.** `test_provider_alerts.py` and `test_provider_balance.py`.
+`test_console_dependency_boundary.py` admits the one new client.
+
 ### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
 
 **Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
