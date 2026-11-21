@@ -241,8 +241,8 @@ def _missing_module_name(exc: BaseException) -> str | None:
 def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
     """The tool result when the dependency self-heal could not install *module*.
 
-    It suggests ``install_dependency`` only to a run that holds it. A shared
-    agent does not (D85), so it is told to ask an admin instead, and never
+    It suggests ``install_dependency`` only to a run that holds it. An agent
+    in D85's scope does not, so it is told to ask an admin instead, and never
     to call a tool it was not given.
     """
     head = (
@@ -3898,8 +3898,8 @@ async def _run_sub_agent_streaming(
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
-                # D85: a shared sub-agent gets no shell tool until the
-                # sandbox broker covers it.
+                # D85 and D129: a sub-agent, shared or personal, gets no
+                # shell tool until the sandbox broker covers it.
                 agent_config=getattr(loaded, "config", None),
                 # H-236: and no egress tool when its parent is covered.
                 no_egress=_sub_no_egress,
@@ -6265,7 +6265,7 @@ async def _assemble_batch_agents(
         tool_scope=_job_tool_scope(
             agent_name, loaded.config.get("tool_scope") or None),
         agent_name=agent_name,
-        agent_config=loaded.config,  # D85: the sharing block
+        agent_config=loaded.config,  # floor_opt_out, and the D85 seam
         no_egress=no_egress,  # H-236: from the run's own binding
     )  # inject call_agent / call_agent_background
     if held is not None:
@@ -8138,7 +8138,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
-                agent_config=loaded.config,  # D85: the sharing block
+                agent_config=loaded.config,  # floor_opt_out, and the D85 seam
                 no_egress=_stream_no_egress,  # H-236
                 # HRD-14b: only a top-level streamed run gets the paste frame.
                 # A delegated run's input is a task that a model wrote.
