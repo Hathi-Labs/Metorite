@@ -125,7 +125,7 @@ export interface ReplyForm {
   draft?: number;
   /**
    * HRD-8b, a new mail only: what differs from the card that this card
-   * replaces (`revises`): its act kind, its To and its Cc. The gateway
+   * replaces (`revises`): its act kind, its To, its Cc and its Bcc. The gateway
    * computes it (`redraft.changed_since`). The card says so in one plain line
    * (`changedLinkLine`) and claims nothing more. A part that is equal is not
    * here.
@@ -176,6 +176,7 @@ export interface LinkChange {
   act?: { was: LinkAct; now: LinkAct };
   to?: LinkPeople;
   cc?: LinkPeople;
+  bcc?: LinkPeople;
 }
 
 const LINK_ACTS: readonly string[] = ["new", "forward", "reply"];
@@ -204,7 +205,9 @@ function changeOf(value: unknown): { changed?: LinkChange } {
   if (to) out.to = to;
   const cc = linkPeople(v.cc);
   if (cc) out.cc = cc;
-  return out.act || out.to || out.cc ? { changed: out } : {};
+  const bcc = linkPeople(v.bcc);
+  if (bcc) out.bcc = bcc;
+  return out.act || out.to || out.cc || out.bcc ? { changed: out } : {};
 }
 
 /** The link of a redraft (§18.11): a card id that the gateway minted, and a
