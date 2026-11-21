@@ -233,6 +233,23 @@ HostKind = Literal["computer", "server", "cloud"]
 AGENT_HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
 #: SW-104 (SW-50). The kind that a box token sets.
 BOX_HOST_KIND = "server"
+#: SW-107 (``agent_coordination.md`` §3.12.3). ``dispatched_by`` of a body is
+#: the id of a run, else 422 at the schema. The edge has the same pattern.
+DISPATCHED_BY_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+#: SW-107. The gateway walks this many dispatcher steps up from the named run,
+#: and drops a value that reaches the run itself within them.
+DISPATCH_LOOP_STEPS = 5
+#: SW-107. The fixed text of each dropped ``dispatched_by``, by its code. A
+#: run of another organization and a run that does not exist read the same,
+#: so the answer tells nothing about another organization. The edge holds the
+#: same codes (``tools.DISPATCH_TEXTS``), and a pin test compares them.
+DISPATCH_DROPS: dict[str, str] = {
+    "unknown": "Metorite kept no dispatcher: your organization has no run with that id.",
+    "self": "Metorite kept no dispatcher: a run cannot dispatch itself.",
+    "loop": "Metorite kept no dispatcher: that run would make a loop of dispatchers.",
+    "no_run": "Metorite kept no dispatcher, because the claim opened no run.",
+}
 #: ``wait_s`` of the long poll, at most.
 MAX_WAIT_S = 20
 #: The long poll reads again after this many seconds.
@@ -318,7 +335,9 @@ class StartIn(BaseModel):
     ``host``, ``model`` and ``host_kind`` only. SW-7b: ``agent_label`` is the
     display name of the agent's own session, and a member's body that names
     it is 422. SW-104: ``host``, ``model`` and ``host_kind`` name the machine
-    and the model of the session, by the same rule. A member
+    and the model of the session, by the same rule. SW-107:
+    ``dispatched_by`` is the run of the session that dispatched this one, by
+    the same rule. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -336,6 +355,7 @@ class StartIn(BaseModel):
     model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
                               pattern=AGENT_PLACE_PATTERN)
     host_kind: HostKind | None = None
+    dispatched_by: str | None = Field(default=None, pattern=DISPATCHED_BY_PATTERN)
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -786,6 +806,25 @@ def agent_place_of(user: UserContext, host: str | None, model: str | None,
                       host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None)
 
 
+def dispatched_by_of(user: UserContext, value: str | None) -> str | None:
+    """SW-107. The ``dispatched_by`` of the body of a claim or a start, as a
+    canonical run id, or ``None``.
+
+    Only a signed agent names the run that dispatched it, as only it names
+    its session (:func:`agent_label_of`). So a person's body that names one
+    is 422. The schema already refused a value that is not an id. The value
+    is only a claim of the agent: :func:`set_run_dispatcher` checks it.
+    """
+    if value is None:
+        return None
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an agent sends dispatched_by, the run that dispatched it.",
+        )
+    return str(uuid.UUID(value))
+
+
 #: SW-104 (SW-50). The name and the credential of the caller's own
 #: connection. RLS keeps the read in the bound tenant.
 _BOX_NAME_SQL = (
@@ -1082,6 +1121,9 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "agent_host": getattr(row, "agent_host", None),
             "agent_model": getattr(row, "agent_model", None),
             "agent_host_kind": getattr(row, "agent_host_kind", None),
+            # SW-107: the run that dispatched this one, an id or None. The
+            # gateway checked it on the write. Display data only.
+            "dispatched_by_run_id": wire(getattr(row, "dispatched_by_run_id", None)),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -2312,6 +2354,73 @@ async def _set_run_place(db: Any, run_id: str, place: AgentPlace | None) -> None
     await db.execute(text(_SET_PLACE_SQL), {"rid": run_id, **_place_binds(place)})
 
 
+#: SW-107. The named run and its dispatchers, up to
+#: :data:`DISPATCH_LOOP_STEPS` steps. It runs in the caller's tenant session,
+#: so RLS hides a run of another organization, and the walk stops there. Only
+#: a task run can dispatch (AD-16).
+_DISPATCH_CHAIN_SQL = (
+    "WITH RECURSIVE chain (id, up, step) AS ("
+    " SELECT r.id, r.dispatched_by_run_id, 1 FROM pm_agent_runs r"
+    "  WHERE r.id = CAST(:d AS uuid) AND r.task_id IS NOT NULL"
+    " UNION ALL"
+    " SELECT r.id, r.dispatched_by_run_id, c.step + 1 FROM chain c"
+    "   JOIN pm_agent_runs r ON r.id = c.up"
+    "  WHERE c.step < :steps AND r.task_id IS NOT NULL"
+    ") SELECT id, step FROM chain"
+)
+
+#: SW-107. A value replaces the old one. The call writes only on a change.
+_SET_DISPATCHER_SQL = (
+    "UPDATE pm_agent_runs SET dispatched_by_run_id = CAST(:d AS uuid)"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND dispatched_by_run_id IS DISTINCT FROM CAST(:d AS uuid)"
+)
+
+
+async def set_run_dispatcher(db: Any, run_id: str | None,
+                             dispatched_by: str | None) -> str | None:
+    """SW-107 (``agent_coordination.md`` §3.12.3). Set the dispatcher of a run
+    that the caller already owns. Return ``None``, or the code of
+    :data:`DISPATCH_DROPS` when the value drops.
+
+    *db* is the caller's tenant session, so RLS hides a run of another
+    organization. The value drops when the session cannot read that run, when
+    it is the run itself, or when the run is among its dispatchers within
+    :data:`DISPATCH_LOOP_STEPS` steps. A dropped value fails nothing: the
+    caller adds the text of its code as a ``warning``. A call with no value
+    keeps the old one, as :func:`_set_run_place` does.
+
+    Display data only. The run came from the gate, so the value never
+    chooses a run, and no authorization check, visibility rule, run slot or
+    session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    if dispatched_by is None:
+        return None
+    if run_id is None:
+        return "no_run"
+    chain = (await db.execute(text(_DISPATCH_CHAIN_SQL), {
+        "d": dispatched_by, "steps": DISPATCH_LOOP_STEPS})).fetchall()
+    if not chain:
+        return "unknown"
+    for row in chain:
+        if str(row.id) == run_id:
+            return "self" if int(row.step) == 1 else "loop"
+    await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
+    return None
+
+
+def warn_dispatch(result: dict[str, Any], dropped: str | None) -> None:
+    """SW-107. Add the fixed text of a dropped ``dispatched_by`` to the
+    ``warning`` of *result*, after any warning it holds (SW-63), and its code
+    as ``dispatched_by_dropped``. The text holds no user text."""
+    if dropped is None:
+        return
+    said = result.get("warning")
+    note = DISPATCH_DROPS[dropped]
+    result["warning"] = f"{said} {note}" if isinstance(said, str) and said else note
+    result["dispatched_by_dropped"] = dropped
+
+
 #: SW-7b. The clear of the label when the run passes to the next session.
 #: SW-104: the machine, its kind and the model of that session go with it.
 _CLEAR_LABEL_SQL = (
@@ -2425,6 +2534,9 @@ async def start_agent_run(
     label = agent_label_of(user, payload.agent_label)
     # SW-104: and its machine, its kind and its model. A person's is 422.
     place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-107: the run that dispatched it. A person's is 422.
+    dispatched_by = dispatched_by_of(user, payload.dispatched_by)
+    dropped: str | None = None
     if via is not None and (payload.connection_id is not None or payload.body is not None):
         raise HTTPException(
             status_code=422, detail="An agent sends no connection_id and no body to start a run.",
@@ -2516,6 +2628,8 @@ async def start_agent_run(
             await _set_run_label(db, str(existing.id), label)
             # SW-104: and its machine, its kind and its model.
             await _set_run_place(db, str(existing.id), place)
+            # SW-107: and its dispatcher, checked in this tenant session.
+            dropped = await set_run_dispatcher(db, str(existing.id), dispatched_by)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2531,6 +2645,8 @@ async def start_agent_run(
             out = (await _runs_out(db, [existing]))[0]
             created = False
         else:
+            # SW-107: the new run's dispatcher. Only an agent sends one.
+            dropped = await set_run_dispatcher(db, str(made.id), dispatched_by)
             run = await _load_run(db, str(made.id))
             if via is None:
                 # The member's instruction is the first prompt. It is the act
@@ -2543,7 +2659,9 @@ async def start_agent_run(
             created = True
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
-    return {"run": out, "created": created}
+    result: dict[str, Any] = {"run": out, "created": created}
+    warn_dispatch(result, dropped)
+    return result
 
 
 @router.get("/agent-runs", dependencies=_ENABLED)
