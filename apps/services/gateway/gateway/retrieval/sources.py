@@ -44,11 +44,26 @@ address, a web domain), never text. ``open`` gives the hits of the refs that
 the member can open, and checks the app's gates itself. Each calls a function
 of its app's own module, as ``find`` does, with ids checked as UUIDs first.
 
+**One more ability, ``named``** (WS-FIND FIND-5, ``find_engine.md`` §4.2
+``names`` and §5.2). The CRM, People and Email sources declare it, with the
+kinds of record whose names ``resolve_name`` reads. ``named`` calls the app's
+own search, and gives each record as a :class:`Named`: its kind, id, name as
+stored and link. Email gives each mail sender once, with the link of the
+newest mail, through its own read ``search.named_mail``. People and Email
+match one phrase (``names_word``), so the route asks them with one word.
+``GET /search/names`` tests the name itself.
+
 **Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
 that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
 takes ``reviewed`` and ranks a page past its review date lower. Only
 ``GET /search/company`` passes them, and only with ``CONTEXT_RECENCY`` on.
+
+**The past chats** (WS-FIND HRD-21, ``find_engine.md`` §3.1 rung 6 and §6).
+The ``chat`` source reads the member's own solo chats with Mira through
+``gateway.chat_search``, after ``feature:chat`` and ``CHAT_SEARCH_ORGS``. It
+declares ``current``, so it takes the id of the chat that the search runs in,
+and it never answers that chat.
 """
 
 from __future__ import annotations
@@ -189,6 +204,41 @@ RelatedReader = Callable[..., Awaitable[list[tuple[str, str, str]]]]
 #: refs that the member can open, and nothing for any other ref.
 OpenReader = Callable[..., Awaitable[list[Hit]]]
 
+
+@dataclass(frozen=True)
+class Named:
+    """One record that an app's own search found for a name (FIND-5).
+
+    *name* is the name as the record holds it, and *href* is the link that
+    code built. *forms* are the stored forms of the name that the name test
+    reads, EACH ON ITS OWN (FIND-5 round 3, P1). Empty means one form,
+    *name*. A person with a preferred name has two: the full name, and the
+    full name with its first word replaced by the preferred name. A sender
+    has the display name and the part of its address before the ``@``. The
+    route never puts a form in an answer. *state* is the record's state, such
+    as a person's status. The route puts it in the row only from a closed
+    list.
+    """
+
+    kind: str
+    id: str
+    name: str
+    href: str
+    forms: tuple[str, ...] = ()
+    state: str = ""
+    #: The label of the module of a mirrored record (FIND-11), or empty.
+    module: str = ""
+
+
+#: ``named(user, name, k)`` (FIND-5): at most *k* records that the app's own
+#: search finds for *name*, and True when the app gave a full page, so more
+#: records may match.
+NamedReader = Callable[..., Awaitable[tuple[list[Named], bool]]]
+
+#: The kind of a record of a mirrored CRM module (FIND-11, ``find_engine.md``
+#: §9.2). It is no ref kind: ``related`` and ``open`` never take it.
+MODULE_KIND = "module_record"
+
 #: The kinds of record of the CRM source, as a ref names them.
 CRM_REF_KINDS: tuple[str, ...] = ("deal", "lead", "contact", "company")
 
@@ -262,6 +312,23 @@ class Source:
     open: OpenReader | None = None
     #: The kinds of ref that :attr:`open` opens: the kinds of hit it gives.
     kinds: tuple[str, ...] = ()
+    #: True when the app's reader takes ``current=``: the id of the chat that
+    #: the search runs in, which the reader never answers (HRD-21, D-FIND-5).
+    #: Only the ``chat`` source. The id only takes a chat away.
+    current: bool = False
+    #: The kinds of record whose names ``resolve_name`` reads (FIND-5,
+    #: ``find_engine.md`` §4.2 ``names``).
+    names: tuple[str, ...] = ()
+    #: The named ability of FIND-5, or ``None``. :meth:`named_records` calls it.
+    named: NamedReader | None = None
+    #: True when the app's own search reads its text as ONE phrase (People and
+    #: Email). ``resolve_name`` then asks it with one word, the longest, and
+    #: its name test checks the other words. The CRM matches word by word.
+    names_word: bool = False
+    #: Kinds that :meth:`named_records` keeps beside :attr:`names` (FIND-11).
+    #: They are no closed kind of ``resolve_name``: the module record of the
+    #: CRM. ``names`` stays the one list of the kinds that the tool declares.
+    named_extra: tuple[str, ...] = ()
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -279,6 +346,18 @@ class Source:
         if self.near is None or not words or not self.reaches(user):
             return {}
         return await self.near(user, list(words), k)
+
+    async def named_records(
+        self, user: UserContext, name: str, k: int,
+    ) -> tuple[list[Named], bool]:
+        """The records of the kinds of :attr:`names` that the app's own search
+        finds for *name*, as *user*, and True when the app gave a full page
+        (FIND-5). No ability, no feature or a closed switch: no call and no
+        record. The function checks the rest of the app's gates itself."""
+        if self.named is None or not self.names or not name or not self.reaches(user):
+            return [], False
+        found, more = await self.named(user, name, k)
+        return [n for n in found if n.kind in self.names or n.kind in self.named_extra][:k], bool(more)
 
     async def related_refs(self, user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
         """The triples of the refs of :attr:`takes` in *refs*, as *user*
@@ -303,7 +382,7 @@ class Source:
         after: datetime | None = None, reviewed: bool = False,
         verified_only: bool = False, vectors: bool = False,
         budget_s: float | None = None, sender: str | None = None,
-        sender_words: str | None = None,
+        sender_words: str | None = None, current: str | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -318,6 +397,8 @@ class Source:
         sender only. That source then reads *sender_words* in place of *q*:
         the other words of the query, which still filter the mail (round 3,
         P2-1). The sender stands for the near word, so the words leave it out.
+        *current* (HRD-21) gives a source with ``current`` the id of the chat
+        that the search runs in, which it never answers.
         """
         if not holds(user, self.feature):
             return []
@@ -339,6 +420,8 @@ class Source:
             options["reviewed"] = True
             if verified_only:
                 options["verified_only"] = True
+        if self.current:
+            options["current"] = current
         return (await self.read(user, q, k, **options))[:k]
 
 
@@ -368,6 +451,13 @@ def _studio_open(user: UserContext) -> bool:
 
     org = user.organization_id
     return bool(flags.studio_allowed(org) and flags.search_allowed(org))
+
+
+def _chat_open(user: UserContext) -> bool:
+    """The switch of the past chats: ``CHAT_SEARCH_ORGS`` (HRD-21)."""
+    from gateway.retrieval import find
+
+    return bool(find.chat_search_named(user.organization_id))
 
 
 # ── Small helpers, one rule each ────────────────────────────────────────────
@@ -593,6 +683,15 @@ def crm_href(kind: str, record_id: Any) -> str:
     return f"/crm?tab={tab}&{param}={quote(str(record_id))}"
 
 
+def crm_module_href(module: str, record_id: Any) -> str:
+    """The link that opens one record of a mirrored module (FIND-11):
+    ``/crm?tab=module&module=<Module>&mrec=<Module>:<id>``, the view state
+    of ``app/crm/lib/urlState.ts``. The ONE builder of this link."""
+    # Not an f-string: the fence of ``crm_href`` counts one f-string link.
+    return ("/crm?tab=module&module=" + quote(str(module))
+            + "&mrec=" + quote(str(module) + ":" + str(record_id)))
+
+
 def crm_reports_href() -> str:
     """The link that opens the Reports tab of the CRM (WS-53 CRM-Q28 item
     14). The My Day card ``digest_ready`` calls it, so the CRM links of the
@@ -632,7 +731,38 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
     if not flags.crm_org_allowed(user.organization_id):
         return []
     await access.require_crm_access(user)
-    return [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+    found = [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+    if not _module_find_open(user):
+        return found
+    # FIND-11: the mirrored modules, through the module list's own predicate.
+    # The module records share the page, so a full page of deals leaves room.
+    modules = await _module("gateway.routes.crm.modules")
+    mine = [_module_hit(row) for row in await modules.find_module_names(user, q, k)]
+    room = min(len(mine), max(1, k // 2))
+    return found[:max(0, k - room)] + mine[:room]
+
+
+def _module_find_open(user: UserContext) -> bool:
+    """True when the mirrored modules are a source of the find engine for
+    *user*'s org (FIND-11): ``FIND_ORGS`` (``find.find_allowed``, the one
+    reader) AND ``CRM_MODULE_FIND_ORGS`` (``flags.module_find_allowed``, which
+    also needs the CRM switch). Either empty: no read of a module, and the
+    answer of before, byte for byte. The org comes from the session."""
+    from gateway.retrieval import find
+    from gateway.routes.crm import flags
+
+    return bool(find.find_allowed(user.organization_id)
+                and flags.module_find_allowed(user.organization_id))
+
+
+def _module_hit(row: dict[str, Any]) -> Hit:
+    """One mirrored record as a hit: its name, the module's label and a link.
+    No snippet, so the answer text stays short."""
+    return Hit(
+        app="crm", kind=MODULE_KIND, id=str(row["id"]), title=_title(row.get("name")),
+        hint=_title(row.get("label")) or "Record", href=crm_module_href(row["module"], row["id"]),
+        when=_when(row.get("modified")), stamp=_when(row.get("modified")),
+    )
 
 
 def _crm_hit(kind: str, row: dict[str, Any]) -> Hit:
@@ -820,6 +950,37 @@ async def _studio(user: UserContext, q: str, k: int) -> list[Hit]:
     return out
 
 
+# ── chat ────────────────────────────────────────────────────────────────────
+
+async def _chat(user: UserContext, q: str, k: int, *, current: str | None = None) -> list[Hit]:
+    """The member's own past chats (WS-FIND HRD-21, ``find_engine.md`` §3.1
+    rung 6, §6 and D-FIND-5).
+
+    The source applies its switch, ``CHAT_SEARCH_ORGS``, before any read, as
+    the studio source does. Then ``gateway.chat_search`` reads the member's
+    own solo chats with Mira on the web, as the member, with each rule in its
+    WHERE, and drops each chat with the egress mark. *current* is the chat that the
+    search runs in: it never answers, and with none the read gives nothing.
+
+    A hit names the title, the date of the last change and the link that
+    opens the chat (``feed._chat_href``, the chat app's ``open-chat`` link).
+    Its snippet comes only from a row that the member typed, or it is empty.
+    """
+    if not _chat_open(user):
+        return []
+    search = await _module("gateway.chat_search")
+    feed = await _module("gateway.routes.shell.feed")
+    out = []
+    for c in await search.search_own_chats(user, q, k, current=current):
+        out.append(Hit(
+            app="chat", kind="chat", id=c.session_id, title=_title(c.title),
+            hint="Your chat", href=feed._chat_href(c.session_id),
+            snippet=_clip(c.snippet), when=_when(c.last_activity),
+            stamp=_when(c.last_activity),
+        ))
+    return out
+
+
 # ── near (HRD-18b, ``find_engine.md`` §4.3 and §6) ──────────────────────────
 # Each calls its app's own function, which reads the names of rows that the
 # member can open and scores them with ``acb_common.name_match``.
@@ -864,7 +1025,136 @@ async def _crm_near(user: UserContext, words: list[str], k: int) -> dict[str, li
     access = await _module("gateway.routes.crm.access")
     await access.require_crm_access(user)
     records = await _module("gateway.routes.crm.records")
-    return await records.near_names(user, words, k)
+    found = await records.near_names(user, words, k)
+    if not _module_find_open(user):
+        return found
+    # FIND-11: the record names of the mirrored modules. One list for each
+    # word: the nearest first, one entry for each spelling.
+    modules = await _module("gateway.routes.crm.modules")
+    more = await modules.near_module_names(user, words, k)
+    merged: dict[str, list[NearName]] = {}
+    for word in words:
+        kept: list[NearName] = []
+        for near in sorted([*found.get(word, []), *more.get(word, [])],
+                           key=lambda n: (-n.score, n.spelling)):
+            if all(near.spelling.lower() != n.spelling.lower() for n in kept):
+                kept.append(near)
+        merged[word] = kept[:k]
+    return merged
+
+
+# ── named (FIND-5, ``find_engine.md`` §4.2 ``names`` and §5.2) ──────────────
+# Each calls the same app function as its ``find``, as the member. The route
+# of ``resolve_name`` tests each name itself, so a record that the search
+# matched by another field (an address, a company, a linked contact) is no row.
+
+#: The kinds of CRM record that have a name of their own. A deal has a title.
+CRM_NAME_KINDS: tuple[str, ...] = ("lead", "contact", "company")
+
+#: An address that a sender row may carry: one ``@``, a dot after it, and no
+#: space, quote or angle bracket. A sender writes the header, so any other
+#: value gives no row.
+_SENDER_ADDRESS = re.compile(r"[^\s@<>«»\"'`]{1,64}@[^\s@<>«»\"'`]{1,189}\.[^\s@<>«»\"'`.]{1,63}")
+_ADDRESS_MAX = 254
+
+
+async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The CRM records of *name*, through :func:`_crm`: the kill switch, the
+    access rule, then ``records.search_records``. Its 403 reaches the caller.
+    ``search_records`` cuts its four kinds to *k* together, so a full page may
+    hide a record."""
+    hits = await _crm(user, name, k)
+    return ([Named(h.kind, h.id, h.title, h.href, module=h.hint if h.kind == MODULE_KIND else "")
+             for h in hits if h.kind in CRM_NAME_KINDS or h.kind == MODULE_KIND],
+            len(hits) >= k)
+
+
+async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The people of *name*, through the directory's own read. The row names
+    the person as the directory does, and :attr:`Named.state` is the status.
+    A person with a preferred name has two :attr:`Named.forms`: the full
+    name, and the full name with its first word replaced by the preferred
+    name ("Gitanjali Rao" and "Gita Rao"). The directory matches *name* as one
+    phrase in the full name (never the preferred name), so ``resolve_name``
+    asks it with one word (:attr:`Source.names_word`)."""
+    from gateway.routes.people.directory import list_directory
+
+    answer = await list_directory(
+        user=user, q=name, department=None, team=None, status=None, skill=None,
+        has_capacity=False,
+    )
+    rows = list(answer.rows or [])
+    out = []
+    for p in rows[:k]:
+        full = " ".join(str(p.get("name") or "").split())
+        preferred = " ".join(str(p.get("preferred_name") or "").split())
+        out.append(Named("person", str(p["id"]), _title(preferred or full),
+                         f"/people/{quote(str(p['id']))}",
+                         forms=person_forms(full, preferred),
+                         state=str(p.get("status") or "")))
+    return out, len(rows) > k
+
+
+def person_forms(full: str, preferred: str) -> tuple[str, ...]:
+    """The forms of a person's name (FIND-5 round 3, P1): the full name FIRST,
+    then the full name with its first word replaced by the preferred name.
+    No preferred name, or one equal to the full name: no form, so the name
+    itself is the one form. Pure.
+
+    ⚠️ The second form guesses that the first word is the given name. When the
+    full name starts with an initial, a title or a surname («K Sharath
+    Kumar»), it holds two spellings of one given name. So the name test reads
+    it only for an ask with no initial (``names.holds_name``, round 4)."""
+    if not full or not preferred or preferred == full:
+        return ()
+    return (full, " ".join([preferred, *full.split()[1:]]))
+
+
+def sender_address(value: Any) -> str:
+    """*value* as the address of a sender row, in lower case, or ``""`` when
+    it is no plain address (FIND-5). An address that holds a hidden character
+    gives ``""`` too, because the answer prints the address outside the
+    quotes: a character that ``hidden_text`` strips, and each character of
+    Unicode category C. The second test also refuses a joiner (ZWJ, ZWNJ),
+    which ``hidden_text`` keeps between two visible characters of a name."""
+    import unicodedata
+
+    from acb_skills.hidden_text import strip_hidden
+
+    raw = str(value or "").strip()
+    if strip_hidden(raw) != raw or any(unicodedata.category(ch).startswith("C") for ch in raw):
+        return ""
+    address = raw.lower()
+    if len(address) > _ADDRESS_MAX or not _SENDER_ADDRESS.fullmatch(address):
+        return ""
+    return address
+
+
+async def _email_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The senders whose name or address holds *name*, in the mailboxes that
+    the member can read, through the Email app's own ``search.named_mail``:
+    the newest mails first, with its own statement limit, and no outbound
+    mail. One row for each sender, with the link of the newest mail. The
+    member's own address gives no row. The match is one phrase, so
+    ``resolve_name`` asks it with one word (:attr:`Source.names_word`)."""
+    search = await _module("gateway.routes.email.transport.search")
+    mails = list(await search.named_mail(user, name, k))[:k]
+    own = str(user.email or "").strip().lower()
+    out: list[Named] = []
+    seen: set[str] = set()
+    for mail in mails:
+        address = sender_address(mail.get("email"))
+        if not address or address == own or address in seen:
+            continue
+        seen.add(address)
+        who = str(mail.get("name") or "").strip()
+        local = address.partition("@")[0]
+        # Two forms, each tested on its own: the display name and the part
+        # of the address before the `@` (round 3, P1). Never the domain.
+        out.append(Named("sender", address, who or address,
+                         f"/email?email={quote(str(mail['id']))}",
+                         forms=(who, local) if who else (local,)))
+    return out, len(mails) >= k
 
 
 # ── related and open (FIND-3, ``find_engine.md`` §4.3 and §6) ───────────────
@@ -965,17 +1255,23 @@ REGISTRY: dict[str, Source] = {
         Source("tasks", "projects", "Tasks", _tasks),
         Source("email", "email", "Email", _email, dated=True, vectors=True,
                near=_email_near, senders=True, related=_email_related,
-               takes=("address", "domain"), open=_email_opened, kinds=("email",)),
+               takes=("address", "domain"), open=_email_opened, kinds=("email",),
+               names=("sender",), named=_email_named, names_word=True),
         Source("people", "people", "People", _people, near=_people_near,
                related=_people_related, takes=("person",), open=_people_opened,
-               kinds=("person",)),
+               kinds=("person",), names=("person",), named=_people_named,
+               names_word=True),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
-               kinds=CRM_REF_KINDS),
+               kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named,
+               named_extra=(MODULE_KIND,)),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
                reviewed=True, gate=_knowledge_open),
         Source("studio", "studio", "Studio apps", _studio, gate=_studio_open),
+        # HRD-21: last, and never in the command bar (BAR_APPS). The route asks
+        # it only when its switch is open and the request names the current chat.
+        Source("chat", "chat", "Past chats", _chat, gate=_chat_open, current=True),
     )
 }

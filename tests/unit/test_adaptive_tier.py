@@ -148,7 +148,7 @@ def test_a_waited_for_draft_stops_at_balanced() -> None:
     ("", False, "tier-fast"),
     ("Earlier mail. " * 6000, False, "tier-powerful"),
     ("Earlier mail. " * 6000, True, "tier-balanced"),
-])
+], ids=["empty-thread", "long-thread", "long-thread-interactive"])  # task 3586: a short id
 async def test_a_long_thread_drafts_on_powerful(monkeypatch, thread, interactive, want) -> None:
     seen: list[str] = []
 

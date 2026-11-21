@@ -1648,6 +1648,23 @@ main[data-askbar-clear]::after {
   }
 }
 
+/* AO-3: the resting elephant of the "AI is taking a breather" card
+   (`components/AiRestingArt.tsx`). It takes ONE slow breath when the card
+   appears, then stands still. It never loops: a failed act is Attention in
+   DESIGN_SYSTEM.md §4b, and Attention never loops. It moves `transform`
+   only, from its feet. Under reduced motion it does not move. */
+@keyframes ai-rest-breathe {
+  0%, 100% { transform: scale(1, 1); }
+  50%      { transform: scale(1.015, 1.035); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ai-rest-breathe {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: ai-rest-breathe 1.2s ease-in-out 1;
+  }
+}
+
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the
    library renders unstyled: tables + the column-resize affordance, selected
