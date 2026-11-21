@@ -16,6 +16,9 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    `unheld` true. Claim it.
    - Never take a task outside your lane.
    - Never take a task that a live session holds.
+   - Never take a task that another member holds, even when the hold went
+     quiet. Ask on the task with `ask_on_task` first. A contributor's fleet
+     works beside yours (`docs/contributor_playbook.md`).
    - Refuse OWNER-GATE work (`work_plan.md` §6).
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20

@@ -191,8 +191,11 @@ def _allowed(workflows: bool) -> frozenset[str]:
     followers come in through :func:`tool_packs.with_followers`, as
     ``packs_on`` adds them. So an entry of FOLLOWS changes this list. The dark
     ``studio-share`` (WS-STU J2d, one tool, no surface) is out of the matrix in
-    both lists: the matrix holds the split of TS-1b."""
-    every = frozenset(sf.pack_slugs()) - {"studio-share"}
+    both lists: the matrix holds the split of TS-1b. The dark ``studio-repair``
+    (TOF-3a F12c, two tools, no surface) is out for the same reason. Only an
+    owner ``TOOL_PACKS`` line turns it on, and the run drops it from the allow
+    list while the org is off its switches (``_tool_injection._apply_tool_packs``)."""
+    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
