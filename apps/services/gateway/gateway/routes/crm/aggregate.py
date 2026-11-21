@@ -130,6 +130,15 @@ the body of ``GET /crm/aggregate``. The weekly digest
 queries, with the org of its run bound. So a digest number and a route
 number are one answer. Fence: ``tests/unit/test_crm_digest.py``.
 
+**Numbers that make sense** (NUM-2, ``project-docs/specs/number_sense.md``
+§4.2). A module answer over 1 to 3 whole months of a date field also reads
+the same measure for the 6 periods before it, in the SAME statement: only
+the start bound widens, and each row names its period. The answer carries
+them in ``baseline``. ``coverage`` counts the records with no value in the
+measure field, and the drafts and cancelled records where the module has a
+catalogue status. ``checks`` holds the ``outlier`` and ``coverage`` findings
+of ``acb_common.number_sense``. A ``concentration`` stays in ``findings``.
+
 **Two reads for My Day** (WS-58 MD-3e). ``my_overdue_deals`` and
 ``my_close_passed_deals`` are not routes. The feed's ``crm`` provider calls
 them with its own session, after the kill switch and the access rule. Each
@@ -145,13 +154,20 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Context, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common.number_sense import (
+    CONCENTRATION_MIN_RECORDS,
+    COVERAGE_STATUSES,
+    coverage,
+    outlier,
+    part_period,
+)
 from acb_common.number_sense import findings as number_findings
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
@@ -168,19 +184,24 @@ from gateway.routes.crm.core import (
     resolve_owner,
     router,
 )
+from gateway.routes.crm.core import _now as _crm_now
 from gateway.routes.crm.currency import CURRENCY_SQL, ordered_currencies
 from gateway.routes.crm.field_sql import (
+    BASELINE_MAX_RECORDS,
+    BASELINE_PERIODS,
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
     GROUP2_KEY,
     STATUS_WORD,
     ZONE_PARAM,
+    Baseline,
     FieldRef,
     FieldScope,
     QueryNode,
     TextNumbers,
     admit_text_numbers,
+    baseline_range,
     check_group,
     check_groups,
     check_measure,
@@ -213,6 +234,7 @@ from gateway.routes.crm.field_sql import (
     overlay_weighted,
     overlay_where,
     parse_query,
+    period_sql,
     q_refusal,
     query_core_refusal,
     query_off_refusal,
@@ -220,13 +242,16 @@ from gateway.routes.crm.field_sql import (
     query_where,
     split_sql,
     status_field,
+    status_sql,
     text_matches,
     text_number_keys,
     used_keys,
+    widen,
     word_names,
     zoned,
 )
 from gateway.routes.crm.flags import (
+    answer_first_allowed,
     long_read_allowed,
     module_find_allowed,
     semantic_model_allowed,
@@ -591,6 +616,21 @@ class AggregateResponse(BaseModel):
     #: with none, so the answer of each older call stays the same.
     filter_words: list[str] | None = Field(
         default=None, exclude_if=lambda value: value is None)
+    #: NUM-2 (``number_sense.md`` §4.2): the findings of the kinds ``outlier``
+    #: and ``coverage``, as ``Finding.wire()``. A ``concentration`` stays in
+    #: ``findings``, so no finding is in both lists. Absent with none.
+    checks: list[dict[str, Any]] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
+    #: NUM-2: the same measure for each of the 6 periods before the asked
+    #: date range, oldest first, from the same scan. Each has ``period``,
+    #: ``value`` and ``records``. Absent with no date range.
+    baseline: list[dict[str, Any]] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
+    #: NUM-2: ``records``, the records with ``no_value`` in the measure field,
+    #: and the count of each status that a total usually leaves out
+    #: (``statuses``). Absent with no measure field and no status field.
+    coverage: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -781,6 +821,9 @@ class _Acc:
     others: dict[str, float] = dc_field(default_factory=dict)
     #: CRM-Q25e part 2: the group of each field of a split after the first.
     parts: list[_Acc] = dc_field(default_factory=list)
+    #: NUM-2: the count of each status of :data:`COVERAGE_STATUSES` in the
+    #: group. Empty when the statement counts no status.
+    statuses: dict[str, int] = dc_field(default_factory=dict)
     #: CRM-Q34-10: the value as the row gave it, before any float: the
     #: ``numeric`` of the statement as a ``Decimal``. The cut of page 1
     #: rounds it (:func:`cents`) as SQL rounds it. None when the row gave
@@ -933,6 +976,12 @@ class _Read:
     text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
     #: CRM-Q34-5: each filter name that the read took as a filter word.
     filter_words: list[str] = dc_field(default_factory=list)
+    #: NUM-2: the asked date range in whole months, and the groups of each
+    #: period before it (-1 to -6) from the same statement.
+    base: Baseline | None = None
+    periods: dict[int, list[_Acc]] = dc_field(default_factory=dict)
+    #: NUM-2: the statuses that the statement counted in each group.
+    statuses: tuple[str, ...] = ()
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -983,8 +1032,77 @@ def _day_of(scope: FieldScope | None, module: str | None, grouped: FieldRef | No
     return day, sql.key, sql.source
 
 
-def _acc_of(r: Any, fields: int) -> _Acc:
-    """One group of a row, with the part of each other field of a split."""
+def number_sense_on() -> bool:
+    """NUM-2 ships dark (CLAUDE.md §4, "Ship dark"). The baseline, the
+    coverage and the ``checks`` come only for an org that the answer-first
+    flag of CRM-Q33 serves (``flags.answer_first_allowed``: the questions, the
+    catalogue and ``CRM_ANSWER_FIRST_ORGS``). The org is the bound tenant,
+    never a request field (R5). An org outside it gets the statement and the
+    answer of before NUM-2, byte for byte."""
+    return answer_first_allowed(str(current_tenant() or ""))
+
+
+async def _module_size(db: Any, module: str) -> int | None:
+    """NUM-2: the records of *module* as the last fill step counted them
+    (``crm_field_fill.total``, the same number for each key), or None with
+    no fill row. One read of a few rows by the key of the table, never a
+    scan of the module. The org is the bound tenant (R5), and RLS holds the
+    session too."""
+    row = (await db.execute(text(
+        "SELECT max(total) AS n FROM crm_field_fill "
+        "WHERE organization_id = CAST(:agf_org AS uuid) AND entity = :agf_entity"),
+        {"agf_org": str(current_tenant()), "agf_entity": f"{MODULE_PREFIX}{module}"},
+    )).first()
+    n = getattr(row, "n", None) if row is not None else None
+    return None if n is None else int(n)
+
+
+async def _sense_columns(
+    db: Any, scope: FieldScope | None, module: str | None, day: FieldRef | None,
+    day_key: str, pairs: list[tuple[str, str]], bound: dict[str, Any], *, reads: bool,
+    sense: bool, nodes: tuple[QueryNode, ...] | None = None, words: bool = False,
+) -> tuple[Baseline | None, str, tuple[str, ...], str]:
+    """NUM-2: the baseline, its period SQL, the statuses that the statement
+    counts, and their columns. Each bound value goes into *bound*. *sense*
+    is the ONE read of :func:`number_sense_on` for the request.
+
+    The baseline: a module answer over 1 to 3 whole months of its day field
+    reads the 6 periods before it in the SAME scan. Only the start bound
+    widens, and each row names its period. The wider window groups more
+    rows, so a module with more than :data:`BASELINE_MAX_RECORDS` records,
+    or with no size in ``crm_field_fill``, gets no baseline.
+
+    The statuses: one count for each status that a total usually leaves
+    out, as more columns of the same statement. Only when the statement
+    reads the detoasted copy already (*reads*), as the day set."""
+    if not sense:
+        return None, "", (), ""  # dark: the statement is the one of before NUM-2
+    base = (baseline_range(scope, day, pairs, nodes or (), words=words)
+            if module is not None and day_key else None)
+    if base is not None and module is not None:
+        size = await _module_size(db, module)
+        if size is None or size > BASELINE_MAX_RECORDS:
+            base = None  # too large, or no size: the window stays as asked
+    if base is not None and not widen(bound, base):
+        base = None  # the start is not bound as asked, so the window stays
+    period = ""
+    if base is not None:
+        period, period_params = period_sql(day_key, base)
+        bound.update(period_params)
+    statuses: tuple[str, ...] = ()
+    counted = ""
+    if module is not None and reads:
+        columns, status_params = status_sql(scope, COVERAGE_STATUSES)
+        if columns:
+            statuses = tuple(COVERAGE_STATUSES)
+            bound.update(status_params)
+            counted = "".join(f", {column} AS agf_s{i}" for i, column in enumerate(columns))
+    return base, period, statuses, counted
+
+
+def _acc_of(r: Any, fields: int, statuses: tuple[str, ...] = ()) -> _Acc:
+    """One group of a row, with the part of each other field of a split, and
+    the count of each of *statuses* (NUM-2)."""
     acc = _Acc(
         value=None if r.value is None else float(r.value),
         s=float(r.s or 0), n=int(r.n or 0), name=r.label,
@@ -995,19 +1113,30 @@ def _acc_of(r: Any, fields: int) -> _Acc:
         acc.parts.append(_Acc(value=None if v is None else float(v),
                               s=float(getattr(r, f"s{i}", 0) or 0),
                               n=int(getattr(r, f"n{i}", 0) or 0)))
+    for i, status in enumerate(statuses):
+        acc.statuses[status] = int(getattr(r, f"agf_s{i}", 0) or 0)
     return acc
 
 
 def _rows_of(rows: Any, fields: int, days: list[tuple[Any, Any, int]],
-             ) -> dict[str | None, _Acc]:
+             periods: dict[int, list[_Acc]] | None = None,
+             statuses: tuple[str, ...] = ()) -> dict[str | None, _Acc]:
     """The groups of the rows of one statement. A row of the day set
-    (``GROUPING()`` is 0 there) goes to *days* as ``(day, value, records)``."""
+    (``GROUPING()`` is 0 there) goes to *days* as ``(day, value, records)``.
+    NUM-2: with a baseline, each row names its period in ``agf_p``. Only the
+    rows of period 0, the asked range, are the answer and its days. A group
+    of an earlier period goes to *periods*, and its days are dropped."""
     out: dict[str | None, _Acc] = {}
     for r in rows:
+        period = getattr(r, "agf_p", None)
+        before = period is not None and int(period) != 0
         if int(getattr(r, "agf_gd", 1) or 0) == 0:
-            days.append((r.agf_day, r.value, int(r.c or 0)))
-        else:
-            out[_key(r.key)] = _acc_of(r, fields)
+            if not before:
+                days.append((r.agf_day, r.value, int(r.c or 0)))
+        elif before and periods is not None:
+            periods.setdefault(int(period), []).append(_acc_of(r, fields, statuses))
+        elif not before:
+            out[_key(r.key)] = _acc_of(r, fields, statuses)
     return out
 
 
@@ -1018,12 +1147,14 @@ async def _read(
     pairs: list[tuple[str, str]], params: ListParams, user: UserContext | None,
     fields: str | None = None, timeout_ms: int | None = None,
     status_group: bool = False, nodes: tuple[QueryNode, ...] | None = None,
+    sense: bool = False,
 ) -> _Read:
     """Every statement of one aggregate, in the caller's tenant session.
     *fields* is the comma list of a split (CRM-Q25e part 2), and
     *timeout_ms* the budget of a long read: ONE deadline for all its
     statements (:func:`_keep_deadline`). *nodes* are the checked ``query``
-    of a module (SEM-1b-1), or None."""
+    of a module (SEM-1b-1), or None. *sense* is the one read of NUM-2's
+    flag for the request (:func:`number_sense_on`)."""
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
     deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
@@ -1038,7 +1169,7 @@ async def _read(
             status_group=status_group, fields=fields, nodes=nodes)
         scope, field_measure, field, zone = mod.scope, mod.field_measure, mod.field, mod.zone
         matched, text_numbers, words = mod.matched, mod.text_numbers, mod.words
-        ranges, filter_words = mod.ranges, mod.filter_words
+        ranges, filter_words, finding = mod.ranges, mod.filter_words, mod.finding
         table, where_sql, bound = MODULE_TABLE, mod.where_sql, mod.bound
         source = mod.source
         # CRM-Q34-7: the near pass reads under the filters of the call, with no q.
@@ -1047,6 +1178,7 @@ async def _read(
     else:
         assert found is not None
         matched, words, plain, ranges = {}, [], ("", {}), pairs
+        finding = False
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -1102,14 +1234,12 @@ async def _read(
                                        reads=bool(source))
     source = from_source(source, day_source)
     days: list[tuple[Any, Any, int]] = []
-    # One scan, two groupings: the answer's own, and the day. With no group,
-    # the empty set gives its one row even when no record matches, as the
-    # plain statement does.
-    sets = (
-        f" GROUP BY GROUPING SETS ({f'({key_sql})' if group_clause else '()'}, ({day_key}))"
-        if day_key else group_clause
-    )
-    grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd" if day_key else ""
+    base, period, statuses, counted = await _sense_columns(
+        db, scope, module, day, day_key, pairs, bound, reads=bool(source), sense=sense,
+        nodes=nodes, words=finding)
+    more += counted  # the status counts are more columns of the ONE statement
+    periods: dict[int, list[_Acc]] = {}
+    sets, grouping = _grouping_sql(key_sql, group_clause, day_key, period)
 
     async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
         await _keep_deadline(db, deadline)
@@ -1121,7 +1251,7 @@ async def _read(
             ),
             args,
         )).fetchall()
-        return _rows_of(rows, len(split), days)
+        return _rows_of(rows, len(split), days, periods, statuses)
 
     if money:
         # Task 888: one read for each currency. Never one sum over all of them.
@@ -1143,8 +1273,10 @@ async def _read(
     near: list[str] | None = None
     nearest: list[str] | None = None
     if words and scope is not None and not sum(acc.rows for acc in values.values()):
+        kept = _set_aside(periods, days)
         values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch,
                                                   values)
+        _take_back(kept, near, periods, days)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
@@ -1158,7 +1290,8 @@ async def _read(
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
                  near=near, nearest=nearest, text_numbers=text_numbers,
-                 filter_words=filter_words)
+                 filter_words=filter_words, base=base, periods=periods,
+                 statuses=statuses)
 
 
 async def _with_query(
@@ -1191,6 +1324,49 @@ def _with_words(scope: FieldScope, words: list[str], where_sql: str,
     found = find_where(scope, words)
     bound.update(found.params)
     return f"{where_sql} AND {found.sql}", from_source(source, found.source)
+
+
+def _grouping_sql(key_sql: str, group_clause: str, day_key: str,
+                  period: str) -> tuple[str, str]:
+    """The GROUP BY text and the more columns of the day set (CRM-Q25e part
+    4) and of the period of a baseline (NUM-2).
+
+    One scan, two groupings: the answer's own, and the day. With no group,
+    the empty set gives its one row even when no record matches, as the
+    plain statement does. With a baseline, both sets also group by the
+    period, and only period 0 is the answer (:func:`_rows_of`). With no
+    day key, the text is *group_clause*, as before."""
+    if not day_key:
+        return group_clause, ""
+    lead = f"{period}, " if period else ""
+    answer_set = (f"({lead}{key_sql})" if group_clause
+                  else f"({period})" if period else "()")
+    grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd"
+    if period:
+        grouping += f", {period} AS agf_p"
+    return f" GROUP BY GROUPING SETS ({answer_set}, ({lead}{day_key}))", grouping
+
+
+def _set_aside(periods: dict[int, list[_Acc]], days: list[tuple[Any, Any, int]],
+               ) -> tuple[dict[int, list[_Acc]], list[tuple[Any, Any, int]]]:
+    """NUM-2: the baseline periods and the days of the exact pass of ``q``,
+    set aside before the near pass fills both again. Both start empty."""
+    kept = (dict(periods), list(days))
+    periods.clear()
+    days.clear()
+    return kept
+
+
+def _take_back(kept: tuple[dict[int, list[_Acc]], list[tuple[Any, Any, int]]],
+               near: list[str] | None, periods: dict[int, list[_Acc]],
+               days: list[tuple[Any, Any, int]]) -> None:
+    """NUM-2: the baseline and the days are of the pass whose groups the
+    answer keeps. With no *near* name, the answer keeps the exact pass, so
+    its own periods and days come back (:func:`_set_aside`)."""
+    if near is None:
+        periods.clear()
+        periods.update(kept[0])
+        days[:] = kept[1]
 
 
 async def _near_pass(
@@ -1231,6 +1407,9 @@ class _ModuleRead:
     words: list[str]
     ranges: list[tuple[str, str]]
     filter_words: list[str]
+    #: CRM-Q34-5: the flag of the filter words, as ``module_where`` read it.
+    #: NUM-2 parses the pairs with the same flag (``baseline_range``).
+    finding: bool = False
 
 
 async def _module_filters(
@@ -1287,7 +1466,7 @@ async def _module_filters(
     where_sql, source = await _with_query(db, scope, module, nodes, zone, where_sql,
                                           bound, source, matched)
     return _ModuleRead(scope, field_measure, field, zone, where_sql, bound, source, matched,
-                       text_numbers, words, ranges, filter_words)
+                       text_numbers, words, ranges, filter_words, finding)
 
 
 # ── Two group fields, and pages of groups (CRM-Q34-10) ─────────────────────
@@ -1825,6 +2004,9 @@ async def _compute(
     if status_group:
         group_by, group_field = None, STATUS_WORD
     group_field2 = group_field2 or None
+    # NUM-2: the flag is read ONCE for the request. The read and the answer
+    # take this one value, so a reload between them never mixes the two.
+    sense = number_sense_on()
     paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size,
                      status_group=status_group, q=params.q)
     if paging is not None and module is not None and group_field is not None:
@@ -1862,6 +2044,7 @@ async def _compute(
                         field=field, group_field=group_field, bucket=bucket,
                         pairs=pairs, params=params, user=user, fields=fields,
                         timeout_ms=timeout_ms, status_group=status_group, nodes=nodes,
+                        sense=sense,
                     )
                 except HTTPException as exc:
                     # Task 3690: a field that is not on this module names
@@ -1922,6 +2105,10 @@ async def _compute(
     elif bucketed or group_by in MONTH_GROUPS:
         shown.sort(key=lambda g: (g.key is None, g.key or ""))
     total = None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in groups]))
+    records = (
+        None if measure == "weighted" else sum(acc.rows for acc in read.values.values())
+    )
+    covered = _coverage(read, values, records) if sense else None
     return AggregateResponse(
         entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
         measure=measure, group_by=group_by, group_field=group_field,
@@ -1953,10 +2140,7 @@ async def _compute(
         ],
         zone=read.zone,
         values=values,
-        records=(
-            None if measure == "weighted"
-            else sum(acc.rows for acc in read.values.values())
-        ),
+        records=records,
         overlay=read.overlay,
         matched=read.matched or None,
         near=read.near,
@@ -1970,6 +2154,12 @@ async def _compute(
             group_by),
         next_group_page=_next_page(module, group_field, fields, rest, bucketed,
                                    status_group, params.q),
+        checks=_checks(read, measure, covered, today=_today(read.zone)) if sense else [],
+        baseline=[
+            {"period": label, "value": _rounded(value), "records": rows}
+            for period, label, value, rows in _periods(read, measure) if period < 0
+        ] if sense else [],
+        coverage=covered,
     )
 
 
@@ -2126,6 +2316,106 @@ def _findings(read: _Read, measure: str, bucket: str | None,
     found = number_findings(
         [(key, acc.value, acc.rows) for key, acc in read.values.items()],
         label=label, summed=summed, bucket=bucket)
+    return [f.wire() for f in found]
+
+
+# ── NUM-2: the baseline, the coverage and the checks (number_sense.md §4.2) ──
+
+
+def _periods(read: _Read, measure: str) -> list[tuple[int, str, float | None, int]]:
+    """``(period, label, value, records)`` for each period of the baseline,
+    oldest first, and the asked range last (period 0). Empty with no
+    baseline. A field measure with no value in a period has the value None,
+    as the total of an empty field has (CRM-Q25c item 3)."""
+    if read.base is None:
+        return []
+    out = []
+    for period in range(-BASELINE_PERIODS, 1):
+        accs = list(read.values.values()) if period == 0 else read.periods.get(period, [])
+        empty = read.measured is not None and sum(a.n for a in accs) == 0
+        value = None if empty else _combine(measure, accs)
+        out.append((period, read.base.label(period), value, sum(a.rows for a in accs)))
+    return out
+
+
+def _coverage(read: _Read, values: int | None, records: int | None) -> dict[str, Any] | None:
+    """The records of the answer, the records with no value in the measure
+    field, and the count of each status that a total usually leaves out,
+    all from the same statement. None with no measure field and no status
+    field, and for ``weighted``, which counts no records."""
+    if records is None or (read.measured is None and not read.statuses):
+        return None
+    out: dict[str, Any] = {"records": records}
+    if read.measured is not None and values is not None:
+        out["no_value"] = max(0, records - values)
+    if read.statuses:
+        out["statuses"] = {
+            status: sum(acc.statuses.get(status, 0) for acc in read.values.values())
+            for status in read.statuses
+        }
+    return out
+
+
+#: NUM-2: the measures whose period figure an ``outlier`` reads. A count and
+#: a sum grow with the records of a period. A min, a max or an average of a
+#: period is no figure of the same kind, so it gets no outlier. ``weighted``
+#: reads deals, which get no baseline.
+OUTLIER_MEASURES = frozenset({"count", "sum", "sum_amount"})
+#: NUM-2: the fewest records of an answer that a ``coverage`` check reads,
+#: the minimum that NUM-1 sets for a concentration
+#: (``number_sense.CONCENTRATION_MIN_RECORDS``). With fewer, a share of a few
+#: records is no signal. The ``coverage`` counts stay in the answer.
+COVERAGE_MIN_RECORDS = CONCENTRATION_MIN_RECORDS
+
+
+def _clock() -> datetime:
+    """NUM-2: now, from the one clock of the CRM routes (``core._now``).
+    The tests patch this function."""
+    return _crm_now()
+
+
+def _today(zone: str) -> date:
+    """NUM-2: the day of now in the CRM zone *zone*, the zone of each range
+    of the answer (CRM-Q25b). A zone that does not load reads as UTC."""
+    try:
+        tz = ZoneInfo(zone) if zone else ZoneInfo("UTC")
+    except (ValueError, KeyError, OSError):
+        tz = ZoneInfo("UTC")
+    return _clock().astimezone(tz).date()
+
+
+def _checks(read: _Read, measure: str, covered: dict[str, Any] | None, *,
+            today: date) -> list[dict[str, Any]]:
+    """NUM-2: the ``outlier`` of the asked range against the periods before
+    it, and the ``coverage`` of the answer (``acb_common.number_sense``, the
+    one rule and its thresholds). Each key is a period label that this
+    module makes from the bound dates, or a fixed word, never a record
+    value. A ``concentration`` stays in ``findings`` (:func:`_findings`).
+
+    A range that is not over on *today* (the CRM zone) has only part of
+    its records, so it gets no ``outlier``. A month or a quarter gets the
+    ``part_period`` of NUM-1 in its place, an ``info`` that says so. Only a
+    measure of :data:`OUTLIER_MEASURES` gets an outlier. An answer of fewer
+    than :data:`COVERAGE_MIN_RECORDS` records gets no coverage check."""
+    found = []
+    base = read.base
+    buckets = _periods(read, measure) if base is not None else []
+    if base is not None and buckets and measure in OUTLIER_MEASURES:
+        word = ("month" if base.months == 1
+                else "quarter" if base.months == 3 and base.start.month % 3 == 1
+                else "period")
+        if today <= base.end:
+            found.extend(part_period(word, base.start, today))
+        else:
+            asked = base.label(0)
+            found.extend(
+                f for f in outlier([(label, value, rows) for _p, label, value, rows in buckets],
+                                   bucket=word)
+                if f.key == asked)
+    if covered is not None and covered["records"] >= COVERAGE_MIN_RECORDS:
+        found.extend(coverage(
+            covered["records"], covered.get("no_value"), covered.get("statuses"),
+            measure=read.measured.label if read.measured is not None else "value"))
     return [f.wire() for f in found]
 
 
