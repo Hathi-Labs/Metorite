@@ -38,6 +38,7 @@ from tally_bridge.tools.common import (
 )
 
 FIND_LIMIT = 50
+TEXT_LIMIT = 100
 
 Company = Annotated[str | None, Field(description="Company name. Optional with one company.")]
 
@@ -80,12 +81,18 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
         annotations=READ_ONLY,
     )
     async def find_ledgers(
-        query: Annotated[str, Field(max_length=100, description="Part of the ledger name.")],
-        group: Annotated[str | None, Field(max_length=100, description="Exact group name.")] = None,
-        limit: Annotated[int, Field(ge=1, le=FIND_LIMIT, description="Most rows.")] = 20,
+        query: Annotated[str, Field(description="Part of the ledger name.")],
+        group: Annotated[str | None, Field(description="Exact group name.")] = None,
+        limit: Annotated[int, Field(description="Most rows, 50 or fewer.")] = 20,
         company: Company = None,
     ) -> CallToolResult:
         async def work() -> dict[str, Any]:
+            # The bounds are checked here, not in the schema, so that a bad
+            # value gets one plain sentence (brief section 6.4 rule 5).
+            if not 1 <= limit <= FIND_LIMIT:
+                raise Refusal(f"The limit is {limit}. Ask for 1 to {FIND_LIMIT} rows.")
+            if len(query) > TEXT_LIMIT or len(group or "") > TEXT_LIMIT:
+                raise Refusal(f"Keep the query and the group to {TEXT_LIMIT} characters.")
             name = pick_company(settings, company)
             # The query never goes to Tally. The bridge filters here, so no
             # text of the member reaches an envelope.

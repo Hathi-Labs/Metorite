@@ -178,9 +178,17 @@ def test_an_ampersand_matches_a_real_ampersand_in_a_name():
     assert [r["name"] for r in body["ledgers"]] == ["Beta & Sons"]
 
 
-def test_find_ledgers_refuses_a_limit_over_fifty():
-    result = _call(FakeReader(), ONE, "find_ledgers", {"query": "a", "limit": 51})
-    assert result.isError is True
+@pytest.mark.parametrize("limit", [0, 51, -1])
+def test_find_ledgers_refuses_a_bad_limit_in_one_sentence(limit):
+    reader = FakeReader()
+    text = _err(_call(reader, ONE, "find_ledgers", {"query": "a", "limit": limit}))
+    assert text == f"The limit is {limit}. Ask for 1 to 50 rows."
+    assert reader.sent == []
+
+
+def test_find_ledgers_refuses_a_long_query_in_one_sentence():
+    text = _err(_call(FakeReader(), ONE, "find_ledgers", {"query": "x" * 101}))
+    assert text == "Keep the query and the group to 100 characters."
 
 
 @pytest.mark.parametrize(
