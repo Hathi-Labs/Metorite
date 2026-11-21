@@ -602,6 +602,16 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "download",
         "The bytes of a chat file for the viewer and the download button. The chat writes and reads its files itself.",
     ),
+    "GET /api/auth/me/chat-decisions": (
+        "chat",
+        "Reads the kept decisions of this chat to draw the chips under the answer (HRD-12b). "
+        "It is the chat's own card. Mira holds the same list in her context.",
+    ),
+    "POST /api/auth/me/chat-decisions/undo": (
+        "chat",
+        "The Undo of a kept decision, on the chip in the chat (HRD-12b). It is the chat's own card. "
+        "In the chat, the member says it and Mira calls drop_correction.",
+    ),
     "GET /api/chat/active-sessions": (
         "stream",
         "A poll of the runs that are live, for the rail's spinners. The chat is the run.",
