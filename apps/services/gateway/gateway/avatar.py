@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 from typing import Any
 
 #: The stored edge, in pixels. A constant rather than a setting: the whole
@@ -214,7 +213,8 @@ async def normalise_async(
     try:
         answer, timed_out = await si.run_worker(
             "avatar", data, crop=clean, size=size, max_side=MAX_SOURCE_EDGE,
-            max_pixels=MAX_SOURCE_PIXELS, max_output_bytes=MAX_OUTPUT_BYTES, jpeg_quality=JPEG_QUALITY)
+            max_pixels=MAX_SOURCE_PIXELS, max_output_bytes=MAX_OUTPUT_BYTES,
+            jpeg_quality=JPEG_QUALITY)
     except si.SignatureImageError as exc:
         if exc.code == "unavailable":
             raise AvatarError(_CHILD_REFUSALS["unavailable"]) from exc
@@ -239,7 +239,7 @@ def _stored_image(item: tuple[str, Any], size: int) -> bytes:
         raise AvatarError(_UNREADABLE)
     try:
         jpeg = base64.b64decode(value["data"], validate=True)
-    except (binascii.Error, ValueError):
+    except ValueError:  # binascii.Error is a ValueError
         raise AvatarError(_UNREADABLE) from None
     if not jpeg.startswith(b"\xff\xd8\xff") or len(jpeg) > MAX_OUTPUT_BYTES:
         raise AvatarError(_UNREADABLE)
