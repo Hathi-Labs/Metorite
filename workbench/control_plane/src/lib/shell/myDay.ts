@@ -133,6 +133,7 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   reminder_due: "Reminder due",
   reminder_check: "Reminder still open",
   reminder_unconfirmed: "Reminder not confirmed",
+  provider_alert: "AI providers",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
@@ -270,8 +271,10 @@ export function appIcon(app: NeedsApp): string {
  * A source that can fail, named by its SOURCE id: the needs sources, and the
  * feed's `calendar` source. The server keys `sources` this way, so
  * `reminders` is not `calendar` (`NEEDS_SOURCE_APP` maps it to its app).
+ * `providers` is the AI vendor alert of the operator's admins (AO-2). It has
+ * no app of the client, so it has its own name below.
  */
-export type FailedSource = NeedsSource | "calendar";
+export type FailedSource = NeedsSource | "calendar" | "providers";
 
 /** What a source's silence can hide, in the member's words. Keyed by source. */
 const MISSING: Readonly<Record<FailedSource, string>> = {
@@ -281,6 +284,7 @@ const MISSING: Readonly<Record<FailedSource, string>> = {
   email: "replies",
   reminders: "reminders",
   calendar: "time blocks",
+  providers: "AI vendor alerts",
 };
 
 /** True when the key is a source this card knows how to word. */
@@ -288,9 +292,13 @@ export function isFailedSource(source: string): source is FailedSource {
   return Object.hasOwn(MISSING, source);
 }
 
-/** The app a source speaks for. A needs source goes through THE map. */
-function appOfSource(source: FailedSource): NeedsApp {
-  return source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source];
+/**
+ * The name of the app a source speaks for. A needs source goes through THE
+ * map. `providers` has no app of the client, so it names itself.
+ */
+function sourceName(source: FailedSource): string {
+  if (source === "providers") return "AI providers";
+  return APP_NAMES[source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source]];
 }
 
 /**
@@ -300,7 +308,7 @@ function appOfSource(source: FailedSource): NeedsApp {
 export function failedLines(sources: Partial<Record<FailedSource, SourceState>>): string[] {
   return (Object.keys(MISSING) as FailedSource[])
     .filter((source) => sources[source] === "failed")
-    .map((source) => `${APP_NAMES[appOfSource(source)]} did not answer, so its ${MISSING[source]} may be missing.`);
+    .map((source) => `${sourceName(source)} did not answer, so its ${MISSING[source]} may be missing.`);
 }
 
 // ── Next actions ────────────────────────────────────────────────────────────

@@ -141,6 +141,7 @@ OUT: dict[str, str] = {
     "POST /crm/sync/zoho": "starts a sync run; it changes no set-up value",
     "POST /crm/analysis/rerun": "starts the analysis; it changes no set-up value",
     "POST /crm/mapping/preview": "a READ ONLY preview; it writes nothing",
+    "POST /crm/verified-queries/match": "a READ that uses POST so the member's words stay out of URLs; it writes nothing (SEM-8)",
     "POST /crm/rules/propose": "holds a rule in Redis; it saves nothing",
     "POST /crm/leads": "a record write",
     "PATCH /crm/leads/{record_id}": "a record write",

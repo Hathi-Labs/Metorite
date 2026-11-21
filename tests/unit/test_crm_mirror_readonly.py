@@ -110,6 +110,10 @@ _EXEMPT = {
     # record table. They work in Mirror mode only. The raw-write fence below
     # does not read this list either.
     "catalogue.py", "questions.py",
+    # SEM-8: the verified questions. A save and a repair write `crm_mapping_plans`
+    # through `mapping_plans.commit` and `write_draft`, and no record table.
+    # The match route is a READ that uses POST. They work in Mirror mode only.
+    "verified_queries.py",
     # CRM-Q33: the business rules. They write `crm_business_rules`, a member's
     # or the org's own words, and no record table. They work in Mirror mode
     # only. The raw-write fence below does not read this list either.

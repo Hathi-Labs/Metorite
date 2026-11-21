@@ -70,6 +70,11 @@ held back (:func:`note_withheld`), as a :class:`Withheld` value from the
 server config. A call of a tool of one of them gets :data:`WITHHELD_MAIL`,
 which says why and what the member can do. A step ignores the value. Fence:
 ``tests/unit/test_unknown_tool_withheld.py``.
+
+The rewrite is also the capture site C3 of the failure log
+(``tool_failure_log.md`` §4.2, TOF-2c): ONE ``unknown_tool`` record for each
+call of this run, and none for a result of the chat history. Fence:
+``tests/unit/test_failure_capture_sites.py``.
 """
 from __future__ import annotations
 
@@ -79,8 +84,12 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import failure_log, get_logger
 from agent_framework import ChatMiddleware, Content, ContextProvider, FunctionInvocationContext
+
+# TOF-2b: the set of built-in names is in the failure log before C3 runs
+# (tool_failure_log.md §3.2 rule 1).
+from acb_skills import builtin_tools as _builtin_tools  # noqa: F401
 
 __all__ = [
     "MEMBER_LINE", "NOT_IN_STEP", "WITHHELD_MAIL", "WITHHELD_MAIL_REASON", "UnknownToolAnswer",
@@ -413,6 +422,25 @@ class UnknownToolAnswer(ChatMiddleware):
         #: slug and the text of a refused load ("" and "" after a load). A
         #: name gets ONE load try in a run, so the loop cannot spin the loader.
         self._tried: dict[str, tuple[str, str]] = {}
+        #: TOF-2c (C3): the keys of the calls of this run that the failure log
+        #: holds. A call writes one record, however many requests hold it.
+        self._recorded: set[str] = set()
+
+    def _record(self, content: Any, name: str) -> None:
+        """The capture site C3 (``tool_failure_log.md`` §4.2): ONE record for
+        each call of this run. A result from the chat history (a key of the
+        first request) writes none. *name* is model text, so the writer
+        keeps it in the tenant column only. Never raises."""
+        try:
+            key = _result_key(content)
+            if key in self._history_keys or key in self._recorded:
+                return
+            self._recorded.add(key)
+            failure_log.record_tool_failure(
+                None, source="chat_tool", error_code="unknown_tool", tool=name,
+                **failure_log.run_fields())
+        except Exception as exc:  # the class only: the answer stays
+            _log.debug("unknown_tool.capture_failed", error_type=type(exc).__name__)
 
     async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -453,6 +481,7 @@ class UnknownToolAnswer(ChatMiddleware):
         run = run if isinstance(run, tp.PackRun) else None
         tools = options.get("tools") if isinstance(options, Mapping) else None
         for content, name in hits:
+            self._record(content, name)  # C3 (TOF-2c)
             held = run.holds() if run is not None else ()
             offered = tuple(s for s in (getattr(loader, "offered", ()) or ()) if s not in held)
             gone = tuple(getattr(run, "gone", ()) or ())

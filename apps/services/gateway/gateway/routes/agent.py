@@ -107,15 +107,28 @@ class ResumeLaunch(BaseModel):
     #: to ``closed`` (``pending_ask.claim_declined_call``), and the run calls
     #: NO tool: its note tells the model that nothing was done. Only
     #: :func:`_resume_from_row` sets it, from ``declined`` of the checked
-    #: answer (R11).
+    #: answer (R11). A decline never goes on in the same reply.
     decline: bool = False
+    #: RESUME-2b, case A: the run goes on in the SAME reply. The request then
+    #: names the parked run's id and its reply row, and the run route starts
+    #: the run with ``start_detached(keep_stream=True)``. Only
+    #: :func:`_resume_from_row` sets it, after :func:`_same_reply_of`, and
+    #: never for a decline.
+    same_reply: bool = False
 
     def as_kwarg(self) -> dict[str, Any]:
-        """The ``resume_call`` kwarg of ``executor.run_agent_stream``."""
-        kwarg = {"stored": dict(self.stored), "request_id": self.request_id,
-                 "title": self.title}
+        """The ``resume_call`` kwarg of ``executor.run_agent_stream``.
+
+        ``declined`` (RESUME-4a-2) makes the run call no tool. ``same_reply``
+        (RESUME-2b, review round 2, P2-a) makes the executor mark the run's
+        ``RUN_STARTED`` ``resumed``. Each key is there only when it is true,
+        so a case B Approve sends the kwarg of before, byte for byte."""
+        kwarg: dict[str, Any] = {"stored": dict(self.stored), "request_id": self.request_id,
+                                 "title": self.title}
         if self.decline:
             kwarg["declined"] = True
+        if self.same_reply and not self.decline:
+            kwarg["same_reply"] = True
         return kwarg
 
 
@@ -125,6 +138,18 @@ class _ContinuationStarted(BaseModel):
 
     run_id: str
     thread_id: str
+    #: RESUME-2b: the reply row that the run writes, for the 200 answer. In
+    #: case A it is the parked reply, and in case B the new row.
+    message_id: str = ""
+    #: RESUME-2b: True when the run went on in the same reply (case A).
+    same_reply: bool = False
+
+
+class _SameReplyGone(Exception):
+    """RESUME-2b: the run route found no parked end in the stream at the
+    start of a case A continuation (``stream_relay.ParkedStreamGone``).
+    Nothing began, and the cap slot stays. :func:`_resume_from_row` then
+    starts the continuation as a new reply (case B), under the same claim."""
 
 
 def _no_continuation() -> None:
@@ -386,6 +411,38 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
         return _followup_refused(thread_id, "probe_failed")
     _log.info("agent.steer_followup", thread_id=thread_id[:12])
     return None
+
+
+def _paste_raw_parts(
+    sent_text: str,
+    taken_steers: list[dict[str, Any]],
+    *,
+    client_text: bool,
+    followup: bool,
+    resume_launch: bool,
+) -> tuple[str, ...]:
+    """The raw member parts of ONE turn, for ``paste_frame.RAW_PARTS`` (HRD-14b).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The raw binding". In order, as
+    the turn holds them: the raw text of each steer that the ENGAGE seam
+    replays (``steer.format_replayed`` skips an empty one too), then the sent
+    words while ``message`` is still the client's text. That covers a typed
+    turn, a pill, a retry, an API call, a card answer and a Continue with no
+    restart marker. A Continue whose note the server wrote adds nothing for
+    the note, and a steer follow-up sends no words. RESUME-2a sends no words
+    either, but it keeps the steers that ENGAGE replays: the executor puts
+    its note BEFORE them (``executor._set_run_note``), so a pasted steer
+    still reaches the model and must get its frame. So the tuple is empty
+    only for a RESUME-2a or a server Continue note with no replayed steer. An
+    empty tuple is still a bound run. The words are the RAW sent words, never
+    ``typed_text`` (the member-sent variable of the profile)."""
+    parts = [str(s.get("text") or "") for s in taken_steers
+             if isinstance(s, dict) and str(s.get("text") or "").strip()]
+    if resume_launch:
+        return tuple(parts)
+    if client_text and not followup and str(sent_text or "").strip():
+        parts.append(str(sent_text))
+    return tuple(parts)
 
 
 async def _resume_note_for(
@@ -2560,7 +2617,9 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
 
     The caller's own ``assistant_message_id`` wins, because the translator
     checkpoints that same row. Without one, the id is server-only: a fresh
-    uuid4 that no event and no response carries. The old fallback was
+    uuid4 that no event carries, and no response carries it before the mint
+    wrote the row. RESUME-2b: the 200 of a late Approve names it AFTER the
+    mint, to the member who approved only. The old fallback was
     ``assistant-{thread}-{run_id}``, and RUN_STARTED publishes ``runId`` to
     every room reader. So a member could insert that id first, become its
     run member, and make S13's WHERE decline the real fold for good.
@@ -3127,10 +3186,14 @@ async def run_agent_stream_endpoint(
         _typed_mark = False  # and its row is not typed (D-PZ-37)
         _prompt = None if _prompt is None else _prompt.model_copy(
             update={"member_typed": False})
+    # HRD-14b: True while `message` is still the client's text. The raw
+    # binding of the paste frame (`_raw_parts` below) reads it.
+    _client_text = True
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
             req.payload["message"] = _note
+            _client_text = False
 
     # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
     # The chat asks for it once the run it steered has ended. It carries no
@@ -3429,6 +3492,29 @@ async def run_agent_stream_endpoint(
         and m.get("content")
     ]
 
+    # RESUME-2b, case A (review of 2026-11-17, P2-1): the row that the fold
+    # of a same-reply run writes when its replay no longer holds part one. A
+    # fresh server id, so part one is never written over. None for each other run.
+    _same_reply_fallback = (
+        fold_message_id(None, thread_id)
+        if _resume_launch is not None and _resume_launch.same_reply else None
+    )
+    # What the restart sweep needs to save this run's partial reply if this
+    # process dies (orchestrator.run_liveness). Server-side facts only.
+    # RESUME-2b, round 3, P2-1: with `keep_stream`, `start_detached` adds the
+    # id of the parked end that it deleted (`parkedEndId`). The fold below
+    # reads it from this same dict at the end of the run.
+    _run_record: dict[str, Any] = {
+        "messageId": _persist_message_id,
+        "agent": agent_name,
+        "runId": run_id,
+        "model": req.model,
+        # RESUME-2b, P2-1: the sweep of a same-reply run that died never
+        # writes part one over either (chat_recovery).
+        **({"sameReplyFallbackId": _same_reply_fallback}
+           if _same_reply_fallback else {}),
+    }
+
     async def _persist_on_complete() -> None:
         # WS-17 EM-G11f3: ONE answer of the mail predicate for the run end,
         # asked before the fold. The trace and both memory writes read it.
@@ -3452,6 +3538,9 @@ async def run_agent_stream_endpoint(
             # its own message id: one reply, two rows (task 1533, bug B3).
             # Fence: tests/unit/test_chat_fold_other_run.py.
             expect_run_id=run_id,
+            same_reply_fallback_id=_same_reply_fallback,
+            same_reply_parked_end=(str(_run_record.get("parkedEndId") or "") or None
+                                   if _same_reply_fallback else None),
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3601,7 +3690,15 @@ async def run_agent_stream_endpoint(
         count_member_steers,
         member_typed,
     )
+    from acb_skills.paste_frame import bind_raw_parts  # noqa: PLC0415
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
+
+    # HRD-14b: the raw member parts of this turn, for the paste frame. Read
+    # after the ENGAGE seam took the steers it replays. Never the member-sent variable of the profile.
+    _raw_parts = _paste_raw_parts(
+        _sent_words, _taken_steers, client_text=_client_text,
+        followup=_followup, resume_launch=_resume_launch is not None,
+    )
 
     # The detached run of this turn: the same arguments for a run that this
     # request reads (`run_detached` below) and for a continuation run that no
@@ -3616,35 +3713,49 @@ async def run_agent_stream_endpoint(
         "source": str(req.payload.get("source") or "chat"),
         "floor": _floor,
         # What the restart sweep needs to save this run's partial
-        # reply if this process dies (orchestrator.run_liveness).
-        "record": {
-            "messageId": _persist_message_id,
-            "agent": agent_name,
-            "runId": run_id,
-            "model": req.model,
-        },
+        # reply if this process dies (orchestrator.run_liveness). ONE dict,
+        # which the fold reads too (`_run_record` above).
+        "record": _run_record,
     }
 
     if _resume_launch is not None:
         # RESUME-2a: no request reads a continuation run, so it starts with
         # no subscriber. The drain task copies the scope that `_serve` opens
         # for a turn, so the run reads no typed or sent words.
-        from orchestrator.stream_relay import start_detached
+        from orchestrator.stream_relay import ParkedStreamGone, start_detached
 
-        # A continuation has no app of the dock, so it binds no surface.
-        with member_typed(_typed, sent=_sent_text), surface_scope(None):
+        # A continuation has no app of the dock, so it binds no surface. Its
+        # raw parts hold only the steers that ENGAGE replayed, which follow
+        # the server's note: a bound run with no member words.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None), \
+                bind_raw_parts(_raw_parts):
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
             # in another tab. A refusal raises before the run began. The
             # reply row minted above stays, empty (the note at
             # `_refuse_if_any_run_is_active` says why).
+            # RESUME-2b, case A: `keep_stream` goes on in the parked run's
+            # stream, with no reset. The request names that run's id and its
+            # reply row, so the mint above changed nothing, and the fold
+            # writes the whole run into the same row.
             _resume_launch.phase = "starting"
             try:
                 await start_detached(
                     thread_id, agent_gen, exclusive=True,
+                    keep_stream=_resume_launch.same_reply,
+                    # RESUME-3d: the live entry names the reply row, so a
+                    # tab that did not get the 200 replays into it.
+                    continuation=True,
                     organization_id=_organization_id, **_detached,
                 )
+            except ParkedStreamGone:
+                # RESUME-2b: the parked end went after `_same_reply_of` saw
+                # it. Nothing began, and the cap slot stays for the new
+                # reply that `_resume_from_row` starts in its place.
+                _resume_launch.phase = "refused"
+                await _give_back_taken()
+                raise _SameReplyGone() from None
             except SupersedeRefused:
                 _resume_launch.phase = "refused"
                 await _release_cap_slot()
@@ -3659,8 +3770,11 @@ async def run_agent_stream_endpoint(
                 ) from None
             _resume_launch.phase = "started"
         _log.info("agent.continuation_started", agent=agent_name, run_id=run_id,
-                  thread_id=thread_id[:12])
-        return _ContinuationStarted(run_id=run_id, thread_id=thread_id)  # type: ignore[return-value]
+                  thread_id=thread_id[:12], same_reply=_resume_launch.same_reply)
+        return _ContinuationStarted(  # type: ignore[return-value]
+            run_id=run_id, thread_id=thread_id, message_id=_persist_message_id,
+            same_reply=_resume_launch.same_reply,
+        )
 
     async def _serve():
         timing = _RunTiming(_route_started)
@@ -3675,8 +3789,10 @@ async def run_agent_stream_endpoint(
                 # typed steers that ENGAGE took count now, and a tool result
                 # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
-                async for chunk in _serve_run(timing):
-                    yield chunk
+                # HRD-14b: the raw parts of the turn ride the same scope.
+                with bind_raw_parts(_raw_parts):
+                    async for chunk in _serve_run(timing):
+                        yield chunk
         finally:
             _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
                       **timing.fields())
@@ -3799,8 +3915,11 @@ async def _late_answer_from_row(
             pending_ask.move_ask, org, req.request_id,
             to="answered", from_states=pending_ask.WAITING, answer=req.answer,
         )
-    except Exception:  # noqa: BLE001
-        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # Never ``exc_info``: a database fault can echo the statement parameters, and
+        # one of them is the member's answer (a card edit or typed text). Class and id only.
+        _log.warning("agent.pending_ask_answer_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return None, True
     if moved is None:
         return None, True
@@ -3940,7 +4059,17 @@ async def _resume_from_row(
     and the row waits). The claim (``pending_ask.claim_stored_call``) moves
     the row once: no row back releases the slot and answers the plain 409.
     The HRD-22 offer goes. The run route starts the continuation, and the
-    answer is ``{"ok": true, "resumed": true, "threadId", "runId"}``.
+    answer is ``{"ok": true, "resumed": true, "threadId", "runId",
+    "sameReply", "messageId"}``.
+
+    **RESUME-2b, case A.** When :func:`_same_reply_of` finds that the parked
+    turn is the last turn and its stream still ends in the park, the run goes
+    on in the SAME reply: the parked run's id, its reply row, and no stream
+    reset (``start_detached(keep_stream=True)``). ``sameReply`` is True, and
+    ``messageId`` names that reply. Each doubt gives case B. When the stream
+    lost its parked end before the start, the same claim starts case B. A
+    late decline never takes case A: it starts the short continuation of
+    RESUME-4a-2, and its answer and kwarg are the ones of RESUME-4a-2.
 
     **A refusal after the claim** (review, P2). The run route refuses when
     another member's run started since the check above, and when ANY run is
@@ -4004,18 +4133,7 @@ async def _resume_from_row(
         organization_id=org, member=_session_member(user), thread_id=req.thread_id,
     )
     if not admission.admitted:
-        if declined:
-            # Review of 4a-2, P2-1 (a): a "no" needs no run slot. The late
-            # decline of before closes the row, with no run.
-            return None
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error": "too_many_runs",
-                "limit": admission.limit,
-                "running": list(admission.running),
-            },
-        )
+        return _cap_refused(admission, declined=declined)
     try:
         if declined:
             claimed = await asyncio.to_thread(
@@ -4027,8 +4145,10 @@ async def _resume_from_row(
                 pending_ask.claim_stored_call, org, req.request_id,
                 member=me, thread_id=req.thread_id, answer=req.answer,
             )
-    except Exception:
-        _log.warning("agent.resume_claim_failed", exc_info=True)
+    except Exception as exc:
+        # Class and id only: the claim carries the member's answer as a parameter.
+        _log.warning("agent.resume_claim_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         claimed = None
     if claimed is None:
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
@@ -4037,22 +4157,34 @@ async def _resume_from_row(
     from acb_skills.late_approve import drop_offer
 
     await drop_offer(org, me, req.thread_id, req.request_id)
-    run_id = str(uuid.uuid4())
-    launch = ResumeLaunch(
-        stored=claimed, request_id=req.request_id,
-        title=str(row.get("question") or ""), decline=declined,
-    )
-    # A new run with a new reply row, and no prompt row: the payload carries
-    # no message id and no words, and no `typed` mark.
-    cont = AgentRunRequest(
-        agent=agent_name, thread_id=req.thread_id, run_id=run_id,
-        payload={"message": "", "source": "chat"},
-    )
+    # RESUME-2b: case A (the same reply) when the parked turn is the last
+    # turn and its stream still ends in the park. Any doubt gives case B.
+    # A decline (RESUME-4a-2) NEVER takes case A: it keeps no run and no
+    # stream, and it starts the short continuation of 4a-2, byte for byte.
+    same = None if declined else await _same_reply_of(
+        org, req.thread_id, row, claimed, member=me)
+    launch = _resume_launch_of(claimed, req, row, same_reply=same is not None,
+                               decline=declined)
+    cont = _continuation_request(agent_name, req.thread_id, same)
     try:
-        started = await run_agent_stream_endpoint(
-            cont, None,  # type: ignore[arg-type]
-            user=user, background_tasks=BackgroundTasks(), _continuation=launch,
-        )
+        try:
+            started = await run_agent_stream_endpoint(
+                cont, None,  # type: ignore[arg-type]
+                user=user, background_tasks=BackgroundTasks(), _continuation=launch,
+            )
+        except _SameReplyGone:
+            # RESUME-2b: the parked end went between the check and the start,
+            # and nothing began. The same claim and the same cap slot start
+            # a new reply (case B), so the old row keeps its words. Only an
+            # Approve of case A gets here: a decline never keeps a stream.
+            _log.info("agent.resume_same_reply_gone", request_id=req.request_id[:12])
+            launch = _resume_launch_of(claimed, req, row, same_reply=False,
+                                       decline=launch.decline)
+            cont = _continuation_request(agent_name, req.thread_id, None)
+            started = await run_agent_stream_endpoint(
+                cont, None,  # type: ignore[arg-type]
+                user=user, background_tasks=BackgroundTasks(), _continuation=launch,
+            )
     except BaseException as exc:
         if declined and isinstance(exc, Exception) and launch.phase in ("new", "refused"):
             # Review of 4a-2, P2-1 (b): no run began, and the claim keeps the
@@ -4073,12 +4205,162 @@ async def _resume_from_row(
         "agent.pending_ask_resumed",
         request_id=req.request_id[:12], thread_id=req.thread_id[:12],
         state=str(row.get("state") or ""), declined=declined,
+        same_reply=started.same_reply,
     )
     if declined:
+        # RESUME-4a-2: the answer of a late decline, as before RESUME-2b.
         return {"ok": True, "resumed": True, "declined": True,
                 "threadId": started.thread_id, "runId": started.run_id}
-    return {"ok": True, "resumed": True, "threadId": started.thread_id,
-            "runId": started.run_id}
+    out: dict[str, Any] = {"ok": True, "resumed": True, "threadId": started.thread_id,
+                           "runId": started.run_id, "sameReply": started.same_reply}
+    if started.message_id:
+        # RESUME-2b: the reply row of the run, so the chat attaches to it.
+        # The row exists before this answer (the mint, or the parked reply),
+        # and only the member who approved reads the answer.
+        out["messageId"] = started.message_id
+    return out
+
+
+def _cap_refused(admission: Any, *, declined: bool) -> Response | None:
+    """The answer of :func:`_resume_from_row` when the run cap refuses the
+    continuation. An Approve gets the 429 ``too_many_runs``, and its card
+    waits. A decline gets None (review of 4a-2, P2-1 (a)): a "no" needs no run
+    slot, so the late decline of before closes the row, with no run."""
+    if declined:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "error": "too_many_runs",
+            "limit": admission.limit,
+            "running": list(admission.running),
+        },
+    )
+
+
+def _resume_launch_of(
+    claimed: dict[str, Any], req: UserInputResponseRequest, row: dict[str, Any],
+    *, same_reply: bool, decline: bool = False,
+) -> ResumeLaunch:
+    """The :class:`ResumeLaunch` of a claimed stored call (RESUME-2a, 2b,
+    4a-2). A decline never goes on in the same reply."""
+    return ResumeLaunch(
+        stored=claimed, request_id=req.request_id,
+        title=str(row.get("question") or ""), decline=decline,
+        same_reply=same_reply and not decline,
+    )
+
+
+def _continuation_request(
+    agent_name: str, thread_id: str | None, same: tuple[str, str] | None,
+) -> AgentRunRequest:
+    """The run request of a continuation (RESUME-2a, 2b). No prompt row: the
+    payload carries no user message id, no words and no ``typed`` mark.
+
+    Case B (*same* None): a new run id, and a new reply row. Case A (*same*
+    ``(run id, reply id)`` from :func:`_same_reply_of`): the parked run's id
+    and its reply row, both from the server's row and record (R11)."""
+    if same is None:
+        return AgentRunRequest(
+            agent=agent_name, thread_id=thread_id, run_id=str(uuid.uuid4()),
+            payload={"message": "", "source": "chat"},
+        )
+    run_id, reply_id = same
+    return AgentRunRequest(
+        agent=agent_name, thread_id=thread_id, run_id=run_id,
+        assistant_message_id=reply_id, payload={"message": "", "source": "chat"},
+    )
+
+
+async def _same_reply_of(
+    org: str, thread_id: str | None, row: dict[str, Any], stored: Any, *,
+    member: str,
+) -> tuple[str, str] | None:
+    """``(run id, reply id)`` when a late Approve goes on in the SAME reply
+    (RESUME-2b, ``chat_run_continuity.md`` §4.12.4 item 2, case A), else None
+    for a new reply (case B).
+
+    Each of these must hold, or it gives None:
+
+    * The row was ``parked`` (an ``open`` row of a dead run is case B), and
+      it names its run (``run_id``).
+    * The stored call names its reply row (``message_id``). A call stored
+      before RESUME-2b has none.
+    * The thread's stream still ends in the parked ``RUN_FINISHED`` of that
+      run (``stream_relay.parked_end_of``). A stream older than 24 hours
+      (D-RES-7), a Stop and a new run each fail it.
+    * The reply row is the last turn of the chat, in the order that a reader
+      sees (``routes.chat.reply_turn``, under the session's org).
+    * No participant joined after the reply row: no history waterline
+      (``join_message_ts``) is later than it. A member who left and came
+      back has a later waterline, and a set of members cannot show that
+      (review round 2, P2-b).
+    * The label of the room now equals the label of the reply row, members
+      AND caps (:func:`_same_label_as_park`). A part two at a new
+      intersection must not write into a row with the old label (review
+      P1 and round 2 P1). The final fold checks the label again
+      (``chat_fold.persist_final_assistant_message``).
+
+    The ids come from the server's row and record, and the members from the
+    session's member and org, never from the request (R11). It never raises:
+    a fault gives case B. The run route checks the stream again at the start
+    (``start_detached(keep_stream=True)``)."""
+    import asyncio
+
+    try:
+        run_id = str(row.get("run_id") or "")
+        reply_id = stored.get("message_id") if isinstance(stored, dict) else None
+        if (str(row.get("state") or "") != "parked" or not run_id or not thread_id
+                or not isinstance(reply_id, str) or not reply_id or not member):
+            return None
+        from orchestrator.stream_relay import parked_end_of
+
+        if await parked_end_of(thread_id, run_id) is None:
+            return None
+        from gateway.routes.chat import reply_turn
+
+        turn = await asyncio.to_thread(reply_turn, thread_id, reply_id, organization_id=org)
+        if turn is None or not turn.last or turn.late_join:
+            return None
+        if not await _same_label_as_park(org, thread_id, member, turn.label):
+            return None
+    except Exception as exc:  # case B is always safe
+        _log.warning("agent.same_reply_check_failed", error=type(exc).__name__)
+        return None
+    return run_id, reply_id
+
+
+async def _same_label_as_park(
+    org: str, thread_id: str, member: str, at_park: Any,
+) -> bool:
+    """True when the label of the room now equals the label of the reply row
+    (RESUME-2b, review of 2026-11-17, P1, and round 2, P1).
+
+    *at_park* is ``routes.chat.label_of`` of the row's ``authority``, which
+    the fold at the park wrote (``chat_fold._run_authority``): the members
+    AND the caps of a shared room. None is no label: the run was solo at the
+    park, so the room must still be solo now. The label now comes from the
+    same function, ``chat_fold._run_authority``, with the session's member.
+    So a member who joined or left, and a cap that a member gained or lost,
+    each give False. That read fails open to no label. So the room read
+    (``_resolve_room``) must also answer: a failed room read, and a shared
+    room with no label, give False (fail closed). It may raise, and the
+    caller reads that as case B. Fences:
+    ``tests/unit/test_resume_continuation_r8.py`` (R8) and
+    ``tests/unit/test_resume_continuation.py``."""
+    import asyncio
+
+    from gateway.chat_fold import _run_authority
+    from gateway.routes.chat import label_of
+
+    room = await asyncio.to_thread(_resolve_room, thread_id, member, org)
+    if room is None or bool(getattr(room, "resolve_failed", True)):
+        return False
+    shared = bool(getattr(room, "is_shared", True))
+    now = label_of(await _run_authority(thread_id, member))
+    if at_park is None:
+        return not shared and now is None
+    return now == at_park
 
 
 async def _give_back_claim(
@@ -4112,8 +4394,10 @@ async def _give_back_claim(
             pending_ask.restore_stored_call, org, req.request_id,
             member=me, thread_id=req.thread_id or "", stored=claimed,
         )
-    except BaseException:  # never mask the refusal of the route
-        _log.warning("agent.resume_claim_restore_failed", exc_info=True)
+    except BaseException as exc:  # never mask the refusal of the route
+        # Class and id only: the stored call holds the answer and the call arguments.
+        _log.warning("agent.resume_claim_restore_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return
     _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
 
@@ -4427,10 +4711,12 @@ async def reconnect_agent_stream(
     # a second person watches a run work; ephemeral threads (no session row)
     # stay reachable for the person who started them.
     actor = getattr(user, "email", None) or "default"
-    if not await _asyncio.to_thread(
-        _thread_owner_ok, thread_id, actor,
-        getattr(user, "organization_id", None),
-    ):
+    # One room read serves the guard and the replay rule (RESUME-2d). It is
+    # the read of `_thread_owner_ok`, through `_thread_room`.
+    room = await _asyncio.to_thread(
+        _thread_room, thread_id, actor, getattr(user, "organization_id", None),
+    )
+    if not _room_readable(room):
         raise HTTPException(status_code=403, detail="Not your conversation")
 
     _log.info(
@@ -4474,6 +4760,14 @@ async def reconnect_agent_stream(
         except Exception:  # noqa: BLE001 — never block a replay on this check
             _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
+        # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
+        # not see the whole run gets no event of it, only the end frame with
+        # `withheld: true`, so the chat does not attach to the run again.
+        if not await _replay_ok(thread_id, room):
+            _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
+            yield _reconnect_end(thread_id, withheld=True)
+            return
+
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between
         # replay end and subscribe start.
@@ -4502,7 +4796,7 @@ async def reconnect_agent_stream(
             # Agent finished — emit RUN_FINISHED so the frontend translator
             # (translateAndPersistStream) maps it to {"type":"done"} and the
             # UI exits the reconnecting state.
-            yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': thread_id, 'threadId': thread_id})}\n\n"
+            yield _reconnect_end(thread_id)
 
     return StreamingResponse(
         _event_generator(),
@@ -4513,6 +4807,72 @@ async def reconnect_agent_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
+    """The end frame of a reconnect: the frame when nothing is left to replay.
+
+    The frontend translator maps it to ``{"type": "done"}``, and the chat
+    leaves the reconnecting state. RESUME-2d: a reader who may not see the
+    run gets the same frame with ``withheld: true``. The chat then does not
+    attach to that run again while the server lists it
+    (``runStatus.ts``, ``attach_withheld``). The frame with no marker keeps
+    its bytes."""
+    import json as _json
+
+    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": thread_id, "threadId": thread_id}
+    if withheld:
+        evt["withheld"] = True
+    return f"data: {_json.dumps(evt)}\n\n"
+
+
+async def _replay_ok(thread_id: str, room: Any) -> bool:
+    """RESUME-2d (D-RES-10): True when the reader of *room* may replay the
+    whole run in the stream of *thread_id*. ``gateway.rooms.replay_allowed``
+    holds the rule.
+
+    *room* is the ``RoomAccess`` of the guard (:func:`_thread_room`), so the
+    route reads the room once. The actor and the org of that read come from
+    the session (``UserContext``), never from the request (R5). A solo chat,
+    and ``None`` (no rooms layer), replay with no stream read, so a solo
+    reconnect costs nothing more. Else the run start is the head of the
+    stream (``stream_relay.stream_head_ms``). A Redis fault reads as an
+    unknown start, and fails closed for a shared room."""
+    if room is None:
+        return True
+    from gateway.rooms import replay_allowed, room_is_solo
+    from orchestrator.stream_relay import stream_head_ms
+
+    if room_is_solo(room):
+        return True
+    try:
+        start = await stream_head_ms(thread_id)
+    except Exception:  # an unknown start fails closed
+        _log.warning("agent.reconnect_head_failed", thread_id=thread_id[:12])
+        start = None
+    return replay_allowed(room, start)
+
+
+def _thread_room(
+    thread_id: str, user_id: str, organization_id: str | None,
+) -> Any:
+    """The ``RoomAccess`` of *user_id* in *thread_id*, or None when the rooms
+    layer is absent (an import failure: the pre-138 world, where each thread
+    was solo). :func:`_thread_owner_ok` reads it, and the reconnect route
+    reads it once for the guard and the replay rule (RESUME-2d)."""
+    try:
+        from gateway.rooms import resolve_room_access
+        return resolve_room_access(
+            thread_id, user_id, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
+        return None
+
+
+def _room_readable(room: Any) -> bool:
+    """The answer of :func:`_thread_owner_ok` for a room of
+    :func:`_thread_room`: True for no rooms layer, else ``can_read``."""
+    return room is None or bool(room.can_read)
 
 
 def _thread_owner_ok(
@@ -4540,13 +4900,7 @@ def _thread_owner_ok(
     The name is kept because it is the guard two endpoints already name; what
     it means is now "may read this room".
     """
-    try:
-        from gateway.rooms import resolve_room_access
-        return resolve_room_access(
-            thread_id, user_id, organization_id=organization_id,
-        ).can_read
-    except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
-        return True
+    return _room_readable(_thread_room(thread_id, user_id, organization_id))
 
 
 def _thread_control_ok(
