@@ -580,6 +580,9 @@ MANIFEST: tuple[Route, ...] = (
     # WS-AGA AGA-7 (agents_view.md §6): the member view of agents, dark behind
     # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
     # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
+    # WS-MCP SW-102 adds `shape=map` (the map read, dark behind
+    # AGENT_MAP_ORGS too) to the same route. The manifest keys on the method
+    # and the path, so the map shares this class A row and its tool.
     Route("GET", "/projects/agents/overview", "agents_list", "A"),
     # WS-AGA AGA-9: the drill-down, the last 40 runs of one agent, dark behind
     # the same flag. A read, so class A. Its tool is `agent_recent_runs` of the

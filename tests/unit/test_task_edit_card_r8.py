@@ -265,6 +265,7 @@ async def test_r8_an_edited_due_status_and_assignee_are_written_as_edited(
     _card, out = await _create(world, monkeypatch, _call(world, title), lambda card: _edit(
         card, due="2026-12-24", status="Doing", assignees=[BOB], important=True))
     assert out.startswith("Created:"), out
+    assert "These are the approved values" in out, out  # EAC-1b
     [row] = _task(world, title)
     assert row.due == "2026-12-24"
     assert str(row.status_id) == world.lanes["doing"]

@@ -261,6 +261,14 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
         "The task-close hop. _closer_owns_mailbox checks that the member who "
         "closes the task owns the mailbox before any write (EM-T2c item 8)."
     ),
+    "apps/services/gateway/gateway/write_check_reader.py": (
+        "The write check (LOOP-18, proactive_loop.md 4.9) reads the sent mail of "
+        "the member and the newer messages of one thread. It joins email_accounts "
+        "and applies private_predicate (own mailboxes) or mailbox_predicate (the "
+        "one mailbox access seam, level read), including the exclusion subquery. "
+        "Fence: test_write_check_r8.py (a colleague, another org and a shared "
+        "mailbox read nothing)."
+    ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "
         "account id, with no member request. Since EM-T6c one route passes a "

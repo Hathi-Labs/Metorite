@@ -7,7 +7,8 @@
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
-and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
+and a guard always refuses its Copilot CLI shell. D129 extends the block to
+personal agents (task 808, built 2026-11-21). WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
@@ -1057,8 +1058,9 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** A shared agent runs no shell on the host. D85 has two halves,
-and each half has its own flag and its own way out:
+**The rule.** An agent that a member reaches runs no shell on the host
+(D85, D129). D85 has two halves, and each half has its own flag and its own
+way out:
 
 | Half | What it blocks | Flag in the run | What lifts it |
 |---|---|---|---|
@@ -1075,15 +1077,16 @@ the host. The verifier set this rule in fix round 1.
 **Who is in scope.** `_tool_injection._d85_leaves_alone` answers it for both
 halves:
 
-- A `personal` agent is out of scope. The owner left personal agents out
-  (H-225).
+- D129 extends D85 to personal agents (task 808, 2026-11-21). A `personal`
+  agent is in scope for both halves. Fence:
+  `test_shared_agent_shell_tools.py` (sections 2 and 7j).
 - The root `metorite` dev agent is out of scope (`_D85_OWNER_PENDING`). It
   edits platform code and runs the tests through its CLI shell. The owner
   decided on 2026-10-03 that only an admin of the first-party organization may
   run it, through any path. `executor._assert_may_run_agent` enforces that at
   every run boundary (§15.4), and that is what makes the exemption safe.
 - Every other agent is in scope: `shared` (the default when a config has no
-  `sharing` block), `team`, a config that does not parse, and
+  `sharing` block), `team`, `personal`, a config that does not parse, and
   `agent_config=None`.
 
 **The tool half.** `_withheld_shell_tools(agent_name, agent_config)`.
@@ -1172,8 +1175,8 @@ reason codes.
   block, so it is shared. Its own tools run their scripts through Python
   `subprocess`. The SDK sends those calls as `custom-tool`, and the guard
   passes them on, so they still work.
-- email-assistant and whatsapp-assistant are personal, and they keep their
-  tools.
+- email-assistant and whatsapp-assistant are personal. Since D129 they get
+  no shell tool, and a delegation to them gets none either.
 
 **`_sandbox_covers` asks `sandbox_broker.lifts_shell_block`.** WS-43d
 pointed it there after the merge of PR #598, so it never asks `covers()`
@@ -1210,9 +1213,6 @@ owner kept delegation (§16.3).
   not describe the coding skill.
 - The skills catalog (`GET /integrations/skills`) resolves a scope with no
   withheld names, so it still shows the coding family for apis-config.
-- Personal agents (H-225). A shared agent can still delegate to one with
-  `call_agent`, and the personal agent keeps its shell tools. That run works
-  in the dir of the acting member, and H-225 closes it.
 - A tool that an agent ships itself under one of these names. The seam
   controls injected tools only, and no in-repo agent ships one.
 
@@ -4339,8 +4339,9 @@ text, and it holds the host shell tools.
 1. `sandbox_broker.py`: the target `email` in `MAF_CODING_TARGETS`,
    `target_for_agent`, the `covers()` branch, `lifts_shell_block` and the
    mounts of §16.4.
-2. `_tool_injection.py`: the email rule of `_withheld_shell_tools`, and
-   `target_binds_no_egress` in `_run_covered` (§16.4).
+2. `_tool_injection.py`: `target_binds_no_egress` in `_run_covered` (§16.4).
+   Since D129 `_withheld_shell_tools` needs no email rule. `lifts_shell_block`
+   answers `False` for `email` (item 1).
 3. `apps/agents/agent-email-assistant/config.json`: the six tool names join
    `tool_scope`.
 4. `apps/agents/agent-email-assistant/instructions.md`: a short section that
@@ -4356,7 +4357,8 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 
 1. With `MAF_CODING_SCOPE=email:<org A>`, a run of org A holds the six tools.
    It holds no `code_task`, `run_script` or `install_dependency`.
-2. A run of org B holds no data tool, and it keeps its shell tools.
+2. A run of org B holds no data tool. Since D129 it holds no shell tool
+   either.
 3. With the scope empty, an email run has the same tools and the same
    instructions as today.
 4. A covered email run binds `no_egress=False`, and it keeps `send_email`,
@@ -4371,15 +4373,15 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 9. Two members of one organization run email-assistant with one session id.
    Neither container sees the staged bytes of the other.
 
-**Fences (R7).** WS43-F29 (new). WS43-F23 gains the email case of the shell
-rule. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
+**Fences (R7).** WS43-F29 (new). WS43-F23 gains the case that a cover of the
+`email` target lifts no shell tool. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
 the `email` target.
 
 **R8.** None. The slice touches no Postgres.
 
 **Mutations.**
 
-- M1 drops the email rule of `_withheld_shell_tools`, and done-when 1 fails.
+- M1 makes `lifts_shell_block` answer `True` for `email`, and done-when 1 fails.
 - M2 makes `target_binds_no_egress` true for `email`, and done-when 4 fails.
 - M3 mounts `/workspace` read-write for `email`, and WS43-F2 fails.
 - M4 adds the hand-off line in an uncovered run, and done-when 8 fails.
@@ -5591,17 +5593,16 @@ email-assistant.
 3. The run holds no host shell tool (the next rule).
 
 **A covered email run holds no host shell tool.** email-assistant is
-`personal` (`config.json`), so D85 leaves it alone today
-(`_d85_leaves_alone`, H-225). The core floor gives it `code_task` and
-`run_script`, and they run on the host.
+`personal` (`config.json`). Since D129 the D85 seam withholds `code_task`,
+`run_script` and `install_dependency` from it, as from a shared agent.
 
-- `_withheld_shell_tools` withholds `code_task`, `run_script` and
-  `install_dependency` from a run of an agent and org that the `email` target
-  names. It checks this before the rule for a personal agent.
+- `_withheld_shell_tools` needs no rule for the `email` target.
+  `lifts_shell_block` answers `False` for it, so a cover keeps the three
+  tools withheld.
 - `_host_shell_withheld` (§16.3 condition 3) then holds for the `email`
   target too.
-- An email run of an organization outside the scope keeps its tools, as
-  today.
+- An email run of an organization outside the scope holds no shell tool
+  either (D129).
 
 **The mounts.** The `email` target takes the mounts of the `projects` target
 (`projects_mounts`, §16.3). That is `/workspace` read-only, the run data, the
