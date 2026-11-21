@@ -318,14 +318,16 @@ then call it". The chat needs that recipe.
   2026-11-21). On the native MAF path, the gate puts each answer of an MCP
   tool of `RunScopedMCPTool` in ONE frame of `acb_skills.untrusted`, with
   its note. The index of the list loader gets the same frame. A refusal that
-  Metorite writes stays outside the frame. Of the lines after a server's
-  answer, only the compute marker, in its exact shape, sits after the END
-  line. With `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the
-  frame. This is a known limit, and task 3849 follows it up. The frame changes no card
-  and marks no session, so MCP-NC1 stays. A Copilot agent's repo `.mcp.json`
-  server and the gateway's Studio preview client (`connections/mcp_tools.py`)
-  are not covered. Fences:
+  Metorite writes stays outside the frame. The frame changes no card and
+  marks no session, so MCP-NC1 stays. Fences:
   `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
+- **What sits after the END line.** Of the lines after a server's answer,
+  only the compute marker, in its exact shape, sits after the END line. With
+  `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the frame. This is a
+  known limit, and task 3849 follows it up.
+- **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
+  server and the gateway's Studio preview client (`connections/mcp_tools.py`)
+  get no frame.
 
 ### 3.6 A turn that cannot reach a server says why
 
