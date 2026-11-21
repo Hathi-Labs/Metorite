@@ -4233,12 +4233,13 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 PROTOCOL_KEY = "protocol"
 #: SW-43c raised the version to 2: the second line names the thought before an
 #: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
-#: stays free for the park of SW-60.
-PROTOCOL_VERSION = 2
+#: stays free for the park of SW-60. SW-105 raised it to 3: the first line asks
+#: for the label, the machine, its kind and the model on each claim.
+PROTOCOL_VERSION = 3
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
-    "Claim the slice, not the epic.",
+    "Claim the slice, not the epic. On each claim send agent_label, host, host_kind and model.",
     "Post a thought with post_agent_activity each minute. Before you act on an answer,"
     " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
