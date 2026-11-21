@@ -1444,8 +1444,8 @@ Four rules sit on top of the score:
 
 **Fence (MD-1, MD-6a).** `tests/unit/test_feed_rank.py` holds the table, each
 term, the four rules, and a fixed seed whose order may change only with the
-table. It also holds rule 2: a `drop` answer for an overdue task leaves the
-card in Later.
+table. Rule 2 has its fence in `tests/unit/test_feed_decide.py` (TestRuleTwo): a
+`drop` answer for an overdue task leaves the card in Later.
 
 ---
 
@@ -4150,7 +4150,7 @@ Affinity, mutes, "Why am I seeing this", `metric_moved`, `lead_replied`,
 in words, for example "Judged high: it moves the Q3 launch".
 
 **The learning of MD-9, proposed 2026-11-16.** `proactive_loop.md` §7 and its
-slices LOOP-4 and LOOP-5 specify the learned `affinity`, the mutes and the class
+slices LOOP-4a, LOOP-4b and LOOP-5 specify the learned `affinity`, the mutes and the class
 that the learner lowers. This spec stays the owner of the feed parts.
 
 **LOOP-4a is BUILT, 2026-11-16, dark.** `state.learn_allowed` reads
