@@ -9247,9 +9247,6 @@ AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
     "last_at",
 )
 
-#: The three viewer levels of the map (``agents_view.md`` §4).
-AGENT_MAP_VIEWERS: frozenset[str] = frozenset({"admin", "lead", "member"})
-
 #: The id of a session node: the first 24 hex characters of a sha256
 #: (``agent_summary._NODE_SQL``). It holds no session key.
 _NODE_ID_RE = re.compile(r"[0-9a-f]{24}")
@@ -9377,7 +9374,9 @@ def agent_map(body: Any) -> dict[str, Any]:
         "lines": [door_value(line, frozenset()) for line in lines[:AGENT_MAP_RUNS_MAX]],
         "count": _map_count(body.get("count")),
         "truncated": body.get("truncated") is True or cut,
-        "viewer": viewer if viewer in AGENT_MAP_VIEWERS else None,
+        # The viewer level of ``agents_view.md`` §4. The gateway sets it from
+        # fixed words, so it leaves plain only in the key shape (AD-10).
+        "viewer": _key(viewer),
     }
 
 
@@ -11795,7 +11794,6 @@ __all__ = [
     "AGENT_MAP_RUN_KEYS",
     "AGENT_MAP_SESSIONS_MAX",
     "AGENT_MAP_SESSION_KEYS",
-    "AGENT_MAP_VIEWERS",
     "AGENT_MOVE_REFUSED",
     "AGENT_SPACE_PINNED",
     "ANCESTOR_DESCRIPTION_CHARS",

@@ -615,15 +615,13 @@ def _plain_ok(value: str) -> bool:
     viewer level. No name, machine, model or title is ever bare."""
     import re
 
-    from agent_edge import tools
-
     return bool(
         re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value)
         or re.fullmatch(r"[0-9a-f]{24}", value)
         or value in {"waiting_on_person", "waiting", "working", "quiet", "awaiting",
                      "idle", "stopping", "stale", "agent_quiet", "answer_unread",
                      "queued", "answered", "created", "in_progress"}
-        or value in tools.AGENT_MAP_VIEWERS
+        or value in {"admin", "lead", "member"}
         or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:[+-][0-9]{2}:[0-9]{2}|Z)?",
                         value))
 
