@@ -71,7 +71,6 @@ _M = load_agent_module()
 # speak through its own transport, so a fake gateway patches both modules.
 import acb_skills.crm_tools as _T  # noqa: E402
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"

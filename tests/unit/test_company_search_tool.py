@@ -40,7 +40,6 @@ import httpx
 import pytest
 from acb_skills import company_search_tools as cst
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"

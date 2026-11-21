@@ -143,7 +143,6 @@ from gateway.studio import packages_store as store
 from tests.unit.test_studio_builder_tools import CLASSES, MEMBER, ROWS
 from tests.unit.test_studio_skill_tools import Card, Mark
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"

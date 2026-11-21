@@ -43,7 +43,6 @@ from gateway.routes.studio import actions, invoke
 
 from tests.unit.test_studio_builder_tools import MEMBER
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"

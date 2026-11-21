@@ -38,7 +38,6 @@ from gateway.routes.admin import assistant_profile_people as rp
 
 from tests.unit._sql_match import hits
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"

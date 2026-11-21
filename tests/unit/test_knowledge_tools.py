@@ -36,7 +36,6 @@ import pytest
 from acb_skills import knowledge_manifest
 from acb_skills import knowledge_tools as kt
 
-
 #: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
 #: These tests set one, and check the exact bearer.
 _INTERNAL = "test-internal-token"
