@@ -6,8 +6,22 @@ section 8. D-HRD-5 (D217) decides the trigger: a part of a member turn that
 holds 8 or more lines that are not blank holds a block. Fence:
 ``tests/unit/test_paste_frame.py``.
 
-This module is PURE, and nothing calls it yet. HRD-14b adds the seam, dark
-behind its own flag. So this slice changes no chat.
+The split and the frame are PURE. HRD-14b (task 3667) adds the seam, dark
+behind ``CHAT_PASTE_FRAME_ORGS`` (:func:`paste_frame_on`, empty is off):
+
+* :data:`RAW_PARTS` is the raw binding. The chat route binds the raw member
+  parts of the turn there (:func:`bind_raw_parts`). A tuple is a bound run,
+  also when it is empty. None means that the door binds nothing, and then
+  the seam frames nothing on the run. It is NOT the member-sent variable of the profile: that holds
+  ``typed_text``, which is empty for a long paste.
+* The composer records the shape of the run input (:func:`record_shape`):
+  ``session``, ``list`` or ``string``. The seam frames nothing on the
+  string shape.
+* :func:`frame_current_turn`, :func:`frame_earlier_turn` and
+  :func:`frame_part` are the rules of the seam for one text. The MAF
+  middleware that applies them to a COPY of each model request lives in the
+  orchestrator (``orchestrator.paste_turns``), because it reads the steer
+  turns of the run. Each one fails closed: a part that fails frames whole.
 
 :func:`split` reads ONE part and returns ``(lead, paste, tail)``:
 
@@ -54,11 +68,14 @@ The source of this module holds only ASCII.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import NamedTuple
 
+from acb_common import get_logger
 from acb_common.assistant_profile import _PASTED
 
 from acb_skills.reply_card import is_invisible_char
@@ -68,11 +85,27 @@ __all__ = [
     "LEAD_MAX",
     "MIN_LINES",
     "PASTE_LABEL",
+    "RAW_PARTS",
+    "SHAPES",
     "PathsExist",
+    "bind_raw_parts",
+    "frame_current_turn",
+    "frame_earlier_turn",
     "frame_member_text",
+    "frame_part",
+    "frame_whole",
+    "is_long",
     "no_path_proven",
+    "note_paths",
+    "paste_frame_everywhere",
+    "paste_frame_on",
+    "raw_parts",
+    "record_shape",
+    "shape_of",
     "split",
 ]
+
+_log = get_logger("acb_skills.paste_frame")
 
 #: The label of the block of a paste.
 PASTE_LABEL = "PASTED TEXT"
@@ -332,3 +365,207 @@ def frame_member_text(
     if parts.paths:
         out += ["", neutralise(_upload_note(parts.paths), frame.token)]
     return "\n".join(out)
+
+
+# -- HRD-14b: the flag ------------------------------------------------------------
+
+
+def _flag_entries() -> frozenset[str] | None:
+    """The entries of ``CHAT_PASTE_FRAME_ORGS``, lower case. None when the
+    settings cannot be read, which reads as off."""
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "chat_paste_frame_orgs", "") or "")
+    except Exception:
+        return None
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def paste_frame_on(org: object = None) -> bool:
+    """True when ``CHAT_PASTE_FRAME_ORGS`` names *org*. THE reader.
+
+    *org* defaults to the bound tenant. A comma list of org ids, or ``*`` for
+    each one. Empty means off, the default. It reads the settings on each
+    call, so a flag reload (``docs/flag_reload.md``) applies a change with no
+    restart. It fails closed. The org must come from the run binding, never
+    from request input (R11)."""
+    entries = _flag_entries()
+    if not entries:
+        return False
+    if "*" in entries:
+        return True
+    if org is None:
+        try:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        except Exception:
+            return False
+    return str(org or "").strip().lower() in entries
+
+
+def paste_frame_everywhere() -> bool:
+    """True only when ``CHAT_PASTE_FRAME_ORGS`` holds ``*``. It reads no org.
+
+    The ``/v1`` door binds no tenant (``current_tenant()`` is None there), and
+    an org from a header or the body is the move that R5 and R11 forbid. So
+    the restore of a cut block on that door asks this, never
+    :func:`paste_frame_on`."""
+    entries = _flag_entries()
+    return bool(entries) and "*" in entries
+
+
+# -- HRD-14b: the raw binding and the shape of the run input ----------------------
+
+#: The raw member parts of the turn (HRD-14b). The chat route binds them:
+#: the sent words while the message is still the client's text, and the raw
+#: text of each replayed steer. A tuple is a bound run, also when it is empty
+#: (a Continue whose note the server wrote, and RESUME-2a). None means that
+#: the door binds nothing. Never read the member-sent variable or the sent-words reader in
+#: its place: they hold ``typed_text``, which is empty for a long paste.
+RAW_PARTS: contextvars.ContextVar[tuple[object, ...] | None] = contextvars.ContextVar(
+    "paste_frame_raw_parts", default=None)
+
+
+@contextlib.contextmanager
+def bind_raw_parts(parts: Iterable[object] | None) -> Iterator[None]:
+    """Bind the raw member parts of ONE turn. Closing restores the value it
+    found, and never raises. None binds nothing: the door is unbound."""
+    token = RAW_PARTS.set(None if parts is None else tuple(parts))
+    try:
+        yield
+    finally:
+        try:
+            RAW_PARTS.reset(token)
+        except (ValueError, RuntimeError):
+            RAW_PARTS.set(None)
+
+
+def raw_parts() -> tuple[object, ...] | None:
+    """The raw member parts of the run on this frame, or None (unbound)."""
+    return RAW_PARTS.get()
+
+
+#: The three shapes of the input of a run (spec section 4.7b, the table).
+SHAPES = ("session", "list", "string")
+
+#: ``(run id, shape)`` of the run on this frame. The composer records it, so a
+#: run that starts inside another run reads no shape of its parent.
+_RUN_SHAPE: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "paste_frame_run_shape", default=None)
+
+
+def record_shape(run_id: object, shape: str) -> bool:
+    """Record the shape of the input of run *run_id*. True when it is the
+    first record of that run, so the caller writes ONE log line for each run,
+    also when the run composes twice (a Tier 1 fall back)."""
+    rid = str(run_id or "")
+    prior = _RUN_SHAPE.get()
+    _RUN_SHAPE.set((rid, shape if shape in SHAPES else "string"))
+    return prior is None or prior[0] != rid
+
+
+def shape_of(run_id: object) -> str | None:
+    """The recorded shape of run *run_id*, or None when that run recorded none."""
+    record = _RUN_SHAPE.get()
+    rid = str(run_id or "")
+    if record is None or not rid or record[0] != rid:
+        return None
+    return record[1]
+
+
+# -- HRD-14b: the rules of the seam for one text ----------------------------------
+
+
+def _lines(text: str) -> list[str]:
+    return _BREAK_RE.sub("\n", str(text or "")).split("\n")
+
+
+def is_long(text: object) -> bool:
+    """True when *text* holds :data:`MIN_LINES` or more lines that are not
+    blank. The 8-line trigger reads the RAW part, never a trimmed turn."""
+    return sum(not _blank(line) for line in _lines(str(text or ""))) >= MIN_LINES
+
+
+def note_paths(text: object) -> tuple[str, ...] | None:
+    """The paths of the whole upload note at the end of *text*, NOT proven,
+    or None. The seam proves them once for each run, then gives
+    :func:`split` a ``paths_exist`` that reads the proof."""
+    noted = _note_paths(str(text or ""))
+    return None if noted is None else noted[1]
+
+
+def frame_whole(text: object, frame: UntrustedFrame) -> str:
+    """*text* whole, as ONE block with no lead, with its paste note before it.
+    The safe failure of each rule below."""
+    return f"{frame.paste_note()}\n{frame.wrap(PASTE_LABEL, str(text or ''))}"
+
+
+def frame_part(text: object, frame: UntrustedFrame, *, paths_exist: PathsExist) -> str:
+    """ONE part through :func:`frame_member_text`. It fails closed: when
+    *text* is not a string, or ``paths_exist`` raises, the whole part is one
+    block with no lead (done-when 20 of HRD-14b)."""
+    try:
+        if not isinstance(text, str):
+            raise TypeError("a part is not a string")
+        return frame_member_text(text, frame, paths_exist=paths_exist)
+    except Exception as exc:
+        _log.warning("paste_frame.part_failed", error=type(exc).__name__)
+        return frame_whole(text, frame)
+
+
+def frame_current_turn(
+    text: str, parts: Sequence[object], frame: UntrustedFrame, *, paths_exist: PathsExist,
+) -> str:
+    """The current turn *text*, with each raw part of *parts* framed where it
+    stands (spec section 4.7b, "Which text the middleware frames").
+
+    Each part is found in *text*, both stripped, from the end: the sent words
+    end the turn, and each replayed steer stands before them. The text around
+    the parts stays outside: the supersede note, the ``[steer from ...]``
+    prefixes and the ``steers_frame`` line. A part that is not a string
+    frames the whole turn. A part that is missing (the compose trim rewrote
+    the turn) frames the whole turn as one block, with no lead, only when the
+    RAW part holds :data:`MIN_LINES` or more lines that are not blank."""
+    if any(not isinstance(part, str) for part in parts):
+        return frame_whole(text, frame)
+    spans: list[tuple[int, int, str]] = []
+    end = len(text)
+    for part in reversed(parts):
+        want = str(part).strip()
+        if not want:
+            continue
+        at = text.rfind(want, 0, end)
+        if at < 0:
+            if is_long(part):
+                return frame_whole(text, frame)
+            continue
+        spans.append((at, at + len(want), want))
+        end = at
+    out = text
+    for at, stop, want in spans:  # from the end, so each index still holds
+        out = out[:at] + frame_part(want, frame, paths_exist=paths_exist) + out[stop:]
+    return out
+
+
+def _trim_marker() -> str:
+    """The marker of the compose trim (``acb_llm.context._TRUNCATION_MARKER``),
+    stripped. ``acb_llm`` must not import ``acb_skills``, so the read goes
+    this way."""
+    try:
+        from acb_llm.context import _TRUNCATION_MARKER
+
+        return _TRUNCATION_MARKER.strip()
+    except Exception:
+        dots = chr(0x2026)
+        return f"[{dots} content truncated to fit the model context window {dots}]"
+
+
+def frame_earlier_turn(text: str, frame: UntrustedFrame, *, paths_exist: PathsExist) -> str:
+    """An earlier user turn, through the split, server text and all. A turn
+    that holds the trim marker goes into ONE block whole: the trim may have
+    cut a paste under 8 lines."""
+    if _trim_marker() in str(text or ""):
+        return frame_whole(text, frame)
+    return frame_part(text, frame, paths_exist=paths_exist)

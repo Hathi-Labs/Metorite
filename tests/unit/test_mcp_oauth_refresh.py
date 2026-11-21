@@ -207,6 +207,38 @@ async def test_a_header_server_401_is_unreachable_and_calls_nothing(
     assert [e for e in logs if e.get("event") == "mcp.unreachable"]
 
 
+async def test_a_header_server_401_reads_http_401_and_asks_a_reconnect(
+        session_world: f.World) -> None:
+    """2026-11-20: Shaurrya's Zoho Books server wanted an OAuth consent and
+    answered 401. The log said ``WouldBlock``, and the chat said "did not
+    answer". The reason names the status, and the chat says an admin must
+    reconnect the server."""
+    from orchestrator import _maf_mcp
+
+    failures: dict[str, str] = {}
+    with structlog.testing.capture_logs() as logs:
+        names = await _maf_mcp.attach_mcp_tools(
+            native_agent(), [_server("plain", oauth=False, refreshed=True)], [],
+            failures=failures)
+    assert names == []
+    assert failures == {"plain": "reconnect"}
+    hits = [e for e in logs if e.get("event") == "mcp.unreachable"]
+    assert hits and hits[0]["reason"] == "http_401"
+
+
+async def test_a_503_stays_unreachable(session_world: f.World) -> None:
+    from orchestrator import _maf_mcp
+
+    session_world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(503)
+    failures: dict[str, str] = {}
+    with structlog.testing.capture_logs() as logs:
+        await _maf_mcp.attach_mcp_tools(
+            native_agent(), [_server("plain", oauth=False)], [], failures=failures)
+    assert failures == {"plain": "unreachable"}
+    hits = [e for e in logs if e.get("event") == "mcp.unreachable"]
+    assert hits and hits[0]["reason"] == "http_503"
+
+
 async def test_a_failed_mark_never_fails_the_run(session_world: f.World, caplog) -> None:
     calls: list[str] = []
     with structlog.testing.capture_logs() as logs:

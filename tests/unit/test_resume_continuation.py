@@ -57,6 +57,12 @@ What it holds (R7):
     case B under the same claim. D-RES-7: a park keeps the stream 24 hours
     only with both flags on, and both ``mark_inactive`` calls keep it. The
     stored call names its reply row from the run's record only.
+12. RESUME-5 (task 3265, §4.12.5): a card that the stop parks, in a real
+    detached run, writes its HRD-22 offer and keeps its stream 24 hours. The
+    next process sweeps no ``run_interrupted`` mark onto it, and an Approve
+    after the restart goes on in the SAME reply (``sameReply`` true).
+    Mutation: let the stop park from the route task, and the offer is not
+    written. Drop the drain's save before the stop, and the sweep marks it.
 
 Run::
 
@@ -3001,3 +3007,299 @@ def test_a_decline_is_never_a_same_reply_run():
     launch = agent_routes._resume_launch_of(_stored(), req, {"question": _TITLE},
                                             same_reply=True, decline=True)
     assert launch.decline is True and launch.same_reply is False
+
+
+# ---------------------------------------------------------------------------
+# 12. RESUME-5 (task 3265): the stop parks the run, and an Approve after the
+#     restart goes on in the same reply
+# ---------------------------------------------------------------------------
+
+def test_a_card_parked_at_the_stop_goes_on_in_the_same_reply_after_a_restart(
+    resume_on, ask_db, streams, no_persist, launches, last_turn, monkeypatch,
+):
+    """The whole sequence of RESUME-5, hermetic. A real detached run draws
+    the Neuropeak card and waits. The stop's park ends it in its own task,
+    and its drain marks it inactive and forgets its record. The next process
+    (a new instance id, with the old one dead) sweeps nothing. The Approve
+    then takes case A."""
+    from acb_common import bind_run_context
+    from acb_common.db import bind_tenant
+    from orchestrator import run_liveness
+
+    store = resume_on
+    tid = "t-stop-a"
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 30.0)
+    kwargs = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+
+    async def _the_run():
+        executor._stream_relay_thread_id.set(tid)
+        bind_tenant(_ORG_A)
+        bind_run_context(user=_ALICE, member_verified=True, agent="orchestrator",
+                         thread_id=tid)
+        await stream_relay.push_event(tid, {"type": "RUN_STARTED", "runId": _RUN,
+                                            "threadId": tid})
+        await stream_relay.push_event(tid, {"type": "TEXT_MESSAGE_CONTENT",
+                                            "messageId": "seg-1", "delta": "Let me move it."})
+        with card_call(update_deal_status, (), kwargs):
+            await update_deal_status(**kwargs)
+        yield ""  # never reached: the park ends the run
+
+    async def go() -> dict[str, int]:
+        task = await stream_relay.start_detached(
+            tid, _the_run(), actor=_ALICE, organization_id=_ORG_A,
+            record={"runId": _RUN, "messageId": _REPLY, "agent": "orchestrator"})
+        for _ in range(500):
+            waits = list(pending_ask._STOP_WAITS)
+            if waits and any(v["thread_id"] == tid for v in ask_db.rows.values()):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("the card never waited")
+        # The insert of the row ends with the My Day bump, and the first
+        # import of the feed cache is slow on a dev PC. The park awaits it.
+        await pending_ask._insert_org(waits[0], pop=False)
+        answer = await pending_ask.park_at_stop()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(task, timeout=10)
+        return answer
+
+    assert asyncio.run(go()) == {"tried": 1, "parked": 1}
+    (rid,) = [r for (_o, r), v in ask_db.rows.items() if v["thread_id"] == tid]
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "parked" and row["run_id"] == _RUN
+    assert row["stored_call"]["message_id"] == _REPLY
+    assert any(rid in k for k in store.data), "the park wrote the HRD-22 offer"
+    assert _stream_key_expires(streams, tid)[-1] == stream_relay.PARKED_STREAM_TTL_SECONDS
+    assert f"cc:active:{tid}" not in streams.store, "the drain marked the run inactive"
+    old = run_liveness.INSTANCE_ID
+    assert tid not in (streams.store.get(run_liveness.instance_runs_key(old)) or {})
+
+    # The next process: a new instance id, and the old one has no heartbeat.
+    streams.store.setdefault(run_liveness.INSTANCES_KEY, set()).add(old)
+    monkeypatch.setattr(run_liveness, "INSTANCE_ID", "next-box:2:00000000")
+    monkeypatch.setattr(stream_relay, "_PARKED_STREAMS", {})
+    monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {})
+    assert asyncio.run(run_liveness.sweep_dead_instances()) == []
+    events = _events(streams, tid)
+    assert not [e for e in events if e.get("name") == run_liveness.INTERRUPTED_EVENT]
+    assert events[-1] == {"type": "RUN_FINISHED", "threadId": tid, "parked": True}
+
+    res = _approve(monkeypatch, tid, rid)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["resumed"] is True and body["sameReply"] is True, body
+    assert body["runId"] == _RUN and body["messageId"] == _REPLY
+    (seen,) = launches
+    assert seen["launch"].same_reply is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+
+
+# ---------------------------------------------------------------------------
+# 16. RESUME-2e (task 3818): the memory extraction of a case A run reads
+#     only the part after the park
+# ---------------------------------------------------------------------------
+#
+# The park ends the first run, and its end (``_persist_on_complete``) folds
+# part one and extracts it into memory. A case A run keeps the run id and
+# the stream, so its fold replays part one AND part two into the same row.
+# Before RESUME-2e, the extraction read that whole fold, so part one went to
+# memory a second time. Now the fold of a whole replay gives the extraction
+# the text of THIS run only (``chat_fold.MEMORY_CONTENT_KEY``). The row
+# still gets both parts. A plain run and a case B run get the fold of before.
+
+_PART_ONE = "Part one."
+_PART_TWO = " Part two."
+
+
+def _whole_case_a() -> list[dict[str, Any]]:
+    """The replay of a case A run: part one, the deleted parked end (the
+    gap), and part two."""
+    return _ids([_start(), _evt("TEXT_MESSAGE_CONTENT", delta=_PART_ONE),
+                 _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta=_PART_TWO),
+                 _evt("RUN_FINISHED")], gap_after=1)
+
+
+@pytest.fixture
+def fold_world(monkeypatch):
+    """The real fold, with the stream, the trace and the writes as stand-ins.
+    The test sets ``world["events"]``. ``world["writes"]`` keeps each row
+    write as ``(row id, content)``."""
+    from gateway import chat_fold, rooms, run_trace
+    from gateway.routes import chat as chat_routes
+
+    world: dict[str, Any] = {"events": [], "writes": []}
+
+    async def _replay(*_a, **_k):
+        return [dict(e) for e in world["events"]]
+
+    async def _none(*_a, **_k):
+        return None
+
+    def _upsert(thread_id, records, **_kw):
+        world["writes"].extend((r.id, r.content) for r in records)
+        return []
+
+    monkeypatch.setattr(stream_relay, "replay_events", _replay)
+    monkeypatch.setattr(run_trace, "record_run_trace", _none)
+    monkeypatch.setattr(chat_fold, "_run_authority", _none)
+    monkeypatch.setattr(chat_routes, "_ensure_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(chat_routes, "_upsert_messages", _upsert)
+    monkeypatch.setattr(chat_routes, "reply_turn", lambda *_a, **_k: chat_routes.ReplyTurn(
+        last=True, label=None, late_join=False))
+    monkeypatch.setattr(rooms, "resolve_room_access", lambda *_a, **_k: _RoomNow(shared=False))
+    return world
+
+
+def _fold(fallback: str | None, parked_end: str | None = _GAP) -> dict[str, Any] | None:
+    from gateway import chat_fold
+
+    return asyncio.run(chat_fold.persist_final_assistant_message(
+        "t-mem", _REPLY, user_id=_ALICE, run_id=_RUN, organization_id=_ORG_A,
+        expect_run_id=_RUN, holds_mail=False, same_reply_fallback_id=fallback,
+        same_reply_parked_end=parked_end if fallback else None))
+
+
+def _answer_of(conv: list[dict[str, str]]) -> list[str]:
+    return [m["content"] for m in conv if m["role"] == "assistant"]
+
+
+def test_the_extraction_input_of_a_plain_run_is_as_before():
+    """A fold with no memory key gives the conversation of before, byte for
+    byte. Mutation: read the key with a default of "" -> a plain run loses
+    its answer -> red."""
+    from gateway.chat_fold import build_extraction_conversation
+
+    hist = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}]
+    folded = {"content": "The answer.", "timestamp": 1}
+    assert build_extraction_conversation(hist, "Move it.", folded) == [
+        *hist, {"role": "user", "content": "Move it."},
+        {"role": "assistant", "content": "The answer."}]
+    assert build_extraction_conversation([], "", folded) == [], "no user turn"
+
+
+def test_the_extraction_input_reads_the_memory_key_when_it_is_there():
+    """With the key, the answer is the key's text, also an empty one. The
+    row's ``content`` (both parts) never reaches memory."""
+    from gateway.chat_fold import MEMORY_CONTENT_KEY, build_extraction_conversation
+
+    whole = {"content": _PART_ONE + _PART_TWO, MEMORY_CONTENT_KEY: _PART_TWO}
+    assert _answer_of(build_extraction_conversation([], "Note it.", whole)) == [_PART_TWO]
+    empty = {"content": _PART_ONE, MEMORY_CONTENT_KEY: ""}
+    assert _answer_of(build_extraction_conversation([], "Note it.", empty)) == []
+
+
+def test_a_case_a_fold_gives_memory_only_the_part_after_the_park(fold_world):
+    """The whole replay of case A writes both parts into the reply row, and
+    gives memory part two only. Mutation: drop the key -> part one goes to
+    memory again -> red."""
+    from gateway.chat_fold import MEMORY_CONTENT_KEY
+
+    fold_world["events"] = _whole_case_a()
+    folded = _fold("fb-row")
+    assert fold_world["writes"] == [(_REPLY, _PART_ONE + _PART_TWO)], "the row keeps both"
+    assert folded is not None and folded["content"] == _PART_ONE + _PART_TWO
+    assert folded[MEMORY_CONTENT_KEY] == _PART_TWO
+    # A record from before round 3 has no parked end id. The events from the
+    # last marked start are the events of the run.
+    fold_world["writes"].clear()
+    fold_world["events"] = [{k: v for k, v in e.items() if k != "_stream_id"}
+                            for e in _whole_case_a()]
+    folded = _fold("fb-row", parked_end=None)
+    assert fold_world["writes"] == [(_REPLY, _PART_ONE + _PART_TWO)]
+    assert folded is not None and folded[MEMORY_CONTENT_KEY] == _PART_TWO
+
+
+def test_a_fallback_row_and_a_plain_fold_carry_no_memory_key(fold_world):
+    """The fallback row of case A holds part two only, so its fold is the
+    memory text as before. A plain run and a case B run (no fallback id)
+    get the fold of before, with no key."""
+    from gateway import chat_fold
+    from gateway.chat_fold import MEMORY_CONTENT_KEY
+
+    fold_world["events"] = _whole_case_a()[2:]  # a trim took part one
+    folded = _fold("fb-row")
+    assert fold_world["writes"] == [("fb-row", _PART_TWO)]
+    assert folded is not None and MEMORY_CONTENT_KEY not in folded
+    fold_world["writes"].clear()
+    for events in (
+        [_start(), _evt("TEXT_MESSAGE_CONTENT", delta=_PART_ONE), _evt("RUN_FINISHED")],
+        [_start(run_id="run-b"), _evt("TEXT_MESSAGE_CONTENT", delta=_PART_TWO),
+         _evt("RUN_FINISHED")],
+    ):
+        fold_world["events"] = events
+        folded = asyncio.run(chat_fold.persist_final_assistant_message(
+            "t-mem", _REPLY, user_id=_ALICE, run_id=str(events[0]["runId"]),
+            organization_id=_ORG_A, expect_run_id=str(events[0]["runId"]),
+            holds_mail=False))
+        assert folded is not None and MEMORY_CONTENT_KEY not in folded
+        assert folded["content"] == events[1]["delta"]
+
+
+@pytest.fixture
+def memory_calls(monkeypatch):
+    """Each conversation that the run end hands to Mem0."""
+    import acb_memory
+    from orchestrator import executor as executor_mod
+
+    calls: list[list[dict[str, str]]] = []
+
+    async def _add(user, conv, **_kw):
+        calls.append(conv)
+
+    async def _episode(**_kw):
+        return None
+
+    monkeypatch.setattr(acb_memory, "add_memories_background", _add)
+    monkeypatch.setattr(acb_memory, "add_episode", _episode)
+    monkeypatch.setattr(executor_mod, "run_was_no_egress", lambda _rid: False)
+    return calls
+
+
+@pytest.mark.parametrize("message", ["", "Also tell Bob."],
+                         ids=["no words", "a replayed steer"])
+def test_a_case_a_run_extracts_each_fact_of_part_one_once(message, fold_world,
+                                                          memory_calls):
+    """The production order at the run end: the park's fold and extraction
+    of part one, then the fold and extraction of the case A run. Part one
+    reaches memory ONCE. A continuation sends no words, so its extraction
+    has no user turn. A steer that the ENGAGE seam replays gives it one, and
+    then memory gets part two only. Mutation: give memory the row's content
+    -> part one twice -> red."""
+    from gateway.routes import agent as agent_routes
+
+    park = _ids([_start(), _evt("TEXT_MESSAGE_CONTENT", delta=_PART_ONE),
+                 _evt("RUN_FINISHED", parked=True)], gap_after=1)
+    fold_world["events"] = park
+    at_park = _fold(None)
+
+    def extract(history, msg, folded):
+        return asyncio.run(agent_routes._extract_run_memory(
+            _RUN, _ALICE, history, msg, folded, agent_name="orchestrator",
+            thread_id="t-mem", member=_ALICE, holds_mail=False))
+
+    assert extract([], "Move Neuropeak.", at_park) is True
+    fold_world["events"] = _whole_case_a()
+    at_end = _fold("fb-row")
+    assert at_end is not None and at_end["content"] == _PART_ONE + _PART_TWO
+    extract([], message, at_end)
+    seen = [m["content"] for conv in memory_calls for m in conv if m["role"] == "assistant"]
+    assert sum(_PART_ONE in s for s in seen) == 1, seen
+    assert seen == ([_PART_ONE, _PART_TWO] if message else [_PART_ONE])
+
+
+def test_a_case_b_run_extracts_its_own_reply_as_before(fold_world, memory_calls):
+    """Case B starts a stream of its own, so its fold holds its own reply
+    only. The extraction gets it, with no key."""
+    from gateway import chat_fold
+    from gateway.routes import agent as agent_routes
+
+    fold_world["events"] = [_start(run_id="run-b"),
+                            _evt("TEXT_MESSAGE_CONTENT", delta=_PART_TWO),
+                            _evt("RUN_FINISHED")]
+    folded = asyncio.run(chat_fold.persist_final_assistant_message(
+        "t-mem", "reply-b", user_id=_ALICE, run_id="run-b", organization_id=_ORG_A,
+        expect_run_id="run-b", holds_mail=False))
+    assert asyncio.run(agent_routes._extract_run_memory(
+        "run-b", _ALICE, [], "Also tell Bob.", folded, agent_name="orchestrator",
+        thread_id="t-mem", member=_ALICE, holds_mail=False)) is True
+    assert [_answer_of(c) for c in memory_calls] == [[_PART_TWO]]

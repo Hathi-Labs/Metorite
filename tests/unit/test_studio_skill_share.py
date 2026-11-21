@@ -32,6 +32,17 @@ The checks here:
 M2: in ``_LOADABLE_VERSION``, read ``s.current_version`` for each member.
 Check 6 goes red, and ``test_r8_a_later_version_reaches_no_other_member``.
 M3: in ``list_skill_shares``, drop the right check. Check 3 goes red.
+
+**The holder's list of shared skills (J2d follow-up).** ``GET
+/studio/skill-shares?state=approved`` gives a holder each skill that the org
+shares, by name, with no body. Check 3b: a member without the right gets 403
+and no session, and the store refuses before any statement. Check 3c: the
+statement reads ``SHARED_WITH_ORG`` in the bound org, with no member filter,
+and the approver shows only while the newest ask is that approval. M4: drop
+the right check of ``list_shared_skills`` -> 3b goes red. M5: drop the org
+scope or read a pending ask too -> 3c goes red here, and
+``test_r8_the_holder_lists_only_the_shared_skills_of_the_bound_org`` in the
+R8 twin.
 """
 
 from __future__ import annotations
@@ -126,7 +137,15 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             version=2, requested_by=OWEN, requested_at=WHEN,
             body={"description": "d", "instructions": "i"}, content_hash="0" * 64)], w.more
 
+    async def shared(db: Any, *, can_publish: Any) -> Any:
+        w.calls.append(("shared", can_publish))
+        return [store.SharedSkill(
+            skill_id=SID, name="Quotes", slug="quotes", description="Use for quotes.",
+            owner_email=OWEN, shared_version=1, share_state="approved", share_version=1,
+            approved_by=ADA, approved_at=WHEN)], w.more
+
     monkeypatch.setattr(skills, "_tenant_session", session)
+    monkeypatch.setattr(store, "list_shared_skills", shared)
     monkeypatch.setattr(store, "request_share", ask)
     monkeypatch.setattr(store, "approve_share", approve)
     monkeypatch.setattr(store, "reject_share", reject)
@@ -146,6 +165,7 @@ def _client(grants: list[str], email: str = OWEN) -> TestClient:
 
 _BASE = f"/studio/skills/{SID}/versions/2/share"
 ROUTES = [("POST", _BASE), ("GET", "/studio/skill-shares?state=pending"),
+          ("GET", "/studio/skill-shares?state=approved"),
           ("POST", f"{_BASE}/approve"), ("POST", f"{_BASE}/reject"),
           ("DELETE", f"/studio/skills/{SID}/share")]
 
@@ -227,11 +247,94 @@ def test_a_holder_reads_each_pending_ask_with_its_body(world: _World) -> None:
     assert world.calls == [("list", True)]
 
 
-@pytest.mark.parametrize("state", ["approved", "rejected", "PENDING", ""])
+@pytest.mark.parametrize("state", ["rejected", "PENDING", "APPROVED", "shared", ""])
 def test_another_state_is_422(world: _World, state: str) -> None:
     r = _client(PUBLISHER, ADA).get(f"/studio/skill-shares?state={state}")
     assert r.status_code == 422, r.text
-    assert world.sessions == 0
+    assert world.sessions == 0 and world.calls == []
+
+
+# ── 3b. The holder's list of shared skills (J2d follow-up) ─────────────────
+
+
+def test_a_member_without_the_right_gets_403_on_the_shared_list_and_no_session(
+    world: _World,
+) -> None:
+    r = _client(STUDIO, ADA).get("/studio/skill-shares?state=approved")
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {"code": "forbidden", "message": skills.NO_SHARED_LIST_RIGHT}
+    assert world.sessions == 0 and world.calls == []
+
+
+def test_a_holder_reads_each_shared_skill_with_no_body(world: _World) -> None:
+    world.more = True
+    r = _client(PUBLISHER, ADA).get("/studio/skill-shares?state=approved")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["state"] == "approved" and body["truncated"] is True
+    [row] = body["shares"]
+    assert (row["skill_id"], row["shared_version"], row["owner_email"]) == (SID, 1, OWEN)
+    assert (row["name"], row["approved_by"]) == ("Quotes", ADA)
+    assert "body" not in row and "content_hash" not in row
+    assert world.calls == [("shared", True)]
+
+
+@pytest.mark.parametrize("can", [False, None, 1, "yes"])
+def test_the_shared_list_without_the_right_is_refused_before_any_statement(can: Any) -> None:
+    class _NoDb:
+        async def execute(self, *_a: Any, **_k: Any) -> Any:
+            raise AssertionError("the read ran a statement")
+
+    with pytest.raises(store.ShareRefused):
+        _run(store.list_shared_skills(_NoDb(), can_publish=can))
+
+
+def test_the_shared_list_reads_the_shared_skills_of_the_bound_org_only() -> None:
+    """Check 3c. The one test of a shared skill, the bound org, and no
+    member filter: the holder is not the owner."""
+    sql = store._SHARED_SKILLS_SQL
+    assert f"organization_id = {store._BOUND_ORG}" in sql
+    assert f"AND {store.SHARED_WITH_ORG}" in sql
+    assert "owner_email = :m" not in sql and ":org" not in sql
+    assert "'pending'" not in sql and "'rejected'" not in sql
+    assert "FROM studio_skills " in sql and "studio_skill_versions" not in sql
+    assert " OR " not in sql.split("WHERE", 1)[1].replace(store.SHARED_WITH_ORG, "")
+
+
+class _Rows:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self.rows = rows
+        self.params: list[dict[str, Any]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+        assert str(stmt) == store._SHARED_SKILLS_SQL
+        self.params.append(params)
+        return _Result(self.rows[:params["lim"]])
+
+
+def test_the_approver_shows_only_while_the_newest_ask_is_that_approval() -> None:
+    """A newer ask clears the decision columns, and a reject names the
+    rejecter. So the list names no approver then: it never names the wrong
+    person."""
+    db = _Rows([
+        (SID, "A", "a", "", OWEN, 1, "approved", 1, ADA, WHEN),
+        (SID, "B", "b", "", OWEN, 1, "pending", 2, None, None),
+        (SID, "C", "c", "", OWEN, 1, "rejected", 2, "hal@j2c.test", WHEN),
+    ])
+    got, more = _run(store.list_shared_skills(db, can_publish=True, limit=3))
+    assert more is False and db.params == [{"lim": 4}]
+    assert [(g.name, g.approved_by, g.approved_at) for g in got] == [
+        ("A", ADA, WHEN), ("B", None, None), ("C", None, None)]
+    assert [(g.share_state, g.share_version) for g in got] == [
+        ("approved", 1), ("pending", 2), ("rejected", 2)]
+    _, more = _run(store.list_shared_skills(db, can_publish=True, limit=2))
+    assert more is True
+
+
+@pytest.mark.parametrize("limit", [0, store.MAX_SHARED_SKILLS + 1, True, "5"])
+def test_the_shared_list_refuses_a_bad_page(limit: Any) -> None:
+    with pytest.raises(store.SkillStoreError):
+        _run(store.list_shared_skills(_Rows([]), can_publish=True, limit=limit))
 
 
 @pytest.mark.parametrize("move", ["approve", "reject"])

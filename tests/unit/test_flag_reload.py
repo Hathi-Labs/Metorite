@@ -394,6 +394,40 @@ def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch
     assert not skill_offer_allowed("globex")
     assert not skill_offer_allowed(None)
 
+def test_studio_skill_repair_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-3a F12b, ai_studio_rows/F12.md. The reload list holds the
+    key, and the one reader of the record of skill runs sees a change with
+    no restart."""
+    from gateway.routes.studio.flags import skill_repair_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_REPAIR_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_REPAIR_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_repair_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_REPAIR_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_REPAIR_ORGS",)
+    assert skill_repair_allowed("acme")
+    assert not skill_repair_allowed("globex")
+    assert not skill_repair_allowed(None)
+
+
+def test_studio_skill_tests_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-3b F4b, ai_studio_rows/F4.md. The reload list holds the key,
+    and the one reader of the test run switch sees a change with no restart.
+    The credit cap is no ``*_ORGS`` key, so a reload never applies it."""
+    from gateway.routes.studio.flags import skill_tests_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_TESTS_ORGS")
+    assert not fr.reloadable("STUDIO_SKILL_TESTS_CAP_CREDITS")
+    monkeypatch.setenv("STUDIO_SKILL_TESTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_tests_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_TESTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_TESTS_ORGS",)
+    assert skill_tests_allowed("acme")
+    assert not skill_tests_allowed("globex")
+    assert not skill_tests_allowed(None)
+
 def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
     the one reader of the logic module switch sees a change with no restart."""
@@ -502,6 +536,24 @@ def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert api_connections_allowed("ACME ")
     assert not api_connections_allowed("globex")
     assert not api_connections_allowed(None)
+
+
+def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-12, semantic_model.md §10.4. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart.
+    Mutation: leave the flag out of the reload list (a name that does not end
+    in ``_orgs``), and the first assert fails."""
+    from gateway.connections.semantic_model import connection_model_allowed
+
+    assert fr.reloadable("CONNECTION_MODEL_ORGS")
+    monkeypatch.setenv("CONNECTION_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_model_allowed("acme")
+    env(**{**_START, "CONNECTION_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CONNECTION_MODEL_ORGS",)
+    assert connection_model_allowed("ACME ")
+    assert not connection_model_allowed("globex")
+    assert not connection_model_allowed(None)
 
 
 def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:

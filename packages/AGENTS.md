@@ -68,6 +68,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - `projects.py` holds `PROJECTS_DOOR`, the door table of Projects (MCP-G24, D208, `external_agent_access.md` §19.16). It has one row for each row of `skill_projects/manifest.py`, with the same class and tool, and it adds the door op or the `off_door` reason. A new Projects route needs a row in both files, until MCP-G24c makes one table (D208.2). The table is not in `APPS`, so the door serves none of its ops yet. Fence: `tests/unit/test_projects_door_coverage.py`.
 
 - `tenant_redis.TenantRedis.delete_unless(k, value)` is the ONE compare-and-delete of the wrapper. It runs a fixed Lua script on one typed key, so a caller gives no script. Do not add a general `eval`. `acb_skills.late_approve.drop_offer` is its caller (task 3467). Fence: `tests/unit/test_tenant_redis.py`.
+- `tenant_redis.TenantPipeline` has `incr` and `expireat` (API-3). The daily budget of an API connection runs both in ONE MULTI block, so no counter key lives without an end. Fence: `tests/unit/test_api_call_limits.py`.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
@@ -108,6 +109,11 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
 - `no_person.py`: the ONE mark of a run with no person present (WS-AUTO AUTO-7a, `proactive_agent.md` §4.2). It imports the standard library only, because `action_broker` and `acb_skills` both read it and neither may depend on the other.
   - `no_person_scope` is the one setter, and only `gateway/jobs/worker.py` and `gateway/routes/workflows/service.py` call it. No tool reads or sets the mark. No function clears it. A task and `asyncio.to_thread` inherit it, and `carry_run_context` carries it onto the Copilot SDK thread.
   - ⚠️ An HTTP call does not carry the mark, and a tool acts as its member over HTTP. So no tool may name a route that approves or answers. A bare `run_in_executor` drops it too. Fences: `tests/unit/test_no_person_present.py`, `tests/unit/test_no_person_present_r8.py` (R8).
+- `failure_fingerprint.py` and `failure_log.py`: the ONE failure store of tool failures (WS-TOF TOF-2b, D225, `tool_failure_log.md` §3 and §6). Neither imports an `acb_skills` module.
+  - `failure_fingerprint` is pure. It makes the four platform fields (tool, failure code, exception type, code site) and the v1 hash. The message, the arguments, the tenant and the release never enter it. Do not add an input to the hash: a new rule is a new version.
+  - `failure_log.record_tool_failure` is the ONE writer of every `failure_*` table. It reads the tenant from `current_tenant()` only, never raises and never waits. A bounded queue, one drain for each loop and a sample cap in tenant Redis hold its cost. `failure_log_on` is the one reader of `TOOL_FAILURE_LOG_ORGS`. Do not add a second writer: `gateway.jobs.unattended.record_failure` stays the job ledger.
+  - Fences: `tests/unit/test_failure_fingerprint.py` (P2, the 12 golden rows), `tests/unit/test_failure_log_queue.py` (P7), `tests/unit/test_failure_store_r8.py` (R8: P3, P4, P5).
+  - TOF-2d: `mcp_error_code` is the ONE map of §4.3 for the MCP sites C5 to C7. It finds the classes of a service in `sys.modules`, so it imports no service. Each record that `record_tool_failure` accepts marks the request of the gateway (`RequestMark`), so the door site D2 writes no second record. A refused call marks nothing. `door_surface` maps the prefix of `X-Actor-Via`. Fence: `tests/unit/test_failure_capture_sites.py`.
 
 ### acb_audit/
 Audit event recording.
