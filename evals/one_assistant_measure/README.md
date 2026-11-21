@@ -378,6 +378,8 @@ of the turn do not, and it hands a setup call to the email assistant.
 
 ## Run it live
 
+**Owner ceiling.** The owner approved USD 10 of live eval spend in total. `--budget-usd` plus `--spent-before` (and the chunks of `--spent-before-from`) above `OWNER_SPEND_CEILING_USD` (10.0) ends the run with exit 2. It does this before any credential or network step. A scripted run ignores it.
+
 A live run spends credits on the Router. Open the tunnel to the Console
 first, and close it after the run. The tunnel maps local port 18090 to the
 Router on port 8090 of the production box (`staging_and_daily_release.md`
@@ -573,6 +575,8 @@ Each result row keeps `split` and `tags`. A row of an old file has no stamp, so 
 
 **Sealed results.** `--out X.json` keeps the tune rows in full. For the held-out rows it keeps counts only. The block `sealed` holds the passes and fails of each check name, and the turn passes of each repeat. The full held-out rows go to `X.holdout.json`.
 
+No chat id may be in two chats. `splits.check_unique_ids` raises on a twin, because `scenario(sid)` returns the first match. One rule of practice has no code behind it. A held-out chat that a fix reads must move to `tune` and be replaced by a new chat. The code cannot see who read a chat.
+
 A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
 
 The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans, so it holds no model output. It prints the chat ids, the tool names and the names of failed checks of held-out chats. It prints no answer text.
@@ -585,6 +589,8 @@ The **noise** `n` counts the T and H turns whose pass or fail differs between re
 2. On T, the tune chats tagged `t2874`, the passes of A minus the passes of B are at least `max(2, n + 1)`. The sum covers both repeats. Or A passes every T turn in both repeats. `--t-tag` changes the tag.
 3. On H, the held-out chats, the passes of A are at least the passes of B minus `n`.
 4. On E, the passes of A are at least the passes of B minus `n`. E is the tune chats of the `email` set that are not T.
+
+Rule 1 and the "A passes every T turn" clause of rule 2 are the owner's own accept rule and its Amendment 1 (task 3649). They are not a drift from it.
 
 The passes of rules 2 to 4 are sums over both repeats. The report prints `H: 0 turns` when no held-out chat ran, because rule 3 then holds with no evidence. The compare refuses two files with different `mirror_prod` headers. Exit 0 is a win. Exit 3 is a loss. Exit 2 means the two files do not compare.
 
@@ -718,3 +724,7 @@ proves these facts:
 - The measure installs the mark store.
 - The live mode refuses a send that is not the Router.
 - The card reproduces the Router's figures.
+
+## Known limit of the scripted run
+
+`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database or Redis (`identity_pool`, `stream_relay`). Those tries come from the product imports on `main` and not from this harness. A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).

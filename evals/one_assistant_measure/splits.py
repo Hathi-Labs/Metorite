@@ -68,8 +68,23 @@ def label(sc: Any) -> str:
     return HIDDEN if split_of(sc) == HOLDOUT else str(sc.id)
 
 
+def check_unique_ids(scenarios: tuple[Any, ...] | None = None) -> None:
+    """Raise ``ValueError`` when one chat id is in two chats of *scenarios*
+    (default: every chat). ``scenario(sid)`` returns the first match, so a
+    twin in the tune file and the holdout file would hide one of them."""
+    if scenarios is None:
+        from evals.one_assistant_measure.scenarios import all_scenarios
+
+        scenarios = all_scenarios()
+    seen: set[str] = set()
+    twins = sorted({sc.id for sc in scenarios if sc.id in seen or seen.add(sc.id)})  # type: ignore[func-returns-value]
+    if twins:
+        raise ValueError(f"a chat id is used by two chats: {', '.join(twins)}")
+
+
 def keep(scenarios: tuple[Any, ...], which: str) -> tuple[Any, ...]:
     """The chats of *scenarios* in the split *which* (``--split``)."""
+    check_unique_ids()
     if which == ALL:
         return scenarios
     return tuple(sc for sc in scenarios if split_of(sc) == which)
@@ -78,6 +93,7 @@ def keep(scenarios: tuple[Any, ...], which: str) -> tuple[Any, ...]:
 def holdout_ids() -> frozenset[str]:
     from evals.one_assistant_measure.scenarios import all_scenarios
 
+    check_unique_ids(all_scenarios())
     return frozenset(sc.id for sc in all_scenarios() if split_of(sc) == HOLDOUT)
 
 

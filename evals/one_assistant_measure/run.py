@@ -68,6 +68,7 @@ from tests.unit._egress_mark_store import install_memory_mark_store
 
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
+OWNER_SPEND_CEILING_USD = spend.OWNER_SPEND_CEILING_USD
 #: ``--compare``: A does not win on the rule of :mod:`.compare` (task 3649).
 EXIT_LOSS = cmp.EXIT_LOSS
 ARMS = ("delegation", "pack")
@@ -2054,8 +2055,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         if len(names) != 2:
             print("NO-GO: --compare takes two files: B.json,A.json")
             return EXIT_NO_GO
-        text, code = cmp.compare(Path(names[0]), Path(names[1]), t_tag=args.t_tag,
-                                 arm=args.compare_arm)
+        try:
+            text, code = cmp.compare(Path(names[0]), Path(names[1]), t_tag=args.t_tag,
+                                     arm=args.compare_arm)
+        except (OSError, ValueError, AttributeError, TypeError, KeyError) as exc:
+            # One line. Never a row, and never the path of a sibling file.
+            print(f"NO-GO: --compare: a file does not read ({type(exc).__name__}). "
+                  f"Files: {names[0]}, {names[1]}")
+            return EXIT_NO_GO
         print(text)
         return code
     if args.report:
@@ -2088,6 +2095,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print("FAIL" if problems else f"PASS: {len(rows)} turns on {len(arms)} arms")
         return EXIT_FAIL if problems else EXIT_PASS
 
+    # The owner ceiling comes before any credential, network or file step of a live run.
+    earlier = args.spent_before
+    if args.spent_before_from.strip():
+        try:
+            earlier += spent_so_far([Path(p) for p in args.spent_before_from.split(",") if p.strip()])
+        except (OSError, ValueError, AttributeError, TypeError):
+            print("NO-GO: --spent-before-from: a chunk file does not read.")
+            return EXIT_NO_GO
+    ok, why = spend.ceiling_gate(args.budget_usd, earlier)
+    if not ok:
+        print(why)
+        return EXIT_NO_GO
     router = router_env()
     if router is None:
         print("NO-GO: set LITELLM_BASE_URL and LITELLM_API_KEY, or write them in eval.env")

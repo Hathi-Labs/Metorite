@@ -397,3 +397,35 @@ def test_the_t_tag_is_a_parameter(tmp_path: Path) -> None:
     pb, pa = put(tmp_path, "B.json", b), put(tmp_path, "A.json", a)
     text, _ = compare.compare(pb, pa, t_tag="t9999")
     assert "T (tune, tag t9999): 0 turns" in text
+
+
+# ── a bad compare file, and a twin chat id (task 3649) ───────────────────────
+
+
+@pytest.mark.parametrize("body", [None, "{not json", "[1, 2]", '{"rows": 5}'])
+def test_compare_on_a_bad_file_exits_2_with_one_line(tmp_path: Path, capsys, body) -> None:
+    """Mutation: drop the ``except`` around ``cmp.compare`` in ``main`` -> a traceback -> red."""
+    good = tmp_path / "a.json"
+    good.write_text('{"rows": []}', encoding="utf-8")
+    bad = tmp_path / "b.json"
+    if body is not None:
+        bad.write_text(body, encoding="utf-8")
+    (tmp_path / "b.holdout.json").write_text("SECRET-ROW", encoding="utf-8")
+    code = run.main(["--compare", f"{bad},{good}"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out.count("\n") == 1 and "SECRET-ROW" not in out and "holdout" not in out
+
+
+def test_a_chat_id_in_two_chats_is_refused() -> None:
+    """Mutation: drop the raise in ``check_unique_ids`` -> red."""
+    a = _scenario("dup", ("holdout",))
+    b = _scenario("dup", ())
+    with pytest.raises(ValueError, match="dup"):
+        splits.check_unique_ids((a, b))
+    splits.check_unique_ids((a, _scenario("other", ())))
+
+
+def test_every_chat_id_of_the_product_is_unique(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()  # the real chat list, not the synthetic one
+    splits.check_unique_ids()
