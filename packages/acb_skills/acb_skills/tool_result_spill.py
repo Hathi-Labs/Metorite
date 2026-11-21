@@ -347,6 +347,24 @@ def _footer(ref: str, text_len: int, text: str, shown: int, stored: int) -> str:
     )
 
 
+_NUM = r"[0-9][0-9,]*"
+#: The whole footer line that :func:`_footer` writes, and nothing else: the
+#: ref, digits and the fixed words. Task 1444: the MCP frame
+#: (``orchestrator._maf_mcp``) lifts a last line of this exact shape out of
+#: the block, because Metorite wrote it. Any other line stays in the block.
+#: Fence: ``tests/unit/test_mcp_result_untrusted_frame.py``.
+_FOOTER_LINE = re.compile(
+    rf"^\[Stored result (tr_[0-9a-f]{{8}}): {_NUM} chars, ~{_NUM} tokens, "
+    rf"{_NUM} lines\. Shown: chars 0-{_NUM}\.(?: Only the first {_NUM} chars are stored\.)? "
+    rf'Call {READ_TOOL}\(ref="\1", offset=[0-9]+\) to read on\.\]$'
+)
+
+
+def is_spill_footer(line: str) -> bool:
+    """True when *line* is, whole, a footer that :func:`_footer` writes."""
+    return bool(_FOOTER_LINE.match(str(line or "")))
+
+
 def preview(text: str, ref: str, limit: int) -> str:
     """The preview of *text*: its head, an END line for each open frame, and
     the footer. The head is the text exactly as it was."""
@@ -625,6 +643,7 @@ __all__ = [
     "SpillToolResults",
     "ToolResultSpillProvider",
     "clear_store",
+    "is_spill_footer",
     "peek",
     "peek_entry",
     "preview",
