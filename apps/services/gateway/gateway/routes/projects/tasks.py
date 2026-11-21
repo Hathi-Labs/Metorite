@@ -570,6 +570,11 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 #: MCP-G19a. The page cap of a compact read. A plain read keeps
 #: ``MAX_PAGE_SIZE``.
 COMPACT_MAX_PAGE_SIZE = 500
+#: MCP-G19c. ``task_number`` is a BIGINT, so a larger number is a 422 and not
+#: a cast error in SQL.
+TASK_NUMBER_MAX = 9_223_372_036_854_775_807
+#: MCP-G19c. The longest ``type_name`` filter. The edge holds the same cap.
+MAX_TYPE_NAME = 100
 #: A compact read still selects ``t.*``: ``row_to_model`` builds a full
 #: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
 #: None, which is a 500. The edge trims the row to the compact keys.
@@ -768,6 +773,13 @@ async def list_tasks(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # MCP-G19c. The type of a task, by id or by name, and its number. All
+    # optional. `build_task_filters` holds them.
+    # Plain defaults, not `Query(...)`: tests and other routes call this
+    # function directly, and a `Query` default is not a value.
+    type_id: str | None = None,
+    type_name: str | None = None,
+    task_number: int | None = None,
     # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
     # query, the stage of each status, and nothing else. The agent door reads it.
     compact: bool = False,
@@ -815,6 +827,14 @@ async def list_tasks(
     )
 
     mine = check_scope(scope)
+    if type_name is not None and len(type_name) > MAX_TYPE_NAME:
+        raise HTTPException(
+            status_code=422, detail=f"type_name is at most {MAX_TYPE_NAME} characters.",
+        )
+    if task_number is not None and not 1 <= task_number <= TASK_NUMBER_MAX:
+        raise HTTPException(
+            status_code=422, detail="task_number is not a valid task number.",
+        )
     if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
         raise HTTPException(
             status_code=422,
@@ -842,7 +862,8 @@ async def list_tasks(
                 watching=watching, top_level=top_level, has_parent=has_parent,
                 is_epic=is_epic, assigned=assigned, updated_before=updated_before,
                 updated_after=updated_after, created_after=created_after,
-                title_prefix=title_prefix,
+                title_prefix=title_prefix, type_id=type_id, type_name=type_name,
+                task_number=task_number,
             ),
         )
         total = (await db.execute(
@@ -896,6 +917,9 @@ async def list_tasks(
         # lanes (migration 196), and the parent board knows only its own, so
         # it files a task by this stage instead of losing it.
         await attach_status_category(db, vis, page_rows)
+        if compact:
+            # MCP-G19c. The name of the type of each row, in one read.
+            await attach_type_name(db, vis, page_rows)
         if with_overlay:
             # WS-64 OP-11 — the caller's own overlay, one query for the page.
             await attach_my_overlay(db, vis, page_rows)
@@ -1065,6 +1089,35 @@ async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
     found = await status_categories_of(db, vis, ids)
     for row in rows:
         row["status_category"] = found.get(str(row.get("status_id") or ""))
+
+
+#: MCP-G19c. The name of each type on one page, in one read. The tenant is
+#: on the read beside RLS (R5).
+_TYPE_NAME_SQL = (
+    "SELECT ty.id, ty.name FROM pm_task_types ty"
+    " WHERE ty.id = ANY(CAST(:ids AS uuid[]))"
+    "   AND ty.organization_id = CAST(:vis_org AS uuid)"
+)
+
+
+async def attach_type_name(db: Any, vis: Any, rows: list[dict]) -> None:
+    """Stamp ``type_name`` on each row: the name of its type, or ``None``.
+
+    The member can see the task, so the member can see the name of its type.
+    A row with no type, or a type the read cannot find, keeps ``None``.
+    """
+    ids = sorted({str(r["type_id"]) for r in rows if r.get("type_id")})
+    found: dict[str, str] = {}
+    if ids:
+        found = {
+            str(r.id): r.name
+            for r in (await db.execute(
+                text(_TYPE_NAME_SQL),
+                {"ids": ids, "vis_org": vis.params.get("vis_org")},
+            )).fetchall()
+        }
+    for row in rows:
+        row["type_name"] = found.get(str(row.get("type_id") or ""))
 
 
 async def status_categories_of(
