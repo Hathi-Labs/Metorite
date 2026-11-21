@@ -2202,7 +2202,13 @@ async def load_row(
 ) -> Any | None:
     """One row by id, or None. ``lock=True`` reads it ``FOR UPDATE``, so a
     check of its values holds until the write of the same transaction (the
-    Undo of a change, CRM-M1)."""
+    Undo of a change, CRM-M1). An id that is not a UUID names no row, so it
+    is None and the caller answers 404, not a 500 from the cast (task 2313:
+    ``GET /crm/deals/aggregate`` read "aggregate" as a deal id)."""
+    try:
+        UUID(str(record_id))
+    except ValueError:
+        return None
     return (await db.execute(
         text(
             f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"
