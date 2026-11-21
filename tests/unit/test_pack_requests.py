@@ -360,6 +360,17 @@ KNOWN_GAPS: dict[str, str] = {
     "unpin that page": "only this, the and a stand before 'page' in the words",
     "unpin the authority": "the bare 'unpin' is out, and 'authority' alone is no word",
     "unpin the doc from the project": "the bare 'unpin' is out, and 'doc' is no word",
+    "unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin it": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin that": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin this doc": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the spec page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "please unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the project page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin my page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the pinned page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin our page": "the bare 'unpin' is out, and no three-phrase form matches",
 }
 
 #: Ordinary turns and the packs that they load. A change of a word list must

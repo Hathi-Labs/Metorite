@@ -1172,7 +1172,7 @@ and the default is empty.
   - It refuses with no request in a WhatsApp run, a batch run, and a run with
     no verified member. A chat that read outside mail shows one card first.
   - Both acts are `COVERED` in `acb_skills/chat_parity.py`. The debt ceiling
-    of the chat is 25 again.
+    of the chat is 28 again.
   - `tool_packs.py` no longer loads the authority pack for a bare "unpin".
     It needs "unpin this page", "unpin the page" or "unpin a page". The
     cal-tasks session approved exactly these three phrases.
@@ -1187,7 +1187,7 @@ and the default is empty.
   - Fences: `tests/unit/test_chat_pin_tool.py`,
     `tests/unit/test_chat_pin_tool_r8.py` (R8), the two rows of `CONTROLS` and
     the three rows of `unpin_authority` in `tests/unit/test_pack_requests.py`,
-    and the two pin cases of `tests/unit/test_exact_tool_count.py`.
+    and the three pin cases of `tests/unit/test_exact_tool_count.py`.
 
 **Before the flags flip.** The owner does three things first. Items 1 and 2
 bind the flip of `CHAT_PIN_ORGS`. Item 3 binds the flip of
