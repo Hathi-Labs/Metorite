@@ -234,6 +234,10 @@ The epic plan gives no task number for AGA-3 and AGA-4. The owner or the next se
   - No run holds the trace, the traceback, the tool list, the model or the stored error text. A failed chat run reads one fixed sentence. The trace stays executive-only at `/debug/runs/{run_id}`.
   - Five cases answer one 404: an unknown key, a key of another organization, a key out of reach, a bad shape and the flag off. Its body names no input.
   - Fence: `tests/unit/test_agent_runs_drilldown_r8.py`. Its table `_sees` holds §4, so a change of Q3 changes one place. The chat tool `agent_recent_runs` is in `PLANNED` for AGA-11.
+- **SW-102, the map shape of the overview (built and dark, 2026-11-20).** `agent_coordination.md` §3.12 and row SW-102 own it. A change to this route follows both specs.
+  - `GET /projects/agents/overview?shape=map` gives people, session nodes and open runs. It reads the `seen` text of the overview, so it shows no run that the overview does not count.
+  - It needs `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. The route checks `AGENTS_VIEW_ORGS` first. With either flag off, the map answers 404, and the plain overview does not change.
+  - Fence: `tests/unit/test_agent_map_r8.py`.
 
 ---
 
