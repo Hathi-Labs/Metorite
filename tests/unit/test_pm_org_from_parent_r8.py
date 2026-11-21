@@ -39,7 +39,8 @@ fixture hashes the ladder files, so the next run builds a new template.
 * M1. The 470 body goes back to the 161 body (a silent return on no row). The
   cross-tenant INSERT probes and the two UPDATE probes go red.
 * M2. The 470 body refuses on no row for each write (no ``TG_OP`` and no
-  changed-link test). The cascade controls go red.
+  changed-link test). The cascade controls ``root_project``, ``folder`` and
+  ``task_pair`` go red.
 """
 
 from __future__ import annotations
@@ -368,8 +369,9 @@ class TestTheUpdateProbes:
 # A delete of a parent runs the `ON DELETE SET NULL` updates of seven keys on
 # attached tables. The parent of the updated row can already be gone, so the
 # trigger finds no row. The 470 body keeps the old silent return there,
-# because the update keeps the link. Each delete below failed when the body
-# refused on each write (M2).
+# because the update keeps the link. When the body refused on each write (M2),
+# the deletes `root_project`, `folder` and `task_pair` failed. The other three
+# passed in that cascade order, so they are controls and do not tell M2 apart.
 
 _ORG_C = "c2324000-0000-4000-8000-000000002324"
 
