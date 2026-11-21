@@ -51,7 +51,7 @@ such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
 | §6.5 rule 1: bind to a loopback address | Built (PR 1). The settings refuse another address |
 | §6.5 rule 2: hashed token, constant-time compare | Built (PR 1) |
 | §5.4 envelopes, §5.5 traps, §6.5 rules 3 and 7 | Built (PR 2). `reader/envelope.py`, `reader/parse.py`, `reader/values.py`, the queue of one in `reader/client.py` |
-| §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is 1,093 bytes for 2 tools |
+| §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is about 1.1 KB for 2 tools (1,127 bytes over HTTP) |
 | §6.5 rule 4: the company allow-list | Built (PR 3). `ALLOWED_COMPANIES`, exact names. With no allowed company, no tool reads the books |
 | §6.4 read tools 3 to 9 | PR 4 and later |
 | §6.5 rule 5 (rate limit), rule 6 (call log) | Later PRs |
