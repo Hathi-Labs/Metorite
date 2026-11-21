@@ -681,10 +681,13 @@ class _FakeDb:
         chat = self.chats.get(tid)
         if chat is None:
             return store.LoadState(chat_exists=False)
+        # A row may carry a third item, True for a mid-run steer (task 2948).
+        rows = [tuple(r[:2]) for r in chat["rows"]]
+        digest_rows = [tuple(r[:2]) for r in chat["rows"] if not (len(r) > 2 and r[2])]
         return store.LoadState(
             chat_exists=True, session_user=chat["owner"],
-            participants=list(chat["participants"]), rows=list(chat["rows"]),
-            stored=self.stored.get((org, tid, agent)),
+            participants=list(chat["participants"]), rows=rows,
+            stored=self.stored.get((org, tid, agent)), digest_rows=digest_rows,
         )
 
     def write_row(
@@ -2155,3 +2158,151 @@ def test_r8_the_probe_through_the_real_executor_and_the_real_fold(
     assert _MEMORY in model.bodies[2]["messages"][0]["content"]
     rows = _stored(graph_as_app, tid)
     assert len(rows) == 1 and _MEMORY not in json.dumps(rows[0][2])
+
+
+# ── 13. Task 2948: a mid-run steer never drops the session ──────────────────
+
+_STEER = "also check the archive folder"
+
+
+def test_a_steered_run_hits_on_the_next_turn(fake_db, store_log) -> None:
+    """The run began on ``_PROPOSE``. A steer row (``steered`` mark) was saved while it ran.
+    The save digest never held the steer, so the next load must not count it either."""
+    tid = "thread-f20-steer"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK),
+                                  ("user", "yes")]
+    # The browser shows the steer as a user turn of its own.
+    browser = [{"role": "user", "content": _PROPOSE}, {"role": "user", "content": _STEER},
+               {"role": "assistant", "content": _ASK}]
+    nxt = _begin(tid, "yes", browser=browser)
+    assert nxt.outcome == "hit", store_log.outcomes()
+
+
+def test_without_the_mark_the_same_rows_still_drop(fake_db, store_log) -> None:
+    """The mark is what makes it a hit: an ordinary user row in the middle changes the transcript."""
+    tid = "thread-f20-steer-unmarked"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER), ("assistant", _ASK), ("user", "yes")]
+    assert _begin(tid, "yes").outcome == "digest_drop"
+
+
+def test_a_second_turn_after_a_steer_saves_a_digest_that_the_third_turn_matches(fake_db, store_log) -> None:
+    tid = "thread-f20-steer-3"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    rows = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK), ("user", "yes")]
+    fake_db.chats[tid]["rows"] = rows
+    turn2 = _begin(tid, "yes")
+    assert turn2.outcome == "hit"
+    _answer(turn2, "yes", "Applied.")
+    assert _finish(turn2) == "saved"
+    fake_db.chats[tid]["rows"] = [*rows, ("assistant", "Applied."), ("user", "thanks")]
+    assert _begin(tid, "thanks").outcome == "hit"
+
+
+@_DB_GATE
+def test_r8_a_steered_run_then_hits_and_holds_the_steer_once(graph_as_app, store_log) -> None:
+    """Task 2948, R8: the real SQL reads the ``steered`` mark of a real row, written the way
+    the gateway writes it (``_write_prompt_row`` with a ``steered`` custom event)."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    # The member steers while the run works: the gateway saves the steer as a user row.
+    steer = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                          timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer], actor_email=_ALICE, organization_id=org) == []
+    # The run stores its own prompt, the steer turn and its answer in its session (task 2494).
+    messages = list(turn.session.state.get(store.HISTORY_SOURCE_ID, {}).get("messages", []))
+    messages += [_message("user", _PROPOSE), _message("user", _STEER), _message("assistant", _ASK)]
+    turn.session.state[store.HISTORY_SOURCE_ID] = {"messages": messages}
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+    _user_row(org, tid, "yes")
+    browser = [{"role": "user", "content": _PROPOSE}, {"role": "user", "content": _STEER},
+               {"role": "assistant", "content": _ASK}]
+    nxt = _begin(tid, "yes", org=org, browser=browser)
+    assert nxt.loaded and store_log.outcomes()[-1] == "hit", store_log.outcomes()
+    texts = [m.text for m in nxt.session.state[store.HISTORY_SOURCE_ID]["messages"]]
+    assert texts.count(_STEER) == 1 and texts == [_PROPOSE, _STEER, _ASK]
+
+
+@_DB_GATE
+def test_r8_an_unread_steer_drops_the_session(graph_as_app, store_log) -> None:
+    """Task 3640, R8: the run saved its session, the steer row (marked ``steered``) came back
+    unread, and ``mark_stale`` ran as ``steer.return_unconsumed`` calls it. The next turn drops
+    with the reason ``resume_stale`` instead of hitting a session that lacks the steer."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    steer_row = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                              timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer_row], actor_email=_ALICE, organization_id=org) == []
+    _answer(turn, _PROPOSE, _ASK)  # the run never read the steer
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+    assert asyncio.run(store.mark_stale(organization_id=org, thread_id=tid)) == "marked"
+    _user_row(org, tid, "yes")
+    nxt = _begin(tid, "yes", org=org)
+    assert not nxt.loaded and nxt.outcome == "digest_drop"
+    assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
+
+
+@_DB_GATE
+def test_r8_return_unconsumed_reaches_the_mark_with_the_runs_org(graph_as_app, store_log, monkeypatch) -> None:
+    """Task 3640, end to end on a real DB: no ``organization_scope`` block (the terminal push
+    runs outside any), the org comes from the run binding read when the steer was buffered,
+    and ``steer.return_unconsumed`` itself marks the session. The next turn drops with
+    ``resume_stale``."""
+    import uuid
+
+    import acb_common
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+    from orchestrator import steer
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    steer_row = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                              timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer_row], actor_email=_ALICE, organization_id=org) == []
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+
+    class _Settings:
+        maf_native_sessions = True
+
+    async def _stored(thread_id: str, signal: dict) -> bool:
+        return True
+
+    monkeypatch.setattr(acb_common, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(steer, "persist_signal", _stored)
+    monkeypatch.setattr(executor, "_RUN_ORG", {tid: org})
+    monkeypatch.setattr(steer, "_PENDING_GUIDANCE", {})
+    monkeypatch.setattr(steer, "_CLOSED", set())
+    assert steer.buffer_guidance(tid, _ALICE, _STEER, signal_id="s1")  # the run never reads it
+    assert asyncio.run(steer.return_unconsumed(tid)) == 1
+    _user_row(org, tid, "yes")
+    nxt = _begin(tid, "yes", org=org)
+    assert not nxt.loaded and nxt.outcome == "digest_drop"
+    assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
