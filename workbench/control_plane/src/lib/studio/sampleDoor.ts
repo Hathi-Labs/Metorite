@@ -42,6 +42,7 @@ export const SAMPLE_FIELDS: FieldSpec[] = [
   { key: "weight", type: "quantity", label: "Load", units: ["kg", "t"] },
   { key: "discount", type: "percent", label: "Discount" },
   { key: "serial", type: "barcode", label: "Serial", format: "ean13" },
+  { key: "tariff", type: "coded", label: "Tariff code", system: "X-SYS" },
 ];
 
 /** The columns the Table shows. The Form and the Detail show all of the fields. */
@@ -57,7 +58,7 @@ export const SAMPLE_ROWS: Row[] = [
     contact: "ops@example.com", phone: "+919876543210", location: { lat: 18.5204, lng: 73.8567 },
     report: "## Findings\n\nThe **base plate** is level.\n\n- Anchor bolts: set\n- Power: on site",
     score: 4, duration: 5400, weight: { value: "1250.5", unit: "kg" }, discount: 1250,
-    serial: "4006381333931",
+    serial: "4006381333931", tariff: { system: "X-SYS", code: "X-0001" },
   },
   {
     id: "v2", title: "Calibrate the line", qty: 3, amount: { minor: 480050, currency: "INR" },

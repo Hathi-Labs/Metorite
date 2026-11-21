@@ -397,6 +397,8 @@ export interface ObjectRow {
     min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
     // STU-C15a: the parts of an autonumber.
     prefix?: string | null; pad?: number | null; reset?: string | null;
+    // STU-C23a: the code system of a coded field.
+    system?: string | null;
     // STU-C24a: the ranges and conversions of a quantity.
     normal?: { low?: string | null; high?: string | null } | null;
     critical?: { low?: string | null; high?: string | null } | null;

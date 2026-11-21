@@ -29,7 +29,8 @@ export type FieldType =
   | "quantity"
   | "percent"
   | "barcode"
-  | "autonumber";
+  | "autonumber"
+  | "coded";
 
 export type BlockName =
   | "table"
@@ -168,6 +169,8 @@ export interface FieldDef {
   prefix?: string | null;
   pad?: number | null;
   reset?: string | null;
+  // C23a. The code system of a `coded` field.
+  system?: string | null;
 }
 
 export interface ObjectDef {

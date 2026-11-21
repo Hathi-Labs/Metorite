@@ -56,7 +56,7 @@ def _field(**extra: Any) -> sf.FieldSpec:
 
 
 def test_the_type_is_in_the_one_list_with_its_parts() -> None:
-    assert sf.FIELD_TYPES[-1] == "autonumber" and len(sf.FIELD_TYPES) == 23
+    assert sf.FIELD_TYPES[22] == "autonumber" and len(sf.FIELD_TYPES) >= 23
     assert sf.SPEC_PARTS["autonumber"] == ("prefix", "pad", "reset")
     assert "autonumber" not in sf.HOT_TYPES
     assert "autonumber" in sf.VALUE_SHAPES
@@ -170,10 +170,10 @@ def test_the_migration_forces_rls_and_keys_by_the_pair() -> None:
     assert "period = '' OR period ~ '^\\d{4}-\\d{2}-\\d{2}$'" in sql
     assert "SET LOCAL lock_timeout" in sql
     assert "REFERENCES organization (id) ON DELETE CASCADE\n                     DEFAULT" in sql
-    # Both type CHECKs hold the whole list, in order.
+    # Both type CHECKs hold the list as it stood at 444, in order. 445 widens them again.
     for check in ("studio_object_fields_type", "package_field_value_field_type"):
         body = sql.split(f"ADD CONSTRAINT {check} CHECK", 1)[1].split(";")[0]
-        assert re.findall(r"'(\w+)'", body) == list(sf.FIELD_TYPES), check
+        assert re.findall(r"'(\w+)'", body) == list(sf.FIELD_TYPES[:23]), check
     policies = (_ROOT / "infra/postgres/generated/04_policies.sql").read_text(encoding="utf-8")
     assert "ALTER TABLE studio_object_counters FORCE  ROW LEVEL SECURITY" in policies
 

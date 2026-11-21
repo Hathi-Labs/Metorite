@@ -51,12 +51,13 @@ from acb_common.app_manifests.base import APP_ID_PATTERN
 
 #: The field types of §3.1 and of C14, in camelCase as the genUI node types are.
 #: The first sixteen are C1. The next six are C14, and none of them may be hot.
-#: The last one, ``autonumber``, is C15a: the store fills it, and a caller never writes it.
+#: The next one, ``autonumber``, is C15a: the store fills it, and a caller never writes it.
+#: The last one, ``coded``, is C23a: a code of a code system, as ``{system, code}``.
 FIELD_TYPES: tuple[str, ...] = (
     "text", "longText", "number", "money", "date", "datetime", "checkbox",
     "select", "multiSelect", "person", "relation", "file", "url", "email",
     "phone", "geo", "richText", "rating", "duration", "quantity", "percent", "barcode",
-    "autonumber",
+    "autonumber", "coded",
 )  # fmt: skip
 
 #: The types that a hot field may have. Each maps to one value column of
@@ -132,6 +133,9 @@ DEFAULT_AUTONUMBER_PAD = 4
 MAX_AUTONUMBER_PAD = 9
 AUTONUMBER_RESETS: tuple[str, ...] = ("never", "day")
 MAX_AUTONUMBER = 999_999_999_999_999
+#: C23a. A coded field names its code system (1 to 32 characters). A code is 1 to 64.
+MAX_CODE_SYSTEM_CHARS = 32
+MAX_CODED_CHARS = 64
 #: The text that ``studio_record_hot.v_text`` holds: the first 256 characters.
 #: A btree entry has a size limit, so the side table never holds a long text.
 HOT_TEXT_CHARS = 256
@@ -142,6 +146,7 @@ SPEC_PARTS: dict[str, tuple[str, ...]] = {
     "quantity": ("units", "normal", "critical", "conversions"),
     "barcode": ("format",),
     "autonumber": ("prefix", "pad", "reset"),
+    "coded": ("system",),
 }
 
 #: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
@@ -156,12 +161,15 @@ VALUE_SHAPES: dict[str, str] = {
     "barcode": "text in the field's format: ean13 (13 digits, check digit last), code128 or qr",
     "autonumber": "no value: the store fills it with the prefix and the next number, as FV-0042. "
                   "A write that names the field is refused",
+    "coded": "{'system': the system of the field, 'code': text of 1 to 64 characters}. "
+             "The field names its code system, and the value repeats it. "
+             "The code has no space at either end and no control character",
 }
 
 _SPEC_KEYS = frozenset({
     "key", "type", "label", "required", "many", "options", "to", "hot",
     "min", "max", "units", "format", "lines", "normal", "critical", "conversions",
-    "prefix", "pad", "reset",
+    "prefix", "pad", "reset", "system",
 })
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
@@ -181,6 +189,8 @@ _QUANTITY_RE = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
 # C24a. A conversion factor is a positive decimal with at most 6 decimals.
 _FACTOR_RE = re.compile(r"[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
 _EAN13_RE = re.compile(r"[0-9]{13}", re.ASCII)
+# C23a. The name of a code system, as ICD-10 or LOINC.
+_CODE_SYSTEM_RE = re.compile(rf"[A-Za-z0-9._-]{{1,{MAX_CODE_SYSTEM_CHARS}}}", re.ASCII)
 # C15a. The prefix of an autonumber, and the stored value: a prefix then the digits.
 # The check of a value is loose on the prefix, because a change of the prefix
 # binds new numbers only, so an older record keeps its older prefix.
@@ -265,21 +275,18 @@ class FieldSpec:
     prefix: str | None = None
     pad: int | None = None
     reset: str | None = None
+    #: C23a. The code system of a coded field.
+    system: str | None = None
 
     def stored_spec(self) -> dict[str, Any]:
         """The ``spec`` column: every part but the key, the type and ``hot``,
         which have their own columns."""
         out: dict[str, Any] = {"required": self.required, "many": self.many}
-        if self.label is not None:
-            out["label"] = self.label
+        for name in ("label", "to", "min", "max", "format", "lines", "prefix", "pad", "reset", "system"):
+            if getattr(self, name) is not None:
+                out[name] = getattr(self, name)
         if self.options is not None:
             out["options"] = list(self.options)
-        if self.to is not None:
-            out["to"] = self.to
-        if self.min is not None:
-            out["min"] = self.min
-        if self.max is not None:
-            out["max"] = self.max
         if self.units is not None:
             out["units"] = list(self.units)
         if self.normal is not None:
@@ -289,16 +296,6 @@ class FieldSpec:
         if self.conversions is not None:
             out["conversions"] = [
                 {"from": a, "to": b, "factor": c} for a, b, c in self.conversions]
-        if self.format is not None:
-            out["format"] = self.format
-        if self.lines is not None:
-            out["lines"] = self.lines
-        if self.prefix is not None:
-            out["prefix"] = self.prefix
-        if self.pad is not None:
-            out["pad"] = self.pad
-        if self.reset is not None:
-            out["reset"] = self.reset
         return out
 
 
@@ -535,6 +532,12 @@ def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) ->
         _check_ranges(spec, out)
     elif kind == "autonumber":
         _check_autonumber(spec, out)
+    elif kind == "coded":
+        system = spec.get("system")
+        if not isinstance(system, str) or not _CODE_SYSTEM_RE.fullmatch(system):
+            out.append(SpecProblem(
+                "system", f"A coded field needs a `system`: 1 to {MAX_CODE_SYSTEM_CHARS} "
+                "characters from letters, digits and . _ -."))
     elif kind == "barcode" and spec.get("format") not in BARCODE_FORMATS:
         out.append(SpecProblem(
             "format", f"A barcode field needs a `format`: {', '.join(BARCODE_FORMATS)}."))
@@ -678,7 +681,8 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         normal=range_of(spec.get("normal")), critical=range_of(spec.get("critical")),
         conversions=conversions_of(spec.get("conversions")),
         format=spec.get("format"), lines=spec.get("lines"),
-        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"))
+        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"),
+        system=spec.get("system"))
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
@@ -706,7 +710,8 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None,
         prefix=spec["prefix"] if isinstance(spec.get("prefix"), str) else None,
         pad=spec["pad"] if _int(spec.get("pad")) else None,
-        reset=spec["reset"] if isinstance(spec.get("reset"), str) else None)
+        reset=spec["reset"] if isinstance(spec.get("reset"), str) else None,
+        system=spec["system"] if isinstance(spec.get("system"), str) else None)
 
 
 # --- the values -------------------------------------------------------------
@@ -992,6 +997,24 @@ def _autonumber(f: FieldSpec, v: Any) -> str:
     return v
 
 
+def _coded(f: FieldSpec, v: Any) -> dict[str, str]:
+    """C23a. ``{system, code}``. The system is the one of the field. The check
+    reads no list of codes: a code list is a later slice."""
+    shape = (f'Field `{f.key}` takes {{"system": "{f.system}", "code": "<code>"}}, '
+             f"with a code of 1 to {MAX_CODED_CHARS} characters.")
+    if not isinstance(v, Mapping) or set(v) != {"system", "code"}:
+        raise FieldError(f.key, shape)
+    if v["system"] != f.system:
+        raise FieldError(f.key, f"Field `{f.key}` takes the code system `{f.system}`.")
+    code = v["code"]
+    if (not isinstance(code, str) or not 1 <= len(code) <= MAX_CODED_CHARS or not storable_text(code)
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in code) or code != code.strip()):
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes a code of 1 to {MAX_CODED_CHARS} characters, "
+            "with no control character and no space at either end.")
+    return {"system": v["system"], "code": code}
+
+
 def autonumber_pad(field: FieldSpec) -> int:
     """The width of the number of an autonumber field."""
     return DEFAULT_AUTONUMBER_PAD if field.pad is None else field.pad
@@ -1037,6 +1060,7 @@ _CHECKS: dict[str, Any] = {
     "percent": _percent,
     "barcode": _barcode,
     "autonumber": _autonumber,
+    "coded": _coded,
 }
 assert tuple(_CHECKS) == FIELD_TYPES, "each field type has one check"
 
@@ -1141,7 +1165,8 @@ def _max_value_bytes(field: FieldSpec) -> int:
              "geo": 32 + 2 * _MAX_NUMBER_BYTES, "date": 16, "datetime": 40, "checkbox": 5,
              "person": 2 + MAX_EMAIL_CHARS, "email": 2 + MAX_EMAIL_CHARS,
              "relation": 16 + MAX_ID_CHARS, "file": 16 + MAX_ID_CHARS, "phone": 24,
-             "autonumber": 2 + MAX_AUTONUMBER_PREFIX + len(str(MAX_AUTONUMBER))}
+             "autonumber": 2 + MAX_AUTONUMBER_PREFIX + len(str(MAX_AUTONUMBER)),
+             "coded": 40 + MAX_CODE_SYSTEM_CHARS + MAX_CODED_CHARS * _MAX_CHAR_BYTES}
     if kind in fixed:
         return fixed[kind]
     options = [len(json.dumps(o, ensure_ascii=False).encode("utf-8")) for o in field.options or ()]

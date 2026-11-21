@@ -322,6 +322,8 @@ class FieldDef(_Strict):
     prefix: str | None = None
     pad: int | None = None
     reset: str | None = None
+    #: C23a. The code system of a `coded` field, as `ICD-10`.
+    system: str | None = None
 
 
 class ObjectDef(_Strict):
