@@ -117,6 +117,7 @@ from skill_projects.writes import (
     _subtasks_phrase,
     _subtasks_wanted,
     _task,
+    _unknown_addresses,
     _vocab,
     _with_line,
     agent_assignee_refusal_as_text,
@@ -1219,6 +1220,15 @@ async def bulk_update(
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Task 3634: an address to ADD that the people directory does not know is
+    # named on the card, as the create cards name it (H-162), so the member sees
+    # it before the Approve. The same one lookup as the other cards. A change
+    # with no address to add reads nothing.
+    # One fence round a comma list, the shape of the create cards
+    # (`_assignee_card_lines`), and each address once.
+    strangers = await _unknown_addresses(list(dict.fromkeys(body.get("assignees_add") or [])))
+    if strangers:
+        rest["not in the directory"] = ", ".join(strangers)
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
