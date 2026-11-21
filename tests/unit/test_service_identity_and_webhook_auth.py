@@ -863,45 +863,63 @@ def test_no_header_gets_a_clean_401_from_the_gateway(unprovisioned) -> None:
 # code trees (tests and docs are not scanned):
 #
 # 1. ``literal``: the dev LLM key value, anywhere in the raw text of a file.
-# 2. ``placeholder``: a string literal that equals the value of a ``*_KEY``,
-#    ``*_TOKEN`` or ``*_SECRET`` line of ``.env.example``. In a ``.py`` file
-#    this is an AST string constant (a docstring does not count). In another
-#    file it is the value as a whole token.
+# 2. ``placeholder``: the value of a ``*_KEY``, ``*_TOKEN`` or ``*_SECRET``
+#    line of ``.env.example`` as a whole token. In a ``.py`` file the scan
+#    reads the AST string constants, so ``"Bearer <value>"`` is a hit, and a
+#    docstring does not count. In another file it reads the raw text.
 #
-# ``_PLACEHOLDER_ALLOWED`` holds each (file, value) that may stay, with its
-# reason. An entry that no longer hits is stale, and a test fails on it.
+# The scan reads ``_PLACEHOLDER_TREES``, the ``*.py`` files of the repo root
+# and the config files of each workbench app (``_PLACEHOLDER_GLOBS``).
+#
+# ``_PLACEHOLDER_ALLOWED`` holds each (file, value) that may stay, with the
+# EXACT count of lines that hit and the reason. One more line in an allowed
+# file is red, and so is one less. So a second default in ``settings.py``
+# cannot hide behind the first one.
+#
+# Out of scope, by name (deferred):
+# * ``.github/`` workflows. ``skill-eval.yml`` falls back to the dev LLM key.
+# * ``.gitleaks.toml``. It lists the two values as known public defaults.
+# * ``*_PASSWORD`` names such as ``POSTGRES_PASSWORD``. The key pattern does
+#   not match them.
+# * ``gateway/routes/oauth.py`` falls back to ``"change-me"``, which is not a
+#   value of ``.env.example``.
 
 _ENV_EXAMPLE = ROOT / ".env.example"
 _KEYLIKE = re.compile(r"^[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|SECRET)$")
 _PLACEHOLDER_TREES = (*(t for t in _TREES if not t.startswith("tests")), "infra")
 _PLACEHOLDER_SUFFIXES = _SUFFIXES | {".yml", ".yaml", ".toml", ".json"}
+_PLACEHOLDER_GLOBS = ("*.py", "workbench/*/*.config.*")
 #: The value of ``LITELLM_MASTER_KEY`` in ``.env.example``.
 _DEV_LLM_KEY = "sk-local-dev-change-me"
 
-#: The (file, value) pairs that may stay, each with its reason.
+#: (file, value) -> (the exact count of lines that hit, the reason).
 _PLACEHOLDER_ALLOWED = {
-    ("packages/acb_common/acb_common/settings.py", "change-me-dev-only"):
-        "the gateway_session_secret default. Each reader refuses it through "
-        "member_proof.PUBLIC_DEFAULT_SECRETS, and test_member_proof.py pins that",
-    ("packages/acb_auth/acb_auth/member_proof.py", "change-me-dev-only"):
-        "PUBLIC_DEFAULT_SECRETS, the deny set that refuses the public default",
-    ("evals/_runner.py", _DEV_LLM_KEY):
+    ("packages/acb_common/acb_common/settings.py", "change-me-dev-only"): (1,
+        "the gateway_session_secret default. member_proof (with v1_compat), "
+        "attribution, agent_paths and the email signer refuse it through "
+        "PUBLIC_DEFAULT_SECRETS. whatsapp_channel/acts.py code_hash uses it "
+        "raw, and task 3854 repairs that"),
+    ("packages/acb_auth/acb_auth/member_proof.py", "change-me-dev-only"): (1,
+        "PUBLIC_DEFAULT_SECRETS, the deny set that refuses the public default"),
+    ("evals/_runner.py", _DEV_LLM_KEY): (1,
         "a /v1 eval client. The LLM key is a legal /v1 bearer, and it never "
-        "goes to an identity route",
-    # The four scripts below send the literal as a bearer with X-User-Email,
-    # which is the identity shape. The gateway refuses the LLM key as an
-    # identity since WS-24b, so the literal opens nothing, and the script
-    # gets 401. They stay until each one reads its bearer from the env only.
-    ("scripts/feature_check.py", _DEV_LLM_KEY):
-        "an operator smoke check that runs on the box. CC_AUTH_TOKEN overrides "
-        "the literal. It also sends X-User-Role. The gateway refuses the literal",
-    ("scripts/run_chat_tests.sh", _DEV_LLM_KEY):
-        "runs tests/integration/test_chat_features.py on the box and exports the "
-        "literal as CC_AUTH_TOKEN. The gateway refuses the literal",
-    ("scripts/test_chat.py", _DEV_LLM_KEY):
-        "a manual POST to a local /copilot/chat. The gateway refuses the literal",
-    ("scripts/_audit_ui.py", _DEV_LLM_KEY):
-        "a manual audit of local gateway and UI routes. The gateway refuses the literal",
+        "goes to an identity route"),
+    # The four scripts below send the literal as a bearer to identity routes
+    # of the gateway. The gateway refuses the LLM key as an identity since
+    # WS-24b, so the literal opens nothing, and the script gets 401. They
+    # stay until each one reads its bearer from the env only.
+    ("scripts/feature_check.py", _DEV_LLM_KEY): (2,
+        "an operator smoke check that runs on the box, with X-User-Email and "
+        "X-User-Role. CC_AUTH_TOKEN overrides the literal. Its docstring names "
+        "the literal too"),
+    ("scripts/run_chat_tests.sh", _DEV_LLM_KEY): (1,
+        "runs tests/integration/test_chat_features.py on the box and exports "
+        "the literal as CC_AUTH_TOKEN"),
+    ("scripts/test_chat.py", _DEV_LLM_KEY): (1,
+        "a manual POST to a local /copilot/chat, with X-User-Email"),
+    ("scripts/_audit_ui.py", _DEV_LLM_KEY): (1,
+        "a manual audit of local gateway and UI routes. It sends only the "
+        "Authorization header"),
 }
 
 
@@ -945,19 +963,26 @@ def placeholder_hits(rel: str, text: str, values: frozenset[str]) -> list[tuple[
         }
         for node in ast.walk(mod):
             if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    and node.value.strip() in values and id(node) not in docstrings):
-                hits.add((node.lineno, node.value.strip()))
+                    and id(node) not in docstrings):
+                for value in values:
+                    if _token_rx(value).search(node.value):
+                        hits.add((node.lineno, value))
     else:
         for value in values:
-            # ``${X:-value}`` is a hit, and ``x-value`` is another name.
-            rx = re.compile(rf"(?<![\w.])(?<!\w-){re.escape(value)}(?![\w.-])")
-            for m in rx.finditer(text):
+            for m in _token_rx(value).finditer(text):
                 hits.add((text.count("\n", 0, m.start()) + 1, value))
     return sorted(hits)
 
 
+@functools.cache
+def _token_rx(value: str) -> re.Pattern[str]:
+    """*value* as a whole token. ``${X:-value}`` and ``Bearer value`` are
+    hits, and ``x-value`` and ``value-2`` are other names."""
+    return re.compile(rf"(?<![\w.])(?<!\w-){re.escape(value)}(?![\w.-])")
+
+
 def _placeholder_files() -> list[Path]:
-    out = []
+    out = [p for g in _PLACEHOLDER_GLOBS for p in ROOT.glob(g) if p.is_file()]
     for tree in _PLACEHOLDER_TREES:
         base = ROOT / tree
         if not base.is_dir():
@@ -966,7 +991,7 @@ def _placeholder_files() -> list[Path]:
             if (p.suffix in _PLACEHOLDER_SUFFIXES and p.is_file()
                     and not _SKIP_PARTS & set(p.parts)):
                 out.append(p)
-    return sorted(out)
+    return sorted(set(out))
 
 
 @functools.cache
@@ -1011,6 +1036,8 @@ PLACEHOLDER_SAMPLES = {
     "getenv default": ("a.py", 'k = os.getenv("X_SECRET", "change-me-dev-only")\n'),
     "ts nullish": ("a.ts", 'const k = process.env.K ?? "change-me-dev-only";\n'),
     "shell default": ("a.sh", 'KEY="${SESSION_SECRET:-change-me-dev-only}"\n'),
+    "bearer in a py string": ("a.py", 'h = {"Authorization": "Bearer change-me-dev-only"}\n'),
+    "class field": ("a.py", 'class S:\n    plant_secret: str = "change-me-dev-only"\n'),
 }
 
 #: Each sample must not hit.
@@ -1020,6 +1047,7 @@ PLACEHOLDER_CLEAN = {
     "docstring": ("a.py", 'def f():\n    """Refuses change-me-dev-only."""\n'),
     "longer name": ("a.ts", 'const k = "change-me-dev-only-2";\n'),
     "prefixed name": ("a.ts", 'const k = "my-change-me-dev-only";\n'),
+    "prefixed in a py string": ("a.py", 'k = "my-change-me-dev-only"\n'),
 }
 
 _SAMPLE_VALUES = frozenset({_DEV_LLM_KEY, "change-me-dev-only"})
@@ -1041,11 +1069,22 @@ def test_no_code_uses_a_placeholder_key_as_a_default() -> None:
     """R7 (task 3847). No ``.env.example`` placeholder key in the code trees.
 
     Mutations, each red: the literal default put back at one site of
-    ``write_artifact.py``, and the dev LLM key planted in another module.
+    ``write_artifact.py``, the dev LLM key planted in another module, a
+    second default in ``settings.py``, a plant in the root ``agents.py`` and
+    in ``next.config.ts``, and ``"Bearer change-me-dev-only"`` in a module.
     """
+    from collections import Counter
+
+    hits = _tree_placeholder_hits()
+    counts = Counter((rel, value) for rel, _line, value in hits)
     found = [
-        f"{rel}:{line} ({value})" for rel, line, value in _tree_placeholder_hits()
+        f"{rel}:{line} ({value})" for rel, line, value in hits
         if (rel, value) not in _PLACEHOLDER_ALLOWED
+    ]
+    found += [
+        f"{rel} holds {counts[(rel, value)]} lines of {value}, and {want} may stay"
+        for (rel, value), (want, _why) in _PLACEHOLDER_ALLOWED.items()
+        if counts[(rel, value)] > want
     ]
     assert found == [], (
         "These lines hold a placeholder key from .env.example. A missing "
@@ -1055,10 +1094,23 @@ def test_no_code_uses_a_placeholder_key_as_a_default() -> None:
 
 
 def test_each_placeholder_allowance_still_hits() -> None:
-    """A stale allowance hides nothing today, and hides a new hit tomorrow."""
-    hit = {(rel, value) for rel, _line, value in _tree_placeholder_hits()}
-    stale = sorted(set(_PLACEHOLDER_ALLOWED) - hit)
+    """A stale allowance hides nothing today, and hides a new hit tomorrow.
+    A count that is too high would let a new line in that file stay green."""
+    from collections import Counter
+
+    counts = Counter((rel, value) for rel, _line, value in _tree_placeholder_hits())
+    stale = sorted(
+        f"{rel} ({value}): {counts[(rel, value)]} lines, {want} allowed"
+        for (rel, value), (want, _why) in _PLACEHOLDER_ALLOWED.items()
+        if counts[(rel, value)] < want
+    )
     assert stale == [], stale
+
+
+def test_the_scan_reads_the_root_and_the_workbench_configs() -> None:
+    files = {p.relative_to(ROOT).as_posix() for p in _placeholder_files()}
+    assert "agents.py" in files
+    assert "workbench/control_plane/next.config.ts" in files
 
 
 # The behaviour of each site that read the literal default. A ctx with no
