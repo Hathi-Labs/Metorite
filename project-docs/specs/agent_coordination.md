@@ -12,6 +12,8 @@
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
+**SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 471. The map line is not built, because SW-102 is not on main.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -2098,6 +2100,7 @@ They keep their own gates.
 - **Done when.** R8: a run of the same organization links. A run id of another organization, the run itself and a loop each drop with a warning, and the claim passes. A viewer who cannot see the dispatcher's run gets no line and no node for it.
 - **Fence.** `tests/unit/test_agent_run_dispatch_r8.py` (new), `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py` (extended).
 - **Risk.** HIGH (a migration, and a reference from one run to another). **Gate.** AGENT-SAFE. **Depends on.** SW-102, Q20.
+- **Built (task 3628), 2026-11-21.** Migration 471 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked. The map line and `test_agent_map_r8.py` are not built, because SW-102 is not on main.
 
 #### SW-108 · The orchestrator holds a run and names it
 
