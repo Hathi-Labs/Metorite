@@ -275,10 +275,10 @@ def _rel(path: Path) -> str:
 def test_the_direct_set_is_create_update_delete_only() -> None:
     assert {("object", "create"), ("object", "update"),
             ("object", "delete")} == invoke.DIRECT_EXECUTORS
-    # STU-D4b adds the aggregate, STU-D18-2a the tree, and B2b-2b the door op,
-    # to the open set.
+    # STU-D4b adds the aggregate, STU-D18-2a the tree, B2b-2b the door op and
+    # C4a-2 the history, to the open set.
     assert {("object", "get"), ("object", "list"), ("object", "aggregate"),
-            ("object", "tree"), invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
+            ("object", "tree"), ("object", "history"), invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
     assert not invoke.DIRECT_EXECUTORS & invoke.OPEN_EXECUTORS
 
 
