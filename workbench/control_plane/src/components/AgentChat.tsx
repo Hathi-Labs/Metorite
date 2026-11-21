@@ -39,6 +39,7 @@ import {
   readyFiles,
 } from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
+import DecisionChips from "@/components/chat/DecisionChips";
 import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
@@ -73,6 +74,7 @@ import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
+  CONFIRMATION_NOT_DONE,
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   NO_EDITS,
@@ -1303,6 +1305,12 @@ export default function AgentChat({
       }
       // The server closed a card: answered, timed out or cancelled. A replay
       // carries this too, so an answered card never comes back.
+      // Task 3827: the card was approved, and the tool then refused the write
+      // (the object changed after the card). Its line must not read "Approved".
+      if (name === CONFIRMATION_NOT_DONE && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "notDone", requestId: String(rid) });
+      }
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         const answer = (value as Record<string, unknown>).answer;
@@ -3052,6 +3060,9 @@ export default function AgentChat({
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
           {aboveComposer}
+          {/* HRD-12b: the decisions this chat keeps, each with an Undo. The server
+              says nothing while CHAT_CONSTRAINTS is off, so nothing draws. */}
+          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={focusQuietly} />
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}

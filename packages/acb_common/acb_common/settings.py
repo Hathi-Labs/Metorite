@@ -1402,6 +1402,17 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agents_overview_r8.py.
     agents_view_orgs: str = ""
 
+    # ── Agents: the map read (WS-MCP SW-102, agent_coordination.md §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agents/overview?shape=map` answers
+    # 404, and the plain overview does not change. The map also needs
+    # AGENTS_VIEW_ORGS. The one reader is
+    # `gateway.routes.projects.agent_summary.agent_map_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_map_r8.py.
+    agent_map_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1932,6 +1943,18 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: a restart can bill a prompt twice (spec
     # §13.1). Fence: tests/unit/test_turn_kind_parallel.py.
     ai_turn_kind_parallel: str = ""
+    # Chat speed (task 3592): the orgs whose DELEGATED runs ask no turn-kind
+    # question. A comma list of organization ids, or `*`. Empty means OFF,
+    # and a delegated run waits for the answer as before (up to 3 s). With
+    # it on, the run starts at once on the `chat` kind, so a `plan`,
+    # `analysis` or `code` task no longer raises its tier. The one reader is
+    # `acb_skills.tier_policy.turn_kind_nowait_on`, and it fails closed.
+    # Spec: ai_tier_routing.md §4.3. It reloads with no restart
+    # (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-GATE on production: it changes the tier that a delegated run
+    # pays for. Fence: tests/unit/test_turn_kind_nowait.py.
+    ai_turn_kind_nowait_orgs: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
