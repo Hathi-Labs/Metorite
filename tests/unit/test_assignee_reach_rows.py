@@ -43,7 +43,8 @@ async def test_the_check_splits_strangers_from_the_unreachable(monkeypatch) -> N
 async def test_the_rows_name_each_reason_once(monkeypatch) -> None:
     fake_gateway(monkeypatch, _directory)
     rows = await writes._assignee_rows([KNOWN, OFF, NOLOGIN, STRANGER, STRANGER])
-    assert rows == {"not in the directory": STRANGER, "cannot open the task": f"{OFF}, {NOLOGIN}"}
+    assert rows == {"not in the directory": f"«{STRANGER}»",
+                    "cannot open the task": f"«{OFF}, {NOLOGIN}»"}
     assert await writes._assignee_rows([KNOWN]) == {}
     assert await writes._assignee_rows(["agent:x"]) == {}
 
