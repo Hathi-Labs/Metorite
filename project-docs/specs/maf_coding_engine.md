@@ -2509,8 +2509,9 @@ gave GO-NARROWED. These facts change or add to the text above:
   but the root `metorite` agent, until `covers()` is true for it. D129 (task
   808) put a personal agent in scope too. `covers()` stays false for this
   target until WS-43f. So today only the root agent holds `code_task`. Its
-  run has no store key, so it gets the clear error of done-when 3. The session also refuses a tenant dir (`o:<org>`) by itself.
-  The `code_task` container mounts its dir whole and read-write, and a tenant
+  run has no store key, so it gets the clear error of done-when 3. The
+  session also refuses a tenant dir (`o:<org>`) by itself.
+  The `code_task` container mounts its dir whole and read-write. A tenant
   dir holds every thread's files and every member's skills. WS-43f must give
   this target the thread and skill covers of `projects` before it lifts that
   refusal.
