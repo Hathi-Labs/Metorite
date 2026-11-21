@@ -53,7 +53,7 @@ such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
 | §5.4 envelopes, §5.5 traps, §6.5 rules 3 and 7 | Built (PR 2). `reader/envelope.py`, `reader/parse.py`, `reader/values.py`, the queue of one in `reader/client.py` |
 | §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is about 1.1 KB for 2 tools (1,127 bytes over HTTP) |
 | §6.5 rule 4: the company allow-list | Built (PR 3). `ALLOWED_COMPANIES`, exact names. With no allowed company, no tool reads the books |
-| §6.4 read tools 3 to 9 | PR 4 and later |
+| §6.4 read tools 3 to 9 | Built (PR 3, later commits). `tools/reports.py`. All 9 tools fit in 4,602 bytes of `tools/list` |
 | §6.5 rule 5 (rate limit), rule 6 (call log) | Later PRs |
 | §6.7 installer, Windows service, DPAPI, setup screen | Step 4. Needs Windows |
 
@@ -71,6 +71,19 @@ unit pass is not the brief test. The brief test runs on the public address.
 
 `tests/unit/test_tally_bridge_reader.py` holds the fence of §6.5 rule 7: no
 read path can build an Import request.
+
+## Where the tools differ from the brief table
+
+- The date inputs are `from_date` and `to_date`, because `from` is a reserved
+  word in Python.
+- `get_voucher` takes a `guid` only. Find the GUID with `list_vouchers`. The
+  brief also allows `voucher_type` and `number`. A later commit adds that
+  path when recording R09 shows the numbering.
+- `ledger_statement` answers `opening` and `closing` as null. Recording R06
+  shows where Tally puts them, and then the tool reads them.
+- `trial_balance` reads from 1 April of the financial year that holds
+  `as_of`.
+- `profit_and_loss` takes 366 days or less.
 
 ## Fixtures
 
@@ -91,7 +104,7 @@ when the recorded one lands.
 | # | Request | Why |
 |---|---|---|
 | R01 | `curl -s -i http://127.0.0.1:9000/` (a GET with no body) | `is_up` reads "up" from any 200 answer. Record the exact body, so that the bridge can tell TallyPrime from another program on port 9000 |
-| R02 to R10 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each |
+| R02 to R11 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each. In R11, put the GUID of one voucher from the R09 answer in place of the zeros |
 
 Write the requests with the real names. Then send each one, and keep the
 answer and its headers:

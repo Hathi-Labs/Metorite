@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -25,6 +26,7 @@ from tally_bridge.reader import (
     TallyRefused,
     TallyTimeout,
 )
+from tally_bridge.reader.values import Amount
 from tally_bridge.settings import Settings
 
 log = logging.getLogger("tally_bridge.tools")
@@ -41,8 +43,52 @@ UNREADABLE = "TallyPrime sent an answer that the bridge cannot read."
 NONE_ALLOWED = "No company is allowed yet. Choose the companies in the bridge setup."
 
 
+# Brief section 6.4 rule 4: one answer goes into the model context.
+MAX_ANSWER_BYTES = 20_000
+TOO_LARGE = "The answer is too large. Ask for a shorter range or a narrower filter."
+TEXT_LIMIT = 100
+
+
 class Refusal(Exception):
     """A plain sentence for the member. The call answers it as a tool error."""
+
+
+def amount(a: Amount) -> dict[str, Any]:
+    return {"amount": a.text, "side": a.side}
+
+
+def day(text: str, field: str) -> date:
+    """A date input. Raises Refusal unless it reads YYYY-MM-DD."""
+    try:
+        return date.fromisoformat(text.strip())
+    except (ValueError, AttributeError):
+        raise Refusal(f"Write {field} as YYYY-MM-DD.") from None
+
+
+def day_range(start: str, end: str, max_days: int) -> tuple[date, date]:
+    """A date range of max_days or fewer, both ends included."""
+    first, last = day(start, "from_date"), day(end, "to_date")
+    if last < first:
+        raise Refusal("The end date is before the start date.")
+    days = (last - first).days + 1
+    if days > max_days:
+        raise Refusal(f"The range is {days} days. Ask for {max_days} days or less.")
+    return first, last
+
+
+def short(*texts: str | None) -> None:
+    """Refuse a text input that is longer than TEXT_LIMIT."""
+    if any(len(t or "") > TEXT_LIMIT for t in texts):
+        raise Refusal(f"Keep each name and filter to {TEXT_LIMIT} characters.")
+
+
+def fy_start(d: date) -> date:
+    """The first day of the Indian financial year (1 April) that holds d."""
+    return date(d.year if d.month >= 4 else d.year - 1, 4, 1)
+
+
+def iso(d: date | None) -> str | None:
+    return d.isoformat() if d else None
 
 
 def answer(payload: dict[str, Any]) -> CallToolResult:
@@ -87,7 +133,10 @@ async def guarded(
 ) -> CallToolResult:
     """Run one call. Every failure becomes one plain sentence."""
     try:
-        return answer(await asyncio.wait_for(work(), settings.call_deadline_s))
+        result = answer(await asyncio.wait_for(work(), settings.call_deadline_s))
+        if len(result.content[0].text.encode("utf-8")) > MAX_ANSWER_BYTES:
+            return refuse(TOO_LARGE)
+        return result
     except Refusal as exc:
         return refuse(str(exc))
     except TallyDown:

@@ -175,7 +175,17 @@ def test_tools_list_with_tally_closed_is_fast():
     assert r.status_code == 200
     assert took < 2.0
     tools = r.json()["result"]["tools"]
-    assert [t["name"] for t in tools] == ["status", "find_ledgers"]
+    assert [t["name"] for t in tools] == [
+        "status",
+        "find_ledgers",
+        "trial_balance",
+        "profit_and_loss",
+        "ledger_statement",
+        "outstanding",
+        "list_vouchers",
+        "get_voucher",
+        "stock_summary",
+    ]
 
 
 def test_tools_list_hints_and_size():

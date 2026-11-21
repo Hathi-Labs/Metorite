@@ -1,4 +1,5 @@
-"""The read tools (brief section 6.4): ``status`` and ``find_ledgers`` so far.
+"""The read tools (brief section 6.4): ``status`` and ``find_ledgers`` here,
+and the seven report tools in ``tools/reports.py``.
 
 Rules of section 6.4 that bind each tool:
 
@@ -32,13 +33,14 @@ from tally_bridge.settings import Settings
 from tally_bridge.tools.common import (
     READ_ONLY,
     TALLY_DOWN,
+    TEXT_LIMIT,
     Refusal,
     guarded,
     pick_company,
 )
+from tally_bridge.tools.reports import register_report_tools
 
 FIND_LIMIT = 50
-TEXT_LIMIT = 100
 
 Company = Annotated[str | None, Field(description="Company name. Optional with one company.")]
 
@@ -117,4 +119,23 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
 
         return await guarded(settings, "find_ledgers", work, company=company)
 
+    register_report_tools(mcp, reader, settings)
+    _compact_schemas(mcp)
     return mcp
+
+
+def _compact_schemas(mcp: FastMCP) -> None:
+    """Keep the tools/list answer small (brief section 6.4 rule 8).
+
+    Pydantic adds a ``title`` to each input and wraps an optional input in
+    ``anyOf`` with null. Neither tells the agent anything. An optional input
+    keeps its default of null and stays out of ``required``.
+    """
+    for tool in mcp._tool_manager.list_tools():
+        schema = tool.parameters
+        schema.pop("title", None)
+        for prop in schema.get("properties", {}).values():
+            prop.pop("title", None)
+            kinds = prop.pop("anyOf", None)
+            if kinds:
+                prop["type"] = next(k["type"] for k in kinds if k.get("type") != "null")

@@ -224,4 +224,4 @@ def test_the_tools_list_stays_small():
     server = build_read_server(FakeReader(), ONE)
     tools = asyncio.run(server.list_tools())
     size = len(json.dumps([t.model_dump(exclude_none=True) for t in tools]))
-    assert size < 2500, size  # brief rule 8: about 6 KB for all 9 tools
+    assert size < 5000, size  # brief rule 8: about 6 KB for all 9 tools
