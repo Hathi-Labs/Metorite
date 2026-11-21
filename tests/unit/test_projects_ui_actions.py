@@ -474,6 +474,11 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "refsApi",
         # WS-55 EA-12c: agent runs on a task.
         "agentRunsApi",
+        # AGA-8, AGA-9 and EA-18b: the agents overview, the recent runs of one agent,
+        # and the agent questions that wait on a person.
+        "agentsOverviewApi",
+        "agentRecentRunsApi",
+        "questionsApi",
         # WS-55 SW-11a: the Needs attention list.
         "attentionApi",
         # D173: the decisions of a task and the answer of one decision.
