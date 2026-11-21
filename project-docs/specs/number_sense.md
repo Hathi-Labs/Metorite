@@ -1,7 +1,13 @@
 # Numbers that make sense — a plausibility check for every total
 
-**Status: PROPOSED, 2026-11-13. Nothing is built.** Epic 3132. NUM-0 is
-task 3133. The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
+**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).**
+`acb_common/number_sense.py` holds the pure checks `concentration`
+(CRM-Q25e, called by the CRM aggregate), `outlier`, `coverage`, `parts`,
+`part_period` and `grouping`. Only `concentration` has a caller.
+
+The kinds `jump` (needs NUM-7) and `duplicates` are not built. No tool,
+harness or table exists yet. Epic 3132. NUM-0 is task 3133.
+The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
 until the owner answers.
 
 **Owner ask, 2026-11-13, in chat.** The words are the owner's, so they sit in
@@ -83,6 +89,8 @@ thresholds are module constants (D-NUM-3).
 
 `acb_common/number_sense.py` holds every check of §3. It has no I/O, no
 settings and no model. The gateway, the tools and the harness all import it.
+The module exists today with the concentration check (task 3129). NUM-1 adds
+the other checks to it, and writes no second module.
 
 It is NOT the faithfulness check. `acb_common/number_check.py` (CRM-Q29)
 checks that each figure of an answer matches a source. That stays the one
@@ -240,13 +248,13 @@ migration).
 |---|---|---|
 | `acb_common/number_check.py` (CRM-Q29) | Built | Nothing. It stays the one faithfulness check |
 | `acb_skills/answer_check.py` | Built, `shadow` on production | NUM-3 adds the plausibility pass. NUM-6 arms it for every tool with figures |
-| `acb_common/number_sense.py` | New | NUM-1. Pure |
+| `acb_common/number_sense.py` | Built, with the concentration check (task 3129) | NUM-1 extends it. Pure |
 | CRM-Q32 open questions and org facts | Built | NUM-5 adds the kinds of a data issue |
 | `answer_figures` | New table | NUM-7 |
 
 Each slice names its fence:
 
-- `tests/unit/test_number_sense.py` (NUM-1).
+- `tests/unit/test_number_sense.py` (exists for the concentration check, NUM-1 extends it).
 - `tests/unit/test_answer_plausibility.py` (NUM-3).
 - An MCP fixture test of a 10 times jump (NUM-6).
 - An R8 test of `answer_figures` on a private database (NUM-7). Until a slice lands, its rule is advisory (R7).

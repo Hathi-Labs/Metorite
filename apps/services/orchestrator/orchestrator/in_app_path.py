@@ -14,12 +14,16 @@ before the client hears of it.
    slash, a backslash, a control mark or another percent is refused (review
    of #1197, P0): ``router.push`` resolves ``/projects/../crm`` to ``/crm``.
 2. :func:`pane_of` finds the pane the path belongs to. ``PANES`` is the
-   allowlist: the LIVE panes of ``launch_surface.md`` §2, as ``nav.ts`` marks
-   them, without the admin pages. A first segment that is not a pane is
-   refused, so ``/connect``, ``/signup``, ``/settings`` and a Center (D49)
-   never open. ``test_show_in_app.py`` holds the list equal to ``nav.ts``.
+   allowlist: every LIVE pane of ``launch_surface.md`` §2, as ``nav.ts`` marks
+   them, the Admin section too (PAR-1, ``chat_parity.md`` §6). A first
+   segment that is not a pane is refused, so ``/connect``, ``/signup``,
+   ``/settings`` and a Center (D49) never open. ``test_show_in_app.py`` holds
+   the list equal to ``nav.ts``.
 3. :func:`member_features` says which features the member holds, and a path
-   to a pane the member does not hold is refused.
+   to a pane the member does not hold is refused. A pane that ``nav.ts`` marks
+   ``adminOnly`` opens only for an admin of the org. The right is the one
+   admin check of the orchestrator (``guide_tools.member_is_admin``), read for
+   the VERIFIED run member and never from a tool argument.
 
 The member comes from the run binding, never from the tool's arguments.
 """
@@ -105,12 +109,18 @@ class Pane:
     href: str
     #: The feature slug, or None for a pane every member holds.
     feature: str | None
+    #: True for a pane that ``nav.ts`` marks ``adminOnly``: only an admin of the org
+    #: opens it (PAR-1).
+    admin: bool = False
+    #: The name that the refusal of an admin pane gives to the member.
+    label: str = ""
 
 
 #: The allowlist: the LIVE panes of ``launch_surface.md`` §2 (``launch:
-#: "live"`` in ``nav.ts``), with the feature each one needs. The admin pages
-#: (``/settings/…``) are left out on purpose, and so is every preview pane.
-#: The order does not matter: :func:`pane_of` takes the longest match.
+#: "live"`` in ``nav.ts``), with the feature each one needs, the Admin section
+#: too (PAR-1). A preview pane is left out. An ``adminOnly`` pane carries
+#: ``admin=True``. The order does not matter: :func:`pane_of` takes the longest
+#: match.
 PANES: tuple[Pane, ...] = (
     Pane("/", None),
     Pane("/calendar", "tasks"),
@@ -127,6 +137,11 @@ PANES: tuple[Pane, ...] = (
     Pane("/studio", "studio"),
     Pane("/approvals", "approvals"),
     Pane("/integrations", None),
+    # PAR-1: the Admin pages of the sidebar. Appearance is a personal preference,
+    # so every member opens it. Organisation (members, roles, seats and brand)
+    # is for an admin of the org.
+    Pane("/settings/organization", None, admin=True, label="Organisation"),
+    Pane("/settings/appearance", None, label="Appearance"),
 )
 
 
@@ -193,17 +208,21 @@ async def member_features() -> frozenset[str] | None:
     return frozenset(access.allowed_features())
 
 
-def refusal(path: str, features: frozenset[str] | None) -> str | None:
+def refusal(path: str, features: frozenset[str] | None, admin: bool = False) -> str | None:
     """Why *path* may not open for a member with *features*, or None.
 
     The shape comes first, then the pane, then the member's hold on it. A
-    member nobody can name (``features`` is None) holds nothing.
+    member nobody can name (``features`` is None) holds nothing. An admin pane
+    opens only when *admin* is true, and the caller reads it for the verified
+    run member (``guide_tools.member_is_admin``), never from an argument.
     """
     if not is_in_app_path(path):
         return "not a path inside this app"
     pane = pane_of(path)
     if pane is None:
         return "no page of this app at that path"
+    if pane.admin and not (admin and features is not None):
+        return f"Only an admin of your organization opens {pane.label or pane.href}."
     if pane.feature is None:
         return None
     if features is None or pane.feature not in features:

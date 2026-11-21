@@ -128,7 +128,11 @@ async def _rows_of(org: str, names: dict[str, str]) -> list[dict[str, Any]]:
     from gateway.studio import mcp_actions
 
     servers = await mcp.enabled_meta(org)
-    return mcp_actions.mcp_rows(servers, {n: TOOLS for n in names.values()})
+    # B1b-3: each tool approved, so the class rule of B1b-1 shows.
+    approved = {(n, t["name"]): mcp_actions.tool_text_hash(t)
+                for n in names.values() for t in TOOLS}
+    return mcp_actions.mcp_rows(servers, {n: TOOLS for n in names.values()},
+                                approved=approved)
 
 
 def _servers(rows: list[dict[str, Any]]) -> set[str]:

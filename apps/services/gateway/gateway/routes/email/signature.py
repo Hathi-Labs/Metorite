@@ -148,7 +148,8 @@ def sign_html(signature: str, body_html: str) -> str:
 
 
 def build_signed_bodies(
-    signature: str, body_text: str, body_html: str | None = None,
+    signature: str, body_text: str, body_html: str | None = None, *,
+    quoted_thread: bool = True,
 ) -> tuple[str, str | None]:
     """Append the signature to a message in both representations.
 
@@ -166,6 +167,11 @@ def build_signed_bodies(
 
     With no signature set, returns the inputs unchanged — ``body_html`` stays
     ``None`` so a plain-text-only send is preserved exactly as before.
+
+    ``quoted_thread`` False (task 3605): the body holds no quoted thread, so
+    the signature goes at the end of both parts. A Markdown send of the chat
+    passes it: the model writes the new text only, and the provider adds the
+    thread. A Markdown quote (``> ``) then stays above the signature.
     """
     sig = (signature or "").strip()
     if not sig:
@@ -191,7 +197,8 @@ def build_signed_bodies(
             out_html += f"<br><br>{_text_to_html(post)}"
         return body_text, out_html
 
-    main_text, quoted_text = split_quoted_text(body_text)
+    main_text, quoted_text = (split_quoted_text(body_text) if quoted_thread
+                               else (body_text, ""))
     out_text = (
         f"{main_text.rstrip()}\n\n{sig_text}" if main_text.strip() else sig_text
     )
@@ -199,7 +206,8 @@ def build_signed_bodies(
         out_text = f"{out_text}\n\n{quoted_text}"
 
     if body_html and body_html.strip():
-        main_html, quoted_html = split_quoted_html(body_html)
+        main_html, quoted_html = (split_quoted_html(body_html) if quoted_thread
+                                  else (body_html, ""))
         out_html = f"{main_html}<br><br>{sig_html}{quoted_html}"
     else:
         # Derived from the plain body — render the two halves separately so the

@@ -107,6 +107,17 @@ EXEMPT: dict[str, str] = {
     # are the only way in, and a deferred trigger lets a row commit only with
     # the delete of its org (security review, fix round 1).
     "email_detached_purges":   "the Mem0 purges of a purged org; the tenant no longer exists, so no session can bind it",
+    # WS-TOF TOF-2b (tool_failure_log.md §5.2, D225, migration 466). The
+    # failure store counts platform code faults across tenants. A row holds a
+    # fingerprint, the four code fields of §3 (each a CHECK on its grammar),
+    # counts, dates and releases. It holds no organization id and no tenant
+    # text. The file revokes every table privilege from PUBLIC, the Supabase
+    # roles and acb_app. Five SECURITY DEFINER functions are the only way in.
+    # failure_tally reads the tenant from the session and checks the hash.
+    # The other four run for the internal org of failure_config only.
+    "failure_fingerprints":    "counts of platform code faults, no organization id, no tenant text",
+    "failure_daily":           "counts of platform code faults, no organization id, no tenant text",
+    "failure_config":          "one row that names the internal org, which runs the failure jobs. It holds no customer data",
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",

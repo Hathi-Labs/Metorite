@@ -87,7 +87,7 @@ A flip in production is OWNER-GATE (`enforcement-flip`). Flag reload: `docs/flag
 
 ## Before the flip
 
-Items 1, 2, 3 and 5 of "Before the flip" of TOF-1a still block the flip of `STUDIO_CHAT_TOOLS_ORGS`. TOF-1b closes item 4: the flag now gates the load of a `tool:` action.
+Items 1, 2, 3 and 5 of "Before the flip" of TOF-1a still block the flip of `STUDIO_CHAT_TOOLS_ORGS`. TOF-1e (task 3793) closed items 1 and 3, and the first gap of item 5. Item 2 (an owner call) and the route floor check of item 5 stay open. TOF-1b closes item 4: the flag now gates the load of a `tool:` action.
 
 **The full-org limit (review P1, an owner decision).** In an org that allows every pack, a skill brings at most 1 pack. It brings it only in a turn with no code pack, or where each code pack is spare (decision 4). A skill with `tool:create_lead` and `tool:send_email` gets `pack_cap` there. This blocks the rung 1 demo (task 3414) in a full org.
 

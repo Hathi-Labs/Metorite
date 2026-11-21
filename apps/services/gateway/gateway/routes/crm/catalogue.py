@@ -229,14 +229,42 @@ def _shares(fills: Mapping[str, Any] | None) -> dict[str, float] | None:
     return {key: f.share for key, f in fills.items() if f.share is not None}
 
 
+#: *count* of :func:`_module_sources` and :func:`_load`: the record count of a
+#: module comes from the stored fill rows (``crm_field_fill.total``, the rows
+#: of the module when the fill step last ran), and an exact count runs only
+#: for a module with no fill row. Task 3593: the exact count scans every row
+#: of the org in ``crm_module_records`` (a sequential scan, 85 ms warm on 480k
+#: rows, and the heap is read cold), and the CRM facts of every chat turn
+#: waited for it (``crm_facts`` lap, p90 1.04 s).
+COUNT_FROM_FILL = "fill"
+
+
+def _fill_counts(
+    modules: Sequence[str], fills: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, int]:
+    """The records of each module that has fill rows: the total of its rows.
+    A module with no row is absent, so the caller counts it exactly."""
+    from gateway.crm_sources.zoho.mapping import module_entity
+
+    out: dict[str, int] = {}
+    for module in modules:
+        rows = (fills or {}).get(module_entity(module))
+        total = max((int(f.total) for f in rows.values()), default=0) if rows else 0
+        if total > 0:  # a total of 0 may be old: the exact count decides
+            out[module] = total
+    return out
+
+
 async def _module_sources(
     db: Any, org: str, mirrored: Mapping[str, Mapping[str, Any]], only: str | None,
-    *, count: bool = True,
+    *, count: bool | str = True,
 ) -> list[Any]:
     """The mirrored modules. With *only*, the defs, the fill and the count of
     that module alone: the others need their names only. With *count*
     False, no record count is read, and each module counts 0 records: the
-    key fields of an entry need no count (fix round, item 6)."""
+    key fields of an entry need no count (fix round, item 6). With *count*
+    :data:`COUNT_FROM_FILL`, the count is the total of the stored fill rows,
+    and an exact count runs only for a module that has none."""
     from gateway.crm_sources.zoho.mapping import module_entity
     from gateway.crm_sync import catalogue as cat
     from gateway.routes.crm.fill_rank import fills_of
@@ -246,23 +274,33 @@ async def _module_sources(
     counts: dict[str, int] = {}
     defs: dict[str, list[Any]] = {}
     fills: dict[str, Any] | None = None
-    if read and count:
-        counts = {
+    if read and count == COUNT_FROM_FILL:
+        fills = await fills_of(db, org, entities)
+        counts = _fill_counts(read, fills)
+    missing = [m for m in read if m not in counts] if count == COUNT_FROM_FILL else read
+    if missing and count:
+        counts.update({
             str(r.module): int(r.n) for r in (await db.execute(
-                text(_MODULE_COUNTS_SQL), {"org": org, "modules": read},
+                text(_MODULE_COUNTS_SQL), {"org": org, "modules": missing},
             )).fetchall()
-        }
+        })
     if read:
         for r in (await db.execute(
             text(_DEFS_SQL), {"org": org, "entities": entities},
         )).fetchall():
             options = from_jsonb(r.options)
             target = options.get("lookup_module") if isinstance(options, dict) else None
+            # SEM-7: the option keys of a picklist. They are schema, not data.
+            keys = tuple(
+                str(o["value"]) for o in options
+                if isinstance(o, dict) and o.get("value") is not None
+            ) if isinstance(options, list) else ()
             defs.setdefault(str(r.entity), []).append(cat.Field(
                 key=str(r.key), label=str(r.label or r.key), type=str(r.type or "text"),
-                target=str(target) if target else None,
+                target=str(target) if target else None, options=keys,
             ))
-        fills = await fills_of(db, org, entities)
+        if count != COUNT_FROM_FILL:
+            fills = await fills_of(db, org, entities)
     out = []
     for api_name, row in mirrored.items():
         entity = module_entity(api_name)
@@ -280,10 +318,17 @@ async def _module_sources(
 
 
 async def _load(
-    db: Any, org: str, *, only: str | None = None, count: bool = True,
+    db: Any, org: str, *, only: str | None = None, count: bool | str = True,
+    core_counts: bool = True,
 ) -> tuple[str, list[Any], dict[str, str], list[dict[str, Any]]]:
     """The mode, the sources, the approved roles (slot → module) and the
-    approved items of other kinds, in the caller's tenant session."""
+    approved items of other kinds, in the caller's tenant session.
+
+    SEM-7: with *core_counts* False, no record count of a core entity is
+    read, and each one counts 0. The check of a semantic item needs only
+    the fields, and it runs under the plan lock
+    (``mapping_plans._check_semantic_refs``). Each other caller keeps the
+    default."""
     from gateway.crm_sync import profiles
     from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.fill_rank import labels_of
@@ -293,7 +338,7 @@ async def _load(
     mirror = await is_mirror_mode(db, org)
     latest = await profiles.latest(db, org) if mirror else None
     counts: dict[str, int] = {}
-    if only is None:
+    if only is None and core_counts:
         row = (await db.execute(text(_CORE_COUNTS_SQL), {"org": org})).first()
         counts = {slug: int(getattr(row, slug, 0) or 0) for slug in CORE_ORDER} if row else {}
     if not mirror:
