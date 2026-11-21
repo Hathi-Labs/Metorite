@@ -26,11 +26,12 @@ Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
-D-CSY-1, D-CSY-3 and D-CSY-4 stay open.
+D-CSY-3 and D-CSY-4 stay open. The owner answered D-CSY-1 with yes on
+2026-11-21 (`chat_connected_systems.md` §9).
 
 So rungs 1 and 2 are ACTIVE. The
-slices of rung 3 that need no D-CSY answer are ACTIVE too. SEM-14 needs D-CSY-1
-and stays PROPOSED. Verified against `origin/main` at `f4c6ff08f`
+slices of rung 3 that need no D-CSY answer are ACTIVE too. SEM-14 is ACTIVE
+since D-CSY-1 is yes. SEM-14 still waits for CSY-1 (task 3400, merged) to be used. Verified against `origin/main` at `f4c6ff08f`
 (2026-11-18).
 
 **Names.** The workstream is **WS-SEM**, and its slice prefix is **SEM-n**.
@@ -649,7 +650,7 @@ SEM-3 and SEM-4 can start at once and run in parallel. SEM-2 starts after
 SEM-R0. SEM-5 and SEM-6 close rung 1.
 
 **Later rungs.** SEM-1b opens rung 2. D-SEM-3 is answered (Option A). Rung 3
-needs CSY-1 for SEM-14. SEM-14 also needs D-CSY-1, which is still open.
+needs CSY-1 for SEM-14. D-CSY-1 is answered (yes, 2026-11-21), so SEM-14 is free.
 
 ### 10.3 The map to the CRM-Q34 slices (epic task 3689)
 
@@ -665,7 +666,7 @@ spec adds no second slice for the same work. The map:
 | none | CRM-Q34-5: the filter words a member needs | 3698 | Unblocked by D-SEM-3 (Option A, 2026-11-18). The words are part of the one grammar |
 
 The tasks of the slices are made under the WS-SEM epic. D-SEM-1 and D-SEM-2 are answered, so SEM-12, SEM-13, SEM-15, SEM-16 and
-SEM-17 may get tasks. SEM-14 waits for D-CSY-1.
+SEM-17 may get tasks. SEM-14 is free: D-CSY-1 is yes (2026-11-21).
 
 ### 10.4 SEM-12 in detail: the store of a connection's model
 
@@ -1655,10 +1656,11 @@ ends with its answer.
     nothing new from it.** Recommendation: yes (rule 5). The CRM's "answer
     first" (CRM-Q33) stays for the CRM.
    **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
-12. **The held WS-CSY decisions. Still open (2026-11-18).** This design does not assume an answer.
-    - **D-CSY-1** (the per-turn block reads the description). SEM-14 needs a
-      yes. With a no, a connection's model reaches the chat only through
-      `org_facts` on demand (SEM-15).
+12. **The held WS-CSY decisions.** This design does not assume an answer.
+    - **D-CSY-1** (the per-turn block reads the description). **Answered yes,
+      2026-11-21, owner in chat.** SEM-14 is free. With a no, a connection's
+      model would have reached the chat only through `org_facts` on demand
+      (SEM-15).
     - **D-CSY-3** (the server's own instructions). With a no, the profiler
       does not read them either.
     - **D-CSY-4** (match words for a server). A model's synonyms could feed the

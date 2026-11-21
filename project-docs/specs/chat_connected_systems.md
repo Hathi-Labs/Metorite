@@ -478,6 +478,8 @@ choose it.
 | **D-CSY-6** | Who asks Shaurrya's admin to tick the read-only key? | The owner. Shaurrya must confirm that the key can only read | The tick is the customer's statement about their key. MCP-C2 built the switch for this case |
 | **Owner directive, 2026-11-16 (task 3603)** | Does an external app's tool ask a card? | No. An external app's tool asks no card in a member's chat in Metorite. There D-CSY-6 (the read-only key tick) is no longer needed. On WhatsApp the tick is still needed: WhatsApp refuses Shaurrya's `call_operation`, which says that it is destructive, unless the tick is on | A member of Shaurrya approved 12 cards in 20 minutes for reads. `agent_architecture.md` §12.2 WS-8c item 33 (MCP-NC1) holds the rule: a member's run in Metorite asks no card, "always confirm" and the mark of §1.2 still ask, and a run with no member and a WhatsApp run still refuse a write |
 
+**Answered: D-CSY-1 = yes (2026-11-21, owner in chat, relayed by metorite-78, comment on task 3790).** The chat reads the admin's description of each attached server in each turn. It sits in the per-turn block of §3.2, capped at 400 characters and framed as data. D-CSY-2 to D-CSY-6 stay as they were. API-4 (task 3790) and SEM-14 (`semantic_model.md`) no longer wait for D-CSY-1.
+
 ## 10. Agreements with other sessions (2026-11-15)
 
 - **Tool search (cal-tasks, task 3190).** The block goes in the per-turn
