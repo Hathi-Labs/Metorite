@@ -259,14 +259,13 @@ _CHECKS = {
 
 
 #: The master flags that a key names and that are not ``Settings`` fields yet.
-#: Each reads as off until its slice adds the field: SW-46
-#: (``agent_claim_scope_modes``), SW-67 (``agent_lane_modes``), SW-95
-#: (``agent_budget_modes``) and SW-75 (``agent_auto_answer_orgs``). The slice
-#: that adds the field removes its name here. Fence:
+#: Each reads as off until its slice adds the field: SW-67
+#: (``agent_lane_modes``), SW-95 (``agent_budget_modes``) and SW-75
+#: (``agent_auto_answer_orgs``). The slice that adds the field removes its name
+#: here. SW-45 added ``agent_claim_scope_modes``. Fence:
 #: ``test_agent_policies_r8.py::test_each_flag_is_a_setting_or_not_yet``.
 FLAGS_NOT_YET = frozenset({
-    "agent_claim_scope_modes", "agent_lane_modes", "agent_budget_modes",
-    "agent_auto_answer_orgs",
+    "agent_lane_modes", "agent_budget_modes", "agent_auto_answer_orgs",
 })
 
 

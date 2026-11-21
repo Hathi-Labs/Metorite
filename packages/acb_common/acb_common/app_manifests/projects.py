@@ -395,6 +395,8 @@ PROJECTS_DOOR = App(
         # ── me.py · personal.py ──
         Route("GET", "/projects/assigned-to-me", "my_work", "A", off_door=LATER),
         Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED),
+        # SW-45: the MCP `my_work` reads the free tasks of the own apps.
+        Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
         Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
         Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
