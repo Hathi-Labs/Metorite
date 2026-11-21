@@ -6,9 +6,9 @@
 his own machine, beside the owner's fleet. The first contributor is Ishaan
 (2026-11-19). His agents read it too.
 
-**Status:** written 2026-11-19, task 3833 (WS-ONB, epic 1872). A rule marked
-**(owner to confirm)** is a default. It binds until the owner answers on
-task 3833. §11 lists those decisions.
+**Status:** written 2026-11-19, task 3833 (WS-ONB, epic 1872). The owner
+decided every open point by 2026-11-21. §11 lists the decisions. Each rule on
+this page binds.
 
 **What this page owns:** only what changes when a second person runs a fleet.
 Every other fact has one owner file, and §1 points to it. Do not copy a fact
@@ -51,7 +51,7 @@ from those files into this page.
 
 ---
 
-## 2. What you own (owner to confirm)
+## 2. What you own
 
 D183 makes an **app project** the unit of ownership. **Your project is "MCP &
 External Agents"** (owner, 2026-11-19). No lane of the owner's fleet builds
@@ -88,7 +88,7 @@ is free.
 | Access | State on 2026-11-19 | Who gives it |
 |---|---|---|
 | A Metorite member with a grant on your projects | Done. The project "AI Chat Interface" lists you. Check with the MCP tool `list_members`. | The owner (a member write) |
-| Write access to the GitHub repo `Hathi-Labs/Metorite` | **(owner to confirm)** | The owner |
+| Write access to the GitHub repo `Hathi-Labs/Metorite` | Done. You hold the admin role (read 2026-11-21). Admin can bypass branch protection. Never do it (§6 step 4). | The owner |
 | Claude accounts | Your own. **Never the account that the owner's PC or box uses.** Two fleets on one account share one usage limit. | You |
 | SSH to production, `.env` files, deploy | **None.** Do not ask for a key. | Nobody |
 | SSH to the home box `metorite-home` | **None.** The box is the owner's. | Nobody |
@@ -115,12 +115,12 @@ company, and exactly one copy may run:
 - The release timer `metorite-nightly-release.timer`. Two timers dispatch a
   release twice.
 - The merge bot timer and the lane keeper of the home box.
-- A GitHub Actions runner with the label `metorite-box` **(owner to confirm)**.
+- A GitHub Actions runner with the label `metorite-box`.
   `vars.USE_BOX_RUNNERS` sends jobs to every runner with that label, so your
   machine would take jobs of the owner's pull requests.
 
-If your machine is the Google Cloud box `aroh-dev-1`, `docs/gcp_aroh.md` owns
-its facts **(owner to confirm which machine)**.
+Your machines are your own computer and the Google Cloud box `aroh-dev-1`.
+`docs/gcp_aroh.md` owns the facts of that box.
 
 ---
 
@@ -150,7 +150,7 @@ its facts **(owner to confirm which machine)**.
 
 ---
 
-## 6. The merge path (owner to confirm)
+## 6. The merge path
 
 You cannot reach the home box. So `scripts/hand_over.sh` and the merge queue
 files on the box are not for you. **You merge your own pull request** with
@@ -164,12 +164,12 @@ the full loop:
 4. Run `gh pr merge <number> --squash`. Never pass `--admin` or `--auto`.
 5. Move the task to done, with the merge SHA in a comment.
 
-**Freeze windows (owner to confirm).** Merge nothing from 04:20, 12:20 and
+**Freeze windows.** Merge nothing from 04:20, 12:20 and
 20:20 UTC until the release run of that slot starts. The owner's merger keeps
 this rule, so that each release picks a green `main`. No file in the
 repo states it yet.
 
-**A HIGH slice waits for the owner (owner to confirm).** HIGH means tenancy,
+**A HIGH slice waits for the owner.** HIGH means tenancy,
 RLS, auth, identity, a migration, money, credits, secrets, a member or role
 write, or the deploy path. Ask "Approve the merge" on the task with
 `ask_on_task`, and merge after the answer.
@@ -229,7 +229,7 @@ CLAUDE.md speaks to the owner's agents. Read these parts this way:
 
 - **"The owner"** is Vijay. You ask him with `ask_on_task` on the task.
 - **§3a, the autonomy window.** `.claude/OWNER_GRANTS.md` opens gates for the
-  owner's agents. It does not open them for your fleet **(owner to confirm)**.
+  owner's agents. It does not open them for your fleet.
   Refuse every act that §3a lists: SSH to a host, deploy scripts, `.env`
   files and flag flips.
 - **"Merge your own PR"** means the path of §6 on this page.
@@ -279,18 +279,20 @@ Read docs/contributor_playbook.md before your first tool call.
 
 ---
 
-## 11. Open decisions for the owner (task 3833)
+## 11. The owner's decisions (task 3833)
 
-Each default above binds until the owner answers.
+The owner decided point 1 on 2026-11-19. On 2026-11-21 the owner told the
+orchestrator in chat to decide points 2 to 9 by its recommendations. Each
+default of this page became the rule.
 
-| # | Decision | The default on this page |
+| # | Decision | The rule |
 |---|---|---|
 | 1 | The unit of ownership | Decided 2026-11-19: the project "MCP & External Agents" (§2), with the local-stack warm-up. |
-| 2 | GitHub write access | The owner gives it. |
+| 2 | GitHub write access | Done before the decision: Ishaan holds the admin role (§3). Never bypass branch protection. |
 | 3 | Claude accounts | Separate accounts. The owner's PC and box use none of them. |
 | 4 | The OWNER_GRANTS window | It does not cover the contributor's fleet. |
 | 5 | The merge path | The contributor merges his own PR by §6. A HIGH slice waits for the owner's Approve. |
 | 6 | Seam review | Ask the owner first (advisory). A `CODEOWNERS` file can make it a fence. |
 | 7 | Previews and flag flips | The owner approves both. |
-| 8 | Runners and the machine | No `metorite-box` runner. The machine: owner to name. |
-| 9 | The merge freeze windows | 04:20, 12:20 and 20:20 UTC, until the release run starts. The owner's merger keeps them, and no repo file states them. |
+| 8 | Runners and the machine | No `metorite-box` runner. The machines: his own computer and the Google Cloud box `aroh-dev-1` (§4). |
+| 9 | The merge freeze windows | 04:20, 12:20 and 20:20 UTC, until the release run starts. The owner's merger keeps them. Task 3415 (PR 2488) makes `premerge.sh` refuse a merge in them. |
