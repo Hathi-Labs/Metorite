@@ -37,6 +37,10 @@ more host paths (§7.9). A run that withholds the shell tools does not get the
 dependency self-heal. An agent's own tool with a shell tool name leaves that
 run too.
 
+**Task 3856 is built (2026-11-22).** A covered run does not get the host
+dependency self-heal (§7.9). The text of WS-43e no longer says that a
+personal agent reaches the MAF path.
+
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
@@ -1215,17 +1219,21 @@ owner kept delegation (§16.3).
 - The skills catalog (`GET /integrations/skills`) resolves a scope with no
   withheld names, so it still shows the coding family for apis-config.
 
-**Two more host paths (task 3848, 2026-11-21).**
+**Two more host paths (task 3848 on 2026-11-21, task 3856 on 2026-11-22).**
 
 - **The dependency self-heal.** When a tool import fails, the executor
   installed the missing module on the host for every run. Now it asks
-  `executor._run_may_install_dependency`, which reads the
-  `shell_tools_withheld` binding. Only an explicit `False` lets it install:
-  an agent that D85 leaves alone, or a covered run. A run in scope installs
-  nothing, a personal one too (D129). A frame with no binding, or a fault of
-  the reader, installs nothing too. The executor logs
-  `executor.tool_dep_selfheal_refused`, and the tool result tells the model
-  to ask an admin. The error text reads the same function.
+  `executor._run_may_install_dependency`. That function reads the
+  `shell_tools_withheld` binding and the bound `agent_name`. It lets the
+  executor install only when the binding is an explicit `False` and
+  `_d85_leaves_alone` is true for the name. Only the root `metorite` agent
+  passes. A run in scope installs nothing, a personal one too (D129).
+- **A covered run (task 3856).** A cover (D130) binds `False`, but it
+  installs nothing on the host either. Its `install_dependency` must go to
+  the broker, and WS-43f builds that route. A frame with no binding, no
+  agent name, or a fault of the reader installs nothing too. The executor
+  logs `executor.tool_dep_selfheal_refused`, and the tool result tells the
+  model to ask an admin. The error text reads the same function.
 - **An agent's own tool with a shell tool name.** `_drop_withheld` filters
   the injected tools only. `_tool_injection._drop_own_shell_tools` now takes
   a withheld name out of each slot of `_tool_pool_slots`, whatever its
@@ -2497,11 +2505,11 @@ gave GO-NARROWED. These facts change or add to the text above:
   flags of `apps/durability.py` go to WS-43h, because its scope names both.
   Middleware 2 (the Gemini 3 thought signature) waits on a WS-43a finding,
   and it belongs in the Router adapter.
-- **Who reaches the MAF path.** D85 withholds `code_task` from a shared agent
-  until `covers()` is true, and `covers()` stays false for this target until
-  WS-43f. So today the MAF path reaches a personal agent only. A run with no
-  store key, such as the root `metorite` agent, gets the clear error of
-  done-when 3. The session also refuses a tenant dir (`o:<org>`) by itself.
+- **Who reaches the MAF path.** D85 withholds `code_task` from every agent
+  but the root `metorite` agent, until `covers()` is true for it. D129 (task
+  808) put a personal agent in scope too. `covers()` stays false for this
+  target until WS-43f. So today only the root agent holds `code_task`. Its
+  run has no store key, so it gets the clear error of done-when 3. The session also refuses a tenant dir (`o:<org>`) by itself.
   The `code_task` container mounts its dir whole and read-write, and a tenant
   dir holds every thread's files and every member's skills. WS-43f must give
   this target the thread and skill covers of `projects` before it lifts that
@@ -2536,9 +2544,10 @@ gave GO-NARROWED. These facts change or add to the text above:
   between them.
 - **A carry-over for WS-43f.** The sweep after a command does not skip a
   name that starts with a dot. So a container can write
-  `agent-data/skills/<name>/.metorite-author`, and the sweep mirrors it. A
-  personal agent has one member, so no harm follows today. Before WS-43f
-  covers a shared agent, the sweep must refuse that marker (review P2-4).
+  `agent-data/skills/<name>/.metorite-author`, and the sweep mirrors it. D85
+  and D129 withhold `code_task` from every agent but the root agent, and the
+  root run stops at done-when 3. So no harm follows today. Before WS-43f
+  covers an agent, the sweep must refuse that marker (review P2-4).
 - **The `code_task` docstring is not changed.** It says that the session can
   edit and commit a built-in skill. That is true only on the Copilot path.
   The MAF path has no clone and no host commit.

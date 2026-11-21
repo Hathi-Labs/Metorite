@@ -395,8 +395,8 @@ def test_the_skill_bodies_read_the_same_withheld_scope(monkeypatch, tmp_path) ->
 
 # ── 5. No branch puts a shell tool back ────────────────────────────────────
 
-def test_the_no_match_fallback_cannot_restore_a_shell_tool(monkeypatch) -> None:
-    """With nothing in scope, injection falls back to the whole chain."""
+def _shell_only_chain(monkeypatch) -> None:
+    """The platform chain holds two shell tools and nothing else."""
     async def run_script(path: str, args: str = "") -> str:
         return ""
 
@@ -406,10 +406,55 @@ def test_the_no_match_fallback_cannot_restore_a_shell_tool(monkeypatch) -> None:
     # It takes the agent name since WS-45 S1 (the `decide` engine).
     monkeypatch.setattr(ti, "_collect_injectable_platform_tools",
                         lambda *_a, **_k: [run_script, code_task])
+
+
+def _slug_config(slug: str) -> dict[str, Any]:
+    """The config of a shared registry agent, or of the personal coach."""
+    return dict(_PERSONAL_COACH) if slug == "coach" else _config(slug)
+
+
+#: Task 3856: a shared agent, and a personal one. Before D129 (task 808) a
+#: personal agent kept its shell tools, so only the personal case goes red
+#: when one consumer reads a divergent, pre-D129 set.
+_IN_SCOPE_SLUGS = pytest.mark.parametrize("slug", ["crm-assistant", "coach"])
+
+
+@_IN_SCOPE_SLUGS
+def test_the_no_match_fallback_cannot_restore_a_shell_tool(monkeypatch, slug: str) -> None:
+    """With nothing in scope, injection falls back to the whole chain. The
+    final ``_drop_withheld`` alone takes the shell tools out again. Mutation
+    c4 (task 3856): a pre-D129 set at that call only, and ``coach`` goes red."""
+    _shell_only_chain(monkeypatch)
     agent = _FakeNativeAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="crm-assistant",
-                           agent_config=_config("crm-assistant"))
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name=slug,
+                           agent_config=_slug_config(slug))
     assert not (_native_names(agent) & SHELL_TOOLS)
+
+
+@_IN_SCOPE_SLUGS
+def test_the_pack_base_names_read_the_d129_withheld_set(monkeypatch, slug: str) -> None:
+    """``_pack_base_names`` counts the tools of a run for the pack cap and the
+    skill packs. It reads ``_withheld_shell_tools`` on its own, so it needs its
+    own fence. Mutation c3 (task 3856): a pre-D129 source there only, and
+    ``coach`` goes red."""
+    _shell_only_chain(monkeypatch)
+    names = ti._pack_base_names(
+        _FakeNativeAgent(), agent_name=slug, tool_scope=None,
+        agent_config=_slug_config(slug), disabled=frozenset(),
+    )
+    assert not (names & SHELL_TOOLS), sorted(names & SHELL_TOOLS)
+    assert ti._withheld_shell_tools(slug, _slug_config(slug)) == SHELL_TOOLS
+
+
+def test_the_pack_base_names_keep_the_root_agents_shell_tools(monkeypatch) -> None:
+    """The control for the test above: the same chain, for the root agent
+    that D85 leaves alone. It proves the fallback put the names back."""
+    _shell_only_chain(monkeypatch)
+    names = ti._pack_base_names(
+        _FakeNativeAgent(), agent_name="metorite", tool_scope=None,
+        agent_config=None, disabled=frozenset(),
+    )
+    assert {"run_script", "code_task"} <= names, sorted(names)
 
 
 # ── 6. Every executor call site threads the config ─────────────────────────
@@ -1243,6 +1288,11 @@ def test_a_github_copilot_agent_never_reaches_tier_2(monkeypatch, tmp_path) -> N
 #   ``not _run_may_install_dependency()`` branch at the install site, and the
 #   withheld Tier 2 test goes red. Bind ``False`` for a personal agent, and
 #   its ``personal`` case goes red (D129).
+# * Task 3856: a covered run (D130) binds ``shell_tools_withheld=False`` but
+#   still installs nothing on the host, because the broker must run its
+#   install. The gate also asks ``_d85_leaves_alone`` of the bound
+#   ``agent_name``. Mutation: read the binding alone again, and the covered
+#   Tier 2 test goes red. The root ``metorite`` agent still installs.
 # * ``_drop_withheld`` filters injected tools only. An agent's OWN tool named
 #   like a shell tool now leaves a withheld run (``_drop_own_shell_tools``).
 #   Mutation: remove its call, and the own-tool tests go red. Skip it for a
@@ -1261,8 +1311,17 @@ def test_the_install_answer_reads_the_binding_and_fails_closed(monkeypatch) -> N
     write_artifact = sys.modules["acb_skills.write_artifact"]
     for value, allowed in ((True, False), (False, True), (None, False), ("no", False)):
         with artifact_context_scope():
-            bind_artifact_context(**({} if value is None else {"shell_tools_withheld": value}))
+            bind_artifact_context(agent_name="metorite", **(
+                {} if value is None else {"shell_tools_withheld": value}))
             assert executor._run_may_install_dependency() is allowed, value
+    # Task 3856: an open binding installs only for an agent that D85 leaves
+    # alone. A covered shared or personal run reads False, and so does a
+    # binding with no agent name.
+    for name in ("crm-assistant", "coach", None, ""):
+        with artifact_context_scope():
+            bind_artifact_context(shell_tools_withheld=False, **(
+                {} if name is None else {"agent_name": name}))
+            assert executor._run_may_install_dependency() is False, name
     # A frame with no run binding at all.
     with artifact_context_scope():
         write_artifact._RUN_ARTIFACT_CONTEXT.set(None)
@@ -1279,11 +1338,15 @@ class _SelfHealTier2Agent(_Tier2Agent):
     """A Tier 2 agent whose turn calls its own tool, which fails its import
     once. The shim wraps the entries of ``tools`` in place."""
 
-    def __init__(self, calls: list[str]) -> None:
+    def __init__(self, calls: list[str], bound: list[Any] | None = None) -> None:
         super().__init__()
 
         async def needs_pkg() -> str:
+            from acb_skills.write_artifact import artifact_context
+
             calls.append("call")
+            if bound is not None:  # the D85 flag this run bound
+                bound.append(artifact_context().get("shell_tools_withheld"))
             if len(calls) == 1:
                 raise ModuleNotFoundError("No module named 'pkgx'", name="pkgx")
             return "pkgx is ready"
@@ -1306,6 +1369,7 @@ _PERSONAL_COACH: dict[str, Any] = {"name": "coach", "sharing": {"instancing": "p
 
 def _drive_self_heal(
     monkeypatch, tmp_path, *, covered: bool, personal: bool = False,
+    root: bool = False, bound: list[Any] | None = None,
 ) -> tuple[list[str], list[str], str]:
     import copilot
     from acb_skills import dep_tools
@@ -1331,9 +1395,19 @@ def _drive_self_heal(
     if covered:
         monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
     calls: list[str] = []
-    slug, cfg = ("coach", _PERSONAL_COACH) if personal else (
-        "crm-assistant", _config("crm-assistant"))
-    _loader(monkeypatch, tmp_path, _SelfHealTier2Agent(calls), cfg, slug)
+    if root:
+        # The first-party gate is switched off here, as in section 7h.
+        # test_root_agent_first_party.py fences that gate.
+        async def _allowed(_name: str) -> None:
+            return None
+
+        monkeypatch.setattr(executor, "_assert_may_run_agent", _allowed)
+        slug = "metorite"
+        cfg = json.loads((REPO / "config.json").read_text(encoding="utf-8"))
+    else:
+        slug, cfg = ("coach", _PERSONAL_COACH) if personal else (
+            "crm-assistant", _config("crm-assistant"))
+    _loader(monkeypatch, tmp_path, _SelfHealTier2Agent(calls, bound), cfg, slug)
     frames = _run_stream(slug)
     results = [f for f in frames if "TOOL_CALL_RESULT" in f]
     return installs, calls, "\n".join(results)
@@ -1355,9 +1429,27 @@ def test_a_withheld_run_never_installs_a_missing_module(
 
 
 @pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
-def test_a_covered_run_keeps_the_self_heal(monkeypatch, tmp_path) -> None:
-    """A cover binds ``shell_tools_withheld=False``: install once, then retry."""
-    installs, calls, results = _drive_self_heal(monkeypatch, tmp_path, covered=True)
+def test_a_covered_run_never_installs_on_the_host(monkeypatch, tmp_path) -> None:
+    """Task 3856: a cover binds ``shell_tools_withheld=False``, so the run
+    holds ``install_dependency``. The broker must run that install, not the
+    host, so the host self-heal stays shut and the run asks an admin."""
+    bound: list[Any] = []
+    installs, calls, results = _drive_self_heal(
+        monkeypatch, tmp_path, covered=True, bound=bound)
+    assert bound == [False], f"the cover did not take effect: {bound}"
+    assert installs == [], f"the self-heal installed {installs} on the host"
+    assert calls == ["call"], "the tool ran again with no install"
+    assert "ask an admin" in results, results
+
+
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+def test_the_root_agent_keeps_the_self_heal(monkeypatch, tmp_path) -> None:
+    """The control: the root agent that D85 leaves alone installs once, then
+    retries."""
+    bound: list[Any] = []
+    installs, calls, results = _drive_self_heal(
+        monkeypatch, tmp_path, covered=False, root=True, bound=bound)
+    assert bound == [False, False], bound
     assert installs == ["pkgx"], installs
     assert calls == ["call", "call"], calls
     assert "pkgx is ready" in results, results

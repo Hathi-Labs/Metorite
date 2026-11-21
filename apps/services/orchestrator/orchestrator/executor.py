@@ -242,17 +242,28 @@ def _missing_module_name(exc: BaseException) -> str | None:
 def _run_may_install_dependency() -> bool:
     """True when the run on this frame may install a package on the host.
 
-    The TOOL half of D85: the executor binds ``shell_tools_withheld`` for each
-    run. Only an explicit ``False`` opens the install: an agent that D85
-    leaves alone (the root ``metorite`` agent), or a run that the broker
-    covers. A shared or a personal agent reads ``True`` (D129). A frame with
-    no binding, or a reader that fails, reads ``False``, so it fails closed.
-    The self-heal and its error text both ask
-    this one function (task 3848).
+    The TOOL half of D85: the executor binds ``shell_tools_withheld`` and
+    ``agent_name`` for each run. The install opens only when both agree: an
+    explicit ``False``, and a name that ``_d85_leaves_alone`` (the root
+    ``metorite`` agent). A shared or a personal agent reads ``True`` (D129).
+    A run that the broker covers (D130) reads ``False``, but D85 does not
+    leave it alone, so it installs nothing on the host (task 3856). The
+    broker must run its install, not the host. A frame with no binding, no
+    agent name, or a reader that fails, reads ``False``, so it fails closed.
+    The self-heal and its error text both ask this one function (task 3848).
     """
     try:
         from acb_skills.write_artifact import artifact_context
-        return artifact_context().get("shell_tools_withheld", True) is False
+
+        from orchestrator._tool_injection import _d85_leaves_alone
+
+        ctx = artifact_context()
+        name = ctx.get("agent_name")
+        return (
+            ctx.get("shell_tools_withheld", True) is False
+            and isinstance(name, str)
+            and _d85_leaves_alone(name, None)
+        )
     except Exception:
         return False
 
@@ -260,9 +271,10 @@ def _run_may_install_dependency() -> bool:
 def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
     """The tool result when the dependency self-heal could not install *module*.
 
-    It suggests ``install_dependency`` only to a run that holds it. An agent
-    in D85's scope does not, so it is told to ask an admin instead, and never
-    to call a tool it was not given.
+    It suggests ``install_dependency`` only to a run that may install on the
+    host (:func:`_run_may_install_dependency`). Every other run is told to ask
+    an admin. That includes a covered run (task 3856): its install must go
+    to the broker, and the host self-heal does not offer it.
     """
     if not _run_may_install_dependency():
         return (
@@ -10103,10 +10115,11 @@ async def run_agent_stream(
                         # importable immediately. One attempt only (no loop).
                         _mod = _missing_module_name(_imp_exc)
                         _healed = False
-                        # D85, task 3848: the install runs on the HOST. A run
-                        # that withholds the shell tools, or whose binding
-                        # cannot be read, installs nothing. It falls through
-                        # to the error below, which says "ask an admin".
+                        # D85, tasks 3848 and 3856: the install runs on the
+                        # HOST. Only the root agent installs. A run that
+                        # withholds the shell tools, a covered run, or a run
+                        # whose binding cannot be read installs nothing. It
+                        # falls through to the error below ("ask an admin").
                         if _mod and not _run_may_install_dependency():
                             _log.warning(
                                 "executor.tool_dep_selfheal_refused",
