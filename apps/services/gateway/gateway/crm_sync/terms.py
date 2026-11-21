@@ -396,6 +396,10 @@ def _fold(text: Any) -> str:
     module imports no route, so it keeps its own copy of the rule."""
     text = str(text or "").replace("%", f" {PERCENT_WORD} ")
     text = unicodedata.normalize("NFC", text.lower())
+    # A ``#`` or a currency sign says what the label holds, so it must not
+    # fold away: "Customer #" is not "Customer", and "$" is not "₹".
+    text = "".join(f" sym{ord(ch):x} " if ch == "#" or unicodedata.category(ch) == "Sc"
+                   else ch for ch in text)
     return "".join(ch for ch in text
                    if ch.isalnum()
                    or (unicodedata.category(ch).startswith("M") and not 0xFE00 <= ord(ch) <= 0xFE0F))

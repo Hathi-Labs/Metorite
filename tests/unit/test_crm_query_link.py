@@ -298,6 +298,13 @@ def test_an_admin_answer_needs_its_field_among_the_candidates_as_decide_does() -
     assert with_fill.step == "term" and with_fill.keys == ("Fee_B",)
 
 
+def test_a_hash_or_a_currency_sign_is_not_dropped_by_the_label_fold() -> None:
+    assert link_field([F("Customer_No", "Customer #")], "customer").linked is False
+    assert link_field([F("Customer_No", "Customer #")], "customer #").linked is True
+    assert link_field([F("Amt", "Amount $")], "amount ₹").linked is False
+    assert link_field([F("Amt", "Amount $")], "amount $").linked is True
+
+
 # ── 2. A close pair never picks ─────────────────────────────────────────────
 
 def test_two_fits_give_both_keys_and_pick_none() -> None:
