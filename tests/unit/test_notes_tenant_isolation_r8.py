@@ -137,8 +137,9 @@ NOTES_TABLES: tuple[NotesTable, ...] = (
     NotesTable("summary_run", "id", _child(), _uuid_key),
     NotesTable(
         "notes_glossary", "id",
-        lambda label, _p, _k: {
-            "user_id": f"{label}-{TAG}@r8notes.test", "term": f"term-{TAG}",
+        # A new term for each row: (user_id, lower(term)) is unique.
+        lambda label, _p, k: {
+            "user_id": f"{label}-{TAG}@r8notes.test", "term": f"term-{k[:8]}",
         },
         _uuid_key,
     ),
