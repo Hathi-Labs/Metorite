@@ -415,8 +415,8 @@ def test_the_no_match_fallback_cannot_restore_a_shell_tool(monkeypatch) -> None:
 # ── 6. Every executor call site threads the config ─────────────────────────
 
 def test_every_executor_call_site_passes_the_agent_config() -> None:
-    """A site that drops ``agent_config`` reads every agent as shared. That
-    fails closed, and it takes the shell tools from a personal agent too."""
+    """Since D129 the D85 scope reads the name only. The config still holds
+    the agent's ``floor_opt_out``, so a site that drops it loses that list."""
     tree = ast.parse(EXECUTOR_PY.read_text(encoding="utf-8"))
     calls: dict[str, list[int]] = {
         "_inject_agent_tools": [], "materialize_skill_bodies_for_agent": [],

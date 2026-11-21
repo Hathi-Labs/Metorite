@@ -1058,8 +1058,9 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** A shared agent runs no shell on the host. D85 has two halves,
-and each half has its own flag and its own way out:
+**The rule.** An agent that a member reaches runs no shell on the host
+(D85, D129). D85 has two halves, and each half has its own flag and its own
+way out:
 
 | Half | What it blocks | Flag in the run | What lifts it |
 |---|---|---|---|

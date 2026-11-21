@@ -6263,7 +6263,7 @@ async def _assemble_batch_agents(
         tool_scope=_job_tool_scope(
             agent_name, loaded.config.get("tool_scope") or None),
         agent_name=agent_name,
-        agent_config=loaded.config,  # D85: the sharing block
+        agent_config=loaded.config,  # floor_opt_out, and the D85 seam
         no_egress=no_egress,  # H-236: from the run's own binding
     )  # inject call_agent / call_agent_background
     if held is not None:
@@ -8133,7 +8133,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
-                agent_config=loaded.config,  # D85: the sharing block
+                agent_config=loaded.config,  # floor_opt_out, and the D85 seam
                 no_egress=_stream_no_egress,  # H-236
                 # HRD-14b: only a top-level streamed run gets the paste frame.
                 # A delegated run's input is a task that a model wrote.
