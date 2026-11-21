@@ -460,4 +460,4 @@ def test_the_catalogue_imports_nothing_at_the_top_but_the_standard_library() -> 
     tree = ast.parse(path.read_text(encoding="utf-8"))
     top = {node.module or "" for node in tree.body if isinstance(node, ast.ImportFrom)}
     top |= {a.name for node in tree.body if isinstance(node, ast.Import) for a in node.names}
-    assert top <= {"__future__", "collections.abc", "dataclasses", "typing"}, sorted(top)
+    assert top <= {"__future__", "collections.abc", "dataclasses", "re", "typing"}, sorted(top)
