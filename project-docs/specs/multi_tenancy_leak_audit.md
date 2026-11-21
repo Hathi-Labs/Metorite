@@ -364,6 +364,18 @@ makes the trigger refuse such a parent with SQLSTATE 23503. It refuses on an INS
 UPDATE that changes the link or the org. An UPDATE that keeps the link keeps the old return,
 because the cascade of a delete runs one. Fence: `tests/unit/test_pm_org_from_parent_r8.py`.
 
+**Task 3846 (2026-11-21).** Nineteen pm_* keys had no org guard, for example
+`pm_tasks.parent_task_id`, `type_id` and `status_id`. A session of one org could set such a
+key to a row of another org. Migration 472 (the number at build time) adds the check-only
+function `pm_same_org_ref()` and one attachment for each key. The function refuses a row of
+another org with SQLSTATE 23503, for each role, and it never sets the org of a row. It keeps
+the rule of 471, so the delete of a parent still works.
+
+The header of 472 lists each key that it guards and each key that it leaves out. Fence:
+`tests/unit/test_pm_fk_same_org_r8.py`. It reads `pg_constraint`, so a new pm_* key with no
+guard fails it. Two keys of other tables stay open: `wa_commitments.task_id` and
+`reminders.promoted_task_id`.
+
 **What remains open here.** Assignee writes still accept any address. Nothing leaks now, but
 `PUT /tasks/{id}/assignees` returns `not_notified` (`tasks.py:591-596`) — the list of addresses
 that could not see the task. Post-retrofit, every out-of-tenant address lands in it, which

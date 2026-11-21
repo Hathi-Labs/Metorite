@@ -46,10 +46,16 @@ not a pass.
 fixture hashes the ladder files, so the next run builds a new template.
 
 * M1. Remove the attachment ``trg_pm_tasks_same_org_type_id``. The attachment
-  fence, the guard fence and the ``pm_tasks.type_id`` probes go red.
+  fence, the guard fence and the ``pm_tasks.type_id`` probes go red (5).
 * M2. The guard refuses on each UPDATE: each attachment is ``BEFORE INSERT OR
   UPDATE`` with no column list, and the body has no changed-link test. The
-  cascade ``task_pair`` and the two straddle controls go red.
+  cascades ``task_pair`` and ``one_task``, the two straddle controls, the
+  column-list fence and the text fence go red (6).
+* M2b. Only the changed-link test goes from the body. The column lists stay.
+  The control ``SET type_id = type_id`` and the text fence go red (2).
+* M3. ``trg_pm_tasks_same_org_type_id`` gets a name that sorts before
+  ``trg_pm_tasks_org_from_*``. The guard sees a NULL org and lets the row by.
+  The probe ``no_org_named[pm_tasks.type_id]`` goes red (1).
 """
 
 from __future__ import annotations
@@ -592,9 +598,10 @@ class TestTheStraddlingRow:
 # Each guarded key with ON DELETE SET NULL or CASCADE, deleted as the app
 # role. The guard keeps the old silent return for an UPDATE that keeps the
 # link, and its column list skips an UPDATE of another key. When the guard
-# refused on each UPDATE (M2), `task_pair` failed: the cascade clears
-# `T3.merged_into_task_id` while `T3.parent_task_id` names `T2`, which the
-# same statement deleted. The other deletes are controls.
+# refused on each UPDATE (M2), `task_pair` and `one_task` failed. In
+# `task_pair` the cascade clears `T3.merged_into_task_id` while
+# `T3.parent_task_id` names `T2`, which the same statement deleted. The other
+# deletes are controls.
 
 _ORG_C = "c3846000-0000-4000-8000-000000003846"
 
