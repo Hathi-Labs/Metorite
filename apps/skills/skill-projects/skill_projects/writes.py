@@ -620,7 +620,7 @@ CANNOT_OPEN_KEY = "cannot open the task"
 def _reach_rows(cannot: list[str]) -> dict[str, str]:
     """The card row for the known people who cannot open the task: one comma
     list, each address once. Empty when nobody is listed."""
-    return {CANNOT_OPEN_KEY: ", ".join(dict.fromkeys(cannot))} if cannot else {}
+    return {CANNOT_OPEN_KEY: data(", ".join(dict.fromkeys(cannot)))} if cannot else {}
 
 
 async def _assignee_rows(who: list[str]) -> dict[str, str]:
@@ -631,7 +631,7 @@ async def _assignee_rows(who: list[str]) -> dict[str, str]:
     strangers, cannot = await _address_check(who)
     rows: dict[str, str] = {}
     if strangers:
-        rows["not in the directory"] = ", ".join(dict.fromkeys(strangers))
+        rows["not in the directory"] = data(", ".join(dict.fromkeys(strangers)))
     rows.update(_reach_rows(cannot))
     return rows
 
