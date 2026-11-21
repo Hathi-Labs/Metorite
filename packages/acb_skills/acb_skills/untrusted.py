@@ -72,6 +72,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 __all__ = [
+    "FRAME_LABELS",
     "MARKER_LINE_RE",
     "TOKEN_BYTES",
     "UntrustedFrame",
@@ -409,8 +410,11 @@ def neutralised_pattern(text: str) -> re.Pattern[str]:
 _MARKER_ANYWHERE_RE = re.compile(r"<<<(END )?([A-Z][A-Z ]{0,38}[A-Z]) ([0-9a-f]{16})>>>")
 #: Each label of a block that the tree writes (task 3849). Only a split
 #: marker of one of these labels goes from the end of a cut text
-#: (:func:`close_cut_blocks`). Any other tail stays as it was. A new label
-#: joins this set, or ``test_each_frame_label_of_the_tree_is_known`` fails.
+#: (:func:`close_cut_blocks`). Any other tail stays as it was. Every
+#: ``wrap``, ``open_line``, ``close_line`` and ``frame_untrusted`` passes its
+#: label through :func:`_label`, which refuses a label that is not here. So
+#: a new label raises at its first call. The static fence
+#: ``test_each_frame_label_of_the_tree_is_known`` finds most of them sooner.
 FRAME_LABELS: frozenset[str] = frozenset({
     "AGENT ANSWER", "ATTACHMENT TEXT", "BRIEF CLAIMS", "CALENDAR",
     "CALENDAR EVENTS", "COMPUTE STDERR", "COMPUTE STDOUT", "CRM NOTE", "DRAFT",
@@ -441,13 +445,16 @@ def open_blocks(text: str) -> list[tuple[str, str]]:
 
     Unlike the line scan of ``tool_result_spill._open_frames``, it finds a
     marker anywhere. MAF's fold glues a marker to the name of the tool or to
-    the next result. A JSON value holds a marker with ``\\n``. It skips the label ``NAME`` of the note. An END marker pops the
-    stack down to its own block. An END marker of no open block counts for
-    nothing."""
+    the next result. A JSON value holds a marker with ``\\n``.
+
+    It counts only a label of :data:`FRAME_LABELS`, because no frame can
+    have another label (:func:`_label`). So it skips the label ``NAME`` of
+    the note. An END marker pops the stack down to its own block. An END
+    marker of no open block counts for nothing."""
     stack: list[tuple[str, str]] = []
     for match in _MARKER_ANYWHERE_RE.finditer(str(text or "")):
         ends, label, token = match.groups()
-        if label == _NOTE_LABEL:
+        if label not in FRAME_LABELS:
             continue
         if not ends:
             stack.append((label, token))
@@ -641,6 +648,14 @@ def _label(label: str) -> str:
     if value == _NOTE_LABEL:
         # Task 3849: the note names NAME, so open_blocks skips that label.
         raise ValueError(f"the label {_NOTE_LABEL} belongs to the note")
+    if value not in FRAME_LABELS:
+        # Task 3849: fail closed. The cut of a fold knows only the labels of
+        # FRAME_LABELS. It would not cut the split marker of another label,
+        # and it would not close a block of that label, so a block could
+        # stay open after a fold.
+        raise ValueError(
+            f"the frame label {value!r} is not known: add the label to "
+            "untrusted.FRAME_LABELS")
     return value
 
 

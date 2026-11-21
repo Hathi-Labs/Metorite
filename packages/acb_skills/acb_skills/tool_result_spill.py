@@ -57,7 +57,12 @@ from acb_skills.egress import (
     session_is_marked,
 )
 from acb_skills.tool_guard import tool_name
-from acb_skills.untrusted import MARKER_LINE_RE, UntrustedFrame, has_marker_shape
+from acb_skills.untrusted import (
+    FRAME_LABELS,
+    MARKER_LINE_RE,
+    UntrustedFrame,
+    has_marker_shape,
+)
 
 _log = get_logger("acb_skills.tool_result_spill")
 
@@ -405,11 +410,14 @@ def _record_spill(ref: str) -> None:
 
 def preview(text: str, ref: str, limit: int) -> str:
     """The preview of *text*: its head, an END line for each open frame, and
-    the footer. The head is the text exactly as it was."""
+    the footer. The head is the text exactly as it was. A marker of a label
+    that is not in ``FRAME_LABELS`` opens no frame (task 3849).
+    ``untrusted._label`` refuses such a label for every frame."""
     end = _cut_point(text, limit)
     head = text[0:end]
     closers = [
-        UntrustedFrame(token).close_line(label) for label, token in reversed(_open_frames(head))
+        UntrustedFrame(token).close_line(label)
+        for label, token in reversed(_open_frames(head)) if label in FRAME_LABELS
     ]
     stored = min(len(text), MAX_STORED_CHARS)
     parts = [head if head.endswith("\n") or not closers else head + "\n"]

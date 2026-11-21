@@ -26,6 +26,8 @@ Mutation table, measured on 2026-11-22.
 | M6 | ``WEB PAGE`` leaves ``FRAME_LABELS`` | ``test_each_frame_label_of_the_tree_is_known`` and the ``whole-token`` row fail |
 | M7 | ``_settled`` keeps a run of ``<`` at the end (the code of ``cd3a2e60c``, which kept ``<<<`` after a cut back) | both sweeps fail. On that code 123 of the 23,274 cuts of one sweep end in ``<`` |
 | M8 | the label scan of ``cd3a2e60c`` (positional only, in a function only, a text filter first) | it stays green with 4 plants in the tree: ``wrap(label=...)``, ``frame_untrusted(kind=...)``, a module-level ``wrap`` and a file that names no frame word. The scan of now fails on each plant alone |
+| M9 | ``untrusted._label`` takes a label that is not in ``FRAME_LABELS`` (repair round 3) | the 13 rows of ``test_the_runtime_check_refuses_a_new_label_on_every_path`` fail |
+| M10 | the label scan of ``d52f10b20`` (no ``as`` name, no annotated assignment) | it misses the plants ``P4a-aliased-class``, ``annassign`` and ``fu-alias``. The scan of now sees all 10 plants |
 """
 from __future__ import annotations
 
@@ -227,9 +229,11 @@ def test_a_split_marker_of_a_frame_label_goes(tail: str) -> None:
 
 
 def _label_slots() -> dict[str, tuple[int, str]]:
-    """``name -> (position, keyword)`` of the label of each frame API, read
-    from the real signatures: ``UntrustedFrame.wrap``, ``open_line`` and
-    ``close_line``, ``frame_untrusted`` and ``studio_tools._framed_json``."""
+    """``name -> (position, keyword)`` of the label of each frame API.
+
+    The test reads each slot from the real signature. The APIs are
+    ``UntrustedFrame.wrap``, ``open_line``, ``close_line``,
+    ``frame_untrusted`` and ``studio_tools._framed_json``."""
     import inspect
 
     from acb_skills import studio_tools, untrusted
@@ -248,8 +252,9 @@ def _label_slots() -> dict[str, tuple[int, str]]:
     return out
 
 
-def _makes_a_frame(node: Any) -> bool:
-    """True for ``UntrustedFrame(...)`` or ``UntrustedFrame.new(...)``."""
+def _makes_a_frame(node: Any, classes: set[str]) -> bool:
+    """True for ``C(...)`` or ``C.new(...)``, where *C* is ``UntrustedFrame``
+    or a name that the module imports it as."""
     import ast
 
     if not isinstance(node, ast.Call):
@@ -257,33 +262,66 @@ def _makes_a_frame(node: Any) -> bool:
     f = node.func
     if isinstance(f, ast.Attribute) and f.attr == "new":
         f = f.value
-    return (isinstance(f, ast.Name) and f.id == "UntrustedFrame") or (
+    return (isinstance(f, ast.Name) and f.id in classes) or (
         isinstance(f, ast.Attribute) and f.attr == "UntrustedFrame")
 
 
+def _frame_names(tree: Any, apis: set[str]) -> tuple[set[str], dict[str, str], set[str]]:
+    """``(classes, aliases, frames)`` of one module.
+
+    *classes* holds each name of ``UntrustedFrame``. *aliases* maps each
+    ``as`` name of a frame API to that API. *frames* holds each name that an
+    assignment sets to a new frame."""
+    import ast
+
+    classes = {"UntrustedFrame"}
+    aliases: dict[str, str] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            for a in n.names:
+                if a.name == "UntrustedFrame":
+                    classes.add(a.asname or a.name)
+                elif a.name in apis and a.asname:
+                    aliases[a.asname] = a.name
+    frames: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and _makes_a_frame(n.value, classes):
+            frames |= {t.id for t in n.targets if isinstance(t, ast.Name)}
+        elif (isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+              and _makes_a_frame(n.value, classes)):
+            frames.add(n.target.id)
+    return classes, aliases, frames
+
+
 def _scan_source(source: str, rel: str) -> tuple[set[str], set[str]]:
-    """``(labels, unread)`` of one module. Each call node at any level
-    counts, in a function or at module level. A label is read from its
-    position or its keyword. ``.wrap`` counts only on a frame: a call that
-    makes one, a name set from such a call, or a name with ``frame`` in it.
-    So ``cv.wrap`` of ``pdf_render`` and ``textwrap.wrap`` do not count."""
+    """``(labels, unread)`` of one module, the STATIC layer of the fence.
+
+    Each call node counts, in a function or at module level. The scan reads
+    a label from its position or its keyword. It follows an ``import ... as``
+    of ``UntrustedFrame`` and ``frame_untrusted``. It also follows a plain or
+    an annotated assignment of a new frame.
+
+    ``.wrap`` counts only on a frame. That is a call that makes one, a name
+    set from such a call, or a name with ``frame`` in it. So ``cv.wrap`` of
+    ``pdf_render`` and ``textwrap.wrap`` do not count.
+
+    Its limits: a frame that comes in as a parameter with another name, an
+    attribute such as ``self.fr``, and reflection. The runtime check of
+    ``untrusted._label`` covers them."""
     import ast
 
     slots = _label_slots()
     tree = ast.parse(source)
+    classes, aliases, frames = _frame_names(tree, set(slots))
     consts = {
         t.id: n.value.value
         for n in tree.body if isinstance(n, ast.Assign)
         and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)
         for t in n.targets if isinstance(t, ast.Name)
     }
-    frames = {
-        t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and _makes_a_frame(n.value)
-        for t in n.targets if isinstance(t, ast.Name)
-    }
 
     def _is_frame(node: Any) -> bool:
-        if _makes_a_frame(node):
+        if _makes_a_frame(node, classes):
             return True
         if isinstance(node, ast.Name):
             return node.id in frames or "frame" in node.id.lower()
@@ -298,6 +336,7 @@ def _scan_source(source: str, rel: str) -> tuple[set[str], set[str]]:
             if isinstance(child, ast.Call):
                 f = child.func
                 name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+                name = aliases.get(name, name) if isinstance(f, ast.Name) else name
                 api = name in slots and not (
                     name == "wrap" and not (isinstance(f, ast.Attribute) and _is_frame(f.value)))
                 if api:
@@ -352,7 +391,8 @@ _PASS_THROUGH = {
 def test_each_frame_label_of_the_tree_is_known() -> None:
     """``close_cut_blocks`` drops a split marker only for a label of
     ``FRAME_LABELS``. A new label that is not in the set would leave a half
-    marker of its own at a cut, so this fence fails first."""
+    marker of its own at a cut. This static fence finds it before a run. The
+    runtime check of ``untrusted._label`` refuses it at the first call."""
     from acb_skills import untrusted
     from orchestrator import _maf_mcp
 
@@ -363,10 +403,25 @@ def test_each_frame_label_of_the_tree_is_known() -> None:
     assert unread <= _PASS_THROUGH, f"a label the scan cannot read: {unread - _PASS_THROUGH}"
 
 
+#: The fixed verdict corpus of task 3849. Each shape gives a new label to a
+#: frame API. The static scan must see the shapes of this dict.
 _PLANTS = {
-    "keyword-wrap": 'def f(frame):\n    return frame.wrap(label="NEW KIND", text="x")\n',
-    "keyword-frame-untrusted": 'def f():\n    return frame_untrusted(kind="NEW KIND", text="x")\n',
-    "module-level": '_PLANT = UntrustedFrame.new().wrap("NEW KIND", "x")\n',
+    "P1-keyword-wrap": 'def f(frame):\n    return frame.wrap(label="NEW KIND", text="x")\n',
+    "P2-keyword-frame-untrusted": 'def f():\n    return frame_untrusted(kind="NEW KIND", text="x")\n',
+    "P3-module-level": '_PLANT = UntrustedFrame.new().wrap("NEW KIND", "x")\n',
+    "P4a-aliased-class": (
+        "from acb_skills.untrusted import UntrustedFrame as _UF\n"
+        'f = _UF.new()\nX = f.wrap("NEW KIND", "x")\n'),
+    "P4b-module-alias": (
+        "import acb_skills.untrusted as U\n"
+        'X = U.UntrustedFrame.new().wrap("NEW KIND", "x")\n'
+        'Y = U.frame_untrusted("NEW KIND", "x")\n'),
+    "annassign": (
+        "from acb_skills.untrusted import UntrustedFrame\n"
+        'f: UntrustedFrame = UntrustedFrame.new()\nX = f.wrap("NEW KIND", "x")\n'),
+    "fu-alias": (
+        "from acb_skills.untrusted import frame_untrusted as fu\n"
+        'X = fu(kind="NEW KIND", text="x")\n'),
     "no-frame-word": 'def f(frame):\n    return frame.wrap("NEW KIND", "x")\n',
     "named-frame": 'f = UntrustedFrame.new()\nX = f.close_line("NEW KIND")\n',
     "keyword-framed-json": 'def f(frame):\n    return _framed_json(frame, label="NEW KIND", value=1)\n',
@@ -377,6 +432,81 @@ _PLANTS = {
 def test_the_label_scan_sees_each_plant(plant: str) -> None:
     labels, unread = _scan_source(_PLANTS[plant], "plant.py")
     assert labels == {"NEW KIND"} and not unread, (labels, unread)
+
+
+class _Holder:
+    def __init__(self) -> None:
+        self.fr = UntrustedFrame.new()
+
+    def framed(self) -> str:
+        return self.fr.wrap("NEW KIND", "x")
+
+
+def _through_a_parameter(fr: Any) -> str:
+    return fr.wrap("NEW KIND", "x")
+
+
+def _runtime_shapes() -> dict[str, Any]:
+    """The fixed verdict corpus of task 3849 for the RUNTIME check. Each
+    shape calls a frame API with the label ``NEW KIND``. P4c, the parameter
+    and ``self.fr`` are limits of the static layer only."""
+    from importlib import import_module
+
+    import acb_skills.untrusted as untrusted_module
+    from acb_skills.studio_tools import _framed_json
+    from acb_skills.untrusted import UntrustedFrame as _UF
+    from acb_skills.untrusted import frame_untrusted as fu
+
+    frame = UntrustedFrame.new()
+    annotated: UntrustedFrame = UntrustedFrame.new()
+    return {
+        "P1-keyword-wrap": lambda: frame.wrap(label="NEW KIND", text="x"),
+        "P2-keyword-frame-untrusted": lambda: untrusted_module.frame_untrusted(kind="NEW KIND", text="x"),
+        "P3-new-then-wrap": lambda: UntrustedFrame.new().wrap("NEW KIND", "x"),
+        "P4a-aliased-class": lambda: _UF.new().wrap("NEW KIND", "x"),
+        "P4b-module-alias": lambda: untrusted_module.UntrustedFrame.new().wrap("NEW KIND", "x"),
+        "P4c-reflection": lambda: getattr(
+            import_module("acb_skills.untrusted"), "Untrusted" + "Frame").new().wrap("NEW KIND", "x"),
+        "annassign": lambda: annotated.wrap("NEW KIND", "x"),
+        "fu-alias": lambda: fu("NEW KIND", "x"),
+        "parameter": lambda: _through_a_parameter(UntrustedFrame.new()),
+        "self-fr": lambda: _Holder().framed(),
+        "open-line": lambda: frame.open_line("NEW KIND"),
+        "close-line": lambda: frame.close_line("NEW KIND"),
+        "framed-json": lambda: _framed_json(frame, label="NEW KIND", value=1),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_runtime_shapes()))
+def test_the_runtime_check_refuses_a_new_label_on_every_path(shape: str) -> None:
+    """``untrusted._label`` refuses a label that is not in ``FRAME_LABELS``.
+    Each frame API passes its label through it, so no alias and no
+    reflection gets past it."""
+    with pytest.raises(ValueError, match=r"add the label to untrusted\.FRAME_LABELS"):
+        _runtime_shapes()[shape]()
+
+
+def test_the_spill_preview_closes_no_block_of_an_unknown_label() -> None:
+    """A marker of a label that no frame has opens no block. So the preview
+    adds no END line for it and does not raise. A block of a known label
+    still gets its END line."""
+    from acb_skills import tool_result_spill as trs
+
+    unknown = "<<<FOO BAR 0123456789abcdef>>>" + chr(10) + "x" * 5000
+    out = trs.preview(unknown, "tr_0123abcd", 1000)
+    assert "END FOO BAR" not in out and trs.is_spill_footer(out.rpartition(chr(10))[2], "tr_0123abcd")
+    frame = UntrustedFrame.new()
+    known = frame.open_line("EMAIL") + chr(10) + "x" * 5000
+    assert frame.close_line("EMAIL") in trs.preview(known, "tr_0123abcd", 1000)
+
+
+def test_each_known_label_frames() -> None:
+    from acb_skills.untrusted import FRAME_LABELS
+
+    frame = UntrustedFrame.new()
+    for label in FRAME_LABELS:
+        assert frame.wrap(label, "x").startswith(f"<<<{label} {frame.token}>>>")
+    assert frame.wrap("mcp result", "x").startswith(f"<<<MCP RESULT {frame.token}>>>")
 
 
 def test_the_label_scan_skips_a_wrap_that_is_no_frame() -> None:
@@ -463,10 +593,11 @@ def test_each_cut_point_gives_a_whole_frame_or_none(where: str) -> None:
 
 
 def _check_cut(ours: str, mafs: str, token: str) -> None:
-    """One cut of the sweep: no open block, inside the cap, and no half
-    marker. A fold that is MAF's, byte for byte, may end in a bare ``<<<`` or
-    in a part of the note's ``NAME`` marker, because neither opens a block.
-    A fold that differs from MAF never ends in ``<``."""
+    """One cut of the sweep. It has no open block, it fits the cap, and it
+    holds no half marker. A fold that is MAF's, byte for byte, may end in a
+    bare ``<<<``. It may also end in a part of the note's ``NAME`` marker.
+    Neither of them opens a block. A fold that differs from MAF never ends
+    in ``<``."""
     assert len(ours) <= CAP, len(ours)
     assert ours.startswith(PREFIX) and ours.endswith(SUFFIX)
     assert not _pairs(ours)[1], "an open block in the fold"
@@ -545,6 +676,6 @@ def test_no_frame_takes_the_label_of_the_note() -> None:
     frame = UntrustedFrame.new()
     for build in (lambda: frame.wrap("NAME", "x"), lambda: frame.open_line("name"),
                   lambda: frame.close_line(" NAME ")):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="belongs to the note"):
             build()
-    assert frame.wrap("NAMES", "x").startswith(f"<<<NAMES {frame.token}>>>")
+    assert frame.wrap("EMAIL", "x").startswith(f"<<<EMAIL {frame.token}>>>")

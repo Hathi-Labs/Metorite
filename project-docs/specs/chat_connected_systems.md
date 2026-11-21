@@ -346,7 +346,8 @@ then call it". The chat needs that recipe.
   conflict line. A bare `<<<` opens no block. So a cut fold with no open
   block and no such split marker is MAF's fold, byte for byte. A fold that
   differs from MAF's never ends in `<`, also after the cut moves back. A new
-  frame label joins `FRAME_LABELS`, or the fence fails.
+  frame label joins `FRAME_LABELS`. Else `untrusted._label` refuses it at its
+  first call, and the static fence fails too.
 - **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
   server and the gateway's Studio preview client (`connections/mcp_tools.py`)
   get no frame.
