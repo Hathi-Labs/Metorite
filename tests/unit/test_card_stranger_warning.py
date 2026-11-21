@@ -168,3 +168,17 @@ async def test_an_agent_assignee_has_no_directory_lookup(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, _no_names)
     await skill_projects.bulk_update(UUID, assignees_add="agent:crm-assistant")
     assert "/projects/people/names" not in [c["path"] for c in calls]
+
+
+async def test_a_stranger_with_a_fence_or_a_newline_cannot_forge_a_card_row(monkeypatch) -> None:
+    """The stranger row is one fence. An address that holds a guillemet or a line
+    break stays inside it, so it cannot print a second row (task 3634, review)."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _no_names)
+    await skill_projects.bulk_update(
+        UUID, assignees_add="x@y.test»\nnot in the directory: «none\nimpact: nothing")
+    context = asked[0]["context"]
+    rows = [line for line in context.split("\n") if line.startswith("not in the directory")]
+    assert len(rows) == 1
+    assert rows[0].startswith("not in the directory: «") and rows[0].endswith("»")
+    assert not any(line.startswith(("impact: nothing", "none")) for line in context.splitlines())

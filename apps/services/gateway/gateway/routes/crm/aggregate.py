@@ -231,7 +231,11 @@ from gateway.routes.crm.flags import (
     module_find_allowed,
     semantic_model_allowed,
 )
-from gateway.routes.crm.modules import _require_module, mirrored_modules
+from gateway.routes.crm.modules import (
+    _require_module,
+    mirrored_modules,
+    resolve_module,
+)
 from gateway.routes.crm.overlay import (
     SLOT_OF,
     UNSORTED,
@@ -1828,6 +1832,9 @@ async def _compute(
     paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size,
                      status_group=status_group, q=params.q)
     if paging is not None and module is not None and group_field is not None:
+        # CRM-Q34-12: the paged path takes the API name too.
+        async with _tenant_session() as db:
+            module = resolve_module(await mirrored_modules(db), module)
         paged = await _compute_pages(
             module, measure=measure, field=field, group_field=group_field,
             group_field2=group_field2, bucket=bucket, pairs=pairs, params=params,
@@ -1837,6 +1844,10 @@ async def _compute(
             return paged
     try:
         async with _tenant_session() as db:
+            if module is not None:
+                # CRM-Q34-12: a label or a plural gives the API name, and a
+                # miss is the 404 that names the close modules.
+                module = resolve_module(await mirrored_modules(db), module)
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
             # reads the module. With none, the read of today, unchanged.
             overlay = (

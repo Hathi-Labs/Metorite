@@ -1117,7 +1117,7 @@ async def propose_plan(
         checks=checks, titles=titles, links=links, dropped_links=dropped_links,
         extra={
             "dependency warnings": " ".join(warnings),
-            "not in the directory": ", ".join(strangers),
+            "not in the directory": data(", ".join(strangers)),
             **_reach_rows(cannot),
         },
     )
@@ -1680,7 +1680,7 @@ def _batch_card(
         card["mailbox"] = mailbox_line(data(node.get("name")))
     card.update(held or {})
     if strangers:
-        card["not in the directory"] = ", ".join(strangers)
+        card["not in the directory"] = data(", ".join(strangers))
     card.update(_reach_rows(cannot or []))
     return card
 
