@@ -12,6 +12,7 @@ import type { ChatSession } from "@/lib/sessions";
 vi.mock("@/hooks/useActiveSessions", () => ({
   useActiveSessions: () => new Set<string>(),
   useUnreadIds: () => new Set<string>(),
+  useNeedsInputIds: () => new Set<string>(),
 }));
 
 import { SessionPicker, sessionRowMenuItems } from "./SessionPicker";
