@@ -2135,6 +2135,7 @@ They keep their own gates.
 - **Done when.** A project with runs in two sub-projects shows the sessions of both. The view of one sub-project shows only its own. A project with no visible run shows no Agents tab. A session that waits on the viewer sorts first. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
 - **Fence.** `lib/agentMap.test.ts` (from SW-103), `lib/commands.test.ts`, `components/ViewTabs.test.ts`, `src/lib/theme/conformance.test.ts` and `tests/unit/test_chat_parity.py`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. D145 owner preview, because the view is new. **Depends on.** SW-103, and SW-102 with `project_id`.
+- **Built and dark, 2026-11-21.** The Agents tab is the seventh canvas, with the key sequence `v a`. It draws the map of SW-103 for the selected project through `project_id`. The tab and the palette command drop out while the map read answers 404, 401 or 403. A failed read keeps the tab and shows a message with a "Read again" button. A saved view cannot hold `agents`, because `pm_views.view_type` allows `list` and `board` only. Rule 3 ("a project with no visible run shows no tab") and rule 4 ("Outside this project") are NOT built. An empty map shows the empty state instead, and the owner decides. This slice is stacked on SW-103 and needs that slice first. The visual review and the owner preview are open.
 
 #### SW-113 · The map in the MCP
 

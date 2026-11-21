@@ -18,7 +18,7 @@
  * It extends the Agents panel of SW-8 and SW-51 when they land. Until then it
  * is a minimal section of Projects. The chips come from `statusAccent.ts`.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { relativeTime } from "@/lib/taskCard";
 
@@ -82,21 +82,43 @@ export const MAP_REFRESH_MS = 30_000;
  * switch knows if the map is dark. It re-reads each 30 s and on focus only
  * while `live` is on and the document is visible. No event stream.
  */
-export function useAgentMap(enabled: boolean, live: boolean, showQuiet: boolean): AgentMapRead {
-  const [read, setRead] = useState<AgentMapRead>({ kind: "loading" });
+export function useAgentMap(
+  enabled: boolean,
+  live: boolean,
+  showQuiet: boolean,
+  projectId?: string,
+  retry = 0,
+): AgentMapRead {
+  // The read carries the project it answers for. A read of another project, or
+  // a read while `enabled` is off, counts as loading on the same render. No
+  // effect resets it, so a project never shows under the map of the last one.
+  const key = projectId ?? "";
+  const [state, setState] = useState<{ key: string; read: AgentMapRead }>({
+    key,
+    read: { kind: "loading" },
+  });
+  const read: AgentMapRead =
+    enabled && state.key === key ? state.read : { kind: "loading" };
+  // Polls stop once the read is dark or failed: nothing is drawn, so nothing refreshes.
+  const kindRef = useRef<AgentMapRead["kind"]>("loading");
+  kindRef.current = read.kind;
   const load = useCallback(
     (alive: () => boolean) => {
       agentMapApi
-        .read({ showQuiet })
+        .read({ showQuiet, projectId })
         .then((map) => {
-          if (alive()) setRead(map ? { kind: "ready", map } : { kind: "dark" });
+          if (alive()) setState({ key, read: map ? { kind: "ready", map } : { kind: "dark" } });
         })
         .catch(() => {
           // A failed refresh keeps the map on screen.
-          if (alive()) setRead((old) => (old.kind === "ready" ? old : { kind: "error" }));
+          if (alive()) {
+            setState((old) =>
+              old.key === key && old.read.kind === "ready" ? old : { key, read: { kind: "error" } },
+            );
+          }
         });
     },
-    [showQuiet],
+    [showQuiet, projectId, key],
   );
   useEffect(() => {
     if (!enabled) return;
@@ -109,7 +131,8 @@ export function useAgentMap(enabled: boolean, live: boolean, showQuiet: boolean)
       };
     }
     const refresh = () => {
-      if (document.visibilityState === "visible") load(alive);
+      const kind = kindRef.current;
+      if (document.visibilityState === "visible" && kind !== "dark" && kind !== "error") load(alive);
     };
     const timer = window.setInterval(refresh, MAP_REFRESH_MS);
     document.addEventListener("visibilitychange", refresh);
@@ -120,12 +143,12 @@ export function useAgentMap(enabled: boolean, live: boolean, showQuiet: boolean)
       document.removeEventListener("visibilitychange", refresh);
       window.removeEventListener("focus", refresh);
     };
-  }, [enabled, live, load]);
+  }, [enabled, live, load, retry]);
   return read;
 }
 
 /** True below 640 px, the width where the outline takes the place of the canvas. */
-function usePhone(): boolean {
+export function usePhone(): boolean {
   const [phone, setPhone] = useState(false);
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 639px)");
