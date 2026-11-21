@@ -10,6 +10,7 @@ import {
   failedMarkerOf,
   foldFailedTurns,
   isFailedTurn,
+  isStaleErrorRow,
 } from "@/lib/chatRunFailed";
 import { checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { retryPlan } from "@/lib/chatRetry";
@@ -59,6 +60,19 @@ describe("foldFailedTurns", () => {
   it("keeps Try again working after a reload: one resend, one prompt dropped", () => {
     const out = foldFailedTurns([u("u1", "send the report"), failed("f1")]);
     expect(retryPlan(out, "f1")).toEqual({ resend: "send the report", drop: ["f1", "u1"] });
+  });
+});
+
+describe("the reload filter", () => {
+  it("keeps a failure card and drops a stale error row", () => {
+    const card = foldFailedTurns([u("u1"), failed("f1")])[1];
+    expect(isStaleErrorRow(card)).toBe(false);
+    expect(isStaleErrorRow({ role: "system", content: "__ERROR__{}", customEvents: [] })).toBe(true);
+    expect(isStaleErrorRow(u("u2"))).toBe(false);
+  });
+  it("AgentChat filters through it on cache and on load", () => {
+    const src = readFileSync("src/components/AgentChat.tsx", "utf-8");
+    expect(src.match(/\.filter\(\(m\) => !isStaleErrorRow\(m\)\)/g)?.length).toBe(2);
   });
 });
 

@@ -14,7 +14,7 @@
 import { setSessionState } from "@/lib/chatStore";
 import { runErrorView } from "@/lib/runErrors";
 import { nanoid } from "@/lib/chatStream";
-import { SAVED_FAILURE_CODES } from "@/lib/chatRunFailed";
+import { SAVED_FAILURE_CODES, failedMarker } from "@/lib/chatRunFailed";
 import { isSessionRefusal, isSessionRefusalText } from "@/lib/sessions";
 
 /**
@@ -111,6 +111,8 @@ export function settleFailedTurn(t: FailedTurn): "recovered" | "capped" | "error
         role: "system",
         content: `__ERROR__${JSON.stringify(view)}`,
         timestamp: Date.now(),
+        // The saved row's marker, so a reload filter keeps this card too.
+        ...(SAVED_FAILURE_CODES.has(view.code) ? { customEvents: [failedMarker(view.code, view.ref)] } : {}),
       }),
   }));
   return "error";

@@ -106,6 +106,7 @@ import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
+import { isStaleErrorRow } from "@/lib/chatRunFailed";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
@@ -667,9 +668,7 @@ export default function AgentChat({
   // Drop stale __ERROR__ system messages saved by older builds.
   const cachedFull = useMemo(
     () =>
-      (getMessages(sessionId) as ChatMessage[]).filter(
-        (m) => !(m.role === "system" && m.content.startsWith("__ERROR__")),
-      ),
+      (getMessages(sessionId) as ChatMessage[]).filter((m) => !isStaleErrorRow(m)),
     [sessionId],
   );
   // The composer is declared below the hook, so the run-cap restore reaches
@@ -821,9 +820,7 @@ export default function AgentChat({
       // transient errors must never resurface on reload.
       // An edit in this page removed some rows. A load that answered before
       // the gateway deleted them must not bring them back (lib/chatEdit.ts).
-      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter(
-        (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
-      ));
+      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter((m) => !isStaleErrorRow(m)));
       if (remote.length === 0) return;
       // The store NOW, not the render that started this load: that render
       // held no messages yet, so every load replaced the thread, and a reply

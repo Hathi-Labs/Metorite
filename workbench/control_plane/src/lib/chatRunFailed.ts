@@ -54,6 +54,11 @@ export function isFailedTurn(m: Row): boolean {
   return m.role === "assistant" && failedMarkerOf(m) !== null;
 }
 
+/** A stale `__ERROR__` system row of an older build. A saved failure card is not one. */
+export function isStaleErrorRow(m: Pick<ChatMessage, "role" | "content" | "customEvents">): boolean {
+  return m.role === "system" && (m.content ?? "").startsWith("__ERROR__") && failedMarkerOf({ role: "assistant", customEvents: m.customEvents }) === null;
+}
+
 /**
  * The thread with each failure row drawn as its card, or dropped.
  *
@@ -79,7 +84,9 @@ export function foldFailedTurns<
     if (!tail || i !== last) return;
     const marker = failedMarkerOf(m)!;
     const view = runErrorView({ raw: "", code: marker.code, ref: marker.ref, status: null });
-    out.push({ ...m, role: "system", content: `__ERROR__${JSON.stringify(view)}`, customEvents: [] });
+    // The card keeps its marker, so a reload filter that drops stale
+    // `__ERROR__` rows knows this one is saved (`isStaleErrorRow`).
+    out.push({ ...m, role: "system", content: `__ERROR__${JSON.stringify(view)}` });
   });
   return out;
 }
