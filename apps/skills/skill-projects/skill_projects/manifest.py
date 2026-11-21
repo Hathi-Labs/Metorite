@@ -1471,6 +1471,10 @@ _AGENT_LABEL_REASON = (
     "The display name of an outside agent session (SW-7b). Only a signed agent "
     "sends it, and the gateway refuses it from a person, so the chat sends none."
 )
+_DISPATCHED_BY_REASON = (
+    "The run that dispatched an outside agent session (SW-107). Only a signed "
+    "agent sends it, and the gateway refuses it from a person, so the chat sends none."
+)
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
@@ -1587,10 +1591,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "has no claim tool."
         ),
         "agent_label": _AGENT_LABEL_REASON,
+        "dispatched_by": _DISPATCHED_BY_REASON,
     },
     # SW-7b. The start route keeps its other fields in FIELD_PLANNED (G23).
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {
         "agent_label": _AGENT_LABEL_REASON,
+        "dispatched_by": _DISPATCHED_BY_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
