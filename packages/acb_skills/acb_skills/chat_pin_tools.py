@@ -38,9 +38,10 @@ the member of this run, and no other chat. The rules:
   changed" and names the next step. The 409 passes the reason of the route.
   The tool never raises.
 * **Dark.** Only the orchestrator holds the tool, in its ``core_tools``, and
-  only for an org on ``CHAT_PIN_ORGS`` (``agents._chat_pin_enabled``, which
-  asks ``pin_allowed`` of the store module). It is in no ``config.json``
-  scope, no skill family and no pack.
+  only for an org on ``CHAT_PIN_TOOL_ORGS`` and on ``CHAT_PIN_ORGS``
+  (``agents._chat_pin_enabled``, which asks ``pin_tool_allowed`` of the store
+  module). The owner gave the tool its own flag on 2026-11-21 (task 3563). It
+  is in no ``config.json`` scope, no skill family and no pack.
 
 Fences: ``tests/unit/test_chat_pin_tool.py`` and
 ``tests/unit/test_chat_pin_tool_r8.py`` (R8).

@@ -19,7 +19,9 @@ Fences (R7):
 * ``chat-pin-tool-card``: where ``write_must_show_card`` says so, one card
   bound to the member shows first, and only an approve sends.
 * ``chat-pin-tool-dark``: the orchestrator holds the tool only for an org on
-  ``CHAT_PIN_ORGS``, and a fault reads as off.
+  ``CHAT_PIN_TOOL_ORGS`` AND on ``CHAT_PIN_ORGS``, and a fault reads as off.
+  The owner gave the tool its own flag on 2026-11-21 (task 3563). So the pin
+  of the chat list alone adds no tool and moves no count.
 * ``chat-pin-tool-parity``: the two pin actions are ``COVERED`` by the tool,
   and the debt ceiling of the chat went down by two (30 to 28 after CO-2b).
 
@@ -29,6 +31,11 @@ Mutations run on 2026-11-17, each red here:
 * lower the case of the address,
 * skip the card,
 * give the build the tool with the flag off.
+
+Mutations run on 2026-11-21, each red here:
+
+* drop the test of ``pin_allowed`` from ``pin_tool_allowed``,
+* point ``agents._chat_pin_enabled`` back at ``pin_allowed``.
 
 The other refusals and statuses have a case each, by design: a chat id from
 an argument, a dropped batch, WhatsApp or member check, and a success on a
@@ -370,9 +377,18 @@ def _mod() -> Any:
     return pkg._mod
 
 
-def _names(monkeypatch: pytest.MonkeyPatch, orgs: str, org: str | None) -> list[str]:
+def _flags(monkeypatch: pytest.MonkeyPatch, pin: str, tool: str) -> None:
+    """``CHAT_PIN_ORGS`` is *pin*, and ``CHAT_PIN_TOOL_ORGS`` is *tool*."""
+    monkeypatch.setattr(get_settings(), "chat_pin_orgs", pin, raising=False)
+    monkeypatch.setattr(get_settings(), "chat_pin_tool_orgs", tool, raising=False)
+
+
+def _names(monkeypatch: pytest.MonkeyPatch, orgs: str, org: str | None,
+           *, tool: str | None = None) -> list[str]:
+    """The tool names of one build. *orgs* goes to both lists, unless *tool*
+    gives ``CHAT_PIN_TOOL_ORGS`` its own value."""
     mod = _mod()
-    monkeypatch.setattr(get_settings(), "chat_pin_orgs", orgs, raising=False)
+    _flags(monkeypatch, orgs, orgs if tool is None else tool)
     monkeypatch.setattr(mod, "Agent", _FakeAgent)
     monkeypatch.setattr(mod, "_make_openai_client", lambda *a, **k: object())
     monkeypatch.setattr(mod, "_load_specialist_agents_as_tools", lambda: [])
@@ -393,7 +409,66 @@ def test_the_build_holds_the_tool_only_for_an_org_on_the_list(monkeypatch) -> No
         assert on.index("pin_chat") == on.index("spawn_copilot_agent") - 1
 
 
+@pytest.mark.parametrize("pin", [IN, "*"])
+def test_the_pin_alone_adds_no_tool_and_moves_no_count(monkeypatch, pin: str) -> None:
+    """The owner decision of 2026-11-21 (task 3563). The pin of the chat list
+    turns on, and the tool list is the list of both flags off. So no golden
+    row moves. Mutation: point ``_chat_pin_enabled`` back at ``pin_allowed``
+    -> red."""
+    off = _names(monkeypatch, "", IN)
+    assert _names(monkeypatch, pin, IN, tool="") == off
+    assert _mod()._chat_pin_enabled(IN) is False
+
+
+@pytest.mark.parametrize("tool", [IN, "*"])
+def test_the_tool_flag_alone_adds_no_tool(monkeypatch, tool: str) -> None:
+    """With the pin off, the routes answer 404, so a tool would only fail.
+    Mutation: drop the test of ``pin_allowed`` from ``pin_tool_allowed``
+    -> red."""
+    off = _names(monkeypatch, "", IN)
+    assert _names(monkeypatch, "", IN, tool=tool) == off
+    assert _mod()._chat_pin_enabled(IN) is False
+
+
+@pytest.mark.parametrize(("pin", "tool"), [(IN, IN), ("*", "*"), ("*", IN), (IN, "*")])
+def test_both_flags_on_add_the_tool(monkeypatch, pin: str, tool: str) -> None:
+    on = _names(monkeypatch, pin, IN, tool=tool)
+    assert on.count("pin_chat") == 1
+    assert _mod()._chat_pin_enabled(IN) is True
+
+
+@pytest.mark.parametrize(("pin", "tool", "org", "want"), [
+    ("", "", IN, False),
+    (IN, "", IN, False),
+    ("*", "", IN, False),
+    ("", IN, IN, False),
+    ("", "*", IN, False),
+    (OUT, "*", IN, False),
+    ("*", OUT, IN, False),
+    (IN, IN, IN, True),
+    ("*", "*", IN, True),
+    ("*", IN, IN, True),
+    (IN, "*", IN, True),
+    (f"x, {IN.upper()}", f" {IN.upper()} ,y", IN, True),
+    ("*", "*", None, False),
+    ("*", "*", "", False),
+    ("*", "*", "   ", False),
+])
+def test_the_reader_needs_both_lists(
+    monkeypatch, pin: str, tool: str, org: str | None, want: bool,
+) -> None:
+    """``pin_tool_allowed`` is the one reader of ``CHAT_PIN_TOOL_ORGS``. It
+    takes the org as its one argument, and no org reads as off."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert list(inspect.signature(pin_tool_allowed).parameters) == ["organization_id"]
+    _flags(monkeypatch, pin, tool)
+    assert pin_tool_allowed(org) is want
+
+
 def test_the_build_reads_the_bound_tenant(monkeypatch) -> None:
+    """The org comes from the session: the bound tenant, never an argument
+    of the model."""
     from acb_common.db import bind_tenant, release_tenant
 
     for org, want in ((IN, True), (OUT, False)):
@@ -412,17 +487,43 @@ def test_a_fault_of_the_flag_reads_as_none(monkeypatch) -> None:
 
     monkeypatch.setattr(store, "pin_allowed", _boom)
     assert "pin_chat" not in _names(monkeypatch, "*", IN)
+    assert store.pin_tool_allowed(IN) is False
     assert _mod()._chat_pin_enabled(IN) is False
+
+
+def test_a_fault_of_the_tool_reader_reads_as_none(monkeypatch) -> None:
+    import gateway.chat_session_member as store
+
+    def _boom(_org: Any) -> bool:
+        raise RuntimeError("settings")
+
+    monkeypatch.setattr(store, "pin_tool_allowed", _boom)
+    assert "pin_chat" not in _names(monkeypatch, "*", IN)
+    assert _mod()._chat_pin_enabled(IN) is False
+
+
+def test_a_fault_of_the_tool_list_reads_as_off(monkeypatch) -> None:
+    """The pin is on, and the read of ``CHAT_PIN_TOOL_ORGS`` fails."""
+    import acb_common
+    import gateway.chat_session_member as store
+
+    def _boom() -> Any:
+        raise RuntimeError("settings")
+
+    monkeypatch.setattr(store, "pin_allowed", lambda _org: True)
+    monkeypatch.setattr(acb_common, "get_settings", _boom)
+    assert store.pin_tool_allowed(IN) is False
 
 
 def test_the_persona_does_not_change(monkeypatch) -> None:
     mod = _mod()
-    monkeypatch.setattr(get_settings(), "chat_pin_orgs", "*", raising=False)
+    _flags(monkeypatch, "*", "*")
     monkeypatch.setattr(mod, "Agent", _FakeAgent)
     monkeypatch.setattr(mod, "_make_openai_client", lambda *a, **k: object())
     monkeypatch.setattr(mod, "_load_specialist_agents_as_tools", lambda: [])
     on = mod.build_orchestrator_agent(with_history=False, organization_id=IN)
-    monkeypatch.setattr(get_settings(), "chat_pin_orgs", "", raising=False)
+    assert "pin_chat" in [getattr(t, "__name__", "") for t in on.kwargs["tools"]]
+    _flags(monkeypatch, "", "")
     off = mod.build_orchestrator_agent(with_history=False, organization_id=IN)
     assert on.kwargs["instructions"] == off.kwargs["instructions"]
 

@@ -566,13 +566,14 @@ def _chat_pin_enabled(org: str | None = None) -> bool:
     """True when the pin tool of this chat is on for this assistant's org.
 
     WS-CO CO-11b (``chat_organization.md`` §18). The rule is the one reader of
-    ``CHAT_PIN_ORGS``, ``gateway.chat_session_member.pin_allowed``. The org is
+    ``CHAT_PIN_TOOL_ORGS``, ``gateway.chat_session_member.pin_tool_allowed``.
+    It needs ``CHAT_PIN_ORGS`` too (owner, 2026-11-21, task 3563). The org is
     found as :func:`_spawn_subagents_enabled` finds it, and a caller with none
-    fails closed. The route asks the same rule again at each call. Never
+    fails closed. The route asks ``pin_allowed`` again at each call. Never
     raises.
     """
     try:
-        from gateway.chat_session_member import pin_allowed
+        from gateway.chat_session_member import pin_tool_allowed
 
         if not org:
             from acb_common.db import current_tenant
@@ -582,7 +583,7 @@ def _chat_pin_enabled(org: str | None = None) -> bool:
             from orchestrator.executor import _current_run_org
 
             org = _current_run_org()
-        return pin_allowed(org)
+        return pin_tool_allowed(org)
     except Exception:
         return False
 
@@ -1341,8 +1342,8 @@ def build_orchestrator_agent(
 
         spawn_tools = [spawn_subagents]
     # WS-CO CO-11b (chat_organization.md §18): the pin of this chat, the
-    # orchestrator's own, on this one path. Dark until CHAT_PIN_ORGS names the
-    # org. Fence: tests/unit/test_chat_pin_tool.py.
+    # orchestrator's own, on this one path. Dark until CHAT_PIN_TOOL_ORGS and
+    # CHAT_PIN_ORGS both name the org. Fence: tests/unit/test_chat_pin_tool.py.
     pin_tools: list[Any] = []
     if _chat_pin_enabled(organization_id):
         from acb_skills.chat_pin_tools import TOOLS as _PIN_TOOLS

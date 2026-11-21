@@ -253,9 +253,10 @@ async def test_find_tools_adds_one_to_the_base_only_with_the_flag_on(
 
 @pytest.fixture(params=[False, True], ids=["pin-off", "pin-on"])
 def pin_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
-    """``CHAT_PIN_ORGS`` for the build of the orchestrator. The fixture
-    ``orchestrator`` builds with no org, so this sets the one decision of the
-    build, ``agents._chat_pin_enabled``. List it before ``orchestrator``."""
+    """``CHAT_PIN_TOOL_ORGS`` (with ``CHAT_PIN_ORGS``) for the build of the
+    orchestrator. The fixture ``orchestrator`` builds with no org, so this
+    sets the one decision of the build, ``agents._chat_pin_enabled``. List it
+    before ``orchestrator``."""
     monkeypatch.setattr(_agents_mod(), "_chat_pin_enabled", lambda org=None: request.param)
     return bool(request.param)
 
@@ -265,7 +266,9 @@ async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
 ) -> None:
     """CO-11b (task 3563, ``chat_organization.md`` §18). ``pin_chat`` is a core
     tool of the orchestrator, so it rides in each request of an org on
-    ``CHAT_PIN_ORGS``. With the flag off, the numbers of the staging shape do
+    ``CHAT_PIN_TOOL_ORGS`` and ``CHAT_PIN_ORGS``. The tool has its own flag
+    (owner, 2026-11-21). So with the tool flag off, the pin of the chat list
+    moves no count. With it off, the numbers of the staging shape do
     not move: 59 sent and a base of 61. With it on, the estimate, the plan,
     the sent count and the true-count log each grow by one: 60 sent. Mutation:
     the build holds the tool with the flag off -> the off case is one high ->
@@ -287,7 +290,8 @@ async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
 
 def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
     """CO-11b (task 3563): the trade that this slice chose, and that the owner
-    accepts before the flag flips (``chat_organization.md`` §18). It is the
+    accepts before ``CHAT_PIN_TOOL_ORGS`` flips (``chat_organization.md``
+    §18). It is the
     trade of D222 decision 13, with ``pin_chat`` in the place of
     ``find_tools``. A Studio turn with the email words fills the cap exactly
     with production's base: 57 + email 31 + studio 10 + studio-more 13, less
@@ -326,8 +330,9 @@ def test_with_both_flags_on_the_core_studio_pack_leaves_a_chosen_trade_of_a_wors
     monkeypatch: pytest.MonkeyPatch, held: str,
 ) -> None:
     """CO-11b (task 3563, ``chat_organization.md`` §18 item 3). A chosen trade
-    of a worst case, with the flags ON only. ``pin_chat`` (``CHAT_PIN_ORGS``)
-    and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add one tool to the base.
+    of a worst case, with the flags ON only. ``pin_chat``
+    (``CHAT_PIN_TOOL_ORGS``) and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add
+    one tool to the base.
     The case ``studio_with_email_and_crm_records`` of the golden matrix runs
     through the harness of the matrix (``_row``) at three bases:
 

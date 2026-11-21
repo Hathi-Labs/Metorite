@@ -308,7 +308,7 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "keep_correction",
     "drop_correction",
     # WS-CO CO-11b: the pin of this chat, on the same terms. Only the
-    # orchestrator holds it, behind CHAT_PIN_ORGS. So every risk block stays
+    # orchestrator holds it, behind CHAT_PIN_TOOL_ORGS. So every risk block stays
     # byte-identical.
     "pin_chat",
     # CTX-1 (#825): the page reader of a stored result. It only reads, and
