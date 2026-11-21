@@ -113,9 +113,9 @@ The rules:
     space, bracket or new line. Each text part goes in the frame, and an
     image or a file part stays as it is. A text that Metorite writes stays
     outside the frame: each refusal of the gate, a refusal of an inner step,
-    the spill footer and the compute marker line, each in its exact shape
-    only. The native MAF path is the only one: a Copilot agent's repo
-    ``.mcp.json`` server and the gateway's own MCP client
+    and the compute marker line in its exact shape only. The spill footer
+    stays inside the frame (task 3849). The native MAF path is the only one:
+    a Copilot agent's repo ``.mcp.json`` server and the gateway's own MCP client
     (``gateway.connections.mcp_tools``) are not framed here. The gate frames
     only when the remote call answered (:func:`_note_server_answer`). The frame changes no card and marks no
     session: MCP-NC1 stays as it is. A fault of the frame gives
@@ -1415,25 +1415,18 @@ def _text_of(value: Any) -> str:
 def _framed_text(frame: Any, note: str, label: str, text: str) -> str:
     """*text* in one block of *frame*, with *note* before it.
 
-    Two last lines are Metorite's text, so they go after the END line, in
-    their order: the spill footer (``tool_result_spill._footer``) and then
-    the compute marker (``KeepForCompute``). The model may follow the footer,
-    and ``event_translator.tool_result_fields`` strips the marker from the
-    last line. Each pattern admits one whole line of a ref, digits and fixed
-    words only. So a server line of any other shape stays in the block, and a
-    forged line of that shape carries no other text."""
-    from acb_skills.tool_result_spill import is_spill_footer, strip_compute_marker
+    The compute marker line (``tool_result_spill.KeepForCompute``) is
+    Metorite's text, and ``event_translator.tool_result_fields`` strips it
+    from the last line. So it goes after the END line. Its pattern admits a
+    ref only, so a server line in that shape carries no other text. No other
+    line leaves the block: with ``TOOL_RESULT_SPILL`` ``on``, the spill
+    footer stays inside the frame (a known limit, task 3849)."""
+    from acb_skills.tool_result_spill import strip_compute_marker
 
-    body, trailer = text, []
-    stripped = strip_compute_marker(body)
-    if stripped != body:
-        trailer.append(body.rstrip().rpartition("\n")[2].strip())
-        body = stripped
-    head, sep, last = body.rstrip().rpartition("\n")
-    if is_spill_footer(last.strip()):
-        trailer.insert(0, last.strip())
-        body = head if sep else ""
-    return "\n".join([f"{note}\n{frame.wrap(label, body)}", *trailer])
+    body = strip_compute_marker(text)
+    marker = text.rstrip().rpartition("\n")[2].strip() if body != text else ""
+    framed = f"{note}\n{frame.wrap(label, body)}"
+    return f"{framed}\n{marker}" if marker else framed
 
 
 def _framed(result: Any, what: str, label: str) -> Any:
