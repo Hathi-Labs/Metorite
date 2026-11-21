@@ -24,7 +24,7 @@ import Icon from "@/components/Icon";
 import SessionRunDot from "@/components/SessionRunDot";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
 import {
@@ -51,6 +51,7 @@ function SessionRow({
   now,
   running,
   unread,
+  needsInput = false,
   onSelect,
   onRename,
   onPin,
@@ -65,6 +66,7 @@ function SessionRow({
   now: number;
   running: boolean;
   unread: boolean;
+  needsInput?: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
   /** CO-11: pin or unpin the chat for this member. Absent: no pin act. */
@@ -135,7 +137,7 @@ function SessionRow({
         {/* The dot and the age give their place to the row's acts on hover
             and on keyboard focus (`rail-row-meta`), so nothing is covered. */}
         <span className="rail-row-meta flex shrink-0 items-center gap-2">
-          <SessionRunDot running={running} unread={unread} />
+          <SessionRunDot running={running} unread={unread} needsInput={needsInput} />
           <span className="text-[11px] text-muted-foreground glass:text-caption">
             {relativeAge(session.updatedAt, now)}
           </span>
@@ -237,6 +239,7 @@ export function SessionPicker({
   const [showArchived, setShowArchived] = useState(false);
   const running = useActiveSessions();
   const unread = useUnreadIds();
+  const needsInputIds = useNeedsInputIds();
   const [now] = useState(() => Date.now());
   const lists = useMemo(() => splitSessions(sessions, query, activeId), [sessions, query, activeId]);
   // Daily briefs fold into one closed group at the end (task 3564). A search
@@ -269,6 +272,7 @@ export function SessionPicker({
       now={now}
       running={running.has(s.id)}
       unread={unread.has(s.id)}
+      needsInput={needsInputIds.has(s.id)}
       onSelect={() => onSelect(s.id)}
       onRename={(t) => onRename(s.id, t)}
       // CO-11: an archived chat is not pinned, so it offers no pin.

@@ -74,8 +74,8 @@ def studio_tool_names() -> frozenset[str]:
     """The tools of every pack of the Studio builder, read from ``SKILL_FAMILIES``.
 
     ``owner_tool_names`` reads a ``config.json``, and this owner has none. The
-    set holds the 23 tools of ``studio`` and the two of ``studio-workflows``, so
-    an unknown tool of the family never maps to email."""
+    set holds the 23 tools of ``studio``, the two of ``studio-workflows`` and the
+    one of ``studio-share``, so an unknown tool of the family never maps to email."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     return frozenset(name for family in SKILL_FAMILIES.values()

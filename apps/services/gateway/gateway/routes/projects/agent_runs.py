@@ -121,13 +121,22 @@ from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_pr
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.attachments import served_url
 from gateway.routes.projects.core import (
+    LANE_STAGE_REVIEW,
+    LANE_STAGE_TODO,
+    STARTED_CATEGORY,
     TaskModel,
     _tenant_session,
     actor,
+    apply_status_transition,
+    board_lanes,
     emit,
     from_jsonb,
+    lane_like,
     load_visible_task,
+    lock_task,
+    pick_lane,
     record_activity,
+    require_row,
     resolve_visibility,
     router,
     row_to_dict,
@@ -2947,12 +2956,141 @@ async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
     return bool(held)
 
 
+# ── The lane of a released task (task 3648) ─────────────────────────────────
+
+#: The references of a task that show started work.
+_REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:tid AS uuid)"
+
+MOVES_SINCE_MAX = 50
+
+#: Every status move of a task since a run began, oldest first, with who wrote
+#: it. The first one is the claim's own move. Later ones are the agent's or a
+#: person's.
+_MOVES_SINCE_SQL = (
+    "SELECT created_by, created_at, meta FROM pm_activities"
+    " WHERE task_id = CAST(:tid AS uuid) AND type = 'status_change'"
+    " AND created_at >= :since ORDER BY created_at, id LIMIT " + str(MOVES_SINCE_MAX + 1)
+)
+
+
+#: A pull request in these states is open. A pull request with no state read
+#: (no GitHub token) counts as open: the agent attached it for review.
+_OPEN_PR_STATES = frozenset({None, "open", "draft"})
+
+#: Why the release left or moved the task: the closed list of the ``reason``
+#: of ``task_status`` in the answer of the tool.
+RELEASE_REASONS = (
+    "already_released", "not_started_lane", "archived",
+    "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
+    "no_status_before_claim", "no_task",
+)
+
+
+def _lane_report(lane: Any, *, moved: bool, reason: str) -> dict[str, Any]:
+    return {"name": getattr(lane, "name", None), "category": getattr(lane, "category", None),
+            "moved": moved, "reason": reason}
+
+
+async def _settle_task_lane(
+    db: Any, run: Any, user: UserContext, handoff: dict[str, str] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Move the task of a released run to the right lane, in the release's own
+    transaction. Returns the report for the tool and the status move, if any.
+
+    The owner's stages: Backlog is a task nobody started. To Do is a task
+    planned soon AND a started task that is paused or given back. In progress
+    is work that moves now: a live run, or an open pull request that waits.
+
+    **A release undoes what the claim of this agent did (owner default,
+    2026-11-17).** It acts only when the last status move of the task is the
+    claim's own move into a started lane: the same member, through the same
+    client (``meta.via``), and written no earlier than this run. A task that
+    was already in progress before the claim is the live work of a person:
+    the release leaves the status alone, whatever refs it holds. For a task
+    that the claim moved, in this order:
+
+    1. An open pull request: it stays in progress, in a review lane if the
+       board has one.
+    2. Started work (a handoff ``done``, or a branch, a commit or a pull
+       request on the task): the To Do lane (:func:`pick_lane`). A board with
+       no To Do lane keeps the task where it is. **It never goes to Backlog.**
+    3. Nothing started: the lane that the claim left (:func:`lane_like`).
+
+    A task that is archived, or not in a started lane, stays.
+    (``pm_agent_runs_one_open_per_task`` allows ONE open run for each task, so
+    no other live run holds the task when this one is released.)
+    """
+    tid = str(run.task_id) if run.task_id is not None else None
+    if tid is None:
+        return {"name": None, "category": None, "moved": False, "reason": "no_task"}, None
+    task = await lock_task(db, tid)
+    status = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+    if getattr(task, "archived_at", None) is not None:
+        return _lane_report(status, moved=False, reason="archived"), None
+    if status.category != STARTED_CATEGORY:
+        return _lane_report(status, moved=False, reason="not_started_lane"), None
+    moves = (await db.execute(
+        text(_MOVES_SINCE_SQL), {"tid": tid, "since": run.created_at},
+    )).fetchall()
+    # The move of THIS claim is the first status move since the run began. It
+    # counts only when it was made by the member of the RUN (not by whoever
+    # presses Release: an admin or an assignee may close the run), through the
+    # same client (`meta.via`, which a person's move in the app never
+    # carries), and into a started lane. Each later move must be the agent's
+    # own too. A move that a person made by hand, even the same member's, is
+    # never reversed (verifier F4), and a task that was in progress before the
+    # claim has no such move: it is a person's live work, and the release
+    # leaves it alone (owner default, F5). The lane that the claim LEFT is the
+    # `from` of the first move, also when the agent moved the task again.
+    owner = str(run.member_email or "").strip().lower()
+    metas = [from_jsonb(m.meta) for m in moves]
+    # A claim moves a task only OUT of backlog or todo into a started lane
+    # (`claim_task`). So the first move must leave a lane that is not started:
+    # the agent's own move from one started lane to another (In progress to In
+    # review, as the routine asks) is never the claim (verifier N2).
+    mine = bool(moves) and len(moves) <= MOVES_SINCE_MAX and all(
+        str(m.created_by or "").strip().lower() == owner
+        and isinstance(meta, dict) and meta.get("via") == run.client_via
+        for m, meta in zip(moves, metas, strict=True)
+    ) and metas[0].get("to_category") == STARTED_CATEGORY \
+        and metas[0].get("from_category") not in (None, STARTED_CATEGORY)
+    meta = metas[0] if mine else None
+    if not mine:
+        return _lane_report(status, moved=False, reason="no_status_before_claim"), None
+    refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
+    lanes = await board_lanes(db, str(task.project_id))
+
+    if any(r.kind == "pull_request" and r.state in _OPEN_PR_STATES for r in refs):
+        target = pick_lane(lanes, LANE_STAGE_REVIEW)
+        reason = "open_pull_request"
+    elif (handoff and handoff.get("done")) or any(
+        r.kind in ("branch", "commit", "pull_request") for r in refs
+    ):
+        target = pick_lane(lanes, LANE_STAGE_TODO)
+        reason = "started_work" if target is not None else "no_todo_lane"
+    else:
+        target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
+        reason = "nothing_started" if target is not None else "no_status_before_claim"
+
+    if target is None or str(target.id) == str(status.id):
+        return _lane_report(status, moved=False, reason=reason), None
+    moved = await apply_status_transition(db, task, str(target.id), created_by=actor(user))
+    return _lane_report(target, moved=True, reason=reason), {
+        "task_id": tid, "from": moved["from"].name, "to": moved["to"].name,
+        "to_category": moved["to"].category,
+    }
+
+
 @router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
 async def release_agent_run(
     run_id: str, payload: ReleaseIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Give a task up without finishing it: the run moves to ``released``.
-    The task keeps its status, and every assignee stays.
+    Every assignee stays. The task goes to the right lane (task 3648,
+    :func:`_settle_task_lane`): an open pull request keeps it in progress,
+    started work puts it in To Do, and a task that nobody started goes back
+    to the lane it had. It never goes to Backlog. The answer names the lane
+    in ``task_status``.
 
     * An agent releases its OWN run only: the same member and the same
       client stamp.
@@ -2970,6 +3108,8 @@ async def release_agent_run(
     handoff = _handoff_of(payload.handoff)
     cleared: list[str] = []
     written: _Written | None = None
+    lane: dict[str, Any] | None = None
+    move: dict[str, Any] | None = None
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2997,13 +3137,30 @@ async def release_agent_run(
                 db, run, actor_email=me, via=via,
                 body=f"Released by {await _member_name(db, me)}/{client}",
             )
+            # Task 3648: the task goes to the right lane in the same
+            # transaction, so a released task is never left In progress with
+            # nobody on it.
+            lane, move = await _settle_task_lane(db, run, user, handoff)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        if lane is None:
+            # A second release of a released run: no write, the lane as it is.
+            held = None
+            if run.task_id is not None:
+                task = await require_row(db, "pm_tasks", str(run.task_id), "Task")
+                held = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+            lane = (_lane_report(held, moved=False, reason="already_released")
+                    if held is not None
+                    else {"name": None, "category": None, "moved": False,
+                          "reason": "no_task"})
     # AP-BUG-3: a release of an awaiting run closes its question, and a
     # release emits no `pm.*` event, so each cleared member's My Day moves here.
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     await _bump_cleared(user, cleared)
-    return {"run": out_run, "released": True}
+    if move is not None:
+        await emit("pm.task.updated", {"task_id": move["task_id"]})
+        await emit("pm.task.status_changed", move)
+    return {"run": out_run, "released": True, "task_status": lane}
 
 
 # ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
