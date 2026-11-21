@@ -3902,6 +3902,26 @@ def _refused(slug: str, reason: str, text: str) -> str:
     return text
 
 
+def _refused_detail(
+    slug: str, reason: str, run: PackRun, live: Sequence[Any], adding: int,
+    spare: Sequence[str], layer: str,
+) -> None:
+    """Task 3616 S1: why a cap refused a load. ONE line, slugs and counts only:
+    no tool argument, no member text and no tool description. It changes no
+    answer and no :class:`PackRun` field."""
+    from acb_skills.egress import held_card_writes_on
+
+    try:
+        room_rule = bool(held_card_writes_on(run.org))
+    except Exception:
+        room_rule = False
+    _log.info(
+        "tool_packs.load_refused_detail", pack=slug[:40], reason=reason,
+        live_tools=len(live), adding=adding, cap=MAX_REQUEST_TOOLS,
+        packs=list(run.holds()), spare=list(spare), ran=sorted(run.ran),
+        noted=sorted(run.noted), room_rule=room_rule, layer=layer)
+
+
 def _pack_of(item: Any) -> str:
     """The slug of the pack that built tool *item*, or ""."""
     return str(getattr(getattr(item, "func", item), PACK_SLUG_ATTR, "") or "")
@@ -4016,7 +4036,7 @@ class LoadSkillTools(FunctionMiddleware):
 
     async def _admit(
         self, found: Pack, ctx: dict[str, Any], live: Sequence[Any], run: PackRun,
-        extra_live: Sequence[Any] = (), *, spare: Sequence[str] = (),
+        extra_live: Sequence[Any] = (), *, spare: Sequence[str] = (), layer: str = "model",
     ) -> str | tuple[tuple[Any, ...], bool, str, list[str], tuple[str, ...]]:
         """The guards and the build of ONE pack: steps 4 to 6 of the class
         text, for a load by the model (:meth:`_load`) and for a load by layer
@@ -4030,7 +4050,7 @@ class LoadSkillTools(FunctionMiddleware):
         OA-7i fix round 1: a refusal for a pack of a ``via_loader`` owner marks
         the owner in ``run.via_failed`` and answers :data:`LOAD_NO_PATH`, so the
         hand-off to the owner opens again for the rest of the run."""
-        admitted = await self._admit_pack(found, ctx, live, run, extra_live, spare)
+        admitted = await self._admit_pack(found, ctx, live, run, extra_live, spare, layer)
         if isinstance(admitted, str) and found.owner in run.via_loader:
             run.via_failed.add(found.owner)
             return LOAD_NO_PATH.format(
@@ -4039,11 +4059,12 @@ class LoadSkillTools(FunctionMiddleware):
 
     async def _admit_pack(
         self, found: Pack, ctx: dict[str, Any], live: Sequence[Any], run: PackRun,
-        extra_live: Sequence[Any] = (), spare: Sequence[str] = (),
+        extra_live: Sequence[Any] = (), spare: Sequence[str] = (), layer: str = "model",
     ) -> str | tuple[tuple[Any, ...], bool, str, list[str], tuple[str, ...]]:
         slug = found.slug
         if (_tool_count(slug) > MAX_PACK_TOOLS
                 or _room_for(run, live, 0, spare) is None):
+            _refused_detail(slug, "cap_packs", run, live, _tool_count(slug), spare, layer)
             return _refused(slug, "cap_packs", _past_cap(found, run))
         if _beside_mcp(found.owner, [*live, *extra_live]):
             return _refused(slug, "beside_mcp", LOAD_BESIDE_MCP.format(
@@ -4063,6 +4084,7 @@ class LoadSkillTools(FunctionMiddleware):
         await asyncio.sleep(0)
         leaving = _room_for(run, live, len(tools), [s for s in spare if s not in run.ran])
         if leaving is None:
+            _refused_detail(slug, "cap_tools", run, live, len(tools), spare, layer)
             return _refused(slug, "cap_tools", _past_cap(found, run))
         held = getattr(build, "held", True) is not False
         before = tuple(s for s in run.holds() if s not in leaving)
@@ -4146,7 +4168,8 @@ class LoadSkillTools(FunctionMiddleware):
             found = pack(slug)
             if found is None or slug in run.holds():
                 continue
-            admitted = await self._admit(found, ctx, live, run, extra_live=mcp)
+            admitted = await self._admit(
+                found, ctx, live, run, extra_live=mcp, layer="turn_kind")
             if isinstance(admitted, str):
                 continue
             tools, held, rules, closing, _leaving = admitted
