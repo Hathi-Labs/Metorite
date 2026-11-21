@@ -2567,8 +2567,9 @@ def _inject_agent_tools(
             agent=agent_name, families=sorted(_disabled_families),
         )
     # D85 (the interim block) and D129: an agent gets no shell tool until the
-    # sandbox broker covers it, a personal agent too. The withheld names leave the SCOPE, so the
-    # addendum below never describes a tool this agent does not hold.
+    # sandbox broker covers it, a personal agent too. The withheld names leave
+    # the SCOPE, so the addendum below never describes a tool this agent does
+    # not hold.
     _withheld = _withheld_shell_tools(agent_name, agent_config)
     if _withheld:
         _log.info(
