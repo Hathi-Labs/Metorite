@@ -23,10 +23,13 @@ The end-to-end tests drive the REAL apis-config agent through the REAL
 ``run_agent_stream`` against a REAL streamable-HTTP MCP server on 127.0.0.1,
 and read what the model wire got. Only the model is scripted.
 
-Mutation table, measured on 2026-11-21. M1 replaced each
-``_call_and_frame(...)`` call in the gate with ``call_next()``. M2 removed
-the ``_note_server_answer()`` call of ``call_tool``. The report of the PR
-quotes the counts.
+Mutation table, measured on 2026-11-21.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | each ``_call_and_frame(...)`` of the gate becomes ``call_next()`` | 12 of the 18 hermetic tests fail. The 6 refusal, None and loader tests stay green by design |
+| M1b | the list loader calls ``call_next()`` with no frame | ``test_the_index_of_the_list_loader_is_framed_and_load_is_not`` fails |
+| M2 | ``call_tool`` no longer calls ``_note_server_answer()`` | the 4 rows of ``test_the_model_reads_each_answer_inside_one_frame_end_to_end`` fail |
 """
 from __future__ import annotations
 
