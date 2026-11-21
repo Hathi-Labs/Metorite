@@ -3076,6 +3076,27 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
 }
 
 /*
+ * A chat row on a touch device (task 3566). The hover strip is hidden there
+ * and the row has its own "More actions" button, so the age and the run dot
+ * stay in place. Without this, a tap that leaves a sticky `:hover` on the row
+ * would blank the age and the dot, and no strip would take their place. The
+ * touch test is the one shared variant `pointer-coarse`, never a second
+ * media query. Fence: `lib/shell/sessionPickerStrip.test.ts`.
+ */
+@variant pointer-coarse {
+  .group[data-session-row][data-has-actions]:hover .rail-row-meta,
+  .group[data-session-row][data-has-actions]:has(:focus-visible) .rail-row-meta {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+}
+
+/*
  * The icon slot of a row that can open. The expand chevron sits over the
  * icon, transparent at rest. On hover or keyboard focus in the row, the
  * chevron shows and the icon gives way. The chevron is a real button the
