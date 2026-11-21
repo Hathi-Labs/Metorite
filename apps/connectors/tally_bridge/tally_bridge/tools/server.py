@@ -1,64 +1,49 @@
-"""The read tools (brief section 6.4). PR 1 has one: ``status``.
+"""The read tools (brief section 6.4): ``status`` and ``find_ledgers`` so far.
 
-Rules of section 6.4 that bind from the first tool:
+Rules of section 6.4 that bind each tool:
 
-1. Each read tool sends the four hints of ``READ_ONLY``.
-2. An answer is compact JSON.
-5. An error is an MCP tool error (``isError``) in one plain sentence.
+1. It sends the four hints of ``READ_ONLY``.
+2. It answers compact JSON. An amount is a string with two decimals and a
+   ``side`` of ``Dr`` or ``Cr`` (null for zero).
+3. It answers ``company``, ``row_count`` and ``truncated``.
+5. An error is an MCP tool error in one plain sentence (``common.guarded``).
 6. ``tools/list`` never calls Tally. FastMCP answers it from the fixed list.
-7. Each call ends inside ``call_deadline_s`` or returns a timeout error.
+7. Each call ends inside ``call_deadline_s``.
 
-A tool returns a ``CallToolResult`` itself. So an error reads as the one
-sentence, with no "Error executing tool" prefix, and the tool has no output
-schema to grow the ``tools/list`` answer.
+Each tool takes the optional ``company`` input (the owner's answer of
+2026-11-21 on task 3656). Section 6.5 rule 4: only an allowed company passes.
+
+A tool returns a ``CallToolResult`` itself, so it has no output schema to
+grow the ``tools/list`` answer.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-from collections.abc import Awaitable
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import CallToolResult
+from pydantic import Field
 
 from tally_bridge import __version__
-from tally_bridge.reader import TallyReader
+from tally_bridge.reader import TallyAnswerError, TallyReader, TallyRefused, envelope, records
+from tally_bridge.reader.values import Amount
 from tally_bridge.settings import Settings
-
-READ_ONLY = ToolAnnotations(
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
+from tally_bridge.tools.common import (
+    READ_ONLY,
+    TALLY_DOWN,
+    Refusal,
+    guarded,
+    pick_company,
 )
 
-TALLY_DOWN = "TallyPrime is not running on the office machine."
+FIND_LIMIT = 50
+
+Company = Annotated[str | None, Field(description="Company name. Optional with one company.")]
 
 
-class CallTimeout(Exception):
-    pass
-
-
-def answer(payload: dict[str, Any]) -> CallToolResult:
-    text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    return CallToolResult(content=[TextContent(type="text", text=text)])
-
-
-def refuse(sentence: str) -> CallToolResult:
-    return CallToolResult(content=[TextContent(type="text", text=sentence)], isError=True)
-
-
-async def within[T](deadline_s: float, work: Awaitable[T]) -> T:
-    try:
-        return await asyncio.wait_for(work, deadline_s)
-    except TimeoutError as exc:
-        raise CallTimeout from exc
-
-
-def timeout_sentence(deadline_s: float) -> str:
-    return f"TallyPrime did not answer in {deadline_s:g} seconds. Try again in a minute."
+def _amount(a: Amount) -> dict[str, Any]:
+    return {"amount": a.text, "side": a.side}
 
 
 def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
@@ -67,16 +52,62 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
 
     @mcp.tool(
         name="status",
-        description="Says if TallyPrime is up, and the bridge version.",
+        description="Says if TallyPrime is up, which allowed companies are open, and the version.",
         annotations=READ_ONLY,
     )
     async def status() -> CallToolResult:
-        try:
-            up = await within(settings.call_deadline_s, reader.is_up())
-        except CallTimeout:
-            return refuse(timeout_sentence(settings.call_deadline_s))
-        if not up:
-            return refuse(TALLY_DOWN)
-        return answer({"tally": "up", "bridge_version": __version__})
+        async def work() -> dict[str, Any]:
+            if not await reader.is_up():
+                raise Refusal(TALLY_DOWN)
+            try:
+                root = await reader.post(envelope.collection("BridgeCompanies", company=None))
+                open_now: set[str] | None = set(records.company_names(root))
+            except (TallyRefused, TallyAnswerError):
+                open_now = None
+            companies = [
+                {"name": n, "open": None if open_now is None else n in open_now}
+                for n in settings.allowed_companies
+            ]
+            # Only allowed companies are named. A company that the setup screen
+            # did not allow stays unnamed, even when it is open.
+            return {"tally": "up", "bridge_version": __version__, "companies": companies}
+
+        return await guarded(settings, "status", work)
+
+    @mcp.tool(
+        name="find_ledgers",
+        description="Finds ledgers by name, with their group and closing balance.",
+        annotations=READ_ONLY,
+    )
+    async def find_ledgers(
+        query: Annotated[str, Field(max_length=100, description="Part of the ledger name.")],
+        group: Annotated[str | None, Field(max_length=100, description="Exact group name.")] = None,
+        limit: Annotated[int, Field(ge=1, le=FIND_LIMIT, description="Most rows.")] = 20,
+        company: Company = None,
+    ) -> CallToolResult:
+        async def work() -> dict[str, Any]:
+            name = pick_company(settings, company)
+            # The query never goes to Tally. The bridge filters here, so no
+            # text of the member reaches an envelope.
+            root = await reader.post(envelope.collection("BridgeLedgers", company=name))
+            needle = query.casefold()
+            hits = [
+                led
+                for led in records.ledgers(root)
+                if needle in led.name.casefold()
+                and (group is None or led.group.casefold() == group.casefold())
+            ]
+            rows = [
+                {"name": led.name, "group": led.group, "closing": _amount(led.closing)}
+                for led in hits[:limit]
+            ]
+            return {
+                "company": name,
+                "row_count": len(rows),
+                "truncated": len(hits) > limit,
+                "ledgers": rows,
+            }
+
+        return await guarded(settings, "find_ledgers", work, company=company)
 
     return mcp

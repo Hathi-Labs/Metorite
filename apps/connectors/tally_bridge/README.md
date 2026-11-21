@@ -51,8 +51,10 @@ such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
 | §6.5 rule 1: bind to a loopback address | Built (PR 1). The settings refuse another address |
 | §6.5 rule 2: hashed token, constant-time compare | Built (PR 1) |
 | §5.4 envelopes, §5.5 traps, §6.5 rules 3 and 7 | Built (PR 2). `reader/envelope.py`, `reader/parse.py`, `reader/values.py`, the queue of one in `reader/client.py` |
-| §6.4 read tools 2 to 9 | PR 3 and later |
-| §6.5 rule 4 (allow-list), rule 5 (rate limit), rule 6 (call log) | Later PRs |
+| §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is 1,093 bytes for 2 tools |
+| §6.5 rule 4: the company allow-list | Built (PR 3). `ALLOWED_COMPANIES`, exact names. With no allowed company, no tool reads the books |
+| §6.4 read tools 3 to 9 | PR 4 and later |
+| §6.5 rule 5 (rate limit), rule 6 (call log) | Later PRs |
 | §6.7 installer, Windows service, DPAPI, setup screen | Step 4. Needs Windows |
 
 ## Brief tests at the unit level (PR 1)
@@ -65,7 +67,7 @@ unit pass is not the brief test. The brief test runs on the public address.
 | 2: no token, a wrong token, the read token on `/mcp-write` | `test_no_token_is_401`, `test_wrong_token_is_401`, `test_read_token_on_mcp_write_is_404` |
 | 4: `tools/list` with TallyPrime closed, in under 2 seconds | `test_tools_list_with_tally_closed_is_fast` |
 | 5: `status` with TallyPrime closed, a plain error in under 25 seconds | `test_status_with_tally_closed_is_a_plain_error`, `test_status_with_tally_hung_stops_at_the_deadline` |
-| 10: `<`, `&` and a quote in an input give no Tally error | `test_every_input_stays_text_and_every_request_is_an_export` (the envelope half only) |
+| 10: `<`, `&` and a quote in an input give no Tally error | `test_every_input_stays_text_and_every_request_is_an_export`, and `test_brief_test_10_special_characters_find_nothing_and_never_reach_tally`: `find_ledgers` filters in the bridge, so the query never reaches Tally |
 
 `tests/unit/test_tally_bridge_reader.py` holds the fence of §6.5 rule 7: no
 read path can build an Import request.
