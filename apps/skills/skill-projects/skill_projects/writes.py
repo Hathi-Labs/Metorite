@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import functools
+import hashlib
 import json
 import math
 import re
@@ -60,6 +61,7 @@ from acb_common.mentions import mention_targets, new_mentions
 from skill_projects import choices, task_files
 from skill_projects.client import (
     GatewayRefusal,
+    PreconditionFailed,
     data,
     delete,
     get,
@@ -264,7 +266,14 @@ async def _confirm(
         request_confirmation,
     )
 
-    await _check_card(context)
+    try:
+        await _check_card(context)
+    except BaseException:
+        # HRD-22b item 5: a card that is refused before it goes out never takes
+        # the facts that the tool bound for it, so they must not reach the
+        # digest of the next card.
+        _drop_card_facts()
+        raise
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
     if edit is not None and rows is None:
@@ -310,12 +319,23 @@ def _not_confirmed() -> str:
     return parked_line() or card_not_done_text()
 
 
+def _drop_card_facts() -> None:
+    """Forget the facts bound for a card that was refused (HRD-22b item 5)."""
+    try:
+        from acb_skills.whatsapp_acts import drop_card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    drop_card_facts()
+
+
 def _bind_card_facts(**facts: Any) -> None:
     """Bind ids that the next card does not show (WS-47 WAC-4).
 
     ``acb_skills.whatsapp_acts.card_facts``: a stored WhatsApp act matches at
-    Confirm only when these ids match too. Outside a WhatsApp act it does
-    nothing, and the card the member sees never changes.
+    Confirm only when these ids match too. The facts also go into the text
+    that a late approve (HRD-22) and a stored call (RESUME-2a) match on, so
+    a replay of a card whose facts changed gets no grant. The card that the
+    member sees never changes.
     """
     try:
         from acb_skills.whatsapp_acts import card_facts
@@ -2021,6 +2041,9 @@ async def update_task(
     and no answer, the tool asks first. The card shows each change as before
     → after, and the timeline records every change."""
     tid, task = await _task(task_id)
+    # HRD-10a: the version of the read that the card shows. Taken BEFORE the
+    # card, from the same read, so a change while the card waits is a 412.
+    version = _card_version(task)
     plan = await _plan_task_edit(
         task,
         title=title,
@@ -2043,13 +2066,31 @@ async def update_task(
         return plan
     if plan.question:
         return plan.question
+    if version:
+        # HRD-10a: the version goes into the facts of the card, so the text
+        # of a late approve (HRD-22) or a stored call (RESUME-2a) holds it.
+        # A replay then meets a changed task as a card with another text,
+        # and the grant does not match: a new card shows. Flag off: no fact,
+        # and the card is the card of before.
+        _bind_card_facts(task_version=version)
     if not await _confirm(
         title="Update this task?",
         detail=plan.detail,
         context=_fields_block(plan.card, before=plan.before),
     ):
         return _not_confirmed()
-    updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    try:
+        if version:
+            updated = await patch(
+                f"/projects/tasks/{tid}", plan.payload, params=plan.params,
+                headers={"If-Match": version},
+            )
+        else:
+            # The flag is off: the request of before, byte for byte.
+            updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    except PreconditionFailed as exc:
+        # A 412 writes nothing. Each other refusal keeps its own path.
+        return _changed_since_card(tid, task, plan.payload, exc.current)
     updated["assignees"] = task.get("assignees") or []
     lane = plan.lane
     return "\n".join(
@@ -2060,6 +2101,138 @@ async def update_task(
             *_subtask_receipt(updated, "subtasks_completed", "complete"),
         ]
     )
+
+
+# ── HRD-10a: changed since the card ─────────────────────────────────────────
+#
+# `chat_failure_modes.md` §4 class C3. Behind `CHAT_CARD_PRECONDITION_ORGS`
+# (`ask_tools.card_precondition_on`), `update_task` sends the `updated_at` of
+# the read that the card shows as `If-Match`. A change while the card waits is
+# a 412, and the write does not happen. Owner decision A (2026-11-16): the
+# tool answers with text, and no new card shows unless the member asks.
+
+#: The name of each wire key of an edit, as a member reads it.
+_CHANGED_LABELS = {
+    "status_id": "status (id)",
+    "type_id": "type (id)",
+    "due_at": "due",
+    "start_date": "start",
+    "estimate_mins": "estimate",
+    "importance": "priority level",
+}
+
+
+def _precondition_on() -> bool:
+    """Whether the flag is on for the run's org. The org comes from the run
+    binding inside the reader, never from an argument (R5)."""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return False
+    return card_precondition_on()
+
+
+def _card_version(task: dict[str, Any], on: bool | None = None) -> str:
+    """The ``If-Match`` token of *task*: its ``updated_at``, or ``""`` when
+    the flag is off for the run's org, or the row has no stamp.
+
+    *on* is the answer of one earlier flag read. `update_tasks` reads the flag
+    ONCE and passes it to each row, so a reload in the middle of the plan
+    never leaves some rows with a version and some without (HRD-10b). None
+    reads the flag here."""
+    if not (_precondition_on() if on is None else on):
+        return ""
+    return str(task.get("updated_at") or "").strip()
+
+
+def _changed_value(value: Any) -> str:
+    """One value of the changed-since text. A task value can hold the words of
+    a stranger (a title, a tag, a custom value), so it goes through the same
+    fence as the card text (`data()`, «guillemets», one line). `_brief` also
+    caps it at `_DETAIL_NAME_MAX` characters, so a long description never
+    fills the answer."""
+    if value is None or value == "" or value == [] or value == {}:
+        return "(empty)"
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return _brief(value)
+
+
+def _changed_rows(
+    payload: dict[str, Any], before: dict[str, Any], now: dict[str, Any]
+) -> list[str]:
+    """One line for each field that the edit was going to change and that
+    another writer changed: the value that the card read, then the value now.
+    Only those fields. The rest of the task is never shown."""
+    rows: list[str] = []
+    for key in payload:
+        if key == "custom_fields":
+            old_cf = before.get("custom_fields") or {}
+            new_cf = now.get("custom_fields") or {}
+            for name in payload.get("custom_fields") or {}:
+                if old_cf.get(name) != new_cf.get(name):
+                    rows.append(
+                        f"  field {_brief(name)}: {_changed_value(old_cf.get(name))} → "
+                        f"{_changed_value(new_cf.get(name))}"
+                    )
+            continue
+        if before.get(key) != now.get(key):
+            rows.append(
+                f"  {_CHANGED_LABELS.get(key, key)}: {_changed_value(before.get(key))} → "
+                f"{_changed_value(now.get(key))}"
+            )
+    return rows
+
+
+def _changed_since_card(
+    tid: str, task: dict[str, Any], payload: dict[str, Any], current: dict[str, Any]
+) -> str:
+    """The answer of `update_task` to a 412 (HRD-10a). Nothing was written.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``). Then one
+    line for each field on the card that changed, from the row that the card
+    read (*task*) and the row of the 412 (*current*, ``detail.current``)."""
+    from acb_skills.ask_tools import CARD_CHANGED_SINCE, card_outcome_text
+
+    lines = [card_outcome_text(CARD_CHANGED_SINCE, f"The task {_ref(task)} was not updated.")]
+    lines.extend(_changed_body(task, payload, current))
+    lines.append(f"  full_id: {tid}")
+    return "\n".join(lines)
+
+
+def _changed_body(
+    task: dict[str, Any], payload: dict[str, Any], current: dict[str, Any]
+) -> list[str]:
+    """What changed on the card of one task: the lines after the head of a
+    changed-since answer. `update_task` (HRD-10a) and each changed row of
+    `update_tasks` (HRD-10b) give the same lines."""
+    if not current:
+        return ["The new values could not be read."]
+    rows = _changed_rows(payload, task, current)
+    if not rows:
+        return ["No field on the card changed. Another part of the task changed."]
+    return ["These fields on the card changed (on the card → now):", *rows]
+
+
+def _versions_fact(pairs: list[tuple[str, str]]) -> str:
+    """ONE card fact for the versions of many tasks (HRD-10b).
+
+    A short hash of the sorted ``(task_id, updated_at)`` pairs: 16 hex
+    characters of an 8-byte BLAKE2b digest. A change of any one version changes
+    the fact.
+
+    ⚠️ Defence in depth only, for a future grant of a card with rows. Today
+    a late approve (HRD-22) and a stored call (RESUME-2a) never apply to
+    `update_tasks`: a card with rows is never a PlainCard
+    (`ask_tools.request_confirmation`), so a replay always shows a new card.
+    The safety today comes from that rule, not from this fact. A hash, and
+    not the list of stamps, so 50 rows do not put 50 timestamps in the card
+    text."""
+    raw = json.dumps(sorted(pairs), separators=(",", ":"))
+    # An 8-byte digest is 16 hex characters, so no head slice is needed.
+    return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 
 class _EditPlan:
@@ -3204,6 +3377,25 @@ class _BatchRow:
     def done(self, result: Any) -> list[str]:  # pragma: no cover — every subclass says
         raise NotImplementedError
 
+    def changed_since(self, current: dict[str, Any]) -> list[str] | None:
+        """The receipt lines of a row whose write met a precondition 412
+        (HRD-10b): the row changed after the card, and nothing was written.
+        None for a row that sent no version: the 412 is then a refusal like
+        each other one."""
+        return None
+
+    def touched(self, result: Any) -> set[str]:
+        """The ids of the OTHER tasks that this row's own write changed, from
+        its reply (HRD-10b). Empty by default."""
+        return set()
+
+    async def after_own_write(self, touched: set[str]) -> list[str] | None:
+        """Called before `send` when an earlier row of the same card changed
+        other tasks (*touched*). A row on one of them can take a new version.
+        It answers the `changed_since` lines when the row must not be sent, or
+        None. The default does nothing."""
+        return None
+
 
 class _BatchWords:
     """The words of one batch tool's receipt."""
@@ -3241,6 +3433,10 @@ class _BatchOutcome:
         self.lines: list[str] = []
         self.failed: list[str] = []
         self.unknown: list[str] = []
+        #: HRD-10b: how many rows changed after the card, and their lines.
+        #: Nothing was written for each of them.
+        self.changed = 0
+        self.changed_lines: list[str] = []
 
 
 def _named_refusal(exc: GatewayRefusal) -> bool:
@@ -3332,10 +3528,30 @@ async def _apply_batch(chosen: list[_BatchRow]) -> _BatchOutcome:
     model would then do the acts again.
     """
     out = _BatchOutcome()
+    #: HRD-10b: the tasks that the member's own earlier rows of this card
+    #: changed (a parent with include_subtasks closes its open subtasks).
+    #: Only a row on one of them gets `after_own_write`. Each other row keeps
+    #: the version of the card.
+    touched: set[str] = set()
     for r in chosen:
+        if touched:
+            changed = await r.after_own_write(touched)
+            if changed is not None:
+                out.changed += 1
+                out.changed_lines.extend(changed)
+                continue
         try:
             result = await r.send()
         except Exception as exc:  # each row ends in the receipt, never in a raise
+            # HRD-10b: a row that sent its version and met a 412 changed after
+            # the card. Nothing was written, and the row is never sent again.
+            changed = (
+                r.changed_since(exc.current) if isinstance(exc, PreconditionFailed) else None
+            )
+            if changed is not None:
+                out.changed += 1
+                out.changed_lines.extend(changed)
+                continue
             if isinstance(exc, GatewayRefusal):
                 out.failed.append(f"failed: row {r.index} {r.failed_ref} {_refusal_words(exc)}.")
             else:
@@ -3349,6 +3565,7 @@ async def _apply_batch(chosen: list[_BatchRow]) -> _BatchOutcome:
         out.made += 1
         out.ok.add(r.row_id)
         out.lines.extend(r.done(result))
+        touched |= r.touched(result)
     return out
 
 
@@ -3380,8 +3597,18 @@ def _batch_receipt(
             parts.append(f"{len(out.unknown)} may have {words.maybe}: read the task before a retry.")
         if out.failed:
             parts.append(f"{len(out.failed)} {'was' if len(out.failed) == 1 else 'were'} refused.")
+        if out.changed:
+            parts.append(f"{out.changed} changed after the card.")
         head = " ".join(parts)
     lines = [head, *out.lines, *out.failed, *out.unknown]
+    if out.changed and not made and not out.failed and not out.unknown:
+        # HRD-10b: no write landed, and each row that was sent changed after
+        # the card. The HRD-7 text comes first, so the chat draws the outcome
+        # of `update_task` for the same case. In each other case the receipt
+        # holds NO HRD-7 sentence: the chat shows the receipt to the member
+        # as plain notes, and "nothing was done" would be false there. The
+        # line of each changed row says what happened.
+        lines.insert(0, _changed_head(words, out.changed))
     if out.failed or out.unknown:
         lines.append(
             f"stopped: {len(out.failed) + len(out.unknown)} of {len(chosen)} "
@@ -3393,8 +3620,24 @@ def _batch_receipt(
             f"was {words.undone}, fix it and call {words.tool} with that row only."
         )
     lines.extend(f"{words.undone}: row {r.index} {r.ref}: {_row_reason(r.why)}" for r in stuck)
+    lines.extend(out.changed_lines)
     lines.extend(f"left out: row {r.index} {r.ref}, unticked on the card." for r in left)
     return "\n".join(lines)
+
+
+def _changed_head(words: _BatchWords, n: int) -> str:
+    """The HRD-7 "Changed since the card" text for *n* rows of a batch, or
+    ``""`` when no row changed (HRD-10b)."""
+    if not n:
+        return ""
+    from acb_skills.ask_tools import CARD_CHANGED_SINCE, card_outcome_text
+
+    act = (
+        f"The {words.noun} below was {words.undone}."
+        if n == 1
+        else f"The {n} {words.nouns(n)} below were {words.undone}."
+    )
+    return card_outcome_text(CARD_CHANGED_SINCE, act)
 
 
 def _json_rows(
@@ -4101,6 +4344,9 @@ class _UpdateRow(_BatchRow):
         self.args = args
         self.task: dict[str, Any] = {}
         self.plan: _EditPlan | None = None
+        #: HRD-10b: the ``If-Match`` token of the read that the card shows
+        #: (`_card_version`), or ``""`` when the flag is off.
+        self.version = ""
 
     @property
     def ready(self) -> bool:
@@ -4137,11 +4383,72 @@ class _UpdateRow(_BatchRow):
     async def send(self) -> Any:
         assert self.plan is not None
         tid = uuid_of(self.task_id, "task_id")
-        updated = await patch(
-            f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params
-        )
+        if self.version:
+            # HRD-10b: the version of this row's own read. A change while the
+            # card waited is a 412, and `_apply_batch` names the row.
+            updated = await patch(
+                f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params,
+                headers={"If-Match": self.version},
+            )
+        else:
+            # The flag is off: the request of before, byte for byte.
+            updated = await patch(
+                f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params
+            )
         updated["assignees"] = self.task.get("assignees") or []
         return updated
+
+    def changed_since(self, current: dict[str, Any]) -> list[str] | None:
+        if not self.version or self.plan is None:
+            return None
+        body = _changed_body(self.task, self.plan.payload, current)
+        return [
+            f"{UPDATE_WORDS.undone}: row {self.index} {self.ref}: "
+            "the task changed after the card.",
+            *(f"  {line}" for line in body),
+        ]
+
+    def touched(self, result: Any) -> set[str]:
+        """The subtasks that this row's own cascade closed: the ``task_id``
+        of each ``subtask_changes`` entry of the PATCH reply
+        (``routes/projects/tasks.py``, ``cascade.complete_subtree``)."""
+        changes = result.get("subtask_changes") if isinstance(result, dict) else None
+        ids: set[str] = set()
+        for change in changes if isinstance(changes, list) else ():
+            raw = change.get("task_id") if isinstance(change, dict) else None
+            try:
+                ids.add(uuid_of(raw, "subtask_changes.task_id"))
+            except GatewayRefusal:
+                continue
+        return ids
+
+    async def after_own_write(self, touched: set[str]) -> list[str] | None:
+        """HRD-10b, F1. An earlier row of this card closed this task through
+        its cascade, so the version of the card is stale by the member's own
+        act. A 412 would then name a change that nobody else made.
+
+        The row reads the task again (one GET) and sends THAT version. A
+        third party that writes after this read still meets a 412. This is
+        narrower than no ``If-Match``, which would let each later change in.
+        Before the read, a third-party change of a field on the card is still
+        named: the row compares those fields of the card's read and of the
+        new read, and does not send when one differs. The status is left out
+        of that compare, because the cascade itself wrote it. A change of a
+        field off the card, or of the status, between the card and the
+        cascade is not caught. If the read fails, the row sends no
+        ``If-Match`` and the PATCH gives its own answer."""
+        if not self.version or self.task_id not in touched or self.plan is None:
+            return None
+        try:
+            now = (await _task(self.task_id))[1]
+        except Exception:  # the read is best effort: no version, the PATCH decides
+            self.version = ""
+            return None
+        payload = {k: v for k, v in self.plan.payload.items() if k != "status_id"}
+        if _changed_rows(payload, self.task, now):
+            return self.changed_since(now)
+        self.version = str(now.get("updated_at") or "").strip()
+        return None
 
     def done(self, result: Any) -> list[str]:
         assert self.plan is not None
@@ -4176,8 +4483,9 @@ def _update_rows(changes: str) -> list[_UpdateRow] | str:
     return rows
 
 
-async def _update_plan(row: _UpdateRow) -> None:
-    """Read the task and plan the row through `_plan_task_edit`. Reads only."""
+async def _update_plan(row: _UpdateRow, on: bool | None = None) -> None:
+    """Read the task and plan the row through `_plan_task_edit`. Reads only.
+    *on* is the ONE flag read of `update_tasks` (HRD-10b)."""
     est = row.args.get("estimate_mins")
     # update_task's int argument refuses "1h" and 1.5. int() would drop the
     # first and round the second, so the row says so instead.
@@ -4186,6 +4494,9 @@ async def _update_plan(row: _UpdateRow) -> None:
     )
     try:
         row.task = (await _task(row.task_id))[1]
+        # HRD-10b: the version of the read that plans the row and that the
+        # card shows. Taken BEFORE the card, as `update_task` takes it.
+        row.version = _card_version(row.task, on)
         if bad_estimate:
             row.why = "the estimate must be a whole number of minutes"
             return
@@ -4236,7 +4547,10 @@ async def update_tasks(changes: str) -> str:
     rows = _update_rows(changes)
     if isinstance(rows, str):
         return rows
-    await _each_at_once(rows, _update_plan)
+    # HRD-10b: ONE read of the flag for the whole call. The rows plan at the
+    # same time, and a reload in the middle must not split them.
+    on = _precondition_on()
+    await _each_at_once(rows, functools.partial(_update_plan, on=on))
     ready = [r for r in rows if r.ready]
     stuck = [r for r in rows if not r.ready]
     if not ready:
@@ -4249,6 +4563,16 @@ async def update_tasks(changes: str) -> str:
     }
     # No count on the card: a count goes stale when the member unticks a row.
     more = " and the tasks below" if len(ready) > 1 else ""
+    if any(r.version for r in ready):
+        # HRD-10b: ONE fact for the versions of every row on the card. It is
+        # defence in depth for a future grant of a card with rows. Today a
+        # card with rows is never a PlainCard, so a late approve (HRD-22) or
+        # a stored call (RESUME-2a) never applies here, and a replay always
+        # shows a new card. That rule is the safety today. This tool binds
+        # no other fact for this card. Flag off: no fact, the card of before.
+        _bind_card_facts(
+            task_versions=_versions_fact([(r.task_id, r.version) for r in ready])
+        )
     asked = await _ask_batch(
         "Update these tasks?",
         f"{ready[0].ref}{more} · untick a task to leave it out",

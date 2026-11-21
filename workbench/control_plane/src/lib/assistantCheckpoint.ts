@@ -24,6 +24,7 @@
  */
 
 import { serializeReasoning } from "@/lib/chatStream";
+import { ROUTE_EVENT } from "@/lib/tierRouting";
 
 export interface AssistantCheckpoint {
   threadId: string;
@@ -58,14 +59,22 @@ export function checkpointAgent(requested: string, message: string): string | un
   return isRoomAddress(message) ? undefined : requested;
 }
 
-/** True when the turn holds nothing worth a row. */
+/**
+ * The custom events that only label a turn. A row of labels alone is no
+ * answer (AO-3, incident 2026-11-17): a failed turn still sent its tier
+ * label, and the saved row then drew an empty reply. The twin is
+ * `LABEL_EVENTS` in `gateway/chat_fold.py`.
+ */
+export const LABEL_EVENTS: ReadonlySet<string> = new Set([ROUTE_EVENT]);
+
+/** True when the turn holds nothing worth a row. A label alone is nothing. */
 export function checkpointIsEmpty(c: AssistantCheckpoint): boolean {
   return (
     !c.content.trim() &&
     (c.toolEvents ?? []).length === 0 &&
     (c.reasoningBlocks ?? []).length === 0 &&
     (c.todos ?? []).length === 0 &&
-    (c.customEvents ?? []).length === 0
+    (c.customEvents ?? []).every((e) => LABEL_EVENTS.has(e.name))
   );
 }
 

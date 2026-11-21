@@ -1284,7 +1284,7 @@ export const RELEASE_COPY = {
 
 /** The confirm text. It names the client, and says what stays. */
 export function releaseBody(clientLabel: string): string {
-  return `${clientLabel} gives this task up. The task keeps its status and its assignees. Another AI session can then claim it.`;
+  return `${clientLabel} gives this task up. The assignees stay. The task moves to its lane: To Do, or In progress while a pull request is open. Another AI session can then claim it.`;
 }
 
 /**

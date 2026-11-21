@@ -119,5 +119,22 @@ def test_a_changed_fence_list_adds_the_tests_that_read_it(monkeypatch):
     the guards by name (finding F2 of the review of 2026-11-15)."""
     _patch_reach(monkeypatch, {})
     monkeypatch.setattr(ps.at, "FENCE_GUARD_TESTS", ("tests/unit/test_fence_lists.py",), raising=False)
+    monkeypatch.setattr(ps, "data_file_readers", lambda files, root: set())
     got = ps.pick(["tests/fences.json"], ["tests/fences.json"])
     assert got == ["tests/unit/test_fence_lists.py"]
+
+
+def test_a_changed_data_file_adds_every_test_that_names_it(monkeypatch, tmp_path):
+    """Task 3369: tests that read tests/fences.json, docs/flag_reload.md or a spec row as text."""
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+    (tmp_path / "tests/unit/test_reads_fences.py").write_text("p = 'tests/fences.json'\n", encoding="utf-8")
+    (tmp_path / "tests/unit/test_reads_flags.py").write_text("p = 'docs/flag_reload.md'\n", encoding="utf-8")
+    (tmp_path / "tests/unit/test_reads_rows.py").write_text("d = 'ai_studio_rows'\n", encoding="utf-8")
+    (tmp_path / "tests/unit/test_other.py").write_text("x = 1\n", encoding="utf-8")
+    assert ps.data_file_readers(["tests/fences.json"], tmp_path) == {"tests/unit/test_reads_fences.py"}
+    assert ps.data_file_readers(["docs/flag_reload.md"], tmp_path) == {"tests/unit/test_reads_flags.py"}
+    assert ps.data_file_readers(["project-docs/specs/ai_studio_rows/X-1.md"], tmp_path) == {"tests/unit/test_reads_rows.py"}
+    assert ps.data_file_readers(["src/a.py"], tmp_path) == set()
+    _patch_reach(monkeypatch, {})
+    got = ps.pick(["docs/flag_reload.md"], ["src/b.py"], tmp_path)
+    assert got == ["tests/unit/test_reads_flags.py"]

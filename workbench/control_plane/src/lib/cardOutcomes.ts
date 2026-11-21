@@ -42,7 +42,7 @@ export const CARD_OUTCOME_TEXTS: Readonly<Record<CardOutcome, CardOutcomeText>> 
   "no card": { lead: "Not shown", happened: "a card cannot show here, so nothing was done.", next: "Tell the member that this needs their approval on a card. Ask them to ask for it again in the Metorite web app, where a card can show." },
   "another member answered": { lead: "Answered by another member", happened: "someone other than the member who asked answered the card, so nothing was done.", next: "Tell the member that only they can approve this card. Ask whether to show it again." },
   parked: { lead: "Parked", happened: "the card waits in the chat for the member's answer, and nothing was done yet.", next: "Tell the member that the card waits for them. Do not say that it is done." },
-  "changed since": { lead: "Changed since the card", happened: "the item changed after the card showed, so nothing was done.", next: "Read the item again. Then show a new card with what is true now." },
+  "changed since": { lead: "Changed since the card", happened: "the item changed after the card showed, so nothing was done.", next: "Tell the member what changed. Show a new card only if the member asks for it." },
 };
 
 const OUTCOMES = Object.keys(CARD_OUTCOME_TEXTS) as CardOutcome[];
