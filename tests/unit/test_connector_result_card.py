@@ -28,8 +28,26 @@ def test_each_row_of_the_list_has_a_card_and_the_offer_follows_the_row() -> None
     for row in cl.connector_rows():
         card = result_card(row["id"])
         assert card is not None and card["label"] == row["label"]
-        assert card["build_offer"] is (not row["built_in_app_shows_data"]), row["id"]
+        offer = cl.chat_reads(row) and not row["built_in_app_shows_data"]
+        assert card["build_offer"] is offer, row["id"]
+        assert card["chat_reads"] is cl.chat_reads(row), row["id"]
         assert card["works_now"]["unlocks"] == row["unlocks"]
+
+
+def test_a_row_that_the_chat_does_not_read_says_so_and_offers_no_build() -> None:
+    """API-5 (``api_connections.md`` §2.12). Zoho Books has no chat reader
+    before API-4 (task 3790). The card says what is true now and what comes
+    next, and it offers no app: an app cannot read the connection either."""
+    card = result_card("api:zoho_books")
+    assert card is not None and card["chat_reads"] is False
+    assert card["build_offer"] is False
+    assert card["works_now"]["mira"] == "The chat cannot read Zoho Books yet. That comes in a later release."
+    line = chat_line(card)
+    assert "Mira can now" not in line and "Next step" not in line
+    assert line.startswith("Zoho Books is connected.")
+    # Only an api: row carries the switch. Every other row reads as true.
+    for row in cl.connector_rows():
+        assert (cl.CHAT_READS in row) is row["id"].startswith("api:"), row["id"]
 
 
 def test_a_mailbox_connect_shows_no_build_offer() -> None:

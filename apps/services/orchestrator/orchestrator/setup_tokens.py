@@ -53,6 +53,11 @@ UNREACHABLE_NOTE = (
 #: The longest refusal detail that the note repeats. The gateway's words are short.
 MAX_DETAIL = 120
 
+#: What the answer says in a skill test (WS-STU F4b). A token in the model
+#: text is no tool call, so the hold of the dry run never sees it. So this
+#: writer saves nothing while a dry run is bound, and says so.
+DRY_RUN_NOTE = "This run is a skill test, so Metorite saved no key."
+
 
 def split_setup_vars(
     matches: Iterable[tuple[str, str, str]],
@@ -94,7 +99,13 @@ async def save_setup_vars(
     """Save the keys of one answer. Returns the note for the answer, or ``""``.
 
     *client* is an ``httpx.AsyncClient``. Never raises, and never logs a value.
+    In a skill test (``skill_dry_run.current_dry_run()`` is set) it sends no
+    request and answers :data:`DRY_RUN_NOTE`.
     """
+    from acb_skills.skill_dry_run import current_dry_run
+
+    if current_dry_run() is not None:
+        return DRY_RUN_NOTE
     token, rest = split_setup_vars(matches)
     if rest:
         # The configure keeps its own refusals (layers A, B and C).
@@ -118,6 +129,7 @@ async def save_setup_vars(
 
 __all__ = [
     "APP_CONNECTED_NOTE",
+    "DRY_RUN_NOTE",
     "GITHUB_TOKEN_KEY",
     "UNREACHABLE_NOTE",
     "github_setup_note",

@@ -294,6 +294,20 @@ def test_empty_run_folds_to_none():
     assert fold_run_events([_ev("RUN_FINISHED", 1000)]) is None
 
 
+def test_a_turn_the_ai_could_not_answer_folds_to_none():
+    """AO-3, incident 2026-11-17: the Router refused every step. The run
+    sent its tier label and then its error, and no answer. The fold saved a
+    row of the label alone, and the member saw an empty reply. A label is no
+    answer, so the run folds to nothing, and the browser's checkpoint agrees
+    (``checkpointIsEmpty``)."""
+    events = [
+        _ev("RUN_STARTED", 1000, runId="r-ao3"),
+        _ev("CUSTOM", 1010, name="ai.route", value={"tier": "tier-balanced"}),
+        _ev("RUN_ERROR", 2000, code="ai_unavailable", ref="r-ao3", message="x"),
+    ]
+    assert fold_run_events(events) is None
+
+
 def test_reasoning_groups_on_paragraph_breaks():
     blocks: list[str] = []
     for chunk in ["First thought", " continues.", "\n\nSecond thought."]:

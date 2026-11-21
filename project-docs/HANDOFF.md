@@ -83,6 +83,46 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-445 · Finish the setup of the Google Cloud dev box `aroh-dev-1`, then delete the temporary office SSH rule · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The Metorite MCP was signed out in the session that built the box.
+- **Why:** D230 approved the box. The VM runs, and nothing else is set up on it. `docs/gcp_aroh.md` §5 and §6 hold the steps and the three traps of `setup.sh`.
+- **Do this:**
+  1. A person signs the box in to Tailscale, with the account of the home server. On the box, `sudo tailscale up --hostname=aroh-dev-1` prints the link.
+  2. Run `BOX_NAME=aroh-dev-1 SETUP_NO_SIGNIN=1 bash setup.sh`, then `dev_toolchain.sh` and `dev_verify.sh` as `dev`.
+  3. A person signs `dev` in to Claude, GitHub and the Metorite MCP.
+  4. Add `aroh-dev-1` to `~/.ssh/config` on the PC. Point `CI_HOME` at `ci@aroh-dev-1` when the CI lane moves there.
+  5. Delete the firewall rule `aroh-vpc-tmp-ssh-office` and the `ufw` rule for `49.204.144.74` on the box.
+- **Check:** `gcloud compute firewall-rules describe aroh-vpc-tmp-ssh-office --project=metorite-513907 --format='value(name)'` prints the name → STILL PENDING. "not found" means step 5 is done. Then confirm `ssh dev@aroh-dev-1 'bash ~/Metorite/scripts/home_server/dev_verify.sh'` passes over Tailscale.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-446 · Ask the Google Cloud admin for four roles that the dev box needs · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** our account cannot change IAM in `metorite-513907`. Without these roles, IAP SSH fails with `4033: not authorized`, and the box sends no logs or metrics.
+- **Ask for:** IAP-secured Tunnel User (`roles/iap.tunnelResourceAccessor`) for the account that runs `gcloud` on the PC. Logs Writer (`roles/logging.logWriter`) and Monitoring Metric Writer (`roles/monitoring.metricWriter`) for `sa-aroh-dev@metorite-513907.iam.gserviceaccount.com`. Storage Admin and Logs Viewer for the account, for backups and logs later.
+- **Check:** `testIamPermissions` for `iap.tunnelInstances.accessViaIAP`, as `docs/gcp_aroh.md` §2 shows. An empty `{}` → STILL PENDING. One permission per call, and HTTP 429 means "ask again later", not "no".
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-447 · Ask the admin about `metorite-vpc` and its two subnets, and the project display name · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** the Google team made `metorite-vpc`, `metorite-app-subnet` (`10.0.1.0/24`) and `metorite-dev-subnet` (`10.0.2.0/24`) on 2026-11-19. They are empty, they break the aroh name of D229, and `10.0.x` is the range most likely to clash with a VPN. The display name of the project is still "Metorite".
+- **Recommend:** delete the VPC and both subnets, and rename the project display name to "aroh". An agent must not delete them, because the admin made them.
+- **Check:** `gcloud compute networks list --project=metorite-513907 --format='value(name)' | grep -c metorite-vpc` → 1 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-448 · Decide where the production database runs on Google Cloud, then test the migration ladder on Cloud SQL · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** production will move to Google Cloud. The data is small, about 200 MB (`specs/backup_and_restore.md`). Supabase also gives Storage for files and backups, and Auth for operator sign-in, so both need a replacement.
+- **Recommend:** Cloud SQL for PostgreSQL 16, apart from the app box, as Supabase is apart today. It gives point-in-time restore, and our migrations only roll forward (R6). Start small and single-zone. The risk to test first: 18 migrations rely on a migration role that bypasses RLS, and Cloud SQL gives no true superuser. Run the whole ladder and the R8 suites on a small instance before any cutover. Supabase is decision D34, so the owner decides.
+- **Check:** `grep -c -E '^### D[0-9]+ .*(Cloud SQL|production database)' project-docs/work_plan.md` → 0 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-449 · Give the AI Router a way to call Gemini 4 Argon on Vertex · [AGENT]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** Google blocks Argon on the Gemini API key route. Vertex serves it, also in the OpenAI shape, but Vertex wants a Google OAuth token, not a fixed key. The Router keeps one fixed secret per provider. `docs/gcp_aroh.md` §7 holds the tests.
+- **Do this:** first ask the Google team two questions. Can a Vertex API key bound to a service account work on the OpenAI endpoint? Or can they open Argon on the Gemini API route for the paid project? A yes to either needs no code. Otherwise, when the app box runs on Google Cloud, add a `vertex_ai` provider that passes the project and the location, and add `google-auth`. The attached service account then signs each call.
+- **Check:** `grep -rc 'vertex_ai/' apps/services/customer_console/customer_console/*.py | grep -v ':0' | wc -l` → 0 means STILL PENDING, unless the Google team's answer removed the need. Record that answer here.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
 ### H-444 · Close five gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
 - **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
 - **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because five gaps stay open:
