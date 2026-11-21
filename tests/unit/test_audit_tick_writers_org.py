@@ -24,7 +24,7 @@ off, every row stays as before, so the change is dark. A payload field never
 gives the org (R5).
 
 This file proves the skip, the system rows and the dark path with no
-database, and it holds the AST source fence. The real table under FORCE RLS
+database, and it runs the AST source fence of ``_audit_guard_fence.py``. The real table under FORCE RLS
 is ``test_audit_tick_writers_org_r8.py`` (R8).
 """
 from __future__ import annotations
@@ -41,6 +41,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.unit._audit_guard_fence import (
+    SYSTEM_CALLS,
+    action_of,
+    audit_fence_violations,
+)
+from tests.unit._audit_guard_fence import WRITERS as FENCED_WRITERS
 
 REPO = Path(__file__).resolve().parents[2]
 GMAIL_TOKEN = "t2221-gmail-token"
@@ -357,141 +364,10 @@ def test_an_escalation_row_keeps_its_tenant_text_with_the_bind_off(events, monke
 
 
 # ==========================================================================
-# 4. The source fence (AST). Each audit write sits inside ``_audit``, or it
-#    is one of the named Option-A system rows.
+# 4. The source fence (AST). ``_audit_guard_fence.py`` holds the checks and
+#    the threat model. Each audit write sits inside the one guard, or it is
+#    one of the named Option-A system rows.
 # ==========================================================================
-#: The only names a writer here may import from ``acb_audit``, never renamed.
-_IMPORTABLE = {"AuditEvent", "record", "refuse_tenantless"}
-#: The names that write a row. ``_persist`` is never imported here.
-_SINKS = {"record", "_persist"}
-#: The Option-A system rows: (path, function, action). Nothing else may call
-#: ``record`` outside ``_audit``.
-SYSTEM_CALLS = {
-    ("apps/services/ingestion/ingestion/scheduler.py", "_run_zoho", "run_ok"),
-    ("apps/services/ingestion/ingestion/scheduler.py", "_serve", "scheduler_started"),
-}
-_GUARD = "if not refuse_tenantless(event):\n    record(event)"
-
-
-def _action_of(call: ast.Call) -> str | None:
-    if call.args and isinstance(call.args[0], ast.Call):
-        for kw in call.args[0].keywords:
-            if kw.arg == "action" and isinstance(kw.value, ast.Constant):
-                return kw.value.value
-    return None
-
-
-def _import_violations(node: ast.AST, at: str) -> list[str]:
-    """An import of ``acb_audit`` that is not a plain allowed name."""
-    if isinstance(node, ast.Import):
-        return [f"{at}: import {a.name}" for a in node.names
-                if a.name.split(".")[0] == "acb_audit"]
-    if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "acb_audit":
-        return [
-            f"{at}: from {node.module} import {a.name} as {a.asname}"
-            for a in node.names
-            if node.module != "acb_audit" or a.name not in _IMPORTABLE or a.asname
-        ]
-    return []
-
-
-#: Names that reach a module attribute by a string, so they could reach
-#: ``record`` around the guard. No writer module uses one, so each is refused.
-_REFLECTION = {
-    "globals", "locals", "vars", "getattr", "setattr", "delattr", "__import__",
-    "eval", "exec", "compile", "importlib", "import_module",
-}
-_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-
-
-def _nearest_function(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> ast.AST | None:
-    up = node
-    while up in parents:
-        up = parents[up]
-        if isinstance(up, _FUNCTIONS):
-            return up
-    return None
-
-
-def _sink_violation(node: ast.Name, parents: dict[ast.AST, ast.AST], path: str,
-                    at: str, guard: ast.AST | None, top: set[int]) -> str | None:
-    """A use of ``record`` or ``_persist`` outside the guard and the system rows.
-
-    The call must sit directly in THE module-level ``_audit`` (*guard*, by
-    identity), or directly in a module-level function that ``SYSTEM_CALLS``
-    names with its action. A nested or second ``_audit`` does not count.
-    """
-    parent = parents.get(node)
-    if not (isinstance(parent, ast.Call) and parent.func is node):
-        return f"{at}: {node.id} used as a value, not called"
-    fn = _nearest_function(node, parents)
-    if fn is not None and fn is guard:
-        return None
-    if (fn is not None and id(fn) in top
-            and (path, fn.name, _action_of(parent)) in SYSTEM_CALLS):
-        return None
-    name = getattr(fn, "name", None)
-    return f"{at}: {node.id}() in {name}, outside the module-level _audit"
-
-
-def _reflection_violation(node: ast.AST, at: str) -> str | None:
-    """A name or an attribute that reaches a module attribute by a string."""
-    if isinstance(node, ast.Name) and node.id in _REFLECTION:
-        return f"{at}: {node.id} can reach record around _audit"
-    if isinstance(node, ast.Attribute) and (
-        node.attr in _REFLECTION or node.attr in {"__dict__", "modules"}
-    ):
-        return f"{at}: .{node.attr} can reach record around _audit"
-    if isinstance(node, ast.Import | ast.ImportFrom):
-        names = [a.name for a in node.names] + [getattr(node, "module", None) or ""]
-        if any(n.split(".")[0] in {"importlib", "sys"} for n in names):
-            return f"{at}: an import of importlib or sys can reach record around _audit"
-    return None
-
-
-def _guard_of(tree: ast.Module, path: str, out: list[str]) -> ast.AST | None:
-    """THE one ``_audit``: module level, sync or async, and exactly the guard."""
-    audits = [n for n in ast.walk(tree) if isinstance(n, _FUNCTIONS) and n.name == "_audit"]
-    if len(audits) != 1:
-        out.append(f"{path}: expected one _audit in the module, found {len(audits)}")
-        return None
-    [guard] = audits
-    if guard not in tree.body or not isinstance(guard, ast.FunctionDef):
-        out.append(f"{path}: _audit must be a module-level def")
-        return None
-    body = [s for s in guard.body
-            if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
-    if [ast.unparse(s) for s in body] != [_GUARD]:
-        out.append(f"{path}: _audit is not the refuse_tenantless guard")
-        return None
-    return guard
-
-
-def audit_fence_violations(src: str, path: str) -> list[str]:
-    """Each way that *src* writes an audit row around the guard."""
-    tree = ast.parse(src)
-    parents: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-
-    out: list[str] = []
-    guard = _guard_of(tree, path, out)
-    top = {id(n) for n in tree.body if isinstance(n, _FUNCTIONS)}
-    for node in ast.walk(tree):
-        at = f"{path}:{getattr(node, 'lineno', '?')}"
-        out += _import_violations(node, at)
-        found = _reflection_violation(node, at)
-        if isinstance(node, ast.Attribute) and node.attr in _SINKS:
-            found = f"{at}: .{node.attr} reaches the audit seam around _audit"
-        elif isinstance(node, ast.Name) and node.id in _SINKS:
-            found = found or _sink_violation(node, parents, path, at, guard, top)
-        elif isinstance(node, ast.keyword) and node.arg == "organization_id":
-            found = f"{at}: organization_id= on an audit row with no tenant source"
-        out += [found] if found else []
-    return out
-
-
 def _source(path: str) -> str:
     return (REPO / path).read_text(encoding="utf-8-sig")
 
@@ -501,110 +377,210 @@ def test_each_writer_records_only_through_the_guard(path: str) -> None:
     assert audit_fence_violations(_source(path), path) == []
 
 
+def test_the_fence_covers_each_writer() -> None:
+    assert set(FENCED_WRITERS) == set(WRITERS.values())
+    assert set(FENCED_WRITERS.values()) == set(WRITERS)
+
+
 def test_each_named_system_row_is_in_the_source() -> None:
     """The allow-list names real calls, so a stale entry fails."""
     for path, fn, action in SYSTEM_CALLS:
         tree = ast.parse(_source(path))
         found = [
             c
-            for n in ast.walk(tree)
+            for n in tree.body
             if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef) and n.name == fn
             for c in ast.walk(n)
             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
-            and c.func.id == "record" and _action_of(c) == action
+            and c.func.id == "record" and action_of(c) == action
         ]
         assert len(found) == 1, (path, fn, action)
 
 
+# --------------------------------------------------------------------------
+# Self-tests: each known bypass is red, for its own rule. The anchors come
+# from the AST of the real file, so a mutant cannot hide by moving text.
+# --------------------------------------------------------------------------
 _GMAIL = "apps/services/ingestion/ingestion/sources/gmail/webhook.py"
-_IMPORT = "from acb_audit import AuditEvent, record, refuse_tenantless"
-_CALL = "    _audit(\n        AuditEvent("
+_EV = 'AuditEvent(actor="webhook:gmail", action="leaked", target="gmail:x")'
 
 
-@pytest.mark.parametrize(
-    ("label", "old", "new"),
-    [
-        ("aliased record", _IMPORT, _IMPORT + "\nfrom acb_audit import record as _write"),
-        ("_persist import", _IMPORT, _IMPORT + "\nfrom acb_audit.log import _persist"),
-        ("module import", _IMPORT, "import acb_audit\n" + _IMPORT),
-        ("bare call", _CALL, "    record(\n        AuditEvent("),
-        ("attribute call", _CALL, "    acb_audit.record(\n        AuditEvent("),
-        ("value alias", _CALL, "    w = record\n    w(\n        AuditEvent("),
-        ("no guard", "    if not refuse_tenantless(event):\n        record(event)",
-         "    record(event)"),
-    ],
-)
-def test_the_fence_catches_a_way_around_the_guard(label: str, old: str, new: str) -> None:
-    src = _source(_GMAIL)
-    assert old in src, label
-    mutant = src.replace(old, new, 1)
-    if label == "aliased record":
-        mutant = mutant.replace(_CALL, "    _write(\n        AuditEvent(", 1)
-    assert audit_fence_violations(mutant, _GMAIL), f"the fence missed: {label}"
+def _lines(src: str) -> list[str]:
+    return src.splitlines(keepends=True)
 
 
-_LEAK_EVENT = 'AuditEvent(actor="webhook:gmail", action="leaked", target="gmail:x")'
-#: Code added at the end of a writer module. Each one reaches ``record``
-#: around the guard, by a second ``_audit`` or by reflection.
-_ADDED = {
+def _guard_line(src: str) -> int:
+    """The 0-based line of ``def _audit``."""
+    [fn] = [n for n in ast.parse(src).body
+            if isinstance(n, ast.FunctionDef) and n.name == "_audit"]
+    return fn.lineno - 1
+
+
+def _first_guarded_call(src: str) -> ast.Call:
+    calls = [n for n in ast.walk(ast.parse(src))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_audit"]
+    return min(calls, key=lambda c: c.lineno)
+
+
+def _replace_name_at(src: str, call: ast.Call, new: str) -> str:
+    """Replace the called name of *call* with *new*, by its position."""
+    lines = _lines(src)
+    i, col = call.func.lineno - 1, call.func.col_offset
+    lines[i] = lines[i][:col] + new + lines[i][col + len(call.func.id):]
+    return "".join(lines)
+
+
+def _add(src: str, code: str) -> str:
+    return src.rstrip("\n") + "\n\n\n" + code
+
+
+def mutant_g(src: str) -> str:
+    """G: a decorator on the guard that writes the row itself."""
+    lines = _lines(src)
+    i = _guard_line(src)
+    lines.insert(i, "@(lambda _f: lambda e: record(e))\n")
+    return "".join(lines)
+
+
+def mutant_h(src: str) -> str:
+    """H: a default on the guard that writes the row, called through __defaults__."""
+    lines = _lines(src)
+    i = _guard_line(src)
+    lines[i] = "def _audit(event: AuditEvent, _w=lambda e: record(e)) -> None:\n"
+    return _add("".join(lines), f"def _other() -> None:\n    _audit.__defaults__[0]({_EV})\n")
+
+
+def mutant_i(src: str) -> str:
+    """I: the guard's check is bound again, so it never refuses."""
+    return _add(src, "refuse_tenantless = lambda _e: False\n")
+
+
+def mutant_j(src: str) -> str:
+    """J: ``record`` of another writer module, through ``operator``."""
+    return _add(src, (
+        "import operator\n"
+        "from ingestion.sources.zoho import webhook as _z\n\n\n"
+        "def _other() -> None:\n"
+        f"    operator.attrgetter('record')(_z)({_EV})\n"
+    ))
+
+
+def mutant_k(src: str) -> str:
+    """K: ``record`` through the guard's ``__globals__``."""
+    return _add(src, f"def _other() -> None:\n    _audit.__globals__['record']({_EV})\n")
+
+
+#: Each mutant, and a part of the message that its own rule gives.
+MUTANTS = {
+    "G decorator on the guard": (mutant_g, "_audit has a decorator"),
+    "H default on the guard": (mutant_h, "no default"),
+    "I check bound again": (mutant_i, "refuse_tenantless is bound again"),
+    "J operator and a writer import": (mutant_j, "an import of operator"),
+    "J writer module import": (mutant_j, "an import of the writer module"),
+    "K __globals__": (mutant_k, "the dunder attribute .__globals__"),
+    "H __defaults__": (mutant_h, "the dunder attribute .__defaults__"),
     "nested async _audit (Clean C)": (
-        "async def _leak() -> None:\n"
-        "    async def _audit(e):\n"
-        "        record(e)\n"
-        f"    await _audit({_LEAK_EVENT})\n"
+        lambda s: _add(s, (
+            "async def _leak() -> None:\n"
+            "    async def _audit(e):\n"
+            "        record(e)\n"
+            f"    await _audit({_EV})\n"
+        )),
+        "expected one _audit in the module, found 2",
     ),
     "nested sync _audit": (
-        "def _other() -> None:\n"
-        "    def _audit(e):\n"
-        "        record(e)\n"
-        f"    _audit({_LEAK_EVENT})\n"
+        lambda s: _add(s, (
+            "def _other() -> None:\n"
+            "    def _audit(e):\n"
+            "        record(e)\n"
+            f"    _audit({_EV})\n"
+        )),
+        "expected one _audit in the module, found 2",
     ),
     "globals lookup": (
-        "def _other() -> None:\n"
-        f'    globals()["record"]({_LEAK_EVENT})\n'
+        lambda s: _add(s, f'def _other() -> None:\n    globals()["record"]({_EV})\n'),
+        "globals can reach record",
     ),
     "getattr on import_module": (
-        "import importlib\n\n\n"
-        "def _other() -> None:\n"
-        f'    getattr(importlib.import_module("acb_audit"), "record")({_LEAK_EVENT})\n'
+        lambda s: _add(s, (
+            "import importlib\n\n\n"
+            "def _other() -> None:\n"
+            f'    getattr(importlib.import_module("acb_audit"), "record")({_EV})\n'
+        )),
+        "an import of importlib",
     ),
     "__import__": (
-        "def _other() -> None:\n"
-        f'    __import__("acb_audit").record({_LEAK_EVENT})\n'
+        lambda s: _add(s, f'def _other() -> None:\n    __import__("acb_audit").record({_EV})\n'),
+        "__import__ can reach record",
     ),
     "sys.modules": (
-        "import sys\n\n\n"
-        "def _other() -> None:\n"
-        f'    sys.modules["acb_audit"].__dict__["record"]({_LEAK_EVENT})\n'
+        lambda s: _add(s, (
+            "import sys\n\n\n"
+            "def _other() -> None:\n"
+            f'    sys.modules["acb_audit"].record({_EV})\n'
+        )),
+        "an import of sys",
+    ),
+    "aliased record import": (
+        lambda s: _add(s, "from acb_audit import record as _write\n"),
+        "expected one acb_audit import",
+    ),
+    "_persist import": (
+        lambda s: _add(s, "from acb_audit.log import _persist\n"),
+        "an import of acb_audit.log",
+    ),
+    "module import": (
+        lambda s: _add(s, "import acb_audit\n"),
+        "an import of acb_audit",
+    ),
+    "bare call": (
+        lambda s: _replace_name_at(s, _first_guarded_call(s), "record"),
+        "record() outside the guard",
+    ),
+    "value alias": (
+        lambda s: _add(s, f"def _other() -> None:\n    w = record\n    w({_EV})\n"),
+        "record used as a value",
+    ),
+    "async guard": (
+        lambda s: "".join(
+            ("async " + ln) if i == _guard_line(s) else ln
+            for i, ln in enumerate(_lines(s))
+        ),
+        "_audit must be a module-level def",
+    ),
+    "no guard": (
+        lambda s: s.replace(
+            "    if not refuse_tenantless(event):\n        record(event)",
+            "    record(event)", 1,
+        ),
+        "the guard text is not the allowed one",
     ),
 }
 
 
-@pytest.mark.parametrize("label", sorted(_ADDED))
-def test_the_fence_catches_a_second_audit_or_reflection(label: str) -> None:
-    mutant = _source(_GMAIL) + "\n\n" + _ADDED[label]
-    assert audit_fence_violations(mutant, _GMAIL), f"the fence missed: {label}"
-
-
-def test_the_fence_refuses_an_async_audit_in_place_of_the_guard() -> None:
+@pytest.mark.parametrize("label", sorted(MUTANTS))
+def test_the_fence_catches_each_known_bypass(label: str) -> None:
+    make, reason = MUTANTS[label]
     src = _source(_GMAIL)
-    old = "def _audit(event: AuditEvent) -> None:"
-    assert old in src
-    mutant = src.replace(old, "async " + old, 1)
-    assert audit_fence_violations(mutant, _GMAIL)
+    mutant = make(src)
+    assert mutant != src, f"{label}: the mutant did not change the source"
+    found = audit_fence_violations(mutant, _GMAIL)
+    assert any(reason in v for v in found), f"{label}: expected {reason!r} in {found}"
 
 
 def test_the_fence_refuses_a_nested_function_with_a_system_name() -> None:
-    """A system row counts only in its own module-level function."""
+    """A system row counts only as a statement of its own module-level function."""
     path = "apps/services/ingestion/ingestion/scheduler.py"
     src = _source(path)
-    old = "async def _run_reconciler() -> None:\n"
-    assert old in src
-    spoof = (
-        old
-        + "    async def _serve() -> None:\n"
-        + '        record(AuditEvent(actor="job:scheduler", action="scheduler_started",'
-        + ' target="scheduler", payload={"error": "tenant text"}))\n\n'
-        + "    await _serve()\n"
-    )
-    assert audit_fence_violations(src.replace(old, spoof, 1), path)
+    [fn] = [n for n in ast.parse(src).body
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_reconciler"]
+    lines = _lines(src)
+    lines.insert(fn.body[0].lineno - 1, (
+        "    async def _serve() -> None:\n"
+        '        record(AuditEvent(actor="job:scheduler", action="scheduler_started",'
+        ' target="scheduler", payload={"error": "tenant text"}))\n\n'
+        "    await _serve()\n"
+    ))
+    found = audit_fence_violations("".join(lines), path)
+    assert any("record() outside the guard" in v for v in found), found
