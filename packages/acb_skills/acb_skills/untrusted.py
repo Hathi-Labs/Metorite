@@ -407,10 +407,29 @@ def neutralised_pattern(text: str) -> re.Pattern[str]:
 #: A marker of this module anywhere in a text: at the start of a line, glued
 #: to other text, or inside a JSON string, where a new line is ``\n``.
 _MARKER_ANYWHERE_RE = re.compile(r"<<<(END )?([A-Z][A-Z ]{0,38}[A-Z]) ([0-9a-f]{16})>>>")
-#: The start of a marker that a cut split at the end of a text: the three
-#: brackets, the label or a part of it, a part of the token, and at most two
-#: closing brackets.
-_SPLIT_MARKER_RE = re.compile(r"<<<[A-Z ]{0,47}(?: [0-9a-f]{0,16}>{0,2})?\Z")
+#: Each label of a block that the tree writes (task 3849). Only a split
+#: marker of one of these labels goes from the end of a cut text
+#: (:func:`close_cut_blocks`). Any other tail stays as it was. A new label
+#: joins this set, or ``test_each_frame_label_of_the_tree_is_known`` fails.
+FRAME_LABELS: frozenset[str] = frozenset({
+    "AGENT ANSWER", "ATTACHMENT TEXT", "BRIEF CLAIMS", "CALENDAR",
+    "CALENDAR EVENTS", "COMPUTE STDERR", "COMPUTE STDOUT", "CRM NOTE", "DRAFT",
+    "EARLIER THREAD", "EMAIL", "EMAIL HEAD", "FILES", "FORWARDED EMAIL",
+    "GATHERED CONTEXT", "IMAGE", "INCOMING", "INSIGHTS", "KNOWLEDGE PAGE",
+    "LATEST MESSAGE", "MCP RESULT", "MCP TOOL LIST", "PAST REPLIES", "PASTED TEXT",
+    "REPLIED EMAIL", "SENT", "SENT EXAMPLES", "SKILL DESCRIPTION",
+    "SKILL INSTRUCTIONS", "SOURCE", "STUDIO PACKAGES", "STUDIO RECORDS",
+    "STUDIO WORKFLOW", "STUDIO WORKFLOW CARD", "STUDIO WORKFLOWS",
+    "SUB AGENT ITEMS", "THREAD", "TOOL RESULT", "WEB PAGE", "WORKFLOW PROBLEMS",
+    "WORKFLOW STEPS",
+})
+#: The open and END forms of each label, which a split marker can start.
+_MARKER_HEADS: tuple[str, ...] = tuple(
+    sorted({*FRAME_LABELS, *(f"END {label}" for label in FRAME_LABELS)}))
+#: The longest split marker: the brackets, ``END``, a label, a space, the
+#: token and two closing brackets.
+_SPLIT_MAX = 3 + 4 + 40 + 1 + 2 * TOKEN_BYTES + 2
+_SPLIT_TOKEN_RE = re.compile(r"[0-9a-f]{0,16}>{0,2}")
 #: The label that :meth:`UntrustedFrame.note` and :meth:`UntrustedFrame.paste_note`
 #: name in a sentence. No block of the tree has it, so the scan skips it.
 _NOTE_LABEL = "NAME"
@@ -439,26 +458,60 @@ def open_blocks(text: str) -> list[tuple[str, str]]:
     return stack
 
 
+def _split_marker_at(text: str) -> int | None:
+    """Where a split marker starts at the end of *text*, or None.
+
+    A split marker is ``<<<`` with no ``<`` before it, then a part of an open
+    or END form of a label of :data:`FRAME_LABELS`. One letter of it is
+    enough. After a whole label, a space, a part of the token and at most two
+    ``>`` can follow. A bare ``<<<``, a label that the tree does not write
+    (``<<<EOF``, ``<<<ABC 12``) and a longer run of ``<`` are not split
+    markers."""
+    at = text.rfind("<<<", max(0, len(text) - _SPLIT_MAX))
+    if at < 0 or (at > 0 and text[at - 1] == "<"):
+        return None
+    rest = text[at + 3:]
+    if not rest:
+        return None
+    for head in _MARKER_HEADS:
+        if head.startswith(rest):
+            return at
+        if rest.startswith(head + " ") and _SPLIT_TOKEN_RE.fullmatch(rest[len(head) + 1:]):
+            return at
+    return None
+
+
 def close_cut_blocks(head: str, limit: int) -> str:
     """*head*, the head of a cut text, made to hold each of its blocks whole
     in at most *limit* characters (task 3849).
 
-    1. A marker that the cut split at the end goes, so no half marker stays.
+    1. A split marker at the end goes (:func:`_split_marker_at`). It is
+       ``<<<`` and then a part of a marker of a label of
+       :data:`FRAME_LABELS`. Any other tail stays, ``<<<EOF`` or
+       ``<<<<<<< HEAD`` too.
     2. Each block that the rest opens and does not close gets its END line,
-       on a line of its own, innermost first, and then one new line.
+       on a line of its own, innermost first, and then one new line. A bare
+       ``<<<`` at the end goes only then, because the head changes anyway.
     3. When those END lines do not fit in *limit*, the cut moves back. A
        head that cannot hold a whole block holds no block.
 
-    A head that opens no block and splits no marker comes back as it is.
-    The caller puts its own text, such as a truncation mark, after it."""
+    A head that opens no block and ends in no split marker comes back as it
+    is, byte for byte. So does a bare ``<<<`` at the end of such a head: it
+    opens no block. The caller puts its own text, such as a truncation mark,
+    after the result."""
     text = str(head or "")
     cut = min(len(text), max(0, int(limit)))
     while cut > 0:
-        part = _SPLIT_MARKER_RE.sub("", text[:cut])
+        part = text[:cut]
+        split = _split_marker_at(part)
+        if split is not None:
+            part = part[:split]
         ends = [UntrustedFrame(token).close_line(label)
                 for label, token in reversed(open_blocks(part))]
         tail = ""
         if ends:
+            if part.endswith("<<<") and not part.endswith("<<<<"):
+                part = part[:-3]
             lead = "" if part.endswith("\n") else "\n"
             tail = lead + "\n".join(ends) + "\n"
         if len(part) + len(tail) <= limit:

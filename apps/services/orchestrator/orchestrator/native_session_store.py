@@ -525,11 +525,17 @@ class FramedToolResultCompactionStrategy(ToolResultCompactionStrategy):
     MAF folds an older tool group into one assistant message. It cuts that
     text at ``_SUMMARY_MAX_CHARS`` and ends it with ``... [truncated]``. A
     cut can drop the END line of an untrusted frame, and the next turn then
-    reads an open block. This class changes only the cut text:
-    ``acb_skills.untrusted.close_cut_blocks`` drops a split marker, and it
-    closes each open block inside the cap. A fold that fits, and a cut fold
-    with no open block, stay as MAF writes them. A fault gives MAF's form
-    with no text, never the raw cut.
+    reads an open block. This class changes only the cut text, through
+    ``acb_skills.untrusted.close_cut_blocks``:
+
+    * A split marker at the end goes: ``<<<`` with a part of a marker of a
+      label of ``untrusted.FRAME_LABELS``.
+    * Each open block gets its END line inside the cap.
+
+    A fold that fits stays as MAF writes it. So does a cut fold with no open
+    block and no such split marker, byte for byte. Any other ``<`` tail stays
+    too: a bare ``<<<``, ``<<<EOF``, a label that no frame writes, or a git
+    conflict line. A fault gives MAF's form with no text, never the raw cut.
     """
 
     @classmethod

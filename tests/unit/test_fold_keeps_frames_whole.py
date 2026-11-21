@@ -18,10 +18,12 @@ Mutation table, measured on 2026-11-22.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap) | 17 of 22 tests fail. The 5 that stay green test a fold that needs no close, or the label rule |
+| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap), measured again 2026-11-22 | 22 of 38 tests fail. The 16 that stay green test a fold that needs no close, or the label rules |
 | M2 | ``open_blocks`` reads only a whole marker line (``MARKER_LINE_RE`` per line) | 5 fail: the ``open-line-first`` and ``json-value`` rows, the two-results test, ``after-the-end-line`` and the two-END-lines test |
-| M3 | ``close_cut_blocks`` keeps a split marker (no ``_SPLIT_MARKER_RE``) | the ``in-the-note-marker``, ``in-the-open-line`` and ``in-the-token`` rows fail |
+| M3 | ``close_cut_blocks`` keeps a split marker (``split = None``) | the 6 rows of ``test_a_split_marker_of_a_frame_label_goes``, ``in-the-open-line`` and ``in-the-token`` fail |
 | M4 | ``untrusted._label`` takes the label ``NAME`` | ``test_no_frame_takes_the_label_of_the_note`` fails |
+| M5 | the old blanket strip ``<<<[A-Z ]{0,47}(?: [0-9a-f]{0,16}>{0,2})?`` at the end of every cut | 8 of the 9 rows of ``test_a_plain_tail_that_is_no_frame_marker_stays_as_maf_cut_it`` (all but ``token-too-long``) and ``in-the-note-marker`` fail |
+| M6 | ``WEB PAGE`` leaves ``FRAME_LABELS`` | ``test_each_frame_label_of_the_tree_is_known`` and the ``whole-token`` row fail |
 """
 from __future__ import annotations
 
@@ -187,6 +189,116 @@ def test_a_plain_result_folds_as_maf_folds_it() -> None:
     assert summary.endswith(CUT_MARK + SUFFIX)
 
 
+def _cut_ending_in(tail: str) -> tuple[str, str]:
+    """Our fold and MAF's fold of ONE plain result, where MAF's cut ends with
+    *tail* exactly."""
+    name = "srv_x: "
+    item = f"{name}{'p' * (ALLOWED - len(name) - len(tail))}{tail}" + "more\n" * 900
+    mafs = ToolResultCompactionStrategy._summary_text([item])
+    assert mafs.endswith(f"{tail}{CUT_MARK}{SUFFIX}"), "the cut does not end with the tail"
+    return Framed._summary_text([item]), mafs
+
+
+@pytest.mark.parametrize("tail", [
+    "<<<", "<<<EOF", "<<<ABC 12", "<<<<<<< HEAD", "<<<MCPX", "x <<<", "<<<MCP RESULTS",
+    "<<<WEB PAGE 0123456789abcdefa", "<<<END NAME 0123",
+], ids=["bare", "eof", "abc-12", "git-conflict", "mcpx", "bare-after-text",
+        "label-plus-letter", "token-too-long", "note-label"])
+def test_a_plain_tail_that_is_no_frame_marker_stays_as_maf_cut_it(tail: str) -> None:
+    """A cut that ends in a ``<`` shape of no frame label opens no block. The
+    fold is MAF's, byte for byte."""
+    ours, mafs = _cut_ending_in(tail)
+    assert ours == mafs
+
+
+@pytest.mark.parametrize("tail", [
+    "<<<MCP RESULT c7c7", "<<<E", "<<<END MCP RES", "<<<WEB PAGE 0123456789abcdef>>",
+    "<<<STUDIO RECORDS 0", "<<<COMPUTE STDOUT",
+], ids=["open-and-token", "one-letter", "end-label", "whole-token", "label-and-token",
+        "whole-label"])
+def test_a_split_marker_of_a_frame_label_goes(tail: str) -> None:
+    """A cut that splits a marker of a label of ``FRAME_LABELS`` drops the
+    split part, so no half marker stays."""
+    ours, mafs = _cut_ending_in(tail)
+    assert ours == mafs.replace(f"{tail}{CUT_MARK}", CUT_MARK, 1)
+    _no_half_marker(ours)
+
+
+def _frame_labels_of_the_tree() -> tuple[set[str], list[str]]:
+    """Each label that a module of the tree gives to ``wrap``, ``open_line``,
+    ``close_line``, ``frame_untrusted`` or ``studio_tools._framed_json``. A
+    label is a string literal, or a name that the module sets to one. Each
+    other argument is a pass-through, listed by file and function."""
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    labels: set[str] = set()
+    unread: list[str] = []
+    for root in ("apps", "packages"):
+        for path in (repo / root).rglob("*.py"):
+            if {"node_modules", "tests", ".venv", "__pycache__"} & set(path.parts):
+                continue
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if "UntrustedFrame" not in source and "frame_untrusted" not in source:
+                continue
+            tree = ast.parse(source)
+            consts = {
+                t.id: n.value.value
+                for n in tree.body if isinstance(n, ast.Assign)
+                and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)
+                for t in n.targets if isinstance(t, ast.Name)
+            }
+            for fn in ast.walk(tree):
+                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for call in ast.walk(fn):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    f = call.func
+                    name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+                    at = {"wrap": 0, "open_line": 0, "close_line": 0, "frame_untrusted": 0,
+                          "_framed_json": 1}.get(name)
+                    if at is None or len(call.args) <= at:
+                        continue
+                    arg = call.args[at]
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        labels.add(arg.value)
+                    elif isinstance(arg, ast.Name) and arg.id in consts:
+                        labels.add(consts[arg.id])
+                    else:
+                        unread.append(f"{path.relative_to(repo).as_posix()}:{fn.name}")
+    return labels, sorted(set(unread))
+
+
+#: The functions that pass a label from their caller. Their callers give a
+#: literal or a constant, which the scan reads.
+_PASS_THROUGH = {
+    "apps/services/orchestrator/orchestrator/_maf_mcp.py:_framed",
+    "apps/services/orchestrator/orchestrator/_maf_mcp.py:_framed_text",
+    "packages/acb_skills/acb_skills/studio_tools.py:_framed_json",
+    "packages/acb_skills/acb_skills/tool_result_spill.py:preview",
+    "packages/acb_skills/acb_skills/untrusted.py:close_cut_blocks",
+    "packages/acb_skills/acb_skills/untrusted.py:frame_untrusted",
+    "packages/acb_skills/acb_skills/untrusted.py:restore_cut_paste",
+    "packages/acb_skills/acb_skills/untrusted.py:wrap",
+}
+
+
+def test_each_frame_label_of_the_tree_is_known() -> None:
+    """``close_cut_blocks`` drops a split marker only for a label of
+    ``FRAME_LABELS``. A new label that is not in the set would leave a half
+    marker of its own at a cut, so this fence fails first."""
+    from acb_skills import untrusted
+    from orchestrator import _maf_mcp
+
+    labels, unread = _frame_labels_of_the_tree()
+    labels |= {_maf_mcp.RESULT_LABEL, _maf_mcp.INDEX_LABEL}
+    assert "MCP RESULT" in labels and "WEB PAGE" in labels, "the scan is blind"
+    assert labels - untrusted.FRAME_LABELS == set(), "add each new label to FRAME_LABELS"
+    assert set(unread) <= _PASS_THROUGH, f"a label the scan cannot read: {set(unread) - _PASS_THROUGH}"
+
+
 def test_two_framed_results_in_one_group() -> None:
     """The first block fits, and the cut lands in the second. The first
     stays as it was, and the second gets its END line."""
@@ -245,6 +357,11 @@ def test_each_cut_point_gives_a_whole_frame_or_none(where: str) -> None:
         "after-the-end-line": len(result) + 1,
     }
     summary, mafs = _cut_at(result, starts[where])
+    if where == "in-the-note-marker":
+        # NAME is the word of the note, never a frame label: MAF's bytes stay.
+        assert summary == mafs and summary.endswith(f"<<<NAM{CUT_MARK}{SUFFIX}")
+        assert _pairs(summary) == ([], [])
+        return
     closed = _assert_whole(summary)
     # Right after the open line, no room is left for the END line, so no block stays.
     opened = where in ("in-the-body", "in-the-end-line", "after-the-end-line")
