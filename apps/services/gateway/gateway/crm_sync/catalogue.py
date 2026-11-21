@@ -25,6 +25,7 @@ records gets no question (rule 5).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -193,6 +194,9 @@ class Field:
     type: str
     target: str | None = None
     parts: tuple[Field, ...] = ()
+    #: SEM-7: the option keys of a picklist (``crm_field_defs.options``).
+    #: They are schema, not data (``semantic_model.md`` §3.3 point 1).
+    options: tuple[str, ...] = ()
 
 
 def composite(fields: Sequence[Field]) -> Field:
@@ -866,19 +870,897 @@ def build(
     return entries
 
 
+# ── The semantic kinds (WS-SEM SEM-7, ``semantic_model.md`` §3.2 to §3.4) ────
+#
+# Three plan item kinds: ``measure``, ``join`` and ``query``. An admin accepts
+# each one, so it is the admin's text (§3.3 point 6). Each kind has a closed
+# key set. No item holds a total, a parameter value or a record value. A
+# number-like value where a name must be is refused (§3.3 points 3 and 5).
+# :func:`semantic_problem` checks the shape with no read. The check against
+# the catalogue (:func:`semantic_ref_problem`) reads the sources that the
+# caller gives. ``SEMANTIC_MODEL_ORGS`` gates both callers.
+
+KIND_MEASURE = "measure"
+KIND_JOIN = "join"
+KIND_QUERY = "query"
+SEMANTIC_KINDS: tuple[str, ...] = (KIND_MEASURE, KIND_JOIN, KIND_QUERY)
+
+#: The cap of a label and of an option key (§3.3, "A cap on a label").
+LABEL_MAX = 80
+#: The aggregates of a measure. ``count`` takes no field. ``sum`` takes 1 to
+#: :data:`SUM_MAX` fields. The others take one field.
+AGGREGATES: tuple[str, ...] = ("sum", "count", "avg", "min", "max")
+#: The units of a measure: fixed words, never a figure.
+UNITS: tuple[str, ...] = ("currency", "count", "number", "percent", "days")
+#: The field types that a ``sum``, ``avg``, ``min`` or ``max`` reads.
+NUMBER_TYPES: frozenset[str] = frozenset({"currency", "number", "decimal", "percent"})
+#: The fixed filters of one measure, and the option keys of one filter.
+FILTERS_MAX = 5
+OPTIONS_MAX = 10
+#: The kinds of a parameter of a verified query.
+PARAM_KINDS: tuple[str, ...] = (
+    "text", "record", "option", "date", "month", "quarter", "year", "number", "period",
+)
+#: The parameters, the conditions and the group fields of one query.
+PARAMS_MAX = 8
+WHERE_MAX = 8
+GROUP_MAX = 3
+#: The operators of a condition of a query. Each one compares a field with a
+#: named parameter, never with a literal.
+OPS: tuple[str, ...] = (
+    "eq", "ne", "in", "gt", "gte", "lt", "lte", "between", "contains", "on",
+)
+
+_MEASURE_KEYS = frozenset({"kind", "key", "label", "module", "aggregate", "fields",
+                           "filters", "unit"})
+_FILTER_KEYS = frozenset({"field", "options"})
+_JOIN_KEYS = frozenset({"kind", "module", "field", "target", "label"})
+_QUERY_KEYS = frozenset({"kind", "key", "question", "params", "query", "model_version"})
+_PARAM_KEYS = frozenset({"name", "kind"})
+_SHAPE_KEYS = frozenset({"module", "measure", "aggregate", "fields", "where", "group_by"})
+_WHERE_KEYS = frozenset({"field", "op", "param"})
+
+_SLUG = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_PARAM_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+#: A value that reads as a number, a date or an amount: digits with signs,
+#: points, commas, colons, slashes, dashes or spaces.
+_NUMBER_LIKE = re.compile(r"[+\-]?[\d.,:/\- ]*\d[\d.,:/\- ]*")
+#: A digit that does not follow a letter or ``_`` is a literal in question
+#: words. "Q1" stays legal. "2024" and "top 5" are literals.
+_LITERAL_DIGIT = re.compile(r"(?<![A-Za-z_])\d")
+_PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]{0,31})\}")
+
+
+def is_semantic(item: Any) -> bool:
+    """True for an item of a semantic kind (SEM-7)."""
+    return isinstance(item, Mapping) and item.get("kind") in SEMANTIC_KINDS
+
+
+def number_like(value: Any) -> bool:
+    """True for a number, or for a string that reads as a number, a date or
+    an amount."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return True
+    return isinstance(value, str) and _NUMBER_LIKE.fullmatch(value.strip()) is not None
+
+
+def _plain(value: Any, cap: int) -> bool:
+    """True for plain text of 1 to *cap* characters, in its clean form. The
+    one text rule is ``rules.clean_body``, the rule of ``crm_business_rules``."""
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import clean_body
+
+    return isinstance(value, str) and len(value) <= cap and clean_body(value) == value
+
+
+def _has_literal(value: str) -> bool:
+    """True when admin text holds a digit that does not follow a letter or
+    ``_``: a figure, a date or a count. It catches only digits. A customer
+    name or another value in plain words passes this check, and only the
+    admin's accept stands against it (``semantic_model.md`` §6.2)."""
+    return _LITERAL_DIGIT.search(value) is not None
+
+
+def _field_key(value: Any) -> bool:
+    """True for a field API name, by the rule of a key of a sum (CRM-Q32-9)."""
+    return (isinstance(value, str) and 0 < len(value) <= SUM_KEY_MAX
+            and not value.startswith("@") and SUM_KEY_JOIN not in value)
+
+
+def _field_keys(value: Any, low: int, high: int) -> bool:
+    return (isinstance(value, list) and low <= len(value) <= high
+            and all(_field_key(k) for k in value) and len(set(value)) == len(value))
+
+
+def _module(value: Any) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= SUM_KEY_MAX and not value.startswith("@")
+
+
+def _aggregate_problem(aggregate: Any, fields: Any) -> str | None:
+    if aggregate not in AGGREGATES:
+        return "aggregate"
+    if aggregate == "count":
+        return None if fields in (None, []) else "fields"
+    high = SUM_MAX if aggregate == "sum" else 1
+    return None if _field_keys(fields, 1, high) else "fields"
+
+
+def _filters_problem(filters: Any) -> str | None:
+    if filters is None:
+        return None
+    if not isinstance(filters, list) or len(filters) > FILTERS_MAX:
+        return "filters"
+    for one in filters:
+        if not isinstance(one, Mapping) or set(one) != _FILTER_KEYS:
+            return "filters"
+        options = one.get("options")
+        if not _field_key(one.get("field")) or not isinstance(options, list):
+            return "filters"
+        if not 0 < len(options) <= OPTIONS_MAX or len(set(map(str, options))) != len(options):
+            return "filters"
+        if not all(_plain(o, LABEL_MAX) for o in options):
+            return "filters"
+    return None
+
+
+def _measure_problem(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _MEASURE_KEYS:
+        return "keys"
+    if not isinstance(item.get("key"), str) or not _SLUG.fullmatch(item["key"]):
+        return "key"
+    if not _plain(item.get("label"), LABEL_MAX):
+        return "label"
+    if _has_literal(item["label"]):
+        return "label_value"
+    if not _module(item.get("module")):
+        return "module"
+    found = _aggregate_problem(item.get("aggregate"), item.get("fields"))
+    if found is None:
+        found = _filters_problem(item.get("filters"))
+    if found is not None:
+        return found
+    return None if item.get("unit") in UNITS else "unit"
+
+
+def _join_problem(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _JOIN_KEYS:
+        return "keys"
+    if not _module(item.get("module")):
+        return "module"
+    if not _field_key(item.get("field")):
+        return "field"
+    if not _module(item.get("target")):
+        return "target"
+    if "label" in item and not _plain(item["label"], LABEL_MAX):
+        return "label"
+    if "label" in item and _has_literal(item["label"]):
+        return "label_value"
+    return None
+
+
+def _params_problem(params: Any) -> str | None:
+    if not isinstance(params, list) or len(params) > PARAMS_MAX:
+        return "params"
+    names: list[str] = []
+    for one in params:
+        if not isinstance(one, Mapping) or set(one) != _PARAM_KEYS:
+            return "params"
+        name = one.get("name")
+        # A number, or text that is no name (such as "Acme Ltd"), is a value.
+        if number_like(name) or not isinstance(name, str) or not _PARAM_NAME.fullmatch(name):
+            return "param_value"
+        if one.get("kind") not in PARAM_KINDS:
+            return "params"
+        names.append(name)
+    return None if len(set(names)) == len(names) else "params"
+
+
+def _where_problem(where: Any, names: frozenset[str]) -> str | None:
+    """The conditions of a query. Each one names a parameter of *names*, and
+    holds no value. Each parameter is used."""
+    if not isinstance(where, list) or len(where) > WHERE_MAX:
+        return "query"
+    used: set[str] = set()
+    for one in where:
+        if not isinstance(one, Mapping):
+            return "query"
+        param = one.get("param")
+        # A key such as ``value``, a number, or text that is no parameter
+        # name (such as "Acme Ltd") is a literal where a name must be.
+        if (not set(one) <= _WHERE_KEYS or number_like(param)
+                or ("param" in one and not (isinstance(param, str)
+                                            and _PARAM_NAME.fullmatch(param)))):
+            return "query_value"
+        if (set(one) != _WHERE_KEYS or not _field_key(one.get("field"))
+                or one.get("op") not in OPS or not isinstance(param, str)
+                or param not in names):
+            return "query"
+        used.add(param)
+    return None if used == names else "query"
+
+
+def _shape_problem(shape: Any, names: frozenset[str]) -> str | None:
+    """The query of a verified query: a structure with no literal."""
+    if not isinstance(shape, Mapping) or not set(shape) <= _SHAPE_KEYS:
+        return "query"
+    if not _module(shape.get("module")):
+        return "query"
+    measure = shape.get("measure")
+    if measure is not None:
+        if "aggregate" in shape or "fields" in shape:
+            return "query"
+        if not isinstance(measure, str) or not _SLUG.fullmatch(measure):
+            return "query"
+    elif _aggregate_problem(shape.get("aggregate"), shape.get("fields")) is not None:
+        return "query"
+    found = _where_problem(shape.get("where", []), names)
+    if found is not None:
+        return found
+    return None if _field_keys(shape.get("group_by", []), 0, GROUP_MAX) else "query"
+
+
+def _query_problem(item: Mapping[str, Any]) -> str | None:
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import BODY_MAX
+
+    if not set(item) <= _QUERY_KEYS:
+        return "keys"
+    if not isinstance(item.get("key"), str) or not _SLUG.fullmatch(item["key"]):
+        return "key"
+    question = item.get("question")
+    if not _plain(question, BODY_MAX):
+        return "question"
+    bare = _PLACEHOLDER.sub("", question)
+    if _has_literal(bare):
+        return "question_value"
+    if "{" in bare or "}" in bare:
+        return "question"
+    found = _params_problem(item.get("params"))
+    if found is not None:
+        return found
+    names = frozenset(str(p["name"]) for p in item["params"])
+    if set(_PLACEHOLDER.findall(question)) != names:
+        return "params"
+    found = _shape_problem(item.get("query"), names)
+    if found is not None:
+        return found
+    version = item.get("model_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        return "model_version"
+    return None
+
+
+def semantic_problem(item: Mapping[str, Any]) -> str | None:
+    """Why an item of a semantic kind is not legal, or ``None``. It reads
+    nothing. Each word names one part:
+
+    * ``keys``: a key outside the closed set of the kind, such as ``total``.
+    * ``key``, ``label``, ``label_value``, ``module``, ``aggregate``,
+      ``fields``, ``filters`` and ``unit``: that part of a ``measure``.
+    * ``module``, ``field``, ``target``, ``label`` and ``label_value``: that
+      part of a ``join``.
+    * ``question``, ``question_value``, ``params``, ``param_value``,
+      ``query``, ``query_value`` and ``model_version``: that part of a
+      ``query``.
+
+    A word that ends in ``_value`` means a literal where a name or plain
+    words must be. In a label or in the question words, the code finds only
+    a digit (:func:`_has_literal`). It cannot find a name that a person
+    wrote in words, so the admin's accept is the guard there.
+    """
+    kind = item.get("kind")
+    if kind == KIND_MEASURE:
+        return _measure_problem(item)
+    if kind == KIND_JOIN:
+        return _join_problem(item)
+    if kind == KIND_QUERY:
+        return _query_problem(item)
+    return "kind"
+
+
+def _has(src: Source, keys: Iterable[Any]) -> bool:
+    return all(src.field(str(k)) is not None for k in keys)
+
+
+def _numbers(src: Source, aggregate: Any, keys: Iterable[Any]) -> bool:
+    if aggregate == "count":
+        return True
+    found = [src.field(str(k)) for k in keys]
+    return all(f is not None and f.type in NUMBER_TYPES for f in found)
+
+
+def semantic_ref_problem(item: Mapping[str, Any], sources: Mapping[str, Source]) -> str | None:
+    """Why a legal semantic item (:func:`semantic_problem` gave ``None``)
+    does not fit the catalogue now, or ``None``. *sources* maps a module to
+    its catalogue source.
+
+    A ``measure`` names fields of its module, of a number type for each
+    aggregate but ``count``. Each fixed filter names option keys of a field.
+    A ``join`` names a lookup field whose target is the target of the item.
+    A ``query`` names fields of its module. The words are ``module``,
+    ``field``, ``type``, ``no_options``, ``options``, ``target`` and
+    ``kind``."""
+    kind = item.get("kind")
+    holder = (item.get("query") or {}) if kind == KIND_QUERY else item
+    src = sources.get(str(holder.get("module")))
+    if src is None:
+        return "module"
+    if kind == KIND_JOIN:
+        found = src.field(str(item.get("field")))
+        if found is None:
+            return "field"
+        return None if found.target and found.target == item.get("target") else "target"
+    if kind == KIND_MEASURE:
+        fields = item.get("fields") or []
+        if not _has(src, fields):
+            return "field"
+        if not _numbers(src, item.get("aggregate"), fields):
+            return "type"
+        for one in item.get("filters") or []:
+            found = src.field(str(one.get("field")))
+            if found is None:
+                return "field"
+            # A field with no fixed option keys takes no fixed filter. A core
+            # select field (the stage or the status of a deal or a lead) is
+            # one: its choices are rows of the org with ids, not keys of a
+            # definition (``core.SYSTEM_FIELDS`` lists none). So the word
+            # ``no_options`` says that, and not that a key is wrong.
+            if not found.options:
+                return "no_options"
+            if not set(one.get("options") or []) <= set(found.options):
+                return "options"
+        return None
+    if kind == KIND_QUERY:
+        shape = item.get("query") or {}
+        keys = [*(shape.get("fields") or []), *(shape.get("group_by") or []),
+                *(w.get("field") for w in shape.get("where") or [])]
+        if not _has(src, keys):
+            return "field"
+        if "aggregate" in shape and not _numbers(src, shape.get("aggregate"),
+                                                  shape.get("fields") or []):
+            return "type"
+        return None
+    return "kind"
+
+
+# ── The model of a connection: ``shape_only`` (WS-SEM SEM-12) ────────────────
+#
+# ``semantic_model.md`` §3.3 point 6 and §10.4. The body of the model of a
+# connection is one object with four keys: ``v`` (the integer 1), and the
+# three sections ``code``, ``ai`` and ``admin``. The name of a section is the
+# writer kind of each part in it. :func:`shape_only` is the one check of a
+# body. ``connections/semantic_model.py`` calls it before each write. It
+# reuses the item checks of SEM-7 above, and it adds no second copy of
+# :data:`LABEL_MAX`, :func:`number_like` or :func:`_has_literal`.
+
+#: The value of ``v`` in a body.
+MODEL_V = 1
+SECTION_CODE = "code"
+SECTION_AI = "ai"
+SECTION_ADMIN = "admin"
+#: The sections, in the order of the writer kinds. A later kind wins.
+MODEL_SECTIONS: tuple[str, ...] = (SECTION_CODE, SECTION_AI, SECTION_ADMIN)
+#: The body keys (parts) that each section may hold (§10.4).
+SECTION_PARTS: Mapping[str, frozenset[str]] = {
+    SECTION_CODE: frozenset({"entities", "fields", "joins"}),
+    SECTION_AI: frozenset({"entities", "fields"}),
+    SECTION_ADMIN: frozenset({"measures", "joins", "tax_marks", "synonyms", "samples",
+                              "queries", "instructions"}),
+}
+#: The most items in one part, and the most options of one field.
+PART_ITEMS_MAX = 1000
+FIELD_OPTIONS_MAX = 100
+#: The time grains of a dimension.
+GRAINS: tuple[str, ...] = ("day", "week", "month", "quarter", "year")
+#: How a value lookup matches a name: the source's own search, or an exact
+#: match. No value is stored (§3.3).
+LOOKUPS: tuple[str, ...] = ("search", "exact")
+
+_CODE_ENTITY_KEYS = frozenset({"key", "label", "records", "first_date", "last_date"})
+_CODE_FIELD_KEYS = frozenset({"entity", "key", "label", "type", "fill", "grain", "options",
+                              "lookup", "tax"})
+_AI_ENTITY_KEYS = frozenset({"key", "purpose", "text"})
+_AI_FIELD_KEYS = frozenset({"entity", "key", "meaning", "unit", "tax", "text"})
+_TAX_MARK_KEYS = frozenset({"entity", "field", "tax"})
+_SYNONYM_KEYS = frozenset({"word", "target"})
+_SAMPLE_KEYS = frozenset({"question"})
+_INSTRUCTION_KEYS = frozenset({"text"})
+#: A key that names a secret (§8). A body never holds one, in any section.
+_SECRET_WORDS: tuple[str, ...] = ("header", "token", "url", "path", "host", "secret",
+                                  "password", "credential", "cookie")
+#: A key that names a figure of money. A body never holds one (§3.3 point 5).
+_FIGURE_WORDS = frozenset({"amount", "total", "balance", "figure", "sum"})
+#: A mark of money beside a digit, on either side: "₹ 5,000", "5000 $",
+#: "Rs. 400", "450000 INR", "5USD", "4500 rs". A code after a digit ends at a
+#: word boundary, so "5 usda" passes. ``rs`` after a digit needs a space
+#: first, so "3rs" passes and "3 rs" does not. Only the connection model
+#: (``shape_only``) reads this pattern. The CRM path (SEM-7) does not.
+_MONEY = re.compile(r"[₹$€£¥]\s*\d|\d\s*[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp)\.?\s*\d"
+                    r"|\d\s*(?:inr|usd|eur|gbp)\b|\d\s+rs\b",
+                    re.IGNORECASE)
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The grammar of a key of a connection model: an identifier of ASCII
+#: letters, digits and ``_``, that starts with a letter. No space, no mark,
+#: no control or format character. The label carries the words.
+CONNECTION_KEY_MAX = 64
+_CONNECTION_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+
+
+def _tax_words() -> Mapping[str, str]:
+    """The closed tax marks and their words: the evidence words of a money
+    field (§18.15.5). Imported here: ``crm_sync.questions`` imports this
+    module."""
+    from gateway.crm_sync.questions import EVIDENCE_WORDS
+
+    return EVIDENCE_WORDS
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _share_value(value: Any) -> bool:
+    return (isinstance(value, int | float) and not isinstance(value, bool)
+            and 0 <= value <= 1)
+
+
+def _iso_date(value: Any) -> bool:
+    from datetime import date
+
+    if not isinstance(value, str) or not _DATE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def connection_key_problem(value: Any) -> str | None:
+    """Why *value* is not a key of a connection model, or ``None``. A key
+    names an entity, a field or a measure, and SEM-15 puts it in the prompt
+    of the chat. So it is an identifier of at most
+    :data:`CONNECTION_KEY_MAX` characters, and never a number, an amount, a
+    date or a literal (``_has_literal``: a digit after a digit)."""
+    if not isinstance(value, str) or not 0 < len(value) <= CONNECTION_KEY_MAX:
+        return "key_value"
+    if not _CONNECTION_KEY.fullmatch(value):
+        return "key_value"
+    if number_like(value) or _MONEY.search(value) or _DATE.search(value):
+        return "key_value"
+    return "key_value" if _has_literal(value) else None
+
+
+def _label_problem(value: Any) -> str | None:
+    """A label or an option that the source wrote: plain text of at most
+    :data:`LABEL_MAX` characters, and never a number or an amount."""
+    if not _plain(value, LABEL_MAX):
+        return "label"
+    if number_like(value) or _MONEY.search(value):
+        return "label_value"
+    return None
+
+
+def _admin_text_problem(value: Any) -> str | None:
+    """The admin's words: 1 to ``BODY_MAX`` characters that pass
+    ``clean_body``, with no digit that :func:`_has_literal` finds."""
+    from gateway.routes.crm.rules import BODY_MAX
+
+    if not _plain(value, BODY_MAX):
+        return "text"
+    return "text_value" if _has_literal(value) else None
+
+
+def ai_description(part: str, item: Mapping[str, Any]) -> str | None:
+    """The text of an item of the ``ai`` section, built by code from its
+    closed words (§4.2 step 4), or ``None`` when a word is not in its closed
+    set. The profiler writes this text, and :func:`shape_only` builds it
+    again and refuses any other text."""
+    if part == "entities":
+        return PURPOSE_MEANINGS.get(str(item.get("purpose")))
+    if part != "fields":
+        return None
+    said: list[str] = []
+    if "meaning" in item:
+        meaning = PART_MEANINGS.get(str(item["meaning"]))
+        if meaning is None:
+            return None
+        said.append(f"It is {meaning}.")
+    if "unit" in item:
+        if item["unit"] not in UNITS:
+            return None
+        said.append(f"Its unit is {item['unit']}.")
+    if "tax" in item:
+        word = _tax_words().get(str(item["tax"]))
+        if word is None:
+            return None
+        said.append(f"Tax: {word}.")
+    return " ".join(said) or None
+
+
+def _code_entity(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _CODE_ENTITY_KEYS:
+        return "keys"
+    if not _module(item.get("key")):
+        return "key"
+    if "label" in item and (found := _label_problem(item["label"])) is not None:
+        return found
+    if "records" in item and not _count(item["records"]):
+        return "records"
+    dates = [item[k] for k in ("first_date", "last_date") if k in item]
+    if not all(_iso_date(d) for d in dates):
+        return "date"
+    if len(dates) == 2 and dates[0] > dates[1]:
+        return "date"
+    return None
+
+
+def _code_field(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _CODE_FIELD_KEYS:
+        return "keys"
+    if not _module(item.get("entity")) or not _field_key(item.get("key")):
+        return "key"
+    if "label" in item and (found := _label_problem(item["label"])) is not None:
+        return found
+    if "type" in item and not (isinstance(item["type"], str) and _SLUG.fullmatch(item["type"])):
+        return "type"
+    if "fill" in item and not _share_value(item["fill"]):
+        return "fill"
+    if "grain" in item and item["grain"] not in GRAINS:
+        return "grain"
+    if "lookup" in item and item["lookup"] not in LOOKUPS:
+        return "lookup"
+    if "tax" in item and item["tax"] not in _tax_words():
+        return "tax"
+    options = item.get("options")
+    if options is None:
+        return None
+    if not isinstance(options, list) or len(options) > FIELD_OPTIONS_MAX:
+        return "options"
+    if len({str(o) for o in options}) != len(options):
+        return "options"
+    for one in options:
+        found = _label_problem(one)
+        if found is not None:
+            return "options" if found == "label" else "options_value"
+    return None
+
+
+def _ai_item(part: str, item: Mapping[str, Any]) -> str | None:
+    keys = _AI_ENTITY_KEYS if part == "entities" else _AI_FIELD_KEYS
+    if not set(item) <= keys:
+        return "keys"
+    if part == "entities":
+        if not _module(item.get("key")):
+            return "key"
+        if item.get("purpose") not in PURPOSES:
+            return "purpose"
+    else:
+        if not _module(item.get("entity")) or not _field_key(item.get("key")):
+            return "key"
+        if not {"meaning", "unit", "tax"} & set(item):
+            return "words"
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import BODY_MAX
+
+    built = ai_description(part, item)
+    if built is None:
+        return "words"
+    text_ = item.get("text")
+    if not isinstance(text_, str) or text_ != built or len(text_) > BODY_MAX:
+        return "ai_text"
+    return None
+
+
+def _kind_then(kind: str, check: Any) -> Any:
+    """An item of a SEM-7 kind: the ``kind`` key may be left out, and when
+    present it names the kind. Then the item check of SEM-7 runs."""
+    def run(item: Mapping[str, Any]) -> str | None:
+        if "kind" in item and item["kind"] != kind:
+            return "kind"
+        return check(item)
+    return run
+
+
+def _tax_mark(item: Mapping[str, Any]) -> str | None:
+    if set(item) != _TAX_MARK_KEYS:
+        return "keys"
+    if not _module(item.get("entity")) or not _field_key(item.get("field")):
+        return "key"
+    return None if item.get("tax") in _tax_words() else "tax"
+
+
+def _words_item(keys: frozenset[str]) -> Any:
+    def run(item: Mapping[str, Any]) -> str | None:
+        if set(item) != keys:
+            return "keys"
+        for k in sorted(keys):
+            found = _admin_text_problem(item.get(k))
+            if found is not None:
+                return found
+        return None
+    return run
+
+
+def _synonym(targets: frozenset[str]) -> Any:
+    def run(item: Mapping[str, Any]) -> str | None:
+        if set(item) != _SYNONYM_KEYS:
+            return "keys"
+        found = _admin_text_problem(item.get("word"))
+        if found is not None:
+            return found
+        return None if item.get("target") in targets else "target"
+    return run
+
+
+#: The check of a part that only one section may hold, or that has one rule
+#: in each section. The section check comes first in :func:`shape_only`.
+_PART_CHECKS: Mapping[str, Any] = {
+    "joins": _kind_then(KIND_JOIN, _join_problem),
+    "measures": _kind_then(KIND_MEASURE, _measure_problem),
+    "queries": _kind_then(KIND_QUERY, _query_problem),
+    "tax_marks": _tax_mark,
+    "samples": _words_item(_SAMPLE_KEYS),
+    "instructions": _words_item(_INSTRUCTION_KEYS),
+}
+
+#: The identity of an item, for the parts where two items may not share it.
+_IDENTITY: Mapping[str, Any] = {
+    "entities": lambda i: i.get("key"),
+    "fields": lambda i: (i.get("entity"), i.get("key")),
+    "measures": lambda i: i.get("key"),
+    "queries": lambda i: i.get("key"),
+}
+
+
+def _keys_of(value: Any) -> Iterable[str]:
+    """Each key of each mapping in *value*, at any depth."""
+    if isinstance(value, Mapping):
+        for k, v in value.items():
+            yield str(k)
+            yield from _keys_of(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _keys_of(v)
+
+
+def _key_problem(body: Mapping[str, Any]) -> str | None:
+    for key in _keys_of(body):
+        low = key.lower()
+        if any(word in low for word in _SECRET_WORDS):
+            return "secret"
+        if low in _FIGURE_WORDS or low.removesuffix("s") in _FIGURE_WORDS:
+            return "figure"
+    return None
+
+
+def _key_values(part: str, item: Mapping[str, Any]) -> Iterable[Any]:
+    """Each value of *item* that names a key of the model: an entity, a
+    field, a module, a target or a measure."""
+    names = {"entities": ("key",), "fields": ("entity", "key"),
+             "joins": ("module", "field", "target"), "tax_marks": ("entity", "field"),
+             "measures": ("key", "module"), "queries": ("key",),
+             "synonyms": ("target",)}.get(part, ())
+    for name in names:
+        if name in item:
+            yield item[name]
+    if part == "measures":
+        yield from item.get("fields") or []
+        yield from (f.get("field") for f in item.get("filters") or [])
+    if part == "queries":
+        shape = item.get("query") or {}
+        yield from (shape[k] for k in ("module", "measure") if k in shape)
+        yield from shape.get("fields") or []
+        yield from shape.get("group_by") or []
+        yield from (w.get("field") for w in shape.get("where") or [])
+
+
+def _declared_options(body: Mapping[str, Any]) -> dict[tuple[Any, Any], frozenset[Any]]:
+    """The options of each field of the ``code`` section, by entity and key."""
+    parts = body.get(SECTION_CODE)
+    fields = parts.get("fields") if isinstance(parts, Mapping) else None
+    found: dict[tuple[Any, Any], frozenset[Any]] = {}
+    for f in fields if isinstance(fields, list) else ():
+        if isinstance(f, Mapping) and isinstance(f.get("options"), list):
+            found[(f.get("entity"), f.get("key"))] = frozenset(
+                o for o in f["options"] if isinstance(o, str))
+    return found
+
+
+def _filter_option_problem(item: Mapping[str, Any],
+                           options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
+    """A fixed filter of a measure names options that the ``code`` section
+    declares for that field. The SEM-7 check allows any plain text there, and
+    on the CRM path ``semantic_ref_problem`` checks it against the catalogue.
+    ``shape_only`` reads no catalogue, so it checks the body itself."""
+    for one in item.get("filters") or []:
+        declared = options.get((item.get("module"), one.get("field")), frozenset())
+        for option in one.get("options") or []:
+            if _label_problem(option) is not None or option not in declared:
+                return "filter_option"
+    return None
+
+
+def _targets(body: Mapping[str, Any]) -> frozenset[str]:
+    """The keys that a synonym may name: the key of an entity, a field or a
+    measure of the body, when it holds the grammar of a key."""
+    found: set[str] = set()
+    for section in MODEL_SECTIONS:
+        parts = body.get(section)
+        if not isinstance(parts, Mapping):
+            continue
+        for part in ("entities", "fields", "measures"):
+            items = parts.get(part)
+            for item in items if isinstance(items, list) else ():
+                if (isinstance(item, Mapping)
+                        and connection_key_problem(item.get("key")) is None):
+                    found.add(item["key"])
+    return frozenset(found)
+
+
+#: The largest ``model_version`` of a verified query in a connection body.
+#: The writer sets no cap on a version, so this is a bound that no real
+#: model reaches.
+MODEL_VERSION_MAX = 1000
+
+
+def _value_in_word(value: Any) -> bool:
+    """True when a word of closed shape (a parameter name, a field type)
+    hides a value: a number, an amount, or a run of two digits such as a
+    date in ``d20240301``."""
+    return (not isinstance(value, str) or number_like(value)
+            or _MONEY.search(value) is not None or _has_literal(value))
+
+
+def _param_names(item: Mapping[str, Any]) -> Iterable[Any]:
+    """Each parameter name of a verified query: in ``params`` and in each
+    condition of ``query.where``."""
+    yield from (p.get("name") for p in item.get("params") or [])
+    shape = item.get("query") or {}
+    yield from (w.get("param") for w in shape.get("where") or [] if "param" in w)
+
+
+def _query_value_problem(item: Mapping[str, Any]) -> str | None:
+    """The connection checks of a verified query. A parameter name is
+    copied into the question as ``{name}``, and the SEM-7 literal check
+    removes placeholders first. So a name never hides a value here."""
+    if any(_value_in_word(name) for name in _param_names(item)):
+        return "param_value"
+    version = item.get("model_version")
+    return "model_version" if isinstance(version, int) and version > MODEL_VERSION_MAX else None
+
+
+def _connection_item_problem(part: str, item: Mapping[str, Any],
+                             options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
+    """The checks of a connection model that run after the item check: the
+    value of each key, a field type, the parameter names and version of a
+    query, and the options of each fixed filter of a measure. The CRM path
+    (SEM-7) does not run them."""
+    for value in _key_values(part, item):
+        found = connection_key_problem(value)
+        if found is not None:
+            return found
+    if part == "fields" and "type" in item and _value_in_word(item["type"]):
+        return "type"
+    if part == "queries":
+        return _query_value_problem(item)
+    return _filter_option_problem(item, options) if part == "measures" else None
+
+
+def _part_problem(section: str, part: str, items: Any, targets: frozenset[str],
+                  options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
+    if not isinstance(items, list) or len(items) > PART_ITEMS_MAX:
+        return "items"
+    if section == SECTION_CODE and part == "entities":
+        check: Any = _code_entity
+    elif section == SECTION_CODE and part == "fields":
+        check = _code_field
+    elif section == SECTION_AI and part in ("entities", "fields"):
+        def check(item: Mapping[str, Any]) -> str | None:
+            return _ai_item(part, item)
+    elif part == "synonyms":
+        check = _synonym(targets)
+    else:
+        check = _PART_CHECKS.get(part)
+    if check is None:
+        return "part"
+    seen: set[Any] = set()
+    identity = _IDENTITY.get(part)
+    for item in items:
+        if not isinstance(item, Mapping):
+            return "item"
+        found = check(item)
+        if found is not None:
+            return found
+        found = _connection_item_problem(part, item, options)
+        if found is not None:
+            return found
+        if identity is not None:
+            one = identity(item)
+            if one in seen:
+                return "duplicate"
+            seen.add(one)
+    return None
+
+
+def shape_only(body: Any) -> str | None:
+    """Why a body of the model of a connection is not shape only, or
+    ``None`` (``semantic_model.md`` §3.3 point 6 and §10.4). It is pure and
+    reads no database. It returns the FIRST problem as a short code:
+
+    * ``body``: not an object with exactly the keys ``v``, ``code``, ``ai``
+      and ``admin``. ``v``: ``v`` is not :data:`MODEL_V`.
+    * ``secret``: a key, at any depth, names a header, a token, a url, a
+      path, a host or another secret (§8).
+    * ``figure``: a key names an amount, a total, a balance or a figure.
+    * ``<section>``: the section is not an object.
+    * ``<section>.<part>:<word>``: a part of a section. ``section`` is a
+      part in the wrong section. ``part`` is a key outside the closed set.
+      Each other word is the first problem of an item, such as ``keys``,
+      ``key_value`` (a key that is not an identifier, see
+      :func:`connection_key_problem`), ``filter_option``, ``label_value``,
+      ``ai_text``, ``text_value``, ``param_value`` or
+      ``query_value`` (the words of :func:`semantic_problem`).
+    """
+    if not isinstance(body, Mapping) or set(body) != {"v", *MODEL_SECTIONS}:
+        return "body"
+    if isinstance(body["v"], bool) or body["v"] != MODEL_V:
+        return "v"
+    found = _key_problem(body)
+    if found is not None:
+        return found
+    targets = _targets(body)
+    options = _declared_options(body)
+    for section in MODEL_SECTIONS:
+        parts = body[section]
+        if not isinstance(parts, Mapping):
+            return section
+        for part, items in parts.items():
+            where = f"{section}.{part}"
+            if part not in SECTION_PARTS[section]:
+                known = any(part in s for s in SECTION_PARTS.values())
+                return f"{where}:{'section' if known else 'part'}"
+            found = _part_problem(section, str(part), items, targets, options)
+            if found is not None:
+                return f"{where}:{found}"
+    return None
+
+
 __all__ = [
+    "AGGREGATES",
     "AMOUNT_NAMES",
     "BY_WORDS",
+    "CONNECTION_KEY_MAX",
     "CORE_FITS",
     "CORE_KEY_COLUMNS",
     "CORE_PURPOSES",
     "DEFAULT_REVENUE",
+    "FIELD_OPTIONS_MAX",
+    "FILTERS_MAX",
+    "GRAINS",
+    "GROUP_MAX",
     "KEY_PARTS",
     "KIND_CATALOGUE",
+    "KIND_JOIN",
+    "KIND_MEASURE",
+    "KIND_QUERY",
+    "LABEL_MAX",
+    "LOOKUPS",
+    "MODEL_SECTIONS",
+    "MODEL_V",
+    "MODEL_VERSION_MAX",
     "MODULE_PARTS",
     "MONEY_PURPOSES",
+    "NUMBER_TYPES",
+    "OPS",
+    "OPTIONS_MAX",
     "ORG_MODULE",
     "ORG_PARTS",
+    "PARAMS_MAX",
+    "PARAM_KINDS",
+    "PART_ITEMS_MAX",
     "PART_MEANINGS",
     "PART_TYPES",
     "PURPOSES",
@@ -886,6 +1768,11 @@ __all__ = [
     "PURPOSE_WORDS",
     "RANK_LIMIT",
     "REVENUE_VALUES",
+    "SECTION_ADMIN",
+    "SECTION_AI",
+    "SECTION_CODE",
+    "SECTION_PARTS",
+    "SEMANTIC_KINDS",
     "SHADOW_KEYS",
     "SLOT_PURPOSES",
     "STANDARD_PURPOSES",
@@ -897,9 +1784,12 @@ __all__ = [
     "SUM_PART",
     "SUM_TYPES",
     "SYSTEM_TIMES",
+    "UNITS",
+    "WHERE_MAX",
     "Entry",
     "Field",
     "Source",
+    "ai_description",
     "build",
     "clear_parts",
     "code_amount",
@@ -910,16 +1800,22 @@ __all__ = [
     "code_purpose",
     "code_status",
     "composite",
+    "connection_key_problem",
     "entry_of",
     "is_catalogue",
+    "is_semantic",
     "item_problem",
     "merge_item",
+    "number_like",
     "parts_of",
     "problem",
     "purposes_of",
     "resolve",
     "revenue_of",
     "role_purposes",
+    "semantic_problem",
+    "semantic_ref_problem",
+    "shape_only",
     "singulars",
     "stored_items",
     "sum_shape_problem",

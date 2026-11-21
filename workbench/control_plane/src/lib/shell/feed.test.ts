@@ -266,6 +266,11 @@ describe("1. the answer of §14.1a", () => {
       "Email did not answer, so its replies may be missing.",
       "Calendar did not answer, so its time blocks may be missing.",
     ]);
+    // AO-2 review: the AI vendor alert source has no app of the client, and
+    // its failure still gets its line.
+    expect(feedFailedLines({ providers: "failed" } as Parameters<typeof feedFailedLines>[0])).toEqual([
+      "AI providers did not answer, so its AI vendor alerts may be missing.",
+    ]);
   });
 
   it("puts the key in the Projects family, so a Done drops it with the needs key", () => {
