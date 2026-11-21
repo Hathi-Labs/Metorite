@@ -283,3 +283,24 @@ describe("the mapper from a manifest view (D4c)", () => {
     expect(!out.ok && out.reason).toContain("“plain”");
   });
 });
+
+describe("the cells of a matrix (C2d-b)", () => {
+  it("reads each cell with its two keys, and an answer of one key has none", () => {
+    const cells = [
+      { key: "open", key2: "east", count: 4, values: [4, 100000, "3.0"] },
+      { key: "open", key2: null, count: 1, values: [1, 0, null] },
+      { key: "won", key2: "east", count: 2, values: ["2", 50000, "4"] },
+    ];
+    const agg = parseAggregate(wire([group("open", 5, 5, 100000, "3.0")], { cells }));
+    expect(agg?.cells).toHaveLength(3);
+    expect(agg?.cells[0]).toEqual({ key: "open", key2: "east", count: 4, values: [4, 100000, 3] });
+    expect(agg?.cells[1].key2).toBeNull();
+    expect(agg?.cells[2].values[0]).toBe(2);
+    expect(parseAggregate(BY_STATUS)?.cells).toEqual([]);
+  });
+
+  it("drops a cell it cannot read", () => {
+    const agg = parseAggregate(wire([], { cells: [{ key: "a", key2: "b" }, "x"] }));
+    expect(agg?.cells).toEqual([]);
+  });
+});
