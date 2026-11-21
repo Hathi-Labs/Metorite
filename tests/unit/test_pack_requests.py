@@ -303,6 +303,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                 "roll back the workflow to version 2"),
     "studio_workflow_live": ("pause the workflow that chases invoices",
                              "turn on the workflow again"),
+    # -- studio-share: the share of a skill with the org (WS-STU J2d) --
+    "studio_skill_share": ("share my skill with the team",
+                           "approve the skill share that waits for me"),
+    # -- studio-repair: the repair of a skill (TOF-3a F12c) --
+    "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
+    "studio_skill_undo": ("undo my skill to the version before",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

@@ -670,7 +670,9 @@ class TestMyWork:
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
                          "run_id": _uuid(6101), "held_by": None,
-                         "yours": False, "external_link": None}]
+                         "yours": False, "external_link": None,
+                         "agent_host": None, "agent_model": None,
+                         "agent_host_kind": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the

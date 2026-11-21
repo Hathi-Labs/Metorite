@@ -1084,6 +1084,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   reminder_due: "Reminder",
   reminder_check: "Check-back",
   reminder_unconfirmed: "Unconfirmed",
+  // AO-2: an AI vendor account is out of credit or low, for the operator's admins.
+  provider_alert: "AI vendor alert",
 };
 
 /**
@@ -1158,7 +1160,10 @@ export function feedFailedLines(
     if (state !== "failed") continue;
     const app = sourceApp(sourceApps, source);
     // The noun follows the SOURCE (reminders, time blocks), the name its app.
-    if (Object.hasOwn(APP_NAMES, app)) needsFailed[isFailedSource(source) ? source : (app as FailedSource)] = "failed";
+    // A source that `failedLines` words by itself goes first: `providers`
+    // (AO-2) has no app of the client, and its line must not drop.
+    if (isFailedSource(source)) needsFailed[source] = "failed";
+    else if (Object.hasOwn(APP_NAMES, app)) needsFailed[app as FailedSource] = "failed";
     else others.add(app);
   }
   const lines = failedLines(needsFailed);

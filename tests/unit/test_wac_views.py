@@ -239,6 +239,55 @@ async def test_an_empty_day_says_so_with_buttons(reads: dict) -> None:
     assert "Nothing needs you" in buttons.interactive["body"]["text"]
 
 
+@pytest.mark.parametrize("kind", ["provider_alert", "reminder_due"])
+async def test_a_feed_of_only_kinds_with_no_section_links_to_my_day(reads: dict, kind: str) -> None:
+    """AO-2 review: a feed of only rows with no section (an AI vendor alert, a
+    fired reminder) raised IndexError in `_list`. The rows need the member, so
+    the view links to My Day and never says the all-clear. Mutation: drop the
+    `_KINDS` filter, and this raises. Drop the `hidden` branch, and the
+    all-clear comes back."""
+    reads["feed"] = {"items": [
+        {"kind": kind, "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    assert v.text == "*My day* — 1 item in Metorite."
+    (link,) = v.ui
+    assert link.interactive["body"]["text"] == "Open My Day to see them."
+    assert "Nothing needs you" not in v.text + link.interactive["body"]["text"]
+
+
+async def test_a_row_with_no_section_is_left_out_beside_known_rows(reads: dict) -> None:
+    """AO-2 review: the known rows draw, the summary names only them, and the
+    link counts the hidden row. Mutation: drop `hidden` from `total`, and the
+    link goes."""
+    reads["feed"] = {"items": [
+        {"kind": "provider_alert", "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()},
+        {"kind": "due_today", "title": "Send the quote", "detail": "P",
+         "at": (NOW + timedelta(hours=1)).isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    assert v.text.startswith("*My day* — 1 due today")
+    lst, link = v.ui
+    titles = [r["title"] for r in lst.interactive["action"]["sections"][0]["rows"]]
+    assert titles == ["Send the quote"]
+    assert link.interactive["body"]["text"] == "1 more in Metorite."
+
+
+async def test_the_more_link_counts_hidden_rows_past_ten_shown(reads: dict) -> None:
+    """AO-2 review: twelve due rows and two hidden rows. Ten rows show, and
+    the link counts the two other due rows and the two hidden ones."""
+    reads["feed"] = {"items": [
+        *({"kind": "reminder_due", "title": f"Reminder {i}", "detail": None,
+           "at": NOW.isoformat()} for i in range(2)),
+        *({"kind": "due_today", "title": f"Task {i}", "detail": "P",
+           "at": (NOW + timedelta(hours=1)).isoformat()} for i in range(12))],
+        "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    lst, link = v.ui
+    assert len(lst.interactive["action"]["sections"][0]["rows"]) == 10
+    assert link.interactive["body"]["text"] == "4 more in Metorite."
+
+
 async def test_more_than_ten_rows_adds_a_link(reads: dict) -> None:
     reads["feed"]["items"] = [
         {"kind": "due_today", "title": f"Task {i}", "detail": "P",

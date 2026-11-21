@@ -73,6 +73,7 @@ import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
+  CONFIRMATION_NOT_DONE,
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   NO_EDITS,
@@ -99,7 +100,7 @@ import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
 import { refreshLiveRuns } from "@/lib/liveRuns";
-import { receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
+import { goesOnInParkedReply, receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
@@ -416,10 +417,12 @@ const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELL
 const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
 
 /** RESUME-3a: where the "Approved" line of a card that another device
- *  approved draws: under the last message before the reply that goes on. */
+ *  approved draws: under the last message before the reply that goes on.
+ *  RESUME-3b: in case A the reply that goes on is the parked one, so the
+ *  line draws under it. */
 function lineAnchorBeforeRun(threadId: string): string | null {
   const st = getSessionState(threadId);
-  return receiptAnchorBeforeRun(st.messages, st.run.messageId);
+  return receiptAnchorBeforeRun(st.messages, st.run.messageId, goesOnInParkedReply(st.run));
 }
 
 export default function AgentChat({
@@ -1301,6 +1304,12 @@ export default function AgentChat({
       }
       // The server closed a card: answered, timed out or cancelled. A replay
       // carries this too, so an answered card never comes back.
+      // Task 3827: the card was approved, and the tool then refused the write
+      // (the object changed after the card). Its line must not read "Approved".
+      if (name === CONFIRMATION_NOT_DONE && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "notDone", requestId: String(rid) });
+      }
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         const answer = (value as Record<string, unknown>).answer;
@@ -1623,6 +1632,8 @@ export default function AgentChat({
           dispatchRun(forSession, {
             type: "resumed", at: Date.now(), runId: resumed.runId,
             ...(resumed.messageId ? { messageId: resumed.messageId } : {}),
+            // RESUME-3b: case A goes on in the parked reply, under its run id.
+            ...(resumed.sameReply ? { sameReply: true } : {}),
           });
           refreshLiveRuns();
         }

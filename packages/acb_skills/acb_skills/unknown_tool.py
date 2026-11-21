@@ -47,14 +47,22 @@ asks it, and shows :data:`MEMBER_LINE` on the step in its place.
 
 HRD-1b (task 3230): a batch run gets the same answer, with no flag. One hook
 of the executor, ``_unknown_tool_view``, puts the provider on the stream run
-of the orchestrator and on each batch run (``_assemble_batch_agents``). So a
-WhatsApp run, a delegated agent, a worker and a self-anneal retry are in
-scope. A batch run has no loader, so it never loads.
+and on each batch run (``_assemble_batch_agents``). So a WhatsApp run, a
+delegated agent, a worker and a self-anneal retry are in scope. A batch run
+has no loader, so it never loads. HRD-1c (task 3679): the stream run of each
+agent gets it, not only the orchestrator's. An agent that is not the
+orchestrator has no loader either, so its answer names only a tool of its
+own request. Fence: ``tests/unit/test_unknown_tool_non_orchestrator_stream.py``.
 A delegated run answers another model, and a run with no chat answers no
 member. Each of those runs is a *step* (``step=True``). Its answer names only
 a tool of the request, or it is :data:`NOT_IN_STEP`. A step never reads the
 record of the packs and never asks a loader, so its text names no pack and
 offers no load. Fence: ``tests/unit/test_unknown_tool_batch_paths.py``.
+
+The rewrite is also the capture site C3 of the failure log
+(``tool_failure_log.md`` §4.2, TOF-2c): ONE ``unknown_tool`` record for each
+call of this run, and none for a result of the chat history. Fence:
+``tests/unit/test_failure_capture_sites.py``.
 """
 from __future__ import annotations
 
@@ -63,8 +71,12 @@ import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import failure_log, get_logger
 from agent_framework import ChatMiddleware, Content, ContextProvider, FunctionInvocationContext
+
+# TOF-2b: the set of built-in names is in the failure log before C3 runs
+# (tool_failure_log.md §3.2 rule 1).
+from acb_skills import builtin_tools as _builtin_tools  # noqa: F401
 
 __all__ = [
     "MEMBER_LINE", "NOT_IN_STEP", "UnknownToolAnswer", "UnknownToolProvider", "answer_for",
@@ -323,6 +335,25 @@ class UnknownToolAnswer(ChatMiddleware):
         #: slug and the text of a refused load ("" and "" after a load). A
         #: name gets ONE load try in a run, so the loop cannot spin the loader.
         self._tried: dict[str, tuple[str, str]] = {}
+        #: TOF-2c (C3): the keys of the calls of this run that the failure log
+        #: holds. A call writes one record, however many requests hold it.
+        self._recorded: set[str] = set()
+
+    def _record(self, content: Any, name: str) -> None:
+        """The capture site C3 (``tool_failure_log.md`` §4.2): ONE record for
+        each call of this run. A result from the chat history (a key of the
+        first request) writes none. *name* is model text, so the writer
+        keeps it in the tenant column only. Never raises."""
+        try:
+            key = _result_key(content)
+            if key in self._history_keys or key in self._recorded:
+                return
+            self._recorded.add(key)
+            failure_log.record_tool_failure(
+                None, source="chat_tool", error_code="unknown_tool", tool=name,
+                **failure_log.run_fields())
+        except Exception as exc:  # the class only: the answer stays
+            _log.debug("unknown_tool.capture_failed", error_type=type(exc).__name__)
 
     async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -363,6 +394,7 @@ class UnknownToolAnswer(ChatMiddleware):
         run = run if isinstance(run, tp.PackRun) else None
         tools = options.get("tools") if isinstance(options, Mapping) else None
         for content, name in hits:
+            self._record(content, name)  # C3 (TOF-2c)
             held = run.holds() if run is not None else ()
             offered = tuple(s for s in (getattr(loader, "offered", ()) or ()) if s not in held)
             gone = tuple(getattr(run, "gone", ()) or ())

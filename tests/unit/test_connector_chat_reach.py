@@ -43,6 +43,8 @@ REACH: dict[str, tuple[str, str]] = {
     "google_sheets": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "smtp": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "mcp": ("mcp", "_inject_mcp_servers"),
+    # API-5 lists the connector. The shared chat tools of api_connections.md §2.4 close the gap.
+    "api:zoho_books": ("gap", "task 3790 (API-4): the api_read chat tools are not built yet"),
 }
 
 
@@ -64,6 +66,26 @@ def test_each_decision_is_valid() -> None:
         assert why.strip(), cid
         if path == "gap":
             assert re.search(r"task \d{3,5}", why), f"{cid}: a gap names its task"
+
+
+def test_an_api_row_says_chat_reads_only_when_the_reach_is_not_a_gap() -> None:
+    """API-5 (``api_connections.md`` §2.12). One switch ties three things: the
+    ``chat_reads`` key of an ``api:`` row, its REACH decision here, and the
+    result card. While the REACH is a gap, the card must not say "Mira can
+    now" and must offer no build. API-4 flips ``chat_reads`` and REACH together,
+    or this test fails."""
+    from acb_common.connector_result_card import result_card
+
+    for row in cl.connector_rows():
+        if not row["id"].startswith("api:"):
+            continue
+        gap = REACH[row["id"]][0] == "gap"
+        assert cl.chat_reads(row) is (not gap), row["id"]
+        card = result_card(row["id"])
+        assert card is not None
+        assert ("Mira can now" in card["works_now"]["mira"]) is (not gap), row["id"]
+        if gap:
+            assert card["build_offer"] is False and card["chat_reads"] is False, row["id"]
 
 
 def test_a_pack_decision_names_packs_that_exist() -> None:

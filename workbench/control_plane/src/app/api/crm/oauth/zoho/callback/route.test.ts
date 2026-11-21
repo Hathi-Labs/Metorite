@@ -185,6 +185,98 @@ describe("the BFF Zoho OAuth callback", () => {
     expect(seam.opts.at(-1)).toEqual({ retry: false });
   });
 
+  // ── Zoho Books (API-2): a state with the mark `zb.` goes to the Books route.
+
+  const BOOKS_STATE = "zb.eyJub25jZSI6Im4ifQ.mac";
+
+  it("sends a marked state to the Books callback, with the five names only", async () => {
+    stubGateway(redirectTo("/integrations?api_connected=zoho_books"));
+    await callback(
+      `code=c&state=${BOOKS_STATE}&location=in&accounts-server=https%3A%2F%2Faccounts.zoho.in&evil=1`,
+    );
+    expect(calls).toHaveLength(1);
+    const sent = new URL(calls[0].url);
+    expect(sent.origin + sent.pathname).toBe("http://gw.test/integrations/api/zoho/callback");
+    expect(sent.searchParams.get("state")).toBe(BOOKS_STATE);
+    expect([...sent.searchParams.keys()].sort()).toEqual([
+      "accounts-server",
+      "code",
+      "location",
+      "state",
+    ]);
+    expect(calls[0].init?.redirect).toBe("manual");
+    expect(seam.opts.at(-1)).toEqual({ retry: false });
+  });
+
+  it("sends a state with no mark to the CRM callback", async () => {
+    stubGateway(redirectTo("/crm?connected=zoho"));
+    await callback("code=c&state=eyJub25jZSI6Im4ifQ.mac");
+    expect(new URL(calls[0].url).pathname).toBe("/crm/oauth/zoho/callback");
+  });
+
+  it("passes on each Location the Books callback can send", async () => {
+    const gateway = readFileSync(
+      new URL(
+        "../../../../../../../../../apps/services/gateway/gateway/routes/integrations_api_connect.py",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const constant = (name: string) => {
+      const m = gateway.match(new RegExp(`^${name} = "([^"]+)"`, "m"));
+      expect(m, name).not.toBeNull();
+      return m![1];
+    };
+    for (const location of [
+      constant("RETURN_OK"),
+      `${constant("RETURN_FAILED")}test_read_failed`,
+      `${constant("RETURN_PICK")}AbCdEfGhIjKlMnOpQrStUv`,
+    ]) {
+      stubGateway(redirectTo(location));
+      const res = await callback(`code=c&state=${BOOKS_STATE}`);
+      expect(res.headers.get("location"), location).toBe(location);
+    }
+  });
+
+  it("refuses a CRM Location for a Books state, and a Books Location for a CRM state", async () => {
+    for (const location of [
+      "/crm?connected=zoho",
+      "https://evil.example/integrations?api_connected=zoho_books",
+      "//evil.example/integrations?api_connected=zoho_books",
+      "/integrations?api_connected=other",
+      "/integrations?api_pick=short",
+      "/integrations?api_connected=zoho_books&x=1",
+      "/integrations/other?api_connected=zoho_books",
+    ]) {
+      stubGateway(redirectTo(location));
+      const res = await callback(`code=c&state=${BOOKS_STATE}`);
+      expect(res.headers.get("location"), location).toBe("/integrations?api_connect_error=failed");
+    }
+    stubGateway(redirectTo("/integrations?api_connected=zoho_books"));
+    const crm = await callback("code=c&state=s");
+    expect(crm.headers.get("location")).toBe("/crm?connect_error=failed");
+  });
+
+  it("names a known Books refusal code, and the generic failure for any other", async () => {
+    stubGateway(refusal(400, "invalid_state"));
+    expect((await callback(`code=c&state=${BOOKS_STATE}`)).headers.get("location")).toBe(
+      "/integrations?api_connect_error=invalid_state",
+    );
+    stubGateway(refusal(404, "Not Found"));
+    expect((await callback(`code=c&state=${BOOKS_STATE}`)).headers.get("location")).toBe(
+      "/integrations?api_connect_error=failed",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("down");
+      }),
+    );
+    expect((await callback(`code=c&state=${BOOKS_STATE}`)).headers.get("location")).toBe(
+      "/integrations?api_connect_error=failed",
+    );
+  });
+
   it("never logs the query", () => {
     const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
