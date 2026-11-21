@@ -157,6 +157,9 @@ REPLY_TOO_MANY_WRONG = ("That was the fifth wrong code, so this request is close
 REPLY_NO_ACT = ("No request waits for a code from this phone, so nothing was "
                 "sent or changed. The code works only from the phone that got "
                 "the summary.")
+#: Task 3854: the server secret is empty or public, so no code can be checked.
+REPLY_CODE_KEY = ("Metorite cannot check reply codes now, so nothing was sent or "
+                  "changed. Make the change in the Metorite web app.")
 
 #: The reply of each problem of ``whatsapp_acts.choice_problem``.
 _CHOICE_REPLIES = {
@@ -352,6 +355,28 @@ def new_code() -> str:
 #: The domain of the code hash, so the key signs nothing else with it.
 _CODE_DOMAIN = b"whatsapp-act-code:"
 
+#: The log reason when the key is not usable. It never holds the secret.
+_CODE_KEY_REASON = "gateway_session_secret is empty or a public default"
+
+
+class CodeKeyUnusable(RuntimeError):
+    """The server secret is empty or public, so no reply code is safe (task 3854)."""
+
+
+def _code_key() -> bytes | None:
+    """The key of the code hash, or None when the secret is empty or public.
+
+    ``acb_auth.member_proof._usable`` is the one test of the secret, as in
+    ``routes/email/transport/signing.py``. An HMAC under a public key is a
+    plain hash, and a table of 923 521 rows reverses it."""
+    from acb_auth.member_proof import _usable
+    from acb_common import get_settings
+
+    raw = str(getattr(get_settings(), "gateway_session_secret", "") or "")
+    if not _usable(raw):
+        return None
+    return raw.encode("utf-8")
+
 
 def code_hash(code: str) -> str:
     """The HMAC-SHA256 of *code* in upper case, in hex. The only form stored.
@@ -359,17 +384,25 @@ def code_hash(code: str) -> str:
     The key is ``gateway_session_secret``, read through the settings seam.
     A plain hash of 4 symbols is reversed by a table of 923 521 rows, so the
     record alone never gives the code (review P3). A rotated key ends each
-    live code, which lives 15 minutes at most."""
-    from acb_common import get_settings
+    live code, which lives 15 minutes at most.
 
-    key = str(get_settings().gateway_session_secret or "").encode("utf-8")
+    Raises :class:`CodeKeyUnusable` when the secret is empty or public. It
+    never falls back to a hash under a weak key (task 3854)."""
+    key = _code_key()
+    if key is None:
+        raise CodeKeyUnusable(_CODE_KEY_REASON)
     msg = _CODE_DOMAIN + str(code).strip().upper().encode("ascii", "replace")
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
 def _code_matches(stored: Any, code: str) -> bool:
-    return bool(stored) and bool(code) and hmac.compare_digest(
-        str(stored), code_hash(code))
+    """True when *code* gives the stored hash. False with no usable key."""
+    if not stored or not code:
+        return False
+    try:
+        return hmac.compare_digest(str(stored), code_hash(code))
+    except CodeKeyUnusable:
+        return False
 
 
 async def park_code(req: RunRequest, act: ParkedAct) -> tuple[str, str] | None:
@@ -378,7 +411,14 @@ async def park_code(req: RunRequest, act: ParkedAct) -> tuple[str, str] | None:
 
     The row holds the hash of the code, never the code. ``bot_run`` puts the
     code in the summary, and the code lives :data:`CODE_TTL_S` after the
-    last part of the summary went out (:func:`offered`)."""
+    last part of the summary went out (:func:`offered`).
+
+    None also when the server secret is empty or public (task 3854). Then
+    no code is made and nothing is stored."""
+    if _code_key() is None:
+        _log.warning("whatsapp_channel.act.code_key_unusable", reason=_CODE_KEY_REASON,
+                     step="park", message_id=req.message_id)
+        return None
     link_id = await _current_link_id(req.wa_id, req.member_email)
     if link_id is None:
         _log.info("whatsapp_channel.act.no_link", message_id=req.message_id)
@@ -581,14 +621,9 @@ async def _settle_code(req: RunRequest, act: dict[str, Any],
         await _close(act_id, "pending", "expired", None)
         _log.info("whatsapp_channel.act.expired", act_id=act_id)
         return REPLY_CODE_EXPIRED
-    if not _code_matches(stored, answer.code):
-        tries = await _wrong_code(act_id)
-        _log.info("whatsapp_channel.act.code_refused", act_id=act_id, reason="wrong_code",
-                  tries=tries)
-        if tries >= MAX_WRONG_CODES:
-            await _close(act_id, "pending", "void", "wrong_codes")
-            return REPLY_TOO_MANY_WRONG
-        return REPLY_WRONG_CODE
+    refused = await _refuse_code(act_id, stored, answer.code)
+    if refused is not None:
+        return refused
     if (str(act["member_email"]).strip().lower() != req.member_email
             or await _current_link_id(req.wa_id, req.member_email) != act["link_id"]):
         await _close(act_id, "pending", "void", "link")
@@ -614,6 +649,27 @@ async def _settle_code(req: RunRequest, act: dict[str, Any],
     return Approved(act_id=act_id, tool=tool, arguments=arguments,
                     card=str(act["card_text"]), kind="email",
                     without=answer.without, include=answer.include)
+
+
+async def _refuse_code(act_id: str, stored: Any, code: str) -> str | None:
+    """The reply that refuses *code*, or None when it matches the stored hash.
+
+    With no usable key (task 3854) no code can be checked, so the act ends.
+    A wrong-code reply would be false, and it would count a try."""
+    if _code_key() is None:
+        await _close(act_id, "pending", "void", "code_key")
+        _log.warning("whatsapp_channel.act.code_key_unusable", reason=_CODE_KEY_REASON,
+                     step="settle", act_id=act_id)
+        return REPLY_CODE_KEY
+    if _code_matches(stored, code):
+        return None
+    tries = await _wrong_code(act_id)
+    _log.info("whatsapp_channel.act.code_refused", act_id=act_id, reason="wrong_code",
+              tries=tries)
+    if tries >= MAX_WRONG_CODES:
+        await _close(act_id, "pending", "void", "wrong_codes")
+        return REPLY_TOO_MANY_WRONG
+    return REPLY_WRONG_CODE
 
 
 async def finish(approved: Approved, used: bool) -> None:

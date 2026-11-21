@@ -22,17 +22,13 @@ CRM-Z2 (``crm_platform.md``). The fence is
 
 Security
 --------
-- ``state`` is an HMAC-signed ``service:nonce:ts`` token (gateway secret).
+- No route signs or checks a ``state`` now. Task 3854 removed the two
+  helpers, which fell back to a public secret and had no caller.
 - Client secrets never leave the server.
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import html
-import secrets
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -47,8 +43,6 @@ from gateway.routes.integrations import MANAGE_PERMISSION, _find_env_file, _upse
 _log = get_logger("gateway.oauth")
 
 router = APIRouter(prefix="/integrations/oauth", tags=["integrations", "oauth"])
-
-_STATE_TTL_SECONDS = 600  # authorize → callback must complete within 10 minutes
 
 #: What a caller of a retired route reads (WS-54 IN-0).
 RETIRED_DETAIL = (
@@ -93,36 +87,6 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
 def _redirect_uri(settings: Any, service: str) -> str:
     base = getattr(settings, "oauth_redirect_base", "http://localhost:8000").rstrip("/")
     return f"{base}/integrations/oauth/callback/{service}"
-
-
-# ---------------------------------------------------------------------------
-# Signed state (CSRF protection)
-# ---------------------------------------------------------------------------
-
-def _sign_state(service: str, settings: Any) -> str:
-    secret = getattr(settings, "gateway_session_secret", "change-me").encode()
-    nonce = secrets.token_urlsafe(8)
-    ts = str(int(time.time()))
-    msg = f"{service}:{nonce}:{ts}"
-    sig = hmac.new(secret, msg.encode(), hashlib.sha256).digest()
-    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
-    return f"{msg}:{sig_b64}"
-
-
-def _verify_state(state: str, service: str, settings: Any) -> bool:
-    try:
-        svc, nonce, ts, sig_b64 = state.split(":")
-    except ValueError:
-        return False
-    if svc != service:
-        return False
-    if int(time.time()) - int(ts) > _STATE_TTL_SECONDS:
-        return False
-    secret = getattr(settings, "gateway_session_secret", "change-me").encode()
-    msg = f"{svc}:{nonce}:{ts}"
-    expected = hmac.new(secret, msg.encode(), hashlib.sha256).digest()
-    expected_b64 = base64.urlsafe_b64encode(expected).decode().rstrip("=")
-    return hmac.compare_digest(sig_b64, expected_b64)
 
 
 # ---------------------------------------------------------------------------

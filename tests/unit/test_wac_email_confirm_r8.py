@@ -57,6 +57,16 @@ from tests.unit.test_wac_writes_r8 import _bound, _req, _seed_thread
 
 pytestmark = _DB_GATE
 
+
+@pytest.fixture(autouse=True)
+def _code_key(monkeypatch) -> None:
+    """A usable server secret. Task 3854: ``acts.code_hash`` refuses the public
+    default, so each test here sets its own key."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "test-code-key-3854")
+
+
 _ROOT = Path(__file__).resolve().parents[2]
 _TABLE = "whatsapp_pending_acts"
 _COLUMN = "confirm_code_hash"

@@ -496,7 +496,6 @@ class TestLayerARefusesControlCharacters:
     ):
         # IN-0: the callback is retired. It answers the error page before it
         # exchanges the code, so no token request goes out.
-        monkeypatch.setattr(oauth_routes, "_verify_state", lambda *_: True)
         _no_httpx(monkeypatch, oauth_routes)
         before = _snapshot(env_file)
         page = await oauth_routes.oauth_callback(service="zoho-crm", code="c", state="s", error="")
@@ -1279,7 +1278,6 @@ class TestEveryCallerStillWorks:
     async def test_oauth_callback_saves_the_zoho_tokens(self, env_file, monkeypatch):
         # IN-0 retires the callback. It answers the retired page and writes
         # no token, even for a good exchange.
-        monkeypatch.setattr(oauth_routes, "_verify_state", lambda *_: True)
         _fake_httpx(monkeypatch, oauth_routes, {
             "access_token": "1000.access", "refresh_token": "1000.refresh", "expires_in": 3600,
         })

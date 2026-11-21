@@ -107,6 +107,7 @@
       "tests/unit/test_sandbox_broker_seam.py",
       "tests/unit/test_semantic_shape_only.py",
       "tests/unit/test_sent_record.py",
+      "tests/unit/test_session_secret_readers_refuse_default.py",
       "tests/unit/test_skill_dry_run.py",
       "tests/unit/test_skill_repair.py",
       "tests/unit/test_skill_runs.py",

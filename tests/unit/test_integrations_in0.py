@@ -444,7 +444,6 @@ class TestTheRetiredAndFailedPaths:
                 raise AssertionError("the retired callback made a token request")
 
         monkeypatch.setattr(oauth_routes.httpx, "AsyncClient", _NoNetwork)
-        monkeypatch.setattr(oauth_routes, "_verify_state", lambda *_: True)
         before = _snapshot(env_file)
         page = await oauth_routes.oauth_callback(
             service="zoho-crm", code="a-real-code", state="s", error="",

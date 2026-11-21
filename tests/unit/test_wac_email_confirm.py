@@ -60,6 +60,15 @@ def _load_email():
 agents = _load_email()
 
 
+@pytest.fixture(autouse=True)
+def _code_key(monkeypatch) -> None:
+    """A usable server secret. Task 3854: ``acts.code_hash`` refuses the public
+    default, so each test here sets its own key."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "test-code-key-3854")
+
+
 # ── The fakes ───────────────────────────────────────────────────────────────
 
 

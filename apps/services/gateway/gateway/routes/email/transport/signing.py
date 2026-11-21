@@ -31,8 +31,7 @@ WS-53 CRM-Z2 adds :func:`sign_state` and :func:`verify_state`: the same
 MAC with a caller purpose, for the CRM Zoho connect (``crm.zoho.connect``). The
 email purposes are reserved, and the email functions are unchanged.
 
-Do not reuse ``routes/oauth.py::_sign_state``. It has another format and it
-falls back to a default secret. Fences: ``tests/unit/test_email_oauth_state.py``.
+Fences: ``tests/unit/test_email_oauth_state.py``.
 """
 
 from __future__ import annotations

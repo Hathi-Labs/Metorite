@@ -409,6 +409,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - `inbound.py` does nothing without `WHATSAPP_APP_SECRET`. Its two unbound reads go through SECURITY DEFINER functions. ⚠️ The failed-code limit lives in the process.
    - Only the insert that wrote the `whatsapp_bot_messages` row starts a run. That table holds no message text. A message gets at most one reply. The bot never touches a shared room.
    - `acts.py` needs `WHATSAPP_ASSISTANT_WRITES` (default OFF). A Confirm runs the stored call once, with no model.
+   - `acts.code_hash` refuses an empty or public `gateway_session_secret`. Then no reply code is made or matched. Each reader of the secret refuses the values in `acb_auth.member_proof.PUBLIC_DEFAULT_SECRETS`. Fence: `test_session_secret_readers_refuse_default.py`.
    - Fences: `test_wac_link_code.py`, `test_wac_link_table.py`, `test_wac_bot_run_r8.py`, `test_wac_writes_r8.py`.
 19. routes/shell/ -- **The shell's own routes** (`navigation_shell.md`, `my_day_feed.md`).
    - `state.py` is the only writer of `my_day_card_state`. Its POST takes the member from the session. Fence: `test_my_day_state_r8.py`.
