@@ -1064,6 +1064,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D13b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D13b-2.md) |
 | **D13c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D13c.md) |
 | **D13d** | open | STD | see row | [row](ai_studio_rows/D13d.md) |
+| **D14a** | 🔨 BUILT, dark, preview only (2026-11-15, task 2358) | STD | AGENT-SAFE | [row](ai_studio_rows/D14a.md) |
+| **D14b** | open | HIGH | see row | [row](ai_studio_rows/D14b.md) |
+| **D14c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D14c.md) |
 | **D14** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D14.md) |
 | **D15** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D15.md) |
 | **D16** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D16.md) |
