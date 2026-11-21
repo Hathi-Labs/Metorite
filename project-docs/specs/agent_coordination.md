@@ -849,7 +849,7 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
-**Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from `README.en.md`, `AGENTS.md`, `docs/protocol.md`, `plugins/claude/agent.ts` and `cli/mcp.ts`.
+**Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from the English README, the protocol doc, the Claude plugin and the MCP command of that repository.
 
 **What it does.** One local hub runs command-line agents (Claude Code, Codex, ACP) in rounds. A cron time, a webhook or an issue becomes an event. A rule in `rules.json` picks the agent, the folder, the skill and the access. A worker runs one round as `claude -p --resume <session> --output-format stream-json`, and then the process exits. The last message of the agent is a receipt with `ask`, `notice`, `resolve`, `later` and `events`. An answer or a timer starts the next round in the same session. All state is an append-only fact log in SQLite.
 
