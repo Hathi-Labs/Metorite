@@ -353,6 +353,20 @@ def test_the_deploy_log_shows_the_backup_before_the_first_migration() -> None:
     assert _PASSWORD not in out + str(r["err"]), "the password reached the deploy log"
 
 
+def test_the_gate_dumps_the_libpq_form_that_the_applier_uses() -> None:
+    """The applier strips `+psycopg2` and `+psycopg` from the DSN, and so does
+    the gate. backup_db.sh refuses a `+psycopg2` URL, so a gate that passed
+    the raw DSN would stop every deploy of a box with that form. Mutation:
+    pass "$CC_DSN" as it is, and this exits 1."""
+    dsn = f"CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg2://cc:{_PASSWORD}@cc.example:5432/postgres"
+    r = _gate(env_line=dsn, unit_enabled=True)
+    out = str(r["out"])
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{out}\n{r['err']}"
+    dumps = [ln for ln in r["calls"] if ln.startswith("pg_dump ")]  # type: ignore[union-attr]
+    assert dumps == [f"pg_dump -d postgresql://cc:{_PASSWORD}@cc.example:5432/postgres -Fc"], dumps
+    assert out.index("Console backup complete: ") < out.index("applying 001_a.sql"), out
+
+
 def test_a_failed_console_backup_stops_the_deploy_before_the_applier() -> None:
     r = _gate(env_line=_BOX_DSN, unit_enabled=True, knobs="export STUB_CONSOLE_DUMP_FAILS=1\n")
     out = str(r["out"])
