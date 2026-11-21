@@ -1,8 +1,10 @@
-"""D85 — a shared agent runs no code on the host until the sandbox covers it.
+"""D85 and D129 — no agent that a member reaches runs code on the host.
 
 The owner decided on 2026-10-03: until the sandbox is live, block code
 execution on the shared server for the Projects agent and the other shared
 agents (``work_plan.md`` D85, ``maf_coding_engine.md`` §7.9). Fence WS43-F23.
+On 2026-10-27 D129 put personal agents in scope too (task 808, H-225). Only
+the root ``metorite`` dev agent, which a first-party admin runs, keeps them.
 
 The seam is ONE function, ``_tool_injection._withheld_shell_tools``. Its
 answer leaves the SCOPE (``_resolve_injected_scope(withheld=)``), and three
@@ -13,13 +15,15 @@ sure no branch puts a shell tool back.
 What each test pins, and the mutation that turned it red (2026-10-03):
 
 * projects-assistant, crm-assistant and apis-config get no ``SHELL_TOOLS``
-  member, and neither does any other shared agent in the registry. Red when
+  member, and neither does any other agent in the registry. Red when
   ``_withheld_shell_tools`` returns ``frozenset()`` for a shared agent.
-* email-assistant and whatsapp-assistant keep exactly the shell tools their
-  scope resolves to. Red when the ``personal`` early return goes.
-* ``covers(agent, org)`` gives the tools back for that agent in that org only.
-  Red when the cover branch goes. A run with no org gets no cover. Red when
-  the ``org`` guard goes.
+* email-assistant and whatsapp-assistant are personal, and they get no shell
+  tool (D129). A run of whatsapp-assistant, and a delegation to either, holds
+  none of the three. A personal Copilot agent's CLI shell is refused. Red when
+  ``_d85_leaves_alone`` gets its ``personal`` early return back (2026-11-21).
+* ``covers(agent, org)`` gives the tools back for that agent in that org only,
+  a personal agent too (D130). Red when the cover branch goes. A run with no
+  org gets no cover. Red when the ``org`` guard goes.
 * The addendum has no coding section for an agent without the tools, and it
   loses nothing else. Red when ``_resolve_injected_scope`` drops ``withheld``
   while the last filter stays.
@@ -36,8 +40,9 @@ host). ``permission_policy.guard_shared_agent_shell`` reads the second, and
 ``_install_copilot_permission_handler`` puts the guard on every Copilot
 handler, a factory's own handler included.
 
-* A shell request of a shared agent is refused in every mode, with any
-  factory handler, and under a cover. A personal agent's is approved.
+* A shell request of a shared or a personal agent is refused in every mode,
+  with any factory handler, and under a cover. Only the root dev agent's
+  shell reaches the inner handler.
 * A frame with no flag refuses. Each artifact-context site binds both flags,
   and a sub-agent takes its own answer, not its parent's.
 * ``decide()`` contains an SDK 1.0 write (``file_name``) and read
@@ -207,14 +212,12 @@ def test_apis_config_loses_the_install_dependency_it_declares() -> None:
     assert "install_dependency" not in _inject_native("apis-config")
 
 
-def test_every_shared_agent_in_the_registry_gets_no_shell_tool() -> None:
-    shared = [
-        slug for slug in SLUG_TO_DIR
-        if (_config(slug).get("sharing") or {}).get("instancing", "shared") != "personal"
-    ]
+def test_every_agent_in_the_registry_gets_no_shell_tool() -> None:
+    """Shared and personal alike (D129). No registry agent is exempt."""
     assert {"projects-assistant", "crm-assistant", "apis-config", "orchestrator",
-            "task-manager", "app-builder"} <= set(shared)
-    for slug in shared:
+            "task-manager", "app-builder", "email-assistant",
+            "whatsapp-assistant"} <= set(SLUG_TO_DIR)
+    for slug in SLUG_TO_DIR:
         names = _inject_native(slug)
         assert not (names & SHELL_TOOLS), f"{slug} still holds {sorted(names & SHELL_TOOLS)}"
 
@@ -226,24 +229,41 @@ def test_every_shared_agent_in_the_registry_gets_no_shell_tool() -> None:
     {"sharing": {"instancing": "team", "team": "ops"}},
     {"sharing": {"instancing": ["not", "a", "string"]}},
     {"schema_version": "not-a-number"},
+    {"sharing": {"instancing": "personal"}},
+    {"sharing": {"instancing": "personal", "visibility": "private"}},
 ])
-def test_anything_but_personal_withholds_every_shell_tool(config: Any) -> None:
+def test_every_config_withholds_every_shell_tool(config: Any) -> None:
+    """A personal config too, since D129 (2026-10-27)."""
     assert ti._withheld_shell_tools("some-agent", config) == SHELL_TOOLS
+    assert ti._host_shell_refused("some-agent", config) is True
 
 
-# ── 2. Personal agents keep today's behaviour ──────────────────────────────
+# ── 2. Personal agents lose them too (D129) ────────────────────────────────
 
 @pytest.mark.parametrize("slug", ["email-assistant", "whatsapp-assistant"])
-def test_a_personal_agent_keeps_its_shell_tools(slug: str) -> None:
+def test_a_personal_agent_gets_no_shell_tool(slug: str) -> None:
     cfg = _config(slug)
     assert cfg["sharing"]["instancing"] == "personal"
+    # The open scope still names two shell tools, so the block has work to do.
+    open_scope = (ti._resolve_injected_scope(cfg.get("tool_scope")) or set()) & SHELL_TOOLS
+    assert open_scope == {"run_script", "code_task"}, "the floor changed; re-read D85"
+    assert ti._withheld_shell_tools(slug, cfg) == SHELL_TOOLS
+    assert ti._host_shell_refused(slug, cfg) is True
     names = _inject_native(slug)
-    expected = (ti._resolve_injected_scope(cfg.get("tool_scope")) or set()) & SHELL_TOOLS
-    assert expected == {"run_script", "code_task"}, "the floor changed; re-read D85"
-    # D85 withholds nothing. An agent may still opt out of a shell tool that
-    # it never calls (email-assistant does, projects_ai_chat.md §25).
-    assert names & SHELL_TOOLS == expected - ti._floor_opt_out(slug, cfg)
-    assert ti._withheld_shell_tools(slug, cfg) == frozenset()
+    assert not (names & SHELL_TOOLS), f"{slug} still holds {sorted(names & SHELL_TOOLS)}"
+
+
+def test_a_covered_personal_agent_gets_its_shell_tools_back(monkeypatch) -> None:
+    """D130: the way back is the same for a personal agent. The host half
+    stays refused, because the broker does not hold the CLI."""
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("whatsapp-assistant", ORG_A))
+    monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_A)
+    cfg = _config("whatsapp-assistant")
+    assert ti._withheld_shell_tools("whatsapp-assistant", cfg) == frozenset()
+    assert ti._host_shell_refused("whatsapp-assistant", cfg) is True
+    assert {"run_script", "code_task"} <= _inject_native("whatsapp-assistant")
+    # The cover is per agent: email-assistant in the same org stays blocked.
+    assert ti._withheld_shell_tools("email-assistant", _config("email-assistant")) == SHELL_TOOLS
 
 
 # ── 3. covers(agent, org) gives the tools back ─────────────────────────────
@@ -300,13 +320,29 @@ def test_a_shared_copilot_agent_gets_no_coding_section() -> None:
             assert marker not in text, f"is_sub={is_sub}: the addendum still says {marker!r}"
 
 
-def test_a_personal_copilot_agent_keeps_its_coding_section() -> None:
-    """The control for the test above: the same path, a personal config."""
+def _coach_copilot() -> _FakeCopilotAgent:
     agent = _FakeCopilotAgent()
     ti._inject_agent_tools(
         [agent], tool_scope=None, agent_name="coach",
         agent_config={"sharing": {"instancing": "personal"}},
     )
+    return agent
+
+
+def test_a_personal_copilot_agent_gets_no_coding_section() -> None:
+    """D129: a personal prompt does not advertise a tool the agent lacks."""
+    agent = _coach_copilot()
+    text = _system_message(agent)
+    for marker in CODING_MARKERS_FULL:
+        assert marker not in text, f"the addendum still says {marker!r}"
+    assert not (_copilot_names(agent) & SHELL_TOOLS)
+
+
+def test_a_covered_copilot_agent_keeps_its_coding_section(monkeypatch) -> None:
+    """The control for the two tests above: the same path, under a cover."""
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("coach", ORG_A))
+    monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_A)
+    agent = _coach_copilot()
     text = _system_message(agent)
     assert "### Coding skill (durable scripts)" in text
     assert {"run_script", "code_task", "install_dependency"} <= _copilot_names(agent)
@@ -342,14 +378,13 @@ def test_the_skill_bodies_read_the_same_withheld_scope(monkeypatch, tmp_path) ->
         tool_scope=cfg.get("tool_scope"), agent_config=cfg,
     )
     assert seen["scope"] is not None and not (seen["scope"] & SHELL_TOOLS)
-    # A personal agent that keeps its shell tools. (email-assistant opts out
-    # of both, so it no longer shows the D85 half of this rule.)
+    # A personal agent with no opt-out reads the withheld scope too (D129).
     ti.materialize_skill_bodies_for_agent(
         "whatsapp-assistant", str(tmp_path),
         tool_scope=_config("whatsapp-assistant").get("tool_scope"),
         agent_config=_config("whatsapp-assistant"),
     )
-    assert {"run_script", "code_task"} <= seen["scope"]
+    assert seen["scope"] is not None and not (seen["scope"] & SHELL_TOOLS)
     ti.materialize_skill_bodies_for_agent(
         "email-assistant", str(tmp_path),
         tool_scope=_config("email-assistant").get("tool_scope"),
@@ -568,8 +603,10 @@ def test_the_host_half_ignores_a_cover(monkeypatch) -> None:
     cfg = _config("crm-assistant")
     assert ti._withheld_shell_tools("crm-assistant", cfg) == frozenset()
     assert ti._host_shell_refused("crm-assistant", cfg) is True
+    # A covered personal agent keeps its CLI shell refused as well (D129).
     personal = {"sharing": {"instancing": "personal"}}
-    assert ti._host_shell_refused("coach", personal) is False
+    assert ti._withheld_shell_tools("coach", personal) == frozenset()
+    assert ti._host_shell_refused("coach", personal) is True
 
 
 def test_no_agent_has_its_cli_in_a_broker_sandbox_today() -> None:
@@ -900,13 +937,26 @@ def test_probe_app_builder_loses_its_build_shell(monkeypatch, tmp_path) -> None:
     assert _refused(agent.decisions["shell"])
 
 
-def test_probe_a_personal_copilot_agent_keeps_its_shell(monkeypatch, tmp_path) -> None:
+def test_probe_a_personal_copilot_agent_loses_its_shell(monkeypatch, tmp_path) -> None:
     """No in-repo personal agent runs on the Copilot path today. This one
-    proves that the guard leaves such an agent as it was."""
+    proves that the guard refuses such an agent's CLI shell (D129)."""
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
     cfg = {"name": "coach", "sharing": {"instancing": "personal"}}
     agent = _probe(monkeypatch, tmp_path, slug="coach", config=cfg)
-    assert _approved(agent.decisions["shell"]), agent.decisions["shell"]
+    assert _refused(agent.decisions["shell"]), agent.decisions["shell"]
+    assert not ({ti._tool_name(t) for t in agent._tools} & SHELL_TOOLS)
+    assert _approved(agent.decisions["my_tasks_capture"])
+
+
+def test_probe_a_whatsapp_assistant_run_holds_no_shell_tool(monkeypatch, tmp_path) -> None:
+    """D129's own done-when: a run of whatsapp-assistant, with its real
+    config, through the real ``run_agent_stream``, gets none of the three."""
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
+    cfg = _config("whatsapp-assistant")
+    agent = _probe(monkeypatch, tmp_path, slug="whatsapp-assistant", config=cfg)
+    held = {ti._tool_name(t) for t in agent._tools}
+    assert not (held & SHELL_TOOLS), sorted(held & SHELL_TOOLS)
+    assert _refused(agent.decisions["shell"]), agent.decisions["shell"]
 
 
 def test_probe_a_cover_gives_the_tools_back_and_never_the_host_shell(
@@ -941,7 +991,8 @@ def test_probe_a_factory_handler_still_gets_the_guard(
 ) -> None:
     """P1 of fix round 1: the guard used to go only into an EMPTY slot, so an
     agent whose factory set ``approve_all`` or its own handler kept its shell.
-    Every repo-registered agent runs as ``github-copilot``."""
+    Every repo-registered agent runs as ``github-copilot``. Since D129 the
+    guard refuses a personal agent's shell too."""
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
     cfg = _config("task-manager")
     slug = "task-manager"
@@ -952,23 +1003,27 @@ def test_probe_a_factory_handler_still_gets_the_guard(
     agent = _probe(monkeypatch, tmp_path, slug=slug, config=cfg, preset=preset())
     # The factory's own handler still answers every other request.
     assert _approved(agent.decisions["my_tasks_capture"])
-    if case == "personal":
-        assert _approved(agent.decisions["shell"]), agent.decisions["shell"]
-    else:
-        assert _refused(agent.decisions["shell"]), (case, agent.decisions["shell"])
+    assert _refused(agent.decisions["shell"]), (case, agent.decisions["shell"])
 
 
 # ── 7h. The sub-agent sets its OWN flags ───────────────────────────────────
 
+_ROOT = "root"  # the sub_cfg_key of the repo-root config.json
+
+
 @pytest.mark.parametrize("parent_refused, sub_slug, sub_cfg_key, sub_refused", [
-    (False, "task-manager", "task-manager", True),   # personal parent, shared sub
-    (True, "coach", None, False),                    # shared parent, personal sub
+    (False, "task-manager", "task-manager", True),   # open parent, shared sub
+    (True, "coach", None, True),                     # refused parent, personal sub (D129)
+    (True, "metorite", _ROOT, False),                # refused parent, the root dev agent
 ])
 def test_a_sub_agent_takes_its_own_host_shell_answer(
     monkeypatch, tmp_path, parent_refused, sub_slug, sub_cfg_key, sub_refused,
 ) -> None:
     """The verifier's gap: the sub-agent's flag was checked only for the key.
-    A hard-coded value at the sub-agent site must turn this red."""
+    A hard-coded value at the sub-agent site must turn this red. Since D129
+    only the root dev agent answers ``False``, so it is the third case. Its
+    first-party gate is switched off here, and
+    ``test_root_agent_first_party.py`` fences that gate."""
     import asyncio
 
     import gateway.routes.agent as agent_routes
@@ -980,9 +1035,17 @@ def test_a_sub_agent_takes_its_own_host_shell_answer(
     # (D84, D92, test_copilot_specialist_refused.py). The Copilot sub-agent
     # branch stays as a second layer, so this test switches the refusal off.
     monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
-    cfg = _config(sub_cfg_key) if sub_cfg_key else {
-        "name": "coach", "sharing": {"instancing": "personal"},
-    }
+
+    async def _allowed(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(executor, "_assert_may_run_agent", _allowed)
+    if sub_cfg_key == _ROOT:
+        cfg = json.loads((REPO / "config.json").read_text(encoding="utf-8"))
+    elif sub_cfg_key:
+        cfg = _config(sub_cfg_key)
+    else:
+        cfg = {"name": "coach", "sharing": {"instancing": "personal"}}
     agent = _CopilotProbeAgent(_my_tasks_tool_names())
     _loader(monkeypatch, tmp_path, agent, cfg, sub_slug)
     monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [
@@ -1012,6 +1075,100 @@ def test_a_sub_agent_takes_its_own_host_shell_answer(
         assert _refused(agent.decisions["shell"]), agent.decisions["shell"]
     else:
         assert _approved(agent.decisions["shell"]), agent.decisions["shell"]
+
+
+# ── 7j. A shared run delegates to a personal agent (D129, H-225) ──────────
+
+class _NativeSubAgent(_FakeNativeAgent):
+    """A native MAF agent. Delegation injects its tools and then hands it to
+    the batch run, which this probe stubs."""
+
+
+def _delegate(
+    monkeypatch, tmp_path, slug: str, *, org: str = ORG_A,
+) -> tuple[_NativeSubAgent, dict[str, Any]]:
+    """A shared parent run (both D85 flags set) delegates to *slug*, with its
+    real config, through ``executor._run_sub_agent_streaming``. Returns the
+    sub-agent and the artifact context that its batch run saw."""
+    import asyncio
+
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import (
+        artifact_context,
+        artifact_context_scope,
+        bind_artifact_context,
+    )
+
+    agent = _NativeSubAgent()
+    _loader(monkeypatch, tmp_path, agent, _config(slug), slug)
+    seen: dict[str, Any] = {}
+
+    async def _batch(name: str, payload: dict[str, Any], **_k: Any) -> dict[str, Any]:
+        seen.update(artifact_context())
+        return {"result": f"{name} is done"}
+
+    async def _no_mark(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _no_working_set(*_a: Any, **_k: Any) -> tuple[None, str]:
+        return None, ""
+
+    async def _not_marked(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    # No database and no Redis: the mail marks of the calling chat stay out.
+    monkeypatch.setattr(executor, "run_agent", _batch)
+    monkeypatch.setattr(executor, "_mark_untrusted_session", _no_mark)
+    monkeypatch.setattr(executor, "_email_working_set_for", _no_working_set)
+    monkeypatch.setattr(executor, "_chat_marked", _not_marked)
+
+    async def _call() -> str:
+        return await executor._run_sub_agent_streaming(
+            slug, "read my inbox", "r-sub-d129", event_queue=asyncio.Queue(),
+        )
+
+    token = bind_tenant(org)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(
+                agent_name="projects-assistant", run_id="r-parent",
+                session_id="t-parent", workspace_root=str(tmp_path),
+                member="ana@example.com",
+                host_shell_refused=True, shell_tools_withheld=True,
+            )
+            out = asyncio.run(_call())
+    finally:
+        release_tenant(token)
+        bind_artifact_context()
+    assert out == f"{slug} is done", out
+    return agent, seen
+
+
+@pytest.mark.parametrize("slug", ["email-assistant", "whatsapp-assistant"])
+def test_probe_a_delegated_personal_agent_holds_no_shell_tool(
+    monkeypatch, tmp_path, slug: str,
+) -> None:
+    """H-225's gap: a shared agent could call a personal agent with
+    ``call_agent``, and the personal agent kept its shell tools. Now the
+    sub-run holds none of the three, and it binds both D85 flags itself."""
+    agent, seen = _delegate(monkeypatch, tmp_path, slug)
+    held = _native_names(agent)
+    assert not (held & SHELL_TOOLS), f"{slug} still holds {sorted(held & SHELL_TOOLS)}"
+    assert seen.get("agent_name") == slug, seen.get("agent_name")
+    assert seen.get("shell_tools_withheld") is True, seen.get("shell_tools_withheld")
+    assert seen.get("host_shell_refused") is True, seen.get("host_shell_refused")
+
+
+def test_probe_a_covered_delegated_personal_agent_gets_the_tools_back(
+    monkeypatch, tmp_path,
+) -> None:
+    """D130 through the delegation path: a cover for the sub-agent in the
+    run's org lifts the tool half. The host half stays refused."""
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("whatsapp-assistant", ORG_A))
+    agent, seen = _delegate(monkeypatch, tmp_path, "whatsapp-assistant")
+    assert {"run_script", "code_task"} <= _native_names(agent)
+    assert seen.get("shell_tools_withheld") is False, seen.get("shell_tools_withheld")
+    assert seen.get("host_shell_refused") is True, seen.get("host_shell_refused")
 
 
 # ── 7i. Tier 2 always denies the CLI shell, as main did for every case ────
