@@ -20,8 +20,10 @@
  *
  * A click on a provider opens a second step, the range of the first import
  * (EM-T6d item 2). The step replaces the list in the same place, and
- * "Continue" calls `onConnect` with the chosen range. "Back" shows the list
- * again. Both places get the step, because both draw this component.
+ * "Continue" opens the disclosure (EM-G11a item 1), the last step before the
+ * browser leaves. Its button calls `onConnect` with the chosen range and the
+ * version the member acknowledged. "Back" goes one step back. Both places get
+ * the steps, because both draw this component.
  *
  * Fix round 1:
  * - The step opens with the range the member chose last in this tab
@@ -48,11 +50,13 @@ import {
   type ConnectProviderId,
   type ProviderAvailability,
 } from "../lib/connect";
+import { DisclosureStep } from "./DisclosureStep";
 import { ImapConnectForm } from "./ImapConnectForm";
 import { ImportRangeStep } from "./ImportRangeStep";
+import { ProviderGlyph } from "./ProviderGlyph";
 import { WorkspaceAdminHelp } from "./WorkspaceAdminHelp";
 
-type Step = { provider: ConnectProviderId; months: number };
+type Step = { provider: ConnectProviderId; months: number; acknowledge?: true };
 
 export function ConnectChoices({
   onConnect,
@@ -62,8 +66,11 @@ export function ConnectChoices({
 }: {
   /** Called once an IMAP mailbox is connected, so a dialog can close. */
   onDone?: () => void;
-  /** Starts the sign-in. `importMonths` is the range the member chose. */
-  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
+  /**
+   * Starts the sign-in. `importMonths` is the range the member chose, and
+   * `disclosure` is the version the member acknowledged.
+   */
+  onConnect: (provider: ConnectProviderId, importMonths: number, disclosure: string) => void;
   /** Opens the range step of this provider at once. A live provider only. */
   initialProvider?: ConnectProviderId | null;
   /**
@@ -96,7 +103,7 @@ function ChoiceList({
   choices,
   onDone,
 }: {
-  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
+  onConnect: (provider: ConnectProviderId, importMonths: number, disclosure: string) => void;
   initialProvider: ConnectProviderId | null;
   choices: readonly ConnectProvider[];
   onDone?: () => void;
@@ -129,6 +136,16 @@ function ChoiceList({
     return <ImapConnectForm onBack={() => setImapOpen(false)} onDone={onDone} />;
   }
 
+  if (step?.acknowledge) {
+    return (
+      <DisclosureStep
+        provider={step.provider}
+        onBack={() => setStep({ provider: step.provider, months: step.months })}
+        onAcknowledge={(disclosure) => onConnect(step.provider, step.months, disclosure)}
+      />
+    );
+  }
+
   if (step) {
     return (
       <ImportRangeStep
@@ -141,7 +158,7 @@ function ChoiceList({
         }}
         onContinue={() => {
           rememberImportMonths(step.months);
-          onConnect(step.provider, step.months);
+          setStep({ ...step, acknowledge: true });
         }}
       />
     );
@@ -161,13 +178,7 @@ function ChoiceList({
             aria-describedby={p.note ? `connect-note-${p.id}` : undefined}
             className={`gap-3 px-3 py-2.5 ${p.available ? "bg-card hover:bg-primary/5" : "border border-dashed border-border"}`}
           >
-            <span
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${
-                p.available ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
-              }`}
-            >
-              <Icon name={p.icon} size={18} />
-            </span>
+            <ProviderGlyph provider={p.id} available={p.available} />
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="text-sm font-medium text-foreground">{p.label}</span>
               <span className="text-xs text-muted-foreground">{p.detail}</span>

@@ -185,3 +185,51 @@ describe("the authorize BFF names the provider on each bounce (EM-G7)", () => {
     expect("provider" in query).toBe(false);
   });
 });
+
+// WS-17 EM-G11a item 6: the version of the disclosure. The gateway is the
+// authority. This hop forwards a plain version and drops anything else.
+describe("the authorize BFF and disclosure", () => {
+  it("forwards a plain version beside redirect_after", async () => {
+    stubGateway();
+    const res = await authorize("redirect_after=%2Femail&disclosure=2026-11-draft");
+    expect(res.status).toBe(302);
+    const sent = new URL(upstream[0]);
+    expect(sent.searchParams.get("disclosure")).toBe("2026-11-draft");
+    expect(sent.searchParams.get("redirect_after")).toBe("/email");
+  });
+
+  it("sends no disclosure when the browser sent none", async () => {
+    stubGateway();
+    await authorize("redirect_after=%2Femail");
+    expect(new URL(upstream[0]).searchParams.has("disclosure")).toBe(false);
+  });
+
+  it("drops a value that is not a plain version", async () => {
+    stubGateway();
+    const bad = [
+      "",
+      "2026 11",
+      "2026-11-DRAFT",
+      "../../evil",
+      "a&redirect_after=https://evil.test",
+      "x".repeat(33),
+    ];
+    for (const value of bad) {
+      await authorize(new URLSearchParams({ disclosure: value }).toString());
+    }
+    expect(upstream).toHaveLength(bad.length);
+    for (const url of upstream) {
+      expect(new URL(url).searchParams.has("disclosure"), url).toBe(false);
+    }
+  });
+
+  it("hands a gateway refusal to the callback page by its code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "disclosure_required" }), { status: 400 })),
+    );
+    const res = await authorize("redirect_after=%2Femail");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain("error=disclosure_required");
+  });
+});
