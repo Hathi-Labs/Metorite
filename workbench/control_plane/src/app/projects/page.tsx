@@ -5078,7 +5078,11 @@ function ProjectsWorkspace() {
     // canvas, as the Needs attention lens does, and it only reads.
     <>
       {shownError ? renderState("error", shownError) : null}
-      <AgentsAtWorkView read={agentsRead} onBack={() => setAgentsOpen(false)} />
+      <AgentsAtWorkView
+        read={agentsRead}
+        onBack={() => setAgentsOpen(false)}
+        onOpenTask={(id) => void openTaskById(id)}
+      />
     </>
   ) : attentionLens && selected ? (
     // WS-55 SW-11a — the Needs attention lens. It takes the place of the
