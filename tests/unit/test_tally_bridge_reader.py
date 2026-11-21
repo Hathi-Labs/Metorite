@@ -369,7 +369,8 @@ def test_the_voucher_request_keeps_the_company_as_text_and_is_an_export(value):
 
 
 @pytest.mark.parametrize(
-    "guid", ["", "abc", GOOD_GUID + "<x>", "</ID><TALLYREQUEST>Import</TALLYREQUEST>", " " + GOOD_GUID]
+    "guid",
+    ["", "abc", GOOD_GUID + "<x>", "</ID><TALLYREQUEST>Import</TALLYREQUEST>", " " + GOOD_GUID],
 )
 def test_the_voucher_request_refuses_text_that_is_not_a_guid(guid):
     with pytest.raises(ValueError):
