@@ -924,7 +924,7 @@ class TestTheRepairs:
         monkeypatch.setattr(chat_client, "httpx", SimpleNamespace(
             AsyncClient=lambda **kw: httpx.AsyncClient(transport=transport, **kw)))
         monkeypatch.setattr(chat_client, "gateway_url", lambda: "http://gateway.test")
-        monkeypatch.setattr(chat_client, "internal_token", lambda: t.INTERNAL)
+        monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", t.INTERNAL)
         monkeypatch.setattr(chat_client, "current_user_email", lambda: MEMBER)
         ticked = {"outcome": "First", "acceptance": [
             {"text": c["text"], "done": i == 0, "evidence": "PR 42" if i == 0 else None}
