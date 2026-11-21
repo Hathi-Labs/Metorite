@@ -27,9 +27,9 @@ Mutation table, measured on 2026-11-21.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | each ``_call_and_frame(...)`` of the gate becomes ``call_next()`` | 12 of the 18 hermetic tests fail. The 6 refusal, None and loader tests stay green by design |
+| M1 | each ``_call_and_frame(...)`` of the gate becomes ``call_next()`` | 12 of 18 hermetic tests fail. The 6 refusal, None and loader tests stay green by design |
 | M1b | the list loader calls ``call_next()`` with no frame | ``test_the_index_of_the_list_loader_is_framed_and_load_is_not`` fails |
-| M2 | ``call_tool`` no longer calls ``_note_server_answer()`` | the 4 rows of ``test_the_model_reads_each_answer_inside_one_frame_end_to_end`` fail |
+| M2 | ``call_tool`` no longer calls ``_note_server_answer()`` | ``test_the_remote_call_says_that_the_server_answered`` and the 4 rows of ``test_the_model_reads_each_answer_inside_one_frame_end_to_end`` fail |
 """
 from __future__ import annotations
 
@@ -321,6 +321,38 @@ async def test_the_compute_marker_stays_after_the_end_line() -> None:
     assert marker not in _blocks(text)[0][2]
 
 
+async def test_the_remote_call_says_that_the_server_answered() -> None:
+    """``RunScopedMCPTool.call_tool`` is MAF's own call under
+    ``_noting_answer``. A call that returns sets the flag, so the gate frames.
+    A call that raises sets nothing."""
+    from agent_framework import MCPStreamableHTTPTool
+
+    wrapped = _maf_mcp._run_scoped_tool_class().call_tool
+    assert wrapped.__wrapped__ is MCPStreamableHTTPTool.call_tool
+
+    async def _answers(_self: Any, _name: str, **_kw: Any) -> Any:
+        return [Content.from_text(INJECTION)]
+
+    async def _raises(_self: Any, _name: str, **_kw: Any) -> Any:
+        raise RuntimeError("the server failed")
+
+    ctx = SimpleNamespace(result=None)
+
+    async def _next() -> None:
+        ctx.result = await _maf_mcp._noting_answer(_answers)(object(), "echo", text="x")
+
+    await _maf_mcp._call_and_frame(ctx, _next, what="W", label=_maf_mcp.RESULT_LABEL, tool="t")
+    _assert_one_frame(_only_text(ctx.result))
+    flag = [False]
+    token = _maf_mcp._SERVER_ANSWERED.set(flag)
+    try:
+        with pytest.raises(RuntimeError):
+            await _maf_mcp._noting_answer(_raises)(object(), "echo")
+    finally:
+        _maf_mcp._SERVER_ANSWERED.reset(token)
+    assert flag == [False]
+
+
 async def test_a_frame_fault_never_gives_the_raw_answer(monkeypatch) -> None:
     from acb_skills import untrusted
 
@@ -594,6 +626,30 @@ def test_the_model_reads_each_answer_inside_one_frame_end_to_end(
     _assert_one_frame(text, holds=INJECTION)
     assert FORGED_END not in text
     assert f"the MCP tool probe-srv_{tool}." in text
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_the_index_reaches_the_model_inside_one_frame_end_to_end(monkeypatch):
+    """A server with more than 12 tools shows the loaders. The model lists,
+    loads and calls a tool. The index sits in one ``MCP TOOL LIST`` block, the
+    load answer stays as MAF wrote it, and the loaded call runs."""
+    import json as _json
+
+    with local_mcp_server(filler=10) as srv:
+        model = ScriptedModel([
+            tool_turn("probe-srv_list_mcp_tools", "{}", call_id="call_1"),
+            tool_turn("probe-srv_load_tool", _json.dumps({"tool": "probe-srv_echo"}),
+                      call_id="call_2"),
+            tool_turn("probe-srv_echo", '{"text": "ping"}', call_id="call_3"),
+            text_turn("done"),
+        ])
+        _drive(monkeypatch, srv, model, payload=_a_member(monkeypatch))
+    assert srv.calls == ["ping"], "the loaded tool did not run"
+    listed, loaded, called = _tool_results(model)[-3:]
+    _assert_one_frame(listed, label=_maf_mcp.INDEX_LABEL, holds="probe-srv_echo")
+    assert "The list below comes from the MCP server probe-srv." in listed
+    assert _blocks(loaded) == [] and "Loaded MCP tool 'probe-srv_echo'" in loaded
+    _assert_one_frame(called, holds="echo:ping")
 
 
 @pytest.mark.usefixtures("_a_tenant")
