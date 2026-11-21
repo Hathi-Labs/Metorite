@@ -272,7 +272,9 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   (`connections/attention.py`). Task 3435 added the waiting chat cards
   (`orchestrator/pending_ask.py`, `chat_run_continuity.md` §4.12.4 item 1).
   An expired card loses its stored call, and the card goes 7 days after it
-  expires. These two hooks run in a savepoint and never raise.
+  expires. These two hooks run in a savepoint and never raise. WS-TOF TOF-2e
+  added the failure rows (`failures/sync.py`, `tool_failure_log.md` §5.4),
+  in a savepoint too.
 
 ## 5c. Seed hooks: a job every 15 minutes (BR-2a-1, built)
 
@@ -312,6 +314,20 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
   names. The job writes the structural edges of `knowledge_graph.md` §4.1,
   with no model.
+- **The fifth consumer (AO-2, built dark).** `provider_alerts.seed` seeds
+  the detached kind `provider_alerts.check` once in each bucket, with the
+  dedupe key `provider_alerts:<bucket>`. It runs only for an org that
+  `PROVIDER_ALERT_ORGS` names. The job reads the AI vendor alerts of the
+  Console and tells the admins of that org (`customer_console.md` §6A.17b).
+  Its effect is `send`, and it gets one try.
+
+- **The sixth consumer (WS-TOF TOF-2e, built dark).**
+  `failures/sync.seed` seeds the detached kind `failure.sync` once in each
+  bucket, with the dedupe key `failure_sync:<bucket>`. It runs only in the
+  org that `TOOL_FAILURE_ORG_ID` names, and only with `TOOL_FAILURE_TASKS`
+  on. The job makes or moves one task for each fingerprint of the failure
+  store. `tool_failure_log.md` §7 holds the rules. The module also adds a
+  prune hook (section 5b) for the failure rows of each org.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 

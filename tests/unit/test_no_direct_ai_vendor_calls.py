@@ -156,25 +156,25 @@ class _Entry:
 #: delete the entry, in the PR that removes a call. NEVER add an entry or
 #: raise a count. Build the call on the Router instead (``acb_llm.routed``).
 _BASELINE: dict[str, _Entry] = {
-    # ── Embeddings (§2.10 row 1 and 2). S5 step 2 moves them. The Router
-    # serves no embeddings door yet, so each needs one first (D61.1).
+    # ── Embeddings (§2.10 row 2). S5 step 2 moves them. The gateway's
+    # /v1/embeddings door left this list in task 3553 (2449 S2, 2026-11-16):
+    # it calls the Router through kb_index.embed.relay, and the OpenAI client
+    # and the openai import of main.py are gone.
     "apps/services/gateway/gateway/main.py": _Entry(
-        {
-            "client OpenAI": 1, "litellm verb acompletion": 1,
-            "sdk openai": 1, "sdk litellm": 1,
-        },
-        "The /v1/embeddings door calls OpenAI with OPENAI_API_KEY (S5 step 2). "
+        {"litellm verb acompletion": 1, "sdk litellm": 1},
         "The prompt-cache warm-up calls litellm, behind PROMPT_CACHE_PREWARM [2449 S2 and S3]",
     ),
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py": _Entry(
         {"litellm verb aembedding": 1, "sdk litellm": 1},
-        "WhatsApp embeddings go to the gateway /v1/embeddings door, which "
-        "skips the Router (S5 step 2) [2449 S2]",
+        "WhatsApp embeddings call litellm.aembedding with the LLM key against "
+        "the gateway /v1/embeddings door, and the gate refuses that key "
+        "(S5 step 2) [2449 S2]",
     ),
     "apps/services/gateway/gateway/routes/tasks/capability.py": _Entry(
         {"litellm verb aembedding": 1, "sdk litellm": 1},
-        "Capability embeddings go to the gateway /v1/embeddings door, which "
-        "skips the Router (S5 step 2) [2449 S2]",
+        "Capability embeddings call litellm.aembedding with the LLM key "
+        "against the gateway /v1/embeddings door, and the gate refuses that "
+        "key (S5 step 2) [2449 S2]",
     ),
     # ── Transcription (§2.10 rows 3 and 4). S5 steps 1 and 4.
     "packages/acb_stt/acb_stt/litellm_provider.py": _Entry(
@@ -205,7 +205,7 @@ _BASELINE: dict[str, _Entry] = {
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
         "is off (H-171), on a dev box only: elsewhere refuse_direct_arm raises "
         "first (task 3554). acompletion_stream_text does the same since task "
-        "3541: with routing on it takes one answer from the Router. Each of "
+        "3541: with routing on it streams from the Router (task 3542). Each of "
         "the two calls imports litellm and the verb, and token_counter is the "
         "fifth import [2449 S3]",
     ),

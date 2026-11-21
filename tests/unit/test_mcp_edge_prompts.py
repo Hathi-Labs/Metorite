@@ -994,6 +994,10 @@ class TestTheAnswerRule:
     #: IMG-3. The image sentence is the LAST sentence, after the cut, so it
     #: moves no kept sentence. Its length is the one growth past the 40.
     IMG3_TAIL = len(" " + prompts.IMAGE_RULE)
+    #: Task 3648. The lane rule is the one growth that the owner asked for. It
+    #: follows the PR rule, after every safety sentence, so it moves no kept
+    #: sentence. The 40 characters stay for everything else.
+    LANE_TAIL = max(len(prompts.LANE_RULE), len(prompts.LANE_RULE_NO_RUNS))
     #: The sentences of main that end before the cut, in either state.
     KEPT = ("never yours", "So do not write on a run of another session.",
             "the heartbeat of your hold.", "If you stop and will not finish, call release_task.")
@@ -1004,7 +1008,7 @@ class TestTheAnswerRule:
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         text = await _instructions()
         assert text.endswith(" " + prompts.IMAGE_RULE), text[-120:]
-        assert len(text) <= self.MAIN_LENGTH[on] + 40 + self.IMG3_TAIL, len(text)
+        assert len(text) <= self.MAIN_LENGTH[on] + 40 + self.IMG3_TAIL + self.LANE_TAIL, len(text)
         pointer = prompts.answer_pointer().strip()
         assert text.find(pointer) != -1 and text.find(pointer) < self.CUT
         for sentence in self.KEPT:

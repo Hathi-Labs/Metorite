@@ -174,6 +174,7 @@ def _facts_tools_stay(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── 2. The cap ──────────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("compute_mode")
 async def test_the_core_pack_loads_beside_the_email_pack_at_the_measured_base(
     orchestrator, monkeypatch,
 ) -> None:
@@ -1159,6 +1160,7 @@ MIXED = [
 ]
 
 
+@pytest.mark.usefixtures("compute_mode")
 @pytest.mark.parametrize("words", MIXED)
 @pytest.mark.parametrize("surface", ["", "projects"])
 def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
@@ -1573,3 +1575,115 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+# ── SBX-19: compute_run never costs a pack its place ────────────────────────
+
+
+@pytest.fixture(params=["dark", "lit"])
+def compute_mode(request, monkeypatch):
+    """Run a test twice: with the compute target off, and on. In the lit run
+    the broker reader says True and the room is reset. ``_compute_withheld``
+    stays real, so the room logic is part of the run."""
+    from orchestrator import sandbox_broker
+
+    on = request.param == "lit"
+    monkeypatch.setattr(sandbox_broker, "compute_enabled", lambda org: on, raising=False)
+    token = ti._COMPUTE_ROOM.set(True)
+    yield request.param
+    ti._COMPUTE_ROOM.reset(token)
+
+
+@pytest.fixture
+def compute_on(monkeypatch) -> None:
+    """The compute target is on for the org (SBX-18's reader, a fake here)."""
+    from orchestrator import sandbox_broker
+
+    monkeypatch.setattr(sandbox_broker, "compute_enabled", lambda org: True, raising=False)
+    ti._COMPUTE_ROOM.set(True)
+
+
+def test_the_base_count_never_holds_compute_run(orchestrator, compute_on) -> None:
+    """The base was at the cap, so a place in it cost a pack a place (111 > 110
+    at 57 + 31 + 23). With the org on, the estimate is the one of the dark
+    run. Mutation: count ``compute_run`` in the base -> one more -> red."""
+    on = _measured_base(orchestrator)
+    names = ti._pack_base_names(
+        orchestrator[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+        agent_config=CONFIG, disabled=frozenset())
+    assert "compute_run" not in names
+    assert on + 1 + 31 + 23 <= tp.MAX_REQUEST_TOOLS  # base, loader, email, core: 110
+
+
+async def test_a_mixed_email_turn_keeps_both_packs_with_compute_on(
+    store, orchestrator, compute_on,
+) -> None:
+    """"Make a recurring task from this email" loads email and projects, and
+    ``compute_run`` leaves when the request is full (55 + 1 + 31 + 23 = 110,
+    the cap, so no place is left). Mutation: ``choose`` sees
+    the tool in the base -> the Projects pack is skipped -> red."""
+    with _tenant():
+        applied = await _apply(orchestrator, "email me my overdue tasks", allowed=EVERY)
+    assert applied is not None and applied.record.slugs == ("email", "projects")
+    assert tp.MAX_REQUEST_TOOLS >= 110
+
+
+async def test_compute_run_leaves_when_the_base_is_at_the_cap(
+    store, orchestrator, compute_on, monkeypatch,
+) -> None:
+    """A base of 110 leaves no place, so the tool goes and no pack does."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *a, **k: tp.MAX_REQUEST_TOOLS)
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is False
+    assert ti._compute_withheld() == frozenset({"compute_run"})
+
+
+async def test_compute_run_stays_when_a_place_is_left(store, orchestrator, compute_on) -> None:
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is True
+    assert ti._compute_withheld() == frozenset()
+
+
+
+
+LOAD_WORDS = [*MIXED, "export my tasks", "start the sprint"]
+
+
+@pytest.mark.parametrize("surface", ["", "projects"])
+@pytest.mark.parametrize("words", LOAD_WORDS)
+async def test_compute_run_never_costs_a_pack_or_a_load_its_place(
+    words: str, surface: str, store, orchestrator, compute_on, monkeypatch,
+) -> None:
+    """The invariant, from the ``executor.pack_plan`` line of the real apply:
+    the tool fits (``planned + room <= 110``), and each pack that the loader
+    offers and that fits without the tool still fits with it. Mutation: the
+    room ignores the offered packs -> "export my tasks" (planned 88, offers
+    projects-bulk 22) fits 110 without the tool and 111 with it -> red."""
+    import copy
+
+    from acb_skills import skill_families as sf
+
+    seen: list[dict[str, Any]] = []
+    real = ti._log.info
+
+    def spy(event, **kw):
+        if event == "executor.pack_plan":
+            seen.append(kw)
+        return real(event, **kw)
+
+    monkeypatch.setattr(ti._log, "info", spy)
+    agent = copy.copy(orchestrator[0])
+    agent.default_options = {**orchestrator[0].default_options,
+                             "tools": list(orchestrator[0].default_options["tools"])}
+    await _apply_on([agent], words, surface, EVERY)
+    if not seen:
+        return
+    plan = seen[-1]
+    planned, room = plan["planned_tools"], int(ti._COMPUTE_ROOM.get())
+    assert planned + room <= tp.MAX_REQUEST_TOOLS, (words, planned, room)
+    for slug in plan["offered"]:
+        n = len(sf.SKILL_FAMILIES[slug]["tools"])
+        if planned + n <= tp.MAX_REQUEST_TOOLS:
+            assert planned + room + n <= tp.MAX_REQUEST_TOOLS, (words, slug, planned, n, room)

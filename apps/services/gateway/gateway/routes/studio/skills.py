@@ -40,12 +40,43 @@ publish or resume. A pause is not gated, so a member can always stop a live
 skill. No route renames a skill, so a skill with a hidden character in its
 name cannot go live again: the member makes a new skill. A new version of a
 published skill
-returns the skill to ``draft`` in the same transaction. No route changes the
-visibility, so each skill stays ``private`` (J2 owns the share).
+returns the skill to ``draft`` in the same transaction. No route of F2a
+changes the visibility.
+
+**The share with the org (WS-STU J2c, ``ai_studio_rows/J2c.md``).** Five
+routes over the share functions of the store. Each reads ``STUDIO_ORGS``
+first (404, no session). ``PACKAGE_HOST_ORGS`` does not apply, because a
+skill share needs no install. The owner asks with ``POST
+/skills/{id}/versions/{n}/share`` (202 ``pending``). A second ask of the same
+version writes nothing. Another member, another org and no such version get
+404. A holder of ``studio:publish`` reads ``GET /skill-shares?state=pending``
+and ``?state=approved``, the skills that the org shares (each other caller
+gets 403, before any session). A holder approves or
+rejects one version with ``POST .../share/approve`` or ``.../share/reject``.
+The handler passes ``user.has_permission(SHARE_RIGHT)`` to the store as
+``can_publish``, and the store refuses the rest (403). The owner cannot
+approve (403). A version that nobody asked for, another org and no such
+skill get 404. A decided ask is 409 ``share_conflict``. ``DELETE
+/skills/{id}/share`` unshares: the owner always, another member only with the
+right. No route takes a visibility from a request, so no route can set
+``group`` or ``system``. ``GET /skills/{id}/share`` gives the owner the share
+of one skill (J2d), with the 404 of each other caller. The chat tool
+``studio_skill_share`` (J2d, ``acb_skills.studio_tools``) sends these routes,
+and the page is a later slice.
 
 **Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
 move waits for the first to commit, then reads the new state, and
 :data:`TRANSITIONS` decides on that state.
+
+**The test run (TOF-3b F4b).** ``POST /studio/skills/{id}/tests/run`` runs
+the tests of a skill on real turns, each in a dry run
+(``gateway.studio.skill_tests.run_suite``). Each test spends credits. The
+order is fixed: the switch ``STUDIO_ORGS`` and the switch
+``STUDIO_SKILL_TESTS_ORGS`` (404 before any other work), the request
+checks, the owner check, then the credit cap. With no cap set, the route
+answers 409 ``cap_unset`` and runs nothing. A second request of a member
+whose suite runs answers 429 ``suite_running`` and runs nothing. The answer
+holds codes and action names only, never an argument of a call.
 """
 
 from __future__ import annotations
@@ -54,21 +85,27 @@ import contextlib
 import re
 import uuid
 from collections.abc import Iterator, Sequence
+from decimal import Decimal
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from acb_common.studio_manifest import MAX_DEPTH
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.skill_slug import slug_from_name  # the one shared slug (STU-F8a)
 from acb_skills.tool_packs import MAX_PACK_TOOLS
-from fastapi import Body, Depends, HTTPException
+from fastapi import Body, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
+from gateway.studio import skill_tests
+from gateway.routes.studio.packages import SHARE_RIGHT
 from gateway.studio import skills_store as store
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, StrictInt, ValidationError
 
 __all__ = ["MAX_ACTIONS", "TRANSITIONS", "router", "slug_from_name"]
+
+_log = get_logger(__name__)
 
 #: The most actions a skill holds: one WS-67 tool pack.
 MAX_ACTIONS = MAX_PACK_TOOLS
@@ -393,7 +430,10 @@ async def add_skill_version(
     await _check_body(new.body)
     async with _tenant_session() as db:
         with _store_errors():
-            stored = await store.add_version(db, user.email, sid, new.body)
+            # F4a: a body with no ``tests`` keeps the tests of the newest
+            # version. The undo copies a body exactly, so it skips this.
+            body = await store.carry_tests(db, user.email, sid, new.body)
+            stored = await store.add_version(db, user.email, sid, body)
             if stored is None:
                 raise HTTPException(status_code=404, detail=NOT_FOUND)
             # The UPDATE of add_version holds the row lock until the commit,
@@ -506,3 +546,404 @@ async def set_skill_state(
             if after is None or after.current_version != skill.current_version:
                 raise _refuse(409, CHANGED)
     return {"skill": _skill_out(after)}
+
+
+# ── The test run (TOF-3b F4b) ───────────────────────────────────────────────
+
+#: The most input-only runs of one request.
+MAX_TEST_INPUTS = 1
+#: A request cap: a decimal string of credits with at most 4 places.
+_CAP_TEXT = re.compile(r"[0-9]{1,9}(\.[0-9]{1,4})?")
+CAP_UNSET = "Skill tests have no credit cap yet. An owner must set the cap first."
+SUITE_RUNNING = "Your skill tests are running. Wait for them to end, then try again."
+SLOT_UNAVAILABLE = "Metorite cannot start skill tests now. Try again soon."
+
+
+class _RunTests(BaseModel):
+    version: StrictInt | None = None
+    body: dict[str, Any] | None = None
+    inputs: list[str] = []
+    cap: str | None = None
+
+
+def _request_cap(raw: str | None) -> Decimal | None:
+    """The cap of the request, or None. It can only lower the setting."""
+    if raw is None:
+        return None
+    if not _CAP_TEXT.fullmatch(raw) or Decimal(raw) <= 0:
+        raise _refuse(422, "The cap must be a number of credits above 0, with at most 4 places")
+    return Decimal(raw)
+
+
+def _check_inputs(inputs: list[str]) -> tuple[str, ...]:
+    if len(inputs) > MAX_TEST_INPUTS:
+        raise _refuse(422, f"A run takes at most {MAX_TEST_INPUTS} input")
+    for i, text in enumerate(inputs):
+        if not text.strip() or len(text) > skill_tests.MAX_INPUT_CHARS:
+            raise _refuse(422, f"inputs[{i}] must be a non-empty string of at most "
+                               f"{skill_tests.MAX_INPUT_CHARS} characters")
+    return tuple(inputs)
+
+
+def _test_out(result: skill_tests.TestResult) -> dict[str, Any]:
+    """One test result as the route answers it: codes and action names."""
+    return {
+        "test_id": result.test_id,
+        "passed": result.passed,
+        "reason": result.reason,
+        "detail": result.detail,
+        "writes": list(result.writes),
+        "calls": list(result.calls),
+        "credits": str(result.credits),
+        "model_calls": result.model_calls,
+    }
+
+
+def _suite_out(result: skill_tests.SuiteResult) -> dict[str, Any]:
+    return {
+        "skill_id": result.skill_id,
+        "version": result.version,
+        "content_hash": result.content_hash,
+        "passed": result.passed,
+        "credits": str(result.credits),
+        "cap": None if result.cap is None else str(result.cap),
+        "stopped": result.stopped,
+        "results": [_test_out(r) for r in result.results],
+    }
+
+
+@router.post("/skills/{skill_id}/tests/run")
+async def run_skill_tests(
+    skill_id: str,
+    payload: Any = Body(None),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run the tests of a skill of the caller, each on a real turn in a dry run.
+
+    The body is ``{version?, body?, inputs?, cap?}``. ``body`` is an unsaved
+    version, and it runs the three body checks first. ``inputs`` holds at most
+    one input-only run. ``cap`` is a decimal string, and it can only lower
+    the setting. The org and the member come from the session only."""
+    org = user.organization_id
+    if not flags.studio_allowed(org) or not flags.skill_tests_allowed(org):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    req = _parse(_RunTests, payload)
+    if req.version is not None and req.version < 1:
+        raise _refuse(422, "The version must be a whole number of 1 or more")
+    if req.version is not None and req.body is not None:
+        raise _refuse(422, "Send a version or a body, not both")
+    inputs = _check_inputs(req.inputs)
+    cap = _request_cap(req.cap)
+    if req.body is not None:
+        await _check_body(req.body)
+    async with _tenant_session() as db:
+        with _store_errors():
+            if await store.get_skill(db, user.email, sid) is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+            if req.body is None and await store.get_version(
+                    db, user.email, sid, req.version) is None:
+                raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if flags.skill_tests_cap() is None:
+        raise HTTPException(status_code=409, detail={"code": "cap_unset", "message": CAP_UNSET})
+    from gateway.jobs.headless_turn import console_meter
+
+    try:
+        result = await skill_tests.run_suite(
+            org=str(org), member=user.email, skill_id=sid, version=req.version,
+            body=req.body, inputs=inputs, cap=cap, runner=skill_tests.agent_runner,
+            meter=console_meter)
+    except LookupError:
+        raise HTTPException(status_code=404, detail=NOT_FOUND) from None
+    except skill_tests.SkillTestError as exc:
+        raise _refuse(422, str(exc)) from None
+    except skill_tests.SuiteRunning:
+        raise HTTPException(status_code=429, detail={
+            "code": "suite_running", "message": SUITE_RUNNING}) from None
+    except skill_tests.SuiteSlotUnavailable:
+        raise HTTPException(status_code=503, detail={
+            "code": "slot_unavailable", "message": SLOT_UNAVAILABLE}) from None
+    await _record_test_failures(str(org), user.email, sid, result, req.body)
+    return _suite_out(result)
+
+
+async def _record_test_failures(org: str, member: str, skill_id: str,
+                                result: skill_tests.SuiteResult,
+                                body: dict[str, Any] | None) -> None:
+    """The test writer of F12b (``ai_studio_rows/F12.md`` "The test writer").
+
+    One ``test`` row for each result that failed with a fault of the skill
+    (``skill_runs.REASONS["test"]``, the seven codes). A cap code,
+    ``bad_test``, ``not_run`` and each other stop write no row. It writes only
+    for an org on ``STUDIO_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``. With the
+    flag off it sends no statement.
+
+    A test of a body that is not saved writes no row. The row would name a
+    version that did not run (``run_suite`` reports ``current_version`` for
+    such a body). So a row names only a stored version that the suite ran,
+    and ``body_key`` is the key of that stored body.
+
+    *org* and *member* come from the session. A row holds codes, the test id
+    and action names, never an input or a value. Best effort: a fault logs
+    its class only, never its text, and never changes the answer of the
+    route."""
+    if body is not None:
+        return
+    if not flags.studio_allowed(org) or not flags.skill_repair_allowed(org):
+        return
+    from gateway.studio import skill_repair, skill_runs
+
+    failed = [r for r in result.results
+              if r.passed is False and r.reason in skill_runs.REASONS["test"]]
+    if not failed:
+        return
+    written = 0
+    try:
+        async with _tenant_session() as db:
+            ran = await store.get_version(db, member, skill_id, result.version)
+            if ran is None or int(ran.version) != int(result.version):
+                return
+            key = skill_repair.body_key(ran.body)
+            for found in failed:
+                try:
+                    await skill_runs.record_test(
+                        db, member, skill_id, version=result.version, reason=found.reason,
+                        body_key=key, test_id=str(found.test_id or ""), detail=found.detail,
+                        writes=skill_runs.safe_writes(
+                            {"action": a, "keys": []} for a in dict.fromkeys(found.writes)),
+                        run_id=found.run_id, credits=found.credits)
+                    written += 1
+                except skill_runs.SkillRunError as exc:  # a bad shape skips one row
+                    _log.warning("studio.skill_run.test_skipped", error_type=type(exc).__name__)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("studio.skill_run.test_unwritten", error_type=type(exc).__name__)
+        return
+    _log.info("studio.skill_run.test_written", skill=skill_id, rows=written)
+
+
+# ── The share with the org (WS-STU J2c) ────────────────────────────────────
+
+#: The 409 of a share move that the state of the ask does not allow (J2c).
+SHARE_CONFLICT = "share_conflict"
+FORBIDDEN = "forbidden"
+#: The two states that ``GET /skill-shares`` reads. ``pending`` is the
+#: default: the asks that wait for a holder. ``approved`` is each skill that
+#: the org shares (J2d follow-up), so a holder can find one to unshare.
+PENDING = "pending"
+APPROVED = "approved"
+BAD_SHARE_STATE = ("state is pending or approved, the two states that this list reads. "
+                   "Leave it out for pending.")
+NO_SHARE_LIST_RIGHT = ("Only a holder of studio:publish reads the skills that wait for a "
+                       "share. Ask the owner of your organization for that right.")
+NO_SHARED_LIST_RIGHT = ("Only a holder of studio:publish reads the skills that the "
+                        "organization shares. Ask the owner of your organization for that "
+                        "right.")
+
+
+@contextlib.contextmanager
+def _share_errors() -> Iterator[None]:
+    """The refusals of the share moves as HTTP answers. ``ShareRefused`` is
+    403 ``forbidden``. ``ShareConflict`` is 409 :data:`SHARE_CONFLICT`, with
+    the state that the store read."""
+    try:
+        yield
+    except store.ShareRefused as exc:
+        raise HTTPException(status_code=403, detail={
+            "code": FORBIDDEN, "message": str(exc)}) from None
+    except store.ShareConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": SHARE_CONFLICT, "message": str(exc),
+            "share_state": exc.current}) from None
+
+
+def _share_out(share: store.Share) -> dict[str, Any]:
+    return {
+        "skill_id": share.skill_id,
+        "visibility": share.visibility,
+        "shared_version": share.shared_version,
+        "share_state": share.share_state,
+        "share_version": share.share_version,
+        "requested_by": share.requested_by,
+        "requested_at": share.requested_at,
+        "decided_by": share.decided_by,
+        "decided_at": share.decided_at,
+    }
+
+
+def _shared_skill_out(found: store.SharedSkill) -> dict[str, Any]:
+    """One row of the holder's list of shared skills. It holds no body."""
+    return {
+        "skill_id": found.skill_id,
+        "name": found.name,
+        "slug": found.slug,
+        "description": found.description,
+        "owner_email": found.owner_email,
+        "shared_version": found.shared_version,
+        "share_state": found.share_state,
+        "share_version": found.share_version,
+        "approved_by": found.approved_by,
+        "approved_at": found.approved_at,
+    }
+
+
+def _pending_share_out(found: store.PendingShare) -> dict[str, Any]:
+    """One row of the holder's list, with the FULL body of the asked version."""
+    return {
+        "skill_id": found.skill_id,
+        "name": found.name,
+        "slug": found.slug,
+        "description": found.description,
+        "owner_email": found.owner_email,
+        "version": found.version,
+        "requested_by": found.requested_by,
+        "requested_at": found.requested_at,
+        "body": found.body,
+        "content_hash": found.content_hash,
+    }
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share", status_code=202)
+async def request_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner asks to share one version with the org (J2c). The answer is
+    202 ``pending``. A second ask of the same version writes nothing. A
+    decided ask of this or a newer version is 409. Another member, another
+    org and no such version get 404. The handler takes no body, so a
+    visibility in a request changes nothing."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    v = _number(version)
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await store.request_share(db, user.email, sid, v)
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.share_asked", skill_id=sid, version=v)
+    return _share_out(found)
+
+
+@router.get("/skills/{skill_id}/share")
+async def get_skill_share(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The owner reads the share of one skill (J2d): the visibility, the
+    shared version and the newest ask. It reads no right and writes nothing.
+    Another member, another org and no such skill get 404."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            found = await store.get_share(db, user.email, sid)
+    if found is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return _share_out(found)
+
+
+@router.get("/skill-shares")
+async def list_skill_shares(
+    user: UserContext = Depends(get_current_user),
+    state: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """The asks of the bound org that wait for a holder (J2c), oldest first,
+    each with the full body of the asked version. With ``state=approved``,
+    each skill that the org shares, by name, with no body (J2d follow-up).
+    Only a holder of ``studio:publish`` reads either list, and each other
+    caller gets 403 before any session. ``truncated`` is True when more rows
+    are past the page. Each other state is 422."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if state is not None and state not in (PENDING, APPROVED):
+        raise _refuse(422, BAD_SHARE_STATE)
+    # D180.3: the holder of the share verb reads what waits for it. Fail closed.
+    can = user.has_permission(SHARE_RIGHT)
+    if not can:
+        raise HTTPException(status_code=403, detail={
+            "code": FORBIDDEN,
+            "message": NO_SHARED_LIST_RIGHT if state == APPROVED else NO_SHARE_LIST_RIGHT})
+    if state == APPROVED:
+        async with _tenant_session() as db:
+            with _store_errors(), _share_errors():
+                shared, more = await store.list_shared_skills(db, can_publish=can)
+        return {"state": APPROVED, "shares": [_shared_skill_out(r) for r in shared],
+                "truncated": more}
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            rows, more = await store.list_pending_shares(db, can_publish=can)
+    return {"state": PENDING, "shares": [_pending_share_out(r) for r in rows],
+            "truncated": more}
+
+
+async def _decide_share(user: UserContext, skill_id: str, version: str, approve: bool,
+                        can: bool) -> dict[str, Any]:
+    """One approve or reject. *can* is the check of the share verb that the
+    handler made. The store refuses each other value first."""
+    sid = _skill_id(skill_id)
+    v = _number(version)
+    decide = store.approve_share if approve else store.reject_share
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await decide(db, user.email, sid, v, can_publish=can)
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.share_decided", skill_id=sid, version=v,
+              move="approve" if approve else "reject")
+    return _share_out(found)
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share/approve")
+async def approve_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` approves one pending ask (J2c). The
+    skill becomes ``org``, and other members load this version. The owner
+    gets 403. No ask of this version, another org and no such skill get
+    404. A decided ask is 409 ``share_conflict``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return await _decide_share(user, skill_id, version, True,
+                               user.has_permission(SHARE_RIGHT))
+
+
+@router.post("/skills/{skill_id}/versions/{version}/share/reject")
+async def reject_skill_share(
+    skill_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A holder of ``studio:publish`` rejects one pending ask (J2c). The
+    owner may reject too. The visibility does not change. The answers are
+    those of the approve."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return await _decide_share(user, skill_id, version, False,
+                               user.has_permission(SHARE_RIGHT))
+
+
+@router.delete("/skills/{skill_id}/share")
+async def unshare_skill(
+    skill_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return a skill to ``private`` (J2c). The owner always may. Another
+    member needs ``studio:publish`` (403 without it), and then a skill that
+    is not ``org`` in the bound org is 404. The next turn of each other
+    member loads the skill no more."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    sid = _skill_id(skill_id)
+    async with _tenant_session() as db:
+        with _store_errors(), _share_errors():
+            found = await store.unshare(db, user.email, sid,
+                                        can_publish=user.has_permission(SHARE_RIGHT))
+        if found is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    _log.info("studio.skills.unshared", skill_id=sid)
+    return _share_out(found)

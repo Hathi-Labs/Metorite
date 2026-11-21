@@ -103,11 +103,16 @@ class Answer:
 
     ``headers`` are the headers of the answer (WS-54 IN-8a). The MCP OAuth
     discovery reads ``WWW-Authenticate`` from a 401. The lookup ignores case.
+
+    ``cut`` is True when the answer filled :data:`MAX_ANSWER_BYTES`, so
+    ``body`` can be only its start (API-3, ``api_connections.md`` §2.3 step
+    8). A caller that parses the body refuses a cut one.
     """
 
     status_code: int
     body: bytes
     headers: httpx.Headers = field(default_factory=httpx.Headers, compare=False)
+    cut: bool = False
 
     @property
     def is_success(self) -> bool:
@@ -207,16 +212,20 @@ async def _is_safe_external_url(url: str) -> bool:
     return True
 
 
-async def _read_capped(resp: httpx.Response) -> bytes:
-    """At most :data:`MAX_ANSWER_BYTES` of the answer, as it came on the wire.
+async def _read_capped(resp: httpx.Response) -> tuple[bytes, bool]:
+    """At most :data:`MAX_ANSWER_BYTES` of the answer, as it came on the wire,
+    and True when the answer filled the cap.
 
-    It reads raw bytes, so a compressed answer cannot grow past the cap."""
+    It reads raw bytes, so a compressed answer cannot grow past the cap. The
+    read stops at the cap and never reads past it, so it cannot tell an
+    answer of exactly the cap from a longer one. It marks both as cut, and a
+    caller that parses the body refuses both (API-3)."""
     buf = bytearray()
     async for chunk in resp.aiter_raw():
         buf += chunk[: MAX_ANSWER_BYTES - len(buf)]
         if len(buf) >= MAX_ANSWER_BYTES:
-            break
-    return bytes(buf)
+            return bytes(buf), True
+    return bytes(buf), False
 
 
 async def send(
@@ -248,12 +257,12 @@ async def send(
                     if 300 <= resp.status_code < 400:
                         raise OutboundRefused(
                             target.host, f"redirect {resp.status_code}")
-                    body = await _read_capped(resp)
+                    body, cut = await _read_capped(resp)
                 finally:
                     await resp.aclose()
     except TimeoutError:
         raise OutboundRefused(target.host, "timeout") from None
-    return Answer(status_code=resp.status_code, body=body, headers=resp.headers)
+    return Answer(status_code=resp.status_code, body=body, headers=resp.headers, cut=cut)
 
 
 async def request(
