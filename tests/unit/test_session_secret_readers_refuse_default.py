@@ -17,8 +17,9 @@ R7 fences named here:
   reply.
 * ``session-secret-readers-guarded``: an AST walk of ``apps/``,
   ``packages/`` and ``scripts/`` finds each read of the secret. The function
-  that reads it must name the shared check, or the allow-list must name the
-  function with a reason.
+  that reads it must call the shared check, or test the value against
+  ``PUBLIC_DEFAULT_SECRETS``. Else the allow-list names the function with a
+  reason.
 """
 from __future__ import annotations
 
@@ -154,10 +155,12 @@ async def test_settle_refuses_with_no_key_and_counts_no_try(monkeypatch) -> None
 
 # ── session-secret-readers-guarded ──────────────────────────────────────────
 
-#: The names that prove a function passes the secret through the one check.
-#: ``verify_member`` and ``sign_member`` call ``_usable`` first, and the test
-#: below proves it, so a function that hands them the secret is guarded.
-GUARDS = frozenset({"_usable", "PUBLIC_DEFAULT_SECRETS", "verify_member", "sign_member"})
+#: A call to one of these proves that a function passes the secret through
+#: the one check. ``verify_member`` and ``sign_member`` call ``_usable``
+#: first, and a test below proves it. An import alone proves nothing.
+CALL_GUARDS = frozenset({"_usable", "verify_member", "sign_member"})
+#: An ``in`` or ``not in`` test against this list is a guard too.
+LIST_GUARD = "PUBLIC_DEFAULT_SECRETS"
 
 #: ``path::function`` of a reader that names no guard, with the reason. Keep
 #: it empty. An entry that matches no reader fails the walk.
@@ -177,25 +180,36 @@ _SKIP = frozenset({"tests", "node_modules", ".venv", "__pycache__", "build", "di
 
 
 def _is_read(node: ast.AST) -> bool:
-    """A read of the secret: the attribute, ``getattr`` by name, or the env name."""
+    """A read of the secret: the attribute, ``getattr`` or ``environ.get`` by
+    name, or ``environ[...]`` by the env name."""
     if isinstance(node, ast.Attribute) and node.attr == FIELD:
         return True
     if isinstance(node, ast.Call):
         return any(isinstance(a, ast.Constant) and a.value in (FIELD, ENV)
                    for a in node.args)
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.slice, ast.Constant) and node.slice.value in (FIELD, ENV)
     return False
 
 
-def _names(fn: ast.AST) -> set[str]:
-    out: set[str] = set()
+def _name_of(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _guarded(fn: ast.AST) -> bool:
+    """True when *fn* calls the check, or tests a value against the list."""
     for node in ast.walk(fn):
-        if isinstance(node, ast.Name):
-            out.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            out.add(node.attr)
-        elif isinstance(node, ast.alias):
-            out.add(node.asname or node.name)
-    return out
+        if isinstance(node, ast.Call) and _name_of(node.func) in CALL_GUARDS:
+            return True
+        if (isinstance(node, ast.Compare)
+                and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
+                and any(_name_of(c) == LIST_GUARD for c in node.comparators)):
+            return True
+    return False
 
 
 def _readers(path: Path, rel: str) -> dict[str, bool]:
@@ -210,7 +224,7 @@ def _readers(path: Path, rel: str) -> dict[str, bool]:
                 continue
             if _is_read(child):
                 key = f"{rel}::{name}"
-                guarded = fn is not None and bool(_names(fn) & GUARDS)
+                guarded = fn is not None and _guarded(fn)
                 found[key] = found.get(key, True) and guarded
             visit(child, fn, name)
 
@@ -260,14 +274,25 @@ def test_the_walk_sees_an_unguarded_reader(tmp_path) -> None:
         "    key = get_settings().gateway_session_secret.encode()\n"
         "    return hmac.new(key, msg, 'sha256').hexdigest()\n\n"
         "def sign_too(msg):\n"
-        "    return getattr(get_settings(), 'gateway_session_secret', 'x')\n",
+        "    return getattr(get_settings(), 'gateway_session_secret', 'x')\n\n"
+        "def imports_only(s):\n"
+        "    from acb_auth.member_proof import _usable\n"
+        "    return s.gateway_session_secret.encode()\n\n"
+        "def from_env():\n"
+        "    import os\n"
+        "    return os.environ['GATEWAY_SESSION_SECRET']\n",
         encoding="utf-8")
     good = tmp_path / "good.py"
     good.write_text(
         "from acb_auth.member_proof import _usable\n\n"
         "def key(s):\n"
         "    raw = s.gateway_session_secret\n"
-        "    return raw if _usable(raw) else None\n",
+        "    return raw if _usable(raw) else None\n\n"
+        "def listed(s):\n"
+        "    raw = s.gateway_session_secret\n"
+        "    return None if raw in member_proof.PUBLIC_DEFAULT_SECRETS else raw\n",
         encoding="utf-8")
-    assert _readers(bad, "bad.py") == {"bad.py::sign": False, "bad.py::sign_too": False}
-    assert _readers(good, "good.py") == {"good.py::key": True}
+    assert _readers(bad, "bad.py") == {
+        "bad.py::sign": False, "bad.py::sign_too": False,
+        "bad.py::imports_only": False, "bad.py::from_env": False}
+    assert _readers(good, "good.py") == {"good.py::key": True, "good.py::listed": True}
