@@ -91,3 +91,27 @@ def test_a_name_match_is_a_whole_word() -> None:
     assert agents._named_in("Vinay Dwivedi", VINAY)
     assert not agents._named_in("Vinayak will join", VINAY)
     assert not agents._named_in("", VINAY)
+
+
+def test_a_mass_cc_thread_still_gets_a_card() -> None:
+    """The warning is bounded. 60 new addresses all start unticked, and the form
+    still passes ``clean_reply_form`` (a notice over 1000 characters raises there,
+    and the card would not draw: review of PR 2500)."""
+    from acb_skills import ask_tools
+
+    agents = F.load_email_agent("ea_unticked_warn_many")
+    new = [f"person{n}@vendor{n}.example.com" for n in range(60)]
+    prep = _prep("Hi all, " + " ".join(f"person{n}" for n in range(60)))
+    prep["recipients"]["reply_all"] = {"to": [TO], "cc": [SB, *new]}
+    prep["classes"].update({a: "new" for a in new})
+    prep["marks"] = {a: "new address — not in your contacts" for a in new}
+    form = _form(agents, prep)
+    warning = form["notices"][0]
+    assert len(warning) < 900
+    assert "Not ticked" in warning and " more" in warning
+    assert person_first(new) in warning
+    assert ask_tools.clean_reply_form(form) is not None  # no "notice is too long"
+
+
+def person_first(addresses: list[str]) -> str:
+    return addresses[0]

@@ -3047,6 +3047,26 @@ def _named_in(body: str, address: str) -> bool:
     return False
 
 
+#: The most characters of addresses that the warning names in one list. The
+#: card refuses a notice of more than 1000 characters (``_whole_line``), so
+#: the warning must not grow with the number of addresses.
+_WARNING_NAMES_MAX = 380
+
+
+def _some(addresses: list[str]) -> str:
+    """The addresses that fit :data:`_WARNING_NAMES_MAX`, then "and K more".
+    The first address always shows."""
+    shown: list[str] = []
+    used = 0
+    for address in addresses:
+        if shown and used + len(address) + 2 > _WARNING_NAMES_MAX:
+            break
+        shown.append(address)
+        used += len(address) + 2
+    rest = len(addresses) - len(shown)
+    return ", ".join(shown) + (f" and {rest} more" if rest else "")
+
+
 def _unticked_warning(form: dict[str, Any]) -> str:
     """The warning of a held reply card that leaves a person unticked (3601).
 
@@ -3065,9 +3085,9 @@ def _unticked_warning(form: dict[str, Any]) -> str:
     if not gone:
         return ""
     named = [a for a in gone if _named_in(str(form.get("body") or ""), a)]
-    text = f"Not ticked, so no copy goes to: {', '.join(gone)}."
+    text = f"Not ticked, so no copy goes to: {_some(gone)}."
     if named:
-        text += (f" Your draft names {', '.join(named)}. "
+        text += (f" Your draft names {_some(named)}. "
                  "Tick the box to send them a copy.")
     return text
 
