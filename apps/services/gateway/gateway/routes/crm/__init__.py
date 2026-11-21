@@ -48,6 +48,9 @@ holds the rules of the ``custom`` write path, which ``records.py`` calls.
 ``modules.py`` is WS-53 CRM-Q6b — ``GET /crm/modules`` and the read-only
 record routes of each mirrored generic Zoho module (``crm_module_records``).
 Its paths start with the literal ``modules/`` segment, so no route shadows it.
+For an org on ``CRM_MODULE_FIND_ORGS`` (CRM-Q34-7), ``q`` on the record list
+and on a module total finds across the module, through the one predicate of
+``field_sql.find_where``.
 
 ``field_rules.py`` is WS-53 CRM-Q7a — ``GET``, ``POST`` and ``PATCH`` on
 ``/crm/field-rules``, the Field map of the mirror. Admin only, behind
@@ -179,6 +182,7 @@ from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm import terms as _terms  # noqa: F401
+from gateway.routes.crm import verified_queries as _verified_queries  # noqa: F401
 from gateway.routes.crm import views as _views  # noqa: F401
 from gateway.routes.crm.core import router
 

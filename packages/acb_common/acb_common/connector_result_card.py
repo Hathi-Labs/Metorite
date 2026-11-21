@@ -33,6 +33,9 @@ MAX_NAME = 80
 _MCP_RE = re.compile(r"mcp:[a-z0-9][a-z0-9_.-]{0,62}", re.ASCII)
 _MIRA_LINE = "Mira can now use {label} when you ask."
 _MIRA_LINE_MCP = "Mira can now call the tools of this server when you ask."
+#: API-5: the line of a row whose ``chat_reads`` is false (``connector_list``).
+#: It says what is true now, and what comes next.
+_NOT_YET_LINE = "The chat cannot read {label} yet. That comes in a later release."
 
 
 def _clean(names: Sequence[str], cap: int) -> list[str]:
@@ -64,12 +67,20 @@ def result_card(
     if row is not None:
         label, unlocks = str(row["label"]), str(row["unlocks"])
         owner = str(row["owning_app"])
-        offer = not bool(row["built_in_app_shows_data"])
-        mira = _MIRA_LINE.format(label=label)
+        reads = connector_list.chat_reads(row)
+        if reads:
+            offer = not bool(row["built_in_app_shows_data"])
+            mira = _MIRA_LINE.format(label=label)
+        else:
+            # API-5: no chat tool reads this connection yet (API-4). The card
+            # says so, and offers no build: an app cannot read it either.
+            offer = False
+            mira = _NOT_YET_LINE.format(label=label)
     elif isinstance(provider_id, str) and _MCP_RE.fullmatch(provider_id):
         label, unlocks, owner = provider_id.removeprefix("mcp:"), "", ""
         offer = not used
         mira = _MIRA_LINE_MCP
+        reads = True
     else:
         return None
     return {
@@ -78,6 +89,8 @@ def result_card(
         "works_now": {"unlocks": unlocks, "owning_app": owner, "apps": used, "mira": mira},
         "templates": _clean(templates, MAX_TEMPLATES),
         "build_offer": offer,
+        #: API-5: false while no chat tool reads the connection (``chat_reads``).
+        "chat_reads": reads,
     }
 
 
