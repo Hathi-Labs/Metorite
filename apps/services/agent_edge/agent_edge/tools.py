@@ -2952,6 +2952,10 @@ _WAITING_SCHEMA = _object({
     "until": _NULLABLE_STRING,
     "note": _UNTRUSTED_OR_NULL,
 })
+#: SW-104 (``agent_coordination.md`` §3.12.7 rule 5). The kinds of machine
+#: of a session. ``agent_runs.AGENT_HOST_KINDS`` holds the same, and a pin
+#: test compares the two.
+HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -2963,6 +2967,11 @@ _RUN_SCHEMA = _object({
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
     # SW-7b. The name that an agent gave its session. An agent wrote it, so (U).
     "agent_label": _UNTRUSTED_OR_NULL,
+    # SW-104. The machine and the model of the session. An agent or its box
+    # token wrote them, so (U). The kind is a value of a database CHECK.
+    "agent_host": _UNTRUSTED_OR_NULL,
+    "agent_model": _UNTRUSTED_OR_NULL,
+    "agent_host_kind": {"type": ["string", "null"], "enum": [*HOST_KINDS, None]},
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
@@ -3122,8 +3131,12 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
     SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
+    SW-104: ``agent_host`` and ``agent_model`` are (U) for the same reason.
+    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`.
     """
     label = row.get("agent_label")
+    host, model = row.get("agent_host"), row.get("agent_model")
+    kind = row.get("agent_host_kind")
     out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
@@ -3139,6 +3152,9 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
         "agent_label": untrusted(label) if isinstance(label, str) else None,
+        "agent_host": untrusted(host) if isinstance(host, str) else None,
+        "agent_model": untrusted(model) if isinstance(model, str) else None,
+        "agent_host_kind": kind if kind in HOST_KINDS else None,
         "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
@@ -5429,10 +5445,12 @@ PLAN_ORDER_BUDGET_S = 2.0
 PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
-#: ``claim_task`` sends back as ``expected_version``.
+#: ``claim_task`` sends back as ``expected_version``. SW-104: the machine, its
+#: kind and the model of the row's run, as on the run wire, or null.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
     "run_id", "held_by", "yours", "external_link",
+    "agent_host", "agent_model", "agent_host_kind",
 )
 
 _MY_WORK_INPUT: dict[str, Any] = {
@@ -5453,6 +5471,9 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "run_id": _NULLABLE_STRING, "held_by": _HELD_BY_SCHEMA,
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
+    "agent_host": _RUN_SCHEMA["properties"]["agent_host"],
+    "agent_model": _RUN_SCHEMA["properties"]["agent_model"],
+    "agent_host_kind": _RUN_SCHEMA["properties"]["agent_host_kind"],
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
     "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
@@ -5624,15 +5645,20 @@ async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]
 def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
               run_id: str | None,
               names_by_project: Mapping[str, Mapping[str, str]],
-              yours: bool = False, link: Any = None) -> dict[str, Any]:
+              yours: bool = False, link: Any = None,
+              run: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One row of ``my_work`` (§12.4). With no task row, the task fields are
     null and the row still names the run. ``external_link`` is the link of
-    the run, shaped as on the run wire, or null (CIV-14a)."""
+    the run, shaped as on the run wire, or null (CIV-14a). SW-104: the
+    machine, its kind and the model of *run*, shaped by :func:`agent_run`,
+    or null for a row with no run."""
     shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
+    wire = agent_run(run) if run is not None else {}
+    place = {key: wire.get(key) for key in ("agent_host", "agent_model", "agent_host_kind")}
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
-                "held_by": None, "yours": yours, "external_link": shown}
+                "held_by": None, "yours": yours, "external_link": shown, **place}
     status_id = row.get("status_id")
     names = names_by_project.get(str(row.get("project_id")), {})
     return {
@@ -5650,6 +5676,7 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
         "held_by": _held_by(row.get("held_by")),
         "yours": yours,
         "external_link": shown,
+        **place,
     }
 
 
@@ -5702,6 +5729,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     listed: list[tuple[str, str, str | None, bool]] = []
     links: dict[str, Any] = {}
+    runs: dict[str, Mapping[str, Any]] = {}
     seen: set[str] = set()
     for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
@@ -5710,6 +5738,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             continue
         seen.add(task_id)
         links[task_id] = run.get("external_link")
+        runs[task_id] = run
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
@@ -5746,7 +5775,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     rows.update(await _tasks_by_id(ctx, missing))
     shown = [rows[t] for t, _, _, _ in listed if t in rows]
     names = await _status_names(ctx, _distinct_projects(shown))
-    out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
+    out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t),
+                     runs.get(t))
            for t, reason, run_id, mine in listed]
     for item in out:
         if item["reason"] in (REASON_ASSIGNED, REASON_CHECK_DUE) and item["task_id"] in plans:
@@ -7760,6 +7790,35 @@ _LABEL_INPUT: dict[str, Any] = {
         " Send the same name on each claim and each start. A new name replaces"
         " the old one.")}
 
+#: SW-104 (``agent_coordination.md`` §3.12.3). The most characters of
+#: ``host`` and ``model``. The gateway cleans each value and caps it at the
+#: same number (``agent_runs.AGENT_PLACE_MAX``), and a pin test compares them.
+AGENT_PLACE_MAX = 60
+
+#: SW-104. The optional machine, kind of machine and model of this session,
+#: on a claim and a start. Each name holds no control character.
+_HOST_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_PLACE_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "A short name for the machine of this session, such as VJ laptop. Use"
+        " the name that your member chose. Send the host name of the system"
+        " only when the member chose no name. Send no network address. It is"
+        " display data only. A box token sends its own name. A new value"
+        " replaces the old one.")}
+_MODEL_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_PLACE_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "The model of this session, such as Sonnet 5.5. It is display data"
+        " only. A new value replaces the old one.")}
+_HOST_KIND_INPUT: dict[str, Any] = {
+    "type": "string", "enum": list(HOST_KINDS),
+    "description": (
+        "The kind of the machine: computer for the PC or laptop of a person,"
+        " server for a VPS or a box, cloud for a hosted agent sandbox. It is"
+        " display data only.")}
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7783,6 +7842,9 @@ _CLAIM_INPUT: dict[str, Any] = {
             "description": "The version that get_task returned for this task."},
         "external_link": _LINK_INPUT,
         "agent_label": _LABEL_INPUT,
+        "host": _HOST_INPUT,
+        "model": _MODEL_INPUT,
+        "host_kind": _HOST_KIND_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7801,6 +7863,13 @@ _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
+def _place_body(args: Mapping[str, Any]) -> dict[str, str]:
+    """SW-104. The ``host``, ``model`` and ``host_kind`` of *args* that the
+    agent sent, for the body of a claim or a start. Never a header."""
+    return {key: value for key in ("host", "model", "host_kind")
+            if (value := _str_or_none(args.get(key))) is not None}
+
+
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """POST the claim with ``If-Match`` and no body field (§9.2).
 
@@ -7812,7 +7881,8 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     It needs no ``_refuse_nul`` (EA-6c): each input must match a pattern of
     the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
-    body only, and its pattern refuses every control character.
+    body only, and its pattern refuses every control character. SW-104:
+    ``host``, ``model`` and ``host_kind`` go in the body by the same rule.
     """
     body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
@@ -7821,6 +7891,7 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     label = _str_or_none(args.get("agent_label"))
     if label is not None:
         body["agent_label"] = label
+    body.update(_place_body(args))
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
@@ -7898,7 +7969,8 @@ CLAIM_TASK = Tool(
     output_schema=_CLAIM_OUTPUT,
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
-            "external_link": "external_link", "agent_label": "agent_label"},
+            "external_link": "external_link", "agent_label": "agent_label",
+            "host": "host", "model": "model", "host_kind": "host_kind"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -9194,15 +9266,19 @@ def _check_options(options: list[dict[str, Any]] | None) -> None:
 
 async def _start(ctx: Context, task_id: str, key: str,
                  link: str | None = None,
-                 label: str | None = None) -> tuple[bool, dict[str, Any]]:
+                 label: str | None = None,
+                 place: Mapping[str, str] | None = None) -> tuple[bool, dict[str, Any]]:
     """POST the start of a run. ``(created, run)``. The gateway gives the
     open run of this member and client on the task, if one exists (EA12-6).
-    SW-7b: *label* is the display name of this session, in the body only."""
+    SW-7b: *label* is the display name of this session, in the body only.
+    SW-104: *place* holds ``host``, ``model`` and ``host_kind``, by the same
+    rule."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
     if label is not None:
         payload["agent_label"] = label
+    payload.update(place or {})
     status, body = await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
@@ -9243,6 +9319,9 @@ _START_INPUT: dict[str, Any] = {
         "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
         "agent_label": _LABEL_INPUT,
+        "host": _HOST_INPUT,
+        "model": _MODEL_INPUT,
+        "host_kind": _HOST_KIND_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
@@ -9253,7 +9332,8 @@ _START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type":
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
                                 _str_or_none(args.get("external_link")),
-                                _str_or_none(args.get("agent_label")))
+                                _str_or_none(args.get("agent_label")),
+                                _place_body(args))
     return {"run": agent_run(run), "created": created}
 
 
@@ -9279,7 +9359,8 @@ START_AGENT_RUN = Tool(
     output_schema=_START_OUTPUT,
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
-            "idempotency_key": "idempotency_key", "agent_label": "agent_label"},
+            "idempotency_key": "idempotency_key", "agent_label": "agent_label",
+            "host": "host", "model": "model", "host_kind": "host_kind"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",

@@ -116,6 +116,10 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/skills/{skill_id}/share"),
     # TOF-3b F4b, the test run of a skill.
     ("POST", "/studio/skills/{skill_id}/tests/run"),
+    # TOF-3a F12c, the history, the repair and the approve of a skill.
+    ("GET", "/studio/skills/{skill_id}/runs"),
+    ("POST", "/studio/skills/{skill_id}/repairs"),
+    ("POST", "/studio/skills/{skill_id}/repairs/{proposal_id}/approve"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.
@@ -182,6 +186,7 @@ _PARAMS = {
     "server": "github",
     "tool": "get_issue",
     "object_name": "ledger",
+    "proposal_id": str(uuid.uuid4()),
 }
 
 STUDIO = ["feature:studio"]
