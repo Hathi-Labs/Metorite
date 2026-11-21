@@ -1981,7 +1981,12 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
         # H-391: the whole card as text, the reply code last, and no buttons.
         # The LAST part names the act, so the code counts only once Meta took
         # the part that holds it.
-        parked = await acts.park_code(req, act)
+        try:
+            parked = await acts.park_code(req, act)
+        except acts.CodeKeyUnusable:
+            # Task 3854: the server secret is empty or public. The reply
+            # names the cause, and park_code logged it.
+            return acts.REPLY_CODE_NOT_MADE
         if parked is None:
             return acts.REPLY_NOT_HELD
         act_id, code = parked

@@ -2069,7 +2069,8 @@ with writes off. That run has no reply path.
    an HMAC-SHA256 of the code, keyed with `gateway_session_secret`, and never
    the code. NULL is a Confirm-button act, so §14 does not change.
    An empty or public secret makes no code and matches no code (task 3854).
-   The member then reads `REPLY_NOT_HELD` or `REPLY_CODE_KEY`.
+   The member then reads `REPLY_CODE_NOT_MADE` when no code is made, or
+   `REPLY_CODE_KEY` when Metorite cannot check a reply code.
 3. **The summary.** `bot_run` sends one text with no buttons. It holds all
    that the card shows: the act, the mailbox and each person with a number.
    Each person has its class mark and its look-alike warning, if any. It also

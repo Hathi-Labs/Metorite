@@ -12,7 +12,8 @@ then gives the code back from the stored hash.
 R7 fences named here:
 
 * ``reply-code-refuses-default``: ``acts.code_hash`` raises under an empty
-  or public secret. ``park_code`` makes no code and stores nothing.
+  or public secret. ``park_code`` makes no code, stores nothing and raises
+  ``CodeKeyUnusable``. The member reads ``REPLY_CODE_NOT_MADE``.
   ``_settle_code`` matches no code, counts no wrong try and gives an honest
   reply.
 * ``session-secret-readers-guarded``: an AST walk of ``apps/``,
@@ -20,6 +21,15 @@ R7 fences named here:
   that reads it must call the shared check, or test the value against
   ``PUBLIC_DEFAULT_SECRETS``. Else the allow-list names the function with a
   reason.
+
+The limits of the walk. It reads names, not data flow, so two cases pass it:
+
+* A read through a name constant is not seen. An example is
+  ``F = "gateway_session_secret"`` and then ``getattr(s, F)``.
+* A function that calls ``_usable`` on another value counts as guarded.
+
+Review covers these two cases. ``KNOWN`` pins the five real readers, so the
+walk cannot lose one without a red test. Do not widen the walk to close them.
 """
 from __future__ import annotations
 
@@ -100,8 +110,8 @@ async def test_park_code_makes_no_code_and_stores_nothing(monkeypatch) -> None:
 
     monkeypatch.setattr(acts, "_current_link_id", link)
     monkeypatch.setattr(acts, "_store", store)
-    with structlog.testing.capture_logs() as caps:
-        assert await acts.park_code(_req(), object()) is None
+    with structlog.testing.capture_logs() as caps, pytest.raises(acts.CodeKeyUnusable):
+        await acts.park_code(_req(), object())
     assert touched == []
     lines = [c for c in caps if c["event"] == "whatsapp_channel.act.code_key_unusable"]
     assert len(lines) == 1 and lines[0]["log_level"] == "warning"
@@ -109,21 +119,38 @@ async def test_park_code_makes_no_code_and_stores_nothing(monkeypatch) -> None:
     assert all(PUBLIC not in str(v) for c in caps for v in c.values())
 
 
-async def test_the_member_reads_an_honest_reply_when_no_code_is_made(monkeypatch) -> None:
-    """``bot_run`` sends the not-held line. It names no sign-in and no error."""
+class _CodeAct:
+    kind = "code"
+
+
+async def test_the_member_reads_the_cause_when_no_code_is_made(monkeypatch) -> None:
+    """With no usable key, ``bot_run`` sends the reply that names the cause.
+    It fits a send, and it names no sign-in and no error text."""
     _set(monkeypatch, PUBLIC)
 
     async def link(*_: Any) -> str:
         raise AssertionError("no link read without a usable key")
 
     monkeypatch.setattr(acts, "_current_link_id", link)
+    reply = await bot_run._offer_act(_req(), _CodeAct())
+    assert reply == acts.REPLY_CODE_NOT_MADE != acts.REPLY_NOT_HELD
+    assert "reply code" in reply and "sent" in reply and "web app" in reply
+    assert "sign" not in reply.lower() and "Confirm" not in reply
 
-    class _Act:
-        kind = "code"
 
-    reply = await bot_run._offer_act(_req(), _Act())
-    assert reply == acts.REPLY_NOT_HELD
-    assert "web app" in reply and "sign" not in reply.lower()
+async def test_no_link_row_still_gives_the_not_held_reply(monkeypatch) -> None:
+    """The other cause keeps its own reply, unchanged."""
+    _set(monkeypatch, GOOD)
+
+    async def link(*_: Any) -> None:
+        return None
+
+    async def store(*_: Any, **__: Any) -> str:
+        raise AssertionError("no store with no link row")
+
+    monkeypatch.setattr(acts, "_current_link_id", link)
+    monkeypatch.setattr(acts, "_store", store)
+    assert await bot_run._offer_act(_req(), _CodeAct()) == acts.REPLY_NOT_HELD
 
 
 async def test_settle_refuses_with_no_key_and_counts_no_try(monkeypatch) -> None:

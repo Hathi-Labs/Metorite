@@ -157,6 +157,9 @@ REPLY_TOO_MANY_WRONG = ("That was the fifth wrong code, so this request is close
 REPLY_NO_ACT = ("No request waits for a code from this phone, so nothing was "
                 "sent or changed. The code works only from the phone that got "
                 "the summary.")
+#: Task 3854: the server secret is empty or public, so no code is made.
+REPLY_CODE_NOT_MADE = ("Metorite cannot make a reply code right now, so nothing was "
+                       "sent or changed. Do it in the Metorite web app.")
 #: Task 3854: the server secret is empty or public, so no code can be checked.
 REPLY_CODE_KEY = ("Metorite cannot check reply codes now, so nothing was sent or "
                   "changed. Make the change in the Metorite web app.")
@@ -409,16 +412,17 @@ async def park_code(req: RunRequest, act: ParkedAct) -> tuple[str, str] | None:
     """Store an email act for the member's reply code (H-391). Returns its id
     and the code, or None when the phone has no current link row.
 
+    Raises :class:`CodeKeyUnusable` when the server secret is empty or public
+    (task 3854). Then no code is made and nothing is stored. ``bot_run``
+    sends :data:`REPLY_CODE_NOT_MADE`.
+
     The row holds the hash of the code, never the code. ``bot_run`` puts the
     code in the summary, and the code lives :data:`CODE_TTL_S` after the
-    last part of the summary went out (:func:`offered`).
-
-    None also when the server secret is empty or public (task 3854). Then
-    no code is made and nothing is stored."""
+    last part of the summary went out (:func:`offered`)."""
     if _code_key() is None:
         _log.warning("whatsapp_channel.act.code_key_unusable", reason=_CODE_KEY_REASON,
                      step="park", message_id=req.message_id)
-        return None
+        raise CodeKeyUnusable(_CODE_KEY_REASON)
     link_id = await _current_link_id(req.wa_id, req.member_email)
     if link_id is None:
         _log.info("whatsapp_channel.act.no_link", message_id=req.message_id)
