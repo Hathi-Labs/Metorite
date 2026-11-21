@@ -325,6 +325,9 @@ CRM = App(
         Route("PUT", "/crm/sync/modules/{key}", "", "B", planned="CRM-M2k", off_door=_CONNECTION),
         # ── terms ──
         Route("GET", "/crm/terms/resolve", "crm_aggregate", "A", off_door=_DOOR_READ),
+        # ── verified questions (WS-SEM SEM-8) ──
+        Route("POST", "/crm/verified-queries/match", "org_facts", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/verified-queries/{key}", "org_facts", "A", off_door=_DOOR_READ),
         # ── views ──
         Route("GET", "/crm/views", "", "A", planned="CRM-M2g", off_door=_DOOR_READ),
         Route("POST", "/crm/views", "", "B", planned="CRM-M2g", off_door=_VIEW),

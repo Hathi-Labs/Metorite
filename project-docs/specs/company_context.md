@@ -12,6 +12,10 @@ which is built (`evals/search_company/`). KG-3a is BUILT 2026-10-28 (migration
 BUILT (WS-KG, Metorite #787, dark), and its backfill has not run. CX-1b,
 CX-3 to CX-7 and KG-3b are not built.
 
+**PROPOSED, task 3500 (2026-11-16).** The chat digest table is
+`chat_session_digest`, and CX-4 adds no second pass (§8.1). Where §5.3, §7,
+§8.2, §10, §11 or CX-4 differ, §8.1 wins until metorite-a3 confirms.
+
 **Read first.** `knowledge_base.md` §0, §6 and §20. `work_plan.md` D104 and
 D105. This spec changes neither decision. It adds the rules that make the
 answers of the seam current and findable.
@@ -494,15 +498,29 @@ derived from one: chunks, digests and judgments.
 
 ### 8.1 The session digest
 
-A pass writes a session's digest, with the shape of §5.1, when the session
-is idle for 30 minutes and holds at least 4 messages. The atoms catch what
-the member decided with the assistant. They also catch the fixes that worked
-and the numbers that were agreed.
+**PROPOSED, task 3500 (2026-11-16).** metorite-a3, the owner of the FIND and
+CX side, must confirm it before CX-4 builds. `chat_organization.md` §10.1
+holds the reasons.
 
-**What it skips.** It skips a session that ran with `no_egress` and a
-session whose turns read mail bodies. It also skips each session of an org
-that has not turned the digest on. These are the rules `_extract_run_memory` already applies to
-Mem0 (`routes/agent.py`).
+- **One table: `chat_session_digest`.** It holds one row for each chat.
+  `chat_organization.md` §10.2 owns its columns. CX-4 adds no second table. It
+  adds the segments and atoms of §5.1 as columns of that row, in its own
+  expand migration.
+- **One pass.** The summary job of PZ-33b writes the row, and CO-1 extends that
+  job (`chat_organization.md` §5). CX-4 adds no second pass. The flags of the
+  pass are in `chat_organization.md` §5.5. `CHAT_DIGEST_ORGS` then opens only
+  the `chat` source of §8.2.
+- **One source rule.** The pass reads the member's own typed rows only
+  (D-PZ-37). It covers a solo chat that is idle for 30 minutes and holds 2
+  typed rows of the member. So an atom holds what the member typed, and never
+  an assistant turn, a tool output or a mail body.
+- **Who reads it.** Only the member of the chat, while the chat is solo. A share
+  clears the row.
+
+A digest that reads the turns of the assistant needs an owner decision first.
+
+**What it skips.** It skips each chat that the rule above leaves out. The
+skip of a session that ran with `no_egress` stays open for metorite-a3.
 
 ### 8.2 The source
 
