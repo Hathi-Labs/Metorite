@@ -1426,9 +1426,12 @@ def test_a_withheld_run_never_installs_a_missing_module(
     monkeypatch, tmp_path, personal: bool,
 ) -> None:
     """crm-assistant is shared, so its run binds ``shell_tools_withheld=True``.
-    A personal agent binds it too, since D129 (task 808)."""
+    A personal agent binds it too, since D129 (task 808). The gate also reads
+    the agent name since task 3856, so ``bound`` pins the flag itself."""
+    bound: list[Any] = []
     installs, calls, results = _drive_self_heal(
-        monkeypatch, tmp_path, covered=False, personal=personal)
+        monkeypatch, tmp_path, covered=False, personal=personal, bound=bound)
+    assert bound == [True], f"the run bound shell_tools_withheld={bound}"
     assert installs == [], f"the self-heal installed {installs} on the host"
     assert calls == ["call"], "the tool ran again with no install"
     assert "ask an admin" in results, results
