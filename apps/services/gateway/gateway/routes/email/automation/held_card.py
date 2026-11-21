@@ -1395,7 +1395,8 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
 
     edit = edit_card_on(_org_of(user))
     thread = req.card_thread_id.strip() if edit else ""
-    linked = (await link_fields(user, thread, lists["to"], cc=lists["cc"], act="forward")
+    linked = (await link_fields(user, thread, lists["to"], cc=lists["cc"], bcc=lists["bcc"],
+                              act="forward")
               if thread else {})
     return await _person_card(user, req, rows, context, {
         "kind": "forward", "account_id": account_id, "message_id": req.message_id,
@@ -1459,7 +1460,8 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     # the rows above come from the server alone, as for any held card: a
     # snapshot of the revised card never ticks a new address (rule 4). Only a
     # card to the same people takes the link (fix round 3).
-    linked = (await link_fields(user, req.card_thread_id, lists["to"], cc=lists["cc"], act="new")
+    linked = (await link_fields(user, req.card_thread_id, lists["to"], cc=lists["cc"],
+                               bcc=lists["bcc"], act="new")
               if edit else {})
     unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {

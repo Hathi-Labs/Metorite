@@ -36,14 +36,27 @@ counts each of them. :func:`value_matches` takes the distinct values of the
 field: the same value in another case, a short form that is the start of
 exactly one longer value (3 letters or more), and the initials of a value of
 two or more words.
+
+**A link (SEM-2a).** :func:`link_field` maps a word of the model to the
+stored key of one field. A wrong link is worse than a refusal, so only a
+certain name links: the exact key, an admin's answer of the term, the key in
+any case, or the folded label, in that order. Two or more fields at one of
+these steps give each key and pick none. A near fit by the words of
+:func:`_hit` is a suggestion only, which the caller can name in a refusal.
+The caller passes only the fields that the member may use, and the caller
+applies :func:`close` to the totals of two money fields. The word never goes
+into the result.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+import unicodedata
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from gateway.crm_sync.catalogue import SUM_KEY_JOIN
 
 #: The kind and the id prefix of a term question in the CRM-Q32 store.
 KIND_TERM = "term"
@@ -327,26 +340,213 @@ def alias_lines(state: Mapping[str, Any] | None) -> list[tuple[str, str, list[st
     return out
 
 
+# ── The link of a word to a field (SEM-2a) ──────────────────────────────────
+
+#: The longest word that :func:`link_field` reads. The route
+#: ``routes/crm/terms.py`` takes a term of the same length (its own
+#: ``TERM_MAX``), and ``tests/unit/test_crm_query_link.py`` checks that the
+#: two agree. This module imports no route, so it keeps its own copy.
+TERM_MAX = 80
+#: The first character of a key word of a module scope (``@amount``). A
+#: stored key never starts with it.
+KEY_WORD_MARK = "@"
+#: The steps of :func:`link_field` that link a field, in the order of the
+#: ladder. Each is a certain name. The ``near`` step only suggests.
+LINK_STEPS: tuple[str, ...] = ("exact", "term", "case", "label")
+#: The shortest word that the ``near`` step reads. A shorter word ("in",
+#: "id", "no") is part of too many field names to suggest one.
+NEAR_MIN = 3
+#: The word that ``%`` reads as in a folded label, so "GST %" and
+#: "GST Amount" fold apart, and "gst" folds to neither.
+PERCENT_WORD = "percent"
+
+
+@dataclass(frozen=True)
+class Link:
+    """What :func:`link_field` found for one word.
+
+    ``keys`` holds stored field keys only, never the word: none, one, or up
+    to :data:`MAX_CANDIDATES`. ``step`` names the step that decided:
+    ``exact``, ``term``, ``case`` or ``label`` for one field (a link),
+    ``ambiguous`` for two or more fields at one of those steps, ``near`` for
+    the fields that the words of the word fit (a suggestion), ``none`` for
+    no field, and ``passthrough`` for a key word or a sum of keys that the
+    caller reads on its old path.
+
+    ``linked`` is True only for a link (:data:`LINK_STEPS`). Only then may
+    the caller run the key. The keys of ``ambiguous`` and ``near`` are for
+    the caller to name, never to run. ``more`` counts the further fields of
+    the deciding step past the keys, so a caller reads ``more > 0`` as
+    "possibly more". ``money`` is a hint: True when each key is a field of
+    :data:`MONEY_TYPES`. SEM-2b decides the money rule of :func:`close` from
+    the measure types of the aggregate, without ``percent``."""
+
+    keys: tuple[str, ...] = ()
+    step: str = "none"
+    money: bool = False
+    linked: bool = False
+    more: int = 0
+
+
+def _fold(text: Any) -> str:
+    """A label in one form: lower case in NFC, with each character that is not a
+    letter, a digit or a combining mark dropped (the variation selectors
+    U+FE00 to U+FE0F too). A combining vowel sign stays, so two words of an
+    Indic script stay apart. ``%`` reads as :data:`PERCENT_WORD` first. This
+    module imports no route, so it keeps its own copy of the rule."""
+    text = str(text or "").replace("%", f" {PERCENT_WORD} ")
+    text = unicodedata.normalize("NFC", text.lower())
+    # A ``#`` or a currency sign says what the label holds, so it must not
+    # fold away: "Customer #" is not "Customer", and "$" is not "₹".
+    text = "".join(f" sym{ord(ch):x} " if ch == "#" or unicodedata.category(ch) == "Sc"
+                   else ch for ch in text)
+    return "".join(ch for ch in text
+                   if ch.isalnum()
+                   or (unicodedata.category(ch).startswith("M") and not 0xFE00 <= ord(ch) <= 0xFE0F))
+
+
+def _own_term(word: str) -> bool:
+    """True when the term question of *word* belongs to *word* alone. Its
+    slug must be shorter than :data:`SLUG_MAX`, because the slug is cut there,
+    and two long words can share one cut slug. A word with ``%`` or a mark of
+    punctuation that the fold keeps apart from the slug is refused, because
+    "gst %" must not read the answer of "gst". :func:`words` must keep each
+    letter and digit of it, because it drops a letter that is not ASCII, and
+    then "<other script> fee" reads the answer of "fee"."""
+    return (len("-".join(words(word))) < SLUG_MAX
+            and not any(ch.isalnum() and not ch.isascii() for ch in word)
+            and _fold(word) == "".join(words(word)))
+
+
+def _stored(fields: Iterable[Any]) -> list[tuple[str, str, str]]:
+    """``(key, label, type)`` of each stored field, once for each key, in the
+    order of *fields*. A key word (``@amount``) and a sum of keys are aliases
+    of stored fields, so they are left out. A field with no label reads its
+    key as its label."""
+    out: dict[str, tuple[str, str, str]] = {}
+    for f in fields:
+        key = str(getattr(f, "key", "") or "")
+        if not key or key in out or key.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in key:
+            continue
+        label = str(getattr(f, "label", "") or "") or key
+        out[key] = (key, label, str(getattr(f, "type", "") or ""))
+    return list(out.values())
+
+
+def _link(found: Sequence[tuple[str, str, str]], step: str) -> Link:
+    """The result of the fields that one step found. At a step of
+    :data:`LINK_STEPS`, one field is the link, and two or more give
+    ``ambiguous``. The ``near`` step never links. At most
+    :data:`MAX_CANDIDATES` keys show, and ``more`` counts the rest."""
+    if len(found) > 1 and step in LINK_STEPS:
+        step = "ambiguous"
+    shown = found[:MAX_CANDIDATES]
+    return Link(keys=tuple(k for k, _label, _type in shown), step=step,
+                money=all(t in MONEY_TYPES for _key, _label, t in shown),
+                linked=step in LINK_STEPS, more=len(found) - len(shown))
+
+
+def link_field(fields: Iterable[Any], word: str, *, module: str = "",
+               answers: Mapping[str, str] | None = None,
+               fills: Mapping[str, float] | None = None) -> Link:
+    """The stored field that *word* names, or the fields it can mean.
+
+    *fields* have ``key``, ``label`` and ``type``, as :func:`candidates`
+    reads them. The caller passes only the fields that the member may use, so
+    a hidden field is a target only when the caller passes it. This function
+    reads no ``visible`` flag.
+
+    A key word (it starts with ``@``) and a sum of keys (it holds ``+``) give
+    ``passthrough``, and the caller keeps its old path. A word longer than
+    :data:`TERM_MAX`, or with no letter and no digit, gives ``none``. Then the
+    first step that finds a field decides:
+
+    1. ``exact``: the stored key;
+    2. ``term``: the admin's answer of the term question of *word* in
+       *module*, first as in :func:`decide`: the answer counts only when its
+       field is one of :func:`candidates` of *word* (*fills* is the fill of
+       each key, as the caller read it). *answers* is
+       ``term_state(...).answers``, which the caller read. With no *module*
+       or no *answers*, or a word that :func:`_own_term` refuses, the step
+       does not run;
+    3. ``case``: the key in any case. A label that names a different field
+       joins it, so the word is ``ambiguous``;
+    4. ``label``: the label, folded by :func:`_fold`;
+    5. ``near``: each word of *word* of :data:`NEAR_MIN` letters or more hits
+       a word of the label or of the key (:func:`_hit`). It suggests and
+       never links.
+
+    One field at steps 1 to 4 is the link (``linked``). Two or more give
+    ``ambiguous`` and pick none. The result never holds *word*, and the
+    function reads no database, no setting and no clock, and logs nothing."""
+    fields = list(fields)
+    asked = word if isinstance(word, str) else ""
+    trimmed = asked.strip()
+    if trimmed.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in trimmed:
+        return Link(step="passthrough")
+    if len(asked) > TERM_MAX or not any(ch.isalnum() for ch in asked):
+        return Link()
+    pool = _stored(fields)
+    found = [f for f in pool if f[0] == trimmed]
+    if found:
+        return _link(found, "exact")
+    if module and answers and words(trimmed) and _own_term(trimmed):
+        picked = answers.get(term_id(module, trimmed))
+        allowed = {c.key for c in candidates(fields, fills, trimmed)}
+        found = [f for f in pool if f[0] == picked and f[0] in allowed]
+        if found:
+            return _link(found, "term")
+    case = trimmed.casefold()
+    found = [f for f in pool if f[0].casefold() == case]
+    folded = _fold(trimmed)
+    by_label = [f for f in pool if folded and _fold(f[1]) == folded]
+    if found:
+        # A label that names another field with the same certainty makes
+        # the word ambiguous: the function must not pick one in silence.
+        found = found + [f for f in by_label if f not in found]
+        return _link(found, "case")
+    found = by_label
+    if found:
+        # A key that folds to the word is as certain as a label that does.
+        found = found + [f for f in pool if f not in found and _fold(f[0]) == folded]
+        return _link(found, "label")
+    wanted = [w for w in dict.fromkeys(words(trimmed)) if len(w) >= NEAR_MIN]
+    if wanted:
+        found = [f for f in pool
+                 if all(_hit(w, list(dict.fromkeys([*words(f[1]), *words(f[0])])))
+                        for w in wanted)]
+        if found:
+            return _link(found, "near")
+    return Link()
+
+
 __all__ = [
     "ALIASES_BUCKET",
     "CLOSE_SHARE",
     "GENERAL_WORDS",
+    "KEY_WORD_MARK",
     "KIND_TERM",
+    "LINK_STEPS",
     "MAX_CANDIDATES",
     "MONEY_TYPES",
+    "NEAR_MIN",
+    "PERCENT_WORD",
     "TAX_PART_WORDS",
     "TAX_WORDS",
     "TERMS_BUCKET",
     "TERM_ANSWERS_BUCKET",
+    "TERM_MAX",
     "TERM_PREFIX",
     "WHY",
     "Candidate",
+    "Link",
     "Pick",
     "TermState",
     "alias_lines",
     "candidates",
     "close",
     "decide",
+    "link_field",
     "rule_pick",
     "slug",
     "term_id",

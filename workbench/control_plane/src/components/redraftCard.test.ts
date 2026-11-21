@@ -1277,6 +1277,14 @@ describe("the line about the card that this card replaces (HRD-8b)", () => {
     expect(line).not.toContain("Removed from");
   });
 
+  it("a changed Bcc is named, and the form reads it", () => {
+    const line = changedLinkLine({ bcc: { added: ["x@y.test"], removed: [] } });
+    expect(line).toBe(`${NOT_THE_SAME_LEAD} The Bcc list changed. Added to Bcc: x@y.test. ${CHECK_TRAIL}`);
+    const form = replyFromEvent({ ...FORM, ...link, changed: { bcc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
+    expect(form.changed).toEqual({ bcc: { added: ["x@y.test"], removed: [] } });
+    expect(changedLinkLine({ act: { was: "reply", now: "new" } })).toContain("The card before it was a reply. This card is a new mail.");
+  });
+
   it("the form reads `changed` only with a link, and only the gateway's shape", () => {
     const ok = replyFromEvent({ ...FORM, ...link, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
     expect(ok.revises).toBe(OLD);
