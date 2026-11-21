@@ -99,6 +99,39 @@ describe("approve-card-receipt", () => {
   });
 });
 
+describe("approve-card-changed-since (task 3827)", () => {
+  const notDone: ConfirmationAction = { type: "notDone", requestId: "r1" };
+  const words = 'Not done · Create task "Call the supplier". The item changed after the card showed, so nothing was changed.';
+
+  it("a refused approve reads Not done, and the POST answer after it keeps that", () => {
+    // The stream beats the POST answer.
+    const early = run([answering("approved"), notDone, settleAnswer(card, "ok")], asked);
+    expect(lines(early)).toEqual([words]);
+    expect(early.receipts[0].kind).toBe("notDone");
+    // The POST answer comes first.
+    const late = run([answering("approved"), settleAnswer(card, "ok"), notDone], asked);
+    expect(lines(late)).toEqual([words]);
+  });
+
+  it("draws it in the warning tone, with its own marker", () => {
+    const done = run([answering("approved"), settleAnswer(card, "ok"), notDone], asked);
+    const html = renderToStaticMarkup(createElement(ConfirmationReceipts, { receipts: done.receipts }));
+    expect(html).toContain('data-confirmation-receipt="notDone"');
+    expect(html).toContain("text-warning");
+    expect(html).not.toContain("Approved");
+  });
+
+  it("only the receipt of that card changes, and a Reject never does", () => {
+    const other: ConfirmationAction = { type: "notDone", requestId: "r9" };
+    const approved = run([answering("approved"), settleAnswer(card, "ok"), other], asked);
+    expect(lines(approved)).toEqual(['Approved · Create task "Call the supplier"']);
+    const rejected = run([answering("rejected"), settleAnswer(card, "ok"), notDone], asked);
+    expect(lines(rejected)).toEqual(['Rejected · Create task "Call the supplier"']);
+    // No receipt of that key: nothing is made up.
+    expect(run([notDone], asked).receipts).toEqual([]);
+  });
+});
+
 describe("approve-card-retry-reason", () => {
   it("brings the card back with the reason, and the next answer clears it", () => {
     const reason = respondFailureText(503);

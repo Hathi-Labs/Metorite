@@ -366,6 +366,7 @@
       "tests/unit/test_signup_provision_route.py",
       "tests/unit/test_signup_reconciler.py",
       "tests/unit/test_skill_packs_r8.py",
+      "tests/unit/test_skill_repair_r8.py",
       "tests/unit/test_skill_run_writers_r8.py",
       "tests/unit/test_staging_export.py",
       "tests/unit/test_staging_minimise_r8.py",

@@ -13,7 +13,8 @@ package tools (STU-G1c) save a draft and publish it. The workflow tool
 The two workflow writes (STB-6b) publish, roll back, pause and turn on a
 workflow. They form the second pack of this owner, ``studio-workflows``.
 The share of a skill with the organization (WS-STU J2d) is one tool, in the
-third small pack of this owner, ``studio-share``.
+third small pack of this owner, ``studio-share``. The repair of a skill and
+its undo (WS-TOF TOF-3a F12c) are two tools, in the pack ``studio-repair``.
 
 It never runs as an agent. The name "studio-builder" is in no agent list: not
 the registry, the picker, a specialist tool or the registry block. Only the
@@ -33,6 +34,7 @@ from acb_common import get_settings
 from acb_skills.studio_tools import (
     STUDIO_PACKAGE_TOOLS,
     STUDIO_RECORD_TOOLS,
+    STUDIO_REPAIR_TOOLS,
     STUDIO_SHARE_TOOLS,
     STUDIO_SKILL_TOOLS,
     STUDIO_TOOLS,
@@ -48,7 +50,8 @@ INSTRUCTIONS = (
 )
 
 _TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
-          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_SHARE_TOOLS]
+          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_SHARE_TOOLS,
+          *STUDIO_REPAIR_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:

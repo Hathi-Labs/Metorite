@@ -1567,14 +1567,66 @@ CARD_NOT_DONE_LEADS: tuple[str, ...] = tuple(
     o.lead for k, o in CARD_OUTCOMES.items() if k != CARD_APPROVED)
 
 
+#: Task 3827: the card that the member approved last in this frame, with the
+#: publisher of its stream. Only :func:`request_confirmation` writes it, and
+#: only on an APPROVE. :func:`card_outcome_head` reads it once, for a
+#: "Changed since the card" text. The default is None, never a mutable object.
+_APPROVED_CARD: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
+    "acb_approved_card", default=None)
+
+#: The event that tells the chat an approved card did nothing (task 3827). The
+#: chat reads it to change its "Approved" line. ``src/lib/confirmationQueue.ts``
+#: holds the same name (``CONFIRMATION_NOT_DONE``).
+CONFIRMATION_NOT_DONE = "confirmation_not_done"
+
+#: Tasks that publish the event. A set keeps each one alive until it ends.
+_NOT_DONE_TASKS: set[Any] = set()
+
+
+def _announce_changed_since() -> None:
+    """Tell the chat that the card the member just approved did nothing,
+    because the object changed after the card (task 3827).
+
+    The tool answer holds the same words for the model. The member read
+    "Approved" on the receipt line before the tool ran, and the id of the
+    card is the only link between that line and this result. It fires once
+    for a card, and only after an APPROVE of that card in this frame. It
+    never raises, and it never waits."""
+    held = _APPROVED_CARD.get()
+    if held is None:
+        return
+    _APPROVED_CARD.set(None)
+    rid, publish = held
+    try:
+        import asyncio as _asyncio
+
+        task = _asyncio.get_running_loop().create_task(publish({
+            "type": "CUSTOM",
+            "name": CONFIRMATION_NOT_DONE,
+            "value": {"request_id": rid, "outcome": CARD_CHANGED_SINCE},
+        }))
+    except Exception:  # no loop, or no publisher: the text still goes out
+        return
+    _NOT_DONE_TASKS.add(task)
+    task.add_done_callback(lambda t: (_NOT_DONE_TASKS.discard(t),
+                                      t.cancelled() or t.exception()))
+
+
 def card_outcome_head(outcome: str, act: str = "") -> str:
     """The lead and what happened of *outcome*, then *act*, with no next step.
 
     A card family that keeps its own next step uses it: the email redraft
     texts keep theirs (HRD-8a). *act* is one sentence that names the act,
     such as "No lead was created for Veena." A ``KeyError`` names an outcome
-    that is not in :data:`CARD_OUTCOMES`."""
+    that is not in :data:`CARD_OUTCOMES`.
+
+    Task 3827: a "Changed since the card" head also tells the chat, by the
+    id of the approved card, so its receipt line stops reading "Approved".
+    Each text with this head says that nothing was done: a batch that wrote
+    some rows holds no such head (``skill_projects.writes``)."""
     o = CARD_OUTCOMES[outcome]
+    if outcome == CARD_CHANGED_SINCE:
+        _announce_changed_since()
     head = f"{o.lead}: {o.happened}"
     act = " ".join(str(act or "").split())
     return f"{head} {act}" if act else head
@@ -1609,6 +1661,7 @@ def clear_card_outcome() -> None:
     :func:`request_confirmation` does. TOF-3a F12b calls it before a tool of
     a loaded skill runs, so a call with no card of its own reads None."""
     _LAST_OUTCOME.set(None)
+    _APPROVED_CARD.set(None)
 
 
 def card_not_done_text(act: str = "") -> str:
@@ -2674,6 +2727,7 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    _APPROVED_CARD.set(None)
     # CO-17: a new card ends the hold on the link slot of an earlier one.
     _LAST_APPROVED.set(None)
     _title = str(title or "Confirm action").strip()[:120]
@@ -2910,6 +2964,9 @@ async def request_confirmation(
             else CARD_TIMED_OUT if _answer == "TIMEOUT"
             else CARD_OTHER_MEMBER if _other_member
             else CARD_DECLINED)
+        # Task 3827: the id of this card, for a "Changed since" text that follows.
+        _APPROVED_CARD.set(
+            (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
         if _answer == "APPROVE":
             # CO-17: the durable record of an approved card. No card text.
             await _record_approved_card(_rid, _responded[-1] if _responded else "")
