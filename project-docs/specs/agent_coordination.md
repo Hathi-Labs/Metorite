@@ -851,7 +851,7 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 
 **Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from the English README, the protocol doc, the Claude plugin and the MCP command of that repository.
 
-**What it does.** One local hub runs command-line agents (Claude Code, Codex, ACP) in rounds. A cron time, a webhook or an issue becomes an event. A rule in `rules.json` picks the agent, the folder, the skill and the access. A worker runs one round as `claude -p --resume <session> --output-format stream-json`, and then the process exits. The last message of the agent is a receipt with `ask`, `notice`, `resolve`, `later` and `events`. An answer or a timer starts the next round in the same session. All state is an append-only fact log in SQLite.
+**What it does.** One local hub runs command-line agents (Claude Code, Codex, ACP) in rounds. A cron time, a webhook or an issue becomes an event. A rule in `rules.json` picks the agent, the folder, the skill and the access. A worker runs one round as `claude -p --resume <session> --output-format stream-json`. Then the process exits. The last message of the agent is a receipt. An answer or a timer starts the next round in the same session. SQLite holds all state as an append-only fact log.
 
 **What we already plan.**
 
@@ -868,7 +868,7 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 
 **What we take.** Each item changes one slice. §5.11 holds the text.
 
-1. **A hop limit (SW-95).** An event that an agent causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap, the hub records the event, starts nothing and sends one notice. The old guards catch a repeated call and a write rate. They do not catch a chain of agent, task and agent. SW-30 and SW-65 make that chain possible.
+1. **A hop limit (SW-95).** An event that an agent causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap, the hub records the event, starts nothing and sends one notice. The old guards catch a repeated call and a write rate. They do not catch a chain of agent, task and agent. SW-30a and SW-65 make that chain possible.
 2. **Retry in the same session, with backoff (SW-78).** A failed round retries after 5 minutes. The wait doubles up to 1 hour. The owner hears at the 3rd failure in a row. The retries stop at the 10th. A round that resumed and then broke retries in the SAME session, so done work is not done again.
 3. **Usage for each round (SW-38).** The `result` line of `stream-json` gives `usage` and `total_cost_usd`. On a resumed session, Claude Code reports the cost of the whole session. So the runner subtracts the total from before the round. A field that is not reported stays unknown, never zero.
 4. **Rules decide where an agent runs (SW-67 and SW-78).** The hub refuses an event that carries `cwd`, `agent` or `access`. For SW-78, the lane record sets the worktree, the model and the permission mode. The task text never sets them.
