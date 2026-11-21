@@ -79,9 +79,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A failed remote `docker rm -f` goes to `_remote_orphans`. Each reaper tick removes only those recorded ids (`_reap_remote_orphans`), because a shared daemon holds containers of other deployments. Only the startup sweep removes every labelled container.
    - `sandbox_max_per_org` is the one per-org cap. A start refuses when it is above `sandbox_max_total`.
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_sandbox_remote_backend.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
-15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
-   - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both.
-   - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
+15. **No agent that a member reaches runs a shell on the host** (D85, D129, spec `maf_coding_engine.md` §7.9).
+   - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both. A personal agent is in scope. Only the root `metorite` dev agent is not.
+   - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config loses the agent's own `floor_opt_out`.
    - Give a Copilot agent its handler through `_copilot_session._install_copilot_permission_handler` and nowhere else. Fence: `test_shared_agent_shell_tools.py`.
 16. **Only an admin of the first-party organization may run the root `metorite` agent** (spec `maf_coding_engine.md` §15.4).
    - `_assert_may_run_agent(agent_name)` is the one gate. Each load site calls it once, before the load. Add no other load site without it.
