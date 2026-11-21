@@ -1605,7 +1605,7 @@ def _announce_changed_since() -> None:
             "name": CONFIRMATION_NOT_DONE,
             "value": {"request_id": rid, "outcome": CARD_CHANGED_SINCE},
         }))
-    except Exception:  # noqa: BLE001 - no loop, or no publisher: the text still goes out
+    except Exception:  # no loop, or no publisher: the text still goes out
         return
     _NOT_DONE_TASKS.add(task)
     task.add_done_callback(lambda t: (_NOT_DONE_TASKS.discard(t),
