@@ -792,7 +792,7 @@ async def _find_rows(
             nearest = list(hit.nearest)
     defs = await _field_defs(db, module, user.organization_id)
     return ModuleListResponse(rows=wired, total=total, field_defs=defs, near=near,
-                              nearest=nearest)
+                              nearest=nearest, module=module)
 
 
 # ── The company search reads the mirrored modules (FIND-11) ─────────────────
