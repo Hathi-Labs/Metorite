@@ -84,6 +84,7 @@ __all__ = [
     "bound_input_hash",
     "check_writes",
     "cut_detail",
+    "failed_live_of_run",
     "fold_space",
     "get_run",
     "history",
@@ -249,6 +250,13 @@ _NEWEST_PASSED_LIVE_SQL = (
     "AND kind = 'live' AND passed AND created_by = :m "
     f"AND created_at > now() - interval '{WRONG_WINDOW_HOURS} hours' "
     "ORDER BY created_at DESC, id DESC LIMIT 1"
+)
+
+
+_FAILED_LIVE_OF_RUN_SQL = (
+    f"SELECT {_COLUMNS} FROM studio_skill_runs "
+    f"WHERE organization_id = {_BOUND_ORG} AND skill_id = CAST(:sid AS uuid) "
+    "AND kind = 'live' AND NOT passed AND run_id = CAST(:run_id AS text)"
 )
 
 
@@ -691,6 +699,16 @@ async def repeats_a_failed_body(db: Any, skill_id: str, body_key: str) -> bool:
         "sid": _uuid(skill_id, "skill_id"), "body_key": _body_key(body_key),
         "reasons": sorted(REPEAT_REASONS)})).scalar()
     return bool(found)
+
+
+async def failed_live_of_run(db: Any, skill_id: str, run_id: str) -> SkillRun | None:
+    """The failed ``live`` row of the skill for the agent run *run_id*, or
+    None. The unique index ``studio_skill_runs_one_failed_live`` allows one
+    (F12c, "It was wrong")."""
+    row = (await db.execute(text(_FAILED_LIVE_OF_RUN_SQL), {
+        "sid": _uuid(skill_id, "skill_id"),
+        "run_id": _plain(run_id, "run_id", limit=MAX_POINTER, required=True)})).first()
+    return None if row is None else _row(row)
 
 
 async def newest_passed_live(db: Any, member: str, skill_id: str) -> SkillRun | None:

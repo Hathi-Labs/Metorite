@@ -69,6 +69,8 @@ WHEN = {
     # STB-6b: the small pack of the workflow writes, of the studio owner.
     "studio-workflows": (
         "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
+    # TOF-3a F12c: the small pack of the repair of a skill, of the studio owner.
+    "studio-repair": "Load to fix a skill that failed, or to undo the newest version of a skill.",
     # WS-STU J2d: the small pack of the share of a skill, of the studio owner.
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
