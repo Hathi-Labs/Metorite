@@ -10,6 +10,8 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
+**SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -2071,6 +2073,7 @@ They keep their own gates.
 - **Done when.** R8: a claim with both values stores them, and a later claim replaces them. A control character gets 422 at the schema. A run with no value reads null.
 - **Fence.** `tests/unit/test_agent_run_place_model_r8.py` (new), `tests/unit/test_agent_label_fence.py` (extended), `tests/unit/test_mcp_edge_coverage.py`.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** Q19. The map read needs SW-102.
+- **Built (task 3625), 2026-11-21.** Migration 470 adds the three columns. The map read is not built, because SW-102 is not on main. No box token wire exists yet (SW-50), so the claim and the start read the name of the box connection when they write.
 
 #### SW-105 · The agent sends its name, machine and model
 
