@@ -15,7 +15,7 @@ under `project-docs/specs/`.
 - orchestrator/ -- Agent execution engine, mutation layer, MAF integration. Local contract: `apps/services/orchestrator/AGENTS.md`.
 - email_ingestion/ -- Multi-provider email sync engine (Gmail, Microsoft 365, IMAP/SMTP, aiosmtpd inbound, background scheduler). Local contract: `apps/services/email_ingestion/AGENTS.md`.
 - agent_edge/ -- The public edge for outside agents (WS-55, spec `external_agent_access.md`). It is a separate unit (D-EA-2) that holds a signing key and no internal bearer. Local contract: `apps/services/agent_edge/AGENTS.md`.
-- reconciler/ -- Nightly source-of-truth diff and escalation.
+- reconciler/ -- Nightly source-of-truth diff and escalation. No unit or timer runs `reconciler.main` now. ⚠️ Its `run_ok` row has no tenant, so it goes through `_audit`, and `refuse_tenantless` skips it with the bind on (task 2221). Fence: `test_audit_tick_writers_org_r8.py` (R8).
 - whatsapp_ingestion/ -- WhatsApp ingestion over the official Meta WhatsApp Business Cloud API.
 - whatsapp_bridge/ -- The unofficial WhatsApp transport (Go, whatsmeow) that pairs a personal number by QR code.
 - meeting_bot/ -- A self-hosted headless-Chrome worker that joins a meeting, records the audio and hands it to Metorite.
@@ -25,6 +25,7 @@ under `project-docs/specs/`.
   - Its sibling `client.py` stays read-only. `SETTINGS_API_VERSION` names the settings API version ONCE. A tenant that refuses it raises `ZohoApiVersionError`, and nothing tries a ladder of older versions.
   - **Receivers:** verify the credential, log, best-effort `queue.enqueue`, then schedule `emit_event(source, event_type, payload)` as a background task. **Never `await` the emit inline.** A provider webhook must never 5xx.
   - **Fail closed:** with `zoho_webhook_secret` or `gmail_pubsub_token` empty, each push gets 401. Provisioning them is an OWNER action.
+  - ⚠️ **An audit row here has no tenant** (task 2221). One shared secret serves the whole deployment, and no code maps a mailbox or a module to an org. So each receiver and `scheduler.py` records through a local `_audit`. With `ACB_GRAPH_TENANT_BIND` on, `refuse_tenantless` skips the row, so it never goes under the operator org. Never take the org from the payload. Fences: `test_audit_tick_writers_org.py`, `test_audit_tick_writers_org_r8.py` (R8).
   - ⚠️ With `INGESTION_CONSUMER` set, a receiver enqueues only, and the consumer is the sole caller of `emit_event`. A failed `enqueue` then drops the event. Never "fix" it with a fallback to an inline emit.
   - **`(source, event_type)` is a user-visible vocabulary** (workflow event triggers match on it). Do not invent strings in a PR. Coerce the provider's value to `str` before `xadd`.
   - **Never pass `event=` to a logger**, because it is structlog's own message parameter. Use `zoho_event=` or `gmail_event=`. This rule is advisory (R7), because no guard pins it now.
