@@ -397,3 +397,18 @@ def test_an_unreachable_dsn_keeps_its_matrix_and_takes_no_backup() -> None:
     for r in (off, on):
         assert not any(ln.startswith("pg_dump") for ln in r["calls"]), r["calls"]  # type: ignore[union-attr]
         assert "APPLIED" not in str(r["out"])
+
+
+def test_the_preflight_skips_console_dirs_when_it_picks_the_newest_night():
+    """H-170: a `<stamp>-console` dir is not a night.
+
+    onboarding_preflight picks the newest backup dir by mtime. A deploy writes
+    a Console dir, so without this filter it would hide a stalled nightly and
+    judge the size of the Console dump as the app dump.
+    """
+    import pathlib
+
+    text = (pathlib.Path(__file__).resolve().parents[2] / "scripts" / "onboarding_preflight.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'not p.name.endswith("-console")' in text
