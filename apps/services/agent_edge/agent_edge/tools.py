@@ -9247,6 +9247,11 @@ AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
     "last_at",
 )
 
+#: The keys of one line of who dispatched whom: the node id of the
+#: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
+#: SW-107. Any other key of a line never leaves the edge.
+AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
 #: The id of a session node: the first 24 hex characters of a sha256
 #: (``agent_summary._NODE_SQL``). It holds no session key.
 _NODE_ID_RE = re.compile(r"[0-9a-f]{24}")
@@ -9285,13 +9290,13 @@ _MAP_RUN_SCHEMA = _object({
     "state": _NULLABLE_STRING, "quiet": {"type": "boolean"}, "age": _NULLABLE_INTEGER,
     "last_at": _NULLABLE_STRING,
 })
+_MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
 _AGENT_MAP_OUTPUT: dict[str, Any] = _object({
     "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
     "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
     "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
-    # SW-107 fills the lines of who dispatched whom. Each string of a line
-    # leaves as untrusted text (:func:`door_value`).
-    "lines": {"type": "array"},
+    # SW-107 fills the lines of who dispatched whom: two node ids each.
+    "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
     "count": {"type": "integer"},
     "truncated": {"type": "boolean"},
     "viewer": _NULLABLE_STRING,
@@ -9345,6 +9350,13 @@ def map_run(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One line of who dispatched whom (SW-107): ``from`` and ``to`` only,
+    each a node id in its shape or null. Any other key, such as a session
+    key or a machine, does not leave."""
+    return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
+
+
 def agent_map(body: Any) -> dict[str, Any]:
     """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
     each value in its shape or as untrusted text. At most
@@ -9359,19 +9371,17 @@ def agent_map(body: Any) -> dict[str, Any]:
         return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
 
     people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
-    found_lines = body.get("lines")
-    lines = found_lines if isinstance(found_lines, list) else []
+    lines = rows("lines")
     viewer = body.get("viewer")
-    cut = len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
+    cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
+           or len(lines) > AGENT_MAP_RUNS_MAX)
     return {
         "people": [{"person": untrusted(p.get("person")),
                     "sessions": _map_count(p.get("sessions"))} for p in people],
         "sessions": [map_session(s) for s in sessions[:AGENT_MAP_SESSIONS_MAX]],
         "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
-        # SW-107 fills the lines. The edge passes them through by the AD-10
-        # rule: each string leaves as untrusted text, and a key with a secret
-        # word leaves no value.
-        "lines": [door_value(line, frozenset()) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
+        "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
         "count": _map_count(body.get("count")),
         "truncated": body.get("truncated") is True or cut,
         # The viewer level of ``agents_view.md`` §4. The gateway sets it from
@@ -11789,6 +11799,7 @@ __all__ = [
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
     "AGENT_MAP_KEYS",
+    "AGENT_MAP_LINE_KEYS",
     "AGENT_MAP_ROUTE",
     "AGENT_MAP_RUNS_MAX",
     "AGENT_MAP_RUN_KEYS",
@@ -12225,6 +12236,7 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_line",
     "map_run",
     "map_session",
     "offered",

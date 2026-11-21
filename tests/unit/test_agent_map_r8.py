@@ -661,7 +661,9 @@ def test_the_edge_wraps_each_name_and_keeps_only_the_pinned_keys() -> None:
             "title": hostile, "state": "in_progress", "quiet": False, "age": 5,
             "last_at": "2026-11-21T10:00:00+00:00", "last_seen_addr": "10.0.0.1",
         }],
-        "lines": [{"from": "a" * 24, "to": "b" * 24, "label": hostile}],
+        "lines": [{"from": "a" * 24, "to": "b" * 24, "label": hostile,
+                   "session_key": "SECRETKEY", "host": "box-1",
+                   "dispatcher_session_key": "SECRETKEY", "addr": "10.0.0.1"}],
         "count": 1, "truncated": False, "viewer": "member", "extra": hostile,
     }
     out = tools.agent_map(body)
@@ -672,11 +674,12 @@ def test_the_edge_wraps_each_name_and_keeps_only_the_pinned_keys() -> None:
     assert out["sessions"][0]["client"] == {"untrusted_text": hostile}
     assert out["people"][0] == {"person": {"untrusted_text": hostile}, "sessions": 1}
     assert out["runs"][0]["title"] == {"untrusted_text": hostile}
-    assert out["lines"][0]["label"] == {"untrusted_text": hostile}
+    assert out["lines"] == [{"from": "a" * 24, "to": "b" * 24}]
+    assert hostile not in json.dumps(out["lines"])
     raw = json.dumps(out)
     for leaked in ("SECRETKEY", "box-1", "model-x", "10.0.0.1"):
         assert leaked not in raw
-    bare = [s for s in _bare_strings(out) if s not in {"from", "to"}]
+    bare = _bare_strings(out)
     assert all(_plain_ok(s) for s in bare), bare
     # A value out of its shape never leaves plain.
     odd = tools.agent_map({**body, "viewer": hostile, "sessions": [
@@ -698,6 +701,26 @@ def test_the_edge_cuts_at_300_runs_and_sets_truncated() -> None:
                            "lines": [], "count": 300, "truncated": False,
                            "viewer": "admin"})
     assert len(out["runs"]) == 300 and out["truncated"] is False
+
+
+def test_a_line_keeps_from_and_to_and_the_301st_sets_truncated() -> None:
+    """SW-107 gives a line as ``{from, to}``. The edge keeps those two keys
+    in the node id shape, drops every other key, and cuts at 300."""
+    from agent_edge import tools
+
+    line = {"from": "c" * 24, "to": "d" * 24, "session_key": "SECRETKEY",
+            "host": "box-1", "dispatcher_session_key": "SECRETKEY", "addr": "10.0.0.1"}
+    base = {"people": [], "sessions": [], "runs": [], "count": 0, "truncated": False,
+            "viewer": "admin"}
+    out = tools.agent_map({**base, "lines": [line]})
+    assert out["lines"] == [{"from": "c" * 24, "to": "d" * 24}]
+    assert tuple(out["lines"][0]) == tools.AGENT_MAP_LINE_KEYS
+    assert tools.agent_map({**base, "lines": [{"from": "x", "to": None}]})["lines"] == [
+        {"from": None, "to": None}]
+    out = tools.agent_map({**base, "lines": [line] * 301})
+    assert len(out["lines"]) == 300 and out["truncated"] is True
+    out = tools.agent_map({**base, "lines": [line] * 300})
+    assert len(out["lines"]) == 300 and out["truncated"] is False
 
 
 def _edge_ctx(w: Any) -> Any:
@@ -841,3 +864,23 @@ class TestTheMapThroughTheEdge:
             bare = _bare_strings(out)
             assert not [s for s in bare if not _plain_ok(s)], bare
             assert MEMBER_A not in bare and OTHER_A not in bare and LABEL_1 not in bare
+
+    async def test_a_pinned_connection_sees_only_its_pins(self, w):
+        """A pin narrows the map, as it narrows every read of the agent
+        (D-EA-12). The admin's agent pinned to the led project sees the runs
+        of that project and its sub-project only, and none of the others."""
+        import dataclasses
+
+        admin = b._principal(ADMIN_A, w.p.org_a, agent_connection=w.conn_m,
+                             scopes=("projects:read",))
+        wide = await _edge(w, admin, {})
+        assert {r["run_id"] for r in wide["structuredContent"]["runs"]} >= {
+            w.r_own, w.r_led, w.r_sub}
+        pinned = dataclasses.replace(admin, agent=dataclasses.replace(
+            admin.agent, pinned_projects=(w.led["id"],)))
+        result = await _edge(w, pinned, {})
+        assert result["isError"] is False, result
+        out = result["structuredContent"]
+        assert {r["run_id"] for r in out["runs"]} == {w.r_led, w.r_sub}
+        hidden = await _edge(w, pinned, {"project_id": w.plain["id"]})
+        assert hidden["isError"] is True
