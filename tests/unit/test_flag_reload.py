@@ -506,6 +506,21 @@ def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert not topics_allowed(None)
 
 
+def test_ai_turn_kind_nowait_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """Task 3592, ai_tier_routing.md §4.3. The reload list holds the key, and
+    the one reader of the delegated wait sees a change with no restart."""
+    from acb_skills.tier_policy import turn_kind_nowait_on
+
+    assert fr.reloadable("AI_TURN_KIND_NOWAIT_ORGS")
+    monkeypatch.setenv("AI_TURN_KIND_NOWAIT_ORGS", "")
+    get_settings.cache_clear()
+    assert not turn_kind_nowait_on("acme")
+    env(**{**_START, "AI_TURN_KIND_NOWAIT_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AI_TURN_KIND_NOWAIT_ORGS",)
+    assert turn_kind_nowait_on("ACME ")
+    assert not turn_kind_nowait_on("globex")
+
+
 def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-SEM SEM-7, semantic_model.md §10.2. The reload list holds the key,
     and the one reader of the switch sees a change with no restart."""

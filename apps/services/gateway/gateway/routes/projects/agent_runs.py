@@ -110,6 +110,7 @@ import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -219,6 +220,19 @@ AGENT_LABEL_MAX = 40
 #: SW-7b. The longest ``agent_label`` that a body may send before the clean.
 #: A longer value is 422, so no big text reaches the clean.
 AGENT_LABEL_INPUT_MAX = 200
+#: SW-104 (``agent_coordination.md`` §3.12.3). The longest ``host`` and
+#: ``model`` after the clean, in characters. The CHECKs of the migration hold
+#: the same number. A body may send at most :data:`AGENT_LABEL_INPUT_MAX`.
+AGENT_PLACE_MAX = 60
+#: SW-104. A ``host`` or a ``model`` of a body holds no C0 or C1 control
+#: character, else 422 at the schema. The edge has the same pattern.
+AGENT_PLACE_PATTERN = r"^[^\x00-\x1f\x7f-\x9f]+$"
+#: SW-104 (§3.12.7 rule 5). The kind of the machine of an agent session.
+HostKind = Literal["computer", "server", "cloud"]
+#: The kinds, in the order of the spec. The CHECK of the migration holds them.
+AGENT_HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
+#: SW-104 (SW-50). The kind that a box token sets.
+BOX_HOST_KIND = "server"
 #: ``wait_s`` of the long poll, at most.
 MAX_WAIT_S = 20
 #: The long poll reads again after this many seconds.
@@ -300,9 +314,11 @@ class OptionIn(BaseModel):
 class StartIn(BaseModel):
     """``POST /projects/tasks/{id}/agent-runs``.
 
-    An agent sends ``external_link``, ``idempotency_key`` and
-    ``agent_label`` only. SW-7b: ``agent_label`` is the display name of the
-    agent's own session, and a member's body that names it is 422. A member
+    An agent sends ``external_link``, ``idempotency_key``, ``agent_label``,
+    ``host``, ``model`` and ``host_kind`` only. SW-7b: ``agent_label`` is the
+    display name of the agent's own session, and a member's body that names
+    it is 422. SW-104: ``host``, ``model`` and ``host_kind`` name the machine
+    and the model of the session, by the same rule. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -315,6 +331,11 @@ class StartIn(BaseModel):
     connection_id: str | None = None
     body: str | None = Field(default=None, max_length=MAX_BODY)
     agent_label: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX)
+    host: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                             pattern=AGENT_PLACE_PATTERN)
+    model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                              pattern=AGENT_PLACE_PATTERN)
+    host_kind: HostKind | None = None
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -706,13 +727,91 @@ def clean_agent_label(value: str | None) -> str | None:
     Display data only. No authorization check, no visibility rule, no run
     slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
     """
+    return _clean_name(value, AGENT_LABEL_MAX)
+
+
+def _clean_name(value: str | None, cap: int) -> str | None:
+    """The one clean of a name that an agent sends (SW-7b, SW-104)."""
     cleaned = _clean_body(value)
     if cleaned is None:
         return None
     kept = "".join(
         " " if ch.isspace() else ch for ch in cleaned
         if ch.isspace() or not unicodedata.category(ch).startswith("C"))
-    return _clean_body(" ".join(kept.split())[:AGENT_LABEL_MAX])
+    return _clean_body(" ".join(kept.split())[:cap])
+
+
+def clean_agent_place(value: str | None) -> str | None:
+    """SW-104 (``agent_coordination.md`` §3.12.3). The clean of ``host`` and
+    ``model``: the rules of :func:`clean_agent_label`, with the cap
+    :data:`AGENT_PLACE_MAX`. ``None`` when nothing is left.
+
+    Display data only. No authorization check, no visibility rule, no run
+    slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    return _clean_name(value, AGENT_PLACE_MAX)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPlace:
+    """SW-104. The machine, the kind of machine and the model of an agent
+    session, each cleaned, or ``None`` when the agent sent none."""
+
+    host: str | None = None
+    model: str | None = None
+    host_kind: str | None = None
+
+    def empty(self) -> bool:
+        return self.host is None and self.model is None and self.host_kind is None
+
+
+def agent_place_of(user: UserContext, host: str | None, model: str | None,
+                   host_kind: str | None) -> AgentPlace:
+    """SW-104. The cleaned ``host``, ``model`` and ``host_kind`` of the body
+    of a claim or a start.
+
+    Only a signed agent names its own machine and model, as only it names its
+    session (:func:`agent_label_of`). So a person's body that names one is
+    422. The values come only from that body, never from a header. A box
+    token's connection name wins later (:func:`_box_place`).
+    """
+    if host is None and model is None and host_kind is None:
+        return AgentPlace()
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an agent sends host, model and host_kind, the place of its session.",
+        )
+    return AgentPlace(host=clean_agent_place(host), model=clean_agent_place(model),
+                      host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None)
+
+
+#: SW-104 (SW-50). The name and the credential of the caller's own
+#: connection. RLS keeps the read in the bound tenant.
+_BOX_NAME_SQL = (
+    "SELECT client_name, credential FROM agent_connection"
+    " WHERE id = CAST(:cid AS uuid)"
+)
+
+
+async def _box_place(db: Any, user: UserContext, place: AgentPlace) -> AgentPlace:
+    """SW-104. For a box token, the connection name wins over ``host``, and
+    ``host_kind`` is ``server`` (``agent_coordination.md`` §3.12.3, §3.12.7
+    rule 5). Any other caller keeps *place*. The model stays the agent's own.
+
+    The stamp ``mcp:box:`` of branch 0 marks a box caller, and the row's
+    ``credential`` confirms it. Display data only: the result chooses no run.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None or not str(getattr(agent, "actor_via", "")).startswith(
+            agent_oauth.BOX_STAMP_PREFIX):
+        return place
+    row = (await db.execute(text(_BOX_NAME_SQL),
+                            {"cid": str(agent.connection_id)})).fetchone()
+    if row is None or row.credential != agent_oauth.BOX_CREDENTIAL:
+        return place
+    return AgentPlace(host=clean_agent_place(row.client_name) or place.host,
+                      model=place.model, host_kind=BOX_HOST_KIND)
 
 
 def agent_label_of(user: UserContext, value: str | None) -> str | None:
@@ -978,6 +1077,11 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # Code (backend-worker-3)". Display data only: no gate reads it,
             # and the edge sends it on as untrusted text.
             "agent_label": getattr(row, "agent_label", None),
+            # SW-104: the machine, its kind and the model of the session, as
+            # the agent or its box token reported them. Display data only.
+            "agent_host": getattr(row, "agent_host", None),
+            "agent_model": getattr(row, "agent_model", None),
+            "agent_host_kind": getattr(row, "agent_host_kind", None),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -2132,10 +2236,12 @@ _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key, session_key, agent_label) "
+    " idempotency_key, session_key, agent_label, agent_host, agent_model, "
+    " agent_host_kind) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
     "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text), "
-    "        CAST(:label AS text)) "
+    "        CAST(:label AS text), CAST(:host AS text), CAST(:model AS text), "
+    "        CAST(:kind AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -2174,10 +2280,46 @@ async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
     await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
 
 
+#: SW-104. The newest place of the run's own agent session wins, value by
+#: value. A value that the call did not send keeps the old one.
+_SET_PLACE_SQL = (
+    "UPDATE pm_agent_runs SET"
+    " agent_host = COALESCE(CAST(:host AS text), agent_host),"
+    " agent_model = COALESCE(CAST(:model AS text), agent_model),"
+    " agent_host_kind = COALESCE(CAST(:kind AS text), agent_host_kind)"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_host IS DISTINCT FROM COALESCE(CAST(:host AS text), agent_host)"
+    "        OR agent_model IS DISTINCT FROM COALESCE(CAST(:model AS text), agent_model)"
+    "        OR agent_host_kind IS DISTINCT FROM"
+    "           COALESCE(CAST(:kind AS text), agent_host_kind))"
+)
+
+
+def _place_binds(place: AgentPlace | None) -> dict[str, str | None]:
+    """The binds ``host``, ``model`` and ``kind`` of *place* (SW-104)."""
+    place = place or AgentPlace()
+    return {"host": place.host, "model": place.model, "kind": place.host_kind}
+
+
+async def _set_run_place(db: Any, run_id: str, place: AgentPlace | None) -> None:
+    """SW-104. Set the machine, its kind and the model of an open run that the
+    caller already owns, as :func:`_set_run_label` sets the label. A value
+    that the call did not send keeps the old one. A Resume and a reopen clear
+    them with the label (:func:`_clear_run_label`). The run came from the
+    gate, so the place never chooses the run."""
+    if place is None or place.empty():
+        return
+    await db.execute(text(_SET_PLACE_SQL), {"rid": run_id, **_place_binds(place)})
+
+
 #: SW-7b. The clear of the label when the run passes to the next session.
+#: SW-104: the machine, its kind and the model of that session go with it.
 _CLEAR_LABEL_SQL = (
-    "UPDATE pm_agent_runs SET agent_label = NULL"
-    " WHERE id = CAST(:rid AS uuid) AND agent_label IS NOT NULL"
+    "UPDATE pm_agent_runs SET agent_label = NULL, agent_host = NULL,"
+    " agent_model = NULL, agent_host_kind = NULL"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_label IS NOT NULL OR agent_host IS NOT NULL"
+    "        OR agent_model IS NOT NULL OR agent_host_kind IS NOT NULL)"
 )
 
 
@@ -2186,7 +2328,9 @@ async def _clear_run_label(db: Any, run_id: str) -> None:
     its connection: a Resume (it clears the key) and a reopen. A label never
     outlives its session on an open run, so a call with no label can always
     keep the old one (:func:`_set_run_label`). It is a separate statement,
-    so no run-slot rule names the label (the fence of §3.7)."""
+    so no run-slot rule names the label (the fence of §3.7). SW-104: the
+    machine, its kind and the model go in the same statement, by the same
+    rule."""
     await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
@@ -2279,6 +2423,8 @@ async def start_agent_run(
     body = _clean_body(payload.body)
     # SW-7b: an agent's own label, display data only. A person's is 422.
     label = agent_label_of(user, payload.agent_label)
+    # SW-104: and its machine, its kind and its model. A person's is 422.
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
     if via is not None and (payload.connection_id is not None or payload.body is not None):
         raise HTTPException(
             status_code=422, detail="An agent sends no connection_id and no body to start a run.",
@@ -2294,6 +2440,8 @@ async def start_agent_run(
         await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
+            # SW-104 (SW-50): a box token's connection name wins over `host`.
+            place = await _box_place(db, user, place)
         else:
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
@@ -2347,6 +2495,7 @@ async def start_agent_run(
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
                 "key": payload.idempotency_key, "sk": own_session, "label": label,
+                **_place_binds(place),
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -2365,6 +2514,8 @@ async def start_agent_run(
             await _set_run_link(db, str(existing.id), link)
             # SW-7b: and the label of its session.
             await _set_run_label(db, str(existing.id), label)
+            # SW-104: and its machine, its kind and its model.
+            await _set_run_place(db, str(existing.id), place)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -3945,7 +4096,8 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                           via: str, link: str | None = None,
-                          label: str | None = None) -> tuple[str | None, bool]:
+                          label: str | None = None,
+                          place: AgentPlace | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -3962,13 +4114,14 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
         await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": link, "ts": ts, "agent_ts": ts, "key": None,
-        "sk": _agent_session(user), "label": label,
+        "sk": _agent_session(user), "label": label, **_place_binds(place),
     })).fetchone()
     if made is not None:
         return str(made.id), True
@@ -3980,6 +4133,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
         await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -3996,7 +4150,8 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
 
 async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
                              link: str | None = None,
-                             label: str | None = None) -> str | None:
+                             label: str | None = None,
+                             place: AgentPlace | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -4009,7 +4164,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
       nothing and returns that run. CIV-14a: a *link* (already checked by
       ``check_run_link``) is the one exception. It sets the link of the run
       or of the new run, and the newest link wins. SW-7b: a *label*
-      (already cleaned by ``agent_label_of``) acts in the same way. Else it
+      (already cleaned by ``agent_label_of``) acts in the same way, and so
+      does a SW-104 *place* (``agent_place_of``). A box token's connection
+      name wins over its host (:func:`_box_place`). Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -4027,8 +4184,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
+    place = await _box_place(db, user, place or AgentPlace())
     run_id, made = await _agent_open_run(db, user, task_id, _member(user),
-                                         _agent_via(user) or "", link, label)
+                                         _agent_via(user) or "", link, label, place)
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
         await _stamp_answer_read(db, await _load_run(db, run_id), user)
