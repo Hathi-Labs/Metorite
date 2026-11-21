@@ -40,6 +40,7 @@ class Settings:
     call_deadline_s: float = 25.0
     max_range_days: int = 92
     max_rows: int = 200
+    calls_per_minute: int = 60
     log_dir: str = ""
 
     def validate(self) -> Settings:
@@ -57,6 +58,8 @@ class Settings:
             raise SettingsError("CALL_DEADLINE_S must be above 0 and below 30.")
         if not 0 < self.tally_timeout_s <= self.call_deadline_s:
             raise SettingsError("TALLY_TIMEOUT_S must be above 0 and not above CALL_DEADLINE_S.")
+        if not 1 <= self.calls_per_minute <= 600:
+            raise SettingsError("CALLS_PER_MINUTE must be between 1 and 600.")
         if self.public_host and ("/" in self.public_host or ":" in self.public_host):
             raise SettingsError("PUBLIC_HOST is a host name only, with no scheme, path or port.")
         return self
@@ -82,6 +85,7 @@ _NAMES: dict[str, tuple[str, type]] = {
     "CALL_DEADLINE_S": ("call_deadline_s", float),
     "MAX_RANGE_DAYS": ("max_range_days", int),
     "MAX_ROWS": ("max_rows", int),
+    "CALLS_PER_MINUTE": ("calls_per_minute", int),
     "LOG_DIR": ("log_dir", str),
 }
 
