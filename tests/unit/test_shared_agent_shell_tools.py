@@ -805,15 +805,22 @@ def test_a_metorite_session_never_loads_file_hooks() -> None:
 
 # ── 7f. The self-heal hint and the integrations prose ──────────────────────
 
-def test_the_self_heal_hint_offers_install_dependency_only_to_a_holder() -> None:
+def test_the_self_heal_hint_offers_install_dependency_only_to_a_host_installer() -> None:
+    """The hint reads the self-heal gate. Task 3856: a covered run holds
+    ``install_dependency``, but its install must go to the broker, so the
+    host hint does not offer it. That run is told to ask an admin."""
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
-    for value, offered in ((True, False), (None, False), (False, True)):
+    for name, value, offered in (
+        ("metorite", True, False), ("metorite", None, False), ("metorite", False, True),
+        ("crm-assistant", False, False),  # a covered run (D130)
+    ):
         with artifact_context_scope():
-            bind_artifact_context(**({} if value is None else {"shell_tools_withheld": value}))
+            bind_artifact_context(agent_name=name, **(
+                {} if value is None else {"shell_tools_withheld": value}))
             text = executor._missing_dependency_message("t", ImportError("no pandas"), "pandas")
-        assert ("install_dependency" in text) is offered, (value, text)
-        assert ("ask an admin" in text) is not offered, (value, text)
+        assert ("install_dependency" in text) is offered, (name, value, text)
+        assert ("ask an admin" in text) is not offered, (name, value, text)
 
 
 def test_an_agent_without_the_coding_section_still_reads_about_integrations() -> None:
