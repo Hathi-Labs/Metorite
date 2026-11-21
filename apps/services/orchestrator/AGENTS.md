@@ -264,6 +264,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 4. The Docker sandbox runs mutation_runner.py with the MUTATION_PROMPT env var
 5. Commits become pending_commit rows for inbox approval
 6. _pull_latest() in acb_skills.loader keeps local-only commits (pending approval) through a rebase, never reset --hard
+7. The two audit rows take the run's tenant (task 2221). The executor passes `audit_organization_id=_RUN_ORG.get(thread_id)`. It does not feed the first-party gate. With no org and the bind on, `refuse_tenantless` skips the rows. The pull agents and `resolution.py` stamp `_current_run_org()` the same way. Fence: `test_audit_writers_org_r8.py` (R8).
 
 ### Session continuity
 - Copilot SDK session IDs live in memory (_copilot_session_store) AND in Postgres (chat_session.service_session_id).
