@@ -502,10 +502,54 @@ async def save_constraints(
 
 # ── The member's own read and Undo (HRD-12b) ───────────────────────────────
 #
-# The gateway route (`gateway/routes/chat_decisions.py`) calls these. The org
+# The gateway route (`gateway/routes/admin/chat_decisions.py`) calls these. The org
 # and the member are the session's; only the chat id comes from the request,
 # and it is a part of a key under the member's own hash, so a member reaches
 # their own list and no one else's.
+
+LOCK_TTL_S = 5
+LOCK_TRIES = 25
+LOCK_WAIT_S = 0.05
+
+
+async def _lock(org: str, session: str, member: str) -> bool:
+    """Take the short lock of one chat and member, so two Undos never read
+    the same list and write it back one after the other. A SET NX with a
+    short TTL, so a crashed holder frees it. False when it stays held, or on
+    a fault of Redis."""
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        for _ in range(LOCK_TRIES):
+            with organization_scope(org):
+                got = await asyncio.wait_for(
+                    get_tenant_redis().set(
+                        key(NAMESPACE + "-lock", session, _member_part(member)),
+                        "1", nx=True, ex=LOCK_TTL_S),
+                    timeout=REDIS_TIMEOUT_S,
+                )
+            if got:
+                return True
+            await asyncio.sleep(LOCK_WAIT_S)
+    except Exception as exc:
+        _log.warning("chat_constraints.lock_failed", error=type(exc).__name__)
+    return False
+
+
+async def _unlock(org: str, session: str, member: str) -> None:
+    """Free the lock of :func:`_lock`. A fault is only logged: the TTL frees it."""
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await asyncio.wait_for(
+                get_tenant_redis().delete(
+                    key(NAMESPACE + "-lock", session, _member_part(member))),
+                timeout=REDIS_TIMEOUT_S,
+            )
+    except Exception as exc:
+        _log.warning("chat_constraints.unlock_failed", error=type(exc).__name__)
+
 
 UNDONE = "undone"
 UNDO_NO_MATCH = "no_match"
@@ -541,18 +585,23 @@ async def undo_decision(org: str, session: str, member: str, wanted: str) -> tup
     who = str(member or "").strip().lower()
     if not chat_constraints_enabled() or not (org and session and "@" in who):
         return UNDO_UNAVAILABLE, None
-    items = await _read_redis(org, session, who)
-    if items is None:
+    if not await _lock(org, session, who):
         return UNDO_UNAVAILABLE, None
-    gone = next((i for i in items
-                 if i["kind"] == DECISION and item_id(i) == str(wanted or "")), None)
-    if gone is None:
-        return UNDO_NO_MATCH, None
-    kept = [i for i in items if i is not gone]
-    if not await _write_redis(org, session, who, kept):
-        return UNDO_UNAVAILABLE, None
-    _cache_put((org, session, who), kept)
-    return UNDONE, dict(gone)
+    try:
+        items = await _read_redis(org, session, who)
+        if items is None:
+            return UNDO_UNAVAILABLE, None
+        gone = next((i for i in items
+                     if i["kind"] == DECISION and item_id(i) == str(wanted or "")), None)
+        if gone is None:
+            return UNDO_NO_MATCH, None
+        kept = [i for i in items if i is not gone]
+        if not await _write_redis(org, session, who, kept):
+            return UNDO_UNAVAILABLE, None
+        _cache_put((org, session, who), kept)
+        return UNDONE, dict(gone)
+    finally:
+        await _unlock(org, session, who)
 
 
 def clear_cache() -> None:

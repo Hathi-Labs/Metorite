@@ -79,4 +79,6 @@ export const CHIP_WORDS = {
   undo: "Undo",
   undoLabel: (text: string) => `Undo: ${text}`,
   failed: "Could not undo. Try again.",
+  showMore: (n: number) => `Show ${n} more`,
+  showFewer: "Show fewer",
 } as const;

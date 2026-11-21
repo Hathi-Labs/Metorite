@@ -9,7 +9,7 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { DecisionChipsView } from "./DecisionChips";
+import { COLLAPSED_LIMIT, DecisionChipsView, focusTargetAfterUndo } from "./DecisionChips";
 
 type El = ReactElement<Record<string, unknown>>;
 
@@ -53,11 +53,11 @@ describe("DecisionChipsView", () => {
     expect(onUndo).toHaveBeenCalledWith("ba9876543210");
   });
 
-  it("disables the chip that is busy, and says when an Undo failed", () => {
+  it("disables every Undo while one is in flight, and says when an Undo failed", () => {
     const html = renderToStaticMarkup(
       createElement(DecisionChipsView, { items: ITEMS, busyId: ITEMS[0].id, failedId: ITEMS[1].id, onUndo: vi.fn() }),
     );
-    expect(html.match(/disabled=""/g)).toHaveLength(1);
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
     expect(html).toContain("Could not undo. Try again.");
     expect(html.indexOf("Could not undo")).toBeGreaterThan(html.indexOf("Pune vendor"));
   });
@@ -67,5 +67,45 @@ describe("DecisionChipsView", () => {
       createElement(DecisionChipsView, { items: ITEMS, busyId: null, failedId: null, onUndo: vi.fn(), locked: true }),
     );
     expect(html.match(/disabled=""/g)).toHaveLength(2);
+  });
+});
+
+const MANY = Array.from({ length: 10 }, (_, i) => ({ id: `id${i}`, kind: "decision", text: `Decision ${i}` }));
+const base = { busyId: null, failedId: null, onUndo: vi.fn(), onToggle: vi.fn() };
+
+describe("DecisionChipsView collapse", () => {
+  it("draws the first three chips and a Show 7 more toggle", () => {
+    const html = renderToStaticMarkup(createElement(DecisionChipsView, { ...base, items: MANY }));
+    expect(COLLAPSED_LIMIT).toBe(3);
+    expect(html.match(/Undo<\/button>/g)).toHaveLength(3);
+    expect(html).toContain("Show 7 more");
+    expect(html).not.toContain("Decision 3");
+  });
+
+  it("draws every chip and Show fewer when expanded", () => {
+    const html = renderToStaticMarkup(createElement(DecisionChipsView, { ...base, items: MANY, expanded: true }));
+    expect(html.match(/Undo<\/button>/g)).toHaveLength(10);
+    expect(html).toContain("Show fewer");
+  });
+
+  it("draws no toggle for three chips or fewer", () => {
+    const html = renderToStaticMarkup(createElement(DecisionChipsView, { ...base, items: MANY.slice(0, 3) }));
+    expect(html).not.toContain("Show ");
+  });
+});
+
+describe("focusTargetAfterUndo", () => {
+  const ids = ["a", "b", "c"];
+  it("goes to the next chip", () => {
+    expect(focusTargetAfterUndo(ids, "b", true)).toEqual({ kind: "undo", id: "c" });
+  });
+  it("goes to the previous chip when the last one went", () => {
+    expect(focusTargetAfterUndo(ids, "c", true)).toEqual({ kind: "undo", id: "b" });
+  });
+  it("goes to the lead text when none is left", () => {
+    expect(focusTargetAfterUndo(["a"], "a", true)).toEqual({ kind: "lead" });
+  });
+  it("stays on the same chip when the Undo failed", () => {
+    expect(focusTargetAfterUndo(ids, "b", false)).toEqual({ kind: "undo", id: "b" });
   });
 });

@@ -93,6 +93,32 @@ D2 = {"kind": cc.DECISION, "text": "We use the Pune vendor."}
 L1 = {"kind": cc.LIMIT, "text": "Do not email Acme."}
 
 
+class TestTwoUndosAtOnce:
+    def test_two_undos_of_different_ids_both_end_gone(self, chat) -> None:
+        """Each read yields, so without the lock both Undos read the full list
+        and the second write brings the first decision back."""
+        _put([D1, D2])
+        real_get = chat.get
+
+        async def slow_get(name):
+            value = await real_get(name)
+            await asyncio.sleep(0)
+            return value
+
+        chat.get = slow_get
+        id1, id2 = (g["id"] for g in _decisions())
+
+        async def both():
+            return await asyncio.gather(
+                cc.undo_decision(ORG, SESSION, ME, id1),
+                cc.undo_decision(ORG, SESSION, ME, id2))
+
+        a, b = asyncio.run(both())
+        assert a[0] == cc.UNDONE and b[0] == cc.UNDONE
+        cc.clear_cache()
+        assert _decisions() == []
+
+
 class TestTheStore:
     def test_only_decisions_are_listed_each_with_a_stable_id(self, chat) -> None:
         _put([L1, D1, D2])
