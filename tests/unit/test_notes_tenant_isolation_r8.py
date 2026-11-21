@@ -66,7 +66,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.pool import NullPool
 
 from tests.unit import _r8_lists as r8_lists
@@ -457,11 +457,11 @@ _GLOBAL_KEY = (
 
 @pytest.mark.parametrize("name", [
     pytest.param("copilot_config", id="copilot_config", marks=pytest.mark.xfail(
-        strict=True,
+        strict=True, raises=IntegrityError,
         reason="copilot_config: PRIMARY KEY (owner_email); "
         + _GLOBAL_KEY.format(what="owner_email"))),
     pytest.param("notes_glossary", id="notes_glossary", marks=pytest.mark.xfail(
-        strict=True,
+        strict=True, raises=IntegrityError,
         reason="notes_glossary: UNIQUE (user_id, lower(term)); "
         + _GLOBAL_KEY.format(what="user and term"))),
 ])
