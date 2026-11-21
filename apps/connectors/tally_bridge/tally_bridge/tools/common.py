@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import Any
@@ -57,11 +58,16 @@ def amount(a: Amount) -> dict[str, Any]:
     return {"amount": a.text, "side": a.side}
 
 
+_ISO_DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
 def day(text: str, field: str) -> date:
-    """A date input. Raises Refusal unless it reads YYYY-MM-DD."""
+    """A date input. Raises Refusal unless it is exactly YYYY-MM-DD."""
     try:
-        return date.fromisoformat(text.strip())
-    except (ValueError, AttributeError):
+        if not _ISO_DAY.fullmatch(text):
+            raise ValueError
+        return date.fromisoformat(text)
+    except (ValueError, TypeError):
         raise Refusal(f"Write {field} as YYYY-MM-DD.") from None
 
 

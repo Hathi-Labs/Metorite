@@ -294,7 +294,7 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
         company: Company = None,
     ) -> CallToolResult:
         async def work() -> dict[str, Any]:
-            if not envelope.GUID.match(guid):
+            if not envelope.is_guid(guid):
                 raise Refusal("That is not a Tally voucher GUID. Find it with list_vouchers.")
             name = pick_company(settings, company)
             found = records.vouchers(await reader.post(envelope.voucher(guid, company=name)))
@@ -356,7 +356,7 @@ def _stock(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
                         "quantity": s.quantity,
                         "unit": s.unit,
                         "rate": s.rate,
-                        "value": s.value.text,
+                        "value": amount(s.value),
                     }
                     for s in lines
                 ],

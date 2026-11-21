@@ -23,8 +23,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import CallToolResult
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from tally_bridge import __version__
 from tally_bridge.reader import TallyAnswerError, TallyReader, TallyRefused, envelope, records
@@ -51,7 +52,7 @@ def _amount(a: Amount) -> dict[str, Any]:
 
 def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
     """The MCP server with the read tools. The transport sets the HTTP options."""
-    mcp = FastMCP(name="tally")
+    mcp = _BridgeMCP(name="tally")
 
     @mcp.tool(
         name="status",
@@ -122,6 +123,22 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
     register_report_tools(mcp, reader, settings)
     _compact_schemas(mcp)
     return mcp
+
+
+class _BridgeMCP(FastMCP):
+    """FastMCP, with one change: a missing or wrong input answers one plain
+    sentence that names the inputs (brief section 6.4 rule 5). Without it,
+    the member sees the raw validation text of pydantic."""
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return await super().call_tool(name, arguments)
+        except ToolError as exc:
+            cause = exc.__cause__
+            if not isinstance(cause, ValidationError):
+                raise
+            fields = sorted({str(e["loc"][0]) for e in cause.errors() if e.get("loc")})
+            raise ToolError(f"Check these inputs: {', '.join(fields)}.") from None
 
 
 def _compact_schemas(mcp: FastMCP) -> None:

@@ -298,7 +298,10 @@ def test_get_voucher_by_guid():
     ]
 
 
-@pytest.mark.parametrize("guid", ["", "abc", "a1b2c3d4</ID><TALLYREQUEST>", "x" * 60])
+@pytest.mark.parametrize(
+    "guid",
+    ["", "abc", "a1b2c3d4</ID><TALLYREQUEST>", "x" * 60, GUID + "\n", " " + GUID, GUID + " "],
+)
 def test_get_voucher_refuses_text_that_is_not_a_guid(guid):
     reader = FakeReader()
     assert "not a Tally voucher GUID" in err(call("get_voucher", {"guid": guid}, reader=reader))
@@ -316,7 +319,13 @@ def test_get_voucher_with_no_match():
 def test_stock_summary_splits_quantity_unit_and_rate():
     body = ok(call("stock_summary", {"as_of": "2026-03-31", "item": "gadget"}))
     assert body["items"] == [
-        {"item": "Gadget Box", "quantity": "5", "unit": "Box", "rate": "150.50", "value": "752.50"}
+        {
+            "item": "Gadget Box",
+            "quantity": "5",
+            "unit": "Box",
+            "rate": "150.50",
+            "value": {"amount": "752.50", "side": "Dr"},
+        }
     ]
 
 
@@ -369,3 +378,28 @@ def test_all_nine_tools_fit_the_size_budget():
         assert "title" not in t.inputSchema
         for prop in t.inputSchema.get("properties", {}).values():
             assert "anyOf" not in prop and "title" not in prop
+
+
+@pytest.mark.parametrize(
+    "as_of", ["20260331", " 2026-03-31", "2026-03-31 ", "2026-3-31", "2026-03-31T00:00"]
+)
+def test_a_date_must_be_exactly_yyyy_mm_dd(as_of):
+    reader = FakeReader()
+    assert (
+        err(call("trial_balance", {"as_of": as_of}, reader=reader)) == "Write as_of as YYYY-MM-DD."
+    )
+    assert reader.sent == []
+
+
+@pytest.mark.parametrize(
+    "tool,args,sentence",
+    [
+        ("trial_balance", {}, "Check these inputs: as_of."),
+        ("ledger_statement", {"ledger": "Cash"}, "Check these inputs: from_date, to_date."),
+        ("find_ledgers", {"query": "a", "limit": "many"}, "Check these inputs: limit."),
+    ],
+)
+def test_a_missing_or_wrong_input_is_one_plain_sentence(tool, args, sentence):
+    reader = FakeReader()
+    assert err(call(tool, args, reader=reader)) == sentence
+    assert reader.sent == []
