@@ -14,6 +14,7 @@ Two holes that let a caller act as the platform:
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import re
@@ -942,7 +943,8 @@ def placeholder_hits(rel: str, text: str, values: frozenset[str]) -> list[tuple[
                 hits.add((node.lineno, node.value.strip()))
     else:
         for value in values:
-            rx = re.compile(rf"(?<![\w.-]){re.escape(value)}(?![\w.-])")
+            # ``${X:-value}`` is a hit, and ``x-value`` is another name.
+            rx = re.compile(rf"(?<![\w.])(?<!\w-){re.escape(value)}(?![\w.-])")
             for m in rx.finditer(text):
                 hits.add((text.count("\n", 0, m.start()) + 1, value))
     return sorted(hits)
@@ -961,14 +963,15 @@ def _placeholder_files() -> list[Path]:
     return sorted(out)
 
 
-def _tree_placeholder_hits() -> list[tuple[str, int, str]]:
+@functools.cache
+def _tree_placeholder_hits() -> tuple[tuple[str, int, str], ...]:
     values = _placeholder_values()
     found = []
     for p in _placeholder_files():
         rel = p.relative_to(ROOT).as_posix()
         text = p.read_text(encoding="utf-8-sig", errors="replace")
         found += [(rel, line, value) for line, value in placeholder_hits(rel, text, values)]
-    return found
+    return tuple(found)
 
 
 def test_the_env_example_parse_finds_the_dev_llm_key() -> None:
@@ -1010,6 +1013,7 @@ PLACEHOLDER_CLEAN = {
     "other value": ("a.py", 'secret = getattr(s, "gateway_session_secret", "change-me")\n'),
     "docstring": ("a.py", 'def f():\n    """Refuses change-me-dev-only."""\n'),
     "longer name": ("a.ts", 'const k = "change-me-dev-only-2";\n'),
+    "prefixed name": ("a.ts", 'const k = "my-change-me-dev-only";\n'),
 }
 
 _SAMPLE_VALUES = frozenset({_DEV_LLM_KEY, "change-me-dev-only"})
@@ -1079,13 +1083,16 @@ def gateway_calls(monkeypatch):
     return sent
 
 
-async def _settle() -> None:
-    """Wait for the ``_notify`` tasks that the site spawned."""
+async def _settle(before: set) -> None:
+    """Wait for the tasks that the site spawned, and for their own tasks.
+
+    A task that was there before the site ran is not waited for.
+    """
     import asyncio
 
-    me = asyncio.current_task()
-    for _ in range(20):
-        rest = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
+    for _ in range(10):
+        rest = [t for t in asyncio.all_tasks() - before if not t.done()]
+        rest = [t for t in rest if t is not asyncio.current_task()]
         if not rest:
             return
         await asyncio.wait(rest, timeout=5)
@@ -1148,14 +1155,16 @@ async def test_a_site_sends_no_llm_key_when_ctx_has_no_token(
 ) -> None:
     """No token in ctx: no Authorization header, and no LLM key in any header.
     A token in ctx: its exact bearer, so a site that drops it goes red."""
+    import asyncio
     import importlib
 
     wa = importlib.import_module("acb_skills.write_artifact")
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", IDENTITY)  # the ctx alone decides
     with wa.artifact_context_scope():
         wa.bind_artifact_context(**_run_ctx(tmp_path, token))
+        before = asyncio.all_tasks()
         await _SITES[site](wa, tmp_path)
-        await _settle()
+        await _settle(before)
     assert gateway_calls, f"{site} made no gateway call"
     assert all(h.get("Authorization") == want for h in gateway_calls), gateway_calls
     assert not any(_DEV_LLM_KEY in v or LLM_KEY in v
