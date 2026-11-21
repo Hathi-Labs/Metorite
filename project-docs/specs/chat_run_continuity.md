@@ -2847,6 +2847,8 @@ For §4.12 RESUME-2c, from the repo root. The R8 files need a private Redis. A s
 ```bash
 uv run pytest tests/unit/test_resume_continuation.py tests/unit/test_late_approve_grant.py tests/unit/test_steer_routing.py tests/unit/test_steer_unsent_card.py tests/unit/test_card_closes_on_steer.py tests/unit/test_steer_follow_up.py -q
 HELD_R8_REDIS_URL=redis://127.0.0.1:<port>/0 uv run pytest tests/unit/test_resume_continuation_r8.py tests/unit/test_late_approve_grant_r8.py -rs
+```
+
 For §4.12 RESUME-2b, from the repo root. The R8 file needs a private
 database and a private Redis, because it runs FLUSHDB. The tests of case A
 point the stream relay at that Redis too. A skip is not a pass.
