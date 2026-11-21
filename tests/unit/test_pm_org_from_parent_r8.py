@@ -2,7 +2,7 @@
 
 Migration: the file that replaces ``pm_organization_from_parent()`` with the
 refusal of a parent that the caller cannot read. This file finds it by its
-CONTENT, never by number (R1). It was 470 at build time.
+CONTENT, never by number (R1). It was 471 at build time.
 
 **The gap.** Under FORCE row level security a parent of another organization
 is a row that the trigger cannot read. The 161 body then returned in silence.
@@ -16,7 +16,7 @@ task or a project of org B.
 
 * For EACH (table, parent column) attachment of the function: an INSERT bound
   to org A that names org A explicitly, as the app writes it, and names the
-  parent of org B. It fails with SQLSTATE 23503 and the message of the 470
+  parent of org B. It fails with SQLSTATE 23503 and the message of the 471
   body, and a bypass role then finds no such row. Under the 161 body (M1) the
   row is STORED, so 28 probes go red on "row stored", not on RLS. The probe of
   ``pm_epic_contracts`` goes red on the message: its 402 guard refuses the row.
@@ -28,7 +28,7 @@ task or a project of org B.
 * An UPDATE that moves a task into a project of org B, and an UPDATE that puts
   a project under a project of org B, are refused.
 * The org clause: an UPDATE that changes ``organization_id`` of a row whose
-  parent is hidden gets the 470 refusal (23503), not the RLS refusal (42501).
+  parent is hidden gets the 471 refusal (23503), not the RLS refusal (42501).
   The row is seeded with the triggers off, because no write can make it now.
 * The trade-off of the header: an UPDATE that keeps the link and the org of
   that row is not refused.
@@ -36,7 +36,7 @@ task or a project of org B.
   OLD is NULL, so the changed-link clause is true as well, and no INSERT can
   tell the two apart. ``test_the_numbered_migration_holds_the_refusal_and_its_narrowing``
   is its only fence. It stays for the reader.
-* Six cascade deletes still work. The 470 body keeps the old silent return for
+* Six cascade deletes still work. The 471 body keeps the old silent return for
   an UPDATE that keeps the link, because a cascade ``ON DELETE SET NULL`` of
   another column runs an UPDATE whose parent can already be gone.
 * **The fence (R7).** ``test_the_probes_cover_every_attachment`` reads
@@ -54,10 +54,10 @@ not a pass.
 **The mutations (R7).** Edit the migration in the worktree. The ``promoted``
 fixture hashes the ladder files, so the next run builds a new template.
 
-* M1. The 470 body goes back to the 161 body (a silent return on no row). The
+* M1. The 471 body goes back to the 161 body (a silent return on no row). The
   cross-tenant INSERT probes and the two UPDATE probes go red. Each
   explicit-org probe but ``pm_epic_contracts`` goes red on "row stored".
-* M2. The 470 body refuses on no row for each write (no ``TG_OP`` and no
+* M2. The 471 body refuses on no row for each write (no ``TG_OP`` and no
   changed-link test). The cascade controls ``root_project``, ``folder`` and
   ``task_pair`` go red.
 """
@@ -412,7 +412,7 @@ class TestTheUpdateProbes:
 @pytest.fixture
 def straddling(world):
     """A watcher row of org A that names a task of org B: the shape the gap
-    left before 470. No write can make it now, so the admin writes it with
+    left before 471. No write can make it now, so the admin writes it with
     the triggers off (``session_replication_role = replica``)."""
     promoted_, _eng, _a, b = world
     with promoted_.admin_engine.begin() as c:
@@ -468,7 +468,7 @@ class TestTheOrgClause:
 #
 # A delete of a parent runs the `ON DELETE SET NULL` updates of seven keys on
 # attached tables. The parent of the updated row can already be gone, so the
-# trigger finds no row. The 470 body keeps the old silent return there,
+# trigger finds no row. The 471 body keeps the old silent return there,
 # because the update keeps the link. When the body refused on each write (M2),
 # the deletes `root_project`, `folder` and `task_pair` failed. The other three
 # passed in that cascade order, so they are controls and do not tell M2 apart.

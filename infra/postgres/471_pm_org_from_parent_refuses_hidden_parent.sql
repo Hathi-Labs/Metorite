@@ -42,7 +42,7 @@
 -- row. A refusal there made the delete of a project, a folder or a pair of
 -- tasks fail. The R8 file keeps six such deletes as controls.
 --
--- The trade-off. A row that already links two organizations before 470 stays
+-- The trade-off. A row that already links two organizations before 471 stays
 -- writable on an UPDATE that does not touch the link. The one-time count of
 -- such rows is a production item for the owner. This file changes no data.
 --
@@ -57,8 +57,9 @@
 -- infra/postgres/README.md: CREATE OR REPLACE FUNCTION. No trigger is
 -- re-created, because a trigger names the function and not its body.
 --
--- The number is taken at build time (R1). On 2026-11-21 origin/main held 468
--- and a branch held 469, so the lane booked 470. Check it again at merge.
+-- The number is taken at build time (R1). The lane booked 471 on 2026-11-21.
+-- PR 2692 then merged its own 471, so this file moved to 471 (booked
+-- 14:43 UTC). Check it again at merge.
 --
 -- Fence (R7): tests/unit/test_pm_org_from_parent_r8.py. It probes each
 -- attachment as a role that cannot bypass RLS, with two organizations. Its
