@@ -159,9 +159,12 @@ def test_a_copilot_provider_gets_the_value_of_its_session() -> None:
     assert stamped["headers"][RUN_CEILING] == "4.0000"
 
 
-#: The one module that may bind the scope. A chat path that binds it would
-#: lower the ceiling of a person's own run with no goal behind it.
-_BINDERS = {"apps/services/gateway/gateway/jobs/headless_turn.py"}
+#: The modules that may bind the scope. A chat path that binds it would
+#: lower the ceiling of a person's own run with no goal behind it. TOF-3b
+#: F4b: ``run_suite`` binds the credit cap that a skill test has left, so
+#: the Router can also stop a test run at it (``ai_studio_rows/F4.md``).
+_BINDERS = {"apps/services/gateway/gateway/jobs/headless_turn.py",
+            "apps/services/gateway/gateway/studio/skill_tests.py"}
 _DEFINER = "packages/acb_llm/acb_llm/attribution.py"
 _CALL = re.compile(r"\brun_ceiling_scope\(")
 
@@ -204,7 +207,10 @@ class _Console:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.headers.get("accept") == "text/event-stream" or b'"stream"' in request.content:
-            return httpx.Response(200, stream=httpx.ByteStream(b"data: [DONE]\n\n"),
+            # One frame of an answer, then the end. AO-3: a lone `[DONE]` is
+            # a stream that never opened, and the stream hop answers it 502.
+            frames = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, stream=httpx.ByteStream(frames),
                                   headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json=OK)
 

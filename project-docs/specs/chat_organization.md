@@ -4,16 +4,33 @@
 CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
 2026-11-16). Its chat tool is not built (§18). CO-2a, the topic store and
 its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
-2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
-never overrides a member, the rail and the chip. The rest of D163 is not
-built.
+2026-11-16).
 CO-13, the continue mark, is BUILT too (task 3512, 2026-11-16).
+
+CO-2b is BUILT and dark behind the same flag (task 3588, 2026-11-17). It adds
+the topic of a chat for each member, the move, and the rule that the pass
+never overrides a member. It also adds the topic groups of the list and the
+chip (§6.1). Its chat tool is not built. The seed of the company list and the
+pass (CO-1) are not built. The rest of D163 is not built.
+
+CO-2c is BUILT and dark behind the same flag (task 3647, 2026-11-17). It adds
+the order of the list: Recent first, and each group by its newest chat (§6.1,
+"The order of the list").
+
+CO-17, the card record, and its sent-mail record are BUILT and dark behind
+`CHAT_CARD_RECORD_ORGS` (tasks 3516 and 3594, 2026-11-17).
+CO-4, the shadow join log, is BUILT and dark behind `CHAT_JOIN_SHADOW_ORGS`
+(task 3503, 2026-11-16).
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions. Some
 slices of them are built since then, and §11 marks each one.
 
 **Verified** against the code on 2026-11-16 at `origin/main` `471704477`.
+
+**CO-1 repair** (task 3500, 2026-11-16, verified at `origin/main` `4e365b4c7`).
+§5.1 to §5.7 and §10.2 hold the shape of CO-1. Who pays (D163.7a), the cap
+and the flag stay PROPOSED. The owner decides them on task 3500.
 
 **Board:** WS-CO, epic task 3495. §11 lists a task for each slice.
 **Owner of the file half:** `artifact_management.md` §6.0 (D162). This spec owns
@@ -85,9 +102,12 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 | Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:151`, `src/lib/shell/chatHistory.ts`. `src/lib/shell/SessionPicker.tsx` draws it | Pinned, then topics, then dates |
 | Client search of title and preview | `matchesQuery`, `chatHistory.ts:133` | Replaced by the server search (CO-3) |
 | Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1157`), `archived_at` (migration 254) | Pin sits beside these acts in the list |
-| The pin (CO-11). **BUILT, dark** | `chat_session_member` (migration 450), `gateway/chat_session_member.py`, `PUT` and `DELETE /chat/sessions/{id}/pin`. Flag `CHAT_PIN_ORGS` | CO-2 adds the topic to the same row |
+| The pin (CO-11). **BUILT, dark** | `chat_session_member` (migration 450), `gateway/chat_session_member.py`, `PUT` and `DELETE /chat/sessions/{id}/pin`. Flag `CHAT_PIN_ORGS` | CO-2b added the topic to the same row (§6.1) |
 | Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1230`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
-| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:762`) | CO-1 writes a better title |
+| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:755`). A rename and that first title both use the PATCH route. No mark tells them apart | CO-1 writes a better title, and `title_source` keeps a rename (§5.4) |
+| The money path of the summary job | `_ask`, `chat_summary_job.py:235`, calls `tier-fast` as the member. The Console writes the usage row (`_record_completion`, `main.py:8424`) and draws the org's credits (`store.py:1257`) | §5.1 moves the call to a hidden tier with an absorbed card |
+| An absorbed card on a hidden tier | `tier_rate_card.pricing_mode` (`infra/customer_console/015_tier_pricing.sql:90`), `rate_call` (`credits.py:496`), the seed `037_embed_door.sql`, the test `test_customer_console_embed.py:412` | The pattern of D163.7a (§5.1) |
+| The clear seams of a summary | `clear_one_for_member:883`, `clear_for_member:940`, `clear_on_share:956`, `assistant_summaries.py` | They clear the digest row and the AI title too (§10.2) |
 | The rule for bar words | `barMayJoin:768`, `startsFresh:751`, `STALE_CHAT_MS:743`, `src/lib/shell/assistant.ts` | §7 widens it, only on a confident match |
 | The solo test | `SOLO_ROOM_SQL`, `rooms.py:590` | The join filter |
 | Removing the last turn | `POST /chat/sessions/{id}/supersede`, `routes/chat.py:1394` | The undo of §7.3 |
@@ -127,14 +147,230 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
 - **When.** A chat with at least 2 turns, idle for 30 minutes, with no live run
   (PZ-33's idle rule). A change check skips a chat that has not changed.
 - **What.** One small-model call returns the summary, the topic, a title and the
-  records named. One embedding goes through `gateway/kb_index/embed.py`.
+  records named (§5.3). One embedding goes through `gateway/kb_index/embed.py`.
 - **The member's switch.** With the D142 switch off, the pass skips the chat. It
   then has no topic, sits under the date groups, and never joins.
-- **Forget and offboarding** delete the topic row and the embedding with the
-  summary (D142.3).
+- **Delete, Forget, offboarding and share** remove the digest row, its
+  embedding and the AI title with the summary (D142.3, §10.2). A topic that the
+  pass set clears with them, through the CO-2 store.
 - **No blocker on numbers.** PZ-33b built the strict digit rule, and its
   question on numbers has a default that stands (`personalization.md` §15.12
-  item 6). CO-1 waits only for rung 1, because the job worker must run first.
+  item 6). CO-1 waits for CO-10 and CO-2 (§5.6).
+
+### 5.1 Who pays (PROPOSED D163.7a, the owner decides on task 3500)
+
+**Today the job bills the member's org.** `_ask` (`chat_summary_job.py:235`)
+calls `tier-fast` with the feature `assistant.chat_summary`, inside
+`job_member_scope(member, app="chat")`. The Console writes the usage row
+(`_record_completion`, `main.py:8424`, then `store.record_usage`,
+`store.py:1155`). `store.py:1257` draws the credits when the charge is not zero.
+No seam lets a feature name another payer. No platform org exists, because
+`usage_event.organization_id` is NOT NULL.
+
+**Option 1 (recommended): an absorbed card on a hidden tier.** It is the one
+path in the code that meters a call and debits nobody.
+
+1. A Console migration adds a hidden tier for the pass. The PROPOSED name is
+   `tier-summary`. Its `tier_catalog` row has `customer_visible` FALSE and the
+   task `chat`, as `033_decide_task.sql` adds `tier-decide`.
+2. The same migration binds the tier to the model that `tier-fast` serves for
+   `chat` at build time. It adds a `tier_rate_card` row for the tier and the
+   task `chat`, with `pricing_mode` `absorbed` and each rate zero.
+3. Each INSERT runs only while no row exists for the pair, as
+   `037_embed_door.sql` seeds `tier-embed`. The migration takes the next free
+   number in `infra/customer_console/` at build time (R1).
+4. `rate_call` answers zero for an absorbed card (`credits.py:496`). The usage
+   row keeps the tokens and the cost, and `billed_credits` is 0. So
+   `store.record_usage` writes no `credit_ledger` row.
+5. The Console serves the tier only to a call whose `agent` attribution is
+   `assistant.chat_summary`. The `feature` of `_ask` sets it. Without this
+   limit, a caller that names the tier gets free calls.
+6. `_ask` names the hidden tier in place of `tier-fast`. The call stays as the
+   member. So the usage row names the org and the member, with a charge of 0.
+
+**A zero-credit org.** The spend gate runs before the Console rates the call
+(`_spend_refusal`, `main.py:1623`, called at `main.py:9229`). So an org with no
+headroom gets a 402 on the free tier too. That is a trial org at zero, or a
+paying org past its grace. The owner accepted the same for `tier-embed`
+(`work_plan.md` §6, row A2). A gate that skips an absorbed card changes the
+money gate, so only the owner can choose it.
+
+For that org, the pass gives up with `OutOfCredits`, as the built job does.
+The mark and the dedupe key (`summary:<session_id>:<through>`) stay. So the
+seed does not try those rows again, and no retry storm starts. The chat gets
+no title, no topic and no digest until a new typed row comes, and the org has
+credits.
+
+**The test.** A Console test asserts that a served call on the hidden tier
+writes one usage row with `billed_credits` 0, and no `credit_ledger` row. A
+mutation guard puts a priced card on the tier and sees a charge, as
+`TestTheMeterRecordsAndDrawsNothing` does (`test_customer_console_embed.py:412`).
+The PROPOSED file is `tests/unit/test_customer_console_summary_tier.py`.
+
+**Two PRs.** The Console tier and its card merge first. The gateway pass merges
+second, because a call to a tier with no binding fails.
+
+**Option 2: bill a small fixed price for each call.** It contradicts D163.7,
+which says that the pass never debits a company. The owner decides between the
+two options.
+
+### 5.2 The cap (PROPOSED, the owner sets the numbers)
+
+D163.7 says that the cap comes from a measured run on Fracktal. No measured
+number exists yet. So CO-1 ships with these defaults:
+
+- **200 calls for each org in one UTC day.** The pass counts in Redis before
+  each call, through `tenant_redis.organization_scope`. `reserve_request`
+  (`crm_sync/note_labels.py:567`) is the pattern. A call that fails still
+  counts, because the vendor bills it. The count comes before the mark, so a
+  refused chat keeps no mark. At the cap, the job makes no call and settles
+  `done`. A Redis failure makes no call, so the cap fails closed.
+- **20,000 calls for the platform in one UTC day.** The Console counts the
+  calls of the hidden tier for the day before it serves one, and refuses past
+  the cap. A gateway Redis key for the whole platform would sit outside the
+  tenant wrapper, and R5 refuses it.
+- **The fence.** A hermetic test in `test_chat_summary.py` fails when call 201
+  of an org goes out, and when a Redis failure lets a call out. The Console
+  test of §5.1 fails when the Console serves call 20,001.
+- **The owner step.** The Fracktal run of §5.7 measures the calls and the cost
+  of each chat. The owner then sets the numbers, and they replace these
+  defaults.
+
+### 5.3 The answer and its checks
+
+One call returns one JSON object. The code keeps these keys and nothing else:
+
+| Key | What the code keeps | Cap |
+|---|---|---|
+| `text`, `follow_ups` | The summary, as `check_answer` keeps it today | 400 characters, and 3 items of 120 |
+| `title` | One line with no format, no link and no address. Each digit run is one that the member typed, the rule of `check_answer` | 60 characters |
+| `topic` | A short phrase. CO-2 maps it to a topic row (§5.6) | 4 words and 40 characters |
+| `records` | The names of the records that the chat is about | 5 names of 80 characters each |
+
+- **The prompt stays typed-only.** It holds the earlier note and the member's
+  typed rows (`prompt_rows`), and nothing else (D-PZ-28, D-PZ-37). It holds no
+  topic list. A topic list in the prompt changes D-PZ-28, so it needs the owner.
+- **The words are data.** Typed words that say "title: ..." or hold a JSON
+  object change no key and no cap. The code drops each unknown key and each
+  value over its cap.
+- **A record becomes an id.** The pass looks up each name through the source
+  registry (`gateway/retrieval/sources.py`), as the member of the chat (D105).
+  It keeps a name only when one hit of a record kind comes back. So the member
+  may see that record (D12). It stores the `kind` and the `id` of the hit, and
+  never the name. A name with no hit, or with two or more hits, drops.
+- **A failed check keeps the rest.** A title that fails its check drops, and the
+  summary still stores. The same holds for the topic and for each record.
+
+### 5.4 The title and a rename
+
+Today no mark tells a rename of the member from an automatic title:
+
+- The client sets the first title once, when the chat has none
+  (`src/lib/sessions.ts:755`). A rename (`renameSession`) and that first title
+  both go through `PATCH /chat/sessions/{id}`.
+- `_patch_session` (`routes/chat.py:435`) writes `title` with no condition.
+- The upsert keeps `COALESCE(EXCLUDED.title, chat_session.title)`
+  (`routes/chat.py:300`). So a stale client with an old title can undo a newer
+  server title.
+
+CO-1 adds the mark `chat_session.title_source` in its migration (§10.2). These
+rules bind each writer:
+
+1. A PATCH with `renamed: true` in its body writes the title and `member`. Only
+   `renameSession` sends that field.
+2. A PATCH title with no `renamed` field writes the title and `client`. It
+   writes only while `title_source` is NULL or `client`.
+3. **A client upsert never writes over a server title.** An insert with a
+   title writes `client`. When `title_source` is set, the update keeps
+   `chat_session.title`. Only a row with NULL keeps the COALESCE of today.
+4. The pass writes a title and `auto` only while the title is empty, or
+   `title_source` is `client` or `auto`. It never writes over `member`.
+5. The pass never writes over a NULL title that holds words, because an old
+   rename has NULL too.
+6. The pass keeps the title that it replaced in the digest row
+   (`title_before`). A clear puts it back (§10.2).
+
+The value `client` exists because the client titles each chat at its first
+turn. With only `member` and `auto`, the pass could never replace that first
+title. The client change and the route change ship in one PR.
+
+The R8 test is `tests/unit/test_chat_title_source_r8.py` (PROPOSED). Its cases
+include `test_rename_survives_the_pass` and `test_upsert_keeps_a_server_title`.
+
+### 5.5 The flag (PROPOSED)
+
+`ASSISTANT_CHAT_SUMMARY_ORGS` is an org list with no mode value
+(`chat_summary_for`, `assistant_profile.py:684`). The one mode idiom in the
+code, `decide_features.mode_for`, serves features of the `decide` task only. So
+CO-1 adds two org lists. Each is empty by default, and `*` names each org:
+
+- **`CHAT_ORGANIZE_SHADOW_ORGS`** is the shadow of D163.8. The pass makes its one
+  call on the hidden tier, and writes the summary and the digest row. It writes
+  no title and no topic, so a member sees no change. The usage rows give the
+  cost of each chat.
+- **`CHAT_ORGANIZE_ORGS`** turns the pass on. The pass also writes the title and
+  the topic.
+- **An org on neither list** keeps the job as built: the summary only, on
+  `tier-fast`, billed to the org (D142.9).
+- **Both lists act only for an org that `chat_summary_for` opens**, because the
+  pass is the job of PZ-33b.
+
+The build writes them in these places:
+
+- `settings.py`, beside `assistant_chat_summary_orgs`. A flag reload applies a
+  `*_ORGS` field with no restart. CO-1 adds a paragraph to `docs/flag_reload.md`.
+- `env_guard.py`. The `CHAT_` prefix of `PLATFORM_ENV_PREFIXES` covers both
+  names. CO-1 adds each exact name to `PLATFORM_ENV_NAMES` too, as
+  `CHAT_CONTINUE_ORGS` has it.
+- The §6 D4 line of `work_plan.md`. CO-1 adds both names there, in its PR.
+
+**The flip is OWNER-GATE.** A name on either list on production spends platform
+money and sends chat words to a model. The §3a window does not open it.
+
+### 5.6 The order and the topic
+
+The order is CO-10, then CO-2, then CO-1 (§11).
+
+1. **CO-10** is an owner flip. It turns on the job worker and the summaries, so
+   a pass can run at all.
+2. **CO-2** (task 3501, lane chat-reach) builds the topic store. It owns the
+   shape of a topic id, and how a topic phrase maps to a topic row. CO-2 and
+   CO-1 agree that shape before CO-1 writes a topic. CO-1 does not choose it.
+3. **CO-1** extends the job of PZ-33b.
+
+If CO-1 builds before CO-2, it writes the title and the digest only. Its call
+asks for no topic, and CO-1 writes no topic before CO-2 exists.
+
+### 5.7 Acceptance of CO-1
+
+**The build half** is AGENT-SAFE and dark. A test proves each item:
+
+1. One call returns the summary, the title, the topic and the records, under
+   the caps of §5.3. The code drops an unknown key and a value over a cap
+   (`test_chat_summary.py`).
+2. An R8 test asserts `billed_credits` 0 on the usage row of the call. It
+   asserts that no `credit_ledger` row exists (§5.1).
+3. A rename survives the pass. A client upsert after the pass keeps the AI
+   title (`test_chat_title_source_r8.py`). An old cached client sends a rename
+   with no `renamed` field. The server stores it as `client`, so the pass may
+   replace it. The client and the route ship in one PR to keep this rare.
+4. Each clear of §10.2 removes the digest row and the AI title
+   (`test_chat_summary_r8.py`, `test_chat_summary_routes_r8.py`).
+5. The prompt holds typed rows only. CO-1 adds its new names to the entry of
+   `chat_summary_job.py` in `IMPORTERS` (`test_chat_summary_private.py`). A new
+   module gets its own entry.
+6. Typed words that say "title: ..." do not change the shape of the stored
+   answer. This is the injection test, in `test_chat_summary.py`.
+7. `chat_session_digest` joins `test_tenant_coverage.py`.
+8. Each cap of §5.2 refuses the call after the cap, and a Redis failure makes
+   no call.
+9. With both lists of §5.5 empty, the job calls `tier-fast` and writes the
+   summary only, as it does today (`test_chat_summary.py`).
+
+**The owner half.** The owner turns on `JOB_QUEUE`,
+`ASSISTANT_CHAT_SUMMARY_ORGS` and a CO-1 list for Fracktal on production. Each
+flip is owner-only. The run then reports the real cost of each chat from the
+usage rows of the hidden tier. That number sets the cap of §5.2.
 
 ## 6. Topics
 
@@ -147,6 +383,108 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
 - **Promotion (CO-6).** When 3 or more members hold a similar private topic, an
   admin sees "Add to company topics". The admin sees the count, and never who.
 - **A shared chat** carries its topic to each member who can see it.
+
+### 6.1 Built (CO-2b, task 3588, 2026-11-17), dark
+
+`CHAT_TOPICS_ORGS` lists the orgs, and the default is empty.
+
+- **The store.** Migration 452 adds `topic_id` and `set_by` to
+  `chat_session_member`, both nullable. `set_by` is `auto` or `member`. A
+  composite key ties `(organization_id, topic_id)` to `chat_topic`, with
+  `ON DELETE SET NULL (topic_id)`. So a row never names a topic of another
+  org.
+- **The move.** `PUT /chat/sessions/{id}/topic` takes `{"topic_id": id}`, or
+  null for "No topic". It writes `set_by = 'member'`. "No topic" is a move
+  too, so the pass does not put a topic back.
+- **The pass.** `chat_session_member.set_auto_topic` is the one door of
+  CO-1. It writes `set_by = 'auto'` only where no row exists, or where
+  `set_by` is NULL or `auto`. A member's row stays as it is (D163). CO-1
+  must catch `TopicNameError` from `find_or_create_member_topic`. Then it
+  files that chat under no topic, and calls no `set_auto_topic` for it.
+- **Who may use a topic.** A company topic that shows, or the member's own
+  topic. A colleague's topic and a hidden company topic answer as a topic
+  that does not exist.
+- **The lock order.** A move locks its topic first, then writes the row. A
+  merge locks its topics first too. So a move and a merge cannot deadlock.
+  The store refuses a move into a topic that a merge takes away.
+- **The merge.** It moves each row of the source to the target before its
+  delete, and keeps `set_by`.
+- **An archived chat, as for the pin.** The move and the pass select no
+  archived chat, and the route answers 409. The read sends no topic for an
+  archived chat, and the chip does not show on it. The archive writes no
+  row, so a restore shows the topic again.
+- **The read.** `GET /chat/sessions` sends `topicId` and `topicName` for the
+  caller only, and only a topic that shows. A chat in a hidden topic sits
+  under its day. The shell read serves the flag as `chat_topics`.
+- **The UI.** (CO-2c replaced the group order: see "The order of the list"
+  below.) The list shows Pinned, then one group for each topic,
+  then one Other group. The chip in the chat header opens a menu. "New topic…" and
+  "No topic" come first, at a fixed place, and the topics come under them.
+  The company topics come before the member's own topics. The first focus
+  is the current topic, else "New topic…", and never "No topic". The full
+  view shows the topic name on the chip. The side panel and a phone show the
+  tag icon, and its label names the topic. A phone with the chat-first flag
+  offers the menu in the chat's "…" control, and the menu hangs from it. On
+  a phone, the menu hangs below the header and covers the header controls,
+  such as Share, while it is open. That is by design: a press outside or
+  Escape closes it. On a cold open the first focus is "New topic…". When the
+  list lands, the focus moves once to the current topic, unless the member
+  moved it first.
+- **Names.** A topic cannot take the name of a heading of the list, such as
+  "Pinned" or "Today", or a word of the topic menu, such as "No topic" or
+  "New topic". Case, spacing and a closing ellipsis do not count. The store
+  refuses it with "The chat list uses this name. Pick another name."
+  `chat_topic.RESERVED_NAMES` is the one list, and `test_chat_topic.py` pins
+  it to the TypeScript labels. Look-alikes are not blocked: a Cyrillic
+  letter or a zero-width character makes a new name.
+- **A move that fails.** The list puts back the last topic that the server
+  confirmed. The notice line of the chat then says "The chat did not move.
+  Try again, or pick another topic." The dock shows no toast (owner,
+  2026-11-01). The menu reads the topics again, and an earlier failure never
+  undoes a later move.
+- **The "…" control of the phone.** While the topic menu is open, a press on
+  the "…" control closes the topic menu and opens no More menu.
+- **The purge.** The member purge deletes the rows and the private topics of
+  a leaver. A row of a colleague on such a topic keeps its org and loses
+  only the topic.
+- **Chat parity: not built.** No chat tool lists or moves chats today. The
+  read, the create and the move are three debt rows of P-7, and the debt
+  ceiling of the chat goes from 27 to 30.
+
+#### The order of the list (CO-2c, task 3647, 2026-11-17), dark
+
+The owner asked for the most recent chat at the top. Each rule below holds
+with `CHAT_TOPICS_ORGS` on. With it off, the list stays as CO-0 and CO-11 draw it.
+
+- **Last used.** The time of a chat is its `updatedAt`. A saved message moves
+  it (`_TOUCH_SESSION_SQL`). A rename moves it, because the PATCH stamps it.
+- **No move.** A pin, a topic move and an archive do not move it. Opening a
+  chat with no message does not move it either.
+- **Recent.** This group comes first. It holds the five chats with the
+  newest `updatedAt`, newest first. A pinned chat counts. With fewer than five
+  chats, it holds them all. A tie goes by id.
+- **Then.** Pinned comes next, as CO-11 orders it. Then each topic group
+  and one group called "Other", by the `updatedAt` of the newest chat in the
+  group. The newest group comes first. The chats with no topic form Other.
+  No day group shows with topics on.
+- **Inside a group.** The newest chat comes first.
+- **Daily briefs.** The Daily briefs fold of task 3564 keeps its place at the
+  end. A folded brief is not in Recent and not in a topic group. Recent and
+  the groups read the list without the folded briefs.
+- **Twice.** A chat in Recent shows again in its own group: Pinned, its topic,
+  or Other. It shows in no third place. The copy in Recent has the DOM id
+  `recent:<id>`. Both copies show the chat on screen, and both act on the same chat.
+- **Tab order.** Recent comes first, then the groups. Each row shows once.
+- **A search.** A search shows one flat list, with no Recent.
+- **Names.** "Recent" and "Other" join `chat_topic.LIST_HEADINGS`, so no topic
+  takes these names. `test_chat_topic.py` reads both from `chatHistory.ts`.
+- **One list.** The dock, the full chat and the phone share `SessionPicker`.
+  Artifacts passes no `topicsOn`, so its list stays by day.
+- **Fence.** `chatHistory.test.ts`, "the order of the list".
+
+**Before the flag flip.** The owner accepts the raise of the parity ceiling
+from 27 to 30. The seed of the company list (§6, "The list") is not built.
+No route makes a company topic, so an org has none until the seed runs.
 
 ## 7. Picking up a chat
 
@@ -229,14 +567,17 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
   `topic_id` (nullable), `set_by` (`auto` or `member`), `pinned_at` (nullable).
   It is the per-member row of a chat: its topic (CO-2) and its pin (CO-11). The
   D163 draft named it `chat_session_topic`. CO-11 built the table (migration
-  450) with `pinned_at` only. CO-2 adds `topic_id` and `set_by` as nullable
-  columns, in its own migration (an expand step, R6). `member_email` is the
+  450) with `pinned_at` only. CO-2b added `topic_id` and `set_by` as nullable
+  columns, in migration 452 (an expand step, R6). `member_email` is the
   address in lower case. `gateway/chat_session_member.py` is the one module
   that runs SQL on it, and the member purge deletes the rows of a leaver.
-- `chat_session_digest`: `session_id` PK, `organization_id`, `content_hash`,
-  `entities JSONB`, `embedding`, `digested_at`. §10.1 reconciles it with CX-4.
+- `chat_session_digest` (CO-1): one row for each chat that the pass covers.
+  §10.1 holds its name and its source rule. §10.2 holds its columns.
 - `chat_join_log`: the shadow record of CO-4: the session, the candidate, the
-  outcome and the override.
+  outcome and the override. CO-4 built it (migration 461), one row for each new
+  chat. Each text is a code from a fixed list, and no column holds a word of
+  the member. `gateway/chat_join_shadow.py` is the one module that runs SQL on
+  it. The member purge deletes the rows of a leaver.
 - `chat_topic_note` (CO-16): one row for each version of a note. `id`,
   `organization_id`, `member_email`, `topic_id`, `version`, `focus`, `body`,
   `sources` (session ids only, never a title), `source_deleted_at`,
@@ -250,12 +591,25 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 - **One idle pass.** Three plans run a pass over an idle chat. They are PZ-33b
   (built), CO-1 (§5) and CX-4 (`company_context.md` §8.1). CO-1 extends the
   PZ-33b job and is the one pass. CX-4 reads its row and adds no second pass.
-- **One digest table.** `chat_session_digest` here and `chat_session_digests` in
-  CX-4 are one table. The first slice that builds it names it for both specs.
-- **One source rule.** The summary job reads typed words only (D-PZ-37), after
-  5 review rounds of PZ-33b. CX-4 §8.1 says that its atoms catch what the member
-  decided with the assistant. A CX-4 digest that reads assistant turns needs an
-  owner decision first.
+- **One digest table: `chat_session_digest`.** PROPOSED (task 3500).
+  metorite-a3, the owner of the FIND and CX side, must confirm it. The name takes
+  the singular form of each chat table: `chat_session`, `chat_message` and
+  `chat_session_participant`. This spec owns its columns (§10.2), because
+  `work_plan.md` §4 gives the digest table of each app to the spec of that
+  app. `company_context.md` §8.1 links here. CX-4 adds no second table. It adds
+  its segments and atoms (`company_context.md` §5.1) as columns of this row, in
+  its own expand migration.
+- **One source rule.** PROPOSED (task 3500), and metorite-a3 must confirm it. The
+  digest reads the member's own typed rows only (D-PZ-37). It covers a chat
+  that passes `ELIGIBLE_SQL`, after the idle rule of PZ-33: 30 minutes idle,
+  and 2 typed rows of the member. It reads no assistant turn, no tool output
+  and no mail body. Only the member of the chat reads the row, while the chat
+  is solo. A share clears it (§10.2).
+- **Why this rule.** PZ-33b is built and dark, with this rule after 5 review
+  rounds. CX-4 is not built. So the rule of CX-4 goes: 4 messages, and atoms
+  from the assistant turns. A digest that reads assistant turns needs an owner
+  decision first. The skip of a `no_egress` session (CX-4) stays open for
+  metorite-a3.
 - **`chat_join_log` has no twin.** It is the shadow record of CO-4 only. CX-4
   plans no join log, so nothing reconciles with it.
 - **One search.** CO-3, HRD-21 (D-FIND-5) and the `chat` source of CX-4 all read
@@ -265,21 +619,59 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
   not a wider HRD-21. `find_engine.md` gives the chat search index of HRD-21
   to CX-4 already.
 
+### 10.2 The CO-1 columns
+
+CO-1 adds them in one gateway migration. It takes the next free number in
+`infra/postgres/` at build time (R1). Expand only (R6).
+
+**`chat_session.title_source`** is TEXT, nullable, with no default. Its value is
+`client`, `member` or `auto`. NULL marks a row from before the migration. §5.4
+holds the rule of each writer.
+
+**`chat_session_digest`:**
+
+| Column | What it holds |
+|---|---|
+| `session_id` | The PK. It references `chat_session(id)` `ON DELETE CASCADE`, so a Delete of the chat deletes the row |
+| `organization_id` | The tenant, with FORCE RLS (R5). The table joins `test_tenant_coverage.py` |
+| `content_hash` | A SHA-256 of the typed rows that the call read. The change check skips a chat with the same hash |
+| `title_before` | The title that the pass replaced, or NULL |
+| `entities` | A JSON array of 5 items at most. Each item is `{"kind": ..., "id": ...}` from one hit of the source registry (§5.3). It holds no name and no text that a model wrote |
+| `embedding` | A `vector(1536)` from `gateway/kb_index/embed.py`, on `tier-embed`. It embeds the title of the answer and the summary text. It never embeds a chat row or a record name |
+| `digested_at` | The time of the write |
+
+**The clears.** The SQL of the row and of the AI title lives in
+`assistant_summaries.py`, beside the summary. Each clear runs in the
+transaction of its seam:
+
+- **A Delete of the chat** (`_delete_session`) deletes the `chat_session` row.
+  The cascade deletes the digest row, and the title goes with the chat.
+- **The Delete of one summary in Settings** (`clear_one_for_member`,
+  `assistant_summaries.py:883`) deletes the digest row of that chat.
+- **Forget and offboarding** (`clear_for_member`, `:940`) delete each digest row
+  of the member.
+- **A share** (`clear_on_share`, `:956`) deletes the digest row of the chat.
+  The pass made the AI title from a private summary, and D163.2 keeps a name
+  from a private chat away from a colleague.
+- In each of the last three, a title with `title_source` `auto` goes back to
+  `title_before`, and `title_source` goes back to `client`.
+
 ## 11. The slices
 
 | Slice | Task | Rung | Work | Gate | Done when |
 |---|---|---|---|---|---|
 | CO-0 | none | — | The full-screen chat (§9). **BUILT**, PR 1607 | AGENT-SAFE | The four captures pass, and `/chat` and the dock's full view match |
-| CO-1 | 3500 | 2 | The pass (§5), metered to the platform | **OWNER-GATE** for the flip. HIGH tier: money | A test run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
-| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It waits for CO-11 (task 3510, not merged) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-1 | 3500 | 2 | The pass (§5): one call writes the summary, a title, a topic and the records. It runs on a hidden tier with an absorbed card (§5.1, PROPOSED D163.7a). Its migration adds `chat_session.title_source` (nullable, expand only) and `chat_session_digest`, with the number taken at build time (§10.2). A client upsert never writes over a server title (`test_upsert_keeps_a_server_title`, §5.4). It builds third: after CO-10 and CO-2 (§5.6) | AGENT-SAFE to build dark, in two PRs: the Console tier first, then the gateway pass. **OWNER-GATE** for the flip of `CHAT_ORGANIZE_SHADOW_ORGS` and `CHAT_ORGANIZE_ORGS` (§5.5). HIGH tier: money, a migration | The build half of §5.7 passes. The owner half: a run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
+| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. **CO-2b BUILT, dark** (task 3588, 2026-11-17): the topic of a chat, the move, the rule of the pass, the rail and the chip (§6.1). The seed of the company list is not built. CO-1 builds after it (§5.6) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-2c | 3647 | 2 | The order of the list: Recent, then Pinned, then each group by its newest chat (§6.1). **BUILT, dark** (2026-11-17). UI only: no data, no route, no migration | AGENT-SAFE, dark. STANDARD tier | The list shows the five newest chats in Recent, and each chat in its own group too |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
-| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
+| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log`. **BUILT, dark** (2026-11-16), migration 461, flag `CHAT_JOIN_SHADOW_ORGS`. The first message of a new chat writes one row of codes and ids, and no text. The held mark is not read yet. The `record_link` of CO-17 is not read yet. The context share is an estimate (the length of the chat text, divided by 4, over a 128k window). `ASSISTANT_CHAT_SUMMARY_ORGS` is off on production, so the first week measures titles and records, with no summary text | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
 | CO-6 | 3505 | Later | Promotion to company topics | AGENT-SAFE, dark | The admin card shows the count and no name |
 | CO-7 | 3506 | Later | The shared chat pointer | AGENT-SAFE, dark | A private chat never shows (R8 test) |
 | CO-8 | 3507 | Later | The Save to Knowledge suggestion | AGENT-SAFE, dark | The suggestion saves nothing by itself |
 | CO-9 | 3508 | Later | The gap count (§8.3) | AGENT-SAFE. The flag is `KNOWLEDGE_GAPS` | A gap under 5 askers does not show |
-| CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
+| CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1). It comes first: before CO-2 and CO-1 (§5.6) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
 | CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a follow-up slice, CO-11b (task 3563), needs cal-tasks. The flip waits for §18, §19 question 8 and the parity ceiling (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
 | CO-12 | 3511 | 2 | First-run hints and the empty state (§17.2, §17.3) | AGENT-SAFE | Each hint shows once per member, and the empty state shows no private topic of a colleague |
 | CO-13 | 3512 | 3 | The continue mark (§17.5). **BUILT** (task 3512, 2026-11-16) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green. That fence pins three things. No Python file outside the allow list names the column. No Python file outside `routes/chat.py` names `continuedFrom`. The dock names `continuedFrom` once |
@@ -288,6 +680,8 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-16 | 3515 | 4 | The condense note: pick, build, preview, edit, versions, Delete (§16.1, §16.2, §16.5) | HIGH: a new table, chat words to a model. AGENT-SAFE, dark | A pasted mail and an assistant reply never reach a note. A room and an `off` chat are never a source. A deleted source leaves no text in any version |
 | CO-17 | 3516 | 4 | The card record (§16.3) | HIGH: a migration. AGENT-SAFE, dark | An approved card writes one row with no model text, a declined card writes none, and a colleague reads none (R8) |
 | CO-18 | 3517 | 4 | The note in a new chat of its topic (§16.4) | AGENT-SAFE, dark | A new chat in the topic answers from the note and cites a source by its link only. A chat in another topic does not load it. No session store holds the note |
+
+**The order of the pass:** CO-10 (an owner flip), then CO-2, then CO-1 (§5.6).
 
 ### 11.1 The ladder (D211)
 
@@ -299,8 +693,8 @@ task of its rung, and each demo task blocks the next one.
 - **Rung 1, "new chats remember my recent chats"** (demo task 3496): CO-10. The
   briefing is live already, so it starts to carry real summaries. Demo: a new
   chat knows what the owner discussed yesterday.
-- **Rung 2, "my chats sort themselves"** (demo task 3497): CO-1, CO-2, CO-11 and
-  CO-12. Demo: the list shows topics and pins.
+- **Rung 2, "my chats sort themselves"** (demo task 3497): CO-2, then CO-1, with
+  CO-11 and CO-12. Demo: the list shows topics and pins.
 - **Rung 3, "it offers to continue"** (demo task 3498): CO-4, CO-15, CO-5 and
   CO-13. Demo: a first message about an old topic offers its chat.
 - **Rung 4, "condense and summarize"** (demo task 3499): CO-17, CO-16 and CO-18.
@@ -322,6 +716,12 @@ uv run python scripts/affected_tests.py --run
 
 # The seams that the new slices touch
 uv run pytest tests/unit/test_continued_from_readers.py tests/unit/test_chat_summary_private.py tests/unit/test_continue_carry.py tests/unit/test_tenant_coverage.py -q
+
+# CO-1 (task 3500): the DB first, then the seams of the pass and of the money
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_chat_summary.py tests/unit/test_chat_summary_r8.py tests/unit/test_chat_summary_private.py tests/unit/test_chat_summary_routes_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_customer_console_embed.py tests/unit/test_customer_console_tier_pricing.py tests/unit/test_background_ai_member.py -q
+# CO-1 new files (PROPOSED names, §5.1 and §5.4)
+uv run pytest tests/unit/test_customer_console_summary_tier.py tests/unit/test_chat_title_source_r8.py -q
 
 # Frontend, in workbench/control_plane
 npx tsc --noEmit && npx vitest run src/lib/shell
@@ -371,6 +771,30 @@ CO-2a adds two fences:
   company topic. The store refuses a duplicate in one list, and the purge
   deletes the member topics. FORCE RLS holds, and the flag off gives 404.
 
+CO-2b adds two fences:
+
+- `tests/unit/test_chat_topic_move.py`: only `chat_session_member.py` writes
+  `topic_id` and `set_by`. The pass writes over no row of a member. A move
+  and the pass lock the topic first, and the merge moves the chats between
+  its locks and its delete. With the flag off, the move route answers 404
+  before it reads the body. A body with any key but `topic_id` gets 422.
+- `tests/unit/test_chat_topic_move_r8.py` (R8) runs the cases on a real
+  database. Three are a move that survives the pass, a colleague's move and
+  a private topic. Three more are two orgs, a chat that the member cannot
+  read and a hidden topic. The rest are the merge, a move and a merge at the
+  same time, the purge, the pin and the switch.
+
+CO-4 adds two fences:
+
+- `tests/unit/test_chat_join_shadow.py`: each row of §7.1 and each bar of
+  §7.2 has a case, and the same record outranks similar words. No column and
+  no argument of the module carries a text of the member. Only the module and
+  the member purge name `chat_join_log` in Python. The hook starts the
+  match only for a turn that the member sent, with the org and the member of
+  the session.
+- `tests/unit/test_chat_join_shadow_r8.py` (R8): one row for each new chat,
+  the bars on real rows, two orgs, a colleague, the cascade and the purge.
+
 ## 14. Risks
 
 - **Context cost.** Each joined turn resends the window, so §7.2 bars a full chat.
@@ -406,6 +830,7 @@ and adds no second spec of the same topic.
 | Capability | State | Where |
 |---|---|---|
 | Chat list by date, rename, archive, Delete of an archived chat, client search | LIVE (CO-0) | §3 |
+| Daily briefs fold into one closed group at the end of the list, before Archived (task 3564) | BUILT, no flag | `isFoldedBrief` in `src/lib/shell/chatHistory.ts`. A brief folds only while the viewer owns it and nobody replied. Pinned and Archived win |
 | A summary of each solo chat (PZ-33a, PZ-33b), and its Settings controls (PZ-35) | BUILT, dark | `personalization.md` §15.3 and §15.5 |
 | The briefing: the newest 3 summaries and the due tasks (PZ-34) | LIVE, with no summaries | `personalization.md` §15.4 |
 | The continue route and its pill (WT-1, WT-2) | BUILT, dark | `one_assistant_context.md` §9 |
@@ -506,6 +931,24 @@ So CO-17 writes one row when a write card closes as `approved`. The row holds
 the session, the member, the outcome key, the act kind and the record link, and
 no text. The note reads the row again as the member. CO-17 checks its overlap
 with HRD-12 before it builds.
+
+**Status (2026-11-16, task 3516).** The store is built, dark behind
+`CHAT_CARD_RECORD_ORGS`, in migration 459 (`chat_card_record`) and
+`orchestrator/card_record.py`. HRD-12 does not overlap: it keeps typed words,
+and this table keeps none. The row names the member who answered the card, and
+it has two nullable slots: `record_link` (an app path) and `message_id` (a
+token, for task 3594). An auto-approved call that shows no card writes no row.
+
+**Status (2026-11-17, task 3594).** The sent-mail record is built, dark behind
+the same `CHAT_CARD_RECORD_ORGS`. Migration 460 adds `recipients` (the
+addresses that the member approved, 50 at most) and `sent_at`. Each send tool
+of the email agent calls `ask_tools.note_sent_message` after the mail went,
+and never on a decline, a close or a failure. The tools are `send_email`,
+`forward_email`, `send_draft`, `compose_reply`, the new-mail card and the held
+card. A send counts only in the tool call frame of its own approved card. The
+run context of each later turn states the last 5 sent acts of the chat, one
+fact line each, and one rule line (`executor._sent_acts_block`). The persona
+does not change. The create tools do not set `record_link` yet.
 
 ### 16.4 Later chats in the topic (CO-18)
 

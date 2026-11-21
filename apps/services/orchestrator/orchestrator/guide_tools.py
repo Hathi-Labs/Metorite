@@ -192,7 +192,7 @@ def may_run(guide: Guide, features: frozenset[str] | None, admin: bool) -> bool:
     if guide.admin_only and not admin:
         return False
     return all(
-        _iap.refusal(step.path or "", features) is None
+        _iap.refusal(step.path or "", features, admin) is None
         for step in guide.steps
         if step.kind == "open"
     )

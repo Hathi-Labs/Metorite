@@ -1279,12 +1279,20 @@ class TestTheCoreList:
         assert dark.kwargs["instructions"] == other.kwargs["instructions"]
 
     def test_an_org_on_the_list_gets_the_tool_after_search_company(self, build):
+        import orchestrator.agents as pkg
+
         dark, lit = build("", ORG), build(ORG, ORG)
         assert _tool_names(lit)[:2] == ["search_company", "resolve_name"]
-        assert cst.resolve_name in lit.kwargs["tools"]
-        # Only the tool joins: every other tool and the persona stay.
+        # FIND-6: the list holds the tool inside the HRD-3 guard
+        # (test_find_tools.py), so a failure is text with a next step.
+        assert any(getattr(t, "__wrapped__", None) is cst.resolve_name
+                   for t in lit.kwargs["tools"])
+        # Only the tool joins the list. With CONTEXT_RECENCY on, the persona
+        # gains the standing rule of FIND-6 (find_engine.md §5.4) and nothing
+        # else (test_find_tools.py). This build has recency off, so no rule.
         assert [n for n in _tool_names(lit) if n != "resolve_name"] == _tool_names(dark)
-        assert lit.kwargs["instructions"] == dark.kwargs["instructions"]
+        rule = pkg._mod.FIND_STANDING_RULE
+        assert lit.kwargs["instructions"].replace(rule, "", 1) == dark.kwargs["instructions"]
 
     def test_with_no_org_it_fails_closed(self, build):
         assert "resolve_name" not in _tool_names(build("*", None))
@@ -1299,7 +1307,10 @@ class TestTheCoreList:
         MAX_REQUEST_TOOLS (110) with production's base. For an org on
         FIND_ORGS the base is one more, so `choose` drops studio-more: no
         error, the request keeps email and studio. An org off the list keeps
-        all three. FIND-6 gives the place back when resolve_person leaves."""
+        all three. FIND-6 kept resolve_person in the list, because the parity
+        of D-FIND-3 does not hold (find_engine.md §5.3), so the trade holds.
+        The exit of resolve_person gives a place back only to an org with the
+        profile on. With the profile off it is not in the list at all."""
         from acb_skills import skill_families as sf
         from acb_skills import tool_packs as tp
 
