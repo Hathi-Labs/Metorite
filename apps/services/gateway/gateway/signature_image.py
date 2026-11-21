@@ -10,6 +10,12 @@ JPEG. The child confines itself with ``acb_skills/child_confine.py`` (Landlock,
 seccomp, no fork) and caps its own memory. The parent kills its process group
 at :data:`TIMEOUT_S` and reads at most :data:`_MAX_ANSWER_BYTES` of its answer.
 
+A third kind, ``capture``, serves the Studio photo field (WS-STU D24a). It keeps
+the aspect ratio, applies the EXIF orientation, scales the long side down to
+:data:`MAX_CAPTURE_SIDE`, and writes no EXIF or GPS block. Only
+:func:`encode_capture` reaches it. :func:`encode` and :data:`KINDS` stay the
+signature path, so the signature route cannot store a capture.
+
 This module holds no SQL and no route. ``routes/email/signature_images.py`` is
 its one caller, and it owns the table. Every refusal is a
 :class:`SignatureImageError` with a sentence for the member and an HTTP status.
@@ -44,6 +50,22 @@ KINDS = ("logo", "photo")
 #: as PNG (measured 2026-11-08). It cannot open WebP (``FileDataError``,
 #: measured 2026-11-07), so a WebP is refused before the child, with the fix.
 ACCEPTED = ("JPEG", "PNG", "GIF")
+#: The kind of a Studio capture (D24a). It is not in :data:`KINDS`.
+CAPTURE = "capture"
+#: A capture takes JPEG and PNG only. HEIC is a non-goal: MuPDF 1.28.2 does
+#: not decode it, and the sniff does not know it. A GIF is refused too.
+CAPTURE_ACCEPTED = ("JPEG", "PNG")
+#: The longest side of a stored capture, in pixels. The scale never goes up.
+MAX_CAPTURE_SIDE = 2048
+#: The byte cap of one capture upload. It matches the shared per-file cap of
+#: 15 MiB, and it is not the 2 MiB of the avatar.
+MAX_CAPTURE_UPLOAD_BYTES = 15 * 1024 * 1024
+#: The bytes of one stored capture. The child steps the long side down to
+#: fit (2048, 1536, 1024), then refuses.
+MAX_CAPTURE_OUTPUT_BYTES = 3 * 1024 * 1024
+#: The bytes of the child's answer for a capture: the base64 of the output
+#: cap, and the JSON around it.
+_MAX_CAPTURE_ANSWER_BYTES = 5 * 1024 * 1024
 #: The refusal of a WebP names the fix (fix round 1, P3).
 WEBP_REFUSED = "This image is a WebP file. Upload it again as a PNG or a JPEG."
 #: The bytes of one stored image (D-EM-67). The child steps the edge down to
@@ -85,6 +107,13 @@ _THREAD_VALUES = {
 _MAGIC = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff"}
 
 _UPLOAD_PNG = "Upload a PNG or a JPEG."
+#: The refusals that differ for a capture. The rest read the same.
+_CAPTURE_REASONS: dict[str, tuple[str, int]] = {
+    "size": (f"That photo is larger than {MAX_CAPTURE_UPLOAD_BYTES // (1024 * 1024)} MB. "
+             "Take it again at a lower quality.", 413),
+    "too_big": (f"That photo is still larger than {MAX_CAPTURE_OUTPUT_BYTES // (1024 * 1024)} MB "
+                "after it was scaled down. Take another photo.", 400),
+}
 _REASONS: dict[str, tuple[str, int]] = {
     "broken": (f"That image could not be read. It may be damaged. {_UPLOAD_PNG}", 400),
     "size": (f"That image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. "
@@ -130,19 +159,23 @@ class Encoded:
     clear_share: float
 
 
-def check_type(data: bytes) -> str:
+def check_type(data: bytes, kind: str = "logo") -> str:
     """The byte cap and the sniff, in the request, before any decoder.
 
     Raises :class:`SignatureImageError`. An SVG, a WebP and a file that is no
-    image never reach the child. JPEG, PNG and GIF do."""
+    image never reach the child. JPEG, PNG and GIF do. A ``capture`` takes
+    JPEG and PNG only, up to :data:`MAX_CAPTURE_UPLOAD_BYTES`."""
+    capture = kind == CAPTURE
     if not data:
         raise SignatureImageError("The file is empty.")
-    if len(data) > MAX_UPLOAD_BYTES:
-        message, status = _REASONS["size"]
+    if len(data) > (MAX_CAPTURE_UPLOAD_BYTES if capture else MAX_UPLOAD_BYTES):
+        message, status = (_CAPTURE_REASONS if capture else _REASONS)["size"]
         raise SignatureImageError(message, status)
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         raise SignatureImageError(WEBP_REFUSED)
     try:
+        if capture:
+            return sniff(data, what="a photo", accepted=CAPTURE_ACCEPTED)
         return sniff(data, what="a signature image", accepted=ACCEPTED)
     except AvatarError as exc:
         raise SignatureImageError(str(exc)) from exc
@@ -152,17 +185,33 @@ async def encode(data: bytes, kind: str) -> Encoded:
     """Check, decode and re-encode one upload. Raises :class:`SignatureImageError`."""
     if kind not in KINDS:
         raise SignatureImageError("The kind of image must be logo or photo.", 422)
-    check_type(data)
+    return await _encode_kind(data, kind)
+
+
+async def encode_capture(data: bytes) -> Encoded:
+    """Check, decode and re-encode one Studio capture (WS-STU D24a).
+
+    The result keeps the aspect ratio, has the EXIF orientation applied, has
+    a long side of at most :data:`MAX_CAPTURE_SIDE`, and holds no EXIF or GPS
+    block. It is JPEG when no pixel is transparent, else PNG."""
+    return await _encode_kind(data, CAPTURE)
+
+
+async def _encode_kind(data: bytes, kind: str) -> Encoded:
+    check_type(data, kind)
     held = await _take_slot(SLOT_WAIT_S)
     if not held:
         raise SignatureImageError(_BUSY, 503)
     try:
-        answer, timed_out = await _run_child(_worker_argv(_spec(kind)), data, TIMEOUT_S)
+        # The default cap is not passed, so a fake child keeps its old shape.
+        extra = {"cap": _MAX_CAPTURE_ANSWER_BYTES} if kind == CAPTURE else {}
+        answer, timed_out = await _run_child(
+            _worker_argv(_spec(kind)), data, TIMEOUT_S, **extra)
     finally:
         _SLOT.release()
     if timed_out:
         raise SignatureImageError(_TIMED_OUT, 503)
-    return _parse(answer)
+    return _parse(answer, kind)
 
 
 # ── The child ───────────────────────────────────────────────────────────────
@@ -194,12 +243,14 @@ def _confine_path() -> str:
 
 def _spec(kind: str) -> dict[str, Any]:
     """The caps that the child applies. Read at each call, so a test can lower them."""
+    capture = kind == CAPTURE
     return {
         "kind": kind,
-        "max_bytes": MAX_UPLOAD_BYTES,
+        "max_bytes": MAX_CAPTURE_UPLOAD_BYTES if capture else MAX_UPLOAD_BYTES,
         "max_pixels": MAX_SOURCE_PIXELS,
         "max_side": MAX_SOURCE_SIDE,
-        "max_output_bytes": MAX_OUTPUT_BYTES,
+        "max_output_bytes": MAX_CAPTURE_OUTPUT_BYTES if capture else MAX_OUTPUT_BYTES,
+        "capture_side": MAX_CAPTURE_SIDE,
         "jpeg_quality": JPEG_QUALITY,
         "memory_bytes": MEMORY_BYTES,
         "cpu_seconds": CPU_SECONDS,
@@ -254,7 +305,7 @@ async def _feed(stdin: Any, data: bytes) -> None:
             stdin.close()
 
 
-async def _talk(proc: Any, data: bytes) -> bytes | None:
+async def _talk(proc: Any, data: bytes, cap: int = _MAX_ANSWER_BYTES) -> bytes | None:
     """Feed the child and read its stdout up to the cap. ``None`` when the
     answer passed the cap: the child is killed then."""
     feed = asyncio.ensure_future(_feed(proc.stdin, data))
@@ -262,7 +313,7 @@ async def _talk(proc: Any, data: bytes) -> bytes | None:
     try:
         while chunk := await proc.stdout.read(_CHUNK):
             out += chunk
-            if len(out) > _MAX_ANSWER_BYTES:
+            if len(out) > cap:
                 _kill_group(proc)
                 return None
         await proc.wait()
@@ -289,7 +340,9 @@ async def _reap(proc: Any) -> None:
         _log.warning("signature_image.reap_timeout", pid=proc.pid)
 
 
-def _run_blocking(argv: list[str], data: bytes, timeout: float) -> tuple[bytes | None, bool]:
+def _run_blocking(
+    argv: list[str], data: bytes, timeout: float, cap: int = _MAX_ANSWER_BYTES,
+) -> tuple[bytes | None, bool]:
     """The child, for a loop that cannot spawn one (a Windows dev server)."""
     try:
         done = subprocess.run(  # our own worker file, no shell
@@ -301,11 +354,11 @@ def _run_blocking(argv: list[str], data: bytes, timeout: float) -> tuple[bytes |
     except OSError as exc:
         raise SignatureImageError(_NO_START, 503) from exc
     out = done.stdout
-    return (None if len(out) > _MAX_ANSWER_BYTES else out), False
+    return (None if len(out) > cap else out), False
 
 
 async def _run_child(
-    argv: list[str], data: bytes, timeout: float,
+    argv: list[str], data: bytes, timeout: float, cap: int = _MAX_ANSWER_BYTES,
 ) -> tuple[bytes | None, bool]:
     """``(stdout, timed_out)``. The child's process group is killed and the
     child reaped on a timeout, on a cancel of the caller and on an answer past
@@ -321,11 +374,11 @@ async def _run_child(
             start_new_session=os.name == "posix",
         )
     except NotImplementedError:
-        return await asyncio.to_thread(_run_blocking, argv, data, timeout)
+        return await asyncio.to_thread(_run_blocking, argv, data, timeout, cap)
     except OSError as exc:
         raise SignatureImageError(_NO_START, 503) from exc
     try:
-        return await asyncio.wait_for(_talk(proc, data), timeout), False
+        return await asyncio.wait_for(_talk(proc, data, cap), timeout), False
     except TimeoutError:
         return None, True
     finally:
@@ -350,8 +403,8 @@ def _share(value: object) -> float:
     return number
 
 
-def _size(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 480:
+def _size(value: object, top: int = 480) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
         raise _bad()
     return value
 
@@ -371,7 +424,7 @@ def _was_confined(value: dict[str, Any]) -> bool:
     return sys.platform != "linux" and value.get("unconfined_os") == sys.platform
 
 
-def _parse(answer: bytes | None) -> Encoded:
+def _parse(answer: bytes | None, kind: str = "logo") -> Encoded:
     """The child's one line, checked field by field. The parent trusts no
     value of a child that read hostile bytes: the type, the size, the shares,
     and the magic bytes of the image must each hold."""
@@ -391,8 +444,9 @@ def _parse(answer: bytes | None) -> Encoded:
         raise _bad()
     (name, value), = item.items()
     if name == "refused":
-        message, status = _REASONS.get(value if isinstance(value, str) else "",
-                                       _REASONS["failed"])
+        code = value if isinstance(value, str) else ""
+        table = {**_REASONS, **(_CAPTURE_REASONS if kind == CAPTURE else {})}
+        message, status = table.get(code, _REASONS["failed"])
         raise SignatureImageError(message, status)
     if name != "ok" or not isinstance(value, dict):
         raise _bad()
@@ -406,11 +460,14 @@ def _parse(answer: bytes | None) -> Encoded:
         data = base64.b64decode(value["data"], validate=True)
     except ValueError:
         raise _bad() from None
-    if not data or len(data) > MAX_OUTPUT_BYTES or not data.startswith(_MAGIC[content_type]):
+    capture = kind == CAPTURE
+    cap = MAX_CAPTURE_OUTPUT_BYTES if capture else MAX_OUTPUT_BYTES
+    top = MAX_CAPTURE_SIDE if capture else 480
+    if not data or len(data) > cap or not data.startswith(_MAGIC[content_type]):
         raise _bad()
     return Encoded(
         data=data, content_type=content_type,
-        width=_size(value.get("width")), height=_size(value.get("height")),
+        width=_size(value.get("width"), top), height=_size(value.get("height"), top),
         dark_share=_share(value.get("dark_share")),
         clear_share=_share(value.get("clear_share")),
     )
@@ -418,11 +475,16 @@ def _parse(answer: bytes | None) -> Encoded:
 
 __all__ = [
     "ACCEPTED",
+    "CAPTURE",
     "KINDS",
+    "MAX_CAPTURE_OUTPUT_BYTES",
+    "MAX_CAPTURE_SIDE",
+    "MAX_CAPTURE_UPLOAD_BYTES",
     "MAX_OUTPUT_BYTES",
     "TIMEOUT_S",
     "Encoded",
     "SignatureImageError",
     "check_type",
     "encode",
+    "encode_capture",
 ]
