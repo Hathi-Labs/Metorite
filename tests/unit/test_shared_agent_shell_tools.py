@@ -1090,6 +1090,10 @@ def test_a_github_copilot_agent_never_reaches_tier_2(monkeypatch, tmp_path) -> N
 #   Mutation: remove its call, and the own-tool tests go red. Make the
 #   platform ``run_command`` exemption ``False``, and the app-builder test
 #   goes red.
+# * The drop walks every slot of ``_tool_pool_slots``: a list, a tuple that
+#   a real ``GitHubCopilotAgent`` keeps, and the legacy Copilot
+#   ``_default_options["tools"]``. Skip one slot shape, and its real-Copilot
+#   or legacy test goes red.
 
 def test_the_install_answer_reads_the_binding_and_fails_closed(monkeypatch) -> None:
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
@@ -1274,6 +1278,80 @@ def test_a_withheld_copilot_agent_drops_its_own_shell_tool() -> None:
     )
     names = _own_names(agent._tools)
     assert "run_script" not in names and "my_report" in names, names
+
+
+def _real_copilot(shape: str) -> Any:
+    """A REAL ``GitHubCopilotAgent``, the class the executor runs, with an
+    own ``run_script`` in one pool shape: ``list`` (``tools=``) or ``tuple``
+    (``default_options={"tools": (...)}``, which the SDK keeps as a tuple)."""
+    from agent_framework_github_copilot import GitHubCopilotAgent
+
+    if shape == "list":
+        return GitHubCopilotAgent(
+            instructions="x", tools=[_named("run_script"), _named("my_report")],
+        )
+    return GitHubCopilotAgent(
+        instructions="x", tools=[_named("my_report")],
+        default_options={"tools": (_named("run_script"),)},
+    )
+
+
+def _session_tool_names(agent: Any) -> list[str]:
+    """The tool names that the agent's next Copilot session gets."""
+    kwargs = agent._build_session_kwargs(False, {})
+    return [getattr(t, "name", None) or ti._tool_name(t) for t in kwargs.get("tools") or []]
+
+
+class _LegacyCopilotShape:
+    """The legacy Copilot shape that the injector also fills: ``_tools`` and
+    ``_default_options["tools"]``, with no public ``default_options``."""
+
+    def __init__(self) -> None:
+        self.name = "legacy"
+        self._tools: list[Any] = [_named("my_report")]
+        self._default_options: dict[str, Any] = {"tools": [_named("run_script")]}
+
+
+@pytest.mark.filterwarnings("ignore::Warning")
+@pytest.mark.parametrize("shape", ["list", "tuple"])
+@pytest.mark.parametrize("case", ["withheld", "root"])
+def test_a_real_copilot_session_holds_no_own_shell_tool(shape: str, case: str) -> None:
+    """The verifier's finding: a tuple pool kept ``run_script`` in the
+    session. ``_build_session_kwargs`` is what the SDK sends."""
+    slug, cfg = ("task-manager", _config("task-manager")) if case == "withheld" else (
+        "metorite", None)
+    agent = _real_copilot(shape)
+    assert "run_script" in _session_tool_names(agent), "the probe holds no run_script"
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name=slug, agent_config=cfg)
+    names = _session_tool_names(agent)
+    assert "my_report" in names, names
+    if case == "withheld":
+        assert "run_script" not in names, (shape, names)
+    else:
+        assert "run_script" in names, (shape, names)
+
+
+@pytest.mark.parametrize("case", ["withheld", "root"])
+def test_the_legacy_copilot_pool_loses_its_own_shell_tool(case: str) -> None:
+    slug, cfg = ("task-manager", _config("task-manager")) if case == "withheld" else (
+        "metorite", None)
+    agent = _LegacyCopilotShape()
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name=slug, agent_config=cfg)
+    names = [ti._tool_name(t) for pool in ti._run_tool_pools(agent) for t in pool]
+    assert "my_report" in names, names
+    assert ("run_script" in names) is (case == "root"), (case, names)
+
+
+def test_a_tuple_pool_that_cannot_change_fails_closed() -> None:
+    class _Frozen:
+        name = "frozen"
+
+        @property
+        def tools(self) -> tuple[Any, ...]:
+            return (_named("run_script"),)
+
+    with pytest.raises(ti.ToolPoolUnwritable):
+        ti._drop_own_shell_tools([_Frozen()], "crm-assistant", SHELL_TOOLS)
 
 
 @pytest.mark.parametrize("case", ["covered", "root"])

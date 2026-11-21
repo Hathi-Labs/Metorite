@@ -613,25 +613,11 @@ def _withhold_egress_from_agent(
     def _off(tool: Any) -> bool:
         return _is_egress(tool) or (chat_hold and _is_held_off(tool, owner))
 
-    def _filter(pool: Any) -> None:
-        if not isinstance(pool, list):
-            return
-        kept = [t for t in pool if not _off(t)]
-        removed.extend(_tool_name(t) for t in pool if _off(t))
-        pool[:] = kept
-
-    _do = getattr(agent, "default_options", None)
-    if isinstance(_do, dict):
-        _filter(_do.get("tools"))
-    for attr in _TOOL_POOLS:
-        _filter(getattr(agent, attr, None))
+    # Every slot, a tuple one too (task 3848, :func:`_filter_tool_slots`).
+    removed.extend(_filter_tool_slots(agent, _off))
     opts = getattr(agent, "_default_options", None)
-    if isinstance(opts, dict):
-        _filter(opts.get("tools"))
-        if opts.pop("mcp_servers", None):
-            removed.append("mcp_servers")
-    elif opts is not None:
-        _filter(getattr(opts, "tools", None))
+    if isinstance(opts, dict) and opts.pop("mcp_servers", None):
+        removed.append("mcp_servers")
     if getattr(agent, "mcp_tools", None):
         removed.append("mcp_tools")
     return removed
@@ -2089,15 +2075,91 @@ def _whatsapp_ui_tools(agent_name: str | None) -> list[Any]:
     return [whatsapp_ui] if gets_ui_tool(agent_name) else []
 
 
-def _drop_own_tools(agents: list[Any], names: frozenset[str]) -> None:
-    """Take the tools named *names* out of each agent's OWN tool pools.
+class ToolPoolUnwritable(RuntimeError):
+    """A tool pool held a tool that must leave, and the pool could not change.
 
-    A change in place holds for this run only: ``build_agents()`` makes the
-    agents again for each run (see :func:`_own_tool_pools`).
+    :func:`_filter_tool_slots` raises it, so the run fails closed. It never
+    keeps a tool that a rule takes away.
+    """
+
+
+def _tool_pool_slots(agent: Any) -> list[tuple[Any, str]]:
+    """Every place where ONE agent holds a tool list or tuple, as ``(owner, key)``.
+
+    *owner* is a dict, and *key* is its item, or an object, and *key* is its
+    attribute. The slots are those of :func:`_run_tool_pools`:
+    ``default_options["tools"]``, ``tools``, ``_tools`` and the legacy Copilot
+    ``_default_options["tools"]`` (an item or an attribute). Unlike those
+    readers, a slot here may hold a TUPLE. ``GitHubCopilotAgent`` keeps a
+    ``default_options={"tools": (...)}`` tuple as it is, and its session reads
+    it (task 3848). Each ``(owner, key)`` pair is listed once.
+    """
+    slots: list[tuple[Any, str]] = []
+    seen: set[tuple[int, str]] = set()
+
+    def _add(owner: Any, key: str) -> None:
+        if owner is None or (id(owner), key) in seen:
+            return
+        try:
+            pool = owner.get(key) if isinstance(owner, dict) else getattr(owner, key, None)
+        except Exception:  # an owner that cannot be read holds no pool we know
+            return
+        if isinstance(pool, (list, tuple)):
+            seen.add((id(owner), key))
+            slots.append((owner, key))
+
+    for opts_attr in ("default_options", "_default_options"):
+        try:
+            opts = getattr(agent, opts_attr, None)
+        except Exception:
+            opts = None
+        if isinstance(opts, dict) or (opts_attr == "_default_options" and opts is not None):
+            _add(opts, "tools")
+    for attr in _TOOL_POOLS:
+        _add(agent, attr)
+    return slots
+
+
+def _filter_tool_slots(agent: Any, drop: Callable[[Any], bool]) -> list[str]:
+    """Take each tool for which *drop* is true out of every slot of *agent*.
+
+    It walks :func:`_tool_pool_slots`. A list changes in place, as before. A
+    tuple is bound again on its owner, as a new tuple without the tools. A
+    slot that cannot be bound again raises :class:`ToolPoolUnwritable`, so the
+    run fails closed. Returns the names it took out, one for each tool.
+    """
+    removed: list[str] = []
+    for owner, key in _tool_pool_slots(agent):
+        pool = owner.get(key) if isinstance(owner, dict) else getattr(owner, key)
+        gone = [t for t in pool if drop(t)]
+        if not gone:
+            continue
+        kept = [t for t in pool if not drop(t)]
+        removed.extend(_tool_name(t) for t in gone)
+        if isinstance(pool, list):
+            pool[:] = kept
+            continue
+        try:
+            if isinstance(owner, dict):
+                owner[key] = tuple(kept)
+            else:
+                setattr(owner, key, tuple(kept))
+        except Exception as exc:
+            raise ToolPoolUnwritable(
+                f"cannot take {sorted(_tool_name(t) for t in gone)} out of {key}",
+            ) from exc
+    return removed
+
+
+def _drop_own_tools(agents: list[Any], names: frozenset[str]) -> None:
+    """Take the tools named *names* out of each agent's tool pools.
+
+    It walks every slot of :func:`_tool_pool_slots`, a tuple one too. A change
+    holds for this run only: ``build_agents()`` makes the agents again for
+    each run (see :func:`_own_tool_pools`).
     """
     for agent in agents:
-        for _attr, lst in _own_tool_pools(agent):
-            lst[:] = [t for t in lst if _tool_name(t) not in names]
+        _filter_tool_slots(agent, lambda t: _tool_name(t) in names)
 
 
 #: The ``SHELL_TOOLS`` members that run only in the sandbox broker. Today that
@@ -2110,15 +2172,17 @@ _BROKER_ONLY_SHELL_TOOLS: frozenset[str] = frozenset({"run_command"})
 def _drop_own_shell_tools(
     agents: list[Any], agent_name: str | None, withheld: frozenset[str],
 ) -> None:
-    """Take each withheld shell tool out of the agent's OWN tool pools (D85).
+    """Take each withheld shell tool out of the agent's OWN tools (D85).
 
     :func:`_drop_withheld` filters the INJECTED tools only. An agent repo can
     ship its own tool named ``run_script``, ``code_task`` or
     ``install_dependency``. In a run that withholds the shell tools, this
     drops it whatever its identity, and logs ``executor.own_shell_tool_refused``
-    (task 3848). It keeps one case: a :data:`_BROKER_ONLY_SHELL_TOOLS` tool that
-    is the platform's own callable (``egress._platform_owned``), because the
-    broker runs it. So app-builder's harness keeps its ``run_command``, and an
+    (task 3848). It walks every slot of :func:`_tool_pool_slots`, so a tuple
+    pool and the legacy Copilot ``_default_options["tools"]`` lose it too. It
+    keeps one case: a :data:`_BROKER_ONLY_SHELL_TOOLS` tool that is the
+    platform's own callable (``egress._platform_owned``), because the broker
+    runs it. So app-builder's harness keeps its ``run_command``, and an
     agent's own ``run_command`` goes. A fault keeps nothing: it fails closed.
     """
     if not withheld:
@@ -2128,26 +2192,19 @@ def _drop_own_shell_tools(
     except Exception:  # no identity check means no exemption
         def _platform_owned(item: Any, name: str) -> bool:  # type: ignore[misc]
             return False
+
+    def _refused(item: Any) -> bool:
+        name = _tool_name(item)
+        if name not in withheld:
+            return False
+        try:
+            return not (name in _BROKER_ONLY_SHELL_TOOLS and _platform_owned(item, name))
+        except Exception:
+            return True
+
     for agent in agents:
-        for _attr, lst in _own_tool_pools(agent):
-            kept: list[Any] = []
-            for item in lst:
-                name = _tool_name(item)
-                if name in withheld:
-                    try:
-                        broker_tool = (
-                            name in _BROKER_ONLY_SHELL_TOOLS and _platform_owned(item, name)
-                        )
-                    except Exception:
-                        broker_tool = False
-                    if not broker_tool:
-                        _log.warning(
-                            "executor.own_shell_tool_refused",
-                            agent=agent_name, tool=name,
-                        )
-                        continue
-                kept.append(item)
-            lst[:] = kept
+        for name in _filter_tool_slots(agent, _refused):
+            _log.warning("executor.own_shell_tool_refused", agent=agent_name, tool=name)
 
 
 def _drop_spawn_tool(agents: list[Any]) -> None:

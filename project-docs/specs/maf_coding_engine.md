@@ -1228,15 +1228,19 @@ owner kept delegation (§16.3).
   to ask an admin. The error text reads the same function.
 - **An agent's own tool with a shell tool name.** `_drop_withheld` filters
   the injected tools only. `_tool_injection._drop_own_shell_tools` now takes
-  a withheld name out of each own tool pool of the agent, whatever its
-  identity, and logs `executor.own_shell_tool_refused`. One case stays: a
+  a withheld name out of each slot of `_tool_pool_slots`, whatever its
+  identity, and logs `executor.own_shell_tool_refused`. The slots are
+  `default_options["tools"]`, `tools`, `_tools` and the legacy Copilot
+  `_default_options["tools"]`. A list changes in place. A tuple, which a
+  `GitHubCopilotAgent` keeps and sends to its session, is bound again. A
+  slot that cannot change fails the run. One case stays: a
   `run_command` that is the platform's own callable, because the broker
   runs it (app-builder's harness, §7.8). An agent's own `run_command` goes.
 - `list_integrations` names `run_script` or `code_task` only to a run that
   holds one (`write_artifact.run_holds_tool`). Its description names neither.
 
 What these do not reach: MCP tools and the tools of a context provider are
-not own tool pools. The loader still installs the declared dependencies of
+in no slot of `_tool_pool_slots`. The loader still installs the declared dependencies of
 an agent repo at load time, with wheels only (BO-7). That runs inside the
 load, before the executor binds the D85 flags from the loaded config. The
 model does not choose those packages.
