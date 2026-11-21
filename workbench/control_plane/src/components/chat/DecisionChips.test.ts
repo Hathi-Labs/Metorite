@@ -102,8 +102,8 @@ describe("focusTargetAfterUndo", () => {
   it("goes to the previous chip when the last one went", () => {
     expect(focusTargetAfterUndo(ids, "c", true)).toEqual({ kind: "undo", id: "b" });
   });
-  it("goes to the lead text when none is left", () => {
-    expect(focusTargetAfterUndo(["a"], "a", true)).toEqual({ kind: "lead" });
+  it("goes outside the list when none is left", () => {
+    expect(focusTargetAfterUndo(["a"], "a", true)).toEqual({ kind: "outside" });
   });
   it("stays on the same chip when the Undo failed", () => {
     expect(focusTargetAfterUndo(ids, "b", false)).toEqual({ kind: "undo", id: "b" });

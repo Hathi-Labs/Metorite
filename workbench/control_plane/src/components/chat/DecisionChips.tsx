@@ -14,7 +14,7 @@
  * and when the list cannot be read. It reads when the chat settles: when a
  * reply ends, not while it streams. More than three chips collapse behind a
  * "Show N more" button. One Undo runs at a time: every Undo is disabled while
- * one is in flight, and focus then moves to the next Undo. Fence:
+ * one is in flight, and focus then moves to the next Undo, or to the composer after the last one. Fence:
  * `DecisionChips.test.ts` and `DecisionChips.fence.test.ts`.
  */
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
@@ -26,19 +26,19 @@ import { CHIP_WORDS, fetchDecisions, undoDecision, type Decision } from "@/lib/c
 /** Chips drawn before "Show N more". The server lists at most 10. */
 export const COLLAPSED_LIMIT = 3;
 
-/** Where focus goes after an Undo. */
-export type FocusTarget = { kind: "undo"; id: string } | { kind: "lead" };
+/** Where focus goes after an Undo. "outside" means no chip is left, so the host takes focus. */
+export type FocusTarget = { kind: "undo"; id: string } | { kind: "outside" };
 
 /**
  * The element that takes focus after an Undo: the chip's own Undo when the
  * Undo failed (the chip stays), else the next chip's Undo, else the previous
- * chip's, else the lead text of the list. `ids` is the list before the Undo.
+ * chip's, else outside the list (the host puts focus on the composer). `ids` is the list before the Undo.
  */
 export function focusTargetAfterUndo(ids: readonly string[], id: string, removed: boolean): FocusTarget {
   if (!removed) return { kind: "undo", id };
   const at = ids.indexOf(id);
   const rest = ids.filter((x) => x !== id);
-  if (rest.length === 0) return { kind: "lead" };
+  if (rest.length === 0) return { kind: "outside" };
   return { kind: "undo", id: rest[Math.min(Math.max(at, 0), rest.length - 1)] };
 }
 
@@ -72,7 +72,7 @@ export function DecisionChipsView({
   const shown = expanded || hidden === 0 ? items : items.slice(0, COLLAPSED_LIMIT);
   return (
     <div ref={rootRef} className="mb-2 flex flex-wrap items-center gap-1.5 text-xs" data-testid="decision-chips">
-      <span className="text-muted-foreground outline-none" tabIndex={-1} data-decision-lead="">
+      <span className="text-muted-foreground">
         {CHIP_WORDS.lead}
       </span>
       {shown.map((d) => (
@@ -112,9 +112,11 @@ export interface DecisionChipsProps {
   enabled: boolean;
   /** Changes when the chat settles. `null` while a reply streams: no read then. */
   settledKey: string | number | null;
+  /** Called after the last chip goes, so focus has a place to land. */
+  onEmptied?: () => void;
 }
 
-export default function DecisionChips({ sessionId, enabled, settledKey }: DecisionChipsProps) {
+export default function DecisionChips({ sessionId, enabled, settledKey, onEmptied }: DecisionChipsProps) {
   const [items, setItems] = useState<Decision[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [failedId, setFailedId] = useState<string | null>(null);
@@ -123,19 +125,17 @@ export default function DecisionChips({ sessionId, enabled, settledKey }: Decisi
   const focusAfter = useRef<FocusTarget | null>(null);
 
   // After an Undo the pressed button is gone or disabled, so focus would drop
-  // to the page. Put it on the next Undo, or on the lead text of the list.
+  // to the page. Put it on the next Undo, or hand it to the host when none is left.
   useEffect(() => {
     const target = focusAfter.current;
     if (!target || busyId !== null) return;
     focusAfter.current = null;
-    const root = rootRef.current;
-    if (!root) return;
-    const el =
-      target.kind === "undo"
-        ? root.querySelector<HTMLElement>(`[data-undo-id="${target.id}"]`)
-        : root.querySelector<HTMLElement>("[data-decision-lead]");
-    el?.focus();
-  }, [items, busyId, failedId]);
+    if (target.kind === "outside") {
+      onEmptied?.();
+      return;
+    }
+    rootRef.current?.querySelector<HTMLElement>(`[data-undo-id="${target.id}"]`)?.focus();
+  }, [items, busyId, failedId, onEmptied]);
 
   useEffect(() => {
     if (!enabled || !sessionId || settledKey === null) return;

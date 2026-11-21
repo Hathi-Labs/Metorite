@@ -15,6 +15,8 @@ R7, each with the mutation that turns it red:
   the process cache answers and the decision holds after the Undo.
 * ``TestTheRoute`` — read the member or the org from the body, or let the flag
   off answer a list.
+* ``TestTwoUndosAtOnce`` — drop the Undo lock in ``undo_decision``: both
+  Undos read the full list, and the second write brings the first decision back.
 """
 from __future__ import annotations
 
