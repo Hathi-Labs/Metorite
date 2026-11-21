@@ -76,6 +76,13 @@ VERSION_ARG = "expected_version"
 #: The longest ``If-Match`` value. The edge checks the shape again.
 MAX_VERSION_CHARS = 40
 
+#: The ONE shape of an ``If-Match`` value that the edge sends: the characters
+#: of an ISO-8601 timestamp, and no other (MCP-P1b-2 review P2). The edge
+#: client refuses each other value before the send, so the ask of a door
+#: write refuses it too. Otherwise the member approves a call that no send
+#: can deliver. ``build_call`` keeps its own rule, because Studio uses it.
+IF_MATCH_PATTERN = r"[0-9][0-9:.+TZ-]{9,39}"
+
 _APP_ID = re.compile(APP_ID_PATTERN)
 _OP = re.compile(OP_PATTERN)
 _ARG_KEY = re.compile(ARG_KEY_PATTERN)
@@ -612,6 +619,7 @@ __all__ = [
     "ARG_KEY_PATTERN",
     "CLASSES",
     "DOORS",
+    "IF_MATCH_PATTERN",
     "MAX_VERSION_CHARS",
     "METHODS",
     "OP_PATTERN",
