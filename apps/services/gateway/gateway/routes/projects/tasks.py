@@ -2919,8 +2919,12 @@ async def claim_task(
                                                     place)
         # SW-107: the run's dispatcher, read in this tenant session, so RLS
         # hides a run of another organization. A bad value drops, and the
-        # claim goes on with a warning. It changes no lock order: it reads
-        # runs with no lock and writes only the claim's own run.
+        # claim goes on with a warning. The chain read takes no lock. The
+        # UPDATE writes only the claim's own run, and its foreign key check
+        # takes a KEY SHARE lock on the dispatcher row. That lock waits on a
+        # delete and on a run write that holds the dispatcher row FOR UPDATE
+        # (`_lock_run`). Such a write locks only its own run and its task, so
+        # it never waits on the claim, and no cycle forms.
         dropped = await agent_runs.set_run_dispatcher(db, run_id, dispatched_by)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).

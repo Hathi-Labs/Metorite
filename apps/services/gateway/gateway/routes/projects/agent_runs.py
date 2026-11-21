@@ -2388,7 +2388,19 @@ async def set_run_dispatcher(db: Any, run_id: str | None,
     it is the run itself, or when the run is among its dispatchers within
     :data:`DISPATCH_LOOP_STEPS` steps. A dropped value fails nothing: the
     caller adds the text of its code as a ``warning``. A call with no value
-    keeps the old one, as :func:`_set_run_place` does.
+    keeps the old one, as :func:`_set_run_place` does. A Resume and a reopen
+    keep the dispatcher by design, so a lane that restarts keeps its line
+    (§3.12.3).
+
+    The chain read takes no lock, and the UPDATE's foreign key check takes a
+    KEY SHARE lock on the dispatcher row. A dispatcher that a delete removes
+    between the two makes that check fail (23503). A savepoint maps the
+    failure to the ``unknown`` drop, so the claim still works.
+
+    Two concurrent calls can each pass the loop check and together make a
+    loop, because neither sees the other's write. So each reader that walks
+    the dispatchers (the map, SW-109) must bound its walk. The map reads one
+    step only.
 
     Display data only. The run came from the gate, so the value never
     chooses a run, and no authorization check, visibility rule, run slot or
@@ -2405,7 +2417,14 @@ async def set_run_dispatcher(db: Any, run_id: str | None,
     for row in chain:
         if str(row.id) == run_id:
             return "self" if int(row.step) == 1 else "loop"
-    await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
+    await db.execute(text("SAVEPOINT sw107_dispatcher"))
+    try:
+        await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
+    except IntegrityError:
+        # The dispatcher went after the chain read (23503). Drop, never fail.
+        await db.execute(text("ROLLBACK TO SAVEPOINT sw107_dispatcher"))
+        return "unknown"
+    await db.execute(text("RELEASE SAVEPOINT sw107_dispatcher"))
     return None
 
 
@@ -2439,7 +2458,7 @@ async def _clear_run_label(db: Any, run_id: str) -> None:
     keep the old one (:func:`_set_run_label`). It is a separate statement,
     so no run-slot rule names the label (the fence of §3.7). SW-104: the
     machine, its kind and the model go in the same statement, by the same
-    rule."""
+    rule. SW-107: the dispatcher stays by design (§3.12.3)."""
     await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 

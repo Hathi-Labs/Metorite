@@ -35,6 +35,8 @@ Mutations (R7). ``G`` is ``gateway/routes/projects/agent_runs.py``.
   ``test_a_person_body_with_dispatched_by_is_refused``.
 * D6. ``G`` ``_SET_DISPATCHER_SQL``: COALESCE the old value first.
   ``test_a_later_value_replaces_it_and_none_keeps_it``.
+* D7. ``G`` ``set_run_dispatcher``: drop the savepoint.
+  ``test_a_dispatcher_gone_after_the_chain_read_drops_and_the_claim_passes``.
 """
 
 from __future__ import annotations
@@ -340,6 +342,29 @@ class TestTheDispatcherOnARealDatabase:
             bad = await _claim(call, session, task, {"dispatched_by": str(uuid.uuid4())})
             assert bad["dispatched_by_dropped"] == "unknown"
         assert _dispatcher(w, run_id) == two
+
+    async def test_a_dispatcher_gone_after_the_chain_read_drops_and_the_claim_passes(
+            self, w, monkeypatch):
+        """P2. A delete between the chain read and the UPDATE makes the
+        foreign key check fail (23503). The chain read is forced to find a run
+        that does not exist, which is the same state, so the UPDATE meets the
+        failure each time. The savepoint maps it to ``unknown``, and the
+        claim, its run and its assignee still commit."""
+        from gateway.routes.projects import agent_runs
+
+        ghost = str(uuid.uuid4())
+        monkeypatch.setattr(agent_runs, "_DISPATCH_CHAIN_SQL",
+                            "SELECT CAST(:d AS uuid) AS id, 1 AS step"
+                            " WHERE CAST(:steps AS int) > 0")
+        task = _fresh(w)
+        async with _session(w.p) as call:
+            out = await _claim(call, _in_session(w.alice, _key()), task,
+                               {"dispatched_by": ghost, "agent_label": "lane-ghost"})
+        assert (out["warning"], out["dispatched_by_dropped"]) == (_UNKNOWN, "unknown")
+        [row] = _rows(w.p, "SELECT dispatched_by_run_id, agent_label FROM pm_agent_runs"
+                           " WHERE id = CAST(:i AS uuid)", i=out["agent_run_id"])
+        assert (row.dispatched_by_run_id, row.agent_label) == (None, "lane-ghost")
+        assert ALICE in out["assignees"], out
 
     async def test_a_claim_with_the_runs_flag_off_drops_it(self, w, monkeypatch):
         async with _session(w.p) as call:
