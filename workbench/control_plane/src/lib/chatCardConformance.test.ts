@@ -88,6 +88,8 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/RecommendedBadge.tsx": { exempt: "a badge inside an option row" },
   "components/TodoPanel.tsx": { exempt: "the plan above the composer, not a card of the transcript" },
   "components/PlanCardBody.tsx": { exempt: "the body of the plan card, under its TemplateHead in genUITemplates" },
+  // AO-3: the picture of the resting card. ChatErrorCard draws its title row.
+  "components/AiRestingArt.tsx": { exempt: "the picture in the body of the resting card, under ChatErrorCard's RollupHeader" },
 };
 
 const SEAM = /<(?:RollupHeader|CollapsibleCardHeader|TemplateHead|ToolCardShell)\b/;

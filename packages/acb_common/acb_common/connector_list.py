@@ -19,6 +19,13 @@ PATH = Path(__file__).with_name("connector_list.json")
 SIGNIN_KINDS = ("one_click", "admin_consent", "key", "mcp_address")
 SCOPES = ("org", "member")
 
+#: API-5 (``api_connections.md`` §2.12). The ONE switch of an API connection
+#: (an ``api:`` row): ``chat_reads`` says whether a chat tool reads it. Each
+#: ``api:`` row carries it, and no other row does. While it is false, the
+#: result card, the connect dialog and the console say that the chat cannot
+#: read the connection yet. API-4 (task 3790) sets it to true.
+CHAT_READS = "chat_reads"
+
 
 @lru_cache(maxsize=1)
 def connector_rows() -> tuple[dict[str, Any], ...]:
@@ -30,3 +37,8 @@ def connector_rows() -> tuple[dict[str, Any], ...]:
 def connector(provider_id: str) -> dict[str, Any] | None:
     """The row of one provider id, or ``None``."""
     return next((r for r in connector_rows() if r["id"] == provider_id), None)
+
+
+def chat_reads(row: dict[str, Any]) -> bool:
+    """False only for a row that says that no chat tool reads it yet."""
+    return row.get(CHAT_READS) is not False

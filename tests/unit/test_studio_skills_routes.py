@@ -279,11 +279,13 @@ def _six(c: TestClient, sid: str) -> list[Any]:
 
 
 def _eight(c: TestClient, sid: str) -> list[Any]:
-    """The six routes, and the history and the undo of F7a."""
+    """The six routes, the history and the undo of F7a, and the test run of
+    F4b (``test_studio_skill_tests_route.py`` holds the rest of its cases)."""
     return [
         *_six(c, sid),
         c.get(f"/studio/skills/{sid}/versions"),
         c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 1}),
+        c.post(f"/studio/skills/{sid}/tests/run", json={}),
     ]
 
 
@@ -297,7 +299,7 @@ class TestTheSwitch:
         world.store_calls.clear()
         _open(monkeypatch, OTHER)
         answers = _eight(_client(world), sid)
-        assert [r.status_code for r in answers] == [404] * 8
+        assert [r.status_code for r in answers] == [404] * 9
         assert all(r.json() == NOT_FOUND for r in answers)
         # The switch runs first: no session, no catalog read.
         assert world.log == [] and world.store_calls == []
@@ -324,7 +326,8 @@ class TestTheSwitch:
                 ("POST", "/studio/skills/{skill_id}/versions"),
                 ("PATCH", "/studio/skills/{skill_id}/state"),
                 ("GET", "/studio/skills/{skill_id}/versions"),
-                ("POST", "/studio/skills/{skill_id}/undo")} <= paths
+                ("POST", "/studio/skills/{skill_id}/undo"),
+                ("POST", "/studio/skills/{skill_id}/tests/run")} <= paths
         assert skills.router is actions.router
         from pathlib import Path
 
@@ -863,6 +866,82 @@ def _two(c: TestClient) -> str:
     sid = _create(c, body=_body([A1]))["skill"]["id"]
     assert c.post(f"/studio/skills/{sid}/versions", json={"body": _body([A2])}).status_code == 201
     return sid
+
+
+class TestTheTestsCarryForward:
+    """F4a. The route of a new version keeps the ``tests`` of the newest
+    version when the new body omits the key. The undo copies exactly.
+
+    Mutation: remove the ``store.carry_tests`` call in
+    ``skills.add_skill_version``. ``test_a_body_with_no_tests_keeps_them`` goes red.
+    """
+
+    TESTS = [{"id": "t1", "input": "Quote for Acme",
+              "expect": [{"action": "tool:create_lead", "fields": {"company": "Acme"}}]}]
+
+    def _versions(self, world, sid):
+        return [v["body"] for v in world.tables.versions if str(v["skill_id"]) == sid]
+
+    def test_a_body_with_no_tests_keeps_them(self, world):
+        c = _client(world)
+        sid = _create(c, body=_body([A1], tests=self.TESTS))["skill"]["id"]
+        r = c.post(f"/studio/skills/{sid}/versions", json={"body": _body([A2])})
+        assert r.status_code == 201, r.text
+        assert r.json()["version"]["body"]["tests"] == self.TESTS
+        assert self._versions(world, sid)[-1]["tests"] == self.TESTS
+
+    def test_an_explicit_empty_list_clears_them(self, world):
+        c = _client(world)
+        sid = _create(c, body=_body([A1], tests=self.TESTS))["skill"]["id"]
+        assert c.post(f"/studio/skills/{sid}/versions",
+                      json={"body": _body([A2], tests=[])}).status_code == 201
+        assert self._versions(world, sid)[-1]["tests"] == []
+        # A later save with no key carries the empty list, so none come back.
+        assert c.post(f"/studio/skills/{sid}/versions",
+                      json={"body": _body([A1])}).status_code == 201
+        assert "tests" not in self._versions(world, sid)[-1]
+
+    def test_a_new_list_replaces_them(self, world):
+        c = _client(world)
+        sid = _create(c, body=_body([A1], tests=self.TESTS))["skill"]["id"]
+        new = [{"id": "z", "input": "Hi", "expect": []}]
+        assert c.post(f"/studio/skills/{sid}/versions",
+                      json={"body": _body([A2], tests=new)}).status_code == 201
+        assert self._versions(world, sid)[-1]["tests"] == new
+
+    def test_a_skill_with_no_tests_gains_none(self, world):
+        c = _client(world)
+        sid = _create(c, body=_body([A1]))["skill"]["id"]
+        assert c.post(f"/studio/skills/{sid}/versions",
+                      json={"body": _body([A2])}).status_code == 201
+        assert "tests" not in self._versions(world, sid)[-1]
+
+    def test_an_undo_copies_the_old_body_exactly(self, world):
+        c = _client(world)
+        sid = _create(c, body=_body([A1]))["skill"]["id"]  # version 1: no tests
+        assert c.post(f"/studio/skills/{sid}/versions",
+                      json={"body": _body([A2], tests=self.TESTS)}).status_code == 201
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 2})
+        assert r.status_code == 201, r.text
+        assert self._versions(world, sid)[-1] == self._versions(world, sid)[0]
+        assert "tests" not in self._versions(world, sid)[-1]
+
+    def test_carried_tests_that_pass_the_size_limit_are_the_normal_422(self, world):
+        """The route's own check counts the sent body. The carried tests grow
+        it, so the store check after the carry refuses it. The member gets
+        the same 422 text as for any body that is too large, and no version
+        is written."""
+        c = _client(world)
+        # F4b caps an input at 2000 characters.
+        fat = [{"id": f"t{i}", "input": "x" * 2_000, "expect": []} for i in range(20)]
+        sid = _create(c, body=_body([A1], tests=fat))["skill"]["id"]
+        room = store.MAX_BODY_BYTES - len(json.dumps(_body([A2]))) - 100
+        body = _body([A2], instructions="x" * room)
+        assert len(json.dumps(body)) < store.MAX_BODY_BYTES
+        before = len(world.tables.versions)
+        r = c.post(f"/studio/skills/{sid}/versions", json={"body": body})
+        assert r.status_code == 422 and "bytes" in r.json()["detail"], r.text
+        assert len(world.tables.versions) == before
 
 
 class TestHistoryAndUndo:

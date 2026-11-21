@@ -87,7 +87,7 @@ describe("the words", () => {
   it("say what a release keeps and what it allows", () => {
     const text = releaseBody("Claude Code");
     expect(text).toContain("Claude Code gives this task up");
-    expect(text).toContain("keeps its status and its assignees");
+    expect(text).toContain("The assignees stay. The task moves to its lane");
     expect(text).toContain("Another AI session can then claim it");
     expect(RELEASE_COPY.confirm).toBe("Release task");
     expect(STALE_HOLD_TEXT).toBe("stale");
