@@ -888,14 +888,20 @@ _PLACEHOLDER_ALLOWED = {
     ("evals/_runner.py", _DEV_LLM_KEY):
         "a /v1 eval client. The LLM key is a legal /v1 bearer, and it never "
         "goes to an identity route",
+    # The four scripts below send the literal as a bearer with X-User-Email,
+    # which is the identity shape. The gateway refuses the LLM key as an
+    # identity since WS-24b, so the literal opens nothing, and the script
+    # gets 401. They stay until each one reads its bearer from the env only.
     ("scripts/feature_check.py", _DEV_LLM_KEY):
-        "a manual dev harness, not product code. Deferred: task 3847 report",
+        "an operator smoke check that runs on the box. CC_AUTH_TOKEN overrides "
+        "the literal. It also sends X-User-Role. The gateway refuses the literal",
     ("scripts/run_chat_tests.sh", _DEV_LLM_KEY):
-        "a manual dev harness, not product code. Deferred: task 3847 report",
+        "runs tests/integration/test_chat_features.py on the box and exports the "
+        "literal as CC_AUTH_TOKEN. The gateway refuses the literal",
     ("scripts/test_chat.py", _DEV_LLM_KEY):
-        "a manual dev harness, not product code. Deferred: task 3847 report",
+        "a manual POST to a local /copilot/chat. The gateway refuses the literal",
     ("scripts/_audit_ui.py", _DEV_LLM_KEY):
-        "a manual dev harness, not product code. Deferred: task 3847 report",
+        "a manual audit of local gateway and UI routes. The gateway refuses the literal",
 }
 
 
