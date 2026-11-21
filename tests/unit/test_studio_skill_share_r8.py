@@ -38,6 +38,8 @@ f. Org B never sees org A's skill, ask or share: the list, the approve, the
    unshare and the loadable reads.
 g. The CHECK of the table refuses ``system``, and a shared version needs
    ``org``.
+h. The holder's list of shared skills (J2d follow-up) gives only the shared
+   skills of the bound org. Mel gets 403, and another state is 422.
 """
 
 from __future__ import annotations
@@ -399,3 +401,62 @@ def test_r8_the_migration_is_in_place_and_the_check_refuses_system(world) -> Non
     row = _row(world, sid)
     assert (row["visibility"], row["shared_version"], row["share_state"]) == (
         "private", None, None)
+
+
+# ── h. The holder's list of shared skills (J2d follow-up) ──────────────────
+
+
+def test_r8_the_holder_lists_only_the_shared_skills_of_the_bound_org(world) -> None:
+    """``GET /skill-shares?state=approved`` gives each skill that org A
+    shares, and never a private, a pending-only or a rejected-only skill, an
+    unshared skill, or a skill of org B. A shared skill whose newest ask
+    waits still shows, with no approver. Mel gets 403. An unknown state is
+    422."""
+    a, b = world.org_a, world.org_b
+
+    async def decided(org: str, approver: str, approve: bool | None, versions: int = 1) -> str:
+        sid = await _published(org, OWEN, versions)
+        await _call("request_skill_share", org, OWEN, skill_id=sid, version="1")
+        if approve is not None:
+            move = "approve_skill_share" if approve else "reject_skill_share"
+            got = await _call(move, org, approver, PUBLISHER, skill_id=sid, version="1")
+            assert got[0] == 200, got
+        return sid
+
+    async def go() -> dict[str, Any]:
+        ids = {"private": await _published(a),
+               "pending": await decided(a, ADA, None),
+               "rejected": await decided(a, ADA, False),
+               "shared": await decided(a, ADA, True),
+               "newer": await decided(a, ADA, True, versions=2),
+               "unshared": await decided(a, ADA, True),
+               "b_shared": await decided(b, ZED, True)}
+        await _call("request_skill_share", a, OWEN, skill_id=ids["newer"], version="2")
+        await _call("unshare_skill", a, OWEN, skill_id=ids["unshared"])
+        return {
+            "ids": ids,
+            "ada": await _call("list_skill_shares", a, ADA, PUBLISHER, state="approved"),
+            "zed": await _call("list_skill_shares", b, ZED, PUBLISHER, state="approved"),
+            "mel": await _call("list_skill_shares", a, MEL, state="approved"),
+            "bad": await _call("list_skill_shares", a, ADA, PUBLISHER, state="rejected"),
+        }
+
+    got = _run(world, go)
+    ids = got["ids"]
+    assert got["ada"][0] == 200 and got["ada"][1]["state"] == "approved"
+    mine = {s["skill_id"]: s for s in got["ada"][1]["shares"]
+            if s["skill_id"] in set(ids.values())}
+    assert set(mine) == {ids["shared"], ids["newer"]}
+    one = mine[ids["shared"]]
+    assert (one["owner_email"], one["shared_version"], one["approved_by"]) == (OWEN, 1, ADA)
+    assert one["approved_at"] is not None and "body" not in one
+    newer = mine[ids["newer"]]
+    assert (newer["shared_version"], newer["share_state"], newer["share_version"]) == (
+        1, "pending", 2)
+    assert newer["approved_by"] is None
+    # Org B reads its own shared skill, and nothing of org A.
+    theirs = {s["skill_id"] for s in got["zed"][1]["shares"]}
+    assert ids["b_shared"] in theirs and not theirs & set(mine)
+    assert ids["b_shared"] not in {s["skill_id"] for s in got["ada"][1]["shares"]}
+    assert got["mel"][0] == 403 and got["mel"][1]["message"] == skills.NO_SHARED_LIST_RIGHT
+    assert got["bad"][0] == 422
