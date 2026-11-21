@@ -22992,6 +22992,11 @@ mailbox of the organization may upload.
      transparent pixels, for the dark-logo check.
 3. The route writes the row, and returns the id and the public URL.
 
+**The profile picture uses this child too** (task 2186, 2026-11-21). `avatar.normalise()` keeps
+the byte cap and the sniff in the request, and sends the decode to the child with the kind
+`avatar`. The fence is `tests/unit/test_people_avatar.py` section 5. It stops a slow child, and
+it shows that the request process decodes nothing.
+
 **Retire.** `DELETE /email/signature/images/{id}` sets `retired_at`. The uploader or an admin
 may call it. A retired image leaves the picker and stays served.
 

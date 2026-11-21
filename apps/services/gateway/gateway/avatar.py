@@ -31,11 +31,21 @@ measured: a 1000x400 pixel image opens as a 750x300 *point* page, so a pixel
 rectangle from the browser would silently crop the wrong region — the first
 probe of this produced a 256x192 image from what should have been a square.
 Fractions cancel the units, and the client never has to know the DPI.
+
+⚠️ **The decode runs in a confined child, never in the request** (task 2186).
+A 2 MB JPEG of 12,000 pixels on a side decodes to 144 megapixels, and native
+code reads it. The request process does the byte cap and the sniff only. The
+child is ``signature_image_worker.py`` with the kind ``avatar``: it confines
+itself with ``acb_skills/child_confine.py`` and caps its own memory, and the
+parent kills it at ``signature_image.TIMEOUT_S``. This module imports no
+decoder. The fence is ``tests/unit/test_people_avatar.py``, section 5.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import binascii
 from typing import Any
 
 #: The stored edge, in pixels. A constant rather than a setting: the whole
@@ -58,6 +68,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 #: can expand to a hundred megapixels.
 MAX_SOURCE_EDGE = 12_000
 
+#: A source with more pixels than this is refused before the decode. It is the
+#: cap of a signature image, and the memory bound of the child fits it.
+MAX_SOURCE_PIXELS = 40_000_000
+
 #: Leading bytes → what the file claims to be. Sniffed rather than trusting the
 #: multipart ``Content-Type``, which the client chooses.
 _MAGIC: tuple[tuple[bytes, str], ...] = (
@@ -71,6 +85,22 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 ACCEPTED = ("JPEG", "PNG", "WebP")
+
+#: The largest stored image that the parent takes from the child. A 256px
+#: JPEG at quality 82 is under 60 KB, so this bounds only a bad answer.
+MAX_OUTPUT_BYTES = 200 * 1024
+
+#: The sentence for each refusal code of the child. A code that is not here
+#: (and an answer that is not one) gets :data:`_UNREADABLE`.
+_UNREADABLE = "That image could not be read - it may be truncated or corrupt."
+_CHILD_REFUSALS = {
+    "broken": _UNREADABLE,
+    "pixels": (f"That image is too large: more than {MAX_SOURCE_EDGE} pixels on a "
+               f"side, or more than {MAX_SOURCE_PIXELS // 1_000_000} million pixels. "
+               "Upload a smaller picture."),
+    "unavailable": ("This server cannot isolate the image reader, so it cannot "
+                    "take profile pictures now. Ask your administrator."),
+}
 
 
 class AvatarError(ValueError):
@@ -143,11 +173,30 @@ def normalise(
 ) -> bytes:
     """Bytes in → a square ``size``x``size`` JPEG out. Raises :class:`AvatarError`.
 
+    The form for a caller with no running event loop. A route awaits
+    :func:`normalise_async`, because this one starts a loop of its own.
+
     ``crop`` is ``(x, y, side)`` as **fractions of the source** in ``[0, 1]``,
     which is what the cropper sends. Absent, out of range or nonsense all fall
     back to a centre crop rather than failing: a picture that lands slightly
     wrong is a person's to fix in a second attempt, and refusing the upload
     teaches them the feature is broken.
+    """
+    return asyncio.run(normalise_async(data, crop=crop, size=size))
+
+
+async def normalise_async(
+    data: bytes,
+    *,
+    crop: tuple[float, float, float] | None = None,
+    size: int = AVATAR_PX,
+) -> bytes:
+    """:func:`normalise`, for a caller in an event loop. Raises :class:`AvatarError`.
+
+    The byte cap and the sniff run here, in the request. The decode, the crop,
+    the scale and the JPEG run in the confined child (task 2186). A child past
+    its time bound is killed. A crash, a bad answer and an answer that is not
+    a ``size``x``size`` JPEG each become one plain refusal.
     """
     if len(data) > MAX_UPLOAD_BYTES:
         raise AvatarError(
@@ -156,63 +205,45 @@ def normalise(
             "under it, and the stored picture is resized to "
             f"{size}x{size} either way.")
     sniff(data)
+    # Imported here: signature_image imports this module for sniff().
+    from gateway import signature_image as si
 
-    import pymupdf
-
+    clean = None if not crop else [_finite(v) for v in crop]
+    if clean is not None and len(clean) != 3:
+        clean = None
     try:
-        page = pymupdf.open(stream=data, filetype="image")[0]
-    except Exception as exc:
+        answer, timed_out = await si.run_worker(
+            "avatar", data, crop=clean, size=size, max_side=MAX_SOURCE_EDGE,
+            max_pixels=MAX_SOURCE_PIXELS, max_output_bytes=MAX_OUTPUT_BYTES, jpeg_quality=JPEG_QUALITY)
+    except si.SignatureImageError as exc:
+        if exc.code == "unavailable":
+            raise AvatarError(_CHILD_REFUSALS["unavailable"]) from exc
+        raise AvatarError(str(exc)) from exc
+    if timed_out:
         raise AvatarError(
-            "That image could not be read - it may be truncated or corrupt."
-        ) from exc
-
-    width, height = float(page.rect.width), float(page.rect.height)
-    if width <= 0 or height <= 0:
-        raise AvatarError("That image has no dimensions.")
-    if max(width, height) > MAX_SOURCE_EDGE:
-        raise AvatarError(
-            f"That image is larger than {MAX_SOURCE_EDGE} pixels on a side.")
-
-    clip = _square(page, width, height, crop)
-    # ⚠️ `Matrix(scale, scale)` is NOT exact: MuPDF rounds the transformed
-    # rectangle outward, so a zoomed crop rendered at `size / side` came back
-    # 257x257 — measured. `Rect.torect` builds the matrix that maps the clip
-    # onto the target box exactly, which is the difference between "about 256"
-    # and the constant this whole design rests on.
-    pixmap = page.get_pixmap(
-        matrix=clip.torect(pymupdf.Rect(0, 0, size, size)), clip=clip,
-        # No alpha: JPEG has none, and the composite lands on WHITE rather than
-        # black — verified against a fully transparent PNG, because the default
-        # for "no alpha" is the kind of thing that is only wrong in the corner
-        # of somebody's profile picture.
-        alpha=False,
-    )
-    return pixmap.tobytes("jpg", jpg_quality=JPEG_QUALITY)
+            f"Reading that image took longer than {si.TIMEOUT_S:g} seconds, so it "
+            "was stopped. Upload a smaller picture.")
+    return _stored_image(si.read_answer(answer), size)
 
 
-def _square(page: Any, width: float, height: float,
-            crop: tuple[float, float, float] | None) -> Any:
-    """The clip rectangle: always square, always inside the page.
-
-    The clamping is what makes the fractional protocol safe to accept from a
-    browser. A caller can send ``(9, 9, 5)`` and gets the largest square that
-    fits, not an exception and not a rectangle off the edge of the image.
-    """
-    import pymupdf
-
-    shortest = min(width, height)
-    if not crop:
-        side = shortest
-        x = (width - side) / 2
-        y = (height - side) / 2
-    else:
-        fx, fy, fside = (_finite(v) for v in crop)
-        # A zero or negative side means the client sent nothing usable; the
-        # whole shortest edge is the honest reading of "no valid selection".
-        side = shortest if fside <= 0 else min(fside * shortest, shortest)
-        x = min(max(fx * width, 0.0), width - side)
-        y = min(max(fy * height, 0.0), height - side)
-    return pymupdf.Rect(x, y, x + side, y + side)
+def _stored_image(item: tuple[str, Any], size: int) -> bytes:
+    """The JPEG of the child's answer. The parent trusts no field of a child
+    that read hostile bytes: the type, the size and the magic must hold."""
+    name, value = item
+    if name != "ok":
+        raise AvatarError(_CHILD_REFUSALS.get(value, _UNREADABLE))
+    width, height = value.get("width"), value.get("height")
+    if (value.get("content_type") != "image/jpeg" or type(width) is not int
+            or type(height) is not int or (width, height) != (size, size)
+            or not isinstance(value.get("data"), str)):
+        raise AvatarError(_UNREADABLE)
+    try:
+        jpeg = base64.b64decode(value["data"], validate=True)
+    except (binascii.Error, ValueError):
+        raise AvatarError(_UNREADABLE) from None
+    if not jpeg.startswith(b"\xff\xd8\xff") or len(jpeg) > MAX_OUTPUT_BYTES:
+        raise AvatarError(_UNREADABLE)
+    return jpeg
 
 
 def _finite(value: Any) -> float:

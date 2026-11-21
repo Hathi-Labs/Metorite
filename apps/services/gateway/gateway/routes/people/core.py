@@ -364,9 +364,10 @@ async def store_avatar(db: Any, person_id: str, data: bytes,
     "when did this person last change their picture", which is what the client
     caches against.
     """
-    from gateway.avatar import normalise, to_data_uri
+    from gateway.avatar import normalise_async, to_data_uri
 
-    uri = to_data_uri(normalise(data, crop=crop))
+    # The decode runs in a confined child, and the loop waits on it (task 2186).
+    uri = to_data_uri(await normalise_async(data, crop=crop))
     await db.execute(
         text("UPDATE people SET avatar = :avatar, avatar_updated_at = now(), "
              "updated_by = :by, updated_at = now() "
