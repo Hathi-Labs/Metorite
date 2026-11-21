@@ -137,7 +137,7 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Show me open tasks due this week for Ayush" | `list_tasks` | `GET /projects/tasks` with the filter set the app uses |
 | "Tell me about #142" | `task_detail` | `GET /projects/tasks/{id}` + `/timeline` + `/relations` |
 | "What is mine?" | `my_work` | `GET /projects/assigned-to-me`, `GET /projects/my/inbox` |
-| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names` |
+| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names`, `GET /projects/people/reach` (a card reads it, task 3636) |
 | "What statuses does this project use?" | `vocabulary` | `GET /nodes/{id}/statuses`, `/types`, `/tags`, `/fields` |
 | "Where is work stuck?" | `analytics_stuck` | `GET /projects/analytics/stuck` |
 | "Who is overloaded?" | `analytics_load` | `GET /projects/analytics/load` |

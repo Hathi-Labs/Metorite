@@ -61,6 +61,8 @@ from skill_projects.writes import (
     AgentAssigneeRefused,
     _access_lines,
     _act_ran,
+    _address_check,
+    _cannot_open,
     _confirm,
     _date_arg,
     _fields_block,
@@ -74,6 +76,7 @@ from skill_projects.writes import (
     _post_new_task,
     _prepare_new_task,
     _project_id,
+    _reach_rows,
     _resolve_assignee,
     _space_of,
     _split,
@@ -82,7 +85,6 @@ from skill_projects.writes import (
     _subtasks_phrase,
     _task,
     _tree_scope,
-    _unknown_addresses,
     _vocab,
     _with_line,
     _yes_no,
@@ -1097,7 +1099,7 @@ async def propose_plan(
         who = row["owner"]
         if who and who not in owners:
             owners[who] = await _resolve_assignee(who)
-    strangers = await _unknown_addresses(sorted(set(owners.values())))
+    strangers, cannot = await _address_check(sorted(set(owners.values())))
     # §13.6 rule 3: the server computes the marks again, for the plan the
     # member submitted, and the confirm card repeats every one.
     checks, warnings, capacity_line = _capacity(final, await _preview(final, owners), {})
@@ -1115,6 +1117,7 @@ async def propose_plan(
         extra={
             "dependency warnings": " ".join(warnings),
             "not in the directory": ", ".join(strangers),
+            **_reach_rows(cannot),
         },
     )
     card["capacity"] = _with_unassigned(capacity_line, final)
@@ -1659,7 +1662,7 @@ def _card_row(p: _BatchRow) -> dict[str, Any]:
 
 def _batch_card(
     node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
-    held: dict[str, Any] | None = None,
+    held: dict[str, Any] | None = None, cannot: list[str] | None = None,
 ) -> dict[str, Any]:
     """The confirmation card's body. The rows themselves are its checkboxes.
 
@@ -1677,12 +1680,13 @@ def _batch_card(
     card.update(held or {})
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
+    card.update(_reach_rows(cannot or []))
     return card
 
 
 def _fits(
     node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
-    held: dict[str, Any] | None = None,
+    held: dict[str, Any] | None = None, cannot: list[str] | None = None,
 ) -> bool:
     """Does the whole batch, every row's facts included, fit on one card?
 
@@ -1690,7 +1694,7 @@ def _fits(
     measure is the body and one line for each row, as ``_fits_on_card``
     counts a card.
     """
-    card = _batch_card(node, rows, strangers, held)
+    card = _batch_card(node, rows, strangers, held, cannot)
     for p in rows:
         card[f"row {p.index}"] = p.line
         if p.recent is not None:
@@ -1745,6 +1749,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     statuses = await _statuses_of(pid)
     rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
     names, strangers = await _names_of([w for p in rows for w in p.new.who])
+    cannot = await _cannot_open(sorted(names))
     recent = await _recent_titles(pid)
     first_lane = _first_lane(statuses)
     for p in rows:
@@ -1768,7 +1773,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     held = None
     if await _held_chat():
         held = await _access_lines(pid, list(dict.fromkeys(w for p in rows for w in p.new.who)))
-    if not _fits(node, rows, strangers, held):
+    if not _fits(node, rows, strangers, held, cannot):
         return (
             f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "
             "two calls. Nothing was created."
@@ -1777,7 +1782,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     ticked = await _confirm(
         title=f"Create {n} task{'s' if n != 1 else ''} in {data(node.get('name'))}?",
         detail=f"one batch in {data(node.get('name'))} · untick a task to leave it out",
-        context=_fields_block(_batch_card(node, rows, strangers, held)),
+        context=_fields_block(_batch_card(node, rows, strangers, held, cannot)),
         rows=[_card_row(p) for p in rows],
     )
     # The card answers with the ticked ids (`request_confirmation` rows). It
