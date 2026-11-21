@@ -20,6 +20,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+from gateway.studio.skills_store import SHARED_WITH_ORG
+
 from tests.unit._sql_match import hits
 
 ORG = "00000000-0000-0000-0000-00000000000a"
@@ -67,6 +69,13 @@ _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
 #: Studio is told from a shared one (WS-STU AF-10a, ``studio_saved_views``).
 #: A row with no ``shared`` key is private.
 _PERSON_SHARED = re.compile(r"\bWHERE (NOT )?shared AND ")
+#: ``[NOT] <the share term>``: how a Studio skill that the org shares is told
+#: from each other skill of the member (WS-STU J2d,
+#: ``skills_store.SHARED_WITH_ORG``). The regex is built from the term itself,
+#: so a new term no longer matches, and the purge tests fail. A row with no
+#: ``visibility`` key is private, and one with no ``shared_version`` is not
+#: shared.
+_PERSON_SKILL_SHARED = re.compile(r"(NOT )?" + re.escape(SHARED_WITH_ORG))
 #: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <tests>)``: does a row of
 #: ``<t>`` pass each test against this row? ``members._OTHERS_SEE_THE_APP``
 #: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
@@ -350,6 +359,15 @@ class _FakeDB:
             # Matching everything is exactly what a person-scoped DELETE must
             # not do, so an unreadable predicate is an error, not a pass.
             raise AssertionError(f"unscoped person clause in fake: {s}")
+        share = _PERSON_SKILL_SHARED.search(s)
+        if share:
+            wants_shared = not share.group(1)
+            found = [r for r in found
+                     if (r.get("visibility") == "org"
+                         and r.get("shared_version") is not None) is wants_shared]
+            # The term holds an IS NOT NULL. The NULL scan below must not read
+            # it again, because a NOT before the term turns its sense.
+            s = _PERSON_SKILL_SHARED.sub("", s)
         vis = _PERSON_VIS.search(s)
         if vis:
             vis_col, wants_private = vis.group(1), vis.group(2) == "="

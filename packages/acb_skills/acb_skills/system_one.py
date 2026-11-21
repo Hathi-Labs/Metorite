@@ -96,6 +96,32 @@ INSTRUCTIONS = (
     '"reason": "the task names a date"}]}'
 )
 
+#: The instructions of a request that asks for no reason (chat speed, task
+#: 3592). The turn-kind question never reads a reason, and the reason is
+#: about 25 of the 45 output tokens of each answer. Fewer output tokens end
+#: the request sooner, and a timeout of 3 s wasted the call in 36 of 51
+#: production turns. The keys are the same, less `reason`.
+INSTRUCTIONS_NO_REASON = (
+    INSTRUCTIONS.replace(
+        "- `reason`: one short clause, at most 120 characters, with no link "
+        "and no code.\n", "",
+    ).replace(
+        "Each object has exactly the four keys `id`, `choice`, "
+        "`confidence` and `reason`, for example:\n",
+        "Each object has exactly the three keys `id`, `choice` and "
+        "`confidence`, for example:\n",
+    ).replace(
+        '{"answers": [{"id": "q1", "choice": "yes", "confidence": 0.9, '
+        '"reason": "the task names a date"}]}',
+        '{"answers": [{"id": "q1", "choice": "yes", "confidence": 0.9}]}',
+    )
+)
+
+#: The output ceiling for each item of a request with no reason: the keys,
+#: the id (about 12 tokens), a choice (about 6) and a confidence (about 5),
+#: with a margin.
+ANSWER_TOKENS_NO_REASON = 40
+
 #: The ``response_format`` of every request (§6.3): JSON mode.
 #:
 #: ⚠️ **Do not put a ``json_schema`` back here.** With it, the Router answered
@@ -114,14 +140,15 @@ ANSWER_TOKENS = 160
 ENVELOPE_TOKENS = 32
 
 
-def max_tokens_for(item_count: int) -> int:
+def max_tokens_for(item_count: int, *, reasons: bool = True) -> int:
     """The output ceiling for *item_count* items (20 items give 3,232).
 
     A reply that the ceiling cuts is not valid JSON. :func:`parse_answers`
     then raises ``not_json``, which the tool reads as ``error`` and so as
     ``chat``. A cut reply never reads as a wrong kind.
     """
-    return ENVELOPE_TOKENS + ANSWER_TOKENS * max(1, item_count)
+    each = ANSWER_TOKENS if reasons else ANSWER_TOKENS_NO_REASON
+    return ENVELOPE_TOKENS + each * max(1, item_count)
 
 
 #: A reason that holds one of these is dropped (§6.7 rule 3). It errs toward
@@ -247,7 +274,7 @@ def warm() -> None:
         importlib.import_module(module)
 
 
-def _build_agent(timeout_s: float = TIMEOUT_S) -> tuple[Any, Any]:
+def _build_agent(timeout_s: float = TIMEOUT_S, *, reasons: bool = True) -> tuple[Any, Any]:
     """A ``system-one`` agent with no tools, and the HTTP client under it.
 
     Built for each call and closed after it, so no connection pool outlives
@@ -264,7 +291,10 @@ def _build_agent(timeout_s: float = TIMEOUT_S) -> tuple[Any, Any]:
         default_headers={"X-CC-Source": SOURCE},
     ).with_options(timeout=timeout_s, max_retries=0)
     client = OpenAIChatCompletionClient(model=SYSTEM_ONE_TIER, async_client=async_client)
-    agent = Agent(client=client, instructions=INSTRUCTIONS, name=AGENT_NAME)
+    agent = Agent(
+        client=client, name=AGENT_NAME,
+        instructions=INSTRUCTIONS if reasons else INSTRUCTIONS_NO_REASON,
+    )
     return agent, async_client
 
 
@@ -335,6 +365,7 @@ def parse_answers(text: str, items: list[Item]) -> list[Answer]:
 
 async def ask(
     context: str, items: list[Item], *, timeout_s: float = TIMEOUT_S,
+    reasons: bool = True,
 ) -> list[Answer]:
     """Ask System 1 every item in ONE ``tier-fast`` request. Never logs content.
 
@@ -350,13 +381,15 @@ async def ask(
     line that said why. The line holds the code and the item count only.
     """
     try:
-        return await _ask(context, items, timeout_s)
+        return await _ask(context, items, timeout_s, reasons)
     except SystemOneUnavailable as exc:
         _log.warning("system_one.failed", reason=exc.reason, items=len(items or []))
         raise
 
 
-async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer]:
+async def _ask(
+    context: str, items: list[Item], timeout_s: float, reasons: bool = True,
+) -> list[Answer]:
     if not items or len(items) > MAX_ITEMS:
         raise SystemOneUnavailable("bad_items")
     try:
@@ -376,7 +409,10 @@ async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer
         headers["X-CC-Agent"] = chat_agent_label(calling)
 
     try:
-        agent, async_client = _build_agent(timeout_s)
+        agent, async_client = (
+            _build_agent(timeout_s) if reasons
+            else _build_agent(timeout_s, reasons=False)
+        )
     except Exception as exc:
         raise SystemOneUnavailable("build_failed") from exc
     try:
@@ -388,7 +424,7 @@ async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer
                 # high effort by default: 180 output tokens for a 30-60
                 # token answer. REASONING_OFF is the one shared constant.
                 "reasoning_effort": REASONING_OFF,
-                "max_tokens": max_tokens_for(len(items)),
+                "max_tokens": max_tokens_for(len(items), reasons=reasons),
             },
             client_kwargs={"extra_headers": headers},
         )

@@ -83,7 +83,20 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     path of a delete, which reads `admin:members:manage` (the seam of
     `routes/admin/members.py`) and no other right. No route gains a
     dependency, so the gate stays one gate. No file reads `.access.has(`,
-    the other door to the same check."""
+    the other door to the same check.
+
+    WS-STU J2c adds four readers in `skills.py`, each with one
+    `user.has_permission(SHARE_RIGHT)`: `list_skill_shares` (403 for each
+    other caller), `approve_skill_share` and `reject_skill_share` (the
+    answer goes to the store as `can_publish`), and `unshare_skill` (a
+    member who is not the owner needs it). The ask of the owner
+    (`request_skill_share`) reads no right. `skills.py` imports the name
+    from `packages.py`, so the constant stays once.
+
+    WS-STU B1b-3 adds one reader of another right: `approve_mcp_tool` reads
+    `integrations:manage` (`routes/integrations.MANAGE_PERMISSION`), the right
+    that connects and edits an MCP server. It reads no share verb. The test
+    takes out its one entry first."""
     import ast
 
     from gateway.routes.studio import packages
@@ -120,6 +133,20 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
         assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
         names.remove(share_name)
         calls.remove(share_call)
+    # WS-STU J2c: the skill share reads the verb once in each of four handlers.
+    for handler in ("list_skill_shares", "approve_skill_share", "reject_skill_share",
+                    "unshare_skill"):
+        share_name = ("skills.py", handler, "Load")
+        share_call = ("skills.py", handler, "user.has_permission(SHARE_RIGHT)")
+        assert names.count(share_name) == 1 and calls.count(share_call) == 1, (
+            handler, names, calls)
+        names.remove(share_name)
+        calls.remove(share_call)
+    # WS-STU B1b-3: the approval of an MCP tool reads the connections right once.
+    approve_call = ("actions.py", "approve_mcp_tool",
+                    "user.has_permission(_integrations.MANAGE_PERMISSION)")
+    assert calls.count(approve_call) == 1, calls
+    calls.remove(approve_call)
 
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
