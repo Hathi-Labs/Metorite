@@ -2410,21 +2410,31 @@ async def assign(task_id: str, assignees: str) -> str:
         # An assignment opens the task to its assignee (`grant_holders`).
         access = await _access_lines(str(task.get("project_id")), added)
         shown.update({k: v for k, v in access.items() if k == "gives access to"})
+    # Task 3635, 3636: the warning rows of the create cards, keyed, so the card
+    # draws them before Approve: the strangers (`not in the directory`) and the
+    # people who cannot open the task (`cannot open the task`). Only the
+    # NEW holders are checked.
+    shown.update(await _assignee_rows(added))
     context = _fields_block(shown, before={"assignees": ", ".join(current) or "(nobody)"})
     if agents:
         context += f"\nAssigning {', '.join(agents)} starts an agent run on this task."
-    strangers = await _unknown_addresses([a for a in who if a not in current])
-    if strangers:
-        context += f"\nThe people directory does not know {data(', '.join(strangers))}."
     if not await _confirm(
         title="Change who holds this task?",
         detail=f"{_ref(task)} → {', '.join(who) or 'nobody'}",
         context=context,
     ):
         return _not_confirmed()
-    await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
+    done = (await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})) or {}
     task["assignees"] = who
-    return "\n".join(["Assigned:", *_task_line(task)])
+    out = ["Assigned:", *_task_line(task)]
+    # Task 3635: the gateway names the people it could not notify (a person who
+    # cannot open the task, by a grant or by the assignment itself).
+    # Say so in plain words, so the assigner can fix it.
+    skipped = [str(a) for a in done.get("not_notified") or [] if str(a).strip()]
+    if skipped:
+        names = data(", ".join(dict.fromkeys(skipped)))
+        out.append(f"{names} will not get a notice, and cannot open this task yet.")
+    return "\n".join(out)
 
 
 async def _comment_tells(tid: str, text: str) -> dict[str, Any]:

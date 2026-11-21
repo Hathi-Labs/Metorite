@@ -2706,8 +2706,9 @@ async def test_an_address_the_directory_does_not_know_is_named_on_the_card(monke
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, responder)
     await skill_projects.assign(UUID, "priya@x.io, typo@x.io")
-    assert "does not know «typo@x.io»" in asked[0]["context"]
-    assert "priya@x.io»" not in asked[0]["context"].split("does not know")[-1]
+    # Task 3635: the keyed row of the create cards, not a free line.
+    assert "not in the directory: «typo@x.io»" in asked[0]["context"]
+    assert "priya@x.io»" not in asked[0]["context"].split("not in the directory")[-1]
 
 
 async def test_the_subtasks_receipt_opens_the_parent_first(monkeypatch) -> None:
