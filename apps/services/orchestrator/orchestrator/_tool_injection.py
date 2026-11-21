@@ -4500,6 +4500,11 @@ async def _apply_tool_packs(
         facts = _SKILL_FACTS.get() or {}
     finally:
         _SKILL_FACTS.reset(facts_token)
+    # CSY-4 (chat_connected_systems.md §3.4): the words of the servers that may
+    # attach, and the mail mark, read once before ``choose``. Dark behind
+    # MCP_MAIL_PRECEDENCE_ORGS. G2: a WhatsApp turn keeps the choice of main.
+    turn = await _with_server_words(turn, agent, agent_name, run_ctx, is_authorized,
+                                    read_only=read_only)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
@@ -4539,9 +4544,11 @@ async def _apply_tool_packs(
             skill_packs=skill_map)
     _log_skills_refused(choice.skills_refused)
     await tool_packs.drop_sticky(turn, choice.evicted)
+    # CSY-4: the reason of an eviction rides on the log line only.
+    reason = _server_named_field(choice)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
-                  skipped=list(choice.skipped), base_tools=base)
+                  skipped=list(choice.skipped), base_tools=base, **reason)
         if not offer_loader and not choice.skills:
             return None
     run_key = secrets.token_urlsafe(24)
@@ -4654,7 +4661,7 @@ async def _apply_tool_packs(
             held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
             refused=sorted(record.refusals),
             evicted=list(choice.evicted), skipped=list(choice.skipped),
-            base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+            base_tools=base, pack_tools=sum(len(b.tools) for b in builds), **reason,
         )
     _log.info(
         "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
@@ -5263,34 +5270,133 @@ async def _mcp_may_attach(
     loader asks first. The same early exits, then the registry rows, listed
     with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
     errs toward True. A fault reads as True (fail closed): then the
-    specialist of a mail owner stays, as it did before OA-7i."""
+    specialist of a mail owner stays, as it did before OA-7i. The rows and
+    their filter are those of :func:`_attachable_rows`."""
     from acb_common.db import current_tenant
-
-    from orchestrator import _maf_mcp
 
     if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
         return False
-    org = current_tenant()
-    if not org or not _maf_mcp.is_native_maf_agent(agent):
-        return False
-    if not _maf_mcp.maf_mcp_org_allowed(org):
-        return False
     try:
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, current_tenant(), is_authorized)
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
         return True
-    for srv in rows:
-        if not srv.enabled or not _in_scope(list(srv.agent_scope), agent_name):
-            continue
-        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-            continue
-        if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-            continue
-        return True
-    return False
+    return bool(rows)
+
+
+def _row_may_attach(srv: Any, agent_name: str, is_authorized: Any, *,
+                    log_stdio: bool = False) -> bool:
+    """THE one row filter of a lookahead on ``enabled_meta`` (CSY-4, §3.4): a
+    row that is enabled, in scope for *agent_name*, not stdio (D85), on an
+    HTTP transport with a URL, and that the run's grant allows. It is the
+    filter that :func:`_inject_mcp_servers` applies through
+    :func:`_keep_mcp_server` and :func:`_maf_servers`. With *log_stdio* the
+    scope and the stdio test go through :func:`_keep_mcp_server`, which logs
+    ``mcp.stdio_refused``. It logs nothing else."""
+    from orchestrator import _maf_mcp
+
+    if getattr(srv, "enabled", True) is False:
+        return False
+    if log_stdio:
+        if not _keep_mcp_server(srv, agent_name):
+            return False
+    elif not _in_scope(list(srv.agent_scope), agent_name) or srv.transport == "stdio":
+        return False
+    if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+        return False
+    return is_authorized is None or bool(is_authorized(_maf_mcp.mcp_service(str(srv.name))))
+
+
+async def _attachable_rows(agent: Any, agent_name: str, org: Any, is_authorized: Any, *,
+                           log_stdio: bool = False) -> list[Any]:
+    """THE one lookahead of the registry rows that may attach to this run.
+
+    The early exits of :func:`_inject_mcp_servers` (no org, not a native MAF
+    agent, ``MAF_MCP_ORGS`` off) give an empty list and read nothing. Else
+    one ``enabled_meta`` read (no header, no token refresh, inside
+    ``tenant_session(org)``), less each row that :func:`_row_may_attach`
+    refuses. It raises on a read fault, so each caller picks its own fail
+    side. Three callers: the OA-7i lookahead (:func:`_mcp_may_attach`), the
+    CSY-5 ``mail`` line (:func:`_note_mail_skipped`) and the CSY-4 server
+    words (:func:`_with_server_words`). The caller checks its own exits
+    first: ``no_egress``, an agent that reads stranger text, a held mail pack."""
+    from orchestrator import _maf_mcp
+
+    if not org or not _maf_mcp.is_native_maf_agent(agent):
+        return []
+    if not _maf_mcp.maf_mcp_org_allowed(org):
+        return []
+    from gateway.connections import mcp as mcp_registry
+
+    rows = await mcp_registry.enabled_meta(str(org))
+    return [srv for srv in rows
+            if _row_may_attach(srv, agent_name, is_authorized, log_stdio=log_stdio)]
+
+
+async def _mail_mark_set(run_ctx: Mapping[str, Any]) -> bool:
+    """CSY-4: True only when the chat's mail mark reads ``MARK_MARKED``.
+
+    The eviction FAILS CLOSED on the mark: clear, unknown (a Redis fault) and
+    any raise read False, and then no pack leaves. So it reads
+    ``session_mark_state`` and compares to ``MARK_MARKED``. Never use a reader
+    that counts unknown as marked here: such a reader fails OPEN for an
+    eviction. *run_ctx* is the server-bound run context (R5)."""
+    try:
+        return await session_mark_state(run_ctx, fail_closed=True) == MARK_MARKED
+    except Exception as exc:  # the class only
+        _log.warning("executor.pack_mail_mark_unread", error=type(exc).__name__)
+        return False
+
+
+def _server_named_field(choice: Any) -> dict[str, list[str]]:
+    """CSY-4: the log field of ``Choice.server_named``, or no field when it is
+    empty, so a line of a run with no such eviction keeps its bytes."""
+    named = list(getattr(choice, "server_named", ()) or ())
+    return {"server_named": named} if named else {}
+
+
+async def _with_server_words(
+    turn: Any, agent: Any, agent_name: str, run_ctx: Mapping[str, Any], is_authorized: Any,
+    *, read_only: bool = False,
+) -> Any:
+    """*turn* with the words of the servers that may attach and the mail mark
+    (CSY-4, ``chat_connected_systems.md`` §3.4), or *turn* as it was.
+
+    It acts only while ``MCP_MAIL_PRECEDENCE_ORGS`` names the bound tenant,
+    the turn holds a sticky pack of an owner that reads stranger text, and
+    the run could get a server at all (not ``no_egress``, not an agent that
+    reads stranger text, no mail tool held). Then ONE read of the attachable
+    rows (:func:`_attachable_rows`), and, only when the words of the turn
+    name one of them, ONE read of the mark (:func:`_mail_mark_set`). A fault
+    of the read gives *turn* as it was. ``tool_packs.choose`` applies the
+    rule. With the flag off it awaits nothing. *read_only* is the WhatsApp
+    turn (G2), which keeps the choice of main."""
+    from acb_common.db import current_tenant
+    from acb_skills import server_match, tool_packs
+    from acb_skills.egress import mcp_mail_precedence_on
+
+    org = current_tenant()
+    if read_only or not org or not mcp_mail_precedence_on(org):
+        return turn
+    if (bool(run_ctx.get("no_egress")) or agent_name in UNTRUSTED_INPUT_AGENTS
+            or _holds_untrusted_pack(agent)):
+        return turn
+    if not any(str(tool_packs.SKILL_FAMILIES.get(str(getattr(e, "slug", "")), {}).get("owner"))
+               in UNTRUSTED_INPUT_AGENTS for e in getattr(turn, "sticky", ()) or ()):
+        return turn
+    try:
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.pack_server_words_failed", error=type(exc).__name__)
+        return turn
+    servers = tuple(sorted(
+        (str(srv.name), words) for srv in rows
+        if (words := server_match.server_words(str(getattr(srv, "label", "") or ""),
+                                               str(srv.name)))))
+    if not servers or not server_match.named_servers(getattr(turn, "words", ""), dict(servers)):
+        return turn
+    return dataclasses.replace(turn, servers=servers,
+                               mail_marked=await _mail_mark_set(run_ctx))
 
 
 async def _pack_available(
@@ -5755,17 +5861,9 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
                 or not _maf_mcp.maf_mcp_org_allowed(org)
                 or not _maf_mcp.connected_systems_org_allowed(org)):
             return
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized, log_stdio=True)
         notes = []
         for srv in rows:
-            if not _keep_mcp_server(srv, agent_name):
-                continue
-            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-                continue
-            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-                continue
             notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
         server_brief.set_attached([], notes)
         await _count_left_out(str(org), {n: "mail" for n, _ in notes})
