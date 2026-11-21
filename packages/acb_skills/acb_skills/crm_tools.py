@@ -89,13 +89,13 @@ import functools
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from datetime import date
 from typing import Any
 from uuid import UUID
 
 import httpx
-from acb_common.paging import page_line, paged, prefix_page
+from acb_common.paging import Page, page_line, paged, prefix_page
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -103,6 +103,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_kind_prefix,
 )
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
@@ -465,6 +466,9 @@ class RunReads:
     total: int = 0
     #: ``(entity slug, page)`` → the answer of ``crm_list_fields``.
     fields: dict[tuple[str, int], str] = dataclasses.field(default_factory=dict)
+    #: SEM-8: a facts read of this run served a verified question, so the
+    #: run form of ``org_facts`` may read one (``org_facts_tools``).
+    verified: bool = False
 
     def spend(self, tool: str) -> str | None:
         """Count one read of *tool*. The budget line when the read is past
@@ -854,12 +858,16 @@ async def _short_note(keys: frozenset[str] | None) -> str:
 
 def _record_uuid(record_id: str) -> str:
     """The canonical UUID. A path can then hold no separator or dot segment."""
+    # HRD-2: cut the `deal:` that `search_company` prints, refuse another kind.
+    cut = strip_kind_prefix(
+        record_id, "lead", "deal", "contact", "company", read_tool="crm_list_records"
+    )
     try:
-        return str(UUID(str(record_id).strip()))
+        return str(UUID(cut))
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use an "
-            "id that another CRM tool returned, not a name."
+            "id that another CRM tool returned, not a name. crm_list_records gives it."
         ) from None
 
 
@@ -1206,7 +1214,8 @@ MODULE_FIND_OFF = "module_find_off"
 #: The last line of a search answer with a hit.
 FIELDS_SEARCH_HINT = (
     "Give a key to crm_aggregate with entity 'module:<api_name>', in field, "
-    "group_field or field_filters."
+    "group_field or field_filters. A key of field_filters may end in .has, .starts, "
+    ".not, .in (a,b) or .empty (true or false)."
 )
 
 
@@ -1827,6 +1836,8 @@ EXACT_FILTER_LINE = (
 #: The arguments that shape a total and filter no record.
 _SHAPE_KEYS = frozenset({
     "entity", "group_by", "measure", "field", "group_field", "bucket", "fields", "long_read",
+    # CRM-Q34-10: a second group and a page shape the answer, and filter nothing.
+    "group_field2", "group_page", "group_page_size",
 })
 
 
@@ -2031,6 +2042,7 @@ async def crm_aggregate(
     field: str | None = None,
     group_field: str | None = None,
     bucket: str | None = None,
+    group_field2: str | None = None,
     q: str | None = None,
     status: str | None = None,
     owner: str | None = None,
@@ -2047,32 +2059,25 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. Quote the Display
-    value as written. To split a total over 2 to 5 number fields,
-    give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
-    before the total. entity is 'leads', 'deals', 'contacts',
-    'organizations' or 'module:<api_name>' (crm_list_modules). measure is
-    'count', 'sum_amount' or 'weighted' (deals: amount times the
-    effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
-    'max' of the number field named by field. The group is optional: with no
-    group_by and no group_field you get one total over every record that
-    the filters match. Or give one of them. group_by is 'status', 'owner', 'pipeline', 'source',
-    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
-    'created_month', 'updated_month'). group_field is a picklist, boolean,
-    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    A text field cannot group. Field keys come from crm_list_fields. A core
-    entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
-    {'key.from': date, 'key.to': date} for a date field, or
-    {'key.from': N, 'key.to': M} for a number field. Both ends count, and
-    text such as 'NA' counts as no value. A text or lookup filter matches
-    the exact value, name or record id.
-    On a module, 'sum_amount' sums its amount, and field, group_field and
-    field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent'. On a module, term is
-    the member's own word for the figure: the
-    server maps it to one field. Give no field with it. When two
-    fields give different totals, ask the member first, with both totals."""
+    """Count, sum or average CRM records. Quote the
+    Display value. To split a total over 2 to 5 number fields, give
+    fields with every key in ONE call, never one call for each field. When
+    the answer starts with FIRST, tell the member that line first. entity is 'leads', 'deals', 'contacts', 'organizations' or
+    'module:<api_name>'. measure is 'count',
+    'sum_amount' or 'weighted' (deals: amount times
+    probability), or 'sum', 'avg', 'min' or 'max' of
+    the number field in field. The group is optional: with none you get
+    one total. group_by is 'status', 'owner',
+    'pipeline', 'source', 'created_month', 'updated_month' or 'close_month'
+    (a module: 'owner' and the months). group_field is a
+    picklist, boolean, lookup or date field; a date needs bucket 'month',
+    'quarter' or 'year'. A module takes field_filters: {key: value}, or {'key.from': N, 'key.to': M} for a
+    number field, and the same with dates for a date field; text such as 'NA' counts as no value.
+    A text or lookup filter matches the exact value, name or id. On a module, 'sum_amount' sums its amount, and field,
+    group_field and field_filters take '@amount', '@date', '@status'
+    and '@parent'. term is the member's own word for the figure: give no
+    field with it. When two fields give
+    different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
@@ -2090,6 +2095,13 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
+    # CRM-Q34-10: the route refuses a second group that it cannot take. With
+    # one, or for page 2 on of one module group, the route cuts page N. Page
+    # 1 of one group is the answer of before, and a route that cannot page
+    # it ignores the page.
+    params["group_field2"] = group_field2 or None
+    if group_field2 or (slug.startswith(MODULE_PREFIX) and group_field and _page(page) > 1):
+        params.update(group_page=_page(page), group_page_size=MAX_ROWS)
     if fields:
         # CRM-Q25e part 2: one statement reads each field. The route checks
         # each key and the count (2 to 5).
@@ -2163,7 +2175,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug}))
     # §18.16 part 7: each filter, and the values that it counted.
-    filters = [line for line in (filters_line(params, data),) if line]
+    filters = [line for line in (filters_line(params, data), find_line(data),
+                                 no_number_line(params, data)) if line]
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
     # CRM-Q25e part 4: a finding goes first, and the total gets its display.
@@ -2184,9 +2197,10 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         lines.extend([*filters, *mine, *_text_number_lines(data, split),
                       *await _revenue_lines(slug, measure, box)])
         return "\n".join([*first, *lines]) + note
-    grouped = data.get("group_field_label") or group_field
-    by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
-    shown = _page_of(groups, page, "groups")
+    by = group_by or _group_words(data, group_field, bucket)
+    # CRM-Q34-10: a page that the route cut.
+    paged_by_route = data.get("group_count") is not None
+    shown = _route_page(groups, data) if paged_by_route else _page_of(groups, page, "groups")
     empty = await _empty_groups(slug, params, data, f"{plural}, {what} by {by}",
                                 (field or data.get("field"), split), first,
                                 [*filters, *mine], box)
@@ -2202,16 +2216,17 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         lines.append(display)
     if shown.line:
         lines.append(shown.line)
-    omitted = int(data.get("omitted") or 0)
+    omitted = 0 if paged_by_route else int(data.get("omitted") or 0)
     if omitted:
         # Past the route's 50 largest groups. The total counts them. A split
         # names each field (CRM-Q25e).
         rest = (_split_text(split, None, measure, key="other") if split
                 else fmt_with(data.get("other"), data.get("others"), "other"))
         lines.append(f"Other ({omitted} smaller groups): {rest}. "
-                     "The total counts them. Narrow the filter to see them.")
+                     f"The total counts them. {_other_step(data)}")
     zone = data.get("zone")
-    if zone and (group_by in _ZONED_GROUPS or data.get("group_field_type") == "datetime"):
+    if zone and (group_by in _ZONED_GROUPS or "datetime" in (
+            data.get("group_field_type"), data.get("group_field2_type"))):
         # CRM-Q25b: the route took each month on the clock of the CRM zone.
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
@@ -2219,6 +2234,45 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     lines.extend([*filters, *mine, *_text_number_lines(data, split),
                   *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
+
+
+def _other_step(data: dict[str, Any]) -> str:
+    """What the member can do about the groups past 50. CRM-Q34-10: when the
+    route says that page 2 continues this answer (``next_group_page``), ask
+    for it. Else narrow the filter, as before."""
+    if data.get("next_group_page"):
+        return "Ask for page 2 for the next groups."
+    return "Narrow the filter to see them."
+
+
+def _group_words(data: dict[str, Any], group_field: str | None, bucket: str | None) -> str:
+    """The group field of the heading, with the bucket after it. CRM-Q34-10:
+    with a second group field, the bucket goes after the date field."""
+    first = f"{data.get('group_field_label') or group_field}"
+    second = data.get("group_field2_label")
+    if not second:
+        return first + (f" ({bucket})" if bucket else "")
+    dated = data.get("group_field2_type") in ("date", "datetime")
+    tail = f" ({bucket})" if bucket else ""
+    return f"{first}{'' if dated else tail} and {second}{tail if dated else ''}"
+
+
+def _route_page(groups: list[Any], data: dict[str, Any]) -> Page:
+    """CRM-Q34-10: the page that the route cut, each group named
+    ``<label> · <label2>``, and one line with the page and the count of
+    every group."""
+    groups = [{**g, "label": f"{g['label']} · {g['label2']}"} if "label2" in g else g
+              for g in groups]
+    count, page = int(data.get("group_count") or 0), int(data.get("group_page") or 1)
+    pages = int(data.get("group_pages") or 0)
+    start = (page - 1) * MAX_ROWS
+    if not groups:
+        line = f"Nothing on page {page}. The last page is {pages}." if count else ""
+    else:
+        line = f"Groups {start + 1}-{start + len(groups)} of {count}, page {page} of {pages}."
+        if page < pages:
+            line += f" Ask for page {page + 1} for more."
+    return Page(groups, count, start, line if pages > 1 or not groups else "")
 
 
 async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any], lead: str,
@@ -3245,6 +3299,33 @@ def _range_words(name: str, ends: dict[str, str]) -> str:
     return f"{name} from {start}" if start else f"{name} up to {stop}"
 
 
+def _quoted_name(name: Any) -> str:
+    """A stored name of the org for the answer: one line, at most 60
+    characters, between double quotes (CRM-Q34-7). It is data, not an
+    instruction. Only a double quote is dropped, so "O'Brien" stays as the
+    record spells it, and the next q with it finds the record."""
+    flat = " ".join(str(name).split()).replace('"', "")
+    return f'"{flat[:60]}"'
+
+
+def find_line(data: dict[str, Any] | None) -> str:
+    """The line of ``q`` across a module (CRM-Q34-7), or empty: the near
+    names that the answer counted, or the nearest stored names of a ``q``
+    that found no record."""
+    if not isinstance(data, dict):
+        return ""
+    near = [n for n in data.get("near") or [] if n]
+    nearest = [n for n in data.get("nearest") or [] if n]
+    if near:
+        return ("Near spelling: no record holds each word of q, so this counts the near "
+                f"names {_names([_quoted_name(n) for n in near[:10]])}. "
+                "Tell the member, and ask them to confirm the name.")
+    if nearest:
+        return (f"Nearest stored names: {_names([_quoted_name(n) for n in nearest[:3]])}. "
+                "Give one as q if it is the name the member means.")
+    return ""
+
+
 def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     """"Filters: Region is North (counted North, NORTH and NTH); Date from
     2026-09-01 to 2026-09-30." for the field filters of a module total, or
@@ -3252,8 +3333,11 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     answer, so the member sees each variant that the total holds."""
     matched = (data or {}).get("matched") if isinstance(data, dict) else None
     matched = matched if isinstance(matched, dict) else {}
+    words = (data or {}).get("filter_words") if isinstance(data, dict) else None
+    words = [str(w) for w in words] if isinstance(words, list) else []
     plain: list[str] = []
     ranges: dict[str, dict[str, str]] = {}
+    pair_eq: set[str] = set()
     for name, value in params.items():
         if not name.startswith("field.") or value is None:
             continue
@@ -3262,13 +3346,199 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
         if end is not None:
             ranges.setdefault(key[: -len(end)], {})[end] = str(value)
             continue
-        counted = [str(v) for v in matched.get(key) or []]
-        line = f"{key} is {value}"
-        if len(counted) > 1 or (counted and counted != [str(value)]):
-            line += f" (counted {_names(counted)})"
-        plain.append(line)
-    parts = plain + [_range_words(k, ends) for k, ends in ranges.items()]
+        # CRM-Q34-5: a filter word, only when the route read the name as one
+        # (`filter_words` of the answer). A real field `Notes.has`, and each
+        # call of an org off CRM_MODULE_FIND_ORGS, keeps the text of before.
+        word = next((w for w in _FILTER_WORDS if key.endswith(w)), None)
+        if word is not None and key in words:
+            plain.append(_word_filter_words(key, word, value, matched))
+            continue
+        pair_eq.add(key)
+        plain.append(_eq_words(key, value, matched))
+    # SEM-1b-2: the leaves of `query` read as the pairs read. No tool sends
+    # `query` yet: `crm_aggregate` takes no `query` argument until the owner
+    # rules on the token budget (follow-up row SEM-1b-2b). Until then this
+    # read is dead code in the chat. test_crm_agent.py calls it with params.
+    extra = _query_words(params.get("query"), matched, plain, ranges, pair_eq)
+    parts = plain + [_range_words(k, ends) for k, ends in ranges.items()] + extra
     return f"Filters: {'; '.join(parts)}." if parts else ""
+
+
+#: CRM-Q34-5: each filter word of a module filter (``field_sql.FILTER_WORDS``)
+#: → its words in the filter line.
+_FILTER_WORDS: dict[str, str] = {
+    ".has": "contains", ".starts": "starts with", ".not": "is not", ".in": "is one of",
+    ".empty": "is empty",
+}
+
+
+def _word_filter_words(name: str, word: str, value: Any, matched: dict[str, Any]) -> str:
+    """"Status is one of Open, Won": one filter with a word (CRM-Q34-5),
+    with the stored values that it counted, as :func:`_eq_words` does."""
+    key = name[: -len(word)]
+    # Member text: it loses each quote, so it cannot close the quotes of the
+    # line or look like a counted stored value.
+    text = _query_text_value(value).replace("'", "").replace('"', "")
+    if word == ".empty":
+        return f"{key} {'has no value' if text.lower() == 'true' else 'has a value'}"
+    if word == ".in":
+        text = ", ".join(p.strip() for p in text.split(",") if p.strip())
+    elif word in (".has", ".starts"):
+        text = f"'{text}'"
+    line = f"{key} {_FILTER_WORDS[word]} {text}"
+    if word == ".not":
+        # `.not` holds the records with no value too (``field_sql``).
+        line += ", or has no value"
+    # Each stored value is org data: one line of at most 60 characters,
+    # between double quotes (:func:`_quoted_name`).
+    counted = [_quoted_name(v) for v in matched.get(name) or []]
+    if counted:
+        line += f" ({'left out' if word == '.not' else 'counted'} {_names(counted)})"
+    return line
+
+
+def no_number_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
+    """CRM-Q34-5: how many matching records hold no plain number in the
+    measured field (``values`` against ``records``), or empty. Only for a
+    call that the route read with a filter word (``filter_words``), so the
+    text of each older call stays the same.
+    A text field read as numbers has its own line (CRM-Q34-11), and a split
+    names each field."""
+    if not isinstance(data, dict) or not data.get("filter_words"):
+        return ""
+    values, records = data.get("values"), data.get("records")
+    field = data.get("field")
+    if (values is None or records is None or not field or data.get("split")
+            or field in (data.get("text_numbers") or {}) or int(values) >= int(records)):
+        return ""
+    label = data.get("field_label") or field
+    gap = int(records) - int(values)
+    return (f"{gap:,} of {int(records):,} matching records hold no plain number in {label}, "
+            "so the total leaves them out.")
+
+
+def _eq_words(key: str, value: Any, matched: dict[str, Any]) -> str:
+    """"Region is North (counted North, NORTH and NTH)": one equal filter,
+    with the stored values that the total counted for it."""
+    counted = [str(v) for v in matched.get(key) or []]
+    line = f"{key} is {value}"
+    if len(counted) > 1 or (counted and counted != [str(value)]):
+        line += f" (counted {_names(counted)})"
+    return line
+
+
+#: SEM-1b-2: the words of a strict end of a query leaf.
+_STRICT_WORDS = {"gt": "after", "lt": "before"}
+#: The ends of a query leaf that read as the ends of a pair range.
+_QUERY_ENDS = {"gte": ".from", "lte": ".to"}
+
+
+def _query_text_value(value: Any) -> str:
+    """A value of a query leaf as words: data of the member, on one line,
+    with no control character. ``true`` and ``false`` as JSON writes them."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value))
+    return " ".join(text.split())
+
+
+def _query_leaf_words(leaf: Any, matched: dict[str, Any]) -> str | None:
+    """One leaf ``{field, op, value}`` in words, or None when it has no such
+    shape. The route checked the query, so this only words it."""
+    if not isinstance(leaf, dict) or not isinstance(leaf.get("field"), str):
+        return None
+    key, op = _query_text_value(leaf["field"]), leaf.get("op")
+    value = leaf.get("value")
+    if op == "in" and isinstance(value, list):
+        return f"{key} is one of {', '.join(_query_text_value(v) for v in value)}"
+    if op == "eq":
+        return _eq_words(key, _query_text_value(value), matched)
+    if op in _QUERY_ENDS:
+        return _range_words(key, {_QUERY_ENDS[str(op)]: _query_text_value(value)})
+    if op in _STRICT_WORDS:
+        return f"{key} {_STRICT_WORDS[str(op)]} {_query_text_value(value)}"
+    return None
+
+
+def query_nodes(query: Any) -> list[Any]:
+    """The nodes of a ``query`` argument: the list itself, or the list of
+    its JSON text. Anything else gives no node."""
+    if isinstance(query, str):
+        import json
+
+        try:
+            query = json.loads(query)
+        except (ValueError, RecursionError):
+            return []
+    return list(query) if isinstance(query, list) else []
+
+
+def _eq_leaves(nodes: list[Any]) -> dict[str, int]:
+    """The count of equal leaves of each field in *nodes*: one for an
+    ``eq``, and one for each value of an ``in``, also inside a group."""
+    counts: dict[str, int] = {}
+    leaves = [x for node in nodes for x in (
+        node["any"] if isinstance(node, dict) and isinstance(node.get("any"), list)
+        else [node])]
+    for leaf in leaves:
+        if not isinstance(leaf, dict) or not isinstance(leaf.get("field"), str):
+            continue
+        key, value = _query_text_value(leaf["field"]), leaf.get("value")
+        if leaf.get("op") == "eq":
+            counts[key] = counts.get(key, 0) + 1
+        elif leaf.get("op") == "in" and isinstance(value, list):
+            counts[key] = counts.get(key, 0) + len(value)
+    return counts
+
+
+def _query_words(query: Any, matched: dict[str, Any], plain: list[str],
+                 ranges: dict[str, dict[str, str]],
+                 pair_eq: Collection[str] = ()) -> list[str]:
+    """Add the words of each node of *query* to *plain* and *ranges*, in
+    the shape of the pairs: an ``eq``, ``in``, ``gt`` or ``lt`` leaf to
+    *plain*, a ``gte`` or ``lte`` leaf to the range of its field, and an
+    ``any`` group as "any of: A or B". Returns the words of each range end
+    whose side the field already has: the SQL ANDs both ends, so the words
+    name both.
+
+    ``matched`` holds ONE list for each field, not for each leaf. So an
+    ``eq`` leaf names its counted values only when it is the one equal
+    filter of its field: no other ``eq`` or ``in`` value in the query, and
+    no ``field.<key>=`` pair (*pair_eq*). Else the words name no variant,
+    because the list may be the one of another leaf."""
+    nodes = query_nodes(query)
+    eqs = _eq_leaves(nodes)
+    mine = {k: v for k, v in matched.items() if eqs.get(k) == 1 and k not in pair_eq}
+    extra: list[str] = []
+    for node in nodes:
+        if isinstance(node, dict) and isinstance(node.get("any"), list):
+            inner = [w for w in (_query_leaf_words(x, mine) for x in node["any"]) if w]
+            if inner:
+                plain.append(f"any of: {' or '.join(inner)}")
+            continue
+        if (isinstance(node, dict) and node.get("op") in _QUERY_ENDS
+                and isinstance(node.get("field"), str)):
+            key = _query_text_value(node["field"])
+            side = _QUERY_ENDS[str(node["op"])]
+            value = _query_text_value(node.get("value"))
+            if side in ranges.get(key, {}):
+                extra.append(_range_words(key, {side: value}))
+            else:
+                ranges.setdefault(key, {})[side] = value
+            continue
+        words = _query_leaf_words(node, mine)
+        if words:
+            plain.append(words)
+    return extra
+
+
+def query_filter_words(query: Any) -> str:
+    """The words of the leaves of a ``query`` argument, joined by "; ", for
+    the read line of ``answer_check`` (no counted values there)."""
+    plain: list[str] = []
+    ranges: dict[str, dict[str, str]] = {}
+    extra = _query_words(query, {}, plain, ranges)
+    return "; ".join(plain + [_range_words(k, ends) for k, ends in ranges.items()] + extra)
 
 
 async def _term_read(params: dict[str, Any], key: str) -> dict[str, Any]:
@@ -3907,8 +4177,9 @@ async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids, and the key and type of each field that crm_aggregate can
-    measure or group. q matches the record name."""
+    with ids. q matches the record name. When the module search is
+    on, q also finds words in a lookup name or text value, and marks a near
+    spelling. It searches the first 40 text fields."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
     data = await _get(f"/crm/modules/{mod}/records", {
@@ -3917,12 +4188,16 @@ async def crm_list_module_records(
     mod = str(data.get("module") or mod)  # CRM-Q34-12: the API name
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
+    found = find_line(data)
     if not rows:
-        return f"No {mod} records match.{await _short_note(frozenset({MODULE_PREFIX + mod}))}"
-    lines = [f"{mod}: {total} records, page {number}."]
+        return (f"No {mod} records match." + (f"\n{found}" if found else "")
+                + await _short_note(frozenset({MODULE_PREFIX + mod})))
+    lines = [f"{mod}: {total} records, page {number}.", *([found] if found else [])]
     lines.extend(
         f"- {r.get('name') or '(unnamed)'}"
         + (f" · owner {r['owner_email']}" if r.get("owner_email") else "")
+        + (f" · near name {_quoted_name(r['matched'])}" if r.get("near") and r.get("matched")
+           else "")
         + f" (id={r.get('id')})"
         for r in rows
     )

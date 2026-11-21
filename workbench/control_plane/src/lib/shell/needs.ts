@@ -32,7 +32,8 @@ export type NeedsKind =
   | "needs_reply"
   | "reminder_due"
   | "reminder_check"
-  | "reminder_unconfirmed";
+  | "reminder_unconfirmed"
+  | "provider_alert";
 export type NeedsAct = "done" | "read";
 export type SourceState = "ok" | "failed" | "absent";
 
@@ -215,6 +216,9 @@ export const KIND_ORDER: readonly NeedsKind[] = [
   // server's cut to 30 rows cannot drop it (`needs.py` `KIND_ORDER`).
   "reminder_due",
   "reminder_check",
+  // AO-2: an AI vendor ran out of credit, for an admin of the operator org.
+  // The source gives one row for each vendor, and only that org has it.
+  "provider_alert",
   "overdue",
   "approval",
   "due_today",

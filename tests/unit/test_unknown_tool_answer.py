@@ -539,14 +539,30 @@ def test_the_executor_puts_the_answer_on_the_orchestrator_view_last() -> None:
     """The one hook: ``executor._log_request_tools_view``. It runs after each
     seam of ``_inject_agent_tools`` (the hold, the steer turns, the progress
     notice and the number check), so the answer runs inside their chat
-    middleware. Mutation: drop ``UnknownToolProvider`` from the view → red."""
+    middleware. Mutation: drop ``UnknownToolProvider`` from the view → red.
+
+    HRD-1c: an agent that is not the orchestrator gets the same answer on its
+    own stream run, and the log view of OA-8f stays the orchestrator's only.
+    Mutation: put back ``agent_name != _PACK_AGENT`` before the hook → red."""
+    from acb_skills.tool_guard import LogRequestToolsProvider
     from orchestrator import executor as ex
 
     agent = Agent(client=_Scripted([]), name="orchestrator", tools=[_own])
+    own =list(getattr(agent, "context_providers", None) or [])
     view = ex._log_request_tools_view([agent], "orchestrator")[0]
     assert view is not agent, "a per-run view, never the shared agent"
-    assert type(view.context_providers[-1]) is ut.UnknownToolProvider
-    assert ex._log_request_tools_view([agent], "email-assistant")[0] is agent
+    assert [type(p) for p in view.context_providers[-2:]] == [
+        LogRequestToolsProvider, ut.UnknownToolProvider], "the order of HRD-1"
+    assert view.context_providers[-1].step is False
+    for name in ("email-assistant", "projects-assistant"):
+        other = ex._log_request_tools_view([agent], name)[0]
+        assert other is not agent, name
+        assert type(other.context_providers[-1]) is ut.UnknownToolProvider, name
+        assert other.context_providers[-1].step is False, "a chat run, never a step"
+        assert not any(isinstance(p, LogRequestToolsProvider)
+                       for p in other.context_providers), name
+    assert list(getattr(agent, "context_providers", None) or []) == own, (
+        "the shared agent never changes")
 
 
 async def test_with_no_loader_the_text_still_replaces_the_raw_error() -> None:
