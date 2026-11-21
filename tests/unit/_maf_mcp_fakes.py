@@ -176,7 +176,7 @@ def _filler_tool(i: int, calls: list[str]) -> Any:
 
 
 @contextlib.contextmanager
-def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0, instructions: str | None = None) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
     * ``echo`` says it is read-only, so it runs in every run (H-299).
@@ -187,6 +187,8 @@ def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
     *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
     on, each with a long description and five arguments. With 10 or more,
     the server has more than 12 tools, so it gets the index (WS-8c item 23).
+
+    *instructions* is the text of the server's ``initialize`` answer (CSY-6).
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -194,7 +196,7 @@ def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
 
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
-    server = FastMCP("probe", stateless_http=True, json_response=True)
+    server = FastMCP("probe", instructions=instructions, stateless_http=True, json_response=True)
     for i in range(filler):
         server.add_tool(
             _filler_tool(i, calls), name=f"bulk_{i:02d}",

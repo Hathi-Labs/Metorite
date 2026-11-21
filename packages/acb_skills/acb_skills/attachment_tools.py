@@ -114,6 +114,7 @@ __all__ = [
     "parse_bounded",
     "read_attachment",
     "read_attachment_bytes",
+    "upload_paths_exist",
 ]
 
 _log = get_logger("acb_skills.attachment_tools")
@@ -769,6 +770,53 @@ def _where(name: object, *, readable: bool = True) -> _Where | str:
     except ValueError:
         return "This chat has no thread, so it has no attachments to read."
     return _Where(str(root), str(session_id), agent, instance, folder, clean, suffix)
+
+
+def _files_in(root: str, folder: str, names: tuple[str, ...]) -> bool:
+    """True when each of *names* is a regular file in ``root/folder``. A
+    worker thread runs this. It opens each file with the safe opener, as
+    :func:`_read_regular` does, and reads no byte. A link, a missing file and
+    a file that is not regular read as absent."""
+    base = Path(root)
+    for name in names:
+        try:
+            fh = safe_open.open_read(base, f"{folder}/{name}")
+        except (safe_open.UnsafePath, OSError):
+            return False
+        if fh is None:
+            return False
+        fh.close()
+    return True
+
+
+async def upload_paths_exist(paths: tuple[str, ...]) -> bool:
+    """The proof of an upload note for the paste frame (HRD-14b, task 3667).
+
+    True only when EACH path is a file in the upload folder of THIS run's
+    thread: the path equals ``<folder>/<name>`` exactly, where the folder is
+    the one that :func:`read_attachment` reads (``agent_paths.upload_dir_rel``
+    of the run's artifact context). A path is free text in a note, so a path
+    in any other folder, a legacy flat upload, or a name with an order in it
+    that no file holds proves nothing. The workspace, the session and the
+    store key come from the run binding only. It never raises: a fault is
+    False, so the note stays inside the block (``paste_frame.split`` step 1).
+    """
+    try:
+        ctx = artifact_context()
+        root, session_id = ctx.get("workspace_root"), ctx.get("session_id")
+        if not root or not session_id or not paths:
+            return False
+        _agent, instance = _store_key(Path(str(root)), ctx.get("instance"))
+        folder = upload_dir_rel(instance, session_id)
+        names: list[str] = []
+        for path in paths:
+            head, _, name = str(path).rpartition("/")
+            if head != folder or _clean_name(name) != name:
+                return False
+            names.append(name)
+        return bool(await _on_the_dir(_files_in, str(root), folder, tuple(names)))
+    except Exception:
+        return False
 
 
 def _store_key(root: Path, instance: object) -> tuple[str, str]:

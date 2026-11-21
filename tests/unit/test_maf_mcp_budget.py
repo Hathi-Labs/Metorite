@@ -767,7 +767,7 @@ async def test_a_server_with_a_129th_tool_is_left_out_and_logged(monkeypatch):
     try:
         assert [t.name for t in agent.mcp_tools] == ["ok"]
         down = [e for e in logs if e["event"] == "mcp.unreachable" and e["name"] == "huge"]
-        assert down and down[0]["reason"] == "McpListTooLong"
+        assert down and down[0]["reason"] == "too_many_tools"
     finally:
         await _maf_mcp.close_mcp_tools(opened)
 

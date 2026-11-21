@@ -4359,6 +4359,12 @@ import needs no mail account.
 `tests/unit/test_h201_email_artifact_sources.py` is the fence. It reads
 the disk only, so no database is involved.
 
+Task 3598 (2026-11-17) gives the attach one more source, and the import
+none. That source is a file of a chat folder in a shared agent's tenant
+dir, for a chat that the sender can write to. A chat file attaches only by
+an `artifact:<agent>:<path>` ref, because only that ref pins a digest. The
+bare path refuses it. `email_app_master_plan.md` §21.11 holds the rule.
+
 | Mutation | Tests that fail |
 |---|---|
 | both fixes reverted to main | 6 |
@@ -7636,6 +7642,42 @@ values. The email cards already work this way (`email_app_master_plan.md`
   Route grants apply to every field.
 - The edit card refuses `files` in a held chat.
 
+**The project (EAC-3b).** The Opus audit of 2026-11-17 closed these points. The
+owner question on task 3470 holds the cascade rule (§32.9, Q4). The text below
+is the default until the owner answers.
+
+- **The key.** The answer gets an eighth key, `project`. Its value is the id of
+  a project row. A subproject is a project row with a parent, so one key
+  covers both. This replaces the "no id" rule for THIS key only. The id is a
+  request value, so the server never trusts it. It resolves the id again under
+  the member's session, with the read that the create route uses
+  (`load_visible_project` with the share lock, `assert_holds_tasks`,
+  `assert_not_archived`). RLS, the org predicate and the grant closure apply.
+  A project that the member cannot open, a space, a folder, an archived
+  project and a project of another org each write nothing. The member sees
+  the standard decline line.
+- **The key is optional.** The parser accepts the seven old keys, and the
+  seven plus `project`. A missing `project` means the card's project. So the
+  server half and the client half can land in either order, and the
+  client of EAC-3a keeps working.
+- **The list.** The form lists the projects and subprojects of the member's
+  visible tree (`GET /projects/tree`, `rows`). It uses `ProjectSelect` with
+  the task `PickRule`, so a folder and a space are refused on the client too.
+  Personal projects are NOT on the list in this slice. A personal project
+  allows only its owner as assignee, and the card would break.
+- **The cascade.** A change of project resets what belongs to the old project.
+  `status` becomes the default lane of the new project. `type_id`,
+  `custom_fields` and `parent_task_id` are cleared. The title, the assignees,
+  the dates, the flags and the description stay. An assignee who cannot be
+  written in the new project makes the server refuse the write, with a line
+  that names the person. The form reloads the lanes of the new project
+  (`useLanes`) before the member can press Approve.
+- **The model's own proposal.** It needs no new check. It goes through
+  `_project_ref`, `space_refusal` and the route, as before.
+- **The receipt.** The receipt names the project when the member changed it.
+  EAC-3b lands AFTER PR 2547 (EAC-1b, the "edited the card" note), and it adds
+  the project to that note.
+
 **The flag.** `PROJECT_EDIT_CARD_ORGS` is new. The default is empty, and it fails
 closed. A value is `*` or a list of org ids. The code reads it on each call, and
 a SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
@@ -7732,7 +7774,7 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 | **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `ConfirmationQueue.tsx`, `confirmationQueue.ts`, `lib/taskEditCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts`, `taskEditCard.test.ts`, `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
 | **EAC-3a** | 3470 | STANDARD, dark, client only | 2 | `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `taskEditCard.test.ts` (the parity of the status and description rules with `task_card.py`), `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** The form edits the start date, the status (a lane of the project, by exact name), the `important` and `leveraged` flags and the description. The answer keeps the seven keys. A start date after the due date warns and does not hold Approve. |
-| **EAC-3b** | none yet | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | Route-grant tests, as `test_task_edit_card_r8.py` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card. A project that the member cannot open is not on the list. The answer needs a new key, so the server half comes first. |
+| **EAC-3b** | 3470 (the task of EAC-3 holds both parts) | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `tests/unit/test_task_card_project.py` (new, hermetic), `tests/unit/test_task_edit_card_r8.py` (extended: it replaces `test_r8_a_forged_project_id_writes_nothing`), `taskEditCard.test.ts`, `taskCardForm.test.ts` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card (§32.4, "The project"). The answer gets the optional key `project`. After PR 2547. |
 | **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus `tests/unit/test_task_edit_card_precondition.py` (needs HRD-10) | AGENT-SAFE | An `update_task` card edits the changed fields. |
 | **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
 | **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
@@ -7822,7 +7864,19 @@ belong to task 3559.
 - **EAC-3a.** Each of the four fields edits and writes through the answer of
   EAC-1. A change reaches the server as the exact lane name, a flag, a date or
   the text byte for byte.
-- **EAC-3b.** A project that the member cannot open is not on the list.
+- **EAC-3b.** A project that the member cannot open is not on the list. On the
+  server, each case below writes nothing and shows the decline line:
+  a project that the member cannot open, a space, a folder, an archived
+  project, a project of another org, and a bad id.
+  A visible subproject gets the task, with its own default lane.
+  A plain `APPROVE` keeps the card's project.
+  A change of project clears `type_id`, `custom_fields` and `parent_task_id`.
+  It also sets the default lane.
+  An assignee who cannot be written in the new project makes the server refuse.
+  The refusal names the person.
+  An answer with the seven old keys still works. The receipt names the project.
+  The test `test_r8_a_forged_project_id_writes_nothing` becomes the tests
+  `test_r8_an_edited_project_*` in `test_task_edit_card_r8.py`, on purpose.
 - **EAC-4.** An edit that changes `due`, then a change by a teammate between the
   card and Approve, gives "changed since the card" and does not overwrite. The
   `If-Match` check of HRD-10 (task 2989, not built) compares against the
@@ -7837,6 +7891,8 @@ belong to task 3559.
 - `uv run pytest tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_late.py tests/unit/test_task_edit_card_r8.py`
   (the R8 file needs a database: `bash scripts/dev_db.sh` first)
 - `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts`
+- EAC-3b: `uv run pytest tests/unit/test_task_card_project.py tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_late.py tests/unit/test_task_edit_card_r8.py`
+  and `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/taskEditCard.test.ts src/components/taskCardForm.test.ts src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts src/app/projects/lib/pickerTree.test.ts`
 - `uv run python scripts/affected_tests.py --run`
 - `bash scripts/dev_up.sh`, then the demo of task 2927 on the local stack.
 
@@ -7855,3 +7911,8 @@ and R8 (a real database for the write path).
    `APPROVE` writes the original values once. A late edit answer writes nothing,
    and the member shows the card again. The owner may choose a different rule.
 3. **Plain Approve.** The default is to approve the original values.
+4. **What a change of project does to the other values (EAC-3b).** The default
+   resets the status, the type, the custom fields and the parent, and keeps the
+   rest (§32.4). The other choices are: refuse the change when anything else was
+   edited, or offer subprojects only. Asked on task 3470, 2026-11-17. Personal
+   projects stay off the list in this slice.
