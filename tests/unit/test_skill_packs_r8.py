@@ -41,7 +41,7 @@ f. TOF-1c (``ai_studio_rows/TOF-1c.md``): a turn loads a skill by its
 * M3. ``_LOADABLE_WHERE`` and ``_LOADABLE_VERSIONS_SQL``: drop each
   ``organization_id = _BOUND_ORG`` filter AND the FORCE RLS lines of both
   tables. ``test_r8_org_b_skill_never_loads_for_org_a`` goes red.
-* M4. ``_LOADABLE_VERSIONS_SQL``: drop ``AND v.version = s.current_version``.
+* M4. ``_LOADABLE_VERSIONS_SQL``: drop ``AND v.version = _LOADABLE_VERSION``.
   ``test_r8_a_turn_loads_the_rules_of_its_skill`` reads two rows → red.
 * M5 (TOF-1c). ``_LOADABLE_WHERE``: widen ``OR s.visibility = 'org'`` to
   ``OR s.visibility <> 'private'``. Ben's group skill loads for Ana by its
@@ -123,10 +123,15 @@ async def _make(org: str, member: str, name: str, *, state: str = "published",
 
 
 def _share(world: Any, skill_id: str, visibility: str) -> None:
-    """No writer of the visibility exists before J2, so the superuser sets it."""
+    """The superuser sets the visibility, so this suite needs no holder. For
+    ``org`` it pins the current version too, as an approve of J2c does
+    (``skills_store.approve_share``). The share routes have their own suite:
+    ``test_studio_skill_share_r8.py``."""
     with world.p.admin_engine.begin() as c:
-        c.execute(text("UPDATE studio_skills SET visibility = :v WHERE id = CAST(:i AS uuid)"),
-                  {"v": visibility, "i": skill_id})
+        c.execute(text(
+            "UPDATE studio_skills SET visibility = :v, shared_version = CASE "
+            "WHEN :v = 'org' THEN current_version END WHERE id = CAST(:i AS uuid)"),
+            {"v": visibility, "i": skill_id})
 
 
 async def _loadable(org: str, member: str, ids: list[str]) -> tuple[list[str], list[str]]:

@@ -570,6 +570,8 @@ for one organization. An empty value turns every target off.
 8. **Caps and eviction.**
    - At most `sandbox_max_per_org` containers live for one organization
      (default 2). That is the organization's fair share.
+   - A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`
+     (SBX-15).
    - At most `sandbox_max_total` containers live on the box (default 4).
    - An organization at its share stops its own oldest idle container first.
    - At the box cap, the broker stops the oldest idle container of ANY

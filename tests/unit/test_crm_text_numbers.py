@@ -350,11 +350,17 @@ def test_the_read_admits_before_any_check() -> None:
 
     from gateway.routes.crm import aggregate
 
+    # CRM-Q34-10 moved the module steps into ``_module_filters``, which the
+    # read of one group and the paged read both call before their checks.
+    steps = inspect.getsource(aggregate._module_filters)
+    admit = steps.index("admit_text_numbers(")
+    assert steps.index("module_measure(") < admit < steps.index("module_where(")
+    assert admit < steps.index("text_matches(")
     body = inspect.getsource(aggregate._read)
-    admit = body.index("admit_text_numbers(")
-    assert body.index("module_measure(") < admit < body.index("module_where(")
-    assert admit < body.index("text_matches(")
-    assert admit < body.index("check_split(") and admit < body.index("check_measure(")
+    first = body.index("_module_filters(")
+    assert first < body.index("check_split(") and first < body.index("check_measure(")
+    pages = inspect.getsource(aggregate._read_pages)
+    assert pages.index("_module_filters(") < pages.index("check_measure(")
 
 
 def test_a_sum_of_fields_never_takes_a_text_part() -> None:

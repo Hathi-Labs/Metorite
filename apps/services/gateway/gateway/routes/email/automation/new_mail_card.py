@@ -96,6 +96,10 @@ class NewMailCardRequest(BaseModel):
     #: no ``revises`` and no ``draft`` field: only the gateway sets those, and
     #: ``extra="forbid"`` refuses a request that names them with a 422.
     card_thread_id: str = Field(default="", max_length=200)
+    #: Task 3814: the draft of this chat that a Save draft replaces, as the
+    #: tool named it before the card (``card_revise.plan_save``). The act
+    #: checks it again against the chat's record, so another id does nothing.
+    replaces: str = Field(default="", max_length=64)
 
 
 class NewMailActRequest(BaseModel):
@@ -220,6 +224,7 @@ async def new_mail_card(
         "metorite": [{"ref": f.ref, "digest": f.digest} for f in shared],
         **({"thread": thread} if thread else {}), **linked,
         **({"unticked": unticked} if unticked else {}),
+        **({"replaces": req.replaces.strip()} if req.replaces.strip() else {}),
     }
     card_id = await write_record(user, record, namespace=RECORD_NAMESPACE)
     # The one label of a file row (``held_card.file_label``): the name in
@@ -273,7 +278,7 @@ async def new_mail_card_act(
     5. Send, or save a NEW draft, with exactly that text, the ticked people
        and the recorded files."""
     from acb_skills.reply_card import parse_new_mail_answer, take_reply_answer
-    from gateway.routes.email.automation.drafting import DraftUpsertRequest, upsert_draft
+    from gateway.routes.email.automation.drafting import replace_fields, save_chat_draft
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.send import (
         MetoriteFileRef,
@@ -324,9 +329,11 @@ async def new_mail_card_act(
     if bcc:
         out["bcc"] = bcc
     if choice.action == "send":
+        # Task 3605: the text of the card is Markdown, as the chat wrote it and
+        # the member edited it. The send makes the text part and the HTML part.
         res = await send_email(SendEmailRequest(
             account_id=account_id, to=to, cc=cc or None, bcc=bcc or None, subject=subject,
-            body_text=body, artifacts=artifacts or None,
+            body_text=body, body_markdown=True, artifacts=artifacts or None,
             metorite_files=[MetoriteFileRef(**m) for m in metorite] or None,
         ), background, user)
         # A person that the mail server refused got nothing (review P1 of §21.15).
@@ -338,10 +345,18 @@ async def new_mail_card_act(
                   refused=len(refused))
         return {**out, "action": "send", "id": (res or {}).get("id"),
                 **({"refused": refused} if refused else {})}
-    saved = await upsert_draft(DraftUpsertRequest(
+    # Task 3814: one draft for one email of a chat. The thread is the one that
+    # the card's record holds, and the member and the org are the session's.
+    saved = await save_chat_draft(dict(
         account_id=account_id, to=to, cc=cc, bcc=bcc, subject=subject, body=body,
         artifacts=artifacts, attachments=await _metorite_attachments(user, metorite),
-        from_chat=True,
-    ), user)
+        from_chat=True, body_markdown=True,
+    ), user, thread=str(rec.get("thread") or ""), member=owner, org=org,
+        replaces=str(rec.get("replaces") or ""), act="new_mail")
     _log.info("email.new_mail_card_saved", edited=edited, left_out=left_out)
-    return {**out, "action": "save", "draft_id": str((saved or {}).get("id") or "")}
+    # Task 3605: a draft holds text only, so the answer says when the
+    # Markdown formatting of the text did not go into the draft.
+    res = saved.result
+    kept = {"formatting": res["formatting"]} if res.get("formatting") else {}
+    return {**out, "action": "save", "draft_id": str(res.get("id") or ""),
+            **replace_fields(saved, rec), **kept}
