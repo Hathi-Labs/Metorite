@@ -573,6 +573,9 @@ def _label(label: str) -> str:
     if not _LABEL_RE.match(value):
         raise ValueError(
             f"a frame label is 2 to 40 capital letters and spaces: {label!r}")
+    if value == _NOTE_LABEL:
+        # Task 3849: the note names NAME, so open_blocks skips that label.
+        raise ValueError(f"the label {_NOTE_LABEL} belongs to the note")
     return value
 
 

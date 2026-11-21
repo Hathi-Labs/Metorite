@@ -220,6 +220,7 @@ not write a second copy of that seam. A bare test file name is under
    - An untrusted entry has a marker shape, an MCP tool, a pack owner of `UNTRUSTED_INPUT_AGENTS`, or a marked or unknown session. A read of it marks the session. It frames each page afresh.
    - `orchestrator._tool_injection._apply_tool_result_spill` is the one seam. It runs BEFORE the egress and number-check steps. So the number check reads the full text.
    - `narrow_and_read` and the delegation tools never spill.
+   - Task 3849: `SpillToolResults` records the ref that it wrote in the list of `recording_spill`, a ContextVar for ONE call. `is_spill_footer` reads the exact footer of one ref only. A frame lifts no footer by its shape. Fence: `test_mcp_result_untrusted_frame.py`.
    - Fence: `test_tool_result_spill.py`.
 5l-1b. progress_notice.py -- one line for the member while a slow tool runs (HRD-6 part 1, task 2985, spec `chat_run_continuity.md` §4.11). Dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
    - `emit_progress` is the ONE writer. The web chat gets one CUSTOM `progress` event on the run's own queue (`resolve_run_queue`). WhatsApp gets the line through `whatsapp_ui.WhatsAppRun.notify`, once in a reply. Do not add a second event channel or a second channel path.
@@ -248,6 +249,7 @@ not write a second copy of that seam. A bare test file name is under
    - Do not build a `<<<` marker anywhere else. Fences: `test_untrusted_frame.py`, `evals/email_injection/`.
    - `is_invisible` is the ONE rule of a character with no glyph. The gateway's approval store (`gateway/app_requests.py`, MCP-P1b-1) refuses each one in a request, less ZWJ and ZWNJ. Do not write a second set.
    - `UntrustedFrame.paste_note` is the note of a block of pasted text (HRD-14a). `note` does not change.
+   - Task 3849: `open_blocks` finds a marker anywhere in a text, and `close_cut_blocks` closes each block that a cut left open, inside a limit. `orchestrator.native_session_store.FramedToolResultCompactionStrategy` is their caller. No frame takes the label `NAME`, because the note names it. Fence: `test_fold_keeps_frames_whole.py`.
 5m-0. paste_frame.py -- the split of a member turn into the member's lead and ONE `PASTED TEXT` block (HRD-14a, spec `chat_failure_modes.md` §4.7b).
    - `split` and `frame_member_text` are pure. HRD-14b (task 3667) adds the seam, dark behind `CHAT_PASTE_FRAME_ORGS`. `paste_frame_on` is the ONE reader. `paste_frame_everywhere` is true only for `*`, and it reads no org: only the `/v1` restore asks it.
    - `RAW_PARTS` is the raw binding, and only the chat route binds it (`bind_raw_parts`). A tuple is a bound run, also when it is empty. None is a door that binds nothing. Never read `MEMBER_SENT` or `sent_words()` in its place.

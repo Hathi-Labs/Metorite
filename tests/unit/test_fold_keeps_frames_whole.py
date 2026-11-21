@@ -18,9 +18,10 @@ Mutation table, measured on 2026-11-22.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap) | 17 of 21 tests fail. The 4 that stay green test a fold that needs no close |
+| M1 | ``_summary_text`` keeps MAF's cut (``whole = head``, no close before the cap) | 17 of 22 tests fail. The 5 that stay green test a fold that needs no close, or the label rule |
 | M2 | ``open_blocks`` reads only a whole marker line (``MARKER_LINE_RE`` per line) | 5 fail: the ``open-line-first`` and ``json-value`` rows, the two-results test, ``after-the-end-line`` and the two-END-lines test |
 | M3 | ``close_cut_blocks`` keeps a split marker (no ``_SPLIT_MARKER_RE``) | the ``in-the-note-marker``, ``in-the-open-line`` and ``in-the-token`` rows fail |
+| M4 | ``untrusted._label`` takes the label ``NAME`` | ``test_no_frame_takes_the_label_of_the_note`` fails |
 """
 from __future__ import annotations
 
@@ -275,3 +276,14 @@ def test_a_fault_gives_the_fold_with_no_text(monkeypatch) -> None:
     monkeypatch.setattr(untrusted, "close_cut_blocks", _boom)
     summary = Framed._summary_text([f"srv_x: {_mcp(_rows(300))}"])
     assert summary == f"{PREFIX}{CUT_MARK}{SUFFIX}"
+
+
+def test_no_frame_takes_the_label_of_the_note() -> None:
+    """``open_blocks`` skips the label ``NAME``, because the note names it in
+    a sentence. So the helper refuses that label for a block."""
+    frame = UntrustedFrame.new()
+    for build in (lambda: frame.wrap("NAME", "x"), lambda: frame.open_line("name"),
+                  lambda: frame.close_line(" NAME ")):
+        with pytest.raises(ValueError):
+            build()
+    assert frame.wrap("NAMES", "x").startswith(f"<<<NAMES {frame.token}>>>")

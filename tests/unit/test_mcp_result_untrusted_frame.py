@@ -36,6 +36,7 @@ Mutation table, measured on 2026-11-21.
 | M6 | the frame lifts an exact footer of the ref that the line itself names, and ignores the ContextVar (task 3849) | ``test_a_later_call_with_no_spill_lifts_no_footer``, ``test_two_concurrent_calls_keep_their_own_spill_ref``, the ``other-ref`` row and the ``footer-exact`` row fail |
 | M7 | ``_FOOTER_NUMBER`` is ``[0-9,]+``, with no bound (task 3849) | the ``oversized-chars`` row of ``test_a_footer_that_is_not_exact_stays_inside`` fails |
 | M8 | ``SpillToolResults`` records no ref (task 3849) | the two spill-through-the-gate tests and ``test_a_later_call_with_no_spill_lifts_no_footer`` fail |
+| M9 | ``_SPILLED_REFS`` is a module global with ``get``, ``set`` and ``reset`` (task 3849) | ``test_two_concurrent_calls_keep_their_own_spill_ref`` fails |
 """
 from __future__ import annotations
 
@@ -472,24 +473,28 @@ async def test_a_later_call_with_no_spill_lifts_no_footer(monkeypatch):
 
 async def test_two_concurrent_calls_keep_their_own_spill_ref() -> None:
     """The refs live in a ``ContextVar``, so each task of a gathered pair has
-    its own list. Call A spills (ref A). While A is still inside, the server
-    of call B writes the exact footer of ref A as its last line. Only the
-    footer of A leaves the block of A, and the line of B stays inside."""
+    its own list. Call A enters, then call B enters. Only then does the spill
+    of A record ref A. The server of B writes the exact footer of ref A as
+    its last line. Only the footer of A leaves the block of A, and the line
+    of B stays inside. With one module global in place of the ContextVar,
+    the record of A goes to the list of B, and both checks fail."""
     from acb_skills import tool_result_spill as trs
 
     ref = "tr_0a1b2c3d"
     footer = trs._footer(ref, 9000, "a\nb", 120, 9000)
     a_ctx, b_ctx = SimpleNamespace(result=None), SimpleNamespace(result=None)
-    a_spilled, b_done = asyncio.Event(), asyncio.Event()
+    b_inside, a_spilled, b_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def _a_next() -> None:
+        await b_inside.wait()           # B set its own list after A set its own
         a_ctx.result = f"{INJECTION}\n{footer}"
         trs._record_spill(ref)
         _maf_mcp._note_server_answer()
         a_spilled.set()
-        await b_done.wait()
+        await b_done.wait()             # B leaves first, then A
 
     async def _b_next() -> None:
+        b_inside.set()
         await a_spilled.wait()
         b_ctx.result = f"{INJECTION}\n{footer}"
         _maf_mcp._note_server_answer()
