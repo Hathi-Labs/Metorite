@@ -365,14 +365,22 @@ def test_an_escalation_row_keeps_its_tenant_text_with_the_bind_off(events, monke
 # tenant data must go through the module's one ``_audit`` guard. Two named rows
 # hold no tenant data, and they call ``record`` directly (Option-A).
 #
-# **The threat model.** This fence catches an honest new audit write that skips
-# the guard. It also catches each known shape of a bypass: an alias, a second
-# or nested ``_audit``, a decorator or a default on the guard, a rebound name,
-# a dunder attribute, reflection, and an import that reaches ``record`` through
-# another module. The fence does not prove the code against a hostile author,
-# because no source fence can do that. The behaviour tests in sections 1 to 3
-# and the R8 tests in ``test_audit_tick_writers_org_r8.py`` pin the twelve
-# named rows at run time.
+# **The threat model.** This fence claims two things only. It catches an
+# honest new audit write that skips the guard. It also catches each case of
+# the corpus in ``MUTANTS`` and ``ENTRY_MUTANTS``: an alias, a second or nested
+# ``_audit``, a decorator or a default on the guard, a rebound name, a write to
+# a pinned attribute, a pinned name imported from another module, a dunder
+# attribute and the listed reflection names. The behaviour tests in sections
+# 1 to 3 and the R8 tests in ``test_audit_tick_writers_org_r8.py`` pin the
+# twelve named rows at run time.
+#
+# **Known limits.** A hostile author can always reach a function by
+# reflection, and no source fence can stop that. Review catches these. The
+# fence does not catch, for example:
+#
+# * A3: ``pkgutil.resolve_name("acb_audit:record")``.
+# * A4: ``(_ for _ in ()).gi_frame.f_globals["record"]``.
+# * A5: ``string.Formatter().get_field("0.record", ...)``.
 #
 # The checks are allow-lists where possible:
 #
@@ -382,6 +390,7 @@ def test_an_escalation_row_keeps_its_tenant_text_with_the_bind_off(events, monke
 #   of the guard's ``if``, by node identity. The other is a statement in the
 #   body of a module-level function that ``SYSTEM_CALLS`` names with its action.
 # * ``acb_audit`` is imported once, at module level, with the allowed names.
+#   A pinned name enters a module only through that one line.
 # * A writer module imports another writer module only where
 #   ``WRITER_IMPORTS`` names it.
 
@@ -409,7 +418,8 @@ WRITER_IMPORTS = {
 }
 #: The one allowed line that imports from ``acb_audit``.
 AUDIT_IMPORT = ("AuditEvent", "record", "refuse_tenantless")
-#: The names that the guard depends on. Nothing else may bind them.
+#: The names that the guard depends on. Nothing else may bind them, import
+#: them or write them as an attribute.
 PINNED = {"record", "_persist", "refuse_tenantless", "AuditEvent"}
 #: The names that write a row.
 SINKS = {"record", "_persist"}
@@ -426,6 +436,10 @@ REFLECTION = {
 #: The only dunder names that a writer module uses.
 ALLOWED_DUNDER_NAMES = {"__name__", "__all__", "__doc__"}
 
+_THROUGH = (
+    "Send the row through _audit(), or add a SYSTEM_CALLS entry with a reason"
+)
+_LINE = "Import record, refuse_tenantless and AuditEvent only through the one acb_audit line"
 _BODY = "    if not refuse_tenantless(event):\n        record(event)"
 #: The allowed texts of the guard: the annotations are optional.
 GUARD_TEXTS = {
@@ -457,21 +471,25 @@ def _guard(tree: ast.Module, path: str, out: list[str]) -> ast.Call | None:
     """The ``record(event)`` call node of THE guard, or ``None`` with a reason."""
     audits = [n for n in ast.walk(tree) if isinstance(n, _FUNCTIONS) and n.name == "_audit"]
     if len(audits) != 1:
-        out.append(f"{path}: expected one _audit in the module, found {len(audits)}")
+        out.append(f"{path}: expected one _audit in the module, found {len(audits)}. "
+                   "Keep one module-level _audit, and send each tenant row through it")
         return None
     [fn] = audits
     if fn not in tree.body or not isinstance(fn, ast.FunctionDef):
-        out.append(f"{path}: _audit must be a module-level def")
+        out.append(f"{path}: _audit must be a module-level def. "
+                   "Keep the guard a plain def at module level")
         return None
     if fn.decorator_list:
-        out.append(f"{path}: _audit has a decorator")
+        out.append(f"{path}: _audit has a decorator. Remove it, the guard takes none")
     a = fn.args
     if (a.defaults or a.kw_defaults or a.vararg or a.kwarg or a.kwonlyargs
             or a.posonlyargs or len(a.args) != 1):
-        out.append(f"{path}: _audit must take one positional parameter and no default")
+        out.append(f"{path}: _audit must take one positional parameter and no default. "
+                   "Keep the signature _audit(event: AuditEvent) -> None")
     text = ast.unparse(_without_docstring(fn))
     if text not in GUARD_TEXTS:
-        out.append(f"{path}: the guard text is not the allowed one:\n{text}")
+        out.append(f"{path}: the guard text is not the allowed one. Keep the body "
+                   f"'if not refuse_tenantless(event): record(event)':\n{text}")
         return None
     return fn.body[-1].body[0].value
 
@@ -505,32 +523,40 @@ def _binds(node: ast.AST) -> list[str]:
 
 def _import_violations(node: ast.AST, path: str, at: str, tree: ast.Module) -> list[str]:
     out: list[str] = []
+    if isinstance(node, ast.Import | ast.ImportFrom) and getattr(node, "module", "") != "acb_audit":
+        for a in node.names:
+            if a.name == "*":
+                out.append(f"{at}: a star import. Name each imported name")
+            entered = {*a.name.split("."), a.asname} & PINNED
+            if entered:
+                out.append(f"{at}: an import of the pinned name {sorted(entered)[0]}. {_LINE}")
     if isinstance(node, ast.Import):
         pairs = [(a.name, a.asname, a.asname or a.name.split(".")[0]) for a in node.names]
     elif isinstance(node, ast.ImportFrom):
         if node.level:
-            return [f"{at}: a relative import"]
+            return [*out, f"{at}: a relative import. Use an absolute import"]
         base = node.module or ""
         if base == "acb_audit":
             names = tuple(a.name for a in node.names)
             if (node not in tree.body or names != AUDIT_IMPORT
                     or any(a.asname for a in node.names)):
-                out.append(f"{at}: the acb_audit import is not the one allowed line")
+                out.append(f"{at}: the acb_audit import is not the one allowed line. Use "
+                            "'from acb_audit import AuditEvent, record, refuse_tenantless' at module level")
             return out
         pairs = [(f"{base}.{a.name}", a.asname, a.asname or a.name) for a in node.names]
         pairs.append((base, None, ""))
     else:
         return out
-    for dotted, alias, bound in pairs:
+    for dotted, alias, _bound in pairs:
         root = dotted.split(".")[0]
         if root == "acb_audit":
-            out.append(f"{at}: an import of {dotted}")
+            out.append(f"{at}: an import of {dotted}. {_LINE}")
         if root in FORBIDDEN_MODULES:
-            out.append(f"{at}: an import of {root} can reach record around _audit")
+            out.append(f"{at}: an import of {root} can reach record around _audit. "
+                       f"Do the work without {root}, or ask review to change the fence")
         if dotted in FENCED_WRITERS.values() and (path, dotted, alias) not in WRITER_IMPORTS:
-            out.append(f"{at}: an import of the writer module {dotted}")
-        if bound in PINNED:
-            out.append(f"{at}: an import binds {bound}")
+            out.append(f"{at}: an import of the writer module {dotted}. Import a writer "
+                       "module only where WRITER_IMPORTS names it, with a reason")
     return out
 
 
@@ -538,27 +564,33 @@ def _node_violations(node: ast.AST, path: str, at: str, parents: dict,
                      sink: ast.Call | None, top: set[int]) -> list[str]:
     out: list[str] = []
     if isinstance(node, ast.Attribute):
+        if node.attr in PINNED and isinstance(node.ctx, ast.Store | ast.Del):
+            out.append(f"{at}: a write to the pinned attribute .{node.attr}. Do not "
+                       "reassign a pinned name on any module")
         if node.attr.startswith("__") and node.attr.endswith("__"):
-            out.append(f"{at}: the dunder attribute .{node.attr}")
+            out.append(f"{at}: the dunder attribute .{node.attr}. Use a public name, "
+                       "or ask review to change the fence")
         if node.attr in SINKS:
-            out.append(f"{at}: .{node.attr} reaches the audit seam around _audit")
+            out.append(f"{at}: .{node.attr} reaches the audit seam around _audit. {_THROUGH}")
     elif isinstance(node, ast.Name):
         if node.id in REFLECTION:
-            out.append(f"{at}: {node.id} can reach record around _audit")
+            out.append(f"{at}: {node.id} can reach record around _audit. Use a plain "
+                       "name, or ask review to change the fence")
         if (node.id.startswith("__") and node.id.endswith("__")
                 and node.id not in ALLOWED_DUNDER_NAMES):
-            out.append(f"{at}: the dunder name {node.id}")
+            out.append(f"{at}: the dunder name {node.id}. Use a public name")
         if node.id in SINKS and isinstance(node.ctx, ast.Load):
             call = parents.get(node)
             if not (isinstance(call, ast.Call) and call.func is node):
-                out.append(f"{at}: {node.id} used as a value, not called")
+                out.append(f"{at}: {node.id} used as a value, not called. Call _audit(event)")
             elif call is not sink and not _system_call_ok(call, parents, top, path):
-                out.append(f"{at}: {node.id}() outside the guard and the system rows")
+                out.append(f"{at}: {node.id}() outside the guard and the system rows. {_THROUGH}")
     elif isinstance(node, ast.keyword) and node.arg == "organization_id":
-        out.append(f"{at}: organization_id= on an audit row with no tenant source")
+        out.append(f"{at}: organization_id= on an audit row with no tenant source. This "
+                   "module has no bound tenant, so never take the org from the payload")
     bound = [n for n in _binds(node) if n in PINNED]
     if bound and not (isinstance(node, ast.arg) and node.arg == "event"):
-        out.append(f"{at}: {bound[0]} is bound again")
+        out.append(f"{at}: {bound[0]} is bound again. Do not reassign a pinned name")
     return out
 
 
@@ -575,7 +607,8 @@ def audit_fence_violations(src: str, path: str) -> list[str]:
     audit_imports = [n for n in ast.walk(tree)
                      if isinstance(n, ast.ImportFrom) and n.module == "acb_audit"]
     if len(audit_imports) != 1:
-        out.append(f"{path}: expected one acb_audit import, found {len(audit_imports)}")
+        out.append(f"{path}: expected one acb_audit import, found {len(audit_imports)}. "
+                   "Keep the one acb_audit line")
     for node in ast.walk(tree):
         at = f"{path}:{getattr(node, 'lineno', '?')}"
         out += _import_violations(node, path, at, tree)
@@ -772,6 +805,65 @@ MUTANTS = {
         "the guard text is not the allowed one",
     ),
 }
+
+
+_SCHEDULER = "apps/services/ingestion/ingestion/scheduler.py"
+
+
+def mutant_s1(src: str) -> str:
+    """S1: ``record`` imported from another writer module that the fence allows."""
+    return _add(src, (
+        "from scripts.zoho_sync import record as _w\n\n\n"
+        f"def _other() -> None:\n    _w({_EV})\n"
+    ))
+
+
+def mutant_a1(src: str) -> str:
+    """A1: ``record`` imported from a module that is not a writer."""
+    return _add(src, (
+        "from orchestrator.executor import record as _w\n\n\n"
+        f"def _other() -> None:\n    _w({_EV})\n"
+    ))
+
+
+def mutant_a2(src: str) -> str:
+    """A2: the guard's check replaced on the module object."""
+    return _add(src, (
+        "from ingestion.sources import gmail as _pkg\n\n"
+        "_pkg.webhook.refuse_tenantless = lambda _e: False\n"
+    ))
+
+
+#: (path, mutant, a part of the message of its own rule).
+ENTRY_MUTANTS = {
+    "S1 record from a writer module": (
+        _SCHEDULER, mutant_s1, "an import of the pinned name record"),
+    "A1 record from another module": (
+        _GMAIL, mutant_a1, "an import of the pinned name record"),
+    "A2 write to a pinned attribute": (
+        _GMAIL, mutant_a2, "a write to the pinned attribute .refuse_tenantless"),
+    "star import": (
+        _GMAIL, lambda s: _add(s, "from orchestrator.executor import *\n"), "a star import"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(ENTRY_MUTANTS))
+def test_the_fence_catches_a_pinned_name_entry_or_write(label: str) -> None:
+    path, make, reason = ENTRY_MUTANTS[label]
+    src = _source(path)
+    assert audit_fence_violations(src, path) == []
+    found = audit_fence_violations(make(src), path)
+    assert any(reason in v for v in found), f"{label}: expected {reason!r} in {found}"
+
+
+def test_each_message_tells_the_developer_what_to_do() -> None:
+    """Each refusal ends in an action: the message has a second sentence."""
+    src = _source(_GMAIL)
+    makers = [m for m, _r in MUTANTS.values()] + [m for _p, m, _r in ENTRY_MUTANTS.values()
+                                                   if _p == _GMAIL]
+    for make in makers:
+        for v in audit_fence_violations(make(src), _GMAIL):
+            assert ". " in v.split(": ", 1)[1], f"no action in: {v}"
 
 
 @pytest.mark.parametrize("label", sorted(MUTANTS))
