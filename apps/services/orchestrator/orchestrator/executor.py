@@ -1244,7 +1244,9 @@ async def _prime_chat_constraints(agent_name: str) -> None:
     if str(artifact_context().get("member") or "").strip().lower() != member:
         return
     try:
-        items = await cc.load_constraints()
+        # `fresh`: Redis answers, so a decision that the member took back
+        # through the gateway (HRD-12b, another process) is gone this turn.
+        items = await cc.load_constraints(fresh=True)
     except Exception as exc:  # a block, never the turn
         _log.warning("executor.chat_constraints_failed", error=type(exc).__name__)
         items = []
