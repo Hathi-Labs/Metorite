@@ -67,6 +67,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # optional argument, so no call breaks.
     # WS-53 CRM-Q25e part 2: `fields`, 2 to 5 number fields in ONE statement.
     # A new optional argument, so no call breaks.
+    # WS-53 CRM-Q34-10 (2026-11-18): `group_field2`, a second group field of
+    # a module total. A new optional argument, so no call breaks.
     'crm_aggregate': {'params': {'bucket': 'string',
                                  'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
@@ -74,7 +76,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                                  'field': 'string', 'field_filters': 'object',
                                  'fields': 'array',
                                  'group_by': 'string', 'group_field': 'string',
-                                 'measure': 'string',
+                                 'group_field2': 'string', 'measure': 'string',
                                  'owner': 'string', 'page': 'integer',
                                  'pipeline_id': 'string',
                                  'q': 'string', 'status': 'string', 'term': 'string',
@@ -185,6 +187,9 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # PDF, from one spec object. The same shape as make_document. A family
     # tool, so the core floor and its total do not move.
     'make_report': {'params': {'spec': 'object'}, 'required': ['spec']},
+    # SBX-19: Python over stored tool results, dark per org. A new tool.
+    'compute_run': {'params': {'code': 'string', 'inputs': 'array', 'timeout_s': 'integer'},
+                    'required': ['code']},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All

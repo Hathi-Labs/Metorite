@@ -31,7 +31,9 @@ So a later :func:`add_version` reaches no other member until a holder
 approves a new ask. :func:`unshare` returns the skill to ``private``. The
 caller passes ``can_publish``, the check of the right that the route made,
 because a store does not read rights. A version stays immutable: the share
-writes columns of ``studio_skills`` only.
+writes columns of ``studio_skills`` only. The owner reads the share with
+:func:`get_share` (J2d). :data:`SHARED_WITH_ORG` is the one test of a skill
+that the org shares, and the member purge reads it.
 
 **A version is immutable.** No function here updates a version row. The
 trigger ``studio_skill_versions_immutable`` refuses each UPDATE on the
@@ -51,8 +53,8 @@ member. A tool pack id (F3) uses the skill ``id``, never the slug.
 
 **The body.** :func:`add_version` checks a light shape only: an object with a
 non-empty ``description`` and ``instructions``, and ``actions`` as a list of
-strings. The other parts of §3.5 (``cards``, ``knowledge``, ``tests``) pass
-as given. The full manifest check is A2, and this module does not import it.
+strings. ``tests`` has the shape of ``skill_tests.parse_tests`` (F4a). The
+other parts of §3.5 (``cards``, ``knowledge``) pass as given. The full manifest check is A2, and this module does not import it.
 The CHECK ``studio_skill_versions_body_size`` caps the jsonb text at
 :data:`MAX_BODY_BYTES`, and the store refuses a bigger body first. The store
 measures its own JSON text, and that text has the same length as the jsonb
@@ -97,6 +99,8 @@ from typing import Any
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.skill_slug import MAX_SLUG_CHARS  # defined once, in acb_skills
 from sqlalchemy import text
+
+from gateway.studio.skill_tests import SkillTestError, parse_tests
 
 #: The four states, as the CHECK ``studio_skills_state`` holds them.
 STATES: tuple[str, ...] = ("draft", "published", "paused", "archived")
@@ -348,6 +352,12 @@ def check_body(body: object) -> str:
     hidden = body_hidden_problem(body)
     if hidden is not None:
         raise SkillStoreError(hidden)
+    # After the hidden walk, so a hidden character keeps its own refusal.
+    if "tests" in body:
+        try:
+            parse_tests(body)
+        except SkillTestError as exc:
+            raise SkillStoreError(str(exc)) from None
     return encoded
 
 
@@ -433,9 +443,42 @@ async def set_state(db: Any, member: str, skill_id: str, state: str) -> bool:
     return bool(getattr(result, "rowcount", 0))
 
 
+async def carry_tests(db: Any, member: str, skill_id: str,
+                      body: Mapping[str, Any]) -> Mapping[str, Any]:
+    """*body* with the ``tests`` of the newest version, when *body* has no
+    ``tests`` key and that version holds a list that passes
+    ``skill_tests.parse_tests``. Otherwise *body* itself (F4a).
+
+    The route of a new version calls it, because the editor form sends no
+    ``tests``. The undo route does not, because it copies an older body
+    exactly, and ``add_version`` carries nothing. ``"tests": []`` in *body*
+    clears the tests, and a list replaces them.
+
+    F4b: the first read takes the row lock, as the undo route does
+    (``get_skill(..., for_update=True)``). The lock holds until the commit.
+    So a second save waits, then reads the version that this save wrote, and
+    no save can carry a list that a save at the same moment replaced.
+    """
+    skill = await get_skill(db, member, skill_id, for_update=True)
+    if "tests" in body or skill is None:
+        return body
+    newest = await get_version(db, member, skill_id)
+    kept = newest.body.get("tests") if newest is not None else None
+    if not kept:
+        return body
+    try:
+        parse_tests({"tests": kept})
+    except SkillTestError:
+        return body  # an old list of a free shape is dropped, never copied
+    return {**body, "tests": kept}
+
+
 async def add_version(db: Any, member: str, skill_id: str,
                       body: Mapping[str, Any]) -> Version | None:
     """Store *body* as the next version of the skill *skill_id* of *member*.
+
+    It stores *body* as given. :func:`carry_tests` does the carry-forward of
+    ``tests``, and the route of a new version calls it first.
 
     The number is ``current_version + 1``, or 1 for the first version, and
     the skill's ``current_version`` moves to it in the same statement.
@@ -485,6 +528,22 @@ async def get_version(db: Any, member: str, skill_id: str,
 _SHARE_COLUMNS = (
     "id::text, owner_email, visibility, shared_version, share_state, share_version, "
     "share_requested_by, share_requested_at, share_decided_by, share_decided_at"
+)
+
+#: The one test of a skill that the org shares (J2c): a holder approved a
+#: version, so each member of the org loads it. The CHECK
+#: ``studio_skills_shared_version`` makes the second term imply the first,
+#: and the test names both. The member purge (``routes/admin/members.py``,
+#: J2d) keeps such a skill with the org and deletes each other skill of the
+#: member. The parentheses let a caller write ``NOT`` before it.
+SHARED_WITH_ORG = "(visibility = 'org' AND shared_version IS NOT NULL)"
+
+#: The owner's row, with no lock: the read of ``GET /skills/{id}/share``
+#: (J2d). A skill of another member gives no row.
+_SHARE_READ_SQL = (
+    f"SELECT {_SHARE_COLUMNS} FROM studio_skills "
+    f"WHERE organization_id = {_BOUND_ORG} AND owner_email = :m "
+    "AND id = CAST(:id AS uuid)"
 )
 
 #: The owner's row, locked. A skill of another member gives no row.
@@ -560,6 +619,23 @@ _PENDING_SHARES_SQL = (
     "ORDER BY s.share_requested_at, s.id LIMIT :lim"
 )
 
+#: The most shared skills in one read of :func:`list_shared_skills`. A row
+#: holds no body, so the page is wider than the page of the pending asks.
+MAX_SHARED_SKILLS = 50
+
+#: The skills that the org shares (:data:`SHARED_WITH_ORG`), by name, for the
+#: holder's list (J2d follow-up). A shared skill whose newest ask is pending
+#: or rejected still shows, because the members still load its approved
+#: version. ⚠️ Like the pending read, it does not filter on the member,
+#: because the holder is not the owner. A private skill never shows. A read
+#: only: no lock.
+_SHARED_SKILLS_SQL = (
+    "SELECT id::text, name, slug, description, owner_email, shared_version, "
+    "share_state, share_version, share_decided_by, share_decided_at FROM studio_skills "
+    f"WHERE organization_id = {_BOUND_ORG} AND {SHARED_WITH_ORG} "
+    "ORDER BY lower(name), id LIMIT :lim"
+)
+
 #: The refusal of a move without the right ``studio:publish``.
 NO_SHARE_RIGHT = "Only a holder of studio:publish can approve, reject or list a skill share."
 #: The refusal of an approve by the owner of the skill.
@@ -614,6 +690,25 @@ class PendingShare:
     content_hash: str
 
 
+@dataclass(frozen=True)
+class SharedSkill:
+    """One skill that the org shares, for the holder's list. ``approved_by``
+    and ``approved_at`` name the approval of ``shared_version``. They are None
+    when a newer ask replaced that record: the columns keep the newest ask
+    only. ``share_state`` and ``share_version`` are that newest ask."""
+
+    skill_id: str
+    name: str
+    slug: str
+    description: str
+    owner_email: str
+    shared_version: int
+    share_state: str | None
+    share_version: int | None
+    approved_by: str | None
+    approved_at: datetime | None
+
+
 def _int_or_none(value: Any) -> int | None:
     return None if value is None else int(value)
 
@@ -640,6 +735,15 @@ def _share_right(can_publish: object) -> None:
     """Only ``True`` passes. A truthy value that is not a bool is refused."""
     if can_publish is not True:
         raise ShareRefused(NO_SHARE_RIGHT)
+
+
+async def get_share(db: Any, member: str, skill_id: str) -> Share | None:
+    """The share columns of the skill *skill_id* of *member*, for the owner's
+    read (J2d). Answers None when *member* owns no such skill in the bound
+    org. A read only: it takes no lock and writes nothing."""
+    row = (await db.execute(text(_SHARE_READ_SQL), {
+        "m": _member(member), "id": _skill_id(skill_id)})).first()
+    return None if row is None else _share(row)
 
 
 async def request_share(db: Any, member: str, skill_id: str, version: int) -> Share | None:
@@ -771,6 +875,32 @@ async def list_pending_shares(db: Any, *, can_publish: bool,
             owner_email=str(r[4]), version=int(r[5]),
             requested_by=str(r[6]) if r[6] is not None else str(r[4]),
             requested_at=r[7], body=dict(body or {}), content_hash=str(r[9])))
+    return out, len(rows) > limit
+
+
+async def list_shared_skills(db: Any, *, can_publish: bool,
+                             limit: int = MAX_SHARED_SKILLS) -> tuple[list[SharedSkill], bool]:
+    """The skills that the bound org shares, by name, at most *limit* (1 to
+    :data:`MAX_SHARED_SKILLS`). The second value is True when more skills
+    are past the page. Anything but ``True`` in *can_publish* raises
+    :class:`ShareRefused` before any statement. A holder reads this list to
+    find the skill to unshare (J2d follow-up)."""
+    _share_right(can_publish)
+    if (isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_SHARED_SKILLS):
+        raise SkillStoreError(f"limit must be an integer from 1 to {MAX_SHARED_SKILLS}")
+    rows = (await db.execute(text(_SHARED_SKILLS_SQL), {"lim": limit + 1})).all()
+    out: list[SharedSkill] = []
+    for r in rows[:limit]:
+        shared, state, asked = int(r[5]), _str_or_none(r[6]), _int_or_none(r[7])
+        # The decision columns name the approval of the shared version only
+        # while the newest ask is that approval.
+        mine = state == "approved" and asked == shared
+        out.append(SharedSkill(
+            skill_id=str(r[0]), name=str(r[1]), slug=str(r[2]), description=str(r[3]),
+            owner_email=str(r[4]), shared_version=shared, share_state=state,
+            share_version=asked, approved_by=_str_or_none(r[8]) if mine else None,
+            approved_at=r[9] if mine else None))
     return out, len(rows) > limit
 
 

@@ -104,7 +104,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows",
+        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
+        "studio-share",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -554,7 +555,11 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
         user=UserContext(email="admin@acme.test", role=UserRole.EXECUTIVE))
     by_slug = {f["slug"]: f for f in out["families"]}
     for slug in sf.pack_slugs():
-        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + 1000, slug
+        # WS-STU J2d: studio-share holds one tool of about 360 characters, so it
+        # has its own floor. The mutation (the rules block alone) prices 0 more.
+        # TOF-3a F12c: studio-repair holds two short tools, so it has that floor too.
+        floor = 300 if slug in ("studio-share", "studio-repair") else 1000
+        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + floor, slug
 
 
 # ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
@@ -682,6 +687,12 @@ DOOR_READ = ("studio_app_read",)
 RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
 #: The two workflow writes of the second pack of the owner (STB-6b).
 WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live")
+#: The one tool of the fifth pack of the owner, the share of a skill (WS-STU J2d).
+SHARE_TOOLS = ("studio_skill_share",)
+#: The two tools of the fourth pack of the owner, the repair of a skill (TOF-3a F12c).
+REPAIR_TOOLS = ("studio_skill_repair", "studio_skill_undo")
+#: Each pack of the Studio owner, in the order of ``PACKS``.
+STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-share")
 
 
 def _studio_scope() -> set[str]:
@@ -699,8 +710,11 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert more["owner"] == STUDIO and sf.is_pack("studio-more") and more["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert tuple(more["tools"]) == STUDIO_MORE_TOOLS
-    assert set(family["tools"]) | set(more["tools"]) | set(WORKFLOW_WRITES) == _studio_scope()
+    assert (set(family["tools"]) | set(more["tools"]) | set(WORKFLOW_WRITES)
+            | set(SHARE_TOOLS) | set(REPAIR_TOOLS)) == _studio_scope()
     assert tuple(sf.SKILL_FAMILIES["studio-workflows"]["tools"]) == WORKFLOW_WRITES
+    assert tuple(sf.SKILL_FAMILIES["studio-share"]["tools"]) == SHARE_TOOLS
+    assert tuple(sf.SKILL_FAMILIES["studio-repair"]["tools"]) == REPAIR_TOOLS
     # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
     # WS-67 TS-1b split the 23 into a core of 10 and studio-more of 13, with no tool in both.
     assert len(family["tools"]) == 10 and len(more["tools"]) == 13
@@ -783,6 +797,8 @@ _NOT_TOOLS = {"no_card", "based_on", "request_id"}
     # WS-67 TS-1b: after a 422 on a skill save, studio-more says to load the
     # core with the load tool. It names no core tool.
     ("studio-more", STUDIO_MORE_TOOLS, frozenset({tp.LOAD_TOOL})),
+    # TOF-3a F12c: the repair pack names its two tools only.
+    ("studio-repair", REPAIR_TOOLS, frozenset()),
 ])
 def test_the_studio_rules_name_only_tools_of_the_pack(
     slug: str, own: tuple[str, ...], extra: frozenset[str],
@@ -794,8 +810,8 @@ def test_the_studio_rules_name_only_tools_of_the_pack(
     assert named and named <= set(own) | extra, named - set(own) - extra
     assert found.owner == STUDIO and found.delegation_refusal
     assert found.delegation_refusal == tp.PACKS["studio"].delegation_refusal
-    # STB-6b, then WS-67 TS-1b.
-    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", "studio-workflows")
+    # STB-6b, then WS-67 TS-1b, then WS-STU J2d.
+    assert tp.owner_packs(STUDIO) == STUDIO_PACKS
     assert STUDIO in tp.NO_PERSONA_BULLETS
 
 
@@ -850,7 +866,11 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     core, more = tp.PACKS["studio"], tp.PACKS["studio-more"]
     assert more.surface_slugs == core.surface_slugs == ("studio",)
     assert more.words == core.words
-    assert list(tp.PACKS)[-3:] == ["studio", "studio-more", "studio-workflows"]
+    # WS-STU J2d: the dark share pack is last, so the cap drops it first.
+    # TOF-3a F12c: the dark repair pack is just before it.
+    assert list(tp.PACKS)[-5:] == list(STUDIO_PACKS)
+    assert "studio-share" not in tp.FOLLOWS
+    assert "studio-repair" not in tp.FOLLOWS
 
 
 def test_the_studio_pack_is_filtered_by_the_owner_key() -> None:
@@ -1086,8 +1106,9 @@ async def test_the_loader_offers_the_studio_pack_only_to_a_member_who_holds_stud
     _member_holds(monkeypatch, features)
     # STB-6b: the owner has more than one pack, so the loader reaches it only
     # where the list allows each. The hand-off to it is refused in every run anyway.
-    # WS-67 TS-1b: studio-more is the third pack of the owner.
-    every = frozenset({"studio", "studio-more", "studio-workflows"})
+    # WS-67 TS-1b: studio-more is the third pack of the owner. WS-STU J2d: the
+    # fourth is studio-share.
+    every = frozenset(STUDIO_PACKS)
     plan = await ti._plan_pack_loader(
         object(), every, [], builds=[], current=40, pool=[], persona="",
         bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
@@ -1251,10 +1272,12 @@ def test_a_hand_off_to_the_studio_owner_is_refused_in_every_run() -> None:
     # A run that holds each pack of the owner answers the pack's own text, which
     # is true there. STB-6b: the owner has more than one pack, so a run with
     # some of them answers the refusal of every run. Both texts refuse. WS-67
-    # TS-1b: studio-more is the third pack of the owner.
-    held = {tp.PACKS_KEY: _studio_record("studio", "studio-more", "studio-workflows")}
+    # TS-1b: studio-more is the third pack of the owner. WS-STU J2d: the fourth
+    # is studio-share.
+    held = {tp.PACKS_KEY: _studio_record(*STUDIO_PACKS)}
     assert tp.delegation_refusal(STUDIO, held) == tp.PACKS["studio"].delegation_refusal
-    for some in (("studio",), ("studio", "studio-more"), ("studio", "studio-workflows")):
+    for some in (("studio",), ("studio", "studio-more"), ("studio", "studio-workflows"),
+                 ("studio", "studio-more", "studio-workflows")):
         part = {tp.PACKS_KEY: _studio_record(*some)}
         assert tp.delegation_refusal(STUDIO, part) == tp.PACK_ONLY_REFUSED, some
     # Any other agent keeps its old answer.
@@ -1351,9 +1374,10 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     monkeypatch.setattr(ti, "_studio_open", lambda: open_)
     _member_holds(monkeypatch, HOLDER)
     # STB-6b: the loader reaches the owner only where the list allows each of
-    # its packs (see the member test above). WS-67 TS-1b: three packs.
+    # its packs (see the member test above). WS-67 TS-1b: three packs. WS-STU
+    # J2d: four.
     plan = await ti._plan_pack_loader(
-        object(), frozenset({"studio", "studio-more", "studio-workflows"}), [], builds=[],
+        object(), frozenset(STUDIO_PACKS), [], builds=[],
         current=40, pool=[], persona="", bullets={}, agent_name="orchestrator",
         no_egress=False, is_authorized=None)
     assert ("studio" in plan.offered) is open_

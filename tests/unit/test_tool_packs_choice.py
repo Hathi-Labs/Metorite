@@ -1548,10 +1548,13 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     # WS-39 SP-5a: projects-cycles follows the authority pack.
     # STB-6b: studio-workflows, the small pack of the workflow writes, follows studio.
     # WS-67 TS-1b: studio-more, the other 13 Studio tools, sits between them.
-    assert list(tp.PACKS)[-13:] == [
+    # WS-STU J2d: studio-share, the one share tool, is last.
+    # TOF-3a F12c: studio-repair, the two repair tools, sits before it.
+    assert list(tp.PACKS)[-15:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "projects-cycles",
-        "calendar-day", "studio", "studio-more", "studio-workflows"]
+        "calendar-day", "studio", "studio-more", "studio-workflows", "studio-repair",
+        "studio-share"]
     assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.

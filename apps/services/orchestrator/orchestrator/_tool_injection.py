@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import functools
 import os
@@ -2023,6 +2024,36 @@ def _image_withheld() -> frozenset[str]:
     return frozenset({"analyze_image"})
 
 
+#: SBX-19 fix round. Whether ``compute_run`` fits in the request of THIS turn.
+#: The tool has the LOWEST priority for a place: the pack step
+#: (:func:`_apply_tool_packs`) sets it after it counts the base and the packs,
+#: and it does not count the tool itself. A turn with two big packs then
+#: keeps both packs and drops the tool, and never the reverse. The base was at
+#: the 110-tool cap (``tool_packs.MAX_REQUEST_TOOLS``), so a place in the
+#: always-on base would push a mixed turn over it. Default True: with packs
+#: off no cap logic runs. Fence: ``tests/unit/test_compute_run.py``.
+_COMPUTE_ROOM: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "compute_room", default=True)
+
+
+def _compute_withheld() -> frozenset[str]:
+    """``compute_run`` when the compute target is off for the run's org (SBX-19).
+
+    The org is the run's own (:func:`_run_org_or_none`), never request input.
+    The answer is per org and not per thread, so the tool list holds from turn
+    to turn. The tool checks the flag again on each call, so a flip between
+    the list and the call refuses the late call. Fence:
+    ``tests/unit/test_compute_run.py``.
+    """
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+    except ImportError:
+        return frozenset({"compute_run"})
+    if compute_enabled_for(_run_org_or_none()) and _COMPUTE_ROOM.get():
+        return frozenset()
+    return frozenset({"compute_run"})
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -2254,6 +2285,15 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
 
+    # SBX-19: Python over the tool results of this chat, in the sealed `compute`
+    # target. It is no finder and no shell tool (D85, D225). It is dark per org:
+    # `_compute_withheld` takes it out of the scope and the final list.
+    try:
+        from acb_skills.compute_run import compute_run
+        _all_tools = [*_all_tools, compute_run]
+    except ImportError:
+        pass
+
     # A report: one file the chat draws as a card, and its PDF, from one spec
     # (projects_ai_chat.md §14.10). The same family and the same PDF seam.
     try:
@@ -2436,8 +2476,13 @@ def _inject_agent_tools(
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
     no_egress: bool = False,
+    paste_frame: bool = False,
 ) -> frozenset[str]:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    ``paste_frame`` (HRD-14b) is True only for a top-level streamed run, which
+    the chat route can bind. A delegated run, a sub-agent and a batch run
+    pass nothing, so they get no paste middleware (:func:`_apply_paste_frame`).
 
     Returns the names of the platform tools this run holds after every
     narrowing (scope, skill toggles, D85, H-236, the floor opt-out and
@@ -2505,6 +2550,7 @@ def _inject_agent_tools(
             _apply_no_egress(agents, agent_name)
         else:
             _apply_chat_hold(agents, agent_name)
+        _apply_dry_run(agents)  # WS-STU F4b: a skill test fails closed here too
         return frozenset()  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
@@ -2566,7 +2612,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld() | _image_withheld()
+    _facts_off = _facts_withheld() | _image_withheld() | _compute_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2986,6 +3032,9 @@ def _inject_agent_tools(
     # CTX-1: a large tool result as a preview and a handle. It goes FIRST, so
     # its middleware is the outermost and the number check below still reads
     # the full result.
+    # SBX-19: it goes BEFORE the spill, so it wraps the spill and reads the
+    # preview. It keeps a result for `compute_run` and never a second copy.
+    _apply_keep_for_compute(agents, agent_name)
     _apply_tool_result_spill(agents, agent_name)
     # H-236: the agent's OWN egress tools and MCP servers leave as well, and
     # a native MAF agent gets the call-time refusal, as a per-run view.
@@ -2993,8 +3042,14 @@ def _inject_agent_tools(
         _apply_no_egress(agents, agent_name, injected=_egress)
     else:
         _apply_chat_hold(agents, agent_name)
+    # WS-STU F4b: a skill test puts its hold first on each agent of the run.
+    _apply_dry_run(agents)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # HRD-14b: a paste is framed as data, in a copy of each model request.
+    # Right after the steer turns, so its middleware sees them. Off for the
+    # org, or a run that the route cannot bind, it attaches nothing.
+    _apply_paste_frame(agents, attach=paste_frame)
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
@@ -3169,6 +3224,42 @@ def _apply_steer_turns(agents: list[Any]) -> None:
             agents[i] = agent_with_providers(agent, [SteerTurnsProvider()])
 
 
+def _apply_paste_frame(agents: list[Any], *, attach: bool) -> None:
+    """A paste is framed as data on ONE run (HRD-14b, task 3667).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The seam". It replaces each
+    native MAF ``Agent`` in *agents* with a per-run view that carries
+    ``orchestrator.paste_turns.PasteFrameProvider``, as
+    :func:`_apply_progress_notice` does. It runs right after
+    :func:`_apply_steer_turns`, so the middleware sees each request after the
+    steer turns. With ``CHAT_PASTE_FRAME_ORGS`` off for the run's org it
+    attaches nothing, so the provider list, the first model request, the
+    stored session and each golden stay byte-identical. The org is the run
+    binding's (:func:`_run_org`), never request input. *attach* is False for
+    a delegated run, a sub-agent and a batch run: they get no middleware. A
+    Copilot SDK agent and a plain object stay as they are. Fence:
+    ``tests/unit/test_paste_frame_seam.py``.
+    """
+    if not attach:
+        return
+    from acb_skills.paste_frame import paste_frame_on
+
+    if not paste_frame_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+
+        from orchestrator.paste_turns import PasteFrameProvider
+    except ImportError as exc:  # pragma: no cover — both ship with the platform
+        _log.warning("executor.paste_frame_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [PasteFrameProvider()])
+
+
 def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
     """The number check of a CRM answer on ONE run (WS-53 CRM-Q29).
 
@@ -3235,6 +3326,39 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
         agents[i] = agent_with_providers(agent, [AnswerCheckProvider(numbers, claim_mode=claims)])
         extra = {"claim_mode": claims} if claims != "off" else {}
         _log.info("executor.answer_check_on", agent=agent_name, mode=numbers, **extra)
+
+
+def _apply_keep_for_compute(agents: list[Any], agent_name: str | None) -> None:
+    """The ``compute_run`` input marker on ONE run (SBX-19).
+
+    It replaces each native MAF ``Agent`` that holds ``compute_run`` with a
+    per-run view that carries ``KeepForComputeProvider``, as
+    :func:`_apply_tool_result_spill` does. Nothing is attached for an org with
+    the compute target off, and a run with no org attaches nothing. Call it
+    BEFORE the spill step, so its middleware wraps the spill's.
+    """
+    org = _run_org_or_none()
+    if not org:
+        return
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+        from acb_skills.tool_result_spill import KeepForComputeProvider
+        from agent_framework import Agent
+    except ImportError as exc:
+        _log.warning("executor.keep_for_compute_unavailable", error=str(exc)[:200])
+        return
+    if not compute_enabled_for(org):
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent):
+            continue
+        held = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+        if "compute_run" not in held:
+            continue
+        agents[i] = agent_with_providers(agent, [KeepForComputeProvider()])
+        _log.info("executor.keep_for_compute_on", agent=agent_name)
 
 
 def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
@@ -3343,6 +3467,37 @@ def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
         if any(_is_held_off(tool, owner) for _label, pool in _own_tool_pools(agent)
                for tool in pool):
             agents[i] = agent_with_providers(agent, [ChatHoldProvider(owner=owner)])
+
+
+def _apply_dry_run(agents: list[Any]) -> None:
+    """The dry-run door of a skill test on ONE run (WS-STU F4b).
+
+    With no dry run on this frame it returns at once, so each other run is as
+    before. Else ``skill_dry_run.attach`` puts ``HoldAndRecord`` and
+    ``CapGuard`` FIRST in the ``middleware`` list of a per-run view of each
+    agent, and arms the record. MAF runs that list before each provider
+    middleware and before the MCP gate, so the hold sees each call first. A
+    Copilot agent or a plain object raises ``DryRunRefused``, so a skill test
+    never runs with no hold. Fence: ``tests/unit/test_skill_dry_run.py``.
+    """
+    from acb_skills.skill_dry_run import attach, current_dry_run
+
+    record = current_dry_run()
+    if record is None:
+        return
+    from agent_framework import Agent
+
+    attach(agents, record, native=Agent,
+           tools_of=lambda agent: [t for _label, pool in _own_tool_pools(agent) for t in pool])
+
+
+def _note_dry_run_loaded(skill_slugs: Sequence[str]) -> None:
+    """In a skill test, note whether the forced skill reached the run
+    (WS-STU F4b). With no dry run on this frame it does nothing."""
+    from acb_skills.skill_dry_run import current_dry_run
+
+    if (dry := current_dry_run()) is not None:
+        dry.loaded = dry.slug in skill_slugs
 
 
 # ── Tool packs: the guarded builder (WS-67 OA-7b, D117) ─────────────────────
@@ -3725,10 +3880,58 @@ async def _drop_pack_unless_studio(
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
     :func:`_studio_member_open`). For an open member, the second filter
-    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b), and
+    then the third, :func:`_drop_studio_repair_unless_open` (TOF-3a F12c)."""
     if await _studio_member_open():
-        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        tools, dropped = await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        return _drop_studio_repair_unless_open(tools, dropped)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+#: The pack of the two repair tools (TOF-3a F12c).
+REPAIR_PACK = "studio-repair"
+
+
+def _skill_repair_tools_open() -> bool:
+    """True when the run's org is on ``STUDIO_ORGS``,
+    ``STUDIO_SKILL_TESTS_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``: the switches
+    of the repair route (F12.md check 1). The org is the run's own, never an
+    argument (R5). It fails closed."""
+    try:
+        from gateway.routes.studio.flags import skill_tests_allowed
+
+        return _skill_repair_open() and bool(skill_tests_allowed(_run_org_or_none()))
+    except Exception:  # fail closed
+        return False
+
+
+def _without_closed_repair(allow: frozenset[str]) -> frozenset[str]:
+    """*allow* less :data:`REPAIR_PACK` while the org of the run is off the
+    switches of the repair (TOF-3a F12c). Then ``tool_packs.choose`` and the
+    loader plan never offer it, also where the owner pack list names it. An
+    *allow* with no repair pack reads no flag."""
+    if REPAIR_PACK in allow and not _skill_repair_tools_open():
+        return allow - {REPAIR_PACK}
+    return allow
+
+
+def _drop_studio_repair_unless_open(
+    tools: list[Any], dropped: list[str],
+) -> tuple[list[Any], list[str]]:
+    """Take the two repair tools out of a ``studio-repair`` pack while the org
+    is off the switches of the repair (TOF-3a F12c,
+    :func:`_skill_repair_tools_open`). A pack with no repair tool reads no
+    flag. The names are ``acb_skills.studio_tools.STUDIO_REPAIR_NAMES``, the
+    one list. Fence: ``tests/unit/test_skill_repair.py``."""
+    from acb_skills.studio_tools import STUDIO_REPAIR_NAMES
+
+    if not any(_tool_name(t) in STUDIO_REPAIR_NAMES for t in tools):
+        return tools, dropped
+    if _skill_repair_tools_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_REPAIR_NAMES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_REPAIR_NAMES]
+    return kept, [*dropped, *gone]
 
 
 def _studio_requests_open() -> bool:
@@ -3939,11 +4142,18 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             return twice
         pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
         await _mark_pack_session(owner, ctx)
+        # TOF-3a F12b: a tool of a loaded skill notes its outcome on the run.
+        notes = _skill_notes_of(ctx, run_key, name)
+        _clear_card_outcome(notes)
         try:
             with owner_scope(owner, held_now):
                 result = await gated(*args, **kwargs)
+        except Exception as exc:
+            _note_skill_call(notes, name, fn, args, kwargs, raised=exc)
+            raise
         finally:
             _close_pack_profile_writes()
+        _note_skill_call(notes, name, fn, args, kwargs, result=result)
         await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
         if slug:
             await note_used(slug, ctx)
@@ -4087,13 +4297,21 @@ class PackApply:
     #: executor reads their MCP tools after the attach
     #: (:func:`_log_skill_mcp_unattached`).
     skills: tuple[Any, ...] = ()
+    #: TOF-3a F12b: the notes of the skills of this run
+    #: (:class:`SkillRunNotes`), or None. Only an org on
+    #: ``STUDIO_SKILL_REPAIR_ORGS`` with a loaded skill gets notes.
+    skill_notes: Any = None
 
     def context(self) -> dict[str, Any]:
         """The keys that the executor derives into the run binding, after
-        ``bind_artifact_context``. A delegated run drops both."""
+        ``bind_artifact_context``. A delegated run drops each of them. The
+        notes key is there only when the run has notes."""
         from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
 
-        return {PACK_RUN_KEY: self.run_key, PACKS_KEY: self.record}
+        out = {PACK_RUN_KEY: self.run_key, PACKS_KEY: self.record}
+        if self.skill_notes is not None:
+            out[SKILL_RUN_NOTES_KEY] = self.skill_notes
+        return out
 
 
 def _as_agent_tools(tools: list[Any]) -> list[Any]:
@@ -4179,7 +4397,10 @@ def _pack_base_names(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | _image_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone
+                # SBX-19: never in the base. It takes a place only after the
+                # packs (`_COMPUTE_ROOM`), so it cannot cost a pack its place.
+                | frozenset({"compute_run"}))
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
@@ -4321,15 +4542,26 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # TOF-3a F12c: the repair pack is off for an org off the switches of the
+    # repair, so neither ``choose`` nor the loader offers it there.
+    allow = _without_closed_repair(allow)
     # WS-STU F3: the published skills that the words of this turn name. G2: a
     # WhatsApp turn loads none.
-    # TOF-5a-1: the facts of the MCP lookahead of this run, for an ``mcp:``
-    # action of a skill. The member's grant is the run's own check.
-    turn = turn if read_only else await _turn_with_skills(turn, reach=McpReach(
-        agent=agent, agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
-        is_authorized=is_authorized))
+    # TOF-3a F12b: the facts of each skill that the turn reads, for the record
+    # of its run. ``_turn_with_skills`` fills them only for an org on the flag.
+    # TOF-5a-1: *reach* holds the facts of the MCP lookahead of this run, for
+    # an ``mcp:`` action of a skill. The member's grant is the run's own check.
+    facts_token = _SKILL_FACTS.set({})
+    try:
+        turn = turn if read_only else await _turn_with_skills(turn, reach=McpReach(
+            agent=agent, agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
+            is_authorized=is_authorized))
+        facts = _SKILL_FACTS.get() or {}
+    finally:
+        _SKILL_FACTS.reset(facts_token)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
+    _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
     # WS-67 TS-2a (D222 decision 13): ``find_tools`` rides in each request of
     # a run where the search is on, so the cap counts it before the first
     # choice. The org is the bound tenant, never a request field (R5). At the
@@ -4455,6 +4687,17 @@ async def _apply_tool_packs(
     # reaches). The inject step after this one adds nothing to the count.
     planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
                   + len(added) - sum(_specialist_counts(pool, replaced).values()))
+    # SBX-19: ``compute_run`` takes the place that is left, and no other. It
+    # leaves room for the largest pack that the loader OFFERS and that fits
+    # without it, so a load never misses by the one place of the tool.
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    cap = tool_packs.MAX_REQUEST_TOOLS
+    reserve = max(
+        (n for n in (len(SKILL_FAMILIES[slug]["tools"]) for slug in plan.offered
+                     if slug in SKILL_FAMILIES) if planned_tools + n <= cap),
+        default=0)
+    _COMPUTE_ROOM.set(planned_tools + reserve + 1 <= cap)
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
@@ -4481,8 +4724,13 @@ async def _apply_tool_packs(
         planned_tools=planned_tools,
     )
     _log_skills_loaded(skills, choice.skills_skipped)
+    _note_dry_run_loaded(skill_slugs)  # WS-STU F4b
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key,
-                        skills=tuple(skills))
+                        skills=tuple(skills),
+                        skill_notes=_skill_run_notes(
+                            facts, skills, run_ctx, run_key,
+                            words=str(getattr(turn, "words", "") or ""),
+                            pack_tools={_tool_name(t) for b in builds for t in b.tools}))
     if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
     # TS-2a: with the search on, the run holds ``find_tools`` also with no
@@ -4548,10 +4796,17 @@ async def _turn_with_skills(turn: Any, *, reach: McpReach | None = None) -> Any:
     org. The approvals come in the same tenant session
     (:func:`_skill_mcp_approvals`). The lookahead reads *reach*, and with no
     *reach* no server is reachable. Each refusal is a log line, never text
-    for the model."""
+    for the model.
+
+    WS-STU F4b: in a skill test, the turn holds the forced pack of the test
+    and only that pack. The words choose nothing, and no store read runs.
+    The MCP lookahead does not run either."""
     from acb_common.db import current_tenant
     from acb_skills import skill_packs, tool_packs, tool_search
+    from acb_skills.skill_dry_run import current_dry_run
 
+    if (dry := current_dry_run()) is not None:
+        return dataclasses.replace(turn, skills=(dry.pack,))
     words = str(getattr(turn, "words", "") or "")
     if not words.strip() or not _studio_open():
         return turn
@@ -4596,6 +4851,7 @@ async def _turn_with_skills(turn: Any, *, reach: McpReach | None = None) -> Any:
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
     packs: list[Any] = []
+    bodies: list[tuple[Any, Any]] = []
     # TOF-1b: one read of the flag a turn, and only for a turn with a skill to
     # build. TOF-1c: the description pass may have read it already.
     chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
@@ -4615,6 +4871,8 @@ async def _turn_with_skills(turn: Any, *, reach: McpReach | None = None) -> Any:
                       reason=built)
             continue
         packs.append(built)
+        bodies.append((built, version.body))
+    _note_skill_facts(bodies)  # TOF-3a F12b
     return dataclasses.replace(turn, skills=tuple(packs)) if packs else turn
 
 
@@ -4746,6 +5004,349 @@ def _builds_read_mail(builds: Sequence[Any]) -> bool:
     text (:data:`UNTRUSTED_INPUT_AGENTS`). Then :func:`_inject_mcp_servers`
     attaches no server to the run (OA-7b)."""
     return any(getattr(b, "owner", None) in UNTRUSTED_INPUT_AGENTS for b in builds)
+
+
+# ── The record of skill runs (WS-TOF TOF-3a F12b) ───────────────────────────
+# ``ai_studio_rows/F12.md`` "The writers (F12b)". Dark behind
+# ``STUDIO_SKILL_REPAIR_ORGS`` (and ``STUDIO_ORGS``). Three hooks, and no new
+# chat hook:
+#
+# 1. The skill list of :func:`_turn_with_skills`. For an org on the flag it
+#    keeps the facts of each built skill (:func:`_note_skill_facts`): the id,
+#    the version, the repair key of the body, and the action of each tool.
+#    :func:`_apply_tool_packs` keeps the facts of the skills that the run
+#    holds at the end (:func:`_skill_run_notes`), in ``PackApply.skill_notes``.
+# 2. The pack tool guard. ``_pack_call`` hands each call of a tool of a
+#    loaded skill to :func:`_note_skill_call`: a raise or a refused answer
+#    is ``tool_error``, and a card that the member declined
+#    (``ask_tools.last_card_outcome``) is ``card_declined``.
+# 3. The end of the run. ``executor.run_agent_stream`` calls
+#    :func:`schedule_skill_runs` in its ``finally``. It starts ONE task that
+#    writes one ``live`` row for each loaded skill (:func:`_write_skill_runs`),
+#    so the write never slows the turn. A fault logs its class only.
+#
+# ``member_said_wrong`` is F12c: the repair route writes it.
+# The notes keep the words of the turn in memory only, to hash them. No log
+# line, no repr and no row holds them. Fence: ``tests/unit/test_skill_repair.py``
+# (``TestTheWriters``) and ``tests/unit/test_skill_run_writers_r8.py`` (R8).
+
+#: The key of the run context that holds the :class:`SkillRunNotes` of a run.
+SKILL_RUN_NOTES_KEY = "skill_run_notes"
+
+#: The ``detail`` of a passed row of a skill whose tools no pack tool of the
+#: run holds. The hook of the pack tool guard cannot see those calls, so the
+#: row did not observe the run. A code word, never a value.
+UNOBSERVED = "unobserved"
+
+#: The facts of the skills that :func:`_turn_with_skills` built, by pack slug.
+#: :func:`_apply_tool_packs` binds an empty dict around the call, so a call
+#: from any other place keeps no fact. The default is None, never a mutable
+#: object.
+_SKILL_FACTS: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "acb_skill_run_facts", default=None)
+
+#: The live tasks of :func:`schedule_skill_runs`, so that no task is lost
+#: before it ends.
+_SKILL_RUN_TASKS: set[asyncio.Task[Any]] = set()
+
+
+@dataclasses.dataclass(frozen=True)
+class _LoadedSkill:
+    """The facts of one loaded skill that its row needs. Names and ids only."""
+
+    skill_id: str
+    version: int
+    body_key: str
+    #: The action of the skill for each chat tool of the skill.
+    actions: Mapping[str, str]
+
+
+def _skill_repair_open() -> bool:
+    """True when ``STUDIO_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS`` both hold
+    the org of this run. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It fails closed, and it logs nothing."""
+    try:
+        from gateway.routes.studio.flags import skill_repair_allowed, studio_allowed
+
+        org = _run_org_or_none()
+        return bool(studio_allowed(org) and skill_repair_allowed(org))
+    except Exception:  # fail closed
+        return False
+
+
+def _skill_actions(body: Any) -> dict[str, str]:
+    """The action of the skill for each chat tool of *body*. A tool that two
+    actions serve, or an action that is no plain name, takes ``tool:<name>``."""
+    from acb_skills import skill_packs
+    from acb_skills.hidden_text import strip_hidden
+
+    raw = body.get("actions") if isinstance(body, Mapping) else None
+    seen: dict[str, list[str]] = {}
+    for action in raw if isinstance(raw, list) else []:
+        clean = strip_hidden(str(action)).strip()
+        tool = skill_packs.action_tool(clean)
+        if tool:
+            seen.setdefault(tool, []).append(clean)
+    return {tool: (names[0] if len(names) == 1 and " " not in names[0] else f"tool:{tool}")
+            for tool, names in seen.items()}
+
+
+def _note_skill_facts(bodies: Sequence[tuple[Any, Any]]) -> None:
+    """Keep the facts of each built skill pack of *bodies* in
+    :data:`_SKILL_FACTS`. Only inside :func:`_apply_tool_packs`, only with a
+    skill, and only for an org on the flag. It never raises."""
+    facts = _SKILL_FACTS.get()
+    if facts is None or not bodies or not _skill_repair_open():
+        return
+    try:
+        from gateway.studio.skill_repair import body_key
+    except Exception:  # pragma: no cover - the gateway ships with the platform
+        return
+    for built, body in bodies:
+        try:
+            facts[str(built.slug)] = _LoadedSkill(
+                skill_id=str(built.skill_id), version=int(built.version),
+                body_key=body_key(body), actions=_skill_actions(body))
+        except Exception as exc:  # the class only: one bad body skips its row
+            _log.info("executor.skill_run_unnoted", skill=str(getattr(built, "skill_id", "")),
+                      error_type=type(exc).__name__)
+
+
+class SkillRunNotes:
+    """What one run did with each loaded skill (F12b). One object for each
+    run, shared by each tool call of the run, as ``assistant_profile``'s
+    steer holder is.
+
+    It holds the org, the member, the run and the chat of the run, the facts
+    of each loaded skill, the first failure of each skill, and the write
+    actions with their key names. The words of the turn stay in a private
+    slot, only to hash them at the write, and the repr never shows them."""
+
+    __slots__ = ("_words", "failures", "member", "org", "run_id", "run_key", "skills",
+                 "thread_id", "unobserved", "writes")
+
+    def __init__(self, *, org: str, member: str, run_id: str, thread_id: str | None,
+                 run_key: str, skills: Mapping[str, _LoadedSkill], words: str,
+                 unobserved: Iterable[str] = ()) -> None:
+        self.org = org
+        self.member = member
+        self.run_id = run_id
+        self.thread_id = thread_id
+        self.run_key = run_key
+        self.skills = dict(skills)
+        self._words = words
+        #: The slugs of the skills with no tool that is a pack tool of the run.
+        #: The hook cannot see their calls, so a passed row of one says
+        #: :data:`UNOBSERVED` in its detail.
+        self.unobserved = frozenset(unobserved) & frozenset(self.skills)
+        #: The slug of a skill to its reason and detail, as the row keeps them.
+        self.failures: dict[str, tuple[str, str]] = {}
+        #: The slug of a skill to each write action and its key names.
+        self.writes: dict[str, dict[str, set[str]]] = {}
+
+    def __repr__(self) -> str:
+        return f"SkillRunNotes(run_id={self.run_id!r}, skills={sorted(self.skills)!r})"
+
+    def holds(self, tool: str) -> bool:
+        """True when *tool* is a tool of a loaded skill of the run."""
+        return any(tool in s.actions for s in self.skills.values())
+
+    def saw(self, tool: str, *, error: str | None = None, declined: bool = False,
+            keys: Iterable[str] | None = None) -> None:
+        """Note one call of *tool*. *error* is the class of a raise, or the
+        kind of a refused answer. *declined* is a card that the member
+        declined. *keys* is the key names of a write call, or None for a
+        read. ``tool_error`` wins over ``card_declined``, and the first of
+        each kind stays."""
+        for slug, skill in self.skills.items():
+            action = skill.actions.get(tool)
+            if action is None:
+                continue
+            if error:
+                if self.failures.get(slug, ("",))[0] != "tool_error":
+                    self.failures[slug] = ("tool_error", f"{tool}: {error}")
+            elif declined and slug not in self.failures:
+                self.failures[slug] = ("card_declined", tool)
+            if keys is not None:
+                self.writes.setdefault(slug, {}).setdefault(action, set()).update(keys)
+
+    def row_of(self, slug: str) -> tuple[bool, str, str, list[dict[str, Any]]]:
+        """The ``passed``, the reason, the detail and the writes of the row
+        of the skill *slug*."""
+        reason, detail = self.failures.get(
+            slug, ("passed", UNOBSERVED if slug in self.unobserved else ""))
+        writes = [{"action": a, "keys": sorted(k)}
+                  for a, k in sorted(self.writes.get(slug, {}).items())]
+        return reason == "passed", reason, detail, writes
+
+    def words(self) -> str:
+        """The words of the turn, for the input hash only."""
+        return self._words
+
+
+def _skill_run_notes(facts: Mapping[str, _LoadedSkill], skills: Sequence[Any],
+                     run_ctx: Mapping[str, Any], run_key: str, *,
+                     words: str, pack_tools: Iterable[str] = ()) -> SkillRunNotes | None:
+    """The notes of the run, or None. Only the skills that the run holds at
+    the end of the apply count (*skills*, after ``_skills_present`` and
+    ``_keep_skill_packs``). With no fact (the flag is off, or no skill
+    loaded), it reads nothing and gives None.
+
+    The org is the bound tenant, and the member is the verified member of
+    the run (``executor._verified_run_member``), never a request field (R5).
+    The run id and the chat come from the server-side run context. *words*
+    is ``PackTurn.words``: the pack read of the executor takes it from
+    ``assistant_profile.sent_words`` at the start of the run, before any
+    steer, so it is the sent text of the member. That is the ``content`` of
+    the member's ``chat_message`` row (``routes/agent.py`` saves the same
+    text). A turn with no sent text, such as a Continue, gets no notes.
+
+    *pack_tools* is the names of the pack tools of the run. A kept skill with
+    no tool among them is ``unobserved`` (:data:`UNOBSERVED`). It never
+    raises: a fault gives None, and the turn goes on with no notes."""
+    if not facts:
+        return None
+    try:
+        from acb_common.db import current_tenant
+
+        from orchestrator.executor import _verified_run_member
+
+        kept = {str(s.slug): facts[str(s.slug)] for s in skills if str(s.slug) in facts}
+        org = str(current_tenant() or "").strip().lower()
+        member = _verified_run_member()
+        run_id = str(run_ctx.get("run_id") or "").strip()
+        if not kept or not org or not member or not run_id or not str(words).strip():
+            return None
+        thread = str(run_ctx.get("session_id") or "").strip() or None
+        held = frozenset(pack_tools)
+        blind = [slug for slug, skill in kept.items() if not held & set(skill.actions)]
+        return SkillRunNotes(org=org, member=member, run_id=run_id, thread_id=thread,
+                             run_key=run_key, skills=kept, words=words, unobserved=blind)
+    except Exception as exc:  # the class only
+        _log.info("executor.skill_run_unnoted", error_type=type(exc).__name__)
+        return None
+
+
+def _skill_notes_of(ctx: Any, run_key: str, tool: str) -> SkillRunNotes | None:
+    """The notes of the run of *ctx* when *tool* is a tool of a loaded skill
+    of this run, else None. The notes of another run key never count, so a
+    pack tool of a child run notes nothing on the parent."""
+    notes = ctx.get(SKILL_RUN_NOTES_KEY) if isinstance(ctx, Mapping) else None
+    if isinstance(notes, SkillRunNotes) and notes.run_key == run_key and notes.holds(tool):
+        return notes
+    return None
+
+
+def _note_skill_call(notes: SkillRunNotes | None, tool: str, fn: Any, args: tuple[Any, ...],
+                     kwargs: dict[str, Any], *, raised: BaseException | None = None,
+                     result: Any = None) -> None:
+    """Note one call of a pack tool on the notes of its run (F12b). It never
+    raises and never changes the call.
+
+    A raise gives its class. A refused answer (``tool_refusals.is_refusal``)
+    gives ``Refused``. A card of this call that the member declined
+    (``ask_tools.last_card_outcome``) gives ``card_declined``. A write tool
+    (no read-only mark in the risk registry) adds its key names: the names
+    of the arguments of the owner's signature, never a value.
+
+    ⚠️ The limit. The hook sees only calls that go through ``_pack_tool``.
+    Some calls leave no signal, so the row reads passed:
+
+    * a call of a tool of the run base: a workflow action,
+      ``tool:crm_change_history``, ``tool:crm_search_notes``, or a door-op
+      tool that the member holds;
+    * a call that a pack refusal answers before the hook: held in the turn,
+      the batch write refusal, the pack write refusal, or the refusal of an
+      argument shape.
+
+    A run that ends in an error or a stop also writes passed rows. A RESUME
+    run that keeps its run_id can write passed rows twice. F12c reads failed
+    rows only, so a passed row never blocks a repair. A skill with no tool
+    among the pack tools of the run gets :data:`UNOBSERVED` in the detail of
+    its passed row."""
+    if notes is None:
+        return
+    try:
+        from acb_common.tool_refusals import is_refusal
+        from acb_skills.ask_tools import CARD_DECLINED, last_card_outcome
+        from acb_skills.subagent_contract import DISPLAY_TOOLS, annotated_read_only
+
+        error = type(raised).__name__ if raised is not None else (
+            "Refused" if is_refusal(result) else None)
+        declined = raised is None and last_card_outcome() == CARD_DECLINED
+        keys = (None if tool in DISPLAY_TOOLS or annotated_read_only(tool)
+                else tuple(str(k) for k in _call_args(fn, args, kwargs)))
+        notes.saw(tool, error=error, declined=declined, keys=keys)
+    except Exception as exc:  # the class only: the call answers as before
+        _log.debug("executor.skill_run_note_failed", error_type=type(exc).__name__)
+
+
+def _clear_card_outcome(notes: SkillRunNotes | None) -> None:
+    """Before a call of a tool of a loaded skill, forget the outcome of an
+    earlier card of this frame, so a call with no card reads none."""
+    if notes is None:
+        return
+    with contextlib.suppress(Exception):
+        from acb_skills.ask_tools import clear_card_outcome
+
+        clear_card_outcome()
+
+
+async def _write_skill_runs(notes: SkillRunNotes) -> int:
+    """Write one ``live`` row for each loaded skill of the run (F12b), and
+    answer the count. Best effort: it never raises.
+
+    It reads the flag again, so a flip to off during the run writes nothing.
+    It opens ``tenant_session()`` on the bound tenant, as
+    :func:`_turn_with_skills` does, and the bound tenant must be the org of
+    the notes. ``skill_runs.record_live`` hashes the words with the org of
+    the session and keeps the hash only. A refused row (``SkillRunError``,
+    ``DuplicateFailure``) skips that row. Any other fault ends the write. A
+    log line names a class or a count, never a word of the turn."""
+    written = 0
+    try:
+        from acb_common.db import current_tenant, tenant_session
+        from gateway.studio import skill_runs
+
+        if str(current_tenant() or "").strip().lower() != notes.org or not _skill_repair_open():
+            return 0
+        async with tenant_session() as db:
+            for slug, skill in notes.skills.items():
+                passed, reason, detail, writes = notes.row_of(slug)
+                try:
+                    await skill_runs.record_live(
+                        db, notes.member, skill.skill_id, version=skill.version,
+                        passed=passed, reason=reason, body_key=skill.body_key,
+                        input_text=notes.words(), run_id=notes.run_id,
+                        thread_id=notes.thread_id, detail=detail,
+                        writes=skill_runs.safe_writes(writes))
+                    written += 1
+                except skill_runs.SkillRunError as exc:
+                    _log.info("executor.skill_run_skipped", skill=skill.skill_id,
+                              error_type=type(exc).__name__)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.skill_run_unwritten", error_type=type(exc).__name__)
+        return written
+    _log.info("executor.skill_run_written", rows=written)
+    return written
+
+
+def schedule_skill_runs(applied: Any) -> asyncio.Task[Any] | None:
+    """Start the write of the rows of the run of *applied* (a
+    :class:`PackApply`), and answer its task, or None. A run with no notes
+    starts nothing. The task runs on a copy of this context, so the bound
+    tenant stays. It never raises, so the end of a run never fails here."""
+    notes = getattr(applied, "skill_notes", None)
+    if not isinstance(notes, SkillRunNotes):
+        return None
+    try:
+        task = asyncio.get_running_loop().create_task(_write_skill_runs(notes))
+    except Exception as exc:  # no loop: no row
+        _log.info("executor.skill_run_unwritten", error_type=type(exc).__name__)
+        return None
+    _SKILL_RUN_TASKS.add(task)
+    task.add_done_callback(_SKILL_RUN_TASKS.discard)
+    return task
 
 
 def _skills_present(
@@ -5358,6 +5959,7 @@ async def _inject_mcp_servers(
     from orchestrator import _maf_mcp
 
     _note_mcp_labels([], [], frozenset())  # CSY-10: no label of an older run stays
+    _note_mcp_briefs([], [], None)  # CSY-1: no brief of an older run stays
     if agent_name in UNTRUSTED_INPUT_AGENTS:
         # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
         # a server, and no check here can prove that a server cannot fetch.
@@ -5368,6 +5970,8 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # CSY-5: the model learns WHY the system is off (reason `mail`).
+        await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
 
     org = organization_id or _run_org_or_none()
@@ -5396,14 +6000,20 @@ async def _inject_mcp_servers(
         maf_servers = _maf_servers(servers, is_authorized)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
+            failures: dict[str, str] = {}
             attached = await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                failures=failures,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
+            tools = getattr(agent, "mcp_tools", None)
+            reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
+            _note_mcp_briefs(servers, attached, tools, reasons)
+            await _count_left_out(str(org), reasons)
         return
 
     for srv in servers:
@@ -5439,6 +6049,138 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
     except Exception:  # the platform surface alone
         packs = frozenset()
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
+
+
+async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str | None,
+                             is_authorized: Any) -> None:
+    """CSY-5, reason ``mail``: a run that holds an email pack reads no server, so the
+    registry read never ran. When the flag is on, one metadata read (``enabled_meta``:
+    no header, no token refresh, inside the org binding) names the servers that this
+    run could have used, and each gets the fixed ``mail`` line. A server that the
+    member's grant refuses gets no line. A fault never blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        from orchestrator import _maf_mcp
+
+        org = organization_id or _run_org_or_none()
+        if (not org or not _maf_mcp.is_native_maf_agent(agent)
+                or not _maf_mcp.maf_mcp_org_allowed(org)
+                or not _maf_mcp.connected_systems_org_allowed(org)):
+            return
+        from gateway.connections import mcp as mcp_registry
+
+        rows = await mcp_registry.enabled_meta(str(org))
+        notes = []
+        for srv in rows:
+            if not _keep_mcp_server(srv, agent_name):
+                continue
+            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+                continue
+            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+                continue
+            notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
+        server_brief.set_attached([], notes)
+        await _count_left_out(str(org), {n: "mail" for n, _ in notes})
+    except Exception as exc:
+        _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
+    """CSY-8: add ONE to the daily count of each server and reason that left a server out
+    of this turn. The reasons come from the closed list of CSY-5, so a turn is counted
+    once for each server. Names and counts only. A fault never blocks the run."""
+    try:
+        if not org or not reasons:
+            return
+        from acb_common import mcp_use
+
+        for name, reason in reasons.items():
+            await mcp_use.count_left_out(org, str(name), str(reason))
+    except Exception as exc:  # the class only
+        _log.warning("mcp_use.counter_fault", op="count_left_out", error=type(exc).__name__)
+
+
+async def _mcp_reasons(org: str, maf_servers: list[Any], attached: Any, failures: dict[str, str],
+                       tools: Any, member_present: bool) -> dict[str, str]:
+    """CSY-5: ``{server name: reason}`` for each server of this run that is out of reach or
+    asks a card, from the closed list of ``server_brief.REASONS``. Only for an org with
+    ``CONNECTED_SYSTEMS_ORGS`` on. A server that the grant refused never reached here
+    (:func:`_maf_servers` dropped it), so it gets no line. Never raises."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return {}
+        out = {str(n): r for n, r in failures.items() if r in ("unreachable", "reconnect")}
+        names = {str(n) for n in (attached or [])}
+        from acb_skills.egress import session_is_marked
+        from acb_skills.permission_policy import MCP_READ_ONLY, MCP_READ_ONLY_KEY, decide
+
+        marked = bool(await session_is_marked())
+        by_name = {str(getattr(t, "name", "")): t for t in tools or []}
+        for srv in maf_servers:
+            if str(srv.name) not in names:
+                continue
+            meta = getattr(by_name.get(str(srv.name)), "__dict__", {}).get("_ws8c_tool_meta") or {}
+            if not meta:
+                continue
+
+            def needs_card(hints: Any, after_mark: bool) -> bool:
+                _ok, code, _ = decide({
+                    "tool_name": f"{srv.name}_x", "mcp_tool": True, "mcp_annotations": hints,
+                    "mcp_always_confirm": srv.always_confirm, "mcp_read_only_key": srv.read_only_key,
+                    # MCP-NC1: a member's run needs no card, so the same fact as the gate.
+                    "mcp_member_present": bool(member_present),
+                    "after_untrusted_answer": after_mark,
+                })
+                return code not in (MCP_READ_ONLY, MCP_READ_ONLY_KEY)
+
+            hints = [getattr(m, "hints", None) for m in meta.values()]
+            if not member_present and all(needs_card(h, marked) for h in hints):
+                out[str(srv.name)] = "no_card"
+            elif marked and any(needs_card(h, True) and not needs_card(h, False) for h in hints):
+                out[str(srv.name)] = "asks_each_call"
+        return out
+    except Exception as exc:
+        _log.warning("mcp.reasons_unavailable", error=type(exc).__name__)
+        return {}
+
+
+def _note_mcp_briefs(servers: list[Any], attached: Any, tools: Any, reasons: dict[str, str] | None = None) -> None:
+    """CSY-1: record the brief of each server that attached (*attached* is what
+    ``attach_mcp_tools`` returned), for the per-turn "Connected systems" block
+    (``acb_skills.server_brief``). It reuses the rows that the read gave. The
+    remote tool names come from the tool's own record. CSY-5: *reasons* adds one
+    fixed line for a server that is out of reach or asks a card. CSY-6: the
+    server's own ``instructions`` come from the tool that THIS run connected
+    (``_maf_mcp.server_instructions``), never from the row. A fault never
+    blocks the run."""
+    try:
+        from acb_skills import server_brief
+
+        from orchestrator._maf_mcp import server_instructions
+
+        names = {str(n) for n in (attached or [])}
+        remote: dict[str, list[str]] = {}
+        said: dict[str, str | None] = {}
+        for tool in tools or []:
+            meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta") or {}
+            remote[str(getattr(tool, "name", ""))] = [str(k) for k in meta]
+            said[str(getattr(tool, "name", ""))] = server_instructions(tool)
+        briefs = [
+            (str(s.name), server_brief.server_brief(
+                str(s.label or s.name), str(s.name), str(getattr(s, "description", "") or ""),
+                remote.get(str(s.name), []), said.get(str(s.name))))
+            for s in servers if s.name and str(s.name) in names
+        ]
+        notes = [
+            (str(s.name), server_brief.reason_line(str(s.label or s.name), str(s.name), reasons[str(s.name)]))
+            for s in servers if s.name and reasons and str(s.name) in reasons
+        ]
+        server_brief.set_attached(briefs, notes)
+    except Exception as exc:
+        _log.warning("mcp.briefs_unavailable", error=type(exc).__name__)
 
 
 def _note_mcp_labels(servers: list[Any], attached: Any, reserved: frozenset[str]) -> None:
@@ -5542,6 +6284,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # IN-8c (D98): the admin that an OAuth row acts as, for the card.
             acts_as=(str(getattr(srv, "connected_by", None) or "")
                      if getattr(srv, "oauth", False) is True else ""),
+            # CSY-1: the label and the admin's description, for the brief.
+            label=str(getattr(srv, "label", "") or ""),
+            description=str(getattr(srv, "description", "") or ""),
         ))
     return out
 

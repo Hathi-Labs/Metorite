@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
                               "push_prompt", "rule_mutes", "block_notify")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
-MAX_KINDS = 31
+MAX_KINDS = 32
 #: The most lines that ``corrections`` takes.
 MAX_CORRECTIONS = 10
 #: The longest correction line.
@@ -97,8 +97,9 @@ def feed_kinds() -> frozenset[str]:
     and ``doc_shared_with_me``, 26 after KB-9b slice 2 added
     ``source_sync_failed``, and 29 after WS-66 RM-2 added the three
     reminder kinds, 30 after WS-ALN ALN-2b added ``decision``, and 31 after
-    WS-55 EA-18c added ``agent_questions``, which is ``MAX_KINDS``
-    (§5.9 item 10.6: a ticket that adds a kind raises the cap)."""
+    WS-55 EA-18c added ``agent_questions``, and 32 after AO-2 added
+    ``provider_alert``, which is ``MAX_KINDS`` (§5.9 item 10.6: a ticket
+    that adds a kind raises the cap)."""
     return frozenset(feed_rank.BASE)
 
 
