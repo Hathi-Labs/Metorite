@@ -245,6 +245,7 @@
       "tests/unit/test_agent_label_fence.py",
       "tests/unit/test_agent_map_r8.py",
       "tests/unit/test_agent_policies_r8.py",
+      "tests/unit/test_agent_run_place_model_r8.py",
       "tests/unit/test_api_connections_r8.py",
       "tests/unit/test_app_audit_bound_r8.py",
       "tests/unit/test_app_create_slug_r8.py",
