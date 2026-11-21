@@ -163,6 +163,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
 3. routes/chat.py -- **Chat history and `GET /chat/active-sessions`.**
    - **Authorization is MEMBERSHIP, not ownership.** Each predicate goes through `gateway/rooms.py`. **Every helper opens `acb_graph.tenant_session(organization_id)`, never `get_session()`.** A session of another tenant gets no access and no write. Fences: `test_chat_write_under_rls.py`, `test_rooms.py`.
    - 🔴 **A human turn changes only when its own author writes it.** `_attribute` takes the email from the caller, never from the body.
+   - ⚠️ **A vote row carries the org of the voter** (task 2221). `record_message_feedback` stamps `user.organization_id` on the request frame, before the thread hop. With no org and the bind on, `refuse_tenantless` skips the row. Fence: `test_audit_writers_org_r8.py` (R8).
    - 🔴 **Only the run's fold changes an agent reply, and the fold seals it.** No write updates a system row. ⚠️ The fold id comes from `routes/agent.py::fold_message_id`. Do not go back to `assistant-{thread}-{run_id}`.
    - 🔴 **Only the server creates an agent row or a system row.** Only `routes/agent.py` passes `mint=True`. ⚠️ `_ensure_session` runs at every run start, so it must never raise a role.
    - 🔴 **Each text and JSON value passes `acb_common.pg_text.storable` before a write.** Fence: `test_chat_nul_persist.py`.

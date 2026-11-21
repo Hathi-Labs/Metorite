@@ -7079,6 +7079,8 @@ async def _run_agent_inner(
             error=exc,
             agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             incompatibility=True,
+            # Task 2221: the run's tenant, for the audit rows only.
+            audit_organization_id=_RUN_ORG.get(thread_id),
         )
         pr_url = mutation_result.pr_url if mutation_result else None
         raise AgentRunError(
@@ -7138,6 +7140,8 @@ async def _run_agent_inner(
             run_id=run_id,
             error=exc,
             agent_dir=_repair_dir(_git_dir, _effective_agent_dir),  # the clone, for an authenticated push
+            # Task 2221: the run's tenant, for the audit rows only.
+            audit_organization_id=_RUN_ORG.get(thread_id),
         )
         pr_url = mutation_result.pr_url if mutation_result else None
 
