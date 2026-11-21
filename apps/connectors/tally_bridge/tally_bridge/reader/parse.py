@@ -25,6 +25,9 @@ _DECL = re.compile(rb"^\s*<\?xml[^>]*encoding=[\"']([A-Za-z0-9._-]+)[\"']", re.I
 _DECL_TEXT = re.compile(r"^\s*<\?xml[^>]*\?>")
 _CHARSET = re.compile(r"charset=\"?([A-Za-z0-9._-]+)", re.I)
 _BOMS = (
+    # UTF-32 first: its little-endian mark starts with the UTF-16 one.
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
     (codecs.BOM_UTF8, "utf-8-sig"),
     (codecs.BOM_UTF16_LE, "utf-16"),
     (codecs.BOM_UTF16_BE, "utf-16"),
@@ -88,17 +91,28 @@ def parse_answer(body: bytes, content_type: str | None = None) -> ET.Element:
     return root
 
 
+# Where TallyPrime puts the status of an answer. A STATUS deeper in the data
+# can be a field of a record, so the check reads these places only.
+_STATUS_AT = ("STATUS", "HEADER/STATUS", "BODY/STATUS", "BODY/DATA/STATUS")
+# Where TallyPrime puts a bare <RESPONSE>text</RESPONSE> refusal.
+_RESPONSE_AT = (".", "BODY/RESPONSE", "BODY/DATA/RESPONSE")
+
+
 def check_status(root: ET.Element) -> None:
-    """Raise TallyRefused when the answer carries STATUS 0."""
-    status = root.find("STATUS")
-    if status is None:
-        status = root.find("HEADER/STATUS")
-    if status is not None and (status.text or "").strip() == "0":
+    """Raise TallyRefused when the answer is a refusal.
+
+    A refusal is a STATUS of 0, any LINEERROR, or a RESPONSE that holds only text.
+    """
+    for path in _STATUS_AT:
+        status = root.find(path)
+        if status is not None and (status.text or "").strip() == "0":
+            raise TallyRefused(_detail(root))
+    if root.find(".//LINEERROR") is not None:
         raise TallyRefused(_detail(root))
-    if root.tag == "RESPONSE" and len(root) == 0 and (root.text or "").strip():
-        # A bare <RESPONSE>text</RESPONSE> is how TallyPrime refuses a request it
-        # does not know.
-        raise TallyRefused((root.text or "").strip())
+    for path in _RESPONSE_AT:
+        el = root if path == "." else root.find(path)
+        if el is not None and el.tag == "RESPONSE" and len(el) == 0 and (el.text or "").strip():
+            raise TallyRefused((el.text or "").strip())
 
 
 def _detail(root: ET.Element) -> str:

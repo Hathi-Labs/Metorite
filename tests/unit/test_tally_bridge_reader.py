@@ -90,7 +90,7 @@ def test_the_ampersand_and_angle_brackets_are_escaped_on_the_wire():
     assert b"A&amp;B &lt;x&gt;" in body
 
 
-@pytest.mark.parametrize("bad", ["a\x00b", "a\x04b", "x" * 201])
+@pytest.mark.parametrize("bad", ["a\x00b", "a\x04b", "x" * 201, "a\ud800b", "\udfff"])
 def test_an_input_that_xml_cannot_carry_is_refused(bad):
     with pytest.raises(ValueError):
         envelope.report("Trial Balance", company=bad)
@@ -134,6 +134,30 @@ def test_no_read_path_can_build_an_import_request():
             if "import" in s.lower():
                 hits.append(f"{f.relative_to(REPO)}: {s!r}")
     assert not hits, hits
+
+
+def test_only_the_envelope_module_names_the_request_kind_tag():
+    """Rule 7, the second half: a new module cannot hand-build a request,
+    because only envelope.py may name TALLYREQUEST."""
+    hits = [
+        str(f.relative_to(REPO))
+        for f in sorted((ROOT / "tally_bridge").rglob("*.py"))
+        if any("TALLYREQUEST" in s for s in _string_constants(f))
+    ]
+    assert hits == ["apps/connectors/tally_bridge/tally_bridge/reader/envelope.py"]
+
+
+def test_the_last_step_of_every_builder_refuses_a_request_that_is_not_an_export():
+    import xml.etree.ElementTree as ET
+
+    env, _ = envelope._envelope("Data", "Trial Balance")
+    env.find("HEADER/TALLYREQUEST").text = "Imp" + "ort"
+    with pytest.raises(RuntimeError):
+        envelope._bytes(env)
+    env, _ = envelope._envelope("Data", "Trial Balance")
+    ET.SubElement(env.find("HEADER"), "TALLYREQUEST").text = "Export"
+    with pytest.raises(RuntimeError):
+        envelope._bytes(env)
 
 
 def test_the_committed_requests_match_the_builders(tmp_path):
@@ -185,6 +209,32 @@ def test_an_unknown_request_answer_is_a_refusal():
         parse_answer((SYNTHETIC / "SYNTHETIC_unknown_request.xml").read_bytes())
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<ENVELOPE><BODY><STATUS>0</STATUS></BODY></ENVELOPE>",
+        b"<ENVELOPE><BODY><DATA><STATUS>0</STATUS></DATA></BODY></ENVELOPE>",
+        b"<ENVELOPE><BODY><DATA><RESPONSE>Unknown Request</RESPONSE></DATA></BODY></ENVELOPE>",
+        b"<ENVELOPE><BODY><DATA><LINEERROR>No such ledger</LINEERROR></DATA></BODY></ENVELOPE>",
+    ],
+)
+def test_a_nested_refusal_is_a_refusal(body):
+    with pytest.raises(TallyRefused):
+        parse_answer(body)
+
+
+def test_a_response_with_children_and_a_status_field_in_a_record_are_data():
+    parse_answer(b"<RESPONSE><A>1</A>text</RESPONSE>")
+    parse_answer(
+        b"<ENVELOPE><BODY><DATA><VOUCHER><STATUS>0</STATUS></VOUCHER></DATA></BODY></ENVELOPE>"
+    )
+
+
+def test_a_utf32_answer_with_a_bom_parses():
+    root = parse_answer("<ENVELOPE><NAME>Ünï</NAME></ENVELOPE>".encode("utf-32"))
+    assert root.find("NAME").text == "Ünï"
+
+
 def test_an_entity_attack_is_refused():
     with pytest.raises(TallyAnswerError):
         parse_answer((SYNTHETIC / "SYNTHETIC_entity_attack.xml").read_bytes())
@@ -224,6 +274,11 @@ def test_dates_go_in_and_come_out():
         ("0.005", "0.01", "Cr"),
         ("", "0.00", None),
         ("-0.00", "0.00", None),
+        ("0.001", "0.00", None),
+        ("-0.004", "0.00", None),
+        ("1,23,456.00", "123456.00", "Cr"),
+        ("-12,345,678.9", "12345678.90", "Dr"),
+        ("-.5", "0.50", "Dr"),
     ],
 )
 def test_amounts_are_a_value_and_a_side(text, value, side):
@@ -233,7 +288,7 @@ def test_amounts_are_a_value_and_a_side(text, value, side):
     assert a.value >= Decimal(0)
 
 
-@pytest.mark.parametrize("bad", ["abc", "12.3.4", "1e5", "--5"])
+@pytest.mark.parametrize("bad", ["abc", "12.3.4", "1e5", "--5", "1,,2", ",5", "5,", "1,2345"])
 def test_a_bad_amount_is_refused(bad):
     with pytest.raises(ValueError):
         parse_amount(bad)

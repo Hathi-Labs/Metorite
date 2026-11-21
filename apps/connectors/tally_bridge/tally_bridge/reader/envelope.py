@@ -56,7 +56,7 @@ COLLECTIONS: dict[str, Collection] = {
 }
 
 # XML 1.0 allows tab, newline and carriage return, and no other control character.
-_NOT_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+_NOT_XML = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ud800-\\udfff\\ufffe\\uffff]")
 _MAX_INPUT = 200
 
 
@@ -102,6 +102,11 @@ def _statics(
 
 
 def _bytes(env: ET.Element) -> bytes:
+    # Rule 7, a second lock: every builder ends here, and the request it built
+    # must hold exactly one TALLYREQUEST, and that one must be the export kind.
+    kinds = [el.text for el in env.iter("TALLYREQUEST")]
+    if kinds != [_REQUEST_KIND]:
+        raise RuntimeError("The reader builds export requests only.")
     return ET.tostring(env, encoding="utf-8", xml_declaration=False)
 
 

@@ -31,6 +31,10 @@ for kind in ("services", "agents", "skills"):
 _OURS = re.compile(r"hathi|metorite\.com", re.I)
 
 
+# Folders that a local run makes and git ignores. They are not the program.
+_LOCAL_ONLY = {"__pycache__", ".venv", "build", "dist", ".pytest_cache", ".ruff_cache"}
+
+
 def _py_files(under: Path) -> list[Path]:
     return sorted(under.rglob("*.py"))
 
@@ -86,7 +90,7 @@ def test_no_name_of_ours_in_the_program():
     """Brief test 17, over every file of the program folder."""
     hits = []
     for f in sorted(ROOT.rglob("*")):
-        if not f.is_file() or "__pycache__" in f.parts:
+        if not f.is_file() or _LOCAL_ONLY.intersection(f.relative_to(ROOT).parts):
             continue
         text = f.read_text(encoding="utf-8", errors="replace")
         for n, line in enumerate(text.splitlines(), 1):

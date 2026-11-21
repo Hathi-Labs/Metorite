@@ -21,7 +21,11 @@ from typing import Literal
 Side = Literal["Dr", "Cr"]
 
 _CENT = Decimal("0.01")
-_NUMBER = re.compile(r"^\(?(-|\(-\))?\)?\s*([0-9][0-9,]*(?:\.[0-9]+)?|\.[0-9]+)$")
+# Digits with no commas, or groups of two or three digits after the first
+# group (both 1,234,567 and the Indian 12,34,567). A comma is never doubled.
+_NUMBER = re.compile(
+    r"^(-|\(-\))?\s*((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{2,3})+)(?:\.[0-9]+)?|\.[0-9]+)$"
+)
 _SIDE_WORD = re.compile(r"\s*\b(Dr|Cr)\.?\s*$", re.I)
 
 
@@ -74,6 +78,7 @@ def parse_amount(text: str | None) -> Amount:
     except InvalidOperation as exc:
         raise ValueError(f"Not a Tally amount: {text!r}") from exc
     negative = bool(m.group(1))
+    value = value.quantize(_CENT, rounding=ROUND_HALF_UP)
     if value == 0:
         return Amount(Decimal(0), None)
     if side is None:
