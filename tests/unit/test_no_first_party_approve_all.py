@@ -1,4 +1,4 @@
-"""H-211 (task 560): no first-party factory sets ``approve_all``.
+"""H-211 (task 560): no first-party factory sets ``approve_all``, or any handler.
 
 The root ``metorite`` factory (repo-root ``agents.py``) passed
 ``on_permission_request: PermissionHandler.approve_all``. The adapter stores
@@ -12,14 +12,22 @@ the agent the B6 handler of the run's mode. ``enforce`` (the default) uses
 ``risk_aware_permission_handler``. Only ``AGENT_PERMISSION_MODE=approve_all``
 uses the SDK's blanket handler, and that is the operator's escape hatch.
 
-Two fences:
+Three fences:
 
-* **The tree.** An AST scan of the root ``agents.py``, ``apps/`` and
+* **The name rule.** An AST scan of the root ``agents.py``, ``apps/`` and
   ``packages/`` fails on each ``approve_all`` reference outside
-  :data:`_ALLOWLIST`: the attribute ``X.approve_all``, an imported name
-  ``approve_all``, ``getattr(X, "approve_all")``, and the string
-  ``"approve_all"`` as an ``on_permission_request`` value. The mode
-  comparisons (``mode == "approve_all"``) are text, so they do not count.
+  :data:`_NAME_ALLOWLIST`: the attribute ``X.approve_all``, an imported name
+  ``approve_all``, ``getattr(X, "approve_all")``, and ``approve_all`` (a name
+  or the string) as an ``on_permission_request`` value. The mode comparisons
+  (``mode == "approve_all"``) are text, so they do not count.
+* **The setter rule** (repair round of task 560). A handler that approves
+  everything needs no such name: a ``lambda``, a local ``def``, a
+  ``functools.partial`` or ``getattr(PH, "approve" + "_all")``. So the same
+  scan fails on EVERY place that sets ``on_permission_request``, whatever its
+  value, outside :data:`_SETTER_ALLOWLIST`: a keyword argument (``dict(...)``
+  and ``.update(...)`` included), a dict-literal key, an assignment to a
+  subscript with that key, and ``setdefault`` with that key. A factory leaves
+  the slot empty, and the executor fills it.
 * **The root agent.** The agent that ``build_agent()`` returns has no
   handler, and once installed, ``enforce`` refuses a denylisted shell
   command while it keeps ``ls``. A factory ``approve_all`` turns both red.
@@ -47,18 +55,31 @@ _ROOT_FILES = ("agents.py",)
 #: Dirs that hold no source of ours. A local checkout can carry them.
 _SKIP_PARTS = frozenset({"__pycache__", ".venv", "node_modules", ".git"})
 
+_MUTATION_RUNNER_REASON = (
+    "It runs only in the mutation sandbox container (Dockerfile.mutation "
+    "ENTRYPOINT, started by mutation._run_mutation_sandbox through docker "
+    "run), never on the host. Nothing on the host imports it"
+)
+
 #: The files that may name ``approve_all``, and why. Never add an entry
 #: without a reason that a reviewer can check in the code.
-_ALLOWLIST: dict[str, str] = {
-    "apps/services/orchestrator/mutation_runner.py": (
-        "It runs only in the mutation sandbox container "
-        "(Dockerfile.mutation ENTRYPOINT, started by "
-        "mutation._run_mutation_sandbox through docker run), never on the "
-        "host. Nothing on the host imports it"
-    ),
+_NAME_ALLOWLIST: dict[str, str] = {
+    "apps/services/orchestrator/mutation_runner.py": _MUTATION_RUNNER_REASON,
     "apps/services/orchestrator/orchestrator/_copilot_session.py": (
         "It implements the AGENT_PERMISSION_MODE=approve_all escape hatch, "
         "and it wraps that handler in the D85 guard"
+    ),
+}
+
+#: The files that may set ``on_permission_request``, and why. Never add an
+#: entry without a reason that a reviewer can check in the code.
+_SETTER_ALLOWLIST: dict[str, str] = {
+    "apps/services/orchestrator/mutation_runner.py": _MUTATION_RUNNER_REASON,
+    "apps/services/orchestrator/orchestrator/copilot_agent.py": (
+        "The executor's own install path. _create_session and _resume_session "
+        "copy the agent's _permission_handler, which "
+        "_install_copilot_permission_handler filled inside the D85 guard, into "
+        "the SDK session config. They choose no handler of their own"
     ),
 }
 
@@ -67,8 +88,8 @@ _HANDLER_KEY = "on_permission_request"
 _NAME = "approve_all"
 
 
-def _is_approve_all_text(node: ast.AST | None) -> bool:
-    return isinstance(node, ast.Constant) and node.value == _NAME
+def _is_text(node: ast.AST | None, text: str) -> bool:
+    return isinstance(node, ast.Constant) and node.value == text
 
 
 def _is_approve_all_value(node: ast.AST | None) -> bool:
@@ -77,61 +98,91 @@ def _is_approve_all_value(node: ast.AST | None) -> bool:
         return node.attr == _NAME
     if isinstance(node, ast.Name):
         return node.id == _NAME
-    return _is_approve_all_text(node)
+    return _is_text(node, _NAME)
 
 
 @dataclass
-class _ApproveAllFinder(ast.NodeVisitor):
-    """Collects each ``approve_all`` reference in one tree, as ``line N: what``."""
+class _HandlerFinder(ast.NodeVisitor):
+    """Collects each hit of the two rules in one tree, as ``line N: what``."""
 
-    hits: list[str] = field(default_factory=list)
+    names: list[str] = field(default_factory=list)
+    setters: list[str] = field(default_factory=list)
 
-    def _hit(self, node: ast.AST, what: str) -> None:
-        self.hits.append(f"line {getattr(node, 'lineno', '?')}: {what}")
+    @staticmethod
+    def _at(node: ast.AST, what: str) -> str:
+        return f"line {getattr(node, 'lineno', '?')}: {what}"
+
+    def _name(self, node: ast.AST, what: str) -> None:
+        self.names.append(self._at(node, what))
+
+    def _setter(self, node: ast.AST, what: str) -> None:
+        self.setters.append(self._at(node, what))
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr == _NAME:
-            self._hit(node, f"names .{_NAME}")
+            self._name(node, f"names .{_NAME}")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             if _NAME in (alias.name, alias.asname):
-                self._hit(node, f"imports the name {_NAME}")
+                self._name(node, f"imports the name {_NAME}")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
         if (
             isinstance(func, ast.Name) and func.id == "getattr"
-            and len(node.args) >= 2 and _is_approve_all_text(node.args[1])
+            and len(node.args) >= 2 and _is_text(node.args[1], _NAME)
         ):
-            self._hit(node, f'getattr(..., "{_NAME}")')
+            self._name(node, f'getattr(..., "{_NAME}")')
+        if (
+            isinstance(func, ast.Attribute) and func.attr == "setdefault"
+            and node.args and _is_text(node.args[0], _HANDLER_KEY)
+        ):
+            self._setter(node, f'setdefault("{_HANDLER_KEY}", ...)')
         for kw in node.keywords:
-            if kw.arg == _HANDLER_KEY and _is_approve_all_value(kw.value):
-                self._hit(node, f"{_HANDLER_KEY}={ast.unparse(kw.value)}")
+            if kw.arg != _HANDLER_KEY:
+                continue
+            if _is_approve_all_value(kw.value):
+                self._name(node, f"{_HANDLER_KEY}={ast.unparse(kw.value)}")
+            self._setter(node, f"{_HANDLER_KEY}= keyword")
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
         for key, value in zip(node.keys, node.values, strict=True):
-            if (
-                isinstance(key, ast.Constant) and key.value == _HANDLER_KEY
-                and _is_approve_all_value(value)
-            ):
-                self._hit(node, f'"{_HANDLER_KEY}": {ast.unparse(value)}')
+            if not _is_text(key, _HANDLER_KEY):
+                continue
+            if _is_approve_all_value(value):
+                self._name(node, f'"{_HANDLER_KEY}": {ast.unparse(value)}')
+            self._setter(node, f'"{_HANDLER_KEY}" dict key')
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, ast.Store) and _is_text(node.slice, _HANDLER_KEY):
+            self._setter(node, f'[...]["{_HANDLER_KEY}"] = ...')
         self.generic_visit(node)
 
 
-def _approve_all_uses(source: str, filename: str = "<source>") -> list[str]:
-    """Each ``approve_all`` reference in *source*. A syntax error RAISES."""
-    finder = _ApproveAllFinder()
+def _finder(source: str, filename: str = "<source>") -> _HandlerFinder:
+    """The hits in *source*. A syntax error RAISES. It never skips."""
+    finder = _HandlerFinder()
     finder.visit(ast.parse(source, filename=filename))
-    return finder.hits
+    return finder
+
+
+def _approve_all_uses(source: str) -> list[str]:
+    return _finder(source).names
+
+
+def _handler_setters(source: str) -> list[str]:
+    return _finder(source).setters
 
 
 @dataclass(frozen=True)
 class _Scan:
-    uses: dict[str, tuple[str, ...]]
+    names: dict[str, tuple[str, ...]]
+    setters: dict[str, tuple[str, ...]]
     parse_errors: dict[str, str]
     files: frozenset[str]
 
@@ -145,34 +196,60 @@ def _python_files() -> list[Path]:
     return sorted(out)
 
 
+def _scan_sources(sources: dict[str, str]) -> _Scan:
+    """Scan ``{repo-relative path: source}``. A parse error is recorded."""
+    names: dict[str, tuple[str, ...]] = {}
+    setters: dict[str, tuple[str, ...]] = {}
+    errors: dict[str, str] = {}
+    for key, source in sources.items():
+        try:
+            found = _finder(source, key)
+        except (SyntaxError, ValueError) as exc:  # a parse error never skips
+            errors[key] = f"{type(exc).__name__}: {exc}"
+            continue
+        if found.names:
+            names[key] = tuple(found.names)
+        if found.setters:
+            setters[key] = tuple(found.setters)
+    return _Scan(names=names, setters=setters, parse_errors=errors, files=frozenset(sources))
+
+
 @cache
 def _tree_scan() -> _Scan:
-    uses: dict[str, tuple[str, ...]] = {}
+    sources: dict[str, str] = {}
     errors: dict[str, str] = {}
-    paths = _python_files()
-    for path in paths:
+    for path in _python_files():
         key = path.relative_to(_REPO).as_posix()
         try:
             # utf-8-sig: some files start with a byte order mark, and
             # ast.parse refuses a leading U+FEFF.
-            hits = _approve_all_uses(path.read_text(encoding="utf-8-sig"), str(path))
-        except (SyntaxError, ValueError) as exc:  # a parse error never skips
+            sources[key] = path.read_text(encoding="utf-8-sig")
+        except ValueError as exc:  # a UnicodeDecodeError never skips
             errors[key] = f"{type(exc).__name__}: {exc}"
-            continue
-        if hits:
-            uses[key] = tuple(hits)
-    files = frozenset(p.relative_to(_REPO).as_posix() for p in paths)
-    return _Scan(uses=uses, parse_errors=errors, files=files)
+    scan = _scan_sources(sources)
+    return _Scan(
+        names=scan.names, setters=scan.setters,
+        parse_errors={**scan.parse_errors, **errors},
+        files=scan.files | frozenset(errors),
+    )
 
 
-def _uses_or_fail() -> dict[str, tuple[str, ...]]:
+def _scan_or_fail() -> _Scan:
     scan = _tree_scan()
     assert not scan.parse_errors, (
         "H-211: the fence could not parse these files, so it cannot say they "
-        "set no approve_all:\n  "
+        "set no permission handler:\n  "
         + "\n  ".join(f"{p}: {e}" for p, e in sorted(scan.parse_errors.items()))
     )
-    return scan.uses
+    return scan
+
+
+def _off(found: dict[str, tuple[str, ...]], allow: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    return {p: u for p, u in sorted(found.items()) if p not in allow}
+
+
+def _fmt(found: dict[str, tuple[str, ...]]) -> str:
+    return "\n  ".join(f"{p}: {'; '.join(u)}" for p, u in found.items())
 
 
 # ── The fence on the tree ───────────────────────────────────────────────────
@@ -186,33 +263,44 @@ def test_the_scan_reads_the_whole_tree() -> None:
 
 
 def test_no_approve_all_off_the_allowlist() -> None:
-    uses = _uses_or_fail()
-    new = {p: u for p, u in sorted(uses.items()) if p not in _ALLOWLIST}
+    new = _off(_scan_or_fail().names, _NAME_ALLOWLIST)
     assert not new, (
         "H-211 (task 560): a first-party factory must not set approve_all. It "
         "approves every shell command, file write and read in every "
         "AGENT_PERMISSION_MODE. Leave on_permission_request out, so the "
-        "executor installs the B6 handler:\n  "
-        + "\n  ".join(f"{p}: {'; '.join(u)}" for p, u in new.items())
+        "executor installs the B6 handler:\n  " + _fmt(new)
     )
 
 
-def test_allowlist_has_no_stale_entries() -> None:
-    uses = _uses_or_fail()
-    stale = sorted(p for p in _ALLOWLIST if p not in uses)
+def test_no_permission_handler_set_off_the_allowlist() -> None:
+    new = _off(_scan_or_fail().setters, _SETTER_ALLOWLIST)
+    assert not new, (
+        "H-211 (task 560): a first-party file must not set "
+        "on_permission_request. A handler of its own (a lambda, a def, a "
+        "partial) stays the agent's handler, and the B6 policy never applies. "
+        "Leave it out, so the executor installs the B6 handler:\n  " + _fmt(new)
+    )
+
+
+@pytest.mark.parametrize("rule", ["names", "setters"])
+def test_allowlist_has_no_stale_entries(rule: str) -> None:
+    allow = _NAME_ALLOWLIST if rule == "names" else _SETTER_ALLOWLIST
+    found = getattr(_scan_or_fail(), rule)
+    stale = sorted(p for p in allow if p not in found)
     assert not stale, (
-        "These _ALLOWLIST entries hold no approve_all. Delete them in this PR, "
+        f"These {rule} allow-list entries have no hit. Delete them in this PR, "
         "so the list only shrinks:\n  " + "\n  ".join(stale)
     )
 
 
 def test_every_allowlist_entry_says_why() -> None:
-    for path, reason in _ALLOWLIST.items():
+    for path, reason in {**_NAME_ALLOWLIST, **_SETTER_ALLOWLIST}.items():
         assert reason.strip(), f"{path} has no reason"
 
 
-def test_the_root_factory_is_not_on_the_allowlist() -> None:
-    assert "agents.py" not in _ALLOWLIST
+def test_the_root_factory_is_not_on_an_allowlist() -> None:
+    assert "agents.py" not in _NAME_ALLOWLIST
+    assert "agents.py" not in _SETTER_ALLOWLIST
 
 
 # ── The finder itself (R7: it must see a hit) ───────────────────────────────
@@ -260,6 +348,69 @@ def test_the_finder_catches_an_approve_all(source: str) -> None:
 )
 def test_the_finder_ignores_text_and_other_names(source: str) -> None:
     assert not _approve_all_uses(source), f"H-211 fence flagged a non-use: {source!r}"
+
+
+#: Factories that approve everything with no ``approve_all`` name. The name
+#: rule misses each one. The setter rule must catch each one.
+_NAMELESS_HANDLERS = [
+    # A lambda that approves everything.
+    "def build_agent():\n"
+    "    return GitHubCopilotAgent(default_options={\n"
+    "        'model': 'tier-balanced',\n"
+    "        'on_permission_request': lambda req, inv: PermissionDecisionApproveOnce(),\n"
+    "    })\n",
+    # A local def.
+    "def build_agent():\n"
+    "    def allow(req, inv):\n"
+    "        return PermissionDecisionApproveOnce()\n"
+    "    return GitHubCopilotAgent(on_permission_request=allow)\n",
+    # functools.partial.
+    "import functools\n"
+    "agent = Agent(on_permission_request=functools.partial(allow, True))\n",
+    # vars() of the handler class.
+    "opts = {'on_permission_request': vars(PH)['approve' + '_all']}\n",
+    # getattr with a built name.
+    "agent = Agent(on_permission_request=getattr(PH, 'approve' + '_all'))\n",
+    # dict(...) and .update(...).
+    "opts = dict(model='m', on_permission_request=allow)\n",
+    "opts.update(on_permission_request=allow)\n",
+    # An assignment to a subscript.
+    "opts = {}\nopts['on_permission_request'] = allow\n",
+    "agent._default_options['on_permission_request'] = lambda r, i: ok()\n",
+    # setdefault.
+    "opts.setdefault('on_permission_request', allow)\n",
+]
+
+
+@pytest.mark.parametrize("source", _NAMELESS_HANDLERS)
+def test_the_setter_rule_catches_a_handler_with_no_name(source: str) -> None:
+    assert _handler_setters(source), f"H-211 setter rule missed a handler in: {source!r}"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A read of the key sets nothing.
+        "h = opts.get('on_permission_request')\n",
+        "h = opts['on_permission_request']\n",
+        "if 'on_permission_request' in opts:\n    pass\n",
+        "agent = GitHubCopilotAgent(default_options={'model': 'tier-balanced'})\n",
+        '"""A docstring: on_permission_request=lambda r, i: ok()."""\n',
+    ],
+)
+def test_the_setter_rule_ignores_a_read(source: str) -> None:
+    assert not _handler_setters(source), f"H-211 setter rule flagged a read: {source!r}"
+
+
+def test_a_planted_lambda_handler_in_an_app_factory_fails_the_fence() -> None:
+    """R7: the setter rule turns red on a new ``apps/agents/*/agents.py``
+    whose factory passes a lambda that approves everything. The name rule
+    alone let this pass (the verifier's and the reviewer's finding)."""
+    rel = "apps/agents/agent-probe/agents.py"
+    scan = _scan_sources({rel: _NAMELESS_HANDLERS[0]})
+    assert not scan.parse_errors
+    assert not _off(scan.names, _NAME_ALLOWLIST), "the name rule now sees it"
+    assert rel in _off(scan.setters, _SETTER_ALLOWLIST)
 
 
 # ── The root agent: the executor installs the B6 handler ────────────────────

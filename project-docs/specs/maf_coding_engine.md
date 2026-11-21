@@ -4542,11 +4542,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4670,6 +4672,11 @@ command and write any file, in every permission mode (H-211). Now the
 executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
 keeps its shell. The denylist and the workspace bounds of
 `permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 
