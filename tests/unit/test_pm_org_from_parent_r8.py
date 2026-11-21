@@ -6,18 +6,36 @@ CONTENT, never by number (R1). It was 470 at build time.
 
 **The gap.** Under FORCE row level security a parent of another organization
 is a row that the trigger cannot read. The 161 body then returned in silence.
-The child took the bound tenant from its DEFAULT, and the foreign key passed,
-because a foreign key check ignores RLS. So a session of org A could store a
-child row that names a task or a project of org B.
+The child kept the ``organization_id`` that the writer named (the bound org),
+or it got the org from its other attachment. RLS WITH CHECK accepted that org,
+because it is the bound org. The foreign key passed, because a foreign key
+check ignores RLS. So a session of org A could store a child row that names a
+task or a project of org B.
 
 **What this file proves, as a role that cannot bypass RLS, with two orgs.**
 
 * For EACH (table, parent column) attachment of the function: an INSERT bound
-  to org A that names the parent of org B fails with SQLSTATE 23503 and the
-  message of the 470 body. A bypass role then finds no such row. The same
-  INSERT that names the parent of org A works and gets org A.
+  to org A that names org A explicitly, as the app writes it, and names the
+  parent of org B. It fails with SQLSTATE 23503 and the message of the 470
+  body, and a bypass role then finds no such row. Under the 161 body (M1) the
+  row is STORED, so 28 probes go red on "row stored", not on RLS. The probe of
+  ``pm_epic_contracts`` goes red on the message: its 402 guard refuses the row.
+* The same INSERT with no ``organization_id``, where the old body still stored
+  a row: a table with two attachments (the other one fills the org), and
+  ``pm_epic_contracts`` (its column has a DEFAULT). A table with one attachment
+  and no DEFAULT is left out: RLS refuses its NULL org under each body.
+* The same INSERT that names the parent of org A works and gets org A.
 * An UPDATE that moves a task into a project of org B, and an UPDATE that puts
   a project under a project of org B, are refused.
+* The org clause: an UPDATE that changes ``organization_id`` of a row whose
+  parent is hidden gets the 470 refusal (23503), not the RLS refusal (42501).
+  The row is seeded with the triggers off, because no write can make it now.
+* The trade-off of the header: an UPDATE that keeps the link and the org of
+  that row is not refused.
+* The INSERT clause (``TG_OP = 'INSERT'``) has no behaviour test. On an INSERT,
+  OLD is NULL, so the changed-link clause is true as well, and no INSERT can
+  tell the two apart. ``test_the_numbered_migration_holds_the_refusal_and_its_narrowing``
+  is its only fence. It stays for the reader.
 * Six cascade deletes still work. The 470 body keeps the old silent return for
   an UPDATE that keeps the link, because a cascade ``ON DELETE SET NULL`` of
   another column runs an UPDATE whose parent can already be gone.
@@ -37,7 +55,8 @@ not a pass.
 fixture hashes the ladder files, so the next run builds a new template.
 
 * M1. The 470 body goes back to the 161 body (a silent return on no row). The
-  cross-tenant INSERT probes and the two UPDATE probes go red.
+  cross-tenant INSERT probes and the two UPDATE probes go red. Each
+  explicit-org probe but ``pm_epic_contracts`` goes red on "row stored".
 * M2. The 470 body refuses on no row for each write (no ``TG_OP`` and no
   changed-link test). The cascade controls ``root_project``, ``folder`` and
   ``task_pair`` go red.
@@ -279,34 +298,60 @@ class TestTheFence:
             f"probes with no attachment: {sorted(probed - live)}")
 
 
+# The probes with no `organization_id` where the 161 body still stored a row:
+# a table with two attachments (the other one fills the org), and
+# `pm_epic_contracts` (its column has a DEFAULT). On a table with one
+# attachment and no DEFAULT, RLS refuses the NULL org under each body, so
+# that probe would prove nothing.
+_TWO_ATTACHMENTS = {t for t, _c in PROBES if sum(1 for t2, _ in PROBES if t2 == t) > 1}
+IMPLICIT = sorted(
+    (t, c) for t, c in PROBES if t in _TWO_ATTACHMENTS or t == "pm_epic_contracts")
+
+
+def _probe_across(world, table: str, column: str, *, explicit: bool) -> None:
+    """Bound to org A, insert a row that names the parent of org B."""
+    promoted_, eng, a, b = world
+    row = _row(table, column, a, b)
+    if explicit:
+        # The app idiom: the writer names the bound org (templates.py,
+        # admin.create_type).
+        row["organization_id"] = uuid.UUID(promoted_.org_a)
+    err: DBAPIError | None = None
+    with eng.connect() as c:
+        tx = c.begin()
+        _bind(c, promoted_.org_a)
+        try:
+            c.execute(text(_insert_sql(table, row)), row)
+            tx.commit()
+        except DBAPIError as exc:
+            err = exc
+            tx.rollback()
+    # As the admin (it bypasses RLS): no row of org A names the parent of
+    # org B. Then remove any such row, so a mutation run leaves no trace.
+    where = f"{column} = :parent AND organization_id = CAST(:org AS uuid)"
+    args = {"parent": row[column], "org": promoted_.org_a}
+    with promoted_.admin_engine.begin() as c:
+        stored = c.execute(text(f"SELECT count(*) FROM {table} WHERE {where}"), args).scalar_one()
+        c.execute(text(f"DELETE FROM {table} WHERE {where}"), args)
+    assert stored == 0, f"row stored: {table}.{column} of org A names a parent of org B"
+    assert err is not None, f"{table}.{column}: a parent of org B was accepted"
+    state, message = _pg_error(err)
+    assert state == "23503", message
+    parent_table = PROBES[(table, column)][0]
+    assert f"{table}: {parent_table} {column} {_MESSAGE}" in message, message
+
+
 class TestTheInsertProbes:
     @pytest.mark.parametrize(("table", "column"), sorted(PROBES), ids=_ids())
-    def test_a_parent_of_another_org_is_refused(self, world, table, column) -> None:
-        promoted_, eng, a, b = world
-        row = _row(table, column, a, b)
-        err: DBAPIError | None = None
-        with eng.connect() as c:
-            tx = c.begin()
-            _bind(c, promoted_.org_a)
-            try:
-                c.execute(text(_insert_sql(table, row)), row)
-                tx.commit()
-            except DBAPIError as exc:
-                err = exc
-                tx.rollback()
-        # As the admin (it bypasses RLS): no row of org A names the parent of
-        # org B. Then remove any such row, so a mutation run leaves no trace.
-        where = f"{column} = :parent AND organization_id = CAST(:org AS uuid)"
-        args = {"parent": row[column], "org": promoted_.org_a}
-        with promoted_.admin_engine.begin() as c:
-            stored = c.execute(text(f"SELECT count(*) FROM {table} WHERE {where}"), args).scalar_one()
-            c.execute(text(f"DELETE FROM {table} WHERE {where}"), args)
-        assert err is not None, f"{table}.{column}: a parent of org B was accepted"
-        state, message = _pg_error(err)
-        assert state == "23503", message
-        parent_table = PROBES[(table, column)][0]
-        assert f"{table}: {parent_table} {column} {_MESSAGE}" in message, message
-        assert stored == 0
+    def test_a_parent_of_another_org_is_refused_with_the_org_named(
+            self, world, table, column) -> None:
+        _probe_across(world, table, column, explicit=True)
+
+    @pytest.mark.parametrize(
+        ("table", "column"), IMPLICIT, ids=[f"{t}.{c}" for t, c in IMPLICIT])
+    def test_a_parent_of_another_org_is_refused_with_no_org_named(
+            self, world, table, column) -> None:
+        _probe_across(world, table, column, explicit=False)
 
     @pytest.mark.parametrize(("table", "column"), sorted(PROBES), ids=_ids())
     def test_a_parent_of_the_own_org_is_accepted(self, world, table, column) -> None:
@@ -359,6 +404,61 @@ class TestTheUpdateProbes:
                 n = c.execute(text(
                     "UPDATE pm_tasks SET title = 'Moved', project_id = :p WHERE id = :t"),
                     {"p": a["{CH}"], "t": a[_T]}).rowcount
+            finally:
+                tx.rollback()
+        assert n == 1
+
+
+@pytest.fixture
+def straddling(world):
+    """A watcher row of org A that names a task of org B: the shape the gap
+    left before 470. No write can make it now, so the admin writes it with
+    the triggers off (``session_replication_role = replica``)."""
+    promoted_, _eng, _a, b = world
+    with promoted_.admin_engine.begin() as c:
+        c.execute(text("SET LOCAL session_replication_role = replica"))
+        wid = c.execute(text(
+            "INSERT INTO pm_task_watchers (task_id, watcher, organization_id) "
+            "VALUES (:t, 'straddle@pmorg.test', CAST(:org AS uuid)) RETURNING id"),
+            {"t": b[_T], "org": promoted_.org_a}).scalar_one()
+    try:
+        yield wid
+    finally:
+        with promoted_.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM pm_task_watchers WHERE id = :w"), {"w": wid})
+
+
+class TestTheOrgClause:
+    def test_a_change_of_org_with_a_hidden_parent_gets_the_470_refusal(
+            self, world, straddling) -> None:
+        """Without the org clause the trigger returns in silence, and RLS
+        WITH CHECK refuses the row with 42501. The clause gives 23503 first."""
+        promoted_, eng, _a, _b = world
+        with eng.connect() as c:
+            tx = c.begin()
+            _bind(c, promoted_.org_a)
+            try:
+                with pytest.raises(DBAPIError) as caught:
+                    c.execute(text(
+                        "UPDATE pm_task_watchers SET organization_id = CAST(:o AS uuid) "
+                        "WHERE id = :w"), {"o": promoted_.org_b, "w": straddling})
+            finally:
+                tx.rollback()
+        state, message = _pg_error(caught.value)
+        assert state == "23503", message
+        assert f"pm_task_watchers: pm_tasks task_id {_MESSAGE}" in message, message
+
+    def test_an_update_that_keeps_the_link_and_the_org_is_not_refused(
+            self, world, straddling) -> None:
+        """The trade-off of the header, pinned: such a row stays writable."""
+        promoted_, eng, _a, _b = world
+        with eng.connect() as c:
+            tx = c.begin()
+            _bind(c, promoted_.org_a)
+            try:
+                n = c.execute(text(
+                    "UPDATE pm_task_watchers SET watcher = 'straddle-2@pmorg.test' "
+                    "WHERE id = :w"), {"w": straddling}).rowcount
             finally:
                 tx.rollback()
         assert n == 1

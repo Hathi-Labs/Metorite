@@ -10,9 +10,11 @@
 --       body returned in silence. A write sets the link when it is an INSERT,
 --       or an UPDATE that changes the parent column or `organization_id`.
 -- Why:  Under FORCE row level security a parent of another organization is a
---       row that the lookup cannot read. The old body then returned NEW, the
---       child took the bound tenant from its column DEFAULT, and the foreign
---       key passed, because a foreign key check ignores RLS. So a session of
+--       row that the lookup cannot read. The old body then returned NEW. The
+--       child kept the `organization_id` that the writer named (the bound
+--       org), or it got the org from its other attachment. RLS WITH CHECK
+--       accepted that org, because it is the bound org. The foreign key
+--       passed, because a foreign key check ignores RLS. So a session of
 --       org A could store a child row that names a task or a project of
 --       org B. Each route loads the parent through the visibility helper
 --       first, so this is defence in depth (R5: never trust the request).
