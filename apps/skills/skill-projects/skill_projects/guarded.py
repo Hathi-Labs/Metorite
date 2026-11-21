@@ -1228,7 +1228,7 @@ async def bulk_update(
     # (`_assignee_card_lines`), and each address once.
     strangers = await _unknown_addresses(list(dict.fromkeys(body.get("assignees_add") or [])))
     if strangers:
-        rest["not in the directory"] = ", ".join(strangers)
+        rest["not in the directory"] = data(", ".join(strangers))
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
