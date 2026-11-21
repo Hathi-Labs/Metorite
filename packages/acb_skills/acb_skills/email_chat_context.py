@@ -105,6 +105,10 @@ _NO_ACT = ("Refused", "Not sent", "Nothing changed", "Error", "Could not",
            "Send cancelled", "Which mailbox", "Send from which mailbox",
            *(f"{o.lead}:" for k, o in CARD_OUTCOMES.items()
              if k not in (CARD_APPROVED, CLOSED_BY_YOUR_MESSAGE)))
+#: The public name of :data:`_NO_ACT`. The claim check of HRD-13
+#: (``acb_skills.answer_claims``) reads it. Keep the old name too: open work
+#: imports ``_NO_ACT``.
+NO_ACT_LEADS = _NO_ACT
 
 #: The bound of each process cache.
 _CACHE_MAX = 4096

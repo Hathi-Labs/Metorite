@@ -271,6 +271,24 @@ _RECENCY_SWAP: tuple[str, str] = (
 )
 
 
+# WS-FIND FIND-6 (find_engine.md §5.4, knowledge_base.md §8.2). With
+# FIND_ORGS naming the org, company search on and CONTEXT_RECENCY on, the
+# grounding paragraph (rule 1) ends with the standing rule, by one more exact
+# swap. It sits right before rule 2, so it closes the paragraph after the CX-1
+# sentences. The route runs the ladder only with CONTEXT_RECENCY on, and only
+# the dated tool prints how a hit matched and the "Where else" line. Off, the
+# persona does not change, byte for byte.
+# Fence: tests/unit/test_find_tools.py.
+FIND_STANDING_RULE = (
+    "   When the member names a person, a company or a record, call search_company\n"
+    "   once, with all their words. Read how each hit matched. A near or related hit\n"
+    "   is a lead: say the spelling or the link you used. Before you say that a record\n"
+    "   does not exist, read the \"Where else\" line.\n"
+)
+_FIND_ANCHOR = "2. For specialist work:"
+_FIND_SWAP: tuple[str, str] = (_FIND_ANCHOR, FIND_STANDING_RULE + _FIND_ANCHOR)
+
+
 # WS-61 KB-5a (knowledge_base.md §8.1 and §13). With KNOWLEDGE_PROPOSALS on
 # too, the tool list of the persona gains the line of the two proposal tools,
 # by one more exact swap. Off, the persona is the KR-2 one, byte for byte.
@@ -391,13 +409,16 @@ _SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
     *, profile: bool = False, constraints: bool = False, spawn: bool = False,
-    card_writes: bool = False,
+    card_writes: bool = False, find: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
     *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
-    (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
-    *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
+    (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. *find* (WS-FIND FIND-6) adds
+    the standing rule of :data:`_FIND_SWAP`, only with *recency* on too. The
+    route runs the ladder, and the dated tool prints how a hit matched and
+    the "Where else" line, only then. Each acts only when *company_search*
+    is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
     *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
     *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
@@ -409,6 +430,7 @@ def _orchestrator_instructions(
         (_COMPANY_SEARCH_SWAPS if company_search else ())
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
+        + ((_FIND_SWAP,) if company_search and recency and find else ())
         + ((_PROFILE_SWAP,) if profile else ())
         + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
         + ((_CONSTRAINTS_SWAP,) if constraints else ())
@@ -540,6 +562,22 @@ def _spawn_subagents_enabled(org: str | None = None) -> bool:
         return False
 
 
+def _find_enabled(org: str | None = None) -> bool:
+    """True when ``FIND_ORGS`` names this assistant's organization (WS-FIND
+    FIND-5). The rule is ``acb_skills.company_search_tools.find_on`` (FIND-6),
+    which asks ``gateway.retrieval.find.find_allowed``, the one reader. *org*
+    is the organization of the caller's server-side ``UserContext``. With
+    none, the bound tenant and then the run's org answer, as for
+    ``spawn_subagents``. A caller with none of them fails closed. Never
+    raises. ``GET /search/names`` asks the same rule again.
+    """
+    try:
+        from acb_skills.company_search_tools import find_on
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return find_on(org)
+
+
 def _context_recency_enabled() -> bool:
     """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
     try:
@@ -640,11 +678,27 @@ async def show_in_app(path: str, why: str) -> dict:
     one sentence. Call it at most once per reply.
 
     Args:
-        path: An in-app path. It starts with one "/" and names a pane:
-            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
-            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
-            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
-            URL, and never another site.
+        path: An in-app path. It starts with one "/" and names a pane. Never a
+            full URL, and never another site. The pages, and what a member
+            does there:
+            /projects (also /projects?project=<id>, /projects?task=<id>):
+            Plan work, boards and tasks, and your own list of tasks.
+            /calendar: Plan your days and time-block tasks.
+            /email (also /email?email=<id>): Read and answer mail.
+            /whatsapp: Your WhatsApp conversations.
+            /crm: Deals, contacts and accounts.
+            /people: The company directory. /people/me: your own profile.
+            /knowledge: The company wiki and its search.
+            /artifacts: Files and documents the assistant made.
+            /chat: Ask the assistant, or have it do the work.
+            /studio: Build apps, workflows and skills for your company.
+            /integrations: Every tool your company has connected.
+            /approvals: Check what the AI will send before it goes out.
+            /settings/organization: Invite members, change roles, assign
+            seats and set your brand. Opens only for an admin of the
+            organization. Add ?tab=members to land on Members & roles
+            (other tabs: seats, branding, requests, email).
+            /settings/appearance: Light or dark, spacing and accent colour.
         why: One short sentence the member reads, such as "Here is the
             board for Website relaunch."
 
@@ -689,7 +743,15 @@ async def show_in_app(path: str, why: str) -> dict:
     # show_in_app must see it. It is pending until the check ends. A refusal
     # gives it back.
     queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
-    reason = _iap.refusal(path, await _iap.member_features())
+    # PAR-1: an admin page opens for an admin of the org only. The right is read for
+    # the verified run member, and only when the pane needs it.
+    pane = _iap.pane_of(path)
+    admin = False
+    if pane is not None and pane.admin:
+        from orchestrator.guide_tools import member_is_admin
+
+        admin = await member_is_admin()
+    reason = _iap.refusal(path, await _iap.member_features(), admin)
     if reason is not None:
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
@@ -761,25 +823,15 @@ async def spawn_copilot_agent(    task: str,
 ) -> str:
     """Spawn a GitHub Copilot SDK agent to create or modify code, skills, or scripts.
 
-    Use this tool when the user asks to:
-    - Create a new skill or script in an agent repo
-    - Add a new capability / automation to an existing agent
-    - Fix a bug or improve an existing script
-    - Write tests, add documentation, or refactor code
-    - Self-improve any part of the system
-
-    The Copilot SDK agent runs in an isolated container with full access to the
-    agent's repository, executes the task autonomously (write code, run tests,
-    commit, push), and returns a summary of what was done.
+    Use it when the user asks to add a skill, script or capability to an
+    agent, fix a bug, write tests or docs, refactor code, or improve any part
+    of the system. The agent works in an isolated container on the agent's
+    repository (code, tests, commit, push) and returns a summary.
 
     Args:
-        task: Natural language description of what to build or fix.
-              Be specific: include file paths, function names, inputs/outputs.
+        task: What to build or fix. Name file paths, functions, inputs and outputs.
         agent_name: Which agent repo to work in (default: current agent).
         agent_dir: Absolute path to the local clone (auto-resolved if omitted).
-
-    Returns:
-        Summary of actions taken and files changed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -839,9 +891,8 @@ async def spawn_copilot_agent(    task: str,
 async def delegate_to_agent(agent_name: str, message: str) -> str:
     """Delegate a task to a specialist agent and return its response.
 
-    Use this tool when the user's request is clearly in the domain of a specialist agent.
-    The specialist agent loads its own system prompt, skills, and tools from its GitHub repo
-    and handles the request fully — its response is returned here verbatim.
+    Use it when the request is clearly in the domain of a specialist agent.
+    The agent handles the request fully, and its response comes back verbatim.
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
@@ -857,8 +908,6 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
         agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
-    Returns:
-        The specialist agent's full response text.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -1135,6 +1184,12 @@ def build_orchestrator_agent(
     profile_on = _assistant_profile_enabled(organization_id)
     # WS-67 OA-4: read once, so the persona line and the two tools agree.
     constraints_on = _chat_constraints_enabled()
+    # WS-FIND FIND-6: read once, so the standing rule, `resolve_name` and the
+    # guard of the find tools agree. It acts only with company search on. The
+    # rule also needs `recency` (`_orchestrator_instructions`), and
+    # `resolve_name` and the guard do not: `GET /search/names` reads no
+    # CONTEXT_RECENCY.
+    find_on = company_search and _find_enabled(organization_id)
 
     # Build the instructions; append memory context when present.
     # WS-63 PZ-32: the offer line only where the card writes are on.
@@ -1143,7 +1198,8 @@ def build_orchestrator_agent(
                                               profile=profile_on,
                                               constraints=constraints_on,
                                               spawn=_spawn_subagents_enabled(organization_id),
-                                              card_writes=card_writes_on)
+                                              card_writes=card_writes_on,
+                                              find=find_on)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -1182,6 +1238,20 @@ def build_orchestrator_agent(
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        # WS-FIND FIND-5: `resolve_name` after `search_company`, only for an
+        # org of FIND_ORGS. So the tool list and the cached prefix of every
+        # other org stay byte for byte. Fence: tests/unit/test_resolve_name_tool.py.
+        # FIND-6: for that org, each core find tool answers a failure as text
+        # with a next step, through the ONE guard of HRD-3. The guard keeps the
+        # name, the docstring and the signature, so the schema does not change.
+        # Fence: tests/unit/test_find_tools.py.
+        if find_on:
+            from acb_skills.company_search_tools import resolve_name
+            from acb_skills.pack_tool_guard import guard
+
+            retrieval_tools = [guard(company_tool, name="search_company"),
+                               guard(resolve_name, name="resolve_name"),
+                               read_page, list_spaces]
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
     else:
@@ -1193,10 +1263,19 @@ def build_orchestrator_agent(
     # WS-63 PZ-6a: the four profile writes, on the same one path, with the
     # persona line of `_PROFILE_SWAP`. Each refuses outside the member's own
     # chat. Fence: tests/unit/test_profile_write_tools.py.
+    # WS-FIND FIND-6: `resolve_person` stays in the list. `resolve_name` has
+    # no member, no saved alias and no address yet, so the parity of D-FIND-3
+    # does not hold (find_engine.md §5.3, as built). For an org of FIND_ORGS
+    # it takes the guard of the find tools.
     if profile_on:
         from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
 
-        profile_tools: list[Any] = [resolve_person, *WRITE_TOOLS]
+        person_tool: Any = resolve_person
+        if find_on:
+            from acb_skills.pack_tool_guard import guard
+
+            person_tool = guard(resolve_person, name="resolve_person")
+        profile_tools: list[Any] = [person_tool, *WRITE_TOOLS]
     else:
         profile_tools = []
     # WS-67 OA-4 (one_assistant_context.md §4): the member's corrections and

@@ -57,6 +57,9 @@ INJECTABLE_PLATFORM_TOOLS = {
     "make_document",
     # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a PDF.
     "make_report",
+    # SBX-19: Python over stored tool results. A run of an org off the compute
+    # flag drops it (_compute_withheld).
+    "compute_run",
     # WS-53 CRM-Q32-5 (2026-10-18): the org facts of a listed org. The run
     # drops it when the org is not on CRM_QUESTIONS_ORGS (_add_crm_facts_block).
     "org_facts",
@@ -92,7 +95,8 @@ SCOPED_AGENTS = {
     # CRM Change history, crm_change_history, through the `crm-records` pack.
     # The orchestrator's tool_scope does not hold it, because the base was at
     # the 110-tool cap (tests/unit/test_projects_packs.py).
-    "agent-orchestrator": 25,
+    # 26 since SBX-19 (2026-11-19): compute_run. A run of an org off the flag drops it.
+    "agent-orchestrator": 26,
 }
 
 

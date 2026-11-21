@@ -85,6 +85,15 @@ class RoomAccess:
     #: them. ``None`` means "the whole transcript".
     since_message_ts: int | None = None
     since_stream_id: str | None = None
+    #: RESUME-2d (D-RES-10): True when a participant row of the room names
+    #: this person (directly, or through a group or ``org`` row with a join
+    #: time), or the creator owns the room through the fallback. A passer-by
+    #: of an org-visible room has none. :func:`replay_allowed` reads it.
+    has_join_row: bool = False
+    #: The join time of that row in epoch ms (``join_message_ts``), whatever
+    #: ``history_visibility`` says. ``None`` with ``has_join_row`` means
+    #: "there from the start": the owner row and the creator fallback.
+    join_ms: int | None = None
     #: The room's own settings, carried so callers don't re-query.
     visibility: str = "private"
     floor_mode: str = "open"
@@ -163,6 +172,53 @@ def room_is_solo(room: RoomAccess | None) -> bool:
         return False
     me = (room.email or "").strip().lower()
     return bool(me) and [str(m).strip().lower() for m in room.members] == [me]
+
+
+#: RESUME-2d (D-RES-10): the margin of the replay rule, in ms. The join time
+#: comes from the gateway clock (``time.time()``), and the run start from the
+#: Redis clock (the stream entry id). The margin takes a small skew.
+REPLAY_JOIN_MARGIN_MS = 2000
+
+
+def replay_allowed(
+    room: RoomAccess | None, run_start_ms: int | None,
+    *, margin_ms: int = REPLAY_JOIN_MARGIN_MS,
+) -> bool:
+    """True when *room*'s reader may replay the WHOLE run that started at
+    *run_start_ms*. False means no event of the run (D-RES-10, owner
+    2026-11-19, ``chat_run_continuity.md`` §4.12.7 RESUME-2d).
+
+    The rule, in this order:
+
+    * a solo chat (:func:`room_is_solo`) replays. Its bytes do not change;
+    * a reader who cannot read the room, or has no join row
+      (``has_join_row``), gets none. That is a passer-by of an org-visible
+      room, and a failed lookup;
+    * a join row with no time (``join_ms is None``) was there from the start,
+      so it replays;
+    * an unknown start (no stream head) gets none;
+    * else the reader replays when ``join_ms <= run_start_ms + margin_ms``.
+
+    A reader who joined in the middle of a run gets none of it. Both times
+    are epoch ms. ⚠️ The join row is the row that names the reader. It wins
+    over an earlier group or ``org`` row of the same reader, so a member who
+    was named after the run started gets none, even when a group row was
+    there before. That is stricter than "a matching row", and it fails
+    closed. A group or ``org`` row with a NULL join (a legacy row) gives no
+    join row, so it fails closed too (``resolve_room_access``). The
+    function is pure. Fences:
+    ``tests/unit/test_reconnect_waterline.py`` (hermetic) and
+    ``tests/unit/test_reconnect_waterline_r8.py`` (R8).
+    """
+    if room_is_solo(room):
+        return True
+    if room is None or not room.can_read or not room.has_join_row:
+        return False
+    if room.join_ms is None:
+        return True
+    if run_start_ms is None:
+        return False
+    return int(room.join_ms) <= int(run_start_ms) + int(margin_ms)
 
 
 def _capabilities(role: str | None, *, visibility: str) -> tuple[bool, bool, bool, bool, bool]:
@@ -438,6 +494,9 @@ def resolve_room_access(
     role: str | None = None
     join_ts: int | None = None
     join_sid: str | None = None
+    direct_row = False
+    #: The earliest join time of a group or ``org`` row that matches.
+    shared_join: int | None = None
     for p in parts:
         subject = p.subject
         matched = (
@@ -453,8 +512,19 @@ def resolve_room_access(
         # The waterline comes from the row that names this person directly;
         # a group's join time is the group's, not this member's.
         if subject == email:
+            direct_row = True
             join_ts = p.join_message_ts
             join_sid = p.join_stream_id
+        elif p.join_message_ts is not None:
+            shared_join = (p.join_message_ts if shared_join is None
+                           else min(shared_join, p.join_message_ts))
+
+    # RESUME-2d: the join row of the replay rule. The direct row wins, and a
+    # NULL there is the owner row (the 138 backfill, or the first add), so it
+    # reads as "from the start". A group or `org` row counts only with a join
+    # time of its own. A NULL there fails closed.
+    has_join_row = direct_row or shared_join is not None
+    join_ms = join_ts if direct_row else shared_join
 
     # The creator owns a session that has NO participant row at all: a legacy
     # session the 134 backfill never reached, or a browser-created session
@@ -473,6 +543,8 @@ def resolve_room_access(
         and (not parts or "@" not in email)
     ):
         role = "owner"
+        # The creator was in the room before every run of it.
+        has_join_row, join_ms = True, None
 
     read, send, cancel, invite, manage = _capabilities(role, visibility=visibility)
     members = _expand_members(parts, row.user_id or "")
@@ -493,6 +565,8 @@ def resolve_room_access(
         members=members,
         since_message_ts=since_ts,
         since_stream_id=since_sid,
+        has_join_row=has_join_row,
+        join_ms=join_ms,
         visibility=visibility,
         floor_mode=row.floor_mode or "open",
         history_visibility=row.history_visibility or "full",

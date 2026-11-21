@@ -75,3 +75,30 @@ def test_approve_all_mode_is_the_escape_hatch(monkeypatch):
     assert pp._mode() == "approve_all"
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "bogus")
     assert pp._mode() == "enforce"  # unknown → safe default
+
+
+def test_the_mcp_rule_is_the_contract():
+    """MCP-NC1 (task 3603, ``agent_architecture.md`` §12.2 WS-8c item 33).
+
+    A member's run calls an MCP tool with no card (``mcp_member_run``). A run
+    with no member keeps ``mcp_confirm``, and the gate refuses it there. The
+    admin's "always confirm" and an untrusted answer still ask the card. If a
+    row of this table changes, the card rule of external apps changed."""
+    write = {"tool_name": "srv_x", "mcp_tool": True,
+             "mcp_annotations": {"destructiveHint": True}}
+    read = {"tool_name": "srv_x", "mcp_tool": True,
+            "mcp_annotations": {"readOnlyHint": True}}
+    member = {"mcp_member_present": True}
+    cases = [
+        (write, "mcp_confirm"),
+        ({**write, **member}, "mcp_member_run"),
+        ({**write, "mcp_member_present": "true"}, "mcp_confirm"),
+        ({**write, **member, "mcp_always_confirm": True}, "mcp_always_confirm"),
+        ({**write, **member, "after_untrusted_answer": True}, "untrusted_answer_confirm"),
+        ({**write, "mcp_read_only_key": True}, "mcp_read_only_key"),
+        (read, "mcp_read_only"),
+        ({**read, **member}, "mcp_read_only"),
+    ]
+    for req, want_code in cases:
+        ok, code, _ = pp.decide(req)
+        assert (ok, code) == (True, want_code), f"MCP rule drift for {req}: got {code}"
