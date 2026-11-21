@@ -31,6 +31,11 @@ true. On 2026-11-08 the owner told the team in chat to finish the removal,
 because Metorite will not use the Copilot SDK. Task 2464 is built
 (2026-11-09): the T2 build refuses an import of a file outside the app dir.
 
+**Task 3848 is built (2026-11-21).** The D85 tool half now reaches two
+more host paths (§7.9). A run that withholds the shell tools does not get the
+dependency self-heal. An agent's own tool with a shell tool name leaves that
+run too.
+
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
@@ -1201,10 +1206,6 @@ owner kept delegation (§16.3).
   which no tenant run reaches.
 - The Copilot CLI's file tools on task-manager and app-builder. They run no
   command, and the write and read checks above contain them.
-- The executor's dependency self-heal calls `install_dependency` directly
-  when a tool import fails (`executor.py`, `executor.tool_dep_selfheal`). The
-  model does not choose that package. Its error text no longer tells an
-  agent without the tool to call it.
 - The risk block of the addendum names every annotated tool, so it still
   names `code_task` and `run_script`. That list classifies risk, and it does
   not describe the coding skill.
@@ -1213,8 +1214,31 @@ owner kept delegation (§16.3).
 - Personal agents (H-225). A shared agent can still delegate to one with
   `call_agent`, and the personal agent keeps its shell tools. That run works
   in the dir of the acting member, and H-225 closes it.
-- A tool that an agent ships itself under one of these names. The seam
-  controls injected tools only, and no in-repo agent ships one.
+
+**Two more host paths (task 3848, 2026-11-21).**
+
+- **The dependency self-heal.** When a tool import fails, the executor
+  installed the missing module on the host for every run. Now it asks
+  `executor._run_may_install_dependency`, which reads the
+  `shell_tools_withheld` binding. Only an explicit `False` lets it install:
+  the root agent, a personal agent or a covered run. A shared run installs
+  nothing. A frame with no binding, or a fault of the reader, installs
+  nothing too. The executor logs
+  `executor.tool_dep_selfheal_refused`, and the tool result tells the model
+  to ask an admin. The error text reads the same function.
+- **An agent's own tool with a shell tool name.** `_drop_withheld` filters
+  the injected tools only. `_tool_injection._drop_own_shell_tools` now takes
+  a withheld name out of each own tool pool of the agent, whatever its
+  identity, and logs `executor.own_shell_tool_refused`. One case stays: a
+  `run_command` that is the platform's own callable, because the broker
+  runs it (app-builder's harness, §7.8). An agent's own `run_command` goes.
+- `list_integrations` names `run_script` or `code_task` only to a run that
+  holds one (`write_artifact.run_holds_tool`). Its description names neither.
+
+What these do not reach: MCP tools and the tools of a context provider are
+not own tool pools. The loader still installs the declared dependencies of
+an agent repo at load time, with wheels only (BO-7). That runs before the
+run binding exists, and the model does not choose the packages.
 
 **Fence.** WS43-F23, `tests/unit/test_shared_agent_shell_tools.py`.
 
@@ -1771,7 +1795,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
 | WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true. WS-43u: the system text of a covered run lacks the sandbox section, or a run without `run_command` reads it |
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
-| WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
+| WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool. A withheld run installs a missing module, or an unbound frame lets it. A withheld run keeps an own tool named like a shell tool, or app-builder loses the broker's `run_command` |
 | WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection. The follow-up: a tool of another repo that borrows a delegation name stays or runs, the control trusts a foreign wrapper of a platform tool, or a chain tool loses its trust. A module outside `acb_skills` and `orchestrator` registers a platform callable. The unmount save has its own fence, `workbench/control_plane/src/lib/chatMemorySave.test.ts` |
 | WS43-F26 | `tests/unit/test_data_engine.py` | §7.10, WS-43y1. On the host Python, the engine misses a header, total or type rule on its fixture. It accepts a second statement, or a query that reads a file, attaches, copies, installs, loads or sets. A cap fails to set `truncated`, or a zip or XML bomb reaches the parse. The DuckDB pin of the host lock and the image lock differ. Its `sandbox_docker` half runs each verb in the image as uid 1000, with no network |
 | WS43-F27 | `tests/unit/test_data_tools.py` | §7.10, WS-43y2. A tool runs with no cover, puts text from the model in the command, stages bytes outside the run-data dir, or reads an attachment of another member. A dataset id of another thread resolves. An answer lacks a field of the envelope or its token markers, or passes 16,000 characters. A dataset outlives its lifetime or its chat, or a restart deletes one inside its lifetime |

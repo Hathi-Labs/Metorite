@@ -1074,3 +1074,238 @@ def test_a_github_copilot_agent_never_reaches_tier_2(monkeypatch, tmp_path) -> N
     the label alone sends a run down Tier 1.5, which always returns."""
     seen = _drive_tier2(monkeypatch, tmp_path, "task-manager", _config("task-manager"))
     assert "client" not in seen, seen
+
+
+# ── 8. Task 3848: the self-heal and an agent's own shell tools ─────────────
+#
+# Two host paths that the injected-tool seam did not reach (§7.9).
+#
+# * The executor's dependency self-heal called ``install_dependency`` on the
+#   host for every run. It now asks ``_run_may_install_dependency``, which
+#   reads the ``shell_tools_withheld`` binding. Mutation: drop the
+#   ``not _run_may_install_dependency()`` branch at the install site, and the
+#   withheld Tier 2 test goes red.
+# * ``_drop_withheld`` filters injected tools only. An agent's OWN tool named
+#   like a shell tool now leaves a withheld run (``_drop_own_shell_tools``).
+#   Mutation: remove its call, and the own-tool tests go red. Make the
+#   platform ``run_command`` exemption ``False``, and the app-builder test
+#   goes red.
+
+def test_the_install_answer_reads_the_binding_and_fails_closed(monkeypatch) -> None:
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    # The package exports a function of the same name, so take the module.
+    write_artifact = sys.modules["acb_skills.write_artifact"]
+    for value, allowed in ((True, False), (False, True), (None, False), ("no", False)):
+        with artifact_context_scope():
+            bind_artifact_context(**({} if value is None else {"shell_tools_withheld": value}))
+            assert executor._run_may_install_dependency() is allowed, value
+    # A frame with no run binding at all.
+    with artifact_context_scope():
+        write_artifact._RUN_ARTIFACT_CONTEXT.set(None)
+        assert executor._run_may_install_dependency() is False
+
+    def _boom() -> Any:
+        raise RuntimeError("the reader failed")
+
+    monkeypatch.setattr(write_artifact, "artifact_context", _boom)
+    assert executor._run_may_install_dependency() is False
+
+
+class _SelfHealTier2Agent(_Tier2Agent):
+    """A Tier 2 agent whose turn calls its own tool, which fails its import
+    once. The shim wraps the entries of ``tools`` in place."""
+
+    def __init__(self, calls: list[str]) -> None:
+        super().__init__()
+
+        async def needs_pkg() -> str:
+            calls.append("call")
+            if len(calls) == 1:
+                raise ModuleNotFoundError("No module named 'pkgx'", name="pkgx")
+            return "pkgx is ready"
+
+        self.tools = [needs_pkg]
+
+    async def run(self, *_a: Any, **_k: Any) -> Any:
+        from types import SimpleNamespace
+
+        import contextlib
+
+        tool_fn = next(t for t in self.tools if getattr(t, "__name__", "") == "needs_pkg")
+        with contextlib.suppress(ImportError):
+            await tool_fn()
+        return SimpleNamespace(text="done", messages=[])
+
+
+def _drive_self_heal(
+    monkeypatch, tmp_path, *, covered: bool,
+) -> tuple[list[str], list[str], str]:
+    import copilot
+    from acb_skills import dep_tools
+
+    installs: list[str] = []
+
+    async def _fake_install(packages: str) -> str:
+        installs.append(packages)
+        return f"Installed {packages}"
+
+    class _FakeConnection:
+        @classmethod
+        def for_stdio(cls, path: Any = None, args: Any = None) -> Any:
+            return object()
+
+    class _FakeClient:
+        def __init__(self, **kw: Any) -> None:
+            pass
+
+    monkeypatch.setattr(dep_tools, "install_dependency", _fake_install)
+    monkeypatch.setattr(copilot, "RuntimeConnection", _FakeConnection)
+    monkeypatch.setattr(copilot, "CopilotClient", _FakeClient)
+    if covered:
+        monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
+    calls: list[str] = []
+    _loader(monkeypatch, tmp_path, _SelfHealTier2Agent(calls), _config("crm-assistant"),
+            "crm-assistant")
+    frames = _run_stream("crm-assistant")
+    results = [f for f in frames if "TOOL_CALL_RESULT" in f]
+    return installs, calls, "\n".join(results)
+
+
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+def test_a_withheld_run_never_installs_a_missing_module(monkeypatch, tmp_path) -> None:
+    """crm-assistant is shared, so its run binds ``shell_tools_withheld=True``."""
+    installs, calls, results = _drive_self_heal(monkeypatch, tmp_path, covered=False)
+    assert installs == [], f"the self-heal installed {installs} on the host"
+    assert calls == ["call"], "the tool ran again with no install"
+    assert "ask an admin" in results, results
+    assert "install_dependency" not in results, results
+
+
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+def test_a_covered_run_keeps_the_self_heal(monkeypatch, tmp_path) -> None:
+    """A cover binds ``shell_tools_withheld=False``: install once, then retry."""
+    installs, calls, results = _drive_self_heal(monkeypatch, tmp_path, covered=True)
+    assert installs == ["pkgx"], installs
+    assert calls == ["call", "call"], calls
+    assert "pkgx is ready" in results, results
+
+
+def test_the_root_agent_binds_an_open_install() -> None:
+    """The root dev agent withholds nothing, so its self-heal stays open."""
+    assert ti._withheld_shell_tools("metorite", None) == frozenset()
+
+
+def _named(name: str, *, kind: str = "callable") -> Any:
+    """An agent's own tool called *name*, in one of three shapes."""
+    async def _fn() -> str:
+        return name
+
+    _fn.__name__ = name
+    if kind == "function_tool":
+        from agent_framework import tool
+        return tool(_fn, name=name)
+    if kind == "dict":
+        return {"type": "function", "function": {"name": name}}
+    return _fn
+
+
+def _own_names(pool: list[Any]) -> list[str]:
+    return [ti._tool_name(t) for t in pool]
+
+
+def _own_shell_pool() -> list[Any]:
+    from acb_skills import code_tools, sandbox_tools
+
+    ti._collect_injectable_platform_tools(None)  # registers the host tools
+    _store, broker = sandbox_tools.app_builder_session_parts()
+    return [
+        _named("run_script"),
+        _named("code_task", kind="function_tool"),
+        _named("install_dependency", kind="dict"),
+        _named("run_command", kind="function_tool"),   # a repo's own, on the host
+        code_tools.run_script,                         # the platform's HOST tool
+        broker[0],                                     # the broker's run_command
+        _named("my_report"),
+    ]
+
+
+def test_a_withheld_run_drops_an_own_tool_named_like_a_shell_tool() -> None:
+    agent = _FakeNativeAgent()
+    agent.default_options["tools"] = _own_shell_pool()
+    broker_tool = agent.default_options["tools"][5]
+    ti._inject_agent_tools(
+        [agent], tool_scope=None, agent_name="crm-assistant",
+        agent_config=_config("crm-assistant"),
+    )
+    pool = agent.default_options["tools"]
+    names = _own_names(pool)
+    assert not ({"run_script", "code_task", "install_dependency"} & set(names)), names
+    # The only run_command left is the broker's own (app-builder's harness).
+    assert names.count("run_command") == 1, names
+    assert any(t is broker_tool for t in pool), "the broker's run_command left"
+    assert "my_report" in names, names
+
+
+def test_app_builder_keeps_the_broker_run_command(monkeypatch) -> None:
+    """app-builder is shared and uncovered, so D85 withholds all four names.
+    Its harness agent still holds the broker's ``run_command`` (§7.8)."""
+    from acb_skills import sandbox_tools
+
+    cfg = _config("app-builder")
+    assert ti._withheld_shell_tools("app-builder", cfg) == SHELL_TOOLS
+    _store, broker = sandbox_tools.app_builder_session_parts()
+    agent = _FakeNativeAgent()
+    agent.default_options["tools"] = list(broker)
+    ti._inject_agent_tools([agent], tool_scope=cfg.get("tool_scope") or None,
+                           agent_name="app-builder", agent_config=cfg)
+    assert any(t is broker[0] for t in agent.default_options["tools"])
+
+
+def test_a_withheld_copilot_agent_drops_its_own_shell_tool() -> None:
+    agent = _FakeCopilotAgent()
+    agent._tools = [_named("run_script"), _named("my_report")]
+    ti._inject_agent_tools(
+        [agent], tool_scope=None, agent_name="task-manager",
+        agent_config=_config("task-manager"),
+    )
+    names = _own_names(agent._tools)
+    assert "run_script" not in names and "my_report" in names, names
+
+
+@pytest.mark.parametrize("case", ["covered", "personal"])
+def test_a_run_that_holds_the_shell_tools_keeps_its_own(monkeypatch, case: str) -> None:
+    cfg = _config("crm-assistant")
+    slug = "crm-assistant"
+    if case == "covered":
+        monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
+        monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_A)
+    else:
+        cfg, slug = {"name": "coach", "sharing": {"instancing": "personal"}}, "coach"
+    agent = _FakeNativeAgent()
+    agent.default_options["tools"] = [_named("run_script"), _named("run_command")]
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name=slug, agent_config=cfg)
+    names = _own_names(agent.default_options["tools"])
+    assert {"run_script", "run_command"} <= set(names), (case, names)
+
+
+def test_the_broker_only_name_is_the_shell_tool_that_is_not_a_host_tool() -> None:
+    from acb_skills.sandbox_tools import _HOST_SHELL_TOOLS
+
+    assert ti._BROKER_ONLY_SHELL_TOOLS == SHELL_TOOLS - _HOST_SHELL_TOOLS
+
+
+def test_list_integrations_names_a_script_tool_only_to_a_holder() -> None:
+    import asyncio
+
+    from acb_skills.integration_tools import list_integrations
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    for run_tools, named in ((frozenset(), False), (frozenset({"run_script"}), True)):
+        with artifact_context_scope():
+            bind_artifact_context(integrations=["zoho-crm"], run_tools=run_tools)
+            out = asyncio.run(list_integrations())
+        assert ("run_script" in out) is named, (run_tools, out)
+        assert "code_task" not in out, out
+    doc = list_integrations.__doc__ or ""
+    assert "run_script" not in doc and "code_task" not in doc, doc

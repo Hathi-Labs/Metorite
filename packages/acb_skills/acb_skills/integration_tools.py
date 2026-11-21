@@ -9,18 +9,18 @@ the run-scoped process env (executor ``_inject_integrations_to_env``) into
 """
 from __future__ import annotations
 
-from acb_skills.write_artifact import artifact_context
+from acb_skills.write_artifact import artifact_context, run_holds_tool
 
 
 async def list_integrations() -> str:
     """List the integrations available to you and how scripts access them.
 
     Shows which platform integrations (Zoho CRM, Gmail, SerpAPI, …)
-    are configured for you this run, and the environment-variable NAMES your
-    scripts (``run_script`` / ``code_task``) can read for each — credential
-    values are injected at run time and are never shown here. Also lists any
-    declared-but-unavailable integrations with the reason, so you can tell the
-    user what needs configuring instead of failing silently.
+    are configured for you this run, and the environment-variable NAMES a
+    script can read for each — credential values are injected at run time
+    and are never shown here. Also lists any declared-but-unavailable
+    integrations with the reason, so you can tell the user what needs
+    configuring instead of failing silently.
     """
     try:
         from acb_skills.integrations import FIELD_TO_ENV  # noqa: PLC0415
@@ -46,11 +46,15 @@ async def list_integrations() -> str:
         for svc in resolved:
             env_vars = ", ".join(v for _, v in FIELD_TO_ENV.get(svc, []))
             lines.append(f"- {svc}: {env_vars or '(no env vars mapped)'}")
-        lines.append(
-            "Scripts run via run_script/code_task receive exactly these vars "
-            "(read with os.getenv); values are injected at run time — never "
-            "hard-code or print them."
-        )
+        # Name a script tool only to a run that holds one. A shared agent
+        # does not (D85), so it is never told to call a tool it lacks.
+        held = [t for t in ("run_script", "code_task") if run_holds_tool(t)]
+        if held:
+            lines.append(
+                f"Scripts run via {'/'.join(held)} receive exactly these vars "
+                "(read with os.getenv); values are injected at run time — never "
+                "hard-code or print them."
+            )
     if warnings:
         lines.append("Declared but UNAVAILABLE (tell the user, don't retry):")
         for svc, reason in sorted(warnings.items()):

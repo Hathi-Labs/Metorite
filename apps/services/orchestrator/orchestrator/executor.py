@@ -238,6 +238,23 @@ def _missing_module_name(exc: BaseException) -> str | None:
     return name.split(".")[0] if name else None
 
 
+def _run_may_install_dependency() -> bool:
+    """True when the run on this frame may install a package on the host.
+
+    The TOOL half of D85: the executor binds ``shell_tools_withheld`` for each
+    run. Only an explicit ``False`` opens the install: the root ``metorite``
+    agent, a personal agent, or a run that the broker covers. A shared agent
+    reads ``True``. A frame with no binding, or a reader that fails, reads
+    ``False``, so it fails closed. The self-heal and its error text both ask
+    this one function (task 3848).
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("shell_tools_withheld", True) is False
+    except Exception:
+        return False
+
+
 def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
     """The tool result when the dependency self-heal could not install *module*.
 
@@ -245,19 +262,17 @@ def _missing_dependency_message(tool_name: str, exc: BaseException, module: str 
     agent does not (D85), so it is told to ask an admin instead, and never
     to call a tool it was not given.
     """
+    if not _run_may_install_dependency():
+        return (
+            f"Error: tool '{tool_name}' needs a package that isn't installed "
+            f"({exc}). This run may not install packages; "
+            "ask an admin to install the package, then retry."
+        )
     head = (
         f"Error: tool '{tool_name}' needs a package that isn't installed "
         f"({exc}). Auto-install "
         f"{'failed' if module else 'could not identify the module'}"
     )
-    try:
-        from acb_skills.write_artifact import artifact_context
-        # The TOOL half of D85: does this run hold install_dependency?
-        withheld = artifact_context().get("shell_tools_withheld", True) is not False
-    except Exception:
-        withheld = True
-    if withheld:
-        return head + "; ask an admin to install the package, then retry."
     return head + "; call install_dependency('<package>') and retry."
 _TOOL_EXECUTION_TIMEOUT: float = _WATCHDOG.tool_execution
 
@@ -10067,7 +10082,16 @@ async def run_agent_stream(
                         # importable immediately. One attempt only (no loop).
                         _mod = _missing_module_name(_imp_exc)
                         _healed = False
-                        if _mod:
+                        # D85, task 3848: the install runs on the HOST. A run
+                        # that withholds the shell tools, or whose binding
+                        # cannot be read, installs nothing. It falls through
+                        # to the error below, which says "ask an admin".
+                        if _mod and not _run_may_install_dependency():
+                            _log.warning(
+                                "executor.tool_dep_selfheal_refused",
+                                agent=agent_name, tool=tool_name, module=_mod,
+                            )
+                        elif _mod:
                             _log.info(
                                 "executor.tool_dep_selfheal",
                                 agent=agent_name, tool=tool_name, module=_mod,

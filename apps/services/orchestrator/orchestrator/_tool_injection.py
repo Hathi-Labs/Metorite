@@ -2100,6 +2100,56 @@ def _drop_own_tools(agents: list[Any], names: frozenset[str]) -> None:
             lst[:] = [t for t in lst if _tool_name(t) not in names]
 
 
+#: The ``SHELL_TOOLS`` members that run only in the sandbox broker. Today that
+#: is ``run_command``: app-builder's harness agent and a covered ``projects``
+#: run hold the platform's own copy, and it never runs on the host. Every other
+#: member runs on the host (``acb_skills.sandbox_tools._HOST_SHELL_TOOLS``).
+_BROKER_ONLY_SHELL_TOOLS: frozenset[str] = frozenset({"run_command"})
+
+
+def _drop_own_shell_tools(
+    agents: list[Any], agent_name: str | None, withheld: frozenset[str],
+) -> None:
+    """Take each withheld shell tool out of the agent's OWN tool pools (D85).
+
+    :func:`_drop_withheld` filters the INJECTED tools only. An agent repo can
+    ship its own tool named ``run_script``, ``code_task`` or
+    ``install_dependency``. In a run that withholds the shell tools, this
+    drops it whatever its identity, and logs ``executor.own_shell_tool_refused``
+    (task 3848). It keeps one case: a :data:`_BROKER_ONLY_SHELL_TOOLS` tool that
+    is the platform's own callable (``egress._platform_owned``), because the
+    broker runs it. So app-builder's harness keeps its ``run_command``, and an
+    agent's own ``run_command`` goes. A fault keeps nothing: it fails closed.
+    """
+    if not withheld:
+        return
+    try:
+        from acb_skills.egress import _platform_owned
+    except Exception:  # noqa: BLE001 - no identity check means no exemption
+        def _platform_owned(item: Any, name: str) -> bool:  # type: ignore[misc]
+            return False
+    for agent in agents:
+        for _attr, lst in _own_tool_pools(agent):
+            kept: list[Any] = []
+            for item in lst:
+                name = _tool_name(item)
+                if name in withheld:
+                    try:
+                        broker_tool = (
+                            name in _BROKER_ONLY_SHELL_TOOLS and _platform_owned(item, name)
+                        )
+                    except Exception:  # noqa: BLE001
+                        broker_tool = False
+                    if not broker_tool:
+                        _log.warning(
+                            "executor.own_shell_tool_refused",
+                            agent=agent_name, tool=name,
+                        )
+                        continue
+                kept.append(item)
+            lst[:] = kept
+
+
 def _drop_spawn_tool(agents: list[Any]) -> None:
     """Take ``spawn_subagents`` out of every agent of a run of an org that
     ``SPAWN_SUBAGENTS_ORGS`` does not name (WS-67 OA-9b).
@@ -2544,6 +2594,12 @@ def _inject_agent_tools(
     """
     _apply_voice(agents, is_sub_agent=is_sub_agent, agent_name=agent_name)
     _drop_spawn_tool(agents)
+    # D85 (the interim block): a shared agent gets no shell tool until the
+    # sandbox broker covers it. The withheld names leave the SCOPE, so the
+    # addendum below never describes a tool this agent does not hold. They
+    # leave the agent's OWN tools too (task 3848), before any early return.
+    _withheld = _withheld_shell_tools(agent_name, agent_config)
+    _drop_own_shell_tools(agents, agent_name, _withheld)
     _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
@@ -2573,10 +2629,6 @@ def _inject_agent_tools(
             "executor.skill_families_disabled",
             agent=agent_name, families=sorted(_disabled_families),
         )
-    # D85 (the interim block): a shared agent gets no shell tool until the
-    # sandbox broker covers it. The withheld names leave the SCOPE, so the
-    # addendum below never describes a tool this agent does not hold.
-    _withheld = _withheld_shell_tools(agent_name, agent_config)
     if _withheld:
         _log.info(
             "executor.shell_tools_withheld",
