@@ -34,8 +34,8 @@ curl -s http://127.0.0.1:8765/health
 
 Settings (environment, with the prefix `TALLY_BRIDGE_`): `TALLY_URL`,
 `BIND_HOST`, `BIND_PORT`, `PUBLIC_HOST`, `ALLOWED_COMPANIES` (split by `|`),
-`TALLY_TIMEOUT_S`, `CALL_DEADLINE_S`, `MAX_RANGE_DAYS`, `MAX_ROWS` and
-`LOG_DIR`.
+`TALLY_TIMEOUT_S`, `CALL_DEADLINE_S`, `MAX_RANGE_DAYS`, `MAX_ROWS`,
+`CALLS_PER_MINUTE` and `LOG_DIR`.
 
 **Behind a tunnel, set `PUBLIC_HOST`.** Set it to the tunnel host name,
 such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
@@ -54,7 +54,8 @@ such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
 | §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is about 1.1 KB for 2 tools (1,127 bytes over HTTP) |
 | §6.5 rule 4: the company allow-list | Built (PR 3). `ALLOWED_COMPANIES`, exact names. With no allowed company, no tool reads the books |
 | §6.4 read tools 3 to 9 | Built (PR 3, later commits). `tools/reports.py`. All 9 tools fit in 4,602 bytes of `tools/list` |
-| §6.5 rule 5 (rate limit), rule 6 (call log) | Later PRs |
+| §6.5 rule 5: 60 calls a minute for each token | Built (PR 3). `calllog.CallLimiter`, one for each MCP server, so one for each token. `CALLS_PER_MINUTE` changes it. A call past the limit never reaches Tally |
+| §6.5 rule 6: one log line for each call, no token | Built (PR 3). `calllog.record`: time, tool, inputs, row count, duration and a result code. With `LOG_DIR` set, `calls.log` rotates at midnight and keeps 90 days |
 | §6.7 installer, Windows service, DPAPI, setup screen | Step 4. Needs Windows |
 
 ## Brief tests at the unit level (PR 1)
@@ -67,6 +68,7 @@ unit pass is not the brief test. The brief test runs on the public address.
 | 2: no token, a wrong token, the read token on `/mcp-write` | `test_no_token_is_401`, `test_wrong_token_is_401`, `test_read_token_on_mcp_write_is_404` |
 | 4: `tools/list` with TallyPrime closed, in under 2 seconds | `test_tools_list_with_tally_closed_is_fast` |
 | 5: `status` with TallyPrime closed, a plain error in under 25 seconds | `test_status_with_tally_closed_is_a_plain_error`, `test_status_with_tally_hung_stops_at_the_deadline` |
+| 15: one log line for each call, and no token in it | `test_brief_test_15_no_token_in_any_log_line`, `test_one_line_for_each_call_with_the_six_facts` |
 | 10: `<`, `&` and a quote in an input give no Tally error | `test_every_input_stays_text_and_every_request_is_an_export`, and `test_brief_test_10_special_characters_find_nothing_and_never_reach_tally`: `find_ledgers` filters in the bridge, so the query never reaches Tally |
 
 `tests/unit/test_tally_bridge_reader.py` holds the fence of §6.5 rule 7: no

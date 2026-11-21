@@ -16,6 +16,7 @@ import logging
 import sys
 
 from tally_bridge import __version__
+from tally_bridge.calllog import open_call_log
 from tally_bridge.reader import TallyClient
 from tally_bridge.secret_store import EnvSecretStore, new_token, token_sha256
 from tally_bridge.settings import EnvSettingsStore
@@ -65,6 +66,7 @@ def _serve() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = EnvSettingsStore().load()
+    open_call_log(settings.log_dir)
     secrets = EnvSecretStore()
     if secrets.read_token_sha256() is None:
         print("No read token. Run `python -m tally_bridge new-token` first.", file=sys.stderr)

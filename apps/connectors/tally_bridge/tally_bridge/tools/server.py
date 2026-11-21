@@ -20,6 +20,8 @@ grow the ``tools/list`` answer.
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -27,17 +29,20 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import CallToolResult
 from pydantic import Field, ValidationError
 
-from tally_bridge import __version__
+from tally_bridge import __version__, calllog
+from tally_bridge.calllog import CallLimiter
 from tally_bridge.reader import TallyAnswerError, TallyReader, TallyRefused, envelope, records
 from tally_bridge.reader.values import Amount
 from tally_bridge.settings import Settings
 from tally_bridge.tools.common import (
+    CALL_CODE,
     READ_ONLY,
     TALLY_DOWN,
     TEXT_LIMIT,
     Refusal,
     guarded,
     pick_company,
+    refuse,
 )
 from tally_bridge.tools.reports import register_report_tools
 
@@ -52,7 +57,7 @@ def _amount(a: Amount) -> dict[str, Any]:
 
 def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
     """The MCP server with the read tools. The transport sets the HTTP options."""
-    mcp = _BridgeMCP(name="tally")
+    mcp = _BridgeMCP(CallLimiter(settings.calls_per_minute), name="tally")
 
     @mcp.tool(
         name="status",
@@ -126,11 +131,42 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
 
 
 class _BridgeMCP(FastMCP):
-    """FastMCP, with one change: a missing or wrong input answers one plain
-    sentence that names the inputs (brief section 6.4 rule 5). Without it,
-    the member sees the raw validation text of pydantic."""
+    """FastMCP, with three changes that hold for every tool call.
+
+    1. The call limit (brief section 6.5 rule 5): past the limit, the call
+       answers one plain sentence and never reaches the tool or Tally.
+    2. The call log (rule 6): one line for each call, with no token.
+    3. A missing or wrong input answers one plain sentence that names the
+       inputs (section 6.4 rule 5), not the raw validation text of pydantic.
+    """
+
+    def __init__(self, limiter: CallLimiter, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._limiter = limiter
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        start = time.monotonic()
+        code, rows = "error", None
+        CALL_CODE.set("error")
+        try:
+            wait = self._limiter.take()
+            if wait:
+                code = "rate_limited"
+                limit = self._limiter.limit
+                return refuse(
+                    f"The bridge takes {limit} calls a minute. Try again in {wait} seconds."
+                )
+            result = await self._checked_call(name, arguments)
+            code = CALL_CODE.get()
+            rows = _row_count(result)
+            return result
+        except ToolError:
+            code = "bad_input"
+            raise
+        finally:
+            calllog.record(name, arguments, code, (time.monotonic() - start) * 1000, rows)
+
+    async def _checked_call(self, name: str, arguments: dict[str, Any]) -> Any:
         try:
             return await super().call_tool(name, arguments)
         except ToolError as exc:
@@ -141,6 +177,16 @@ class _BridgeMCP(FastMCP):
             if not fields:
                 raise ToolError("Check the inputs of this call.") from None
             raise ToolError(f"Check these inputs: {', '.join(fields)}.") from None
+
+
+def _row_count(result: Any) -> int | None:
+    if not isinstance(result, CallToolResult) or result.isError or not result.content:
+        return None
+    try:
+        value = json.loads(result.content[0].text).get("row_count")
+    except (ValueError, AttributeError):
+        return None
+    return value if isinstance(value, int) else None
 
 
 def _compact_schemas(mcp: FastMCP) -> None:

@@ -16,6 +16,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from datetime import date
 from typing import Any
 
@@ -137,22 +138,35 @@ async def guarded(
     work: Callable[[], Awaitable[dict[str, Any]]],
     company: str | None = None,
 ) -> CallToolResult:
-    """Run one call. Every failure becomes one plain sentence."""
+    """Run one call. Every failure becomes one plain sentence.
+
+    It also sets ``CALL_CODE``, the result code of the call log (rule 6).
+    """
     try:
         result = answer(await asyncio.wait_for(work(), settings.call_deadline_s))
         if len(result.content[0].text.encode("utf-8")) > MAX_ANSWER_BYTES:
-            return refuse(TOO_LARGE)
-        return result
+            return _coded("too_large", refuse(TOO_LARGE))
+        return _coded("ok", result)
     except Refusal as exc:
-        return refuse(str(exc))
+        return _coded("refused", refuse(str(exc)))
     except TallyDown:
-        return refuse(TALLY_DOWN)
+        return _coded("tally_down", refuse(TALLY_DOWN))
     except (TallyTimeout, TimeoutError):
-        return refuse(timeout_sentence(settings.call_deadline_s))
+        return _coded("timeout", refuse(timeout_sentence(settings.call_deadline_s)))
     except TallyRefused as exc:
         log.warning("tally refused %s: %s", tool, exc.detail)
         where = f" Check that the company '{company}' is open in TallyPrime." if company else ""
-        return refuse("TallyPrime refused the request." + where)
+        return _coded("tally_refused", refuse("TallyPrime refused the request." + where))
     except TallyAnswerError as exc:
         log.warning("unreadable answer for %s: %s", tool, exc)
-        return refuse(UNREADABLE)
+        return _coded("unreadable", refuse(UNREADABLE))
+
+
+# The result code of the call that runs now. ``guarded`` sets it, and the
+# call log reads it after the call (``tools/server.py``).
+CALL_CODE: ContextVar[str] = ContextVar("tally_bridge_call_code", default="error")
+
+
+def _coded(code: str, result: CallToolResult) -> CallToolResult:
+    CALL_CODE.set(code)
+    return result
