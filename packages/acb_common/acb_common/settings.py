@@ -1,6 +1,7 @@
 """Centralised env-driven settings. One source of truth for every service."""
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -1401,6 +1402,17 @@ class Settings(BaseSettings):
     # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_agents_overview_r8.py.
     agents_view_orgs: str = ""
+
+    # ── Agents: the map read (WS-MCP SW-102, agent_coordination.md §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agents/overview?shape=map` answers
+    # 404, and the plain overview does not change. The map also needs
+    # AGENTS_VIEW_ORGS. The one reader is
+    # `gateway.routes.projects.agent_summary.agent_map_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_map_r8.py.
+    agent_map_orgs: str = ""
 
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
@@ -3149,6 +3161,45 @@ def install_settings(new: Settings) -> None:
     _NEXT[:] = [new]
     get_settings.cache_clear()
     get_settings()
+
+
+# ── The internal service token (WS-24c slice 2) ──────────────────────────────
+
+
+def internal_service_token() -> str:
+    """The ONE caller-side reader of the service-identity token.
+
+    A caller that sends a request to a gateway business route (``/tasks``,
+    ``/crm``, ``/email``) reads its bearer here. It reads
+    ``GATEWAY_INTERNAL_TOKEN``, then the ``gateway_internal_token`` field. That
+    is the order of ``acb_auth.deps._get_internal_token``, so a caller sends
+    the value that the gateway checks. There is NO fallback to the LLM key
+    (WS-24b). ``""`` means unprovisioned. A settings load that fails also
+    gives ``""``.
+
+    Never give this value to a ``/v1`` client. Use ``Settings.llm_api_key``.
+    Fences: ``tests/unit/test_service_identity_and_webhook_auth.py``
+    (``test_no_copy_of_the_internal_token_reader``).
+    """
+    tok = os.getenv("GATEWAY_INTERNAL_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        return (getattr(get_settings(), "gateway_internal_token", "") or "").strip()
+    except Exception:  # a broken settings load is an unset token
+        return ""
+
+
+def internal_auth_headers() -> dict[str, str]:
+    """The ``Authorization`` header of an internal call, or ``{}``.
+
+    An empty token gives NO header. ``Bearer `` with no token is an illegal
+    header value, and httpx raises ``LocalProtocolError`` before the request
+    leaves. With no header the gateway answers a clean 401. A caller spreads
+    this into its headers: ``{**internal_auth_headers(), ...}``.
+    """
+    tok = internal_service_token()
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
 #: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).

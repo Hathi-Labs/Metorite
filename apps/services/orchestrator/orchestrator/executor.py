@@ -41,6 +41,7 @@ from acb_audit import AuditEvent, record
 from acb_common import failure_log, get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
+from acb_common.settings import internal_auth_headers, internal_service_token
 from acb_llm.run_errors import classify_run_error, run_error_event
 from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
@@ -241,8 +242,8 @@ def _missing_module_name(exc: BaseException) -> str | None:
 def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
     """The tool result when the dependency self-heal could not install *module*.
 
-    It suggests ``install_dependency`` only to a run that holds it. A shared
-    agent does not (D85), so it is told to ask an admin instead, and never
+    It suggests ``install_dependency`` only to a run that holds it. An agent
+    in D85's scope does not, so it is told to ask an admin instead, and never
     to call a tool it was not given.
     """
     head = (
@@ -1244,7 +1245,9 @@ async def _prime_chat_constraints(agent_name: str) -> None:
     if str(artifact_context().get("member") or "").strip().lower() != member:
         return
     try:
-        items = await cc.load_constraints()
+        # `fresh`: Redis answers, so a decision that the member took back
+        # through the gateway (HRD-12b, another process) is gone this turn.
+        items = await cc.load_constraints(fresh=True)
     except Exception as exc:  # a block, never the turn
         _log.warning("executor.chat_constraints_failed", error=type(exc).__name__)
         items = []
@@ -3898,8 +3901,8 @@ async def _run_sub_agent_streaming(
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
-                # D85: a shared sub-agent gets no shell tool until the
-                # sandbox broker covers it.
+                # D85 and D129: a sub-agent, shared or personal, gets no
+                # shell tool until the sandbox broker covers it.
                 agent_config=getattr(loaded, "config", None),
                 # H-236: and no egress tool when its parent is covered.
                 no_egress=_sub_no_egress,
@@ -6265,7 +6268,7 @@ async def _assemble_batch_agents(
         tool_scope=_job_tool_scope(
             agent_name, loaded.config.get("tool_scope") or None),
         agent_name=agent_name,
-        agent_config=loaded.config,  # D85: the sharing block
+        agent_config=loaded.config,  # floor_opt_out, and the D85 seam
         no_egress=no_egress,  # H-236: from the run's own binding
     )  # inject call_agent / call_agent_background
     if held is not None:
@@ -6789,9 +6792,7 @@ async def _run_agent_inner(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
                 # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
-                gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "") or ""
-                ).strip(),
+                gateway_token=internal_service_token(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -7077,6 +7078,8 @@ async def _run_agent_inner(
             error=exc,
             agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             incompatibility=True,
+            # Task 2221: the run's tenant, for the audit rows only.
+            audit_organization_id=_RUN_ORG.get(thread_id),
         )
         pr_url = mutation_result.pr_url if mutation_result else None
         raise AgentRunError(
@@ -7136,6 +7139,8 @@ async def _run_agent_inner(
             run_id=run_id,
             error=exc,
             agent_dir=_repair_dir(_git_dir, _effective_agent_dir),  # the clone, for an authenticated push
+            # Task 2221: the run's tenant, for the audit rows only.
+            audit_organization_id=_RUN_ORG.get(thread_id),
         )
         pr_url = mutation_result.pr_url if mutation_result else None
 
@@ -7342,6 +7347,18 @@ def _closed_card_events(line: str, run_id: str = "") -> list[dict[str, Any]]:
         return []
     _log.info("executor.card_outcome_line", run_id=run_id, outcome=CLOSED_BY_YOUR_MESSAGE)
     return closed_card_text_events(line)
+
+
+def _open_approved_acts(delegated: bool) -> Any:
+    """Open the record of the approved acts of this reply (task 3595), or
+    None for a delegated run. A child run opens no record, so each act of
+    the child goes into its parent's record, and one park line names both.
+    ``release_approved_acts`` takes the token, None too."""
+    if delegated:
+        return None
+    from acb_skills.ask_tools import open_approved_acts_for_run
+
+    return open_approved_acts_for_run()
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -7889,6 +7906,11 @@ async def run_agent_stream(
     # another run is a delegation. Read it BEFORE this run opens its own. A
     # delegated run neither loads nor saves a native session.
     _delegated_run = bool(artifact_context().get("run_id"))
+    # Task 3595 (PARK-LINE): the approved acts that ran in this reply. Only
+    # a run that is not delegated opens the record, so a child run writes
+    # into its parent's record. Released in the same finally.
+    from acb_skills.ask_tools import release_approved_acts
+    _approved_acts_token = _open_approved_acts(_delegated_run)
     # CRM-Q29: the member's own words of this turn, a source of the number
     # check. A delegated run takes its parent's words, never its payload.
     _member_words = _member_words_for_run(artifact_context(), event_payload)
@@ -8138,7 +8160,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
-                agent_config=loaded.config,  # D85: the sharing block
+                agent_config=loaded.config,  # floor_opt_out, and the D85 seam
                 no_egress=_stream_no_egress,  # H-236
                 # HRD-14b: only a top-level streamed run gets the paste frame.
                 # A delegated run's input is a task that a model wrote.
@@ -8251,9 +8273,7 @@ async def run_agent_stream(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
                 # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
-                gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "") or ""
-                ).strip(),
+                gateway_token=internal_service_token(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -10372,14 +10392,13 @@ async def run_agent_stream(
                 # save that did not happen (orchestrator/setup_tokens.py).
                 if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
 
                         from orchestrator.setup_tokens import save_setup_vars
                         async with httpx.AsyncClient(timeout=10) as c:
                             _setup_note = await save_setup_vars(
-                                c, _GATEWAY_URL, {"Authorization": f"Bearer {_token}"},
+                                c, _GATEWAY_URL, internal_auth_headers(),
                                 raw_matches,
                             )
                         if _setup_note:
@@ -10487,6 +10506,7 @@ async def run_agent_stream(
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
             release_closed_cards(_closed_cards_token)
+            release_approved_acts(_approved_acts_token)
             _active_run_model.reset(_model_token)
             _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
