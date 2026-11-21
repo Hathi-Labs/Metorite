@@ -108,17 +108,17 @@ class _ApproveAllFinder(ast.NodeVisitor):
         ):
             self._hit(node, f'getattr(..., "{_NAME}")')
         for kw in node.keywords:
-            if kw.arg == _HANDLER_KEY and _is_approve_all_text(kw.value):
-                self._hit(node, f'{_HANDLER_KEY}="{_NAME}"')
+            if kw.arg == _HANDLER_KEY and _is_approve_all_value(kw.value):
+                self._hit(node, f"{_HANDLER_KEY}={ast.unparse(kw.value)}")
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
         for key, value in zip(node.keys, node.values, strict=True):
             if (
                 isinstance(key, ast.Constant) and key.value == _HANDLER_KEY
-                and _is_approve_all_text(value)
+                and _is_approve_all_value(value)
             ):
-                self._hit(node, f'"{_HANDLER_KEY}": "{_NAME}"')
+                self._hit(node, f'"{_HANDLER_KEY}": {ast.unparse(value)}')
         self.generic_visit(node)
 
 
@@ -236,6 +236,9 @@ def test_the_root_factory_is_not_on_the_allowlist() -> None:
         "h = getattr(PermissionHandler, 'approve_all')\n",
         "agent = Agent(on_permission_request='approve_all')\n",
         "opts = {'on_permission_request': 'approve_all'}\n",
+        # A local alias of the SDK handler, passed by its bare name.
+        "agent = Agent(on_permission_request=approve_all)\n",
+        "opts = {'on_permission_request': approve_all}\n",
     ],
 )
 def test_the_finder_catches_an_approve_all(source: str) -> None:
