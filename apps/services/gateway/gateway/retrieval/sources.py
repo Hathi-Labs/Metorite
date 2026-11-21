@@ -567,6 +567,7 @@ async def _email(
     answer = await search_messages(
         q=q, account_id=None, folder="all", label=None, labels=None,
         uncategorized=False, from_addr=sender or None, to_addr=None,
+        attachment_name=None,
         received_after=after.isoformat() if after is not None else None,
         received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,

@@ -60,6 +60,10 @@ from gateway.routes.email.provider_errors import (
 )
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -216,6 +220,8 @@ async def list_messages(
     has_attachments: bool | None = Query(None),
     importance: str | None = Query(None),       # high | normal | low
     from_email: str | None = Query(None),       # substring match on sender address
+    to_addr: str | None = Query(None),          # substring on any To/Cc recipient (LOOP-19)
+    attachment_name: str | None = Query(None),  # substring on a file name (LOOP-19)
     sender_category: str | None = Query(None),  # email_senders category
     sort: str = Query("newest"),                # newest | oldest | importance
     collapse: bool = Query(False),              # one row per conversation
@@ -338,6 +344,10 @@ async def list_messages(
         if has_attachments is not None:
             where_clauses.append("em.has_attachments = :has_attachments")
             params["has_attachments"] = has_attachments
+        for clause in (recipient_clause(params, to_addr),
+                       attachment_name_clause(params, attachment_name)):
+            if clause:
+                where_clauses.append(clause)
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
