@@ -8,8 +8,13 @@ project "Personalization & Memory System".
 hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
 `my_day_feed.md` records it under MD-9. Every other slice of §10 is not built.
 
-The owner decides LOOP-Q1 to LOOP-Q10 (§12). The defaults hold until the owner
+The owner decides LOOP-Q1 to LOOP-Q13 (§12). The defaults hold until the owner
 answers. This spec takes no D-number.
+
+**Look before acting (§4.9, added 2026-11-16, task 3570).** The loop also
+runs when a member asks for a write. It shows what the member may not know on
+the card that the write already has. Slices LOOP-17 to LOOP-27, rungs W1 to
+W4.
 
 **What it owns.** It owns the loop across the stages, and the learning. It owns
 the fields of a finding, which fill the `nudges` and `insights` points of
@@ -28,6 +33,7 @@ each owner and copies none of its rules.
 | Watches and headless turns | `proactive_agent.md` (D161) | Nothing. A detector on a schedule runs on their engine |
 | The manifest envelope | `package_host.md` (HX-0, task 2762) | The fields of a finding and of a kind (§6) |
 | Connected MCP servers | `chat_connected_systems.md` (WS-CSY) | The poll of a connected system (§4.1, rung 6) |
+| The confirmation card and the mail draft | `chat_failure_modes.md` (HRD), `email_app_master_plan.md` | A finding at the moment of a write, on the card that exists (§4.9) |
 
 **Not the WS-LL loop.** `orchestration_playbook.md` §6c owns the learning loop
 of the agent harness, behind `LEARNING_ORGS`. This spec is about what Metorite
@@ -162,6 +168,10 @@ because it sits in the section that LOOP-0 extends.
 4. `number_sense.md` says that nothing is built, and NUM-1 plans to create
    `number_sense.py`. The module exists, with the concentration check
    (task 3129). NUM-1 must extend it and not write a second one.
+
+LOOP-1 (task 3441) fixed items 2 to 4 on 2026-11-16: task 602 holds the
+evidence, `chat_run_continuity.md` §8 and `number_sense.md` state the fact of
+`main`.
 
 ---
 
@@ -408,6 +418,150 @@ item. An open or a seen counts for nothing.
 
 §7 holds the rules.
 
+### 4.9 At the moment of a write: look before acting
+
+**Owner ask, 2026-11-16, task 3570.** The owner showed the reply composer with
+its AI draft. The words are the owner's, so they sit in a block that the linter
+does not read.
+
+```text
+"when a user is asking to do something say, in an email or a project or
+something, but at the same time, he might not have a certain amount of
+information needed to make a good decision. Or he does not have the latest
+context himself ... Say, for example, telling a colleague, reminding a
+colleague, or emailing to send out an NDA when that other NDA colleague has
+already sent out the NDA. We should intimate the user that the NDA has already
+been sent out, but do you still want to send a follow-up? ... Instead of
+blindly following what the user wants, we get more context and are able to
+give better insights to the user so that he can make the best decision
+possible. And even add supplementary information as needed. And then do the
+action that has been specified."
+```
+
+**What this section adds.** The loop gets a second trigger. A background
+detector finds a fact on its own. This trigger runs when a member asks for a
+write.
+
+The trigger reads the same kind of finding (§6.1) through the same judge
+(§4.4). It shows the finding on the card that the write already has. It adds
+no engine, store, card kind or model writer (§3.2).
+
+#### 4.9.1 What exists, and what Metorite lacks
+
+| Part | State on `main` (`085c21f99`) |
+|---|---|
+| A read before the card | Built. "Reads may precede the card. Writes may not" (`skill_projects/writes.py` rule 1) |
+| The one place that sees each chat tool call | Built. `_agated` (`orchestrator/_tool_injection.py:1192`) runs `decide`, then `card_call` |
+| A card that tells the member a fact | Built. HRD-9a (task 2988), the reach line on a shared change. stu-r3 plans HRD-9b (task 3465) and HRD-10 "changed since" (task 2989) |
+| Lines on a mail card | Built. A reply or new-mail form takes up to four `notices` (`acb_skills/ask_tools.py:949`) |
+| A check beside the draft | Built. `_orchestrate_draft` gathers memory and the consult plan side by side (`routes/email/automation/drafting.py:2231`) |
+| A newer reply on the thread | Built and dark: the recent-reply warning of the held card (`EMAIL_HELD_CARD_SEND`), and the 409 of `reply_card.py` when a reply landed first |
+| "You may already have this" | Built for an email capture only (`routes/tasks/capture_email.py`) |
+| Mail that a colleague sent | Absent by design. A mailbox is private (D-EM-4, D-EM-17, D-EM-18). `email_send_log` has no writer and holds no recipients. A send writes no CRM activity: `record_activity` (`routes/crm/core.py:3525`) has one caller, `pipeline.py:183` |
+| A trace of a record that the member cannot open | Forbidden. "A record that the member cannot open leaves no trace" (`find_engine.md`, `knowledge_graph.md`, `crm_conversational.md` §14) |
+| A search of sent mail by recipient or by file name | In part. `/email/search` takes `to_addr`. The chat tools take no recipient, and no index holds attachment names |
+| A choice of another act on the card | Absent. A plain card answers Approve or Reject. Only the reply card offers Send, Save or Discard |
+
+**So the owner's NDA example has no data path today.** The member's own mail
+gives the first rung. A colleague's send needs a new record, and the owner
+decides it (LOOP-Q11).
+
+#### 4.9.2 The flow
+
+1. **The intent.** The write's own typed arguments give it. They name the act,
+   the recipients and the object, such as a thread, a task or a project. They
+   also give the topic words: a subject, file names or a task title. No model
+   call reads the intent.
+2. **The detectors.** Rules in code (§4.2 type 1) read as the member, each with
+   a time bound. They start beside the card build or the draft. They never run
+   before a hand-off to a specialist, because that cost about 8.7 s (KR-2).
+   They never gate a capture.
+3. **The finding.** The fields of §6.1. A finding with no evidence drops. Its
+   `visibility_scope` is the member who asked.
+4. **The judge.** At most two findings show on one card. A finding that comes
+   back after the budget drops, and the card does not wait for it.
+5. **The display.** The card that the write already has shows each finding as
+   one line from a template (§6.4 rule 4). The copy says "may", and never
+   "wrong". The member's own act stays the main button.
+
+**Mail text never reaches the model.** A finding about mail goes to the card
+only. The model gets typed facts at most: the kind, the date, a label and a
+link. So a check does not mark the chat (EM-G11d). A shared agent also gets no
+direct read tool of a mailbox (D91 item 4).
+
+**The label is a template word or text that the member wrote.** It may use
+the subject of a new mail that the member wrote. It never uses the subject of
+a reply or a forward, because that subject comes from the other sender. A
+label never holds a subject, a file name or a name from mail that another
+sender wrote. The stop list drops Re and Fwd for a match only, and never makes
+a label.
+
+For `write_thread_moved`, the label is the template "a new message on
+this thread". The card can show more, because the card is not the model.
+
+**Mira's sentence is not a nudge.** The card line stays the template
+(§6.4 rule 4). Mira's reply only refers to the typed facts, and it adds no
+claim beyond them. A golden case fails when her sentence states a date, a
+person or an object that the typed facts do not hold (LOOP-22).
+
+**Another act is a new card.** "Send a follow-up instead" changes the payload.
+So it opens a new card with the new payload, and the first card closes.
+
+#### 4.9.3 The kinds
+
+| Kind | It fires when | Evidence | It never fires on |
+|---|---|---|---|
+| `write_already_sent` | The member's own mailboxes sent mail to the same address in 30 days, with a matching subject word or file name | The sent message | The current thread. A reply in a long thread is not a resend |
+| `write_thread_moved` | The thread got a new message after the draft began | The new message | A message from the member |
+| `write_task_settled` | A nudge, a reminder or an assign meets a task that is done, assigned to that person already, or nudged in the last 24 hours | The task, and its last nudge | A task that the member cannot open |
+| `write_duplicate_task` | A new task matches an open task of the same project by title | The open task | A task in another project |
+| `write_teammate_contacted` | A send record says that another member mailed the same contact or company in 30 days, with a matching subject word or file name | The send record | A send record that the member cannot open. Blocked by LOOP-Q11 |
+| `write_context` | The customer card holds a fact for this recipient: an open deal, an overdue invoice, an open ticket | The record | Rung W4 |
+| `write_rule_conflict` | The project checker finds that the write contradicts a rule | The rule and the quote | Rung W4, with ALN-6 (task 1380) and LOOP-8 (task 3448) |
+
+**What counts as a match.** A subject word counts only after a stop list
+drops it. The list holds Re, Fwd, Fw, hi, hello, update, follow, up, the
+names of days and months, and each number. A file name counts without its
+extension and without a date stamp.
+
+Each kind ships in shadow first (§7.6) with its two fixtures (§6.5). The
+negative fixtures include a reply in a long thread, a weekly report to the same
+address, and a resend that the member asked for.
+
+#### 4.9.4 Where it runs
+
+- **A chat write.** `_agated` starts the check from the tool name and its
+  arguments, beside `card_call`. `request_confirmation`
+  (`ask_tools.py:2374`) shows the findings in its `context` in rung W1. Rung W3
+  adds typed `facts` and `alternatives` to the card event.
+- **The composer and the chat reply card.** The gather of `_orchestrate_draft`
+  runs the check beside memory and the consult plan, so it adds no wait. The
+  findings return as `notices`, and the composer shows a banner in the place of
+  the From banner (`FromRow.tsx`). A Refine round runs the check too.
+- **A send from the app.** `/email/send` and `/email/drafts/send` read
+  `write_thread_moved` again at the send, as the 409 of `reply_card.py` does.
+- **A write that acts at once** (D-CF-5). A finding makes it show its card,
+  through `egress.write_must_show_card` (`egress.py:1771`). LOOP-Q12 asks the
+  owner.
+
+#### 4.9.5 Budget and cost
+
+Rungs W1 to W3 use rules in code only. They cost no credits. A check has a
+budget of 800 ms at the 95th percentile, beside the work that the write does
+already. A topic match by a model (`decide`, about 0.029 credits and 1.3 s for
+each request) waits for rung W4 and LOOP-Q13.
+
+#### 4.9.6 The owners
+
+| Part | Owner |
+|---|---|
+| The chat cards | stu-r3 (HRD-9a, HRD-9b, HRD-10), lane-ui (EAC-1, EAC-2 in PR 2466) |
+| The mail draft card and the composer | metorite-a3, which fixes the AI draft path now (task 3541) |
+| The rule text of Mira | cal-tasks |
+| "Mail to and from an address" | FIND-3 `related` (built, behind `FIND_ORGS`), FIND-4 (task 3241), FIND-7 (task 3244) |
+| "Send anyway" on a shared mailbox | SM-4 of `shared_mailbox.md` |
+| The customer card | CRM-SIG-1 (task 2435), and the hint of CRM-M6 (task 1434) |
+
 ---
 
 ## 5. The member model (an extension of `personalization.md` §19)
@@ -613,9 +767,45 @@ test. LOOP-7 builds the test.
 ### 7.2 Affinity for each kind (MD-9)
 
 The formula is in `my_day_feed.md` §7: `(acted − not_useful) / shown × 20`,
-from −20 to +20, over 30 days, computed once each day at day start. LOOP-4
+from −20 to +20, over 30 days, computed once each day at day start. LOOP-4a
 builds it. The count read is `feed_decide._habits`. The day value goes into a
 Redis key through `acb_common.tenant_redis` (R5).
+
+**The pins of LOOP-4a (2026-11-16, from the audit of task 3444).**
+
+- **P1, the formula.** The affinity is the truncation of
+  `(acted − not_useful) / shown × 20`, held between −20 and +20. A kind shown
+  fewer than 5 times gets 0, because the prior is 0 until LOOP-7 (§7.4).
+  Five cards shown, none acted and three "Not useful" give −12. Three shown and
+  three "Not useful" give 0. The demo of rung 2 needs five or more cards of one
+  kind.
+- **P2, the clock.** "Not useful" counts by `not_useful_at`, and an act counts
+  by `acted_at`, inside 30 days. No count uses `updated_at`.
+- **P3, the needs card.** A kind mute or a negative affinity never takes a
+  needs card out of the feed. A needs card is `feed_decide.is_needs_card`, by
+  its main kind or its folded kind. At worst a muted needs card goes to Later.
+  Dismiss, Snooze and "Not useful" on one card still hide that card. The
+  affinity of a needs card never goes below 0 in the score. So the per-app cut
+  of `feed_rank.order` cannot drop it under a kind of lower base.
+- **P4, the mute key.** A mute keys on the main kind of the card.
+- **P5, the flag off.** With the flag off, the feed answers the same bytes,
+  also when the member has stored mutes. If the prefs read or the count read
+  fails, the affinity is 0 and no mute applies, as `apply_state` does.
+- **P6, the day value.** The key is
+  `tenant_redis.key("my_day", "affinity", <member>, <feed day>)`, with a TTL of
+  26 hours. The first read of the member's day computes it. A Redis fault
+  gives 0.
+
+**Who reads the learned feed (found by the review of LOOP-4a).** The learned
+join also feeds the reach loop, the briefs and the chat brief. The reach loop
+calls `feed.feed_cards`, and the briefs call it through `loop.snapshot`. A muted kind leaves those too, and a muted needs card in
+Later is no interrupt and is in no brief. A mute is meant to do this. LOOP-5
+(§7.3) owns the rest of the reach effect. The flag paragraphs must say it.
+
+The count read must add the bound-org predicate to `_HABITS_SQL`
+(`state.py` requires it in each statement on `my_day_card_state`). The seat of
+the change is `apply_state` and `join` in `state.py`. `state.py` imports
+`feed_decide` inside the function, because `feed_decide` imports `feed`.
 
 ### 7.3 A threshold for each kind
 
@@ -627,11 +817,88 @@ mute makes it `none`.
 - **The mute stays a choice.** At the same count, the menu offers "Stop
   showing <kind>" (`my_day_feed.md` §6.6). The lower class needs no tap.
 - **The class comes back** when the member acts on a card of the kind. A
-  member can also undo it from "Why am I seeing this".
+  member can also undo it from "Why am I seeing this". LOOP-5 builds neither
+  (L9).
 - **A rare kind keeps its prior.** A member who saw a kind fewer than 5 times
   gets the prior of §7.4. So silence on a rare kind never reads as "no value".
-- **Where.** The gate of `proactive_reach.md` §5.1 reads the lowered class.
-  LOOP-5 builds it.
+  This floor binds the affinity and the exploration only. The class has no
+  floor (L1).
+- **Where.** With `BRIEF_EXCEPTIONS` off, the gate of `proactive_reach.md`
+  §5.1 reads the lowered class. With it on, `exceptions.admit` decides and
+  reads no class, so L4 applies the step after it. LOOP-5 builds it.
+
+**The pins of LOOP-5 (2026-11-16, from the audit of task 3445).**
+
+LOOP-4a owns the mutes, the affinity, the count read and the day value. LOOP-5
+owns only the step down at the interrupt gate. It adds no mute test in reach
+and no second read of the counts.
+
+- **L1, the threshold.** The learner lowers a kind for a member when
+  `feed_decide._habits` gives the kind a `not_useful` count of 3 or more. The
+  count is by `not_useful_at`, on the main kind, inside 30 days (§7.2 P2).
+  One constant, `LOWER_AFTER = 3`, holds the count until LOOP-7 adds the
+  `lower_after` field of §6.2. The class has no floor of 5 shown cards. Three
+  "Not useful" are three acts of the member, not silence. In this slice, the
+  class comes back when the next day value finds a count under 3.
+- **L2, one step down.** The step moves the class of a lowered kind one place
+  down in `classes.RANK`. So `interrupt` becomes `brief`, and `brief` becomes
+  `none`. The step applies to each kind of the card before `reach_class`
+  takes the strongest of the main and the folded kinds. So a folded mention
+  that is not lowered still interrupts.
+- **L3, what never moves.** The learner never lowers `notify_me` or the three
+  reminder kinds of `classes.NOT_ON_WHATSAPP`. So `push_channel.py`, which
+  reads `REACH_CLASS` for the reminders, does not change. A needs kind
+  (`feed_decide.NEEDS_KINDS`) goes no lower than `brief`. **PROPOSED for the
+  owner:** `needs_reply`, `approval`, a `notification` that assigns or
+  mentions, `agent_asks`, `agent_questions` and `decision` may drop to
+  `brief`. The step only removes a message, and the card stays in the feed
+  and in the brief. This default holds until the owner answers.
+- **L4, both branches.** The step binds both branches of
+  `plan.interrupt_candidates`. With rules off, a card interrupts only when
+  its lowered class is `interrupt` or `urgent`. With `BRIEF_EXCEPTIONS` on, a
+  card that `exceptions.admit` lets in still waits for the brief when the
+  step takes it out of `interrupt` and `urgent`. An explicit request passes,
+  because L3 never lowers `notify_me`. A `block_soon` kind on a card with
+  `facts.notify_me` keeps its class in both branches, because the member
+  asked for that alert with `block_notify`. The member's own setting wins
+  over the learner.
+- **L5, the pair does not move.** `pair`, `reach_print` and `line` read
+  `reach_kind`, and `reach_kind` takes no lowered set. So the pair of a card
+  stays the same when the set changes, and one reason interrupts once.
+- **L6, one read, kept for the day.** The set comes from the same `_habits`
+  result as the affinity. `_learn` reads `_habits` only when it computes the
+  day value (P6). So `_learn` keeps the set beside the day value, under
+  `tenant_redis.key("my_day", "lowered", <member>, <feed day>)`, with the TTL
+  of P6. A read that finds the affinity and no set computes both again.
+  `Learned.lowered` and `Applied.lowered` carry the set to
+  `loop.Snapshot.lowered`, whose default is `frozenset()`. The set goes on no
+  card, so the feed answer keeps its bytes and the read cache does not
+  change.
+- **L7, a fault fails open.** A learned fault gives the empty set, so each
+  kind keeps the class of the table, as with the flag off. Fail open is the
+  choice, because a held interrupt can hide real work, and an extra one stays
+  inside the budget of `proactive_reach.md` §6. A failed prefs read drops the
+  mutes in the same way (P5).
+- **L8, the brief does not change.** `plan.brief_items` and
+  `brief/gather.py` read the group of a card, not its class. So a step from
+  `brief` to `none` has no effect in this slice, and a lowered card stays in
+  the brief.
+- **L9, not in this slice.** LOOP-5 does not bring the class back after an act
+  (bullet 2). A later slice, LOOP-5b, does that, and it has no row yet.
+  LOOP-5 builds no undo from "Why am I seeing this", which waits for LOOP-4b.
+  It builds no exploration (§7.5), no `not_here` button (RE-6), no list in
+  Settings → Notifications (RE-7) and no change to the brief (L8). LOOP-5
+  writes no log row for a lowered card, because the CHECK
+  `reach_signal_log_outcome_known` (migrations 266 and 271) takes no new
+  outcome without a migration. RE-6 later adds its `not_here` count to the
+  same set (`proactive_reach.md` §10.3).
+- **L10, the flag.** `MY_DAY_LEARN_ORGS` gates LOOP-5, and LOOP-5 adds no
+  flag. With the flag off, `state.learned` gives no set, so reach plans as
+  before. The entry of the flag in `work_plan.md` §6 already gives LOOP-5 the
+  rest of the effect on reach. The flip is the `enforcement-flip` act, after
+  the owner approves the preview (D218). If the flag is on for an org in
+  production when LOOP-5 merges, LOOP-5 is not dark, and its merge waits for
+  the owner's approval.
 
 ### 7.4 The cold start
 
@@ -762,11 +1029,21 @@ The demo tasks do not exist yet. LOOP-0 makes them with the title
 |---|---|---|
 | **0** | Nothing new. The board and the docs tell the truth | LOOP-0, LOOP-1 |
 | **1. See it work** | The owner opens My Day and reads today's brief, beside the card of agent questions | LOOP-2, LOOP-3 |
-| **2. It learns from me** | The owner marks one kind "Not useful" 3 times. The next morning those cards sit lower, and "Why am I seeing this" says why. That kind waits for the brief and sends no interrupt | LOOP-4, LOOP-5 |
+| **2. It learns from me** | The owner marks one kind "Not useful" 3 times. The next morning those cards sit lower, and "Why am I seeing this" says why. That kind waits for the brief and sends no interrupt | LOOP-4a, LOOP-4b, LOOP-5 |
 | **3. It knows me, and I can see it** | Mira proposes one working pattern on a card. The owner says yes. "How I work" shows it, with its source and its evidence | MM-1, MM-2, PZ-15, MM-5, MM-6, LOOP-6. PZ-45 to PZ-49 if LOOP-Q5 is yes |
 | **4. It catches a contradiction** | An email that contradicts a rule of a project gives one nudge, with the quote of the email and the quote of the rule | HX-0, LOOP-7, ALN-7, ALN-8, ALN-9, LOOP-8, LOOP-9 |
 | **5. Company signals** | An odd week in the CRM totals shows as one card, with its driver as evidence | NUM rows of `number_sense.md`, LOOP-10, LOOP-11 |
 | **6. Connectors join** | A change in a connected system becomes one nudge | CSY-R0, CSY-1, CSY-2, LOOP-12, LOOP-13 |
+
+**The write track (§4.9).** It runs beside rungs 1 to 6, because it reads
+the member's own data first and needs no detector of the background loop.
+
+| Rung | What the owner sees on production | Slices |
+|---|---|---|
+| **W1. It looks before I send** (demo task 3581) | A reply to Mahesh with the NDA shows "You sent 'NDA - Hathilabs' to mahesh@dewin.in on 12 Nov." In chat, the card shows the same line. A nudge on a done task says that the task is done | LOOP-18 to LOOP-22 |
+| **W2. It knows what my team did** (demo task 3582) | The owner's NDA example: the card says that a colleague sent the NDA to Acme on 12 Nov | LOOP-23, LOOP-24. Blocked by LOOP-Q11 |
+| **W3. I pick another act** (demo task 3583) | "Send a follow-up instead" on the card opens a new card with the follow-up | LOOP-25, LOOP-26 |
+| **W4. It adds what I should know** (demo task 3584) | An open deal, an overdue invoice or a project rule shows on the card | LOOP-27 |
 
 **Rung 4 depends on LOOP-Q6.** The checker of `project_alignment.md` reads
 tasks only. If the owner answers no, the demo shows a task edit that
@@ -793,8 +1070,9 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-1** (task 3441) | 0 | Comment the evidence on task 602, and fix items 2 to 4 of §2.3 in their specs | Each named spec | LOOP-0 | Task 602 holds the evidence. Each spec states the fact of `main` | LOW · AGENT-SAFE |
 | **LOOP-2** (task 3442) | 1 | The brief in the app for HathiLabs: `BRIEF_ENABLED`, `BRIEF_ORGS` (the org id), `BRIEF_IN_APP`, and `NEXT_PUBLIC_BRIEF_CARD` in a release. The slice first reads `JOB_QUEUE` and `UNATTENDED_LEDGER` on the box | `core_brief.md` §10 rows 2 and 5 | LOOP-Q4 | `GET /brief/today` answers the owner's run. The `brief_runs` row reads `delivered`. My Day shows the card. The task holds the box, the flags and the log line | STANDARD · AGENT-SAFE after the owner preview, under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-3** (task 3443) | 1 | `CORE_EVENTS_ORGS` for HathiLabs. It gives a week of event evidence before rung 4 adds emit sites | `ai_studio.md` E12 | LOOP-Q4 | One person edit logs one `people.person.updated` event. The reload line is in the task | LOW · AGENT-SAFE under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
-| **LOOP-4** (task 3444) | 2 | MD-9, part 1: `affinity` from the one count read, the `mutes` key on the feed, "Why am I seeing this". Dark behind `MY_DAY_LEARN_ORGS` | `my_day_feed.md` MD-9, §6.6, §7 | None | Three "Not useful" on one kind give the affinity of §7.2. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
-| **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3) | `proactive_reach.md` §4.2, §5.1 | LOOP-4 | A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower. Another member keeps the class. No path raises a class | STANDARD · AGENT-SAFE |
+| **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
+| **LOOP-4b** | 2 | "Why am I seeing this": the card field, the clauses, the menu item and the panel | `my_day_feed.md` MD-9 | LOOP-4a | NOT DISPATCHABLE. The spec must name the field, the template of each clause, when each clause shows, the client files and a done-when | STANDARD · waits for a spec edit |
+| **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |
 | **MM-2**, **PZ-15**, **MM-5** | 3 | Habits (2879), proposals with Undo (309), a habit to a kept habit (2882) | `personalization.md` §12, §19 | MM-1 | Their own rows | Their own tiers · AGENT-SAFE |
 | **MM-6** | 3 | The page "How I work" (2883) | `personalization.md` §19.9 | MM-2, PZ-15 | Its own row | STANDARD · owner preview |
@@ -811,6 +1089,18 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-14** (task 3454) | Later | A prior for each kind across tenants | This spec §7.4 | LOOP-Q7 | Its row | HIGH · OWNER-GATE until LOOP-Q7 |
 | **LOOP-15** (task 3455) | Later | The focus boost in the find ranking ([a3-1]) | This spec. `company_context.md` (CX-1) owns the score | LOOP-6 | The two fences of [a3-1] pass | STANDARD · AGENT-SAFE |
 | **LOOP-16** (task 3456) | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, and the one failure store (D225, TOF-2a task 3416) | Its row | STANDARD · AGENT-SAFE |
+
+| **LOOP-17** (task 3570) | W1 | §4.9 of this spec, and its board tasks | This spec | None | The doc tests of §11.2 pass, and each row has a task | LOW · AGENT-SAFE |
+| **LOOP-18** (task 3571) | W1 | The write check: the intent from the typed arguments, four own-data kinds, a budget of 800 ms, shadow first | This spec §4.9 | None | Each kind passes its positive and negative fixtures. The check stays in its budget | STANDARD, Opus review · AGENT-SAFE |
+| **LOOP-19** (task 3572) | W1 | An index of attachment names, and a recipient filter on the chat mail tools | `email_app_master_plan.md` | None | R8: the member finds their own sent mail by recipient and by file name, and never another member's mail | HIGH (migration) · AGENT-SAFE |
+| **LOOP-20** (task 3573) | W1 | `_agated` starts the check. `request_confirmation` shows its lines in `context`. The tool result holds typed facts only | `chat_failure_modes.md` | LOOP-18 | With `WRITE_CHECK_ORGS` on, the card shows one line. Off, the card is byte-identical | STANDARD · AGENT-SAFE, dark |
+| **LOOP-21** (task 3574) | W1 | The check beside the draft: `notices`, the composer banner, Refine, and the read again at the send | `email_app_master_plan.md` | LOOP-18 | The composer shows one banner line with a link. Visual review | STANDARD UI · owner preview |
+| **LOOP-22** (task 3575) | W1 | Mira says a heads-up in one sentence, from typed facts, and adds no claim | The persona (cal-tasks) | LOOP-20 | The persona goldens. A golden case fails when her sentence states a fact that the typed facts do not hold | LOW · AGENT-SAFE |
+| **LOOP-23** (task 3576) | W2 | The send record: mail to a CRM contact writes one CRM activity, with no body | `crm_conversational.md` | LOOP-Q11 | R8: one activity, no body, nothing for a non-contact or "Do not log" | HIGH (privacy) · OWNER-GATE until LOOP-Q11 |
+| **LOOP-24** (task 3577) | W2 | `write_teammate_contacted` from the send record | This spec §4.9.3 | LOOP-23 | R8: a colleague's send shows, and a member without access sees nothing | STANDARD · AGENT-SAFE |
+| **LOOP-25** (task 3578) | W3 | Typed `facts` and `alternatives` on the card event: the same card kind, with a bigger payload (§3.2 rule 6). Another act opens a new card | `chat_failure_modes.md`, with stu-r3 and lane-ui | LOOP-20 | Its row | STANDARD UI · owner preview |
+| **LOOP-26** (task 3579) | W3 | A finding makes a write that acts at once show its card | `chat_first_surface.md` (D-CF-5) | LOOP-18, LOOP-Q12 | Its row | STANDARD · AGENT-SAFE |
+| **LOOP-27** (task 3580) | W4 | `write_context` from the customer card, and `write_rule_conflict` | `crm_conversational.md` §14, `project_alignment.md` | CRM-SIG-1 (2435), ALN-6 (1380), LOOP-8, LOOP-Q13 | Its row | STANDARD · AGENT-SAFE |
 
 The rows of rungs 4 to 6 and Later say "Its row". The plan after the rung 3
 demo writes each "done when" in full, before its slice starts.
@@ -829,13 +1119,18 @@ Each fence is advisory until its slice builds it.
 
 | Rule | Fence |
 |---|---|
-| A needs card never leaves the feed | `tests/unit/test_feed_rank.py` (rule 2 of §7 there). V |
-| One reader of the card counts | LOOP-4 extends `tests/unit/test_feed_rank.py`. A scan fails on a second query that groups `my_day_card_state` by kind |
+| One reader of the card counts | LOOP-4a extends `tests/unit/test_feed_rank.py`. A scan fails on a second query that groups `my_day_card_state` by kind |
+| A needs card stays in the feed | `tests/unit/test_feed_decide.py` TestRuleTwo, and LOOP-4a adds a mute case to `tests/unit/test_my_day_state.py` |
+| The flag off answers the same bytes | LOOP-4a adds the case to `tests/unit/test_shell_feed.py` |
 | The learner never raises a class | LOOP-5 extends `tests/unit/test_reach_plan.py` |
 | A finding with no evidence or no `visibility_scope` drops. A person is never the subject of a fault | `tests/unit/test_finding_contract.py` (LOOP-7, new) |
 | A recipient outside `visibility_scope` gets nothing | An R8 test of LOOP-7, with the `_DB_GATE` |
 | Only the member reads the model | The privacy fence of PZ-9 and the fences of `personalization.md` §19.10 |
 | No model writes the words of a nudge | PZ-48's planned fence on the send path (`personalization.md` §17.9) |
+| A write check never fires on the current thread, and stays in its budget | `tests/unit/test_write_check.py` (LOOP-18, new) |
+| Mail text from a write check never reaches the model, and a label never holds another sender's text (the `write_thread_moved` case, and a reply whose inherited subject holds an instruction) | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
+| Mira's sentence about a heads-up states no fact beyond the typed facts | A golden case of LOOP-22 in the persona goldens |
+| A colleague's send shows only to a member who can open its record | An R8 test of LOOP-24, `tests/unit/test_write_check_teammate_r8.py` (new) |
 
 ### 11.2 Verification commands
 
@@ -846,10 +1141,27 @@ uv run pytest tests/unit/test_index_completeness.py tests/unit/test_doc_names_re
 node .claude/hooks/ste-lint.mjs project-docs/specs/proactive_loop.md
 ```
 
-Run these for LOOP-4 and LOOP-5:
+Run these for LOOP-4a:
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 1200 uv run pytest tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_shell_feed_r8.py tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py tests/unit/test_my_day_cache.py tests/unit/test_my_day_loop.py -q
+timeout 600 uv run pytest tests/unit/test_flag_reload.py tests/unit/test_flag_doc_sorted.py tests/unit/test_integrations_env_hardening.py tests/unit/test_tenant_redis.py tests/unit/test_db_engine_seam.py -q
+```
+
+Run these for LOOP-5:
 
 ```bash
 uv run pytest tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_reach_plan.py -q
+```
+
+LOOP-5 also runs these, with the dev database up (R8). A run that reports a
+skipped test fails, as `proactive_reach.md` §18 says.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 1200 uv run pytest tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_exceptions.py tests/unit/test_reach_r8.py tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_my_day_cache.py -q
+timeout 600 uv run pytest tests/unit/test_flag_reload.py tests/unit/test_flag_doc_sorted.py tests/unit/test_tenant_redis.py -q
 ```
 
 Each later slice names its own test files in its row.
@@ -870,6 +1182,9 @@ Each later slice names its own test files in its row.
 | **LOOP-Q8** | May a small holdout group get no nudges of one kind, to measure what the nudges add? | **Not before rung 5.** Then 5% of members at most, for `insights` kinds only, never for a needs kind | A holdout hides real work from a real member |
 | **LOOP-Q9** | When KG-11 removes the Mem0 client, does `save_memory` leave with it? | **Yes.** `profile_remember` stays the one write of a fact about the member | D132 item 1 puts what Mira knows about a member in the profile. `personalization.md` §5.5 sends a kept fact there already |
 | **LOOP-Q10** | The poll of a connected server (§4.1.1) follows three rules of this spec. A poll needs the admin's read-only key, and a hint is not enough. Its result is untrusted data. Its signal reaches only the admin who connected the server, for OAuth and for a static key. Agreed? | **Yes** | A poll runs on a schedule with no person to see a card. A wider audience needs a statement by the admin |
+| **LOOP-Q11** | Your NDA example needs a record of a colleague's send. A mailbox is private (D-EM-4, D-EM-17, D-EM-18), and a record that a member cannot open leaves no trace. May mail to a CRM contact write one CRM activity: the sender, the date, the subject and the file names, never the body? | **Yes, with limits.** An org switch, off by default. Only mail to a CRM contact. A "Do not log" toggle on each mail. No backfill. The activity has the visibility of the contact | Without a record outside the mailbox, no check can see a colleague's send. A record with no body tells the team who spoke to the customer and keeps the words private |
+| **LOOP-Q12** | D-CF-5 lets a reversible write on the member's own work act at once with Undo. May a heads-up make such a write show its card? | **Yes.** Only when the check finds a fact. With no finding, the write acts at once | A heads-up that shows after the act is too late. The card shows only in the rare case |
+| **LOOP-Q13** | Rungs W1 to W3 match topics by rules in code and cost nothing. May rung W4 add a model match, such as "NDA" and "non-disclosure agreement", at about 0.029 credits for each write that the rules do not settle? | **Later.** Decide after a week of shadow data from rung W1 | The shadow data shows how often the rules miss |
 
 ---
 
