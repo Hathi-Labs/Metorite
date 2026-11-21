@@ -629,6 +629,54 @@ The runner never sets `TOOL_PACKS`, `TOOL_PACKS_ORGS` or
 The report in `docs/` for OA-8e also needs a run of the `general` and `miss`
 sets and a run with no packs. Those are not in this phase.
 
+## CSY-3: the connected-systems chats (scripted only)
+
+**Status.** Built on 2026-11-16. The owning spec is
+`project-docs/specs/chat_connected_systems.md`, §8.2, row CSY-3. The set is
+`mcp`, in `scenarios_mcp.py`. It has NO live arm. A live run costs money, and
+the owner has not opened one.
+
+The four chats ask where a question goes when an MCP server is attached:
+
+| Chat | The question | What the plan does |
+|---|---|---|
+| `csy_only_server` | Only the server holds the fact | It calls the server. |
+| `csy_metorite` | Metorite holds the answer | It reads Metorite and leaves the server out. |
+| `csy_miss` | Metorite finds nothing, and the server covers it | It tries Metorite, then the server. |
+| `csy_mail` | A mail question | The email pack wins, and the server stays out (OA-7b). |
+
+**The fake edge.** `mcp_fixture.py` fakes the server and nothing else. A real
+MCP server answers on `127.0.0.1` in a thread, with one read-only tool. The
+registry read, the grant and the URL check are stand-ins. The real code does
+the rest: `_inject_mcp_servers`, `attach_mcp_tools`, `RunScopedMCPTool` and
+`McpPermissionGate`. The harness guard still refuses every other send.
+
+**The checks.** `mcp_called`, `mcp_not_called`, `mcp_offered`,
+`server_after_metorite`, `no_mail_pack_with_mcp` and `mail_without_server`.
+`mcp_called` also needs the server's own log to show the query.
+
+**What the scripted run proves today.** The server attaches by the real path
+and the model sees its tool. A call reaches the server and the result comes
+back. A mail chat holds no server beside the email pack. Each check fails on a
+broken plan.
+
+**What it does not prove.** It does not prove the model's choice. The plans
+are known-good. Demo 3396, or a small live arm with the owner's OK, proves the
+choice.
+
+**What CSY-1 will tighten.** CSY-1 (task 3400) adds the block of §3.2 to the
+context. Then two assertions change. In `csy_only_server` and `csy_miss`, a
+new check must read the block in the request, because the tool name alone is
+not enough. In `csy_miss`, the block carries the rule "ask the server on a
+miss". The scripted plan cannot prove that the model obeys it.
+
+Run it with `uv run python -m evals.one_assistant_measure.run --scripted
+--scenarios csy_only_server,csy_metorite,csy_miss,csy_mail`.
+`--live --scenarios csy_mail` stops with `NO-GO` before the Router or its key
+is read. A live run of all chats leaves the set out.
+
+The fence is `tests/unit/test_one_assistant_measure_mcp.py`.
+
 ## The fence
 
 `tests/unit/test_one_assistant_measure_oa8e.py` is the fence of OA-8e (R7). It
