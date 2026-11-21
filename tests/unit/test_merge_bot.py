@@ -481,6 +481,15 @@ def test_a_premerge_failure_goes_back_with_its_output(env):
     assert "pr merge" not in env.calls and env.log.count("\n") == 1
 
 
+def test_a_release_freeze_is_a_wait_and_never_a_back(env):
+    """premerge.sh exits 75 inside a freeze window (task 3415). A wait, not a BACK to the lane."""
+    env.pr(5)
+    env.premerge("75")
+    env.run()
+    assert "BACK" not in env.log, env.log
+    assert "pr merge" not in env.calls
+
+
 def test_main_moving_during_premerge_runs_premerge_again(env):
     env.pr(5)
     env.premerge("0", move_main_once=True)
@@ -618,7 +627,9 @@ def test_p1_1_the_real_premerge_gates_a_branch_one_commit_behind(env):
     env.pr(5)
     env.commit("other.txt", "y\n", "main moved")
     git(env.seed, "push", "-q", "origin", "main")
-    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}")
+    # The REAL premerge.sh reads the clock for the release freeze (task 3415). 10:00 UTC is
+    # outside every window, so this case does not depend on the hour that it runs.
+    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}", PREMERGE_NOW="1794823200")
     assert "detached" not in env.log
     assert env.log == "DONE 5 abc123\n"
 

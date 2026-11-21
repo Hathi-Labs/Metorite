@@ -484,7 +484,12 @@ gate() {
     git checkout -q -B "$branch" "$sha" 2>/dev/null || { echo "premerge: checkout of ${sha:0:9} failed"; return 1; }
     main_before="$(git rev-parse origin/main)"
     # 9>&-: premerge and its children do not hold the lock of this pass.
-    if ! out="$(bash -c "$PREMERGE_CMD" 9>&- 2>&1)"; then
+    out="$(bash -c "$PREMERGE_CMD" 9>&- 2>&1)"; prc=$?
+    if [ "$prc" = 75 ]; then
+      # The release freeze (task 3415): a wait, never a BACK. The next pass tries again.
+      echo "release freeze: premerge waits for the release run"; return 2
+    fi
+    if [ "$prc" != 0 ]; then
       tail_="$(tail -n 3 <<< "$out" | one_line)"
       echo "premerge: ${tail_:-exit 1}"; return 1
     fi
