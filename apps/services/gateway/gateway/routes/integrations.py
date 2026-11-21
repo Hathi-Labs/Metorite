@@ -2103,6 +2103,40 @@ async def list_mcp_servers(
         _log.warning("mcp.list_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP servers could not be read.") from exc
 
+@router.get(
+    "/mcp/{name}/use", summary="The chat use of one MCP server in the last 7 days",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def read_mcp_use(
+    name: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """CSY-8 (task 3408, spec ``chat_connected_systems.md`` §3.7): the use panel's counts.
+
+    The chat calls of each of the last 7 days (today and the 6 before, zero-filled),
+    the turns that left the server out by reason, and the last call. The org comes
+    from the session, and the server must be a server of that org, or it is 404
+    (never a count of another org). A Redis fault answers zeros with
+    ``available: false``. It returns names and counts only.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    try:
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        found = any(s.name == name for s in await mcp_registry.list_servers(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.use_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be read.") from exc
+    if not found:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    from acb_common import mcp_use  # noqa: PLC0415
+    from acb_skills import server_brief  # noqa: PLC0415
+
+    return await mcp_use.read_use(org, name, server_brief.REASONS)
+
+
 #: D85: an MCP server over stdio starts a process on the host.
 _MCP_STDIO_REFUSED = (
     "Metorite does not run MCP servers over stdio. Use an http-sse server."

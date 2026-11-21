@@ -24,7 +24,18 @@ from typing import Any
 
 from acb_common.paging import paged
 
-from acb_skills.crm_tools import CRM_QUESTION_TOOLS, CRM_RULE_TOOLS, _get, _read_tool
+from acb_skills.crm_tools import (
+    CRM_QUESTION_TOOLS,
+    CRM_RULE_TOOLS,
+    _aggregate_text,
+    _budgeted,
+    _GatewayError,
+    _get,
+    _member_words,
+    _post,
+    _read_tool,
+    _run_reads,
+)
 
 #: The route of the seam.
 ORG_FACTS_PATH = "/org/facts"
@@ -107,6 +118,127 @@ def _line(row: dict[str, Any]) -> str:
     return f"- {row.get('meaning')} ({row.get('subject')}; set by {by})"
 
 
+# ── Verified questions (WS-SEM SEM-8, ``semantic_model.md`` §5 step 5) ──────
+#
+# No new tool and no new argument: the schema of ``org_facts`` stays byte for
+# byte. The gateway serves a ``query:`` fact only to an org on
+# ``SEMANTIC_MODEL_ORGS``. Only then does ``org_facts`` add the matches of the
+# member's own words, and the line that names the run form
+# ``query="run:<key> <name>=<value>; ..."``. The run lowers the question on the
+# gateway, then reads ``GET /crm/aggregate`` as the member, so the member's own
+# visibility holds. It spends one aggregate read of the run's budget.
+
+#: The prefix of the run form of ``query``.
+RUN_PREFIX = "run:"
+#: The subject prefix of a verified question fact.
+QUERY_SUBJECT = "query:"
+#: The code of the gateway for an org off ``SEMANTIC_MODEL_ORGS``.
+SEMANTIC_OFF = "semantic_off"
+#: The line that names the run form.
+RUN_LINE = (
+    'To answer with one, call org_facts(query="run:<key> <name>=<value>; <name>=<value>"). '
+    "Its total is a verified answer: say so."
+)
+#: The mark of an answer from a verified question (§5.2).
+VERIFIED_MARK = "Verified question"
+#: The shape of a key of a verified question (``catalogue._SLUG``). Any
+#: other text never reaches a URL.
+_RUN_KEY = re.compile(r"[a-z][a-z0-9_]{0,39}")
+#: The most characters of the member's words that a match reads. It is the
+#: cap of ``MatchIn.q`` on the gateway, so a long message never gets a 422.
+MATCH_WORDS_MAX = 2000
+
+
+def _note_verified(rows: list[Any]) -> bool:
+    """Mark the run when *rows* hold a verified question fact.
+
+    The mark lives on the holder of the run (``RunReads.verified``), which
+    a run makes new and keeps across its tool calls. So a mark never leaks
+    into another run. Only an org on ``SEMANTIC_MODEL_ORGS`` gets such a
+    fact. A run with no holder (a batch run) keeps no mark."""
+    seen = any(isinstance(r, dict) and str(r.get("subject") or "").startswith(QUERY_SUBJECT)
+               for r in rows)
+    if seen:
+        reads = _run_reads()
+        if reads is not None:
+            # The holder of the run lives across its tool calls.
+            reads.verified = True
+    return seen
+
+
+def _verified_on() -> bool:
+    """True when a facts read of this run served a verified question. A
+    run with no holder gets False, so its run form makes the facts read of
+    before: the same calls, the same budget and the same text."""
+    reads = _run_reads()
+    return bool(reads is not None and reads.verified)
+
+
+def parse_run(text_: str) -> tuple[str, dict[str, str]]:
+    """The key and the values of the run form ``<key> <name>=<value>; ...``.
+    A value may hold spaces and commas. ``;`` ends it."""
+    key, _sep, rest = text_.strip().partition(" ")
+    values: dict[str, str] = {}
+    for part in rest.split(";"):
+        name, eq, value = part.partition("=")
+        if eq and name.strip():
+            values[name.strip()] = value.strip()
+    return key.strip(), values
+
+
+async def verified_lines() -> list[str]:
+    """The verified questions that match the member's own words of this
+    run, with the parameters to give, then :data:`RUN_LINE`. The words go
+    in a POST body, never in a URL. Empty with no words or no match."""
+    words = " ".join(_member_words().split())[:MATCH_WORDS_MAX]
+    if not words:
+        return []
+    try:
+        body = await _post("/crm/verified-queries/match", {"q": words}) or {}
+    except Exception:  # an optional read: the facts still serve without it
+        return []
+    matches = [m for m in body.get("matches") or [] if isinstance(m, dict)]
+    if not matches:
+        return []
+    lines = ["Verified questions that match the member's words (use one first):"]
+    for m in matches:
+        params = ", ".join(f"{p.get('name')} ({p.get('kind')})" for p in m.get("params") or [])
+        lines.append(f'- "{m.get("question")}": key {m.get("key")}'
+                     + (f", give {params}" if params else ""))
+    lines.append(RUN_LINE)
+    return lines
+
+
+async def _verified_total(key: str, values: dict[str, str]) -> str:
+    """The total of the verified question *key*, as the member: the gateway
+    lowers it, and ``crm_aggregate``'s own read answers it."""
+    params = {f"param.{name}": value for name, value in values.items()}
+    lowered = await _get(f"/crm/verified-queries/{key}", params) or {}
+    aggregate = {str(k): str(v) for k, v in (lowered.get("aggregate") or {}).items()}
+    slug = str(lowered.get("entity") or aggregate.get("entity") or "")
+    head = (f'{VERIFIED_MARK} (model version {lowered.get("model_version")}): '
+            f'"{lowered.get("question")}".')
+    return f"{head}\n{await _aggregate_text(slug, aggregate, 1)}"
+
+
+async def verified_run(text_: str) -> str | None:
+    """The answer of the run form, or ``None`` for an org off
+    ``SEMANTIC_MODEL_ORGS``: the caller then reads the facts as before."""
+    if not _verified_on():
+        # No facts read of this run served a verified question: the facts
+        # read of before answers, with no other call and no read spent.
+        return None
+    key, values = parse_run(text_)
+    if not _RUN_KEY.fullmatch(key):
+        return "No verified question has this key. Read the keys with org_facts."
+    try:
+        return await _budgeted("crm_aggregate", _verified_total)(key, values)
+    except _GatewayError as exc:
+        if exc.code == SEMANTIC_OFF:
+            return None
+        raise
+
+
 @_read_tool
 async def org_facts(app: str = "crm", query: str | None = None, offset: int = 0) -> str:
     """The fixed facts of the organization's data: what each CRM module is
@@ -114,6 +246,11 @@ async def org_facts(app: str = "crm", query: str | None = None, offset: int = 0)
     approved stage, and what revenue means. A CRM admin answered each fact,
     or Metorite and Jev found it, so use it as given. app is 'crm'. query
     narrows the facts by a word of the subject or the meaning."""
+    asked = (query or "").strip()
+    if asked.lower().startswith(RUN_PREFIX):
+        answer = await verified_run(asked[len(RUN_PREFIX):])
+        if answer is not None:
+            return answer
     params = {"app": (app or "").strip() or None, "q": (query or "").strip() or None}
     body = await _get(ORG_FACTS_PATH, params)
     rows = [r for r in (body.get("facts") if isinstance(body, dict) else None) or []
@@ -126,6 +263,9 @@ async def org_facts(app: str = "crm", query: str | None = None, offset: int = 0)
     lines.extend(_line(r) for r in page.items)
     if page.line:
         lines.append(page.line)
+    if _note_verified(rows):
+        # SEM-8: only an org on SEMANTIC_MODEL_ORGS has a verified question.
+        lines.extend(await verified_lines())
     return "\n".join(lines)
 
 
@@ -140,11 +280,18 @@ def crm_facts_block(rows: list[Any]) -> str:
     modules, the meaning of revenue and the stages, in the order of the
     gateway, at most :data:`BLOCK_LINES` lines in all. When more facts are
     there, the last line names how many, and ``org_facts`` reads them, so no
-    fact is lost in silence. Empty with no fact."""
+    fact is lost in silence. Empty with no fact.
+
+    SEM-8: when the gateway serves verified questions (an org on
+    ``SEMANTIC_MODEL_ORGS``), one line inside the same cap names their count
+    and sends the model to ``org_facts``. With none, the block is the block
+    of before, byte for byte."""
     kept = [r for r in rows if isinstance(r, dict) and r.get("meaning") and _kept(r)]
+    verified = sum(1 for r in rows if isinstance(r, dict)
+                   and str(r.get("subject") or "").startswith(QUERY_SUBJECT))
     if not kept:
         return ""
-    room = BLOCK_LINES - 2
+    room = BLOCK_LINES - 2 - (1 if verified else 0)
     if len(kept) > room:
         room -= 1  # one line names the rest
     lines = [f"{BLOCK_MARKER} (fixed answers of this organization; use them as given)",
@@ -152,6 +299,9 @@ def crm_facts_block(rows: list[Any]) -> str:
     lines.extend(f"- {r['meaning']}" for i, r in enumerate(kept) if i < room)
     if len(kept) > room:
         lines.append(f"- {len(kept) - room} more facts: call org_facts to read them.")
+    if verified:
+        lines.append(f"- {verified} verified questions: call org_facts, and answer a "
+                     "question that matches one with it first.")
     return "\n".join(lines)
 
 
@@ -163,7 +313,9 @@ async def crm_facts_for_run() -> list[Any]:
     except Exception:  # the block is advice: a run never fails on it
         return []
     rows = body.get("facts") if isinstance(body, dict) else None
-    return [r for r in rows or [] if isinstance(r, dict)]
+    out = [r for r in rows or [] if isinstance(r, dict)]
+    _note_verified(out)
+    return out
 
 
 async def crm_facts_block_for_run() -> str:
@@ -189,9 +341,14 @@ __all__ = [
     "FACTS_GATED_TOOLS",
     "ORG_FACTS_PATH",
     "ORG_FACTS_TOOLS",
+    "RUN_PREFIX",
+    "VERIFIED_MARK",
     "crm_facts_block",
     "crm_facts_block_for_run",
     "crm_facts_for_run",
     "crm_routing_line",
     "org_facts",
+    "parse_run",
+    "verified_lines",
+    "verified_run",
 ]

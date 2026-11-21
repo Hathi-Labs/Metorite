@@ -174,6 +174,28 @@ async def test_read_only_always_comes_with_the_tmp_tmpfs(
     assert len(docker.runs()) == 2
 
 
+async def test_runsc_adds_one_runtime_flag_and_runc_adds_none(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-8 (agent_sandbox.md §4.3). The default keeps the argv of before.
+
+    ``runsc`` reaches docker run as ``--runtime=runsc``, once and before the
+    image. An unknown value refuses, so a typo never runs under a runtime
+    that nobody chose.
+    """
+    argv = await _start(broker, docker, thread="t-runc")
+    assert not any(a.startswith("--runtime") for a in argv)
+    monkeypatch.setattr(env["settings"], "sandbox_runtime", "runsc")
+    argv = await _start(broker, docker, thread="t-runsc")
+    assert argv.count("--runtime=runsc") == 1
+    assert argv.index("--runtime=runsc") < argv.index(PINNED_IMAGE)
+    monkeypatch.setattr(env["settings"], "sandbox_runtime", "kata")
+    with bound_run(ORG, thread="t-kata"), pytest.raises(sb.SandboxRefused, match="runtime"):
+        await broker.acquire()
+    assert len(docker.runs()) == 2
+
+
 # ── rule 6: the uid, the environment and PATH ───────────────────────────────
 
 

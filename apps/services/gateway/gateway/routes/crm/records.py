@@ -34,7 +34,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import name_match
-from fastapi import Depends, HTTPException, Query, Request
+from fastapi import Depends, Header, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -94,6 +94,7 @@ from gateway.routes.crm.pipeline import (
     _require_entry_fields,
     apply_status_transition,
 )
+from gateway.routes.projects.core import require_precondition
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -468,6 +469,7 @@ async def create_record(
 
 async def patch_record(
     entity: Entity, record_id: str, payload: BaseModel, user: UserContext,
+    *, if_match: str | None = None,
 ) -> dict:
     """Update a record. A body that moves ``status_id`` is a status TRANSITION.
 
@@ -475,12 +477,25 @@ async def patch_record(
     than writing the column: the transition's three effects (dwell log, timeline
     activity, re-stamped clock) are the pipeline's semantics and must not depend
     on which endpoint moved the record.
+
+    HRD-10c (``chat_failure_modes.md`` §6): *if_match* is the ``If-Match``
+    header, the ``updated_at`` of the read that the caller showed. The check
+    is ``projects.core.require_precondition``, imported and never copied: a
+    record that changed since that read is 412 ``precondition_failed`` with
+    ``detail.current``, before any write. With a header, the row is read
+    ``FOR UPDATE``, so no other write lands between the check and this write.
+    With no header, the statements are the statements of before.
     """
     values = clean_payload(payload)
     given_custom = values.pop("custom", None)
     validate_source(values)
+    # An endpoint called DIRECTLY gets FastAPI's sentinel, not a string. Only a
+    # string is a header (see `require_precondition`).
+    guarded = isinstance(if_match, str)
     async with _tenant_session() as db:
-        record = await require_row(db, entity.table, record_id, entity.label)
+        record = await require_row(db, entity.table, record_id, entity.label, lock=guarded)
+        if guarded:
+            require_precondition(record, if_match, row_to_dict(record, entity.model))
         await assert_writable(
             db, current_tenant(), entity, values, row=record,
         )
@@ -990,8 +1005,12 @@ async def get_deal(
 async def patch_deal(
     record_id: str, payload: DealIn,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
-    return await patch_record(DEALS, record_id, payload, user)
+    """HRD-10c: the one CRM record route that reads ``If-Match``. With no
+    header it is the PATCH of before. The chat's ``crm_update_record`` sends
+    it for a deal behind ``CHAT_CARD_PRECONDITION_ORGS``."""
+    return await patch_record(DEALS, record_id, payload, user, if_match=if_match)
 
 
 @router.delete("/deals/{record_id}", response_model=DeleteResponse)
