@@ -670,8 +670,8 @@ def test_an_unconfined_answer_is_refused_with_its_own_sentence() -> None:
     assert avatar._stored_image(_ok(), 256).startswith(b"\xff\xd8\xff")
 
 
-def _bomb_png(width: int, height: int) -> bytes:
-    """A real PNG of zeros, 1-bit grey, built one row at a time.
+def _bomb_png(width: int, height: int, *, rgb: bool = False) -> bytes:
+    """A real PNG of zeros, built one row at a time: 1-bit grey, or 8-bit RGB.
 
     The file is tiny, and the image is huge. The test process never holds
     the raw image, and never decodes it: that is the point of the child."""
@@ -679,11 +679,12 @@ def _bomb_png(width: int, height: int) -> bytes:
         return (struct.pack(">I", len(body)) + tag + body
                 + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF))
 
+    depth, colour, row_bytes = (8, 2, width * 3) if rgb else (1, 0, (width + 7) // 8)
     packer = zlib.compressobj(9)
-    row = b"\x00" * (1 + (width + 7) // 8)
+    row = b"\x00" * (1 + row_bytes)
     body = b"".join(packer.compress(row) for _ in range(height)) + packer.flush()
     return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, 0))
             + chunk(b"IDAT", body) + chunk(b"IEND", b""))
 
 
@@ -701,6 +702,19 @@ def test_a_decompression_bomb_is_refused_in_the_child(monkeypatch, width, height
         avatar.normalise(bomb)
     assert "too large" in str(caught.value)
     assert time.monotonic() - began < si.TIMEOUT_S
+    assert seen == []
+
+
+@needs_child
+def test_the_largest_source_under_the_caps_still_decodes(monkeypatch) -> None:
+    """The bounds fit the caps: a 39.6-megapixel RGB source decodes inside the
+    memory bound and the time bound. So the caps, not the memory, refuse a
+    bomb above."""
+    bomb = _bomb_png(6_000, 6_600, rgb=True)
+    assert len(bomb) < avatar.MAX_UPLOAD_BYTES
+    seen = _no_decode_in_parent(monkeypatch)
+    out = decoded(avatar.normalise(bomb))
+    assert (out.width, out.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
     assert seen == []
 
 
