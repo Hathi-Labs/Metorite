@@ -173,3 +173,102 @@ test("at 390 px the strip still covers nothing", async ({ page }) => {
   expect(meets(on.strip!, on.title!)).toBe(false);
   expect(on.metaShown).toBe(false);
 });
+
+// ---- Daily briefs (task 3564): the briefs fold into one closed group at the end. ----
+
+const BRIEF = (id: string, over: Record<string, unknown> = {}) => ({
+  id, agentName: "orchestrator", title: `Your day, ${id}`, messageCount: 2,
+  createdAt: ago(7_200_000), updatedAt: ago(7_200_000),
+  visibility: "private", isOwner: true, participantCount: 1,
+  hasUserMessage: false, isBrief: true, archivedAt: null, ...over,
+});
+
+// The briefs are older than "Short one", so the page opens on a chat outside the group.
+const BRIEF_SESSIONS = [
+  ...SESSIONS,
+  BRIEF("brief-a"),
+  BRIEF("brief-b", { updatedAt: ago(2 * 86_400_000) }),
+  // The member typed this title: the server does not mark it a brief.
+  BRIEF("typed", { title: "Your day, my own plan", isBrief: false, hasUserMessage: true }),
+  { ...SESSIONS[1], id: "s-old", title: "Put away", archivedAt: ago(1000) },
+];
+
+async function openBriefs(page: Page, width = 1440) {
+  await page.setViewportSize({ width, height: 900 });
+  await page.route("**/api/auth/me", (r) =>
+    r.fulfill({
+      json: {
+        email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+        organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+        roles: ["owner"], legacy_role: "executive", features: ["chat", "artifacts"],
+        features_denied: [], agents: ["orchestrator"], permissions: ["*"],
+        capabilities: [], denied: [], is_admin: true,
+      },
+    }),
+  );
+  await page.route("**/api/chat/active-sessions", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/chat/sessions", (r) => r.fulfill({ json: BRIEF_SESSIONS }));
+  await page.route("**/api/chat/sessions/**", (r) => r.fulfill({ json: [] }));
+  await page.goto("/artifacts");
+  await expect(page.locator('[data-session-row="s-long"]')).toBeVisible({ timeout: 60_000 });
+}
+
+test("the daily briefs fold into one closed group at the end, with the count", async ({ page }) => {
+  await openBriefs(page);
+  const group = page.locator('[data-chat-group="Daily briefs"]');
+  await expect(group).toBeVisible();
+  const toggle = group.getByRole("button", { name: /Daily briefs/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toContainText("2");
+  await expect(page.locator('[data-session-row="brief-a"]')).toHaveCount(0);
+  // The group sits below the last day group and above Archived.
+  const y = async (sel: string) => (await page.locator(sel).first().boundingBox())!.y;
+  expect(await y('[data-chat-group="Daily briefs"]')).toBeGreaterThan(await y('[data-chat-group="Today"]'));
+  const archived = page.getByRole("button", { name: /Archived chats/ });
+  expect((await archived.boundingBox())!.y).toBeGreaterThan((await toggle.boundingBox())!.y);
+  // The member's own 'Your day' chat is not folded.
+  await expect(page.locator('[data-session-row="typed"]')).toBeVisible();
+  // A click opens it, and a second click closes it.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-session-row="brief-a"]')).toBeVisible();
+  await expect(page.locator('[data-session-row="brief-b"]')).toBeVisible();
+  await toggle.click();
+  await expect(page.locator('[data-session-row="brief-a"]')).toHaveCount(0);
+});
+
+test("a search shows a matching brief in the one list", async ({ page }) => {
+  await openBriefs(page);
+  await page.getByLabel("Search chats").fill("brief-b");
+  await expect(page.locator('[data-session-row="brief-b"]')).toBeVisible();
+  await expect(page.locator('[data-chat-group="Daily briefs"]')).toHaveCount(0);
+});
+
+test("the group opens when the chat on screen is a brief and the list arrives late", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route("**/api/auth/me", (r) =>
+    r.fulfill({
+      json: {
+        email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+        organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+        roles: ["owner"], legacy_role: "executive", features: ["chat", "artifacts"],
+        features_denied: [], agents: ["orchestrator"], permissions: ["*"],
+        capabilities: [], denied: [], is_admin: true,
+      },
+    }),
+  );
+  await page.route("**/api/chat/active-sessions", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/chat/sessions", async (r) => {
+    await new Promise((done) => setTimeout(done, 1500));
+    await r.fulfill({ json: BRIEF_SESSIONS });
+  });
+  await page.route("**/api/chat/sessions/**", (r) => r.fulfill({ json: [] }));
+  await page.goto("/artifacts?session=brief-a");
+  const toggle = page.locator('[data-chat-group="Daily briefs"]').getByRole("button", { name: /Daily briefs/ });
+  await expect(toggle).toBeVisible({ timeout: 60_000 });
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-session-row="brief-a"]')).toBeVisible();
+  // The member closes it: it stays closed for the same chat on screen.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+});

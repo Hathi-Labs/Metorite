@@ -161,6 +161,10 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # lets the key CREATE, so a key that may create an organization here cannot
     # sensibly be refused the list of the ones it created.
     "/registry/orgs": "provision",
+    # AO-2 (2026-11-18) — the vendor alert read of a box, on `serve`. Not an
+    # eighth capability: a box that sends its chat through the Router may ask
+    # whether the Router's vendors can serve.
+    "/registry/providers/health": "serve",
     # 2026-09-23, H-152 — the Router's chat door, on the FIFTH capability.
     #
     # 🔴 **It had to gain an arm, because the alternative was structural

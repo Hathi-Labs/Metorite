@@ -449,6 +449,7 @@ A task is **agent-worked** at time `T` when either of these rows exists, with `c
 For each task with a `pull_request` reference to the merged pull request:
 
 1. **Skip a closed or held task.** Skip when the task is archived, or its status category is `completed`, `cancelled` or `triage`.
+   Also skip a task of the project `TOOL_FAILURE_PROJECT_ID` in the org `TOOL_FAILURE_ORG_ID`, while `TOOL_FAILURE_TASKS` is on. The failure sync job is the one closer of that project (`tool_failure_log.md` §7.5, TOF-2e).
 2. **Skip a task that people run.** Skip when `agent_worked.reason` is None.
 3. **Skip a task that a person took back.** Look at the newest `status_change` row of the task. Skip when all three are true:
    - its `meta.via` is absent, or does not start with `mcp:` and is not `github`. A move through the in-product chat carries `chat:projects-assistant` (`skill_projects/client.py:52`), and it is a person's move.
