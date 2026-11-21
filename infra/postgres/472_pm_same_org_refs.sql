@@ -85,11 +85,14 @@
 --
 -- A BEFORE ROW trigger cannot see a row that the same statement inserts
 -- later. The foreign key could, because it checks at the end of the
--- statement. No write path of the app inserts a pm_* row and the row that it
--- names in one statement: the template apply makes parents first, one INSERT
--- each, and each agent-run insert is one VALUES row. A data-only restore that
--- fires triggers must load parents first. A full `pg_restore` makes the
--- triggers after it loads the data.
+-- statement. The write paths read for this file insert one row in each
+-- statement, and the row that a key names exists first. The task create
+-- (`tasks.py`), the template apply, the file importer (`import_writer.py`)
+-- and the recurrence spawn use `core.insert_row`, parents first. The
+-- agent-run writes are one VALUES row each. The strand sweep is an INSERT ...
+-- SELECT that reads runs that exist. A data-only restore that fires triggers
+-- must load parents first. A full `pg_restore` makes the triggers after it
+-- loads the data.
 --
 -- `pm_agent_guidance` and `pm_agent_policies` refuse each UPDATE of a saved
 -- row with their own guard (340, 343 and 404). Their attachment here checks
