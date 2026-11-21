@@ -1102,19 +1102,34 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
 
 
 def test_the_caller_id_wins_and_the_run_route_uses_the_helper() -> None:
-    """The source half of the test above. The route mints the fold id once,
-    through ``fold_message_id``, and the ``run_id`` shape is gone."""
+    """The source half of the test above. The route mints each fold id
+    through ``fold_message_id``, the caller's id wins for the main fold, and
+    the ``run_id`` shape is gone.
+
+    RESUME-2b (``chat_run_continuity.md`` §4.12.4, case A) adds ONE more
+    call: the fallback row of a same-reply run, which is server-only (no
+    caller id), named ``_same_reply_fallback``. So the route has exactly two
+    calls, and each one is the call named here. Mutation: mint a fold id
+    with a raw ``uuid4`` or an f-string, or pass the caller's id to the
+    fallback -> red."""
     import inspect
+    import re
 
     from gateway.routes import agent
 
     assert agent.fold_message_id("client-nanoid", "t1") == "client-nanoid"
     route = inspect.getsource(agent.run_agent_stream_endpoint)
-    assert (
-        "_persist_message_id = fold_message_id(req.assistant_message_id, thread_id)"
-        in route
-    )
-    assert route.count("fold_message_id(") == 1
+    flat = " ".join(route.split())
+    main = "_persist_message_id = fold_message_id(req.assistant_message_id, thread_id)"
+    fallback = "_same_reply_fallback = ( fold_message_id(None, thread_id)"
+    assert flat.count(main) == 1, "the caller's id wins for the main fold id"
+    assert flat.count(fallback) == 1, "the one other call: the server-only fallback"
+    assert route.count("fold_message_id(") == 2, "no third mint of a fold id"
+    # The helper is the ONLY mint of a fold id. The one raw uuid of the route
+    # is the run id, and no fold id is an f-string of the thread.
+    assert re.findall(r"uuid\.uuid4\(\)", route) == ["uuid.uuid4()"]
+    assert "run_id = req.run_id or str(uuid.uuid4())" in route
+    assert 'f"assistant-' not in route
     assert 'f"assistant-{thread_id}-{run_id}"' not in inspect.getsource(agent)
 
 

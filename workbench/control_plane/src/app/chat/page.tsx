@@ -40,7 +40,7 @@ import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
-import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTierRouted } from "@/hooks/useTierRouted";
@@ -325,6 +325,7 @@ function SessionList({
   activeId,
   activeRunIds,
   unreadIds,
+  needsInputIds,
   onSelect,
   onNew,
   onDelete,
@@ -335,6 +336,7 @@ function SessionList({
   activeRunIds: Set<string>;
   /** Chats with a reply the member has not read (WS-51 S5). */
   unreadIds: ReadonlySet<string>;
+  needsInputIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -505,7 +507,7 @@ function SessionList({
                       )}
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
-                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
+                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} needsInput={needsInputIds.has(s.id)} />
                           {/* A cut title shows whole in a tip (owner, 2026-10-10). The
                               row stays a two-line card, so only this line gets it. */}
                           <OverflowTip
@@ -590,6 +592,7 @@ function ChatPageInner() {
   const activeRunIds = useActiveSessions();
   // WS-51 S5: a chat whose run ended while the member looked away.
   const unreadIds = useUnreadIds();
+  const needsInputIds = useNeedsInputIds();
 
   // Refs to hold drawer content (defined later in render).
   const conversationsRef = useRef<React.ReactNode>(null);
@@ -1095,6 +1098,7 @@ function ChatPageInner() {
           activeId={activeSessionId}
           activeRunIds={activeRunIds}
           unreadIds={unreadIds}
+          needsInputIds={needsInputIds}
           onSelect={(id) => { handleSelectSession(id); closeDrawer(); }}
           onNew={() => { handleNewSession(); closeDrawer(); }}
           onDelete={handleDeleteSession}
@@ -1225,6 +1229,7 @@ function ChatPageInner() {
               <SessionRunDot
                 running={sessions.some((s) => activeRunIds.has(s.id))}
                 unread={sessions.some((s) => unreadIds.has(s.id))}
+                needsInput={sessions.some((s) => needsInputIds.has(s.id))}
               />
             )
           }
@@ -1245,6 +1250,7 @@ function ChatPageInner() {
               activeId={activeSessionId}
               activeRunIds={activeRunIds}
               unreadIds={unreadIds}
+              needsInputIds={needsInputIds}
               onSelect={handleSelectSession}
               onNew={handleNewSession}
               onDelete={handleDeleteSession}

@@ -45,12 +45,16 @@ from acb_common.db import bind_tenant, release_tenant, tenant_session
 from email_ingestion.providers.base import ProviderDidNotAnswer
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
+    DRAFT_FILES_CHANGED_DETAIL,
     DRAFT_HIDDEN_TEXT_DETAIL,
+    DRAFT_RECIPIENTS_CHANGED_DETAIL,
     DRAFT_TEXT_CHANGED_DETAIL,
     DraftExpect,
     DraftSendRequest,
     _assert_account_owner,
+    _draft_matches,
     _refuse_bad_draft_id,
+    check_draft_files,
     send_draft_endpoint,
 )
 from gateway.routes.email.core import _log, _savepoint, _tenant_session, router
@@ -154,6 +158,8 @@ async def schedule_draft(
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
         if draft is None:
             raise HTTPException(status_code=404, detail="Draft not found")
+        if req.expect.files_digest is not None:
+            await _refuse_changed(db, req.draft_id, req.expect)
         taken = (await db.execute(text(
             "SELECT 1 FROM email_scheduled_sends WHERE draft_id = CAST(:id AS uuid) "
             "AND status IN ('queued', 'sending')"), {"id": req.draft_id})).fetchone()
@@ -168,7 +174,7 @@ async def schedule_draft(
                     "CAST(:exp AS jsonb), :subject) RETURNING id, account_id, "
                     "draft_id, send_at, status, expect, error, subject"
                 ), {"aid": req.account_id, "did": req.draft_id, "owner": owner,
-                    "at": when, "exp": json.dumps(req.expect.model_dump()),
+                    "at": when, "exp": json.dumps(req.expect.stored()),
                     "subject": str(draft.subject or "")[:500]})).fetchone()
         except IntegrityError:
             # Two schedules of one draft at once: the unique index wins.
@@ -177,6 +183,19 @@ async def schedule_draft(
     out = _row(row)
     _log.info("email.send_later_scheduled", schedule_id=out.id)
     return out
+
+
+async def _refuse_changed(db: Any, draft_id: str, expect: DraftExpect) -> None:
+    """409 before the insert when the draft no longer holds the people or the
+    files of the card (HRD-10d-2). Only an ``expect`` with ``files_digest``
+    runs it: the email assistant with ``CHAT_CARD_PRECONDITION_ORGS`` on. The
+    fire of the schedule checks the text too, and it checks all again."""
+    drow = (await db.execute(text(
+        "SELECT to_addresses, cc_addresses, bcc_addresses FROM email_messages "
+        "WHERE id = CAST(:id AS uuid)"), {"id": draft_id})).fetchone()
+    if drow is None or not _draft_matches(drow, expect):
+        raise HTTPException(status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
+    await check_draft_files(db, draft_id, expect)
 
 
 @router.get("/drafts/scheduled", response_model=list[ScheduleRow])
@@ -297,6 +316,10 @@ def _why(exc: BaseException) -> str:
             # §21 fix round 1 (P1-b): the text is sealed too.
             return ("The subject or the text of the draft changed after it was "
                     "scheduled, so it was not sent.")
+        if exc.status_code == 409 and exc.detail == DRAFT_FILES_CHANGED_DETAIL:
+            # HRD-10d-2: only a schedule with ``files_digest`` gives it.
+            return ("The files of the draft changed after it was scheduled, so "
+                    "it was not sent.")
         if exc.status_code == 409:
             return ("The recipients of the draft changed after it was scheduled, "
                     "so it was not sent.")

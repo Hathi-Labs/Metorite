@@ -41,11 +41,16 @@ export type RespondOutcome = "ok" | "drop" | "retry";
  * 200 `{ok, resumed: true, threadId, runId}`). The run is new, with its own
  * reply row at the end of the chat (case B). `messageId` names that row when
  * the server sends it.
+ *
+ * RESUME-3b: `sameReply` is true when the run goes on in the parked reply,
+ * under the parked run's id (case A of RESUME-2b). `messageId` then names the
+ * parked reply. A late decline never takes case A, and its 200 has neither.
  */
 export interface ResumedRun {
   runId: string;
   threadId: string;
   messageId?: string;
+  sameReply?: true;
 }
 
 /** The outcome, plus the message to send instead when the run restarted. */
@@ -161,13 +166,17 @@ export function respondFailureText(status: number | undefined, body = ""): strin
  */
 export function resumedOf(body: string): ResumedRun | null {
   try {
-    const j = JSON.parse(body) as { resumed?: unknown; runId?: unknown; threadId?: unknown; messageId?: unknown };
+    const j = JSON.parse(body) as {
+      resumed?: unknown; runId?: unknown; threadId?: unknown; messageId?: unknown; sameReply?: unknown;
+    };
     if (!j || j.resumed !== true) return null;
     if (typeof j.runId !== "string" || !j.runId || typeof j.threadId !== "string" || !j.threadId) return null;
     return {
       runId: j.runId,
       threadId: j.threadId,
       ...(typeof j.messageId === "string" && j.messageId ? { messageId: j.messageId } : {}),
+      // RESUME-3b: only the JSON `true` counts. Any other value is case B.
+      ...(j.sameReply === true ? { sameReply: true as const } : {}),
     };
   } catch {
     return null;
