@@ -1215,9 +1215,11 @@ class TestTheStudioApprovalSource:
         rows = self._mine(answer)
         assert sorted(r["id"] for r in rows) == [
             "studio-approval:p1:1", "studio-approval:p1:2", "studio-approval:p2:1"]
-        assert {(r["kind"], r["href"], r["act"], r["act_ref"]) for r in rows} == {
-            ("approval", shell.STUDIO_HREF, None, None)}
-        assert shell.STUDIO_HREF == "/studio"
+        assert {(r["id"], r["kind"], r["href"], r["act"], r["act_ref"]) for r in rows} == {
+            (f"studio-approval:{p}:{v}", "approval", f"/studio/approvals?pkg={p}&v={v}", None, None)
+            for p, v in (("p1", 1), ("p1", 2), ("p2", 1))}
+        # J2b-4b: the row opens the approvals screen on its version.
+        assert shell.STUDIO_HREF == "/studio/approvals"
         assert answer["sources"]["studio"] == "ok"
         assert answer["totals"]["studio"] == 3
         assert calls and calls[0][1] is None

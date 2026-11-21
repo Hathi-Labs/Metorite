@@ -1213,11 +1213,12 @@ async def _decisions(user: UserContext) -> Found:
 # The flags and the right are read here, because a bare 404 from the route
 # would read as `failed`. The list is org-wide, so the provider drops each row
 # that the store would refuse the member to approve: the owner's and the
-# publisher's. The row names no manifest. It opens the Studio library
-# (`STUDIO_HREF`). It has no feed signal, so My Day shows no card for it.
+# publisher's. The row names no manifest. It opens the approvals screen of
+# J2b-4b (`STUDIO_HREF`) on its version, with `?pkg=<id>&v=<n>`. It has no feed
+# signal, so My Day shows no card for it.
 # Fence: `tests/unit/test_shell_needs.py`, `test_shell_needs_r8.py`.
 
-STUDIO_HREF = "/studio"
+STUDIO_HREF = "/studio/approvals"
 STUDIO_APPROVAL_RIGHT = "studio:publish"
 
 # WS-STU J2d (TOF-4b, ``ai_studio_rows/J2d.md``): the same source gives one
@@ -1264,7 +1265,7 @@ async def _studio_app_rows(user: UserContext) -> tuple[list[Item], bool]:
             id=f"studio-approval:{row.get('package_id')}:{version}", app="studio",
             kind="approval", title="A share waits for your approval",
             detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
-            href=STUDIO_HREF, at=row.get("requested_at"),
+            href=f"{STUDIO_HREF}?pkg={row.get('package_id')}&v={version}", at=row.get("requested_at"),
         ))
     return out, bool(answer.get("truncated"))
 

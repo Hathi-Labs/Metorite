@@ -6,8 +6,16 @@ Gate: UI, D145 preview first. After J2b-4a
 
 ## What
 
-**A real approvals screen.** A screen where a holder reads the pending manifest and approves or rejects, and the row of J2b-4a opens it (the `href` moves from `/studio`). Not built
+🔨 **BUILT, dark (2026-11-15, task 3377). Owner preview and four captures are left.** **A real approvals screen** at `/studio/approvals`. It is a sub-page of Studio under the `studio` gate. `?pkg=<uuid>&v=<n>` opens one pending version.
+
+The holder reads the app name, the version, who asked and when. A plain summary lists objects and fields, actions, connections and pages. The raw manifest sits in a folded block, as plain text. The block keeps the first 24,000 characters (the cap of the chat tools). It says "This shows the start of the manifest" when it cuts. No manifest text is HTML or markdown.
+
+Approve and Reject ask through `ConfirmDialog`. They call the J2b-1 routes through the `/api/studio` proxy (`lib/studio/approvalsApi.ts`). Neither route takes a body, so a reject has no reason. The owner and the publisher see no button and read one sentence. A member without `studio:publish` reads the sentence of the 403.
+
+The Needs-you row of J2b-4a now opens `/studio/approvals?pkg=<id>&v=<n>`. No migration, no flag, no nav entry. Fences: `approvalsModel.test.ts`, `approvalsApi.test.ts`, `test_shell_needs.py` and `test_shell_needs_r8.py`
 
 ## Done when
 
 A holder opens the row and lands on the pending version
+
+**Notes from the verifier (2026-11-15, no defect):** (1) Fixed: `clip` now also turns bidi overrides and zero-width marks into spaces. (2) The server lets the owner and the publisher REJECT their own pending version (J2b-1 docstring), but the screen hides Reject for them, so an owner cannot withdraw a pending version here. Decide in a follow-up whether to show Reject only. (3) No test covers `page.tsx`. The rule that the owner sees no button is fenced at model level (`standing()`). Add a component test when the repo has a pattern for it.
