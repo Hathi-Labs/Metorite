@@ -17,6 +17,8 @@ route from any other file takes its decision from that app's manifest.
 2. No row names an action that the UI no longer sends.
 3. Each ``COVERED`` tool is a registered tool, and its own source names the
    gateway route of the action, with the same verb. So a false claim fails.
+   Each ``ALSO`` tool passes the same check, on an action that ``COVERED``
+   holds (STU-B2c-2b: one door route, a list tool and three write tools).
 4. Each exemption names a kind of ``EXEMPT_KINDS`` and a real reason.
 5. Each debt row names a wave that holds its app.
 6. The debt of each app equals its ceiling. A new debt fails, and a paid
@@ -31,6 +33,7 @@ from __future__ import annotations
 import functools
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -139,6 +142,33 @@ def false_claims(acts: dict[str, r.Action], tables: dict[str, dict[str, Any]]) -
             bad.append(f"{key}: {tool} does not send {names}")
         if isinstance(value, tuple) and not _bff_names(act, routes[0][1]):
             bad.append(f"{key}: the BFF route of {act.path} does not name {value[1]}")
+    return bad
+
+
+def false_also_claims(
+    acts: dict[str, r.Action], tables: dict[str, dict[str, Any]],
+    also: dict[str, tuple[str, ...]],
+) -> list[str]:
+    """Each ``ALSO`` tool that its own source does not bear out, with the check
+    of :func:`false_claims`. A row needs a ``COVERED`` row of its action."""
+    registered = r.registered_tools()
+    bad: list[str] = []
+    for key, tools in sorted(also.items()):
+        if key not in tables["COVERED"]:
+            bad.append(f"{key}: an ALSO row needs a COVERED row of the same action")
+            continue
+        act = acts.get(key)
+        if act is None:
+            continue  # The stale check names the COVERED row.
+        routes = _gateway_of(act, tables["COVERED"][key])
+        for tool in tools:
+            if tool not in registered:
+                bad.append(f"{key}: {tool} is not a registered chat tool")
+            elif r.tool_routes(tool) is None:
+                bad.append(f"{key}: no file of TOOL_SOURCES defines {tool}")
+            elif not any(r.reaches(tool, verb, path) for verb, path in routes):
+                names = ", ".join(f"{v} {p}" for v, p in routes)
+                bad.append(f"{key}: {tool} does not send {names}")
     return bad
 
 
@@ -357,6 +387,52 @@ def test_a_false_claim_fails() -> None:
     assert len(bad) == 2, bad
 
 
+def test_every_also_tool_sends_the_route_of_its_action() -> None:
+    """STU-B2c-2b: the three record write tools send the door route of the
+    package page, as the list tool of its ``COVERED`` row does."""
+    acts, _ = _read()
+    assert cp.ALSO["POST /api/studio/apps/{}/actions/{}"] == (
+        "studio_record_create", "studio_record_update", "studio_record_delete",
+        "studio_app_read")
+    bad = false_also_claims(acts, _tables(), cp.ALSO)
+    assert not bad, "these ALSO claims are false:\n  " + "\n  ".join(bad)
+
+
+def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
+    """STU-A5c-2 pays the two delete requests of the app page (BETA-1): the
+    preview and the DELETE are ``COVERED`` by ``studio_delete_package``, whose
+    own source sends both gateway routes. The debt of AI Studio went from 3
+    to 1. Mutation: drop the DELETE call from the tool -> red."""
+    acts, _ = _read()
+    pairs = {"GET /api/studio/packages/{}/delete-preview": ("GET",
+                                                           "/studio/packages/{}/delete-preview"),
+             "DELETE /api/studio/packages/{}": ("DELETE", "/studio/packages/{}")}
+    for key, (verb, path) in pairs.items():
+        assert key in acts, key
+        assert cp.COVERED[key] == "studio_delete_package" and key not in cp.DEBT
+        assert r.reaches("studio_delete_package", verb, path), (key, verb, path)
+    # 1 after A5c-2 paid the two delete requests, plus Keep and Restore of PKG-10e-2 (task 2971, paid by P-9).
+    # STU-K1a-ui (task 1203) added the template list and the one-step install (3 to 5). STU-K1d (task 2967) pays both with chat tools (5 to 3).
+    assert cp.DEBT_CEILING["studio"] == 3
+
+
+def test_a_false_also_claim_fails() -> None:
+    """Mutation: a tool that sends another route, a name that is no tool, and
+    a row with no ``COVERED`` row."""
+    acts, _ = _read()
+    also = {
+        "POST /api/studio/apps/{}/actions/{}": ("studio_package_get", "zz_no_such_tool"),
+        "POST /api/zz/nothing": ("studio_record_create",),
+    }
+    bad = false_also_claims(acts, _tables(), also)
+    assert bad == [
+        "POST /api/studio/apps/{}/actions/{}: studio_package_get does not send "
+        "POST /studio/apps/{}/actions/{}",
+        "POST /api/studio/apps/{}/actions/{}: zz_no_such_tool is not a registered chat tool",
+        "POST /api/zz/nothing: an ALSO row needs a COVERED row of the same action",
+    ], bad
+
+
 # ── 4 and 5. Each exemption has a kind, and each debt a wave ────────────────
 
 
@@ -420,3 +496,149 @@ def test_projects_tools_named_by_f3_are_real() -> None:
     assert projects_debt() == len(pm.UI_PLANNED) + sum(
         1 for t in pm.UI_ACTIONS.values() if t in pm.PLANNED and t not in skill_projects.__all__
     )
+
+
+# ── PAR-1: each app has a page, and the chat can open it ────────────────────
+
+def test_every_app_names_its_page_or_none() -> None:
+    from acb_skills.chat_parity import APP_PAGE, APPS
+
+    assert set(APP_PAGE) == set(APPS)
+
+
+def test_a_page_of_an_app_opens_for_an_admin() -> None:
+    """The fence of PAR-1: each app with a page names a page that the chat may open
+    (``in_app_path.refusal`` accepts it for an admin who holds every feature).
+    Mutation: point an app at a path that is not a live pane -> red."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    every = frozenset(p.feature for p in iap.PANES if p.feature)
+    for app, page in APP_PAGE.items():
+        if page is not None:
+            assert iap.refusal(page, every, True) is None, (app, page)
+
+
+def test_an_app_with_no_page_has_no_live_pane() -> None:
+    """``None`` means that the app is not live. An app that goes live must get a page."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    live = {p.href for p in iap.PANES}
+    none = {app for app, page in APP_PAGE.items() if page is None}
+    assert none == {"notes", "memory", "agents"}
+    for app in none:
+        assert f"/{app}" not in live, app
+    for app in set(APP_PAGE) - none:
+        assert APP_PAGE[app] in live, app
+
+
+def test_each_app_with_debt_has_a_page_or_a_reason() -> None:
+    from acb_skills.chat_parity import APP_PAGE, DEBT_CEILING
+
+    for app, count in DEBT_CEILING.items():
+        assert app in APP_PAGE, app
+        if count and APP_PAGE[app] is None:
+            assert app in {"notes", "memory", "agents"}, app
+
+
+# ── PAR-1b: the ratchet names its tasks (task 3100) ─────────────────────────
+#
+# Since P-0 (2026-11-01) eight ceilings of ``DEBT_CEILING`` went UP, and no wave
+# after P-0 had a task on the board, so the debt only grew. Now each wave names
+# its board tasks (``WAVES``), the baseline of P-0 stays in ``P0_CEILING``, and a
+# ceiling above its baseline names the task that pays it in its comment
+# ("Paid by task N", N a task of the wave of that app). Each check below has a
+# test that gives it bad data, so each one can fail (R7).
+
+def waves_without_a_task(waves: dict[str, tuple]) -> list[str]:
+    """The waves that name no board task, or a task that is not a positive number."""
+    bad: list[str] = []
+    for wave, (_name, _apps, tasks) in sorted(waves.items()):
+        if not tasks or not all(isinstance(t, int) and not isinstance(t, bool) and t > 0
+                                for t in tasks):
+            bad.append(f"{wave}: no board task")
+    return bad
+
+
+def raises_without_a_task(
+    ceiling: dict[str, int], baseline: dict[str, int], comments: dict[str, str],
+    waves: dict[str, tuple],
+) -> list[str]:
+    """The apps whose ceiling is above the P-0 baseline and whose comment does not
+    name a task of their wave ("Paid by task N")."""
+    bad: list[str] = []
+    for app, value in sorted(ceiling.items()):
+        if value <= baseline.get(app, 0):
+            continue
+        wave_tasks = {t for _n, apps, tasks in waves.values() if app in apps for t in tasks}
+        named = {int(n) for n in re.findall(r"[Pp]aid by task (\d+)", comments.get(app, ""))}
+        if not named & wave_tasks:
+            bad.append(f"{app}: the ceiling {value} is above its baseline "
+                       f"{baseline.get(app, 0)} and names no task of its wave")
+    return bad
+
+
+def _ceiling_comments() -> dict[str, str]:
+    """The trailing comment of each ``DEBT_CEILING`` line, read from the source."""
+    text = Path(cp.__file__).read_text(encoding="utf-8")
+    block = text[text.index("DEBT_CEILING: dict[str, int] = {"):]
+    block = block[:block.index("\n}\n")]
+    out: dict[str, str] = {}
+    for line in block.splitlines():
+        m = re.match(r'^    "(\w+)": \d+,(?:\s*#\s*(.*))?$', line)
+        if m:
+            out[m.group(1)] = m.group(2) or ""
+    return out
+
+
+def test_each_wave_names_a_board_task() -> None:
+    assert waves_without_a_task(cp.WAVES) == []
+
+
+def test_a_wave_with_no_task_is_found() -> None:
+    bad = {**cp.WAVES, "P-X": ("A wave nobody builds", ("crm",), ()),
+           "P-Y": ("A wave with a bad task", ("crm",), (0,))}
+    assert waves_without_a_task(bad) == ["P-X: no board task", "P-Y: no board task"]
+
+
+def test_the_waves_cover_each_app_with_debt_once() -> None:
+    covered = [app for _n, apps, _t in cp.WAVES.values() for app in apps]
+    assert sorted(covered) == sorted(set(covered))
+    assert set(cp.DEBT_CEILING) - {"projects"} <= set(covered)
+
+
+def test_the_baseline_names_the_same_apps_as_the_ceiling() -> None:
+    assert set(cp.P0_CEILING) == set(cp.DEBT_CEILING)
+
+
+def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
+    assert raises_without_a_task(
+        cp.DEBT_CEILING, cp.P0_CEILING, _ceiling_comments(), cp.WAVES) == []
+
+
+def test_eight_ceilings_went_up_since_p0() -> None:
+    """The count that the owner met on 2026-11-13. A ceiling may go down, and one that
+    goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
+    up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
+    assert up == ["calendar", "chat", "email", "integrations", "knowledge", "settings",
+                  "shell", "studio"]
+
+
+def test_a_raise_with_no_task_in_its_comment_is_found() -> None:
+    ceiling = {**cp.DEBT_CEILING, "crm": cp.P0_CEILING["crm"] + 1}
+    comments = {**_ceiling_comments(), "crm": "added a row, nobody pays it"}
+    assert [m.split(":")[0] for m in
+            raises_without_a_task(ceiling, cp.P0_CEILING, comments, cp.WAVES)] == ["crm"]
+
+
+def test_a_raise_that_names_a_task_of_another_wave_is_found() -> None:
+    comments = {**_ceiling_comments(), "email": "added a row. Paid by task 3112."}  # P-1, not P-2
+    assert [m.split(":")[0] for m in raises_without_a_task(
+        cp.DEBT_CEILING, cp.P0_CEILING, comments, cp.WAVES)] == ["email"]
+
+
+def test_a_ceiling_at_or_below_its_baseline_needs_no_task() -> None:
+    ceiling = {**cp.DEBT_CEILING, "crm": cp.P0_CEILING["crm"], "tasks": 1}
+    comments = {**_ceiling_comments(), "crm": "", "tasks": ""}
+    assert raises_without_a_task(ceiling, cp.P0_CEILING, comments, cp.WAVES) == []

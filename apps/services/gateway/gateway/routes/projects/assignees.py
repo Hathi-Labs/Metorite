@@ -35,8 +35,14 @@ from datetime import date, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
-from gateway.routes.projects.core import router
+from fastapi import Depends, Query
+from gateway.routes.projects.core import (
+    _tenant_session,
+    load_visible_project,
+    resolve_visibility,
+    router,
+)
+from gateway.routes.projects.notifications import project_grant_holders
 from gateway.routes.tasks.core import can_read_hr_fields
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -282,3 +288,77 @@ async def _agent_rows(db: Any, needle: str) -> list[PickerRow]:
         if len(out) >= MAX_AGENTS:
             break
     return out
+
+
+# ── Who a task of a project can go to (MCP-G21) ─────────────────────────────
+
+#: The most members one answer holds. A tenant has far fewer people than this.
+MAX_ASSIGNABLE = 2000
+
+#: The visible, live, non-personal projects of the caller, for the answer that
+#: names no project.
+_ASSIGNABLE_SCOPE_SQL = (
+    "SELECT p.id FROM pm_projects p"
+    " WHERE p.personal_owner IS NULL AND p.archived_at IS NULL"
+    " AND p.organization_id = CAST(:vis_org AS uuid) AND {clause}"
+)
+
+
+class AssignableMember(BaseModel):
+    address: str
+    #: The directory name, or ``None`` when the directory holds none.
+    name: str | None = None
+
+
+class AssignableMembers(BaseModel):
+    rows: list[AssignableMember]
+    total: int
+
+
+@router.get("/assignable-members", response_model=AssignableMembers)
+async def assignable_members(
+    project_id: str | None = Query(None),
+    user: UserContext = Depends(get_current_user),
+) -> AssignableMembers:
+    """The active members that an outside agent may add to a task (MCP-G21).
+
+    The rule is ``tasks._refuse_agent_assignees``: a member opens the task
+    through a GRANT on its project. The predicate is
+    :func:`notifications.project_grant_holders`, the project form of
+    ``grant_holders`` that the assignee guard reads. So this list and the
+    guard cannot drift. A member of another organization is not in the
+    tenant's member list, and a member with no grant is not in the holders.
+
+    With ``project_id`` the project must be visible to the caller, else 404.
+    A personal project takes only its owner (``assert_assignable_here``).
+    With no project, the answer is every member who opens at least one live,
+    shared project that the caller sees. A signed agent sees only its own
+    pin. Only the address and the directory name leave: no role, grant,
+    title or contact fact.
+    """
+    from gateway.routes.people.core import names_of
+
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        organization = vis.organization_id
+        if project_id is not None:
+            project = await load_visible_project(db, vis, project_id)
+            ids = [str(project.id)]
+            owner = (getattr(project, "personal_owner", None) or "").lower() or None
+        else:
+            found = (await db.execute(
+                text(_ASSIGNABLE_SCOPE_SQL.format(clause=vis.project_clause("p.id"))),
+                vis.params,
+            )).fetchall()
+            ids = [str(r.id) for r in found]
+            owner = None
+        holders = await project_grant_holders(db, ids, organization)
+        people = sorted({who for held in holders.values() for who in held})
+        if owner is not None:
+            people = [who for who in people if who == owner]
+        people = people[:MAX_ASSIGNABLE]
+        names = await names_of(db, people)
+    return AssignableMembers(
+        rows=[AssignableMember(address=who, name=names.get(who)) for who in people],
+        total=len(people),
+    )

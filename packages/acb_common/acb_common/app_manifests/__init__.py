@@ -12,6 +12,9 @@ edge, branch 0 of ``acb_auth.deps`` and the gateway call.
   Projects is the one. Its manifest stays in ``skill_projects`` and its
   allowlist stays ``agent_oauth.MCP_ROUTES`` (§19.3). Only its header is
   here, for ``list_apps``.
+* :mod:`acb_common.app_manifests.projects` holds the door table of Projects
+  (MCP-G24, D208). It is in neither tuple, so the door serves none of its
+  ops until a later slice registers it (§19.16).
 
 Each reader reads :data:`APPS` when it runs, so a test can register a test
 manifest with ``monkeypatch.setattr(app_manifests, "APPS", ...)``.

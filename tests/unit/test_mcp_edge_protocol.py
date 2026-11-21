@@ -118,9 +118,16 @@ HTTPX_DEFAULT_HEADERS = {"host", "accept", "accept-encoding", "connection", "use
 NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 
 #: The seven tools of EA-3, in the order of ``tools/list`` (§15.1), then the
-#: two reads of EA-15 (§12.4).
-ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_tasks", "get_task",
-             "get_task_timeline", "search_tasks", "get_task_context", "my_work"]
+#: two reads of EA-15 (§12.4), then ``get_attachment`` of IMG-3.
+ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tags",
+             "list_tasks", "board_stats",
+             "get_plan", "get_task",
+             "get_task_timeline", "search_tasks", "get_task_context", "my_work",
+             "get_attachment",
+             # WS-39 LP-1a: the updates of a project, newest first.
+             "list_project_updates",
+             # WS-39 TPL-1a: the templates of the organization.
+             "list_templates"]
 
 
 def _uuid(n: int) -> str:
@@ -604,11 +611,23 @@ class TestTheOrderOfTheChecks:
         assert armed.store.calls == 0
 
     async def test_a_body_over_one_mib_is_413_before_any_parse(self, armed):
+        """CIV-14b (§9.6 "The body size"): a large body runs the token check
+        first, from the headers only. With a token, a body that is not one
+        upload call is 413, and no gateway request goes out."""
         raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
-        r = await _post(None, token=None, raw=raw)
+        r = await _post(None, raw=raw)
         assert r.status_code == 413
         assert r.json()["id"] is None
+        assert not armed.gateway.requests
+
+    async def test_a_body_over_one_mib_with_no_token_is_401_before_any_read(self, armed):
+        """CIV-14b: a client with no token never makes the edge read or hold
+        a large body. So the answer is the 401 of check 6, and no 413."""
+        raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
+        r = await _post(None, token=None, raw=raw)
+        _assert_error_body(r, 401, -32600)
         assert armed.store.calls == 0
+        assert mcp._LARGE_BODIES == [0]
 
     async def test_a_body_of_exactly_one_mib_is_read(self, armed):
         msg = json.dumps(_rpc("ping")).encode()
@@ -1592,7 +1611,12 @@ class TestGetTask:
 
     async def test_the_task_has_exactly_the_pinned_keys(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
-        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs"}
+        # WS-39 SP-5a: `cycle` is always there, and null while the flag is off.
+        # SP-8a: `epic_contract`, null for a task that is not an epic.
+        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs", "cycle",
+                             "epic_contract"}
+        assert body["cycle"] is None
+        assert body["epic_contract"] is None
         assert tuple(body["task"]) == tools.GET_TASK_KEYS
         assert [tuple(s) for s in body["subtasks"]] == [tools.SUBTASK_KEYS]
         assert [tuple(link) for link in body["links"]] == [tools.LINK_KEYS]
@@ -1606,7 +1630,7 @@ class TestGetTask:
         assert task["assignees"] == ["a@x.test"]
         flat = json.dumps(body)
         for dropped in ("clickup", "lead", "time_spent_mins", "view_position", "merged_",
-                        "source", "link_id", "progress", "blocked_by"):
+                        "source", "progress", "blocked_by"):
             assert dropped not in flat, dropped
 
     async def test_f1_the_task_has_a_url_and_a_short_id_for_the_pull_request(self, armed):
@@ -1644,9 +1668,11 @@ class TestGetTask:
         assert [(c.kind, c.value) for c in body] == [("uuid", form["example_task"])]
 
     async def test_a_link_id_is_the_other_task(self, armed):
+        """``id`` is the OTHER task. SW-16a adds ``link_id``, the link row, which
+        ``remove_task_link`` takes."""
         link = _structured(await _tool("get_task", {"task_id": T_ONE}))["links"][0]
         assert link["id"] == T_OTHER
-        assert _uuid(8888) not in json.dumps(link)
+        assert link["link_id"] == _uuid(8888)
 
     async def test_free_text_and_custom_fields_follow_the_rules(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))

@@ -32,7 +32,7 @@ vi.mock("next/link", () => ({
     createElement("a", { href, ...rest }, children as never),
 }));
 
-import SessionRunDot, { sessionDot } from "@/components/SessionRunDot";
+import SessionRunDot, { SESSION_DOT_LABEL, sessionDot } from "@/components/SessionRunDot";
 import NavBadge from "@/components/NavBadge";
 import { paneBadge } from "@/components/Sidebar";
 import { HIDDEN_MS } from "@/lib/liveRuns";
@@ -689,7 +689,7 @@ describe("the phone's agent pill", () => {
     expect(html).not.toMatch(/(^|[\s"])animate-pulse/);
     expect(html).not.toMatch(/#[0-9a-f]{3,8}\b|\b(bg|text|border)-(red|blue|green|amber|sky|yellow|slate|gray|zinc)-\d/);
     const css = read("app/globals.css");
-    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\) \+ 0\.5rem\);/);
+    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(var\(--phone-bar-h\) \+ 0\.5rem\);/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.agent-pill-progress \{\s*animation:/);
     // The only animation of the line sits inside the motion query.
     expect(css.match(/animation: agent-pill-progress/g)).toHaveLength(1);
@@ -772,6 +772,42 @@ describe("the badge, the panel and the chat lists show a new reply", () => {
     expect(html).toContain('aria-label="New reply"');
     expect(html).toContain("bg-info");
     expect(renderToStaticMarkup(createElement(SessionRunDot, { running: false, unread: false }))).toBe("");
+  });
+
+  it("the row dot: a card that waits wins over a run and an unread reply (task 3600)", () => {
+    expect(sessionDot(true, true, true)).toBe("needs_input");
+    expect(sessionDot(true, false, true)).toBe("needs_input");
+    expect(sessionDot(false, true, true)).toBe("needs_input");
+    expect(sessionDot(false, false, true)).toBe("needs_input");
+    expect(sessionDot(true, true)).toBe("running");
+    expect(SESSION_DOT_LABEL.needs_input).toBe("Needs your answer");
+    const html = renderToStaticMarkup(createElement(SessionRunDot, { running: true, unread: true, needsInput: true }));
+    expect(html).toContain('aria-label="Needs your answer"');
+    expect(html).toContain('title="Needs your answer"');
+    expect(html).toContain('data-session-dot="needs_input"');
+    expect(html).toContain("bg-warning");
+    expect(html).not.toContain("bg-success");
+    expect(html).not.toContain("animate-pulse");
+  });
+
+  it("the chat page and the picker give the dot the waiting chats (task 3600)", () => {
+    const page = read("app/chat/page.tsx");
+    expect(page).toContain("const needsInputIds = useNeedsInputIds();");
+    expect(page).toMatch(/needsInput=\{needsInputIds\.has\(s\.id\)\}/);
+    expect(page.match(/needsInputIds=\{needsInputIds\}/g)).toHaveLength(2);
+    expect(page).toMatch(/needsInput=\{sessions\.some\(\(s\) => needsInputIds\.has\(s\.id\)\)\}/);
+    const picker = read("lib/shell/SessionPicker.tsx");
+    expect(picker).toContain("needsInput={needsInputIds.has(s.id)}");
+    expect(picker).toContain("needsInput={needsInput}");
+  });
+
+  it("useNeedsInputIds keeps one set while the ids hold (task 3600)", () => {
+    const src = read("hooks/useActiveSessions.ts");
+    const body = src.slice(src.indexOf("export function useNeedsInputIds"), src.indexOf("export function localTitle"));
+    expect(body).toContain('r.state === "needs_input"');
+    expect(body).toMatch(/\.sort\(\)\.join\(","\)/);
+    expect(body).toMatch(/\[idsKey\]/);
+    expect(body).toContain(": EMPTY");
   });
 
   it.each([

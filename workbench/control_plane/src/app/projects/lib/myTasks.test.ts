@@ -44,7 +44,6 @@ import {
   MY_TASKS_EMPTY_TEXT,
   MY_TASKS_PAGE,
   STATUS_READ_FAILED,
-  phoneMyTasksTap,
   planMineDrop,
   projectChipText,
   quickAddHome,
@@ -89,8 +88,10 @@ describe("the old ids open My tasks with a chip", () => {
     expect(asChip(" Next ")).toBe("next");
   });
 
-  it("the chips are All, New, Today, Next, Waiting, Someday and Done", () => {
-    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "New", "Today", "Next", "Waiting", "Someday", "Done"]);
+  it("the chips are All, New, Today, Next, Waiting, Someday, Done and Archive", () => {
+    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual([
+      "All", "New", "Today", "Next", "Waiting", "Someday", "Done", "Archive",
+    ]);
   });
 });
 
@@ -163,7 +164,8 @@ describe("each chip is the server's rule", () => {
     expect(mine).toContain('elif effective == "SOMEDAY":');
     expect(mine).toContain('elif effective == "DONE":');
     expect(mine).toMatch(/if completed_at is not None or effective != "NEXT" or not is_mine:/);
-    for (const chip of ids.filter((c) => c !== "all")) expect(mine).toContain(`"${chip}"`);
+    // "archive" is not a fold key: the Archive chip reads its own rows (ARC-1).
+    for (const chip of ids.filter((c) => c !== "all" && c !== "archive")) expect(mine).toContain(`"${chip}"`);
   });
 
   it("the Today chip calls the one Today rule", () => {
@@ -305,14 +307,6 @@ describe("the tabs", () => {
     expect(MY_TASKS_MODES).toEqual(
       VIEW_MODES.filter((m) => m.id !== "timeline").map((m) => ({ id: m.id, icon: m.icon })),
     );
-  });
-});
-
-describe("the phone tab", () => {
-  it("opens My tasks, and on My tasks opens the Projects sheet", () => {
-    expect(phoneMyTasksTap(null)).toBe("open");
-    expect(phoneMyTasksTap("my-inbox")).toBe("open");
-    expect(phoneMyTasksTap("my-tasks")).toBe("sheet");
   });
 });
 
@@ -624,7 +618,6 @@ describe("PJP-13 — the tab My tasks opens on", () => {
     expect(space).toMatch(/onMode=\{\(next\) => onView\(\{ \.\.\.view, mode: next as MyTasksMode \}, true\)\}/);
     const page = code("page.tsx");
     expect(page).toMatch(/mode: tab, attention: false \}\), true\)/);
-    expect(page).toMatch(/mode: "list", attention: false \}\), true\)/);
     expect(page).toMatch(/legacy,\s*\);/);
   });
 

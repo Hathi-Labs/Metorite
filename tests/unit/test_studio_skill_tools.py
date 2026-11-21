@@ -1158,7 +1158,7 @@ async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None
 
 async def test_a_version_with_only_instructions_keeps_the_rest_of_the_body(gw, card) -> None:
     """Mutation: an omitted field is sent empty, or the copy drops a key -> red."""
-    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [1, 2]}
+    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [{"id": "t1", "input": "x", "expect": []}]}
     sid = gw.seed(body=stored)
     out = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.", based_on=await _based_on(sid))
     assert out["ok"], out
@@ -1253,7 +1253,7 @@ def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
     line = "When a read says truncated, do not send that text back."
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text and "Change long instructions in Studio." in text
 
 
@@ -1426,7 +1426,7 @@ def test_the_rules_say_to_send_based_on_from_a_read() -> None:
             "read of the skill.")
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text
 
 

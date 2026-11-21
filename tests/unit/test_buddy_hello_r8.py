@@ -13,15 +13,19 @@ What this proves:
 * the chat is named "Welcome";
 * the stamp is taken first: a second chat (a second tab) answers 204 and gets
   no row, and several calls at the same moment make exactly one row;
+* the database decides the claim, never the clock: calls with the same
+  millisecond still make one row (task 3537);
 * ``GUIDE_ORGS`` off answers 404, writes no row and takes no stamp;
 * another member's chat answers 404 and gets no row;
-* a member with no display name gets "Hi there";
+* a member with no display name gets the greeting alone, "Good morning.";
 * a failed post gives the stamp back, so the next visit tries again.
 
 **The mutation (R7).** Commit first, restore with git after. In
 ``post_buddy_hello`` post before ``_claim_hello`` and drop the ``won`` test:
 ``test_two_tabs_at_once_make_one_row`` goes red. Drop the ``_set_title``
-call: ``test_a_fresh_chat_gets_one_sealed_hello_named_welcome`` goes red.
+call: ``test_a_fresh_chat_gets_one_sealed_hello_named_welcome`` goes red. In
+``me._claim_first_mark`` drop the ``WHERE`` of the claim:
+``test_two_claims_in_one_millisecond_make_one_row`` goes red.
 
 Run::
 
@@ -153,12 +157,22 @@ def _dsn(ns) -> str:
 
 
 def test_the_copy_is_one_constant_with_the_first_name() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
     from gateway.routes.chat_brief import HELLO_COPY, hello_text
 
-    assert hello_text("Priya Shah").startswith("Hi Priya, welcome to Metorite.")
-    assert hello_text("  ").startswith("Hi there, welcome to Metorite.")
-    assert hello_text(None) == hello_text("")
-    assert hello_text("Priya") == HELLO_COPY.format(name="Priya")
+    kol = ZoneInfo("Asia/Kolkata")
+    morning = datetime(2026, 11, 6, 9, 0, tzinfo=kol)
+    late = datetime(2026, 11, 6, 2, 0, tzinfo=kol)
+    assert hello_text("Priya Shah", "Asia/Kolkata", morning).startswith(
+        "Good morning, Priya. Welcome to Metorite.")
+    assert hello_text("  ", "Asia/Kolkata", morning).startswith("Good morning. Welcome to Metorite.")
+    assert hello_text(None, "Asia/Kolkata", morning) == hello_text("", "Asia/Kolkata", morning)
+    assert hello_text("Priya", "Asia/Kolkata", late).startswith("Hello, Priya. Welcome")
+    assert "Good night" not in hello_text("Priya", "Asia/Kolkata", late)
+    assert hello_text("Priya", "Asia/Kolkata", morning) == HELLO_COPY.format(
+        opener="Good morning, Priya.")
     for banned in ("model", "claude", "gpt", "jev", "orchestrator"):
         assert banned not in HELLO_COPY.lower()
 
@@ -182,7 +196,9 @@ async def test_a_fresh_chat_gets_one_sealed_hello_named_welcome(graph_as_app, gu
         [row] = _rows(ns, sid)
         assert (row.role, row.author_kind, row.author_email, row.run_member_email) == (
             "assistant", "agent", "orchestrator", email)
-        assert row.content.startswith("Hi Alice, welcome to Metorite.")
+        assert row.content.startswith(
+            ("Good morning, Alice. Welcome", "Good afternoon, Alice. Welcome",
+             "Good evening, Alice. Welcome", "Hello, Alice. Welcome"))
         assert row.org == org and row.sealed is True
         [event] = row.custom_events
         props = event["value"]["props"]
@@ -192,6 +208,83 @@ async def test_a_fresh_chat_gets_one_sealed_hello_named_welcome(graph_as_app, gu
         assert _title(ns, sid) == "Welcome"
         assert _rows(ns, sid2) == []
         assert _stamp(ns, email) is not None
+    finally:
+        _unseed(ns, email)
+
+
+def _set_zone(ns, email: str, org: str, zone: str) -> None:
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, timezone) "
+            "VALUES (CAST(:o AS uuid), :u, :z) "
+            "ON CONFLICT (organization_id, user_id) DO UPDATE SET timezone = EXCLUDED.timezone"),
+            {"o": org, "u": email, "z": zone})
+
+
+def _clock(monkeypatch) -> None:
+    """06:00 UTC: 11:30 in Kolkata, 19:00 in Auckland."""
+    from datetime import UTC, datetime
+
+    import gateway.routes.chat_brief as cb
+
+    monkeypatch.setattr(cb, "_now", lambda: datetime(2026, 11, 6, 6, 0, tzinfo=UTC))
+
+
+async def test_the_hello_greets_for_the_stored_zone_of_the_member(
+        graph_as_app, guide_on, monkeypatch):
+    """F4: the zone comes from the member's own `user_settings.timezone`. A
+    broken read would fall back to Kolkata and read "Good morning"."""
+    _clock(monkeypatch)
+    ns = graph_as_app
+    org, email = ns.org_a, _address("zed")
+    _seed(ns, email, org, "Zed Auckland")
+    _set_zone(ns, email, org, "Pacific/Auckland")
+    sid = f"bud1-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            got = await _post(_member(email, org), sid)
+        assert _status(got) == 200
+        assert got["preview"].startswith("Good evening, Zed. Welcome to Metorite.")
+    finally:
+        _unseed(ns, email)
+
+
+async def test_a_member_with_no_zone_row_is_greeted_in_the_default_zone(
+        graph_as_app, guide_on, monkeypatch):
+    _clock(monkeypatch)
+    ns = graph_as_app
+    org, email = ns.org_a, _address("kol")
+    _seed(ns, email, org, "Kol Member")
+    sid = f"bud1-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            got = await _post(_member(email, org), sid)
+        assert got["preview"].startswith("Good morning, Kol. Welcome to Metorite.")
+    finally:
+        _unseed(ns, email)
+
+
+async def test_a_failed_zone_read_still_posts_the_hello(
+        graph_as_app, guide_on, monkeypatch):
+    """F4: the zone read raises, and the hello posts with the default zone."""
+    import gateway.routes.chat_brief as cb
+
+    _clock(monkeypatch)
+    monkeypatch.setattr(cb, "_ZONES_SQL", "SELECT broken FROM no_such_table")
+    ns = graph_as_app
+    org, email = ns.org_a, _address("brk")
+    _seed(ns, email, org, "Brk Member")
+    _set_zone(ns, email, org, "Pacific/Auckland")
+    sid = f"bud1-{uuid.uuid4().hex[:12]}"
+    try:
+        _new_session(sid, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            got = await _post(_member(email, org), sid)
+        assert _status(got) == 200 and got["posted"] is True
+        assert got["preview"].startswith("Good morning, Brk. Welcome to Metorite.")
+        assert len(_rows(ns, sid)) == 1
     finally:
         _unseed(ns, email)
 
@@ -209,6 +302,35 @@ async def test_two_tabs_at_once_make_one_row(graph_as_app, guide_on):
             got = await asyncio.gather(*[_post(user, sid) for sid in sids])
         assert sorted(_status(g) for g in got) == [200, 204, 204, 204]
         assert sum(len(_rows(ns, sid)) for sid in sids) == 1
+    finally:
+        _unseed(ns, email)
+
+
+async def test_two_claims_in_one_millisecond_make_one_row(graph_as_app, guide_on, monkeypatch):
+    """Task 3537: the database decides the claim, never the clock. Two claims
+    in the same millisecond carry the same time, and each one read the stored
+    time as its own: two hellos (R8 shard 2, 2026-11-16 05:30). A frozen
+    clock makes that moment certain."""
+    from gateway.routes.admin import me
+
+    frozen = "2026-11-16T05:30:00.000Z"
+    monkeypatch.setattr(me, "_server_stamp", lambda: frozen)
+    ns = graph_as_app
+    org, email = ns.org_a, _address("hal")
+    _seed(ns, email, org, "Hal")
+    sids = [f"bud1-{uuid.uuid4().hex[:12]}" for _ in range(5)]
+    user = _member(email, org)
+    try:
+        for sid in sids:
+            _new_session(sid, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            got = await asyncio.gather(*[_post(user, sid) for sid in sids[:4]])
+            # A later visit in the same millisecond is no winner either.
+            later = await _post(user, sids[4])
+        assert sorted(_status(g) for g in got) == [200, 204, 204, 204]
+        assert _status(later) == 204
+        assert sum(len(_rows(ns, sid)) for sid in sids) == 1
+        assert _stamp(ns, email) == frozen
     finally:
         _unseed(ns, email)
 
@@ -250,7 +372,9 @@ async def test_another_member_s_chat_is_404_and_a_member_with_no_name_is_greeted
             _new_session(own, intruder, org)
             got = await _post(_member(intruder, org), own)
         assert _status(got) == 200
-        assert got["preview"].startswith("Hi there, welcome to Metorite.")
+        assert got["preview"].startswith(
+            ("Good morning. Welcome", "Good afternoon. Welcome",
+             "Good evening. Welcome", "Hello. Welcome"))
     finally:
         _unseed(ns, owner)
         _unseed(ns, intruder)

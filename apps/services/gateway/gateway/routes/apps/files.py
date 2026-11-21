@@ -1,7 +1,9 @@
 """Custom Apps · files — workspace passthrough for the Workshop (edit-gated).
 
-Flat listing + text read/write over an app's workspace, containment-guarded by
-``resolve_app_file`` (traversal, dotfiles, ``.git``, symlink escapes). The
+Flat listing + text read/write over an app's workspace. ``clean_app_rel``
+refuses traversal, dotfiles and ``.git``, and every open goes through
+``acb_skills.safe_open``, which refuses a link at any depth (§7.5 rule B,
+WS-43h review P0: a sandbox container writes the app dir). The
 Workshop's code view and the preview pane's draft fetch ride these; published
 bundles are served from ``app_versions`` instead (see ``publish.py``). Reads
 resolve the workspace through ``durability.ensure_workspace`` (lazy rehydrate
@@ -11,6 +13,7 @@ from ``app_files``) and writes mirror the file back into that store.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +22,7 @@ from typing import Any
 from acb_auth import UserContext
 from acb_common import get_settings
 from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from gateway.routes.apps._common import (
@@ -27,13 +31,15 @@ from gateway.routes.apps._common import (
     WORKSPACE_SKIP_DIRS,
     _log,
     _tenant_session,
+    clean_app_rel,
     get_app_or_404,
+    iter_app_files,
     read_workspace_manifest,
     require_app_author,
     require_app_user,
-    resolve_app_file,
     router,
     t2_vendor_dir,
+    workspace_links,
 )
 from gateway.routes.apps.durability import ensure_workspace, mirror_app_file
 from pydantic import BaseModel
@@ -42,6 +48,19 @@ from pydantic import BaseModel
 # already-vendored dep cache is a few seconds; generous headroom for a
 # loaded box without leaving a runaway process to hang the request forever.
 BUILD_TIMEOUT_SECONDS = 60.0
+
+#: The answer of the host build route while CUSTOM_APPS_HOST_BUILD is off
+#: (task 2464). It names no flag, and it tells the member what to do next.
+HOST_BUILD_OFF_MESSAGE = (
+    "This app builds in its sandbox. Ask the builder to build it, or ask Metorite support."
+)
+
+#: The answer of the host build route while a container on the app dir is over
+#: its quota (task 2464 round 5). The build writes dist/, so it is refused.
+HOST_BUILD_OVER_QUOTA_MESSAGE = (
+    "The app dir is over its quota, so the build did not run. "
+    "Delete files to free space, then build again."
+)
 
 
 class AppFileEntry(BaseModel):
@@ -56,34 +75,40 @@ class AppFileWrite(BaseModel):
 
 
 def _walk_files(workspace: Path) -> list[AppFileEntry]:
-    """Flat file list — skips dot-anything, VCS/build dirs, and directories."""
+    """Flat file list — skips dot-anything, VCS/build dirs, directories and links."""
     entries: list[AppFileEntry] = []
-    if not workspace.is_dir():
+    if not workspace.is_dir() or workspace.is_symlink():
         return entries
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if not d.startswith(".") and d not in WORKSPACE_SKIP_DIRS
-        )
-        rel_dir = Path(dirpath).relative_to(workspace)
-        for fname in sorted(filenames):
-            if fname.startswith("."):
-                continue
-            fpath = Path(dirpath) / fname
-            try:
-                stat = fpath.stat()
-            except OSError:
-                continue
-            entries.append(AppFileEntry(
-                path=str(rel_dir / fname).replace("\\", "/"),
-                size=stat.st_size,
-                modified_at=datetime.fromtimestamp(
-                    stat.st_mtime, tz=UTC,
-                ).isoformat(),
-            ))
-            if len(entries) >= MAX_WORKSPACE_FILES:
-                return entries
+
+    def keep_dir(_parent: tuple[str, ...], d: str) -> bool:
+        return not d.startswith(".") and d not in WORKSPACE_SKIP_DIRS
+
+    for parts in iter_app_files(workspace, keep_dir):
+        if parts[-1].startswith("."):
+            continue
+        rel = "/".join(parts)
+        try:
+            stat = safe_open.stat_file(workspace, rel)
+        except (OSError, ValueError):
+            continue
+        if stat is None:
+            continue
+        entries.append(AppFileEntry(
+            path=rel,
+            size=stat.st_size,
+            modified_at=datetime.fromtimestamp(
+                stat.st_mtime, tz=UTC,
+            ).isoformat(),
+        ))
+        if len(entries) >= MAX_WORKSPACE_FILES:
+            return entries
     return entries
+
+
+def _unsafe(exc: Exception) -> HTTPException:
+    """The answer of a path that the safe opener refused: a link, or no plain file."""
+    _log.warning("apps.file_path_refused", error=str(exc)[:160])
+    return HTTPException(status_code=400, detail="Not a plain file in the app")
 
 
 async def _edit_workspace(slug: str, user: UserContext) -> tuple[Any, Path]:
@@ -113,19 +138,28 @@ async def read_app_file(
     user: UserContext = Depends(require_app_user),
 ) -> PlainTextResponse:
     _row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, path)
-    if not file_path.is_file():
+    rel = clean_app_rel(path)
+    try:
+        stat = safe_open.stat_file(workspace, rel)
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
+    if stat is None:
         raise HTTPException(status_code=404, detail="File not found")
-    size = file_path.stat().st_size
+    size = stat.st_size
     if size > MAX_SOURCE_FILE_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"File too large ({size} bytes). "
                    f"Maximum is {MAX_SOURCE_FILE_BYTES}.",
         )
-    data = await asyncio.get_event_loop().run_in_executor(
-        None, file_path.read_bytes,
-    )
+    try:
+        data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: safe_open.read_bytes(workspace, rel, limit=MAX_SOURCE_FILE_BYTES),
+        )
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
+    if data is None:
+        raise HTTPException(status_code=404, detail="File not found")
     try:
         content = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -149,15 +183,19 @@ async def write_app_file(
                    f"Maximum is {MAX_SOURCE_FILE_BYTES}.",
         )
     row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, body.path)
+    rel = clean_app_rel(body.path)
 
     def _write() -> os.stat_result:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(data)
-        return file_path.stat()
+        safe_open.write_bytes(workspace, rel, data)
+        written = safe_open.stat_file(workspace, rel)
+        if written is None:
+            raise FileNotFoundError(rel)
+        return written
 
-    stat = await asyncio.get_event_loop().run_in_executor(None, _write)
-    rel = str(file_path.relative_to(workspace.resolve())).replace("\\", "/")
+    try:
+        stat = await asyncio.get_event_loop().run_in_executor(None, _write)
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
     # Durability write-through: mirror just this file into app_files
     # (best-effort — a full reconcile rides POST /{slug}/sync and publish).
     await mirror_app_file(str(row.id), rel, body.content)
@@ -184,12 +222,16 @@ async def delete_app_file(
     rides the caller's follow-up ``POST /{slug}/sync``, not this endpoint.
     """
     _row, workspace = await _edit_workspace(slug, user)
-    file_path = resolve_app_file(workspace, path)
-    if not file_path.is_file():
+    rel = clean_app_rel(path)
+    if not safe_open.is_file(workspace, rel):
         raise HTTPException(status_code=404, detail="File not found")
 
-    await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
-    rel = str(file_path.relative_to(workspace.resolve())).replace("\\", "/")
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, safe_open.unlink, workspace, rel,
+        )
+    except (OSError, ValueError) as exc:
+        raise _unsafe(exc) from exc
     _log.info("apps.file_deleted", slug=slug, path=rel)
     return {"path": rel, "deleted": True}
 
@@ -202,15 +244,79 @@ def _is_buildable_manifest(manifest: dict[str, Any] | None) -> bool:
     return entry.startswith("dist/")
 
 
-def _agent_app_builder_dir() -> Path | None:
-    """The on-disk clone of the ``agent-app-builder`` agent, which owns
-    ``build/build_t2.mjs`` — the SAME script the app-builder's own Copilot
-    session invokes mid-chat (agent-app-builder/agents.py's
-    ``__T2_BUILD_SCRIPT__`` substitution). Reuses the loader's own
-    clone-cache resolution so this never drifts from where the agent
-    actually finds it."""
-    from gateway.routes.workspace import _agent_workspace_dir
-    return _agent_workspace_dir("agent-app-builder")
+def _t2_build_script() -> Path | None:
+    """The ``build_t2.mjs`` of the deployed source tree, or ``None`` (task 2464).
+
+    The host route runs the script that ships with the gateway. It is the
+    same source that the sandbox broker copies into a container
+    (``sandbox_broker.app_builder_build_source``), found from code, never
+    from input. It is never the agent clone cache
+    (``{agents_clone_dir}/repos/...``): the clone refreshes only when the
+    agent loads, so a fix to the script did not reach the copy that this
+    route ran.
+    """
+    try:
+        from orchestrator.sandbox_broker import (
+            APP_BUILDER_BUILD_SOURCES,
+            app_builder_build_source,
+        )
+    except ImportError:
+        return None
+    root = app_builder_build_source()
+    if root is None:
+        return None
+    return root / APP_BUILDER_BUILD_SOURCES["build_t2.mjs"]
+
+
+def host_build_refusal(workspace: Path) -> str | None:
+    """Why the HOST may not build this app, or ``None`` (WS-43h review P0).
+
+    ``node build_t2.mjs`` follows links, so a link in the app dir could put a
+    host file in the bundle, or write ``dist/`` into another app's dir. And
+    esbuild follows a relative import out of the app dir, with no link at
+    all: ``import x from "../other-app/src/data.json"``. So a dir that a
+    sandbox container mounts now, or ever mounted, is refused for good (fix
+    round 2, option b). Its source came from a container, and only the
+    sandbox, which sees no other app, builds it. After a flip off of
+    ``app_builder`` such an app has no build path until the flip is back on.
+    Any other dir is refused while it holds a link.
+    """
+    try:
+        from orchestrator.sandbox_broker import is_sandbox_dir
+    except ImportError:
+        is_sandbox_dir = None
+    if is_sandbox_dir is not None and is_sandbox_dir(workspace):
+        return (
+            "The App Workshop builder on MAF edited this app, so it builds only "
+            "in its sandbox. Ask the builder to build it. If the builder is off "
+            "for your organization, an admin must turn it on (app_builder in "
+            "MAF_CODING_SCOPE) before this app can build again."
+        )
+    links = workspace_links(workspace)
+    if links:
+        shown = ", ".join(links[:5])
+        return f"The app holds a link ({shown}). Remove it, then build again."
+    return None
+
+
+async def _stop_build(proc: Any) -> None:
+    """Kill a build that did not finish, and wait for it (task 2464 review P2).
+
+    ``wait_for`` cancels only the wait. Without this, node and esbuild ran on
+    after the route answered, so a slow build could hold the box.
+    """
+    kill = getattr(proc, "kill", None)
+    if kill is None:
+        return
+    try:
+        kill()
+    except ProcessLookupError:
+        return
+    wait = getattr(proc, "wait", None)
+    if wait is not None:
+        # The kill is sent. A late reap is not an error.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(wait(), timeout=5)
 
 
 async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
@@ -230,14 +336,56 @@ async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
             cwd=str(workspace), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+    except Exception as exc:  # missing node, etc.
+        return False, str(exc)
+    try:
         out, err = await asyncio.wait_for(
             proc.communicate(), timeout=BUILD_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # timeout, missing node, etc.
+    except TimeoutError:
+        await _stop_build(proc)
+        return False, (
+            f"The build ran for more than {BUILD_TIMEOUT_SECONDS:.0f} s, so it was "
+            "stopped. Make the app smaller, then build again."
+        )
+    except Exception as exc:
+        await _stop_build(proc)
         return False, str(exc)
     if proc.returncode != 0:
         return False, err.decode(errors="replace")[-2000:]
     return True, out.decode(errors="replace")[-2000:]
+
+
+async def _build_under_dir_lock(workspace: Path, script: Path) -> tuple[bool, str]:
+    """``host_build_refusal`` and the build, under the broker's dir lock.
+
+    Task 2464 review P2. Each real-path check of ``build_t2.mjs`` comes before
+    its read or write. Without the lock, a container that mounted the dir
+    during a slow build could put a link at ``dist/`` between the check and
+    the write. ``delivery_guard`` holds off every container exec on the dir,
+    as ``durability._git_under_dir_lock`` does. With no broker in this
+    process, no container can mount the dir.
+    """
+    try:
+        from orchestrator.sandbox_broker import delivery_guard
+    except ImportError:
+        delivery_guard = None
+    loop = asyncio.get_event_loop()
+
+    async def checked_build() -> tuple[bool, str]:
+        refusal = await loop.run_in_executor(None, host_build_refusal, workspace)
+        if refusal:
+            return False, refusal
+        return await _run_build_t2(workspace, script)
+
+    if delivery_guard is None:
+        return await checked_build()
+    async with delivery_guard(workspace) as over_quota:
+        # A container on the dir is over its quota (§7.1 rule 10). The build
+        # writes dist/, so it is refused, as each delegated write is.
+        if over_quota:
+            return False, HOST_BUILD_OVER_QUOTA_MESSAGE
+        return await checked_build()
 
 
 @router.post("/{slug}/build")
@@ -259,19 +407,18 @@ async def build_app(
     manifest = read_workspace_manifest(workspace)
     if not _is_buildable_manifest(manifest):
         return {"built": False, "reason": "not a build-based (T2) app"}
+    # Task 2464: the host build ships dark. Off, no node process starts.
+    if not getattr(get_settings(), "custom_apps_host_build", False):
+        return {"built": False, "error": HOST_BUILD_OFF_MESSAGE}
 
-    app_builder_dir = await asyncio.get_event_loop().run_in_executor(
-        None, _agent_app_builder_dir,
-    )
-    if app_builder_dir is None:
+    script = await asyncio.get_event_loop().run_in_executor(None, _t2_build_script)
+    if script is None:
         return {
             "built": False,
-            "error": "T2 build tooling unavailable (agent-app-builder not cloned)",
+            "error": "T2 build tooling unavailable (no agent-app-builder build dir in the source)",
         }
-    script = app_builder_dir / "build" / "build_t2.mjs"
-    if not script.is_file():
+    if script.is_symlink() or not script.is_file():
         return {"built": False, "error": f"build script missing: {script}"}
-
-    ok, output = await _run_build_t2(workspace, script)
+    ok, output = await _build_under_dir_lock(workspace, script)
     _log.info("apps.build_triggered", slug=slug, ok=ok)
     return {"built": ok, **({"output": output} if ok else {"error": output})}

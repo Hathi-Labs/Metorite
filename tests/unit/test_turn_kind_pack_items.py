@@ -392,7 +392,8 @@ CRM_NINE = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
 
 
 @pytest.mark.parametrize(("mode", "dropped"), [
-    ("mirror", {"create_lead", "update_deal_status", "convert_lead"}),
+    ("mirror", {"create_lead", "update_deal_status", "convert_lead",
+                "crm_update_record"}),
     ("live", set()),
 ])
 @pytest.mark.usefixtures("store")
@@ -408,6 +409,9 @@ async def test_layer_c_drops_the_mirror_record_writes_through_load_early(
         return mode
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so only the Mirror drop applies.
+    # The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     loader = _loader(_record(), offered=("crm-records",))
     assert loader.set_early(["crm-records"]) == ("crm-records",)
     context = await _before_run(loader, _dummies(10))

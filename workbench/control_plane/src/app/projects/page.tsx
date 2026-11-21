@@ -12,6 +12,8 @@
  * `lib/tree.filterByCenter`'s own test says so).
  */
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useBarTap } from "@/lib/phoneBarTap";
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
 import RailRow from "@/components/ui/RailRow";
@@ -60,6 +62,8 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { AgentsAtWorkView, useAgentsAtWork } from "./components/AgentsAtWork";
+import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
 import { NeedsAttentionList } from "./components/NeedsAttentionList";
 import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
@@ -82,6 +86,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
+import { ViewTabs } from "./components/ViewTabs";
 import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
@@ -92,7 +97,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -148,6 +153,7 @@ import {
   isWaitingOnMe,
   matchesAgentFocus,
 } from "./lib/agentRuns";
+import { epicOptions, filterByEpic } from "./lib/epicFilter";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -248,7 +254,7 @@ import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
 import { useUndoScope } from "@/components/UndoProvider";
 import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
-import { DEFAULT_SHOWN } from "./lib/shownFields";
+import { DEFAULT_SHOWN, sameFieldSet } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
 import type { TableSort } from "./lib/table";
 import {
@@ -275,9 +281,17 @@ import {
   taskWhere,
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
-import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import {
+  ARCHIVED_FOLD_ID,
+  type ArchivedEntry,
+  groupByPath,
+  splitArchived,
+} from "./lib/archivedRoots";
+import { archiveBar } from "./lib/archiveBar";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
+import { QuestionsView } from "./components/QuestionsView";
+import { useQuestionsBadge } from "./components/useQuestionsBadge";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
@@ -418,6 +432,54 @@ function renderState(
 }
 
 /**
+ * The rows of an Archived section, under the path each one came from
+ * (ARC-BUG-1). A filed project leaves its parent, so without the path a
+ * member cannot tell which "Phase 2" this is. Filed siblings share one label.
+ * A filed space has no parent, so it has no label.
+ */
+function ArchivedTree({
+  entries,
+  selectedId,
+  onSelect,
+  actions,
+  rootParentGen,
+}: {
+  entries: readonly ArchivedEntry[];
+  selectedId: string | null;
+  onSelect: (project: ProjectRow) => void;
+  actions?: ProjectMenuHandlers;
+  rootParentGen: (node: ProjectRow) => number;
+}) {
+  return (
+    <>
+      {groupByPath(entries).map((group) => {
+        const where = group.path.join(" › ");
+        return (
+          <div key={group.entries[0].node.id}>
+            {where ? (
+              <p
+                className="truncate px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground"
+                title={`From ${where}`}
+                data-testid="archived-path"
+              >
+                {where}
+              </p>
+            ) : null}
+            <ProjectTree
+              roots={group.entries.map((entry) => entry.node)}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              actions={actions}
+              rootParentGen={rootParentGen}
+            />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/**
  * The project nav — the collapsible rail on desktop, the drawer sheet on a
  * phone. ONE component, so tree-vs-drawer cannot drift into two navigations
  * with two active states; `onPicked` is only how the drawer closes itself.
@@ -443,6 +505,7 @@ function ProjectNav({
   onManageTags,
   onManageLifecycle,
   counts,
+  questionsOn = false,
   personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
@@ -454,6 +517,8 @@ function ProjectNav({
   onApp: (id: ProjectAppId) => void;
   /** WS-64 OP-2 — the count beside each My work entry (`lib/myWork.ts`). */
   counts?: Partial<Record<ProjectAppId, number>>;
+  /** WS-55 EA-18b — Questions shows only while its route answers (flag on). */
+  questionsOn?: boolean;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
@@ -540,7 +605,9 @@ function ProjectNav({
             </p>
           ) : null}
           <div className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
+            {section.items
+              .filter((item) => item.id !== "questions" || questionsOn)
+              .map((item) => {
               const preview = item.launch === "preview";
               const active = !preview && app === item.id;
               return (
@@ -765,8 +832,8 @@ function ProjectNav({
               </button>
               {personalArchivedOpen ? (
                 <div id="projects-personal-archived-list" className="opacity-75">
-                  <ProjectTree
-                    roots={personalSplit.archived.map((entry) => entry.node)}
+                  <ArchivedTree
+                    entries={personalSplit.archived}
                     selectedId={app ? null : selectedId}
                     onSelect={(project) => {
                       onSelect(project);
@@ -879,8 +946,8 @@ function ProjectNav({
           </button>
           {archivedOpen ? (
             <div id="projects-archived-list" className="opacity-75">
-              <ProjectTree
-                roots={split.archived.map((entry) => entry.node)}
+              <ArchivedTree
+                entries={split.archived}
                 selectedId={app ? null : selectedId}
                 onSelect={(project) => {
                   onSelect(project);
@@ -930,7 +997,7 @@ function ProjectsWorkspace() {
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
   const { isMobile, mounted: viewMounted } = useViewMode();
-  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
@@ -1175,9 +1242,14 @@ function ProjectsWorkspace() {
   // OP-11 fix round, item 11: the count on the Needs attention lens of My
   // tasks. The space reads the same cache key for the lens itself.
   const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
+  // WS-55 EA-18b — the Questions entry and its badge (the "mine" count).
+  const questions = useQuestionsBadge();
   const navCounts = useMemo(
-    () => (MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : undefined),
-    [mySummary.data],
+    () => ({
+      ...(MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : {}),
+      ...(questions.count ? { questions: questions.count } : {}),
+    }),
+    [mySummary.data, questions.count],
   );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
@@ -1250,6 +1322,9 @@ function ProjectsWorkspace() {
    * then offers no button.
    */
   const [waitingOnMe, setWaitingOnMe] = useState(false);
+  // SP-2a — the Epic filter. Page state like "Waiting on me": it narrows the
+  // loaded rows in the browser (`lib/epicFilter`).
+  const [epicId, setEpicId] = useState("");
   const [agentRunsOn, setAgentRunsOn] = useState(false);
   /**
    * WS-55 EA-13e (EA3-43, EA3-49) — "Agent work" and the count button of the
@@ -1274,6 +1349,13 @@ function ProjectsWorkspace() {
    * the last answer, and the header badge and the toggle read its total.
    */
   const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  /**
+   * WS-AGA AGA-8 — the "Agents at work" lens. Page state like the lens above.
+   * `agentsRead` is one read of the overview. A dark read (404) draws neither
+   * the toggle nor the section.
+   */
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const agentsRead = useAgentsAtWork();
   const [attention, setAttention] = useState<{
     projectId: string;
     page: AttentionPage;
@@ -1507,25 +1589,33 @@ function ProjectsWorkspace() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
-  // WS-27ag — the phone's bottom bar (AppShell's `isProjectsPage` branch) talks
-  // to this page over the same `cc-mobile-nav` channel Tasks, Notes and the App
-  // Workshop use. Tapping the tab that is already showing closes its sheet.
+  // WS-27ag — the phone's bottom bar (the registry, `lib/shell/phoneBar.ts`)
+  // talks to this page over the same `cc-mobile-nav` channel Tasks, Notes and
+  // the App Workshop use. Tapping the tab that is already showing closes its
+  // sheet. The Projects tab is a place: it shows selected while its sheet
+  // is open (MOB-12).
+  usePhoneBar({ active: sheet === "tree" ? "projects-tree" : null });
+  // A second tap on Search closes it. The bar tap closes the overlay before
+  // the tab's event arrives, so read whether Search was open AT the tap, from
+  // the committed state, and let the event close and not reopen (MOB-9 fix).
+  const searchingRef = useRef(false);
+  useEffect(() => {
+    searchingRef.current = searching;
+  });
+  const searchTapClosed = useRef(false);
+  useBarTap((tab) => {
+    searchTapClosed.current = tab === "projects-search" && searchingRef.current;
+  });
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
-      if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
-      else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
-      else if (tab === "projects-mywork") {
-        // WS-64 OP-11 — the phone's "My tasks" tab opens My tasks on its
-        // List. A second tap there opens the Projects sheet (`ProjectNav`:
-        // My work, Personal, Spaces). The shell's "Menu" keeps the drawer.
-        if (phoneMyTasksTap(appRef.current) === "sheet") {
-          setSheet((s) => (s === "tree" ? null : "tree"));
-        } else {
-          setSheet(null);
-          setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
-        }
+      // MOB-10: each tab closes the page's other overlays first, so two never
+      // stack. The shell has closed its own drawer and the assistant's sheet.
+      if (tab === "projects-tree" || tab === "projects-views") {
+        setSearching(false);
+        useTaskStore.getState().closeQuickCapture();
+        const which = tab === "projects-tree" ? "tree" : "views";
+        setSheet((s) => (s === which ? null : which));
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open
@@ -1533,13 +1623,20 @@ function ProjectsWorkspace() {
         // the host mounts. OP-11: My tasks mounts no capture host, so it
         // opens the inbox too. The smallest change: no second capture host.
         setSheet(null);
+        setSearching(false);
         setApp("my-inbox");
         useTaskStore.getState().openQuickCapture("single");
       }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
+        if (searchTapClosed.current) {
+          searchTapClosed.current = false;
+          setSearching(false);
+          return;
+        }
         setSheet(null);
+        useTaskStore.getState().closeQuickCapture();
         setSearching(true);
       }
     };
@@ -1742,7 +1839,7 @@ function ProjectsWorkspace() {
             key: `project-archive:${project.id}`,
             loading: `Restoring ${project.name}…`,
             success: () => `Restored ${project.name}`,
-            error: "Couldn't restore the project",
+            error: "Couldn't restore the project. Check your connection and try again.",
           }
         );
       },
@@ -1871,23 +1968,47 @@ function ProjectsWorkspace() {
   // An app pane (Reports, the AI chat, Settings) is not a view of the
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
+  const archiveBarNow = useMemo(
+    () =>
+      archiveBar(
+        selected
+          ? ((flatten(allRoots).find((e) => e.node.id === selected.id)?.node as
+              | ProjectRow
+              | undefined) ?? selected)
+          : null,
+        allRoots as ProjectRow[]
+      ),
+    [selected, allRoots]
+  );
   const noProjectChrome =
     dashboardOnly ||
     app === "reports" ||
     app === "ai-chat" ||
     app === "settings" ||
+    app === "questions" ||
     isMyWorkId(app);
   // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
   // lens is on for it. A new project opens on its board, never on the lens of
   // the last one. While the lens is on, the view switch selects no mode.
   const attentionProject = selected && !dashboardOnly ? selected.id : null;
-  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
-  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  const agentsLens = agentsOpen && agentsRead.kind !== "dark" && Boolean(selected) && !dashboardOnly;
+  const attentionLens =
+    !agentsLens && attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens || agentsLens ? null : mode;
   /** A pick of a view mode leaves the lens, from every door. */
   const pickMode = (next: ViewMode) => {
     setAttentionFor(null);
+    setAgentsOpen(false);
     setChosenMode(next);
   };
+  // OP-12: the saved views of the tab row. The project's order-bearing board
+  // is withheld, as the filter chrome withholds it (it is not a saved filter).
+  const tabViews = views.filter((v) => v.id !== orderBearingView(views)?.id);
+  const viewsUntouched =
+    !isFiltered(filters) &&
+    groupBy === "status" &&
+    lanes.subGroupBy === "none" &&
+    sameFieldSet(shownFields, DEFAULT_SHOWN);
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -2025,6 +2146,7 @@ function ProjectsWorkspace() {
             selectedId={selected?.id ?? null}
             app={app}
             counts={navCounts}
+            questionsOn={questions.on === true}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
@@ -2081,11 +2203,15 @@ function ProjectsWorkspace() {
   // and this is the subscribe half. The alternatives all reintroduce the bug
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
+  //
+  // MOB-9: the Menu tab can also take the drawer over while a sheet shows. The
+  // sheet is gone then, and the drawer is not this page's to close.
   useEffect(() => {
-    if (!drawerOpen) ownsDrawer.current = false;
+    const gone = !drawerOpen || drawerShows === "menu";
+    if (gone) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!drawerOpen) setSheet(null);
-  }, [drawerOpen]);
+    if (gone) setSheet(null);
+  }, [drawerOpen, drawerShows]);
 
   // True once the page's own mount effects have run. ⚠️ The command bar's
   // "New space" waits for it. A child's effect runs BEFORE its parent's, so
@@ -2721,13 +2847,16 @@ function ProjectsWorkspace() {
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
   // from the read before the switch are painted first, and the selection
   // (`onScreen`) must not keep a row nobody can see.
+  const epics = useMemo(() => epicOptions(tasks, taskTypes), [tasks, taskTypes]);
+  // An epic from another project is not in the list, and then no filter applies.
+  const epicScoped = epics.some((o) => o.value === epicId) ? epicId : "";
   const groups = useMemo(
     () =>
       groupTasks(
         visibleTasks(
           // Task #986: the server filters by these now (`boardReadParams`), so
           // this is only a paint-time guard for rows held from before a switch.
-          tasks.filter(
+          filterByEpic(tasks, epicScoped).filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
               (!agentWork || isAgentWork(t)) &&
@@ -2741,7 +2870,7 @@ function ProjectsWorkspace() {
           projectName,
         },
       ),
-    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me]
+    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me, epicScoped]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -4667,6 +4796,72 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // WS-64 OP-12: the lens and the project actions. With the compact chrome they
+  // sit at the right of the title line, and the tab row owns the line below.
+  const headerTools = () => (
+    <>
+        {selected ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            selected={attentionLens}
+            // OP-12: in a narrow row the word folds away, so the tabs
+            // keep their room. The name and the tooltip stay.
+            aria-label={
+              compactChrome
+                ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
+                : undefined
+            }
+            data-attention-toggle=""
+            title={
+              attentionLens
+                ? "Back to the board"
+                : "Show the work that stopped and waits for a person"
+            }
+            onClick={() => {
+              setAgentsOpen(false);
+              setAttentionFor(attentionLens ? null : selected.id);
+            }}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
+            ) : (
+              LENS_LABEL
+            )}
+            {attentionHere && attentionHere.total > 0 ? (
+              <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+            ) : null}
+          </Button>
+        ) : null}
+        {selected && (agentsRead.kind === "ready" || agentsRead.kind === "error") ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="Bot"
+            selected={agentsLens}
+            data-agents-toggle=""
+            title={agentsLens ? "Back to the board" : "Show the agents and what they did last"}
+            onClick={() => setAgentsOpen(!agentsLens)}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{AGENTS_LENS_LABEL}</span>
+            ) : (
+              AGENTS_LENS_LABEL
+            )}
+          </Button>
+        ) : null}
+        <div
+          className={`flex shrink-0 items-center gap-1${
+            compactChrome ? "" : " ml-auto"
+          }`}
+        >
+          {projectActions(false)}
+        </div>
+    </>
+  );
   // The server takes ONE focus (`agent_focus`), so the toggle and the strip
   // clear each other, as `onAgentFocus` already does.
   const onWaitingOnMe = (next: boolean) => {
@@ -4721,6 +4916,9 @@ function ProjectsWorkspace() {
   const personalHeadRootId = personalHeading(personal).root?.id ?? null;
   const personalIds = new Set(flatten(personal).map((e) => e.node.id));
   const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  // ARC-1 — a task of an archived project cannot be restored alone.
+  const myTasksProjectArchived = (projectId: string) =>
+    pathTo(allRoots, projectId).some((node) => Boolean((node as ProjectRow).archived_at));
   const openMineIn = (id: string) => {
     const row = flatten(visibleRoots).find((e) => e.node.id === id);
     if (!row) return;
@@ -4745,6 +4943,7 @@ function ProjectsWorkspace() {
       people={people}
       personLabels={personLabels}
       projectPath={myTasksPath}
+      projectArchived={myTasksProjectArchived}
       isPrivateProject={(id) => personalIds.has(id)}
       personalRootId={personal[0]?.id ?? null}
       onOpenTask={(task) => void openWithStatuses(task, true)}
@@ -4811,6 +5010,21 @@ function ProjectsWorkspace() {
     <div className="min-w-0 flex-1 overflow-hidden">
       <AssistantRail {...railPlace} view={null} />
     </div>
+  ) : app === "questions" ? (
+    // WS-55 EA-18b (`external_agent_access.md` §12.8) — the agent questions
+    // that wait on the reader. The pane reads its own list. A project name
+    // opens that project, and "Open task" opens the task, as a deep link does.
+    <QuestionsView
+      projects={flatten(visibleRoots).map((e) => ({
+        id: e.node.id,
+        label: displayNodeName(e.node),
+        depth: e.depth,
+      }))}
+      personLabels={personLabels}
+      onOpenTask={(taskId) => router.push(`/projects?task=${encodeURIComponent(taskId)}`)}
+      onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
+      onChanged={questions.refresh}
+    />
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
     // WS-27bn R5f: Reports is also where the Analytics app went. It opens on
@@ -4858,6 +5072,13 @@ function ProjectsWorkspace() {
       ) : (
         renderState("loading", "Counting the work below…")
       )}
+    </>
+  ) : agentsLens && selected ? (
+    // WS-AGA AGA-8 — the Agents at work lens. It takes the place of the
+    // canvas, as the Needs attention lens does, and it only reads.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      <AgentsAtWorkView read={agentsRead} onBack={() => setAgentsOpen(false)} />
     </>
   ) : attentionLens && selected ? (
     // WS-55 SW-11a — the Needs attention lens. It takes the place of the
@@ -4941,6 +5162,9 @@ function ProjectsWorkspace() {
           me={me}
           waitingOnMe={waitingOnMe}
           onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
+          epic={epicScoped}
+          epics={epics}
+          onEpic={setEpicId}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
           people={people}
@@ -5274,6 +5498,17 @@ function ProjectsWorkspace() {
               onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
+              // MOB-2: the phone row. Same flag as the board above.
+              phone={compactChrome && isMobile}
+              onDrop={handleDrop}
+              // The project shows only when it is not the one that is open,
+              // so the rows of one project do not repeat its name. A row of
+              // a child project still names its project.
+              projectPath={
+                compactChrome && isMobile
+                  ? (t) => (t.project_id === selected?.id ? null : [projectName(t.project_id)])
+                  : undefined
+              }
             />
           )}
           {/* OP-1: with the compact chrome the load-more row sits at the END of
@@ -5742,6 +5977,40 @@ function ProjectsWorkspace() {
     slotOpen: app === "ai-chat",
   });
 
+  // ⚠️ Not `noProjectChrome`: that also hides the header actions on a space
+  // or folder dashboard, and a filed SPACE must still say it is filed (rule 1
+  // names spaces). Only the app's own pages, which show no node, drop it.
+  const onAppPage =
+    app === "reports" ||
+    app === "ai-chat" ||
+    app === "settings" ||
+    app === "questions" ||
+    isMyWorkId(app);
+  const archiveBarEl =
+    !onAppPage && selected && archiveBarNow ? (
+      <div
+        role="status"
+        data-archive-bar=""
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-muted px-3 py-1.5 text-xs text-muted-foreground glass:px-4"
+      >
+        <span className="min-w-0 flex-1">{archiveBarNow.text}</span>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="ArchiveRestore"
+          className="shrink-0"
+          onClick={() =>
+            projectMenuActions.onUnarchive(
+              archiveBarNow.root ?? (selected as ProjectRow)
+            )
+          }
+        >
+          Restore
+        </Button>
+      </div>
+    ) : null;
+
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -5751,6 +6020,8 @@ function ProjectsWorkspace() {
           actions={projectActions(true)}
           tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
+
+        {archiveBarEl}
 
         {workArea}
 
@@ -5828,6 +6099,7 @@ function ProjectsWorkspace() {
               selectedId={selected?.id ?? null}
               app={app}
               counts={navCounts}
+              questionsOn={questions.on === true}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
@@ -5871,7 +6143,13 @@ function ProjectsWorkspace() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
-            <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1">
+            <div
+              className={`flex min-w-0 gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1${
+                compactChrome && !isMyTasksApp(app) && !noProjectChrome
+                  ? " @container items-center"
+                  : " items-baseline"
+              }`}
+            >
               <h2
                 className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
                 title={title}
@@ -5902,7 +6180,16 @@ function ProjectsWorkspace() {
                   {attentionBadge}
                 </Button>
               ) : null}
+              {compactChrome && !isMyTasksApp(app) && !noProjectChrome ? (
+                <div className="ml-auto flex shrink-0 items-center gap-1">{headerTools()}</div>
+              ) : null}
             </div>
+            {/* ARC-2a (§9b.6 rule 1) — one bar for an archived space, project
+                or subproject. `selected` is a snapshot, so the bar reads the
+                row again from the tree: Restore then clears it with no
+                reload. Restore is the rail menu's Unarchive, run on the row
+                whose archive filed this one. */}
+            {archiveBarEl}
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
             {/* A space and a folder have no views to switch between and no
@@ -5922,38 +6209,45 @@ function ProjectsWorkspace() {
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
-              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5">
-                <ModeSwitch
-                  modes={MODE_OPTIONS}
-                  mode={shownMode}
-                  layout="toolbar"
-                  onPick={pickMode}
-                />
+              <div
+                className={`flex items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5${
+                  compactChrome ? "" : " flex-wrap"
+                }`}
+              >
+                {compactChrome ? (
+                  // WS-64 OP-12 (D-OP-17) — the canvases and the saved views
+                  // are one tab row. The View popover no longer holds them.
+                  <ViewTabs
+                    canvas={shownMode}
+                    onCanvas={pickMode}
+                    views={tabViews}
+                    activeViewId={activeViewId}
+                    onView={(view) => {
+                      // A saved view filters a list. From the Overview or the
+                      // lens, it opens on the canvas it was saved from.
+                      setAttentionFor(null);
+                      setAgentsOpen(false);
+                      if (mode === "overview" || attentionLens || agentsLens) {
+                        setChosenMode(view.view_type === "board" ? "board" : "list");
+                      }
+                      applyView(view);
+                    }}
+                    onAddView={(name) => void saveView(name)}
+                    onDeleteView={(view) => void deleteView(view)}
+                    canAddView={Boolean(selected) && !viewsUntouched}
+                    addViewHint="Filter, regroup or change the fields first. An untouched view is the board."
+                  />
+                ) : (
+                  <ModeSwitch
+                    modes={MODE_OPTIONS}
+                    mode={shownMode}
+                    layout="toolbar"
+                    onPick={pickMode}
+                  />
+                )}
                 {/* WS-55 SW-11a — the lens beside the board's other lenses.
                     Pressed while the list is on screen. */}
-                {selected ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="TriangleAlert"
-                    selected={attentionLens}
-                    data-attention-toggle=""
-                    title={
-                      attentionLens
-                        ? "Back to the board"
-                        : "Show the work that stopped and waits for a person"
-                    }
-                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
-                  >
-                    {LENS_LABEL}
-                    {attentionHere && attentionHere.total > 0 ? (
-                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
-                    ) : null}
-                  </Button>
-                ) : null}
-                <div className="ml-auto flex shrink-0 items-center gap-1">
-                  {projectActions(false)}
-                </div>
+                {compactChrome ? null : headerTools()}
               </div>
             )}
           </header>

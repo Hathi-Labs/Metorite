@@ -18,7 +18,14 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate, and no route reads ``studio:publish`` (J2 owns that check).
+   second gate. Only the org and group install of WS-PKG PKG-8b, its
+   uninstall of PKG-8e, the member of a run with no viewer of WS-STU B6a, the
+   share with people of J2b-2, the list, the approve and the reject of
+   WS-STU J2b-1, and the list, the approve, the reject and the unshare of the
+   skill share of J2c read ``studio:publish``, in their handlers. Such an install
+   is a share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
+   review. No other route reads it. The fence reads the syntax tree, so a second read
+   in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
 f. No file of ``routes/studio`` names the ``workflows`` gate.
@@ -46,11 +53,16 @@ with 16 routes, and each test named here went red.
   publish route. Red: ``test_no_route_adds_a_second_gate_or_the_share_verb``
   and ``test_a_studio_holder_passes_the_gate_on_each_route`` (the
   ``feature:studio`` and ``feature:*`` holders) on that route, and
-  ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``.
+  ``test_the_share_verb_is_read_by_the_install_only``.
 * M5: remove ``"studio"`` from ``FEATURES`` and ``"studio:publish"`` from
-  ``CAPABILITIES``. Red: ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``,
+  ``CAPABILITIES``. Red: ``test_the_share_verb_is_read_by_the_install_only``,
   and the pins in ``test_org_access_control.py`` and
   ``test_auth_me_features.py``.
+* M6 (STU-A5c-2 fix round 1): read ``ADMIN_RIGHT`` in ``install_package``,
+  or the text ``"admin:members:manage"`` in a function of another module of
+  ``routes/studio``. Red: ``test_the_admin_right_is_read_by_the_delete_mode_only``.
+  ``test_a_second_read_of_the_admin_right_fails`` runs both changes on the
+  real sources on each run, and holds the scan to them.
 """
 
 from __future__ import annotations
@@ -64,13 +76,13 @@ from typing import Any
 import httpx
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
-from acb_auth.permissions import CAPABILITIES, FEATURES
 from acb_common import get_settings
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from gateway.routes import studio as studio_pkg
 from gateway.routes.studio import actions
+
+from tests.unit import _r8_lists as r8_lists
 
 _ROOT = Path(__file__).resolve().parents[2]
 _STUDIO_DIR = _ROOT / "apps/services/gateway/gateway/routes/studio"
@@ -91,19 +103,72 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),
+    ("GET", "/studio/skills/{skill_id}/versions"),
+    ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
+    # WS-STU J2c, the share of a skill with the org.
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share"),
+    ("GET", "/studio/skill-shares"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/approve"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/reject"),
+    ("DELETE", "/studio/skills/{skill_id}/share"),
+    # WS-STU J2d (TOF-4b), the owner's read of the share. It reads no right.
+    ("GET", "/studio/skills/{skill_id}/share"),
+    # TOF-3b F4b, the test run of a skill.
+    ("POST", "/studio/skills/{skill_id}/tests/run"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
+    # K1a, the template list and the one-step create from a template.
+    ("GET", "/studio/templates"),
+    ("POST", "/studio/packages/from-template"),
     ("GET", "/studio/packages"),
     ("GET", "/studio/packages/{package_id}"),
     ("PUT", "/studio/packages/{package_id}/draft"),
+    # C11b, the CSV import of an object.
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import"),
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import/preview"),
     ("POST", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions"),
+    ("GET", "/studio/packages/{package_id}/versions/{version}"),
     # A5c-1, the package delete.
     ("GET", "/studio/packages/{package_id}/delete-preview"),
     ("DELETE", "/studio/packages/{package_id}"),
+    # WS-PKG PKG-8b, the org and group install.
+    ("POST", "/studio/packages/{package_id}/install"),
+    # WS-PKG PKG-8e, the org and group uninstall.
+    ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-STU B6a, the member of a run with no viewer.
+    ("PUT", "/studio/packages/{package_id}/install/run-as"),
+    # WS-STU J2b-2, the share with people.
+    ("POST", "/studio/packages/{package_id}/share"),
+    # WS-STU J2b-5, the per-person unshare.
+    ("DELETE", "/studio/packages/{package_id}/share/{email}"),
+    # WS-PKG PKG-10d, Keep and Restore of the private install.
+    ("POST", "/studio/packages/{package_id}/keep"),
+    ("POST", "/studio/packages/{package_id}/restore"),
+    # WS-PKG PKG-10e-1, the lifetime read of the private install.
+    ("GET", "/studio/packages/{package_id}/lifetime"),
+    # WS-STU J2b-1, the approval for the org.
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval"),
+    ("GET", "/studio/approvals"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
+    # I8a, the connections of a draft (Connect in place).
+    ("GET", "/studio/packages/{package_id}/connections"),
+    # I8b-1a, the ask of an admin and its withdraw.
+    ("POST", "/studio/packages/{package_id}/connections/ask"),
+    ("DELETE", "/studio/packages/{package_id}/connections/ask"),
+    # AF-10a, the saved views of an app.
+    ("GET", "/studio/packages/{package_id}/views"),
+    ("POST", "/studio/packages/{package_id}/views"),
+    ("PATCH", "/studio/packages/{package_id}/views/{view_id}"),
+    ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
+    # B1b-2, the refresh of the tools of one MCP server.
+    ("POST", "/studio/mcp/{server}/refresh"),
+    # B1b-3, the approval of the text of one MCP tool.
+    ("POST", "/studio/mcp/{server}/tools/{tool}/approve"),
 )
 
 _PARAMS = {
@@ -112,6 +177,11 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "email": "ben@example.test",
+    "view_id": str(uuid.uuid4()),
+    "server": "github",
+    "tool": "get_issue",
+    "object_name": "ledger",
 }
 
 STUDIO = ["feature:studio"]
@@ -120,8 +190,9 @@ GUEST = ["feature:chat", "apps:use:*"]
 
 
 def _router_routes() -> list[tuple[str, str]]:
-    return sorted((m, r.path) for r in actions.router.routes
-                  if isinstance(r, APIRoute) for m in r.methods)
+    return sorted(
+        (m, r.path) for r in actions.router.routes if isinstance(r, APIRoute) for m in r.methods
+    )
 
 
 def _url(path: str) -> str:
@@ -133,8 +204,12 @@ def _client(grants: list[str], overrides: list[tuple[str, str]] | None = None) -
     app.include_router(actions.router)
 
     def _user() -> UserContext:
-        return UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-                           access=build_access(grants, overrides or []))
+        return UserContext(
+            email=ANA,
+            role=UserRole.EMPLOYEE,
+            organization_id=ORG,
+            access=build_access(grants, overrides or []),
+        )
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app, raise_server_exceptions=False)
@@ -155,14 +230,20 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         def _fn(*_a: Any, **_k: Any) -> Any:
             reached.append(name)
             raise RuntimeError(f"{name} ran")
+
         return _fn
 
-    from gateway.routes.studio import invoke, packages, skills
+    from gateway.routes.studio import connections, invoke, packages, skills, views
 
-    for module in (actions, invoke, packages, skills):
+    for module in (actions, connections, invoke, packages, skills, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
+    # B1b-2: the refresh and the cache read of the MCP tools.
+    monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
+    monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
+    # B1b-3: the approval of the text of one tool.
+    monkeypatch.setattr(actions.mcp_tools, "approve_tool", _trip("mcp_tools.approve_tool"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 
@@ -177,13 +258,8 @@ def _open(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
 def test_expected_routes_are_the_routes_of_the_router() -> None:
     assert _router_routes() == sorted(EXPECTED_ROUTES), (
         "The Studio router changed. Add the new route to EXPECTED_ROUTES, so "
-        "the 403 tests of J1 cover it.")
-
-
-def test_the_package_exports_the_one_router() -> None:
-    assert studio_pkg.router is actions.router
-    sources = {p.name: p.read_text(encoding="utf-8") for p in _STUDIO_DIR.glob("*.py")}
-    assert [n for n, s in sources.items() if "APIRouter(" in s] == ["actions.py"]
+        "the 403 tests of J1 cover it."
+    )
 
 
 # ── d. One gate, and it is `feature:studio` ───────────────────────────────
@@ -223,8 +299,11 @@ def test_the_router_carries_one_feature_gate_and_it_is_studio() -> None:
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -> None:
-    route = next(r for r in actions.router.routes
-                 if isinstance(r, APIRoute) and r.path == path and method in r.methods)
+    route = next(
+        r
+        for r in actions.router.routes
+        if isinstance(r, APIRoute) and r.path == path and method in r.methods
+    )
     assert _gates_of(route) == ["feature:studio"], (method, path)
 
 
@@ -234,7 +313,11 @@ def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -
 @pytest.mark.parametrize("listed", ["", "*"])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_member_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str, listed: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    listed: str,
 ) -> None:
     """B1's interim gate is gone. The 403 comes before the 404 of the switch."""
     _open(monkeypatch, listed)
@@ -244,16 +327,27 @@ def test_a_workflows_member_gets_403_on_each_route(
     assert no_store == []
 
 
-@pytest.mark.parametrize("who,grants,overrides", [
-    ("guest", GUEST, []),
-    ("denied member", ["feature:*"], [("feature:studio", "deny")]),
-    ("workflows yes, studio no", ["feature:*"],
-     [("feature:workflows", "allow"), ("feature:studio", "deny")]),
-])
+@pytest.mark.parametrize(
+    "who,grants,overrides",
+    [
+        ("guest", GUEST, []),
+        ("denied member", ["feature:*"], [("feature:studio", "deny")]),
+        (
+            "workflows yes, studio no",
+            ["feature:*"],
+            [("feature:workflows", "allow"), ("feature:studio", "deny")],
+        ),
+    ],
+)
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_member_without_studio_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
-    who: str, grants: list[str], overrides: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    who: str,
+    grants: list[str],
+    overrides: list[tuple[str, str]],
 ) -> None:
     _open(monkeypatch, "*")
     r = _call(_client(grants, overrides), method, path)
@@ -267,7 +361,10 @@ def test_a_member_without_studio_gets_403_on_each_route(
 @pytest.mark.parametrize("grants", [STUDIO, ["feature:*"], ["*"]])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_studio_holder_passes_the_gate_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
     grants: list[str],
 ) -> None:
     """Past the gate, the switch of each handler answers 404 for an org
@@ -282,7 +379,10 @@ def test_a_studio_holder_passes_the_gate_on_each_route(
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_deny_override_no_longer_closes_studio(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
 ) -> None:
     """The edge that the owner accepted on 2026-11-06 (task 1199, D180). Before
     J1-1, a member with a ``feature:workflows`` deny override got 403 here.
@@ -298,34 +398,12 @@ def test_an_anonymous_caller_gets_401() -> None:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO))
+        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO)
+    )
     assert TestClient(app).get("/studio/actions").status_code == 401
 
 
 # ── f. The source names no `workflows` gate ───────────────────────────────
-
-
-def test_no_studio_file_names_the_workflows_gate() -> None:
-    gate = re.compile(
-        r"""(?:require_feature(?:_router)?|require_permission|require_any_permission)"""
-        r"""\(\s*["'](?:feature:)?workflows["']""")
-    for path in sorted(_STUDIO_DIR.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        assert not gate.search(text), path.name
-        assert "feature:workflows" not in text, path.name
-    actions_src = (_STUDIO_DIR / "actions.py").read_text(encoding="utf-8")
-    assert 'dependencies=[require_feature_router("studio")]' in actions_src
-
-
-def test_the_share_verb_is_a_capability_that_no_studio_route_reads() -> None:
-    """J1-1 adds `studio:publish` to the vocabulary only. Version publish of
-    a member's own app needs `feature:studio` and ownership (STU-Q4b)."""
-    assert "studio:publish" in CAPABILITIES
-    assert "studio" in FEATURES
-    for path in sorted(_STUDIO_DIR.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        assert "studio:publish" not in text, path.name
-        assert "has_permission(" not in text, path.name
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────
@@ -342,18 +420,20 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> Any:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-        access=build_access(box["grants"]))
+        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG, access=build_access(box["grants"])
+    )
     real = httpx.AsyncClient
-    monkeypatch.setattr(st.httpx, "AsyncClient",
-                        lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw))
+    monkeypatch.setattr(
+        st.httpx, "AsyncClient", lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw)
+    )
     monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
     box["st"] = st
     return box
 
 
 def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
-    chat: Any, no_store: list[str],
+    chat: Any,
+    no_store: list[str],
 ) -> None:
     import asyncio
 
@@ -368,7 +448,8 @@ def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
 
 
 def test_a_chat_tool_of_a_holder_reaches_the_handler(
-    chat: Any, monkeypatch: pytest.MonkeyPatch,
+    chat: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
 
@@ -388,8 +469,5 @@ def test_a_chat_tool_of_a_holder_reaches_the_handler(
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_route_gate_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_route_gate_r8.py" in must_run

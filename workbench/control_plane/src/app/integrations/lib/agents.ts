@@ -113,17 +113,34 @@ export interface AgentConnection {
   client_origin: string;
   scopes: string[];
   pinned_projects: string[];
+  /** The left-out list of D-EA-12. Absent on a gateway from before EA-17a. */
+  left_out_projects?: string[];
   include_personal: boolean;
+  /** What the agent asked for at the connect. `null` before EA-17a (EA-17c-2). */
+  requested_scopes?: string[] | null;
+  /** The scopes that Change access may turn on (EA-17c-1, D-EA-13). */
+  ceiling_scopes?: string[];
   created_at: string;
   last_used_at: string | null;
   expires_at: string;
+  /** `box` for a box token (EA-19d). Absent or `oauth` for an OAuth connection. */
+  credential?: "oauth" | "box" | string;
+  /** The address of the newest box call. Box only. */
+  last_seen_addr?: string | null;
+  /** When that address changed. The new-address mark reads it. Box only. */
+  addr_changed_at?: string | null;
 }
 
 /**
  * The headline: the VERIFIED host the client document came from, as the
  * consent page names it (spec §10.5). The scheme goes, a port stays.
  */
-export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
+export function agentHost(
+  row: Pick<AgentConnection, "client_origin"> & Partial<Pick<AgentConnection, "credential" | "client_name">>,
+): string {
+  // A box has no client document and no host. Its name is the box name that
+  // the member chose (EA-19d), so the row is headed by it.
+  if (row.credential === "box" && row.client_name?.trim()) return row.client_name.trim();
   const origin = (row.client_origin || "").trim();
   const host = origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
   return host || "Unknown agent";
@@ -134,7 +151,10 @@ export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
  * when it says nothing the host does not already say: approve stores the
  * host as the name when the document gives none.
  */
-export function agentClaim(row: Pick<AgentConnection, "client_name" | "client_origin">): string | null {
+export function agentClaim(
+  row: Pick<AgentConnection, "client_name" | "client_origin"> & Partial<Pick<AgentConnection, "credential">>,
+): string | null {
+  if (row.credential === "box") return null;
   const name = (row.client_name || "").trim();
   if (!name) return null;
   const host = agentHost(row);
@@ -195,17 +215,38 @@ export class AgentsError extends Error {
   }
 }
 
-async function readList(res: Response): Promise<AgentConnection[] | null> {
+/** The member's list: the rows, and whether Change access is on (EA-17c-2). */
+export interface MyAgents {
+  connections: AgentConnection[];
+  changeAccess: boolean;
+}
+
+async function readBody(res: Response): Promise<MyAgents | null> {
   // 404: the agent flag is off for this deployment. Not an error to show.
   if (res.status === 404) return null;
   if (!res.ok) throw new AgentsError(`The list did not load (${res.status}).`, res.status);
-  const body = (await res.json().catch(() => ({}))) as { connections?: AgentConnection[] };
-  return Array.isArray(body.connections) ? body.connections : [];
+  const body = (await res.json().catch(() => ({}))) as {
+    connections?: AgentConnection[];
+    change_access?: unknown;
+  };
+  return {
+    connections: Array.isArray(body.connections) ? body.connections : [],
+    changeAccess: body.change_access === true,
+  };
+}
+
+async function readList(res: Response): Promise<AgentConnection[] | null> {
+  return (await readBody(res))?.connections ?? null;
+}
+
+/** The member's own agents and the Change access flag. `null` when agent connections are off. */
+export async function listMyAgents(): Promise<MyAgents | null> {
+  return readBody(await fetch("/api/agent-access/connections", { cache: "no-store" }));
 }
 
 /** The member's own agents. `null` when agent connections are off. */
 export async function listMine(): Promise<AgentConnection[] | null> {
-  return readList(await fetch("/api/agent-access/connections", { cache: "no-store" }));
+  return (await listMyAgents())?.connections ?? null;
 }
 
 /** Every agent connection of the org. Needs `integrations:manage`. */

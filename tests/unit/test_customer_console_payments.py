@@ -51,6 +51,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     SECOND_PLAN,
@@ -3915,10 +3916,7 @@ class TestTheProviderSeam:
         this step exists to catch, which is why the suite asserts its own
         membership rather than trusting a reviewer to notice.
         """
-        workflow = (Path(__file__).resolve().parents[2] /
-                    ".github/workflows/pr-check.yml").read_text(
-                        encoding="utf-8")
-        assert "tests/unit/test_customer_console_payments.py" in workflow
+        assert "tests/unit/test_customer_console_payments.py" in r8_lists.must_run()
 
     def test_the_owning_specs_name_this_suite(self):
         """The §7 command block, in the same PR that creates the file."""

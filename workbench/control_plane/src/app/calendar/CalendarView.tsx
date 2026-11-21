@@ -10,6 +10,7 @@
 // AppShell). Specs: calendar_timeboxing.md, calendar_focus_os.md,
 // calendar_ai_review.md.
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -48,6 +49,7 @@ import {
   HOUR_PX,
   addMonths,
   plannerCandidates,
+  startOfMonthGrid,
   startOfWeek,
   useNow,
   type Mode,
@@ -59,8 +61,11 @@ import { EndOfDayReview } from "./components/EndOfDayReview";
 import { ScheduleSheet } from "./components/ScheduleSheet";
 import { PlanDayPanel } from "./components/PlanDayPanel";
 import { CalendarSettings } from "./components/CalendarSettings";
+import { CalendarConnectPrompt, CalendarConnectReturn } from "./components/CalendarConnections";
+import type { ReturnNotice } from "./lib/calendarConnections";
 import { TimeGrid } from "./components/TimeGrid";
-import { MonthGrid } from "./components/MonthGrid";
+import { MonthGrid } from "@/components/calendar/MonthGrid";
+import { monthEventsForDay, openMonthEvent } from "./lib/gridAdapter";
 import { UnscheduledRail } from "./components/UnscheduledRail";
 import { CalendarDeepLink } from "./components/CalendarDeepLink";
 import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
@@ -80,6 +85,9 @@ import {
   type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { calendarEventsOn } from "@/lib/shell/calendarEventsFlag";
+import { ExternalSheet } from "./components/ExternalSheet";
+import { useExternalEntries, visibleWindow } from "./lib/useExternalEntries";
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
@@ -112,6 +120,10 @@ export function CalendarView() {
   const [mode, setMode] = useState<Mode>("day");
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // CE-10c: what the calendar consent redirect said, shown in the settings sheet.
+  const [connectNotice, setConnectNotice] = useState<ReturnNotice | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const openConnectSettings = useCallback(() => setSettingsOpen(true), []);
   // The AI planner panel: "plan" fills free slots from unscheduled next actions;
   // "replan" reorganizes the rest of today's flexible blocks from now. null = shut.
   const [planMode, setPlanMode] = useState<null | "plan" | "replan">(null);
@@ -131,6 +143,16 @@ export function CalendarView() {
   // The grid draws on the browser's wall clock, so every reminder computation
   // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
   const remZone = gridZone(browserTimeZone());
+  // Google and Outlook events (CE-5a). Flag off: no read, an empty list.
+  const [externalId, setExternalId] = useState<string | null>(null);
+  const { views: externals, note: externalNote } = useExternalEntries(
+    mode === "month"
+      ? visibleWindow(startOfMonthGrid(anchor), addDays(startOfMonthGrid(anchor), 42))
+      : mode === "week"
+        ? visibleWindow(startOfWeek(anchor), addDays(startOfWeek(anchor), 7))
+        : visibleWindow(anchor, addDays(anchor, 1)),
+  );
+  const externalOpen = externalId ? externals.find((x) => x.id === externalId) : undefined;
   const [remForm, setRemForm] = useState<{ mode: "new"; title?: string } | { mode: "move"; id: string } | null>(null);
   // `/calendar?reminder=<id>` (RX-2): the Reminders panel marks this row.
   const [markReminder, setMarkReminder] = useState<string | null>(null);
@@ -352,6 +374,27 @@ export function CalendarView() {
   // schedule). The gateway planner reads the same rule (`plannerCandidates`).
   const unscheduled = useMemo(() => plannerCandidates(items), [items]);
 
+  // The phone bar (MOB-12): Today, Schedule and Reminders. The bar holds what
+  // the floating button and the top bell held. Month has no time to place a
+  // task in, and a closed reminders flag draws no list. Reminders hides only
+  // when the flag is off ("absent"). While the list loads the tab stays, so
+  // the bar does not reflow, and its sheet shows a loading row.
+  usePhoneBar({
+    hide: [...(mode === "month" ? ["calendar-schedule"] : []), ...(remList.status === "absent" ? ["calendar-reminders"] : [])],
+    counts: { "calendar-schedule": unscheduled.length, "calendar-reminders": remList.total },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "calendar-today") pickAnchor(startOfDay(new Date()));
+      else if (tab === "calendar-schedule") setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor });
+      else if (tab === "calendar-reminders" && remList.status !== "absent") setRemSheet(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pickAnchor` only sets state
+  }, [mode, anchor, remList.status]);
+
   // Deadline radar: unscheduled next actions with a due date approaching (≤14d)
   // — the ones most likely to slip because they were never timeboxed.
   const dueSoon = useMemo(() => {
@@ -560,16 +603,19 @@ export function CalendarView() {
       ? Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i))
       : [anchor];
 
-  // Back, Today and on. One group, so the phone bar and the desktop bar
-  // draw the same three buttons.
+  // Back, Today and on. One group. On a phone the bottom bar holds Today, so
+  // the arrows stay and Today leaves.
   const dayNav = (
     <div className="flex items-center gap-0.5">
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
         <Icon name="ChevronLeft" className="h-4 w-4" />
       </Button>
-      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
-        Today
-      </Button>
+      {/* On a phone the bar's Today tab holds it (MOB-12). */}
+      {!isMobile && (
+        <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+          Today
+        </Button>
+      )}
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
         <Icon name="ChevronRight" className="h-4 w-4" />
       </Button>
@@ -653,18 +699,6 @@ export function CalendarView() {
           <span className="hidden 2xl:inline">New reminder</span>
         </button>
       )}
-      {remShown && isMobile && (
-        <button
-          type="button"
-          onClick={() => setRemSheet(true)}
-          title="Your open reminders"
-          aria-label={`Reminders, ${remList.total} open`}
-          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-        >
-          <Icon name="Bell" className="h-3.5 w-3.5" />
-          {remList.total > 0 && <span className="tabular-nums">{remList.total}</span>}
-        </button>
-      )}
       <button
         type="button"
         onClick={() => setSettingsOpen((v) => !v)}
@@ -700,7 +734,13 @@ export function CalendarView() {
         <CalendarSettings
           settings={settings}
           onChange={(patch) => void updateSettings(patch)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setGuideOpen(false);
+          }}
+          guideOpen={guideOpen}
+          connectNotice={connectNotice}
+          onDismissConnectNotice={() => setConnectNotice(null)}
         />
       )}
     </>
@@ -712,6 +752,7 @@ export function CalendarView() {
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>
         <CalendarDeepLink onLink={openLink} />
+        <CalendarConnectReturn onNotice={setConnectNotice} onOpenSettings={openConnectSettings} />
       </Suspense>
       {/* The command bar's "New reminder" job (RX-6, `?do=new-reminder`): it
           opens the form and saves nothing. A filled title is a suggestion. */}
@@ -764,6 +805,15 @@ export function CalendarView() {
         }}
       />
 
+      {/* CE-10c: offer Connect Google Calendar / Outlook when none is connected. Draws nothing
+          until the gateway says the feature is on. */}
+      <CalendarConnectPrompt
+        onOpenGuide={() => {
+          setGuideOpen(true);
+          setSettingsOpen(true);
+        }}
+      />
+
       {/* Startup ritual offer — once per local day, dismissible. Habits form
           around rituals; the banner invites, it never ambushes. */}
       {startupOffered && !startupOpen && !dayClosed && (
@@ -785,6 +835,12 @@ export function CalendarView() {
             }} className="shrink-0 rounded-md px-2 py-1">
             Skip
           </Button>
+        </div>
+      )}
+
+      {externalNote && (
+        <div role="status" className="border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
+          {externalNote}
         </div>
       )}
 
@@ -812,15 +868,20 @@ export function CalendarView() {
           {mode === "month" ? (
             <MonthGrid
               anchor={anchor}
-              items={items}
+              eventsForDay={(day) =>
+                monthEventsForDay(day, items, remShown ? remList.rows : [], remZone, externals)
+              }
               onPickDay={(d) => {
                 pickAnchor(d);
                 setMode("day");
               }}
-              onOpen={openFocus}
-              reminders={remShown ? remList.rows : []}
-              reminderZone={remZone}
-              onOpenReminder={openReminder}
+              onOpenEvent={(e) =>
+                openMonthEvent(e, {
+                  onOpen: openFocus,
+                  onOpenReminder: openReminder,
+                  onOpenExternal: setExternalId,
+                })
+              }
             />
           ) : (
             <TimeGrid
@@ -859,6 +920,9 @@ export function CalendarView() {
               onMoveReminder={(id, to) => void moveReminderTo(id, to)}
               onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
               onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
+              externals={externals}
+              reserveAllDay={calendarEventsOn()}
+              onOpenExternal={setExternalId}
             />
           )}
         </div>
@@ -908,26 +972,6 @@ export function CalendarView() {
         )}
       </div>
 
-      {/* Mobile scheduling entry point — the rail is desktop-only and touch has
-          no drag-and-drop, so on a phone this is how you timebox: pick a task
-          (auto-placed) or Plan the whole day. Anchored to the calendar area so
-          it sits above the app's bottom bar. */}
-      {mode !== "month" && (
-        <button
-          type="button"
-          onClick={() =>
-            setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor })
-          }
-          aria-label="Schedule a task"
-          className="tech-transition absolute bottom-4 right-4 z-30 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-3 font-semibold text-primary-foreground shadow-lg hover:opacity-90 md:hidden"
-        >
-          <Icon name="CalendarPlus" className="h-5 w-5" />
-          {unscheduled.length > 0 && (
-            <span className="text-sm tabular-nums">{unscheduled.length}</span>
-          )}
-        </button>
-      )}
-
       {remShown && remForm?.mode === "new" && (
         <ReminderFormModal
           mode="new"
@@ -947,8 +991,11 @@ export function CalendarView() {
           onClose={() => setRemForm(null)}
         />
       )}
-      {remSheet && remShown && (
+      {remSheet && remList.status !== "absent" && (
         <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
+          {!remShown ? (
+            <p className="px-3 py-4 text-xs text-muted-foreground">Loading your reminders…</p>
+          ) : (
           <RemindersSheetBody
             rows={remList.rows}
             total={remList.total}
@@ -968,8 +1015,11 @@ export function CalendarView() {
             }}
             onResolve={(id, action) => void resolveReminderAs(id, action)}
           />
+          )}
         </Modal>
       )}
+
+      {externalOpen && <ExternalSheet entry={externalOpen} zone={remZone} onClose={() => setExternalId(null)} />}
 
       {sheet && (
         <ScheduleSheet

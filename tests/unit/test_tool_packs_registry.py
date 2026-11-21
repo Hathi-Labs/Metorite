@@ -103,7 +103,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "projects-authority", "calendar-day", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
+        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-share",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -182,8 +183,8 @@ def test_the_setup_rules_read_the_mailboxes_from_the_per_turn_context() -> None:
 
 def test_the_email_rules_name_the_orchestrators_files_for_a_send() -> None:
     """OA-7b fix round 1, item 8: in a pack turn the file comes from the
-    orchestrator's workspace, and a bare path names a file of the email
-    assistant. Mutation: drop the line → red."""
+    orchestrator's workspace. Task 3598: send_email also writes a bare
+    chat path as its artifact ref. Mutation: drop the line → red."""
     rules = tp.rules_for("email")
     assert "artifact:orchestrator:<path>" in rules
     assert "write_artifact" in rules and len(rules) < 3000
@@ -273,7 +274,8 @@ PRODUCTION_TOOL_PACKS = (
     "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
-FOLLOWERS = frozenset({"projects-reports", "projects-authority", "calendar-day"})
+FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
+                       "calendar-day"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -317,8 +319,10 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
     Mutation: name a slug that is no pack, or a pack of another owner -> red."""
     assert tp.FOLLOWS == {"projects-reports": "projects-plan",
                           "projects-authority": "projects",
-                          "calendar-day": "projects"}
-    assert set(tp.FOLLOWS) == FOLLOWERS
+                          "projects-cycles": "projects",  # WS-39 SP-5a
+                          "calendar-day": "projects",
+                          "studio-more": "studio"}  # WS-67 TS-1b
+    assert set(tp.FOLLOWS) == FOLLOWERS | {"studio-more"}
     for follower, parent in tp.FOLLOWS.items():
         assert tp.pack(follower) is not None and tp.pack(parent) is not None
         assert follower != parent and parent not in tp.FOLLOWS
@@ -332,7 +336,8 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     the slugs as they are -> a disabled parent leaves its following pack on
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
-    assert tp.with_followers({"projects"}) == {"projects", "projects-authority", "calendar-day"}
+    assert tp.with_followers({"projects"}) == {
+        "projects", "projects-authority", "projects-cycles", "calendar-day"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()
@@ -549,7 +554,10 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
         user=UserContext(email="admin@acme.test", role=UserRole.EXECUTIVE))
     by_slug = {f["slug"]: f for f in out["families"]}
     for slug in sf.pack_slugs():
-        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + 1000, slug
+        # WS-STU J2d: studio-share holds one tool of about 360 characters, so it
+        # has its own floor. The mutation (the rules block alone) prices 0 more.
+        floor = 300 if slug == "studio-share" else 1000
+        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + floor, slug
 
 
 # ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
@@ -557,8 +565,11 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 #: Ten since WS-CRM CRM-M1: ``crm_change_history`` is in the pack, and not in
 #: the orchestrator's base, because the base was at the 110-tool cap beside
 #: the email and Projects core packs (``test_projects_packs.py``).
+#: Eleven since WS-CRM CRM-M3a: ``crm_create_pipeline`` (admin, behind
+#: ``CRM_PIPELINES_ORGS``). The owner declares 23 tools.
 CRM_TOOLS = (
-    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
+    "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
+    "crm_search_notes", "crm_update_record", "crm_update_task",
     "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
     "update_deal_status",
 )
@@ -582,7 +593,9 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    assert len(scope) == 22, "non-vacuity: the owner still declares 22 tools"
+    # 25: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # and crm_create_pipeline of CRM-M3a.
+    assert len(scope) == 25, "non-vacuity: the owner declares 25 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
@@ -634,8 +647,9 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    # 10, not 9, since WS-CRM CRM-M1: the pack holds crm_change_history too.
-    assert len(tools) == 10
+    # 13: 10 since CRM-M1, 2 of CRM-M2b (the record edit and the task
+    # change) and 1 of CRM-M3a (crm_create_pipeline).
+    assert len(tools) == 13
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
@@ -647,13 +661,34 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
-#: The eight read-only tools, the three skill tools (STU-F2d), the two
-#: package tools (STU-G1c), then the two record tools (STU-D2b).
+#: WS-67 TS-1b: the core ``studio`` pack. The eight read-only builder tools, then
+#: save and publish (STU-G1c).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
-                "studio_validate", "studio_skill_list", "studio_skill_save",
-                "studio_skill_state", "studio_save", "studio_publish",
-                "studio_package_get", "studio_record_list")
+                "studio_validate", "studio_save", "studio_publish")
+#: WS-67 TS-1b: the ``studio-more`` pack. The three skill tools (STU-F2d), the
+#: delete (STU-A5c-2), the ready apps (STU-K1d), the two record reads (STU-D2b), the
+#: three record writes (STU-B2c-2b), the door read (STU-B2b-2c), then the one
+#: workflow read (STB-6a).
+STUDIO_MORE_TOOLS = ("studio_skill_list", "studio_skill_save", "studio_skill_state",
+                     "studio_delete_package", "studio_template_list",
+                     "studio_create_from_template", "studio_package_get",
+                     "studio_record_list", "studio_record_create", "studio_record_update",
+                     "studio_record_delete", "studio_app_read", "studio_workflow_read")
+#: The rule lines that both Studio rules blocks hold. Each other rule is in one
+#: block only.
+STUDIO_SHARED_RULES = frozenset({
+    "- Never name a tool to the member. Say what it does in product words."})
+#: The six record tools: the two reads, the three writes, then the door read (B2b-2c).
+RECORD_READS = ("studio_package_get", "studio_record_list")
+DOOR_READ = ("studio_app_read",)
+RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
+#: The two workflow writes of the second pack of the owner (STB-6b).
+WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live")
+#: The one tool of the fourth pack of the owner, the share of a skill (WS-STU J2d).
+SHARE_TOOLS = ("studio_skill_share",)
+#: Each pack of the Studio owner, in the order of ``PACKS``.
+STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-share")
 
 
 def _studio_scope() -> set[str]:
@@ -662,12 +697,24 @@ def _studio_scope() -> set[str]:
 
 
 def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -> None:
-    """Mutation: add a tool to the family or to ``own_tool_scope`` alone -> red."""
+    """Mutation: add a tool to the family or to ``own_tool_scope`` alone -> red.
+    STB-6b: the owner holds a second pack, ``studio-workflows``, so its scope
+    is the tools of its two packs."""
     family = sf.SKILL_FAMILIES["studio"]
+    more = sf.SKILL_FAMILIES["studio-more"]
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
+    assert more["owner"] == STUDIO and sf.is_pack("studio-more") and more["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
-    assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 15 <= tp.MAX_PACK_TOOLS == 35
+    assert tuple(more["tools"]) == STUDIO_MORE_TOOLS
+    assert (set(family["tools"]) | set(more["tools"]) | set(WORKFLOW_WRITES)
+            | set(SHARE_TOOLS)) == _studio_scope()
+    assert tuple(sf.SKILL_FAMILIES["studio-workflows"]["tools"]) == WORKFLOW_WRITES
+    assert tuple(sf.SKILL_FAMILIES["studio-share"]["tools"]) == SHARE_TOOLS
+    # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
+    # WS-67 TS-1b split the 23 into a core of 10 and studio-more of 13, with no tool in both.
+    assert len(family["tools"]) == 10 and len(more["tools"]) == 13
+    assert not set(family["tools"]) & set(more["tools"])
+    assert len(set(family["tools"]) | set(more["tools"])) == 23 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -714,33 +761,107 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     module = ti._import_pack_owner(STUDIO)
     assert module is not None and callable(module._agent_tools)
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
+    assert tuple(tool_name(fn) for fn in tp.owner_tools("studio-more", module)) == (
+        STUDIO_MORE_TOOLS)
 
 
-def test_the_built_studio_pack_is_the_fifteen_tools_as_coroutines() -> None:
+def test_the_built_studio_packs_are_the_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
     assert tuple(tool_name(fn) for fn in tools) == STUDIO_TOOLS
     assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+    # WS-67 TS-1b: the owner builds studio-more from the same module.
+    more = tp.owner_tools("studio-more", load_agent_module(STUDIO_DIR))
+    assert tuple(tool_name(fn) for fn in more) == STUDIO_MORE_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in more)
+    # STB-6b: the owner builds the second pack from the same module.
+    writes = tp.owner_tools("studio-workflows", load_agent_module(STUDIO_DIR))
+    assert tuple(tool_name(fn) for fn in writes) == WORKFLOW_WRITES
+    assert all(inspect.iscoroutinefunction(fn) for fn in writes)
 
 
-def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
-    """Mutation: name a tool of another pack in the rules -> red."""
-    found = tp.PACKS["studio"]
-    # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
-    # parameter of studio_skill_save (STU-F2d review round 2). Neither is a tool.
-    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card", "based_on"}
-    assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
+#: "no_card" is a value of the "decision" of studio_plan, and "based_on" a
+#: parameter of studio_skill_save (STU-F2d review round 2). "request_id" is a
+#: parameter of the record write tools (STU-B2c-2b). None is a tool.
+_NOT_TOOLS = {"no_card", "based_on", "request_id"}
+
+
+@pytest.mark.parametrize(("slug", "own", "extra"), [
+    ("studio", STUDIO_TOOLS, frozenset()),
+    # WS-67 TS-1b: after a 422 on a skill save, studio-more says to load the
+    # core with the load tool. It names no core tool.
+    ("studio-more", STUDIO_MORE_TOOLS, frozenset({tp.LOAD_TOOL})),
+])
+def test_the_studio_rules_name_only_tools_of_the_pack(
+    slug: str, own: tuple[str, ...], extra: frozenset[str],
+) -> None:
+    """Mutation: name a tool of another pack in the rules -> red. Mutation: name
+    a core tool in the rules of studio-more -> red."""
+    found = tp.PACKS[slug]
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - _NOT_TOOLS
+    assert named and named <= set(own) | extra, named - set(own) - extra
     assert found.owner == STUDIO and found.delegation_refusal
-    assert tp.owner_packs(STUDIO) == ("studio",)
+    assert found.delegation_refusal == tp.PACKS["studio"].delegation_refusal
+    # STB-6b, then WS-67 TS-1b, then WS-STU J2d.
+    assert tp.owner_packs(STUDIO) == STUDIO_PACKS
     assert STUDIO in tp.NO_PERSONA_BULLETS
 
 
+def test_the_studio_more_rules_send_a_422_to_the_load_of_the_core() -> None:
+    """WS-67 TS-1b. The one step that crosses the split: after a 422 with an
+    actions path, the rules of studio-more name only the load tool. Mutation:
+    name ``studio_list_actions`` in the rules of studio-more -> red."""
+    more = " ".join(tp.PACKS["studio-more"].rules.split())
+    assert ("When this chat holds no tool that lists them, load the studio pack with "
+            "load_skill_tools first, then list the actions.") in more
+    assert "studio_list_actions" not in more
+    assert tp.LOAD_TOOL not in tp.PACKS["studio"].rules
+
+
+def _rule_lines(rules: str) -> list[str]:
+    """Each rule of a rules block: a bullet with its wrapped lines, as one line."""
+    out: list[str] = []
+    for line in rules.splitlines()[1:]:
+        if line.startswith("- "):
+            out.append(line)
+        elif out and line.startswith("  "):
+            out[-1] = f"{out[-1]} {line.strip()}"
+    return out
+
+
+def test_each_studio_rule_is_in_one_block_only() -> None:
+    """WS-67 TS-1b: the split moved each rule of the old block to one of the two
+    blocks. Only the closing rule is in both. Mutation: copy a rule into the
+    other block -> red."""
+    core = _rule_lines(tp.PACKS["studio"].rules)
+    more = _rule_lines(tp.PACKS["studio-more"].rules)
+    assert core and more
+    assert set(core) & set(more) == STUDIO_SHARED_RULES
+    assert len(core) == len(set(core)) and len(more) == len(set(more))
+
+
 def test_no_studio_tool_is_in_another_pack_or_an_injected_family() -> None:
-    mine = set(STUDIO_TOOLS)
-    for slug, fam in sf.SKILL_FAMILIES.items():
-        if slug != "studio":
-            assert not mine & set(fam["tools"]), slug
+    for own_slug, own in (("studio", STUDIO_TOOLS), ("studio-more", STUDIO_MORE_TOOLS)):
+        for slug, fam in sf.SKILL_FAMILIES.items():
+            if slug != own_slug:
+                assert not set(own) & set(fam["tools"]), (own_slug, slug)
+
+
+def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
+    """WS-67 TS-1b. studio-more is on wherever studio is on, with the same
+    surface and words. studio-workflows is not in FOLLOWS (owner-only, work_plan.md
+    section 6 D4). Mutation: drop the FOLLOWS entry, drop the surface, or add
+    studio-workflows to FOLLOWS -> red."""
+    assert tp.FOLLOWS["studio-more"] == "studio"
+    assert "studio-workflows" not in tp.FOLLOWS
+    assert tp.with_followers({"studio"}) == {"studio", "studio-more"}
+    core, more = tp.PACKS["studio"], tp.PACKS["studio-more"]
+    assert more.surface_slugs == core.surface_slugs == ("studio",)
+    assert more.words == core.words
+    # WS-STU J2d: the dark share pack is last, so the cap drops it first.
+    assert list(tp.PACKS)[-4:] == list(STUDIO_PACKS)
+    assert "studio-share" not in tp.FOLLOWS
 
 
 def test_the_studio_pack_is_filtered_by_the_owner_key() -> None:
@@ -764,6 +885,153 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
     kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
     assert kept == [], "no org fails closed"
+
+
+# -- 8a. The record writes need the approval store of the org (STU-B2c-2b) ---
+
+
+def _named(name: str) -> Any:
+    async def tool(): ...
+    tool.__name__ = name
+    return tool
+
+
+def _record_tools() -> list[Any]:
+    return [_named(n) for n in (*RECORD_READS, *RECORD_WRITES)]
+
+
+@pytest.mark.parametrize("access,listed,kept", [
+    (True, "", RECORD_READS), (True, "org-2", RECORD_READS),
+    (True, "org-1", RECORD_READS + RECORD_WRITES), (True, "*", RECORD_READS + RECORD_WRITES),
+    # Fix round 1 (P3): the member's list of Waiting for you needs agent access
+    # too (`agent_requests._require_access`). Without it, no write tool.
+    (False, "org-1", RECORD_READS), (False, "*", RECORD_READS), (False, "", RECORD_READS),
+])
+async def test_the_studio_pack_holds_the_record_writes_only_where_requests_are_open(
+    monkeypatch, access: bool, listed: str, kept: tuple[str, ...],
+) -> None:
+    """Criterion 5: an org that ``APP_REQUESTS_ORGS`` leaves out gets the read
+    tools only, and an org in it gets all five, while ``AGENT_ACCESS_ENABLED``
+    is on. With agent access off, the read tools only, whatever the org flag.
+    The readers are the ones of the door and of the list route. Mutation:
+    make ``_drop_studio_writes_unless_requests`` return the tools unchanged ->
+    the dark cases keep the writes -> red. Mutation: drop the
+    ``agent_oauth.enabled()`` check -> the access-off cases keep the writes ->
+    red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, HOLDER)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", listed)
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", access)
+    tools = _record_tools()
+    out, dropped = await ti._drop_pack_unless_studio(tools, ["earlier"])
+    assert tuple(tool_name(t) for t in out) == kept
+    assert dropped == ["earlier", *(n for n in RECORD_WRITES if n not in kept)]
+
+
+async def test_the_record_write_filter_fails_closed(monkeypatch) -> None:
+    """No org, and a reader that raises, both read as closed."""
+    from gateway import app_requests
+
+    tools = _record_tools()
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+
+    def boom(_org: Any) -> bool:
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
+    monkeypatch.setattr(app_requests, "requests_allowed", boom)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+
+    # A reader of agent access that raises reads as closed too (fix round 1).
+    from acb_auth import agent_oauth
+
+    def access_boom() -> bool:
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(app_requests, "requests_allowed", lambda _org: True)
+    monkeypatch.setattr(agent_oauth, "enabled", access_boom)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+    monkeypatch.setattr(agent_oauth, "enabled", lambda: True)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS + RECORD_WRITES, "non-vacuous"
+
+
+async def test_a_pack_with_no_record_write_reads_no_flag(monkeypatch) -> None:
+    reads: list[int] = []
+
+    def read() -> bool:
+        reads.append(1)
+        return False
+
+    monkeypatch.setattr(ti, "_studio_requests_open", read)
+    tools = [_named("studio_draft"), _named("studio_record_list")]
+    out, dropped = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert out == tools and dropped == [] and reads == []
+
+
+def test_the_filter_reads_the_one_list_of_record_writes() -> None:
+    from acb_skills import studio_tools as st
+
+    assert frozenset(RECORD_WRITES) == st.STUDIO_RECORD_WRITES
+    assert tuple(fn.__name__ for fn in st.STUDIO_RECORD_TOOLS) == (
+        RECORD_READS + RECORD_WRITES + DOOR_READ)
+
+
+def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
+    """Criterion 6. The lit text: the ask, where the member answers, the
+    resend with no data, and saved true as the only proof. The dark text: no
+    write tool means record changes from chat are not open. The old line that
+    no chat tool writes a record is gone. Mutation: drop either part -> red."""
+    rules = " ".join(tp.PACKS["studio-more"].rules.split())
+    lit = (
+        "studio_record_create adds a record, studio_record_update changes one, and "
+        "studio_record_delete deletes one.",
+        "each asks the member first. The first call saves nothing.",
+        # STU-B2c-2c fix round 1: the card of the web chat first, the list of
+        # Integrations in a channel with no card, and the resend by the id alone.
+        "In the web chat, the approval card shows under your reply, so ask the member to "
+        "answer it there.",
+        "In a channel with no card, the member approves or declines the change in "
+        "Integrations, AI agents, Waiting for you.",
+        "call the same tool again with only that request_id. Send no package id, no object "
+        "name and no data again",
+        "Only a result with saved true is saved. Never say that a change is saved before that.",
+        "A declined change wrote nothing. Say so.",
+    )
+    dark = ("When this chat holds no tool that adds, changes or deletes a record, record "
+            "changes from chat are not open for this organization yet.")
+    for line in (*lit, dark):
+        assert line in rules, line
+    assert "No chat tool creates, changes or deletes a record" not in rules
+    assert "change the records of a package" in tp.PACKS["studio-more"].when
+
+
+def test_the_studio_rules_tell_the_one_card_of_a_delete() -> None:
+    """STU-A5c-2. The delete always shows one card, only approved deletes, an
+    admin deletes the app of a member who left, and a result with remaining
+    asks for a new call. The delete is a write of the pack, and the record
+    filter does not take it out. Mutation: drop the DELETE AN APP bullet ->
+    red."""
+    from acb_skills import studio_tools as st
+
+    rules = " ".join(tp.PACKS["studio-more"].rules.split())
+    for line in ("DELETE AN APP. studio_delete_package deletes an app for good",
+                 "Send the package id only.",
+                 "It always shows one card with the counts, in every chat.",
+                 "Only approved deletes.",
+                 "An admin can delete the app of a member who left.",
+                 "When the result gives remaining, call it again. It shows a new card."):
+        assert line in rules, line
+    assert "studio_delete_package" not in st.STUDIO_RECORD_WRITES
+    assert st.studio_delete_package in st.STUDIO_PACKAGE_TOOLS
+    assert st.studio_delete_package.__tool_risk__["read_only"] is False
 
 
 # -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)
@@ -827,11 +1095,69 @@ async def test_the_loader_offers_the_studio_pack_only_to_a_member_who_holds_stud
     monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
     monkeypatch.setattr(ti, "_studio_open", lambda: True)
     _member_holds(monkeypatch, features)
+    # STB-6b: the owner has more than one pack, so the loader reaches it only
+    # where the list allows each. The hand-off to it is refused in every run anyway.
+    # WS-67 TS-1b: studio-more is the third pack of the owner. WS-STU J2d: the
+    # fourth is studio-share.
+    every = frozenset(STUDIO_PACKS)
     plan = await ti._plan_pack_loader(
-        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
+        object(), every, [], builds=[], current=40, pool=[], persona="",
         bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
     assert ("studio" in plan.offered) is offered, who
+    assert ("studio-more" in plan.offered) is offered, who
+    assert ("studio-workflows" in plan.offered) is offered, who
     assert (STUDIO in plan.via_loader) is offered, who
+    # The list of a box that names ``studio``: its follower comes in, and the
+    # dark ``studio-workflows`` does not.
+    lit = tp.with_followers({"studio"})
+    alone = await ti._plan_pack_loader(
+        object(), lit, [], builds=[], current=40, pool=[], persona="",
+        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+    assert ("studio" in alone.offered) is offered, who
+    assert ("studio-more" in alone.offered) is offered, who
+    assert STUDIO not in alone.via_loader, "the dark pack keeps the owner unreached"
+    # A run that holds the core still offers studio-more (WS-67 TS-1b). Only a
+    # member who holds Studio can hold the core, so only that row asks it.
+    if offered:
+        held = await ti._plan_pack_loader(
+            object(), lit, ["studio"], builds=[], current=50, pool=[], persona="",
+            bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+        assert held.offered == ("studio-more",), who
+
+
+@pytest.mark.parametrize("who,open_,features,requests,core,more", [
+    # STUDIO_ORGS leaves the org out: no tool of either pack.
+    ("org closed", False, HOLDER, True, (), ()),
+    # A member without feature:studio: no tool of either pack.
+    ("guest", True, GUEST, True, (), ()),
+    ("denied member", True, DENIED, True, (), ()),
+    # An open member in an org with no approval store: no record write.
+    ("no requests", True, HOLDER, False, STUDIO_TOOLS,
+     tuple(n for n in STUDIO_MORE_TOOLS if n not in RECORD_WRITES)),
+    ("all open", True, HOLDER, True, STUDIO_TOOLS, STUDIO_MORE_TOOLS),
+])
+async def test_both_studio_packs_build_through_the_one_owner_filter(
+    monkeypatch, who: str, open_: bool, features: frozenset[str] | None, requests: bool,
+    core: tuple[str, ...], more: tuple[str, ...],
+) -> None:
+    """WS-67 TS-1b. The owner filter keys on the owner, so studio-more keeps
+    STUDIO_ORGS, ``feature:studio`` and the drop of the record writes with no
+    code of its own. The real module and the real builder. Mutation: key the
+    filter on the slug ``studio`` -> studio-more builds for a guest -> red."""
+    monkeypatch.setattr(ti, "_studio_open", lambda: open_)
+    monkeypatch.setattr(ti, "_studio_requests_open", lambda: requests)
+    _member_holds(monkeypatch, features)
+
+    async def _clear(_owner: str, _ctx: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(ti, "_pack_held", _clear)
+    module = load_agent_module(STUDIO_DIR)
+    ctx = {tp.PACK_RUN_KEY: "run-key-studio"}
+    for slug, want in (("studio", core), ("studio-more", more)):
+        build = await ti._pack_tools(slug, ctx, module=module)
+        assert build is not None and build.owner == STUDIO, (who, slug)
+        assert tuple(tool_name(t) for t in build.tools) == want, (who, slug)
 
 
 async def test_the_member_is_not_read_while_the_org_is_closed(monkeypatch) -> None:
@@ -934,9 +1260,17 @@ def test_a_hand_off_to_the_studio_owner_is_refused_in_every_run() -> None:
     other = {tp.PACKS_KEY: _studio_record("email")}
     assert tp.delegation_refusal(STUDIO, other, starts=True) == tp.PACK_ONLY_REFUSED
     assert STUDIO not in other[tp.PACKS_KEY].handed, "a refused hand-off never starts"
-    # A run that holds the pack answers the pack's own text, which is true there.
-    held = {tp.PACKS_KEY: _studio_record("studio")}
+    # A run that holds each pack of the owner answers the pack's own text, which
+    # is true there. STB-6b: the owner has more than one pack, so a run with
+    # some of them answers the refusal of every run. Both texts refuse. WS-67
+    # TS-1b: studio-more is the third pack of the owner. WS-STU J2d: the fourth
+    # is studio-share.
+    held = {tp.PACKS_KEY: _studio_record(*STUDIO_PACKS)}
     assert tp.delegation_refusal(STUDIO, held) == tp.PACKS["studio"].delegation_refusal
+    for some in (("studio",), ("studio", "studio-more"), ("studio", "studio-workflows"),
+                 ("studio", "studio-more", "studio-workflows")):
+        part = {tp.PACKS_KEY: _studio_record(*some)}
+        assert tp.delegation_refusal(STUDIO, part) == tp.PACK_ONLY_REFUSED, some
     # Any other agent keeps its old answer.
     assert tp.delegation_refusal("projects-assistant", {}) is None
 
@@ -1030,8 +1364,14 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
     monkeypatch.setattr(ti, "_studio_open", lambda: open_)
     _member_holds(monkeypatch, HOLDER)
+    # STB-6b: the loader reaches the owner only where the list allows each of
+    # its packs (see the member test above). WS-67 TS-1b: three packs. WS-STU
+    # J2d: four.
     plan = await ti._plan_pack_loader(
-        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
-        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+        object(), frozenset(STUDIO_PACKS), [], builds=[],
+        current=40, pool=[], persona="", bullets={}, agent_name="orchestrator",
+        no_egress=False, is_authorized=None)
     assert ("studio" in plan.offered) is open_
+    assert ("studio-more" in plan.offered) is open_
+    assert ("studio-workflows" in plan.offered) is open_
     assert (STUDIO in plan.via_loader) is open_

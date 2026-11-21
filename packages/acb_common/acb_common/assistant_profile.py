@@ -383,7 +383,7 @@ def _clean_address(value: Any) -> dict[str, Any]:
 
 
 def _clean_style(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("length", "language", "notes"), "the style")
+    raw = _object(value, ("length", "language", "language_fixed", "notes"), "the style")
     out: dict[str, Any] = {}
     if "length" in raw:
         out["length"] = _choice(raw["length"], LENGTH, "style.length")
@@ -394,6 +394,11 @@ def _clean_style(value: Any) -> dict[str, Any]:
         if not _LANGUAGE.match(lang) or _language_has_number(lang):
             raise ValueError("style.language is a BCP 47 tag")
         out["language"] = lang
+    if "language_fixed" in raw:
+        # The member's order about the answer language (personalization.md 5.3).
+        if raw["language_fixed"] is not True:
+            raise ValueError("style.language_fixed is true, or null to clear it")
+        out["language_fixed"] = True
     if "notes" in raw:
         notes = raw["notes"]
         if not isinstance(notes, list):
@@ -576,7 +581,7 @@ def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
 
     *star* is True only for a reader that reads ``*`` as each org
     (:func:`card_writes_for`, :func:`chat_summary_for`,
-    :func:`briefing_for`). For any other
+    :func:`briefing_for`, :func:`image_analysis_for`). For any other
     reader ``*`` matches no org, so
     it warns as any entry that is not a uuid does. :func:`enabled_for` reads
     an empty list as each org, and ``*`` there turns the profile off.
@@ -648,6 +653,34 @@ def card_writes_for(org_id: str | None) -> bool:
         return False
 
 
+def image_analysis_for(org_id: str | None) -> bool:
+    """True when ``analyze_image`` may call a model for *org_id*. Fails closed.
+
+    ``IMAGE_ANALYSIS_ORGS`` (``image_analysis_orgs``, WS-VOX VOX-3,
+    ``projects_ai_chat.md`` §31) is a comma list of organization ids, or
+    ``*`` for each one. Empty means off, which is the default. It is the one
+    reader of the flag. Each call that the flag lets through draws AI credits
+    on ``tier-vision``. It does not need the profile switch.
+
+    The caller passes the bound tenant of the run
+    (``acb_common.db.current_tenant``), never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "image_analysis_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        return "*" in orgs or org in orgs
+    except Exception:
+        return False
+
+
 def chat_summary_for(org_id: str | None) -> bool:
     """True when the chat summaries of PZ-33 are on for *org_id*. Fails closed.
 
@@ -706,6 +739,36 @@ def briefing_for(org_id: str | None) -> bool:
         from acb_common import get_settings
 
         raw = str(getattr(get_settings(), "assistant_briefing_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        if "*" not in orgs and org not in orgs:
+            return False
+        return enabled_for(org)
+    except Exception:
+        return False
+
+
+def address_forms_for(org_id: str | None) -> bool:
+    """True when the forms of address of PZ-40 are on for *org_id*. Fails closed.
+
+    ``ADDRESS_FORMS_ORGS`` (``address_forms_orgs``) is a comma list of
+    organization ids, or ``*`` for each one. Empty means off, which is the
+    default (``personalization.md`` §16.4). It is the one reader of the flag.
+    On, the name question offers the forms of ``acb_common.honorifics`` and
+    the block keeps ``address.name`` exactly as written.
+
+    The profile must be on for the org too (:func:`enabled_for`). The caller
+    passes the bound tenant of the run, never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_honorifics.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "address_forms_orgs", "") or "")
         orgs = _parse_orgs(raw, star=True)
         if "*" not in orgs and org not in orgs:
             return False
@@ -1008,8 +1071,8 @@ def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
     * *author* is the run member. Another member's steer never grounds a
       write.
 
-    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
-    carries a steer to the model. Never raises.
+    ``orchestrator.steer.take_steer_turns`` calls it when a model call reads
+    a steer as a user turn (task 2494). Never raises.
     """
     holder = _STEERS.get()
     if holder is None or typed is not True or not holder.member:
@@ -1044,8 +1107,11 @@ def sent_words() -> str:
 
     That is the sent text of the request (:data:`MEMBER_SENT`), then the
     member's own typed steers that the run read, as :func:`typed_words` reads
-    them. Only the tool-pack chooser reads it (D-PZ-37). ⚠️ Never ground a
-    write in it: a tapped pill holds words that the member did not type.
+    them. Only the tool-pack chooser reads it (D-PZ-37). TOF-3a F12b: the
+    live writer of skill runs reads the same words through ``PackTurn.words``,
+    and keeps only their hash (``orchestrator._tool_injection``). ⚠️ Never
+    ground a write in it: a tapped pill holds words that the member did not
+    type.
     :func:`typed_words` is the one value that grounds a write."""
     own = MEMBER_SENT.get()
     holder = _STEERS.get()
@@ -1784,7 +1850,7 @@ def may_ask(interview: Any, now: datetime) -> bool:
     return sitting_active(interview, now) or bool(due_area(interview, now))
 
 
-def interview_due_line(interview: Any, now: datetime) -> str:
+def interview_due_line(interview: Any, now: datetime, forms_line: str = "") -> str:
     """The one line of the block when a question is due, or ``""``.
 
     A question is due when the sitting began (``started_at``), the last
@@ -1792,13 +1858,18 @@ def interview_due_line(interview: Any, now: datetime) -> str:
     an area is open. The line names the first open area and its starting
     question. A member who said no to the offer has ``started_at`` and no
     ``last_asked_at``, so no line ever comes (§14.4).
+
+    *forms_line* is the offer of PZ-40 (``honorifics.offer_line``). The caller
+    passes it only where the flag is on, and it joins the ``name`` area only.
     """
     area = due_area(interview, now)
     if not area:
         return ""
+    offer = f"{forms_line} " if forms_line and area == "name" else ""
     return ("Interview (one question is due): "
             f"{area}: {AREA_INTENTS[area]}. "
             f"Example, do not read it out: «{AREAS[area]}» "
+            f"{offer}"
             "Ask it only if it fits the moment, at the end of your reply, "
             "in your own words. "
             f'Then call profile_interview("asked", "{area}").')
@@ -1825,11 +1896,13 @@ NO_NAME_LINE = "Do not address them by name. Never write a placeholder."
 #: "at most once a day", because the model keeps no day of its own (R7).
 GREETING_LINES: dict[str, str] = {
     "none": "Greeting: none. Open with the answer.",
-    "brief": ("Greeting: brief. In the first reply of a chat only, open with one "
-              "short greeting for the time of day. Never greet again in that chat."),
-    "warm": ("Greeting: warm. In the first reply of a chat only, open with a "
-             "greeting and one personal line from a fact in this block. Do this "
-             "at most once a day."),
+    "brief": ("Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    "warm": ("Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal "
+             "line from a fact in this block. Do this at most once a day. "
+             "Otherwise do not greet."),
 }
 #: The rule of each answer length (§5.3, the WS-52 brevity rule).
 LENGTH_LINES: dict[str, str] = {
@@ -1861,10 +1934,18 @@ def effective_greeting(raw: Any) -> str:
 DIRECTORY_NAME_LINE = 'Their directory name is "{name}". Use it only as a name, to address them.'
 
 
-def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> str:
+#: PZ-40 (§16.4.1 rule 6). The block says that a chosen form stays as written.
+AS_WRITTEN_LINE = ("Use this name exactly as written, with any form of address in it. "
+                   "Never add, drop, respell or move a form.")
+
+
+def _address_line(address: dict[str, Any], name: str, *, own: bool = True,
+                  forms: bool = False) -> str:
     bits: list[str] = []
     if name and own:
         bits.append(f'Address them as "{name}".')
+        if forms:
+            bits.append(AS_WRITTEN_LINE)
     elif name:
         bits.append(DIRECTORY_NAME_LINE.format(name=name))
     else:
@@ -1875,13 +1956,67 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> st
     return " ".join(bits)
 
 
+# Language names for the style line. Same nine as ``LANGUAGES`` in
+# ``settings/assistant/lib/profile.ts``. ``test_assistant_profile_language.py``
+# keeps the two maps equal. A tag outside the map stays a bare tag.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "hi": "Hindi", "kn": "Kannada", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati",
+    "ml": "Malayalam",
+}
+
+# The one language rule of every chat turn (PZ-51, personalization.md 5.3).
+# ``executor._context_preamble_parts`` adds it to each turn, with or without
+# a profile block. Owner, 2026-11-09: the core truth is saved in English, and
+# the language of the message wins over the profile language.
+LANGUAGE_RULE_LINE = (
+    "Language rule: answer in the language that the member uses in this "
+    "message, also when it differs from their profile language. Use the "
+    "profile language only when the language of the message is unclear. "
+    "A profile line that says to answer in a language even when the member "
+    "writes in another one wins over this: the member ordered it. "
+    "Write every saved record in English: task and project titles and "
+    "descriptions, comments, notes, CRM records, calendar events, and email "
+    "or message drafts. Do this even when the member writes in another "
+    "language. The one exception is a member's explicit request for another "
+    "language in that record, such as \"write this email in Hindi\"."
+)
+
+# Accepts "kn" and "Kannada (kn)". The group is always the TAG.
+_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in ")
+
+
+def block_language(block: str) -> str | None:
+    """The ``style.language`` tag that :func:`_style_line` wrote into *block*,
+    or None. The part-of-day line reads it (PZ-39). It never guesses a
+    language from a name or a region."""
+    m = _BLOCK_LANGUAGE.search(block or "")
+    return m.group(1) if m else None
+
+
 def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     bits: list[str] = []
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
     if style.get("language"):
-        bits.append(f"Language: {_one_line(style['language'])}. Answer in it, "
-                    "unless they write in another language.")
+        tag = _one_line(style["language"])
+        name = LANGUAGE_NAMES.get(tag.lower())
+        label = f"{name} ({tag})" if name else tag
+        if style.get("language_fixed") is True:
+            # The member ordered this language (personalization.md 5.3). It
+            # holds when they write in another one.
+            answer = LANGUAGE_NAMES.get(tag.lower().split("-")[0], label)
+            if answer == "English":
+                tail = "writes in Hindi or another language"
+            elif answer == "Hindi":
+                tail = "writes in English or another language"
+            else:
+                tail = "writes in another language"
+            bits.append(f"Language: {label}. Answer in {answer}, even when "
+                        f"the member {tail}.")
+        else:
+            bits.append(f"Language: {label}. Answer in it, "
+                        "unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))
     return " ".join(bits)
@@ -1916,7 +2051,7 @@ def _compose(address: str, style: str, aliases: list[dict[str, Any]],
     return "\n".join(lines)
 
 
-def render_block(raw: Any, fallback_name: str = "") -> str:
+def render_block(raw: Any, fallback_name: str = "", *, forms: bool = False) -> str:
     """The per-turn block of §5.1 for the stored value *raw*, or ``""``.
 
     Pure, apart from one log line when the cap sheds an item. It reads the
@@ -1932,6 +2067,12 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     and the footer. With no stored greeting, the line is
     :data:`DEFAULT_GREETING`. A style key or a formality adds
     :data:`HOUSE_VOICE_LINE` (PZ-3).
+
+    **A form of address** (PZ-40, §16.4.1 rules 4 and 6). With *forms* on and
+    a stored ``address.name``, the address line adds :data:`AS_WRITTEN_LINE`,
+    so the chat keeps "Vijay garu" as written. With no stored name, the block
+    names the member by the directory name alone (rule 4). Off, the block is
+    as before.
 
     The block is at most :data:`RENDER_MAX` characters. Over the cap it
     sheds whole items in one fixed order: the facts, oldest first (by
@@ -1957,7 +2098,7 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     name = own_name or fallback
     if not (address or style or notes or aliases or facts or name):
         return ""
-    address_line = _address_line(address, name, own=bool(own_name))
+    address_line = _address_line(address, name, own=bool(own_name), forms=forms)
     overlay = bool(style or notes or address.get("formality"))
     dropped = 0
     # The oldest first: an undated fact sorts as the oldest of all.
@@ -1984,7 +2125,7 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     return block
 
 
-def member_block(raw: Any, preferred: Any, display: Any) -> str:
+def member_block(raw: Any, preferred: Any, display: Any, org: str | None = None) -> str:
     """The block of one member: :func:`render_block` of the stored value
     *raw*, with the name of :func:`resolve_address_name`.
 
@@ -1992,11 +2133,12 @@ def member_block(raw: Any, preferred: Any, display: Any) -> str:
     ``app_user.display_name``. The executor builds the block of a turn with
     this function. The "Read as text" route of Settings (PZ-20a) calls it
     too. One path builds the text, so the member reads what the model reads.
-    Pure.
+    *org* is the bound tenant of the caller. It decides the PZ-40 flag
+    (:func:`address_forms_for`). Without it, the flag is off.
     """
     name = resolve_address_name(stored_profile(raw)["address"].get("name"),
                                 preferred, display)
-    return render_block(raw, name)
+    return render_block(raw, name, forms=address_forms_for(org))
 
 
 # ── The briefing at the start of a chat (PZ-34, §15.4) ──────────────────────
@@ -2184,6 +2326,8 @@ def render_export(raw: Any) -> str:
         for key, label in (("length", "Answer length"), ("language", "Language")):
             if style.get(key):
                 lines.append(f"- {label}: {_one_line(style[key])}")
+        if style.get("language_fixed") is True and style.get("language"):
+            lines.append("- The language holds even when you write in another one")
         lines += [f"- Note: {n}" for n in notes]
     if profile["facts"]:
         lines += ["", "What you asked the assistant to remember"]

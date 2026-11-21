@@ -870,3 +870,23 @@ describe("the lifecycle verbs (owner request, 2026-09-20)", () => {
     expect(spy.calls).toEqual(["archive:t1", "unarchive:t1", "delete:t1"]);
   });
 });
+
+describe("Make it an epic (SP-6)", () => {
+  it("shows only where the project has an epic type and the task is not one", () => {
+    expect(ids(taskMenuItems(board()))).not.toContain("task.makeEpic");
+    expect(ids(taskMenuItems(board({ epicTypeId: "e1" })))).toContain("task.makeEpic");
+    expect(ids(taskMenuItems(board({ epicTypeId: "e1", isEpic: true })))).not.toContain(
+      "task.makeEpic",
+    );
+  });
+
+  it("runs makeEpic", () => {
+    const made: string[] = [];
+    const ctx = board({ epicTypeId: "e1" });
+    const found = taskMenuItems(ctx).find((e) => e.kind === "item" && e.id === "task.makeEpic");
+    if (found?.kind !== "item") throw new Error("not offered");
+    expect(found.label).toBe("Make it an epic");
+    found.run({ ...spyActions(), makeEpic: (t) => made.push(t.id) }, ctx);
+    expect(made).toEqual(["t1"]);
+  });
+});

@@ -56,12 +56,13 @@ def test_flag_on_sends_one_offer(stream, monkeypatch, call) -> None:
     _flag(monkeypatch, ORG)
     with artifact_context_scope():
         bind_artifact_context(session_id=SESSION)
+        # WT-3: the event went out, so the text names the tap.
         if call == "note":
             text = eg.egress_hold_note(_ctx())
-            assert text == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
+            assert text == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES_CONTINUE
         else:
             text = eg.egress_held_answer("x", _ctx())
-            assert text == eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name="x")
+            assert text == eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES_CONTINUE.format(name="x")
     events = _drain(stream)
     assert events == [{"type": "CUSTOM", "name": eg.CONTINUE_OFFER_EVENT, "value": {}}]
     assert eg.CONTINUE_OFFER_EVENT == "chat_continue_offer"
@@ -73,7 +74,9 @@ def test_flag_off_or_other_org_sends_nothing(stream, monkeypatch, value) -> None
     with artifact_context_scope():
         bind_artifact_context(session_id=SESSION)
         assert eg.egress_hold_note(_ctx()) == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
-        assert eg.egress_held_answer("x", _ctx())
+        # WT-3: no event, so the text promises no tap.
+        assert eg.egress_held_answer("x", _ctx()) == (
+            eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name="x"))
     assert _drain(stream) == []
 
 

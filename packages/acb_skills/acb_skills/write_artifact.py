@@ -778,38 +778,29 @@ async def write_artifact(
 ) -> dict:
     """Write a file to the agent's workspace and surface it in the UI file browser.
 
-    Call this any time you generate a document, report, script, spreadsheet,
-    PDF, image, or any other file that the operator should be able to view or
-    download from the Control Plane.
+    Call this for any file you make (a document, report, script, sheet, PDF
+    or image) that the operator can view or download.
 
-    Files are automatically placed in ``outputs/`` unless you specify
-    ``inputs/`` (user-provided files) or ``agent-data/`` (reference data).
-    In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
-    own folders, so the returned ``path`` shows where the file went.
+    Files go in ``outputs/`` unless you specify ``inputs/`` (user-provided
+    files) or ``agent-data/`` (reference data). In a chat of a shared agent,
+    ``outputs/`` and ``inputs/`` are that chat's own folders, so the returned
+    ``path`` shows where the file went.
 
     The chat shows a card that opens and downloads the file. Name the file in
     your reply, and do not paste ``download_url``.
 
     Args:
-        path:     Relative file path, e.g. ``"summary.md"`` or
-                  ``"reports/q2_summary.md"``.  If the path does not start
-                  with ``inputs/``, ``outputs/``, or ``agent-data/``, it is
-                  automatically placed in ``outputs/``.
-                  Parent directories are created automatically.
-        content:  File content — either a ``str`` (written with *encoding*)
-                  or ``bytes`` (written as-is; set *encoding* to ``None``).
-        encoding: Text encoding for ``str`` content.  Default ``"utf-8"``.
-                  Pass ``None`` when *content* is already ``bytes``.
-        overwrite: By default (``False``) an existing file is **never**
-                  clobbered — the new file is written to a uniquified name
-                  (``report (1).md``) so originals/user uploads are preserved.
-                  Set ``True`` to deliberately replace the file in place.
+        path: Relative file path, e.g. ``"reports/q2.md"``. Parent folders
+              are created.
+        content: A ``str`` (written with *encoding*) or ``bytes`` (set
+              *encoding* to ``None``).
+        encoding: Text encoding for ``str`` content. Default ``"utf-8"``.
+        overwrite: ``False`` (the default) never replaces a file: the new
+              file takes a new name (``report (1).md``). ``True`` replaces it.
 
     Returns:
-        ``{"path": str, "size": int, "sha256": str, "download_url": str}``
-
-        ``path`` is the file *actually* written (which may be a uniquified
-        name if a file already existed and ``overwrite`` is off).
+        ``{"path", "size", "sha256", "download_url"}``. ``path`` is the file
+        actually written.
     """
     import asyncio
 

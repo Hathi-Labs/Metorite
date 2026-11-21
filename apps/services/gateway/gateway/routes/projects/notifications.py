@@ -480,11 +480,12 @@ async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
     *me* read, in the caller's transaction. *ids* names the rows, and
     ``None`` marks every unread row of *me*. The count of rows it marked.
 
-    Two callers: :func:`mark_read`, the member's own click, and the outside
-    decision of an agent (WS-55 MCP-G15, ``agent_runs.record_outside_decision``),
-    which marks the member's bell row of the question that the member
-    answered outside Metorite. It does not commit, and it does not move My
-    Day. Each caller calls ``personal.bump_my_day`` after its commit.
+    Two callers: :func:`mark_read`, the member's own click, and the close of
+    an agent question (AP-BUG-3, ``agent_runs._close_question_bells``). A run
+    that leaves ``awaiting`` marks each recipient's bell row of its questions
+    read: an answer, an outside decision (WS-55 MCP-G15), Stop, Release or
+    Finish. It does not commit, and it does not move My Day. Each caller
+    calls ``personal.bump_my_day`` after its commit.
     """
     if ids is None:
         sql = (
@@ -501,6 +502,24 @@ async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
         params = {"me": me, "ids": list(ids)}
     result = await db.execute(text(sql), params)
     return int(getattr(result, "rowcount", 0) or 0)
+
+
+async def mark_rows_unread(db: Any, ids: list[str]) -> list[str]:
+    """The one narrow way back of :func:`mark_rows_read` (H-409 fix round 2,
+    task 748). A put-back of a task reopens an agent run to ``awaiting``, so
+    the bell rows of its question that the CLOSE marked read are unread
+    again (``agent_runs.reopen_run_of_reopened_task``). The caller names the
+    exact rows that the close itself marked, and the write touches only an
+    ``agent_question`` row that is read. It does not commit. It returns the
+    recipients, sorted, so the caller moves their My Day after its commit.
+    """
+    if not ids:
+        return []
+    rows = (await db.execute(text(
+        "UPDATE pm_notifications SET read_at = NULL "
+        "WHERE id = ANY(CAST(:ids AS uuid[])) AND kind = 'agent_question' "
+        "AND read_at IS NOT NULL RETURNING recipient"), {"ids": list(ids)})).fetchall()
+    return sorted({str(r.recipient) for r in rows})
 
 
 @router.post("/notifications/read")

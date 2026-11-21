@@ -25,7 +25,6 @@ Without the database each R8 test here SKIPS. A skip is not a pass.
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +48,7 @@ from gateway.jobs import queue, worker
 from gateway.routes.workflows import service
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 
 # Resolved by name as fixtures, so ruff sees them as unused (F401) and the
@@ -370,7 +370,6 @@ async def test_r8_a_marked_turn_cannot_approve_an_archive_and_a_person_can(w) ->
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_no_person_present_r8\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_no_person_present_r8.py" in r8_lists.must_run()
 
 

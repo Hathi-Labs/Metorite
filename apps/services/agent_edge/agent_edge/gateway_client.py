@@ -29,6 +29,23 @@ limit lives in ``tools``. One read is longer (EA-12b, spec §12.1): the long
 poll of ``get_agent_run`` passes ``timeout_s``, its ``wait_s`` plus 10
 seconds.
 
+**A binary read (IMG-3, ``projects_ai_chat.md`` §30.4).** :func:`get` with
+``max_bytes`` reads the body as bytes, and parses no JSON. It streams the
+body and stops once it holds ``max_bytes + 1`` bytes, so the edge never
+buffers more than the cap and one chunk. :attr:`Answer.content` then holds
+at most ``max_bytes + 1`` bytes. More than ``max_bytes`` means "too long".
+It reads the body of a 2xx answer only.
+
+**The one file write (CIV-14b, ``external_agent_access.md`` §12.9).**
+:func:`write_file` sends one image to the upload route of a task as a
+``multipart/form-data`` body with one part, ``file``. It is the only write
+that carries no JSON. The signature covers the bytes of the whole form, and
+the gateway keeps a copy of them for branch 0
+(``routes/projects/agent_upload_body.py``). It takes only
+:data:`FILE_WRITE_ROUTE`, a png, jpeg, gif or webp type and a file name in
+the shape of ``agent_oauth.ATTACHMENT_FILENAME_PATTERN``, so no quote and no
+line break reaches a part header.
+
 This module maps no answer. It returns the status and the parsed body, and
 ``agent_edge.tools`` maps each one to a tool result (§9.6, EA3-16).
 """
@@ -38,20 +55,26 @@ import asyncio
 import contextlib
 import json
 import re
+import secrets
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from acb_auth import agent_oauth, agent_signing
 from acb_auth.agent_tokens import TokenLookup
 from acb_common import app_manifests, get_logger, get_settings
+from acb_common.image_probe import RASTER_MIMES
 
 _log = get_logger("agent_edge.gateway_client")
 
 #: The limit of each gateway request, in seconds (EA3-17).
 REQUEST_TIMEOUT_S = 10.0
+
+#: CIV-14b. The one route that :func:`write_file` sends, and its form field.
+FILE_WRITE_ROUTE = "/projects/tasks/{task_id}/attachments"
+FILE_FIELD = "file"
 
 #: The method of every read.
 _GET = "GET"
@@ -84,10 +107,20 @@ class RouteRefused(ValueError):
 
 @dataclass(frozen=True)
 class Answer:
-    """The gateway's status code and its parsed JSON body (``None`` if none)."""
+    """The gateway's status code and its parsed JSON body (``None`` if none).
+
+    IMG-3: a binary read (:func:`get` with ``max_bytes``) parses no JSON. Its
+    ``body`` is ``None``, ``content`` holds the bytes (at most the cap and one
+    byte), and ``content_type`` holds the header. A tool never decides a type
+    from that header."""
 
     status: int
     body: Any
+    content: bytes = b""
+    content_type: str | None = None
+    #: MCP-G10. The whole seconds of the ``Retry-After`` header, when the
+    #: gateway sent a valid one. At least 1 and at most 3600.
+    retry_after: int | None = None
 
 
 @contextlib.contextmanager
@@ -137,7 +170,10 @@ def actor_via(caller: TokenLookup) -> str:
     of this client by it (EA-15b). One function, so the two cannot differ.
     """
     return agent_oauth.actor_via_for(
-        caller.client_origin, client_id=caller.connection_client_id)
+        caller.client_origin, client_id=caller.connection_client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=caller.credential, connection_id=caller.connection_id,
+        client_name=caller.client_name)
 
 
 def signed_request_headers(
@@ -172,6 +208,7 @@ async def get(
     query: Sequence[tuple[str, str]] = (),
     timeout_s: float | None = None,
     session: str | None = None,
+    max_bytes: int | None = None,
 ) -> Answer:
     """One signed ``GET`` to the gateway, or raise :class:`GatewayUnreachable`.
 
@@ -180,7 +217,12 @@ async def get(
     gateway refuses a repeated key. *timeout_s* is the limit of this request,
     and ``None`` is :data:`REQUEST_TIMEOUT_S`. Only the long poll of
     ``get_agent_run`` sets it (EA-12b).
+
+    IMG-3: *max_bytes* asks for the binary read of the module text. ``None``
+    is the JSON read.
     """
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes is not a size")
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
     try:
@@ -193,7 +235,7 @@ async def get(
         _log.warning("agent_edge.gateway_request_unbuildable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
-    return await _send(_GET, url, headers, b"", template, timeout_s)
+    return await _send(_GET, url, headers, b"", template, timeout_s, max_bytes)
 
 
 async def write(
@@ -234,6 +276,54 @@ async def write(
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
     return await _send(method, url, headers, body, template)
+
+
+def _form(filename: str, content: bytes, content_type: str) -> tuple[bytes, str]:
+    """``(body, Content-Type)`` of a form with the one part :data:`FILE_FIELD`.
+    The boundary is 32 random hex characters, so the bytes of an image hold
+    it by chance with no real chance at all."""
+    boundary = secrets.token_hex(16)
+    head = (f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{FILE_FIELD}"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n").encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    return head + content + tail, f"multipart/form-data; boundary={boundary}"
+
+
+async def write_file(
+    key: str,
+    caller: TokenLookup,
+    *,
+    path_params: Mapping[str, str],
+    filename: str,
+    content: bytes,
+    content_type: str,
+    session: str | None = None,
+) -> Answer:
+    """One signed multipart POST of one image (CIV-14b), or raise
+    :class:`GatewayUnreachable` or :class:`RouteRefused`.
+
+    The pair is ``POST`` :data:`FILE_WRITE_ROUTE`, which is in
+    ``MCP_WRITE_ROUTES``. *content_type* is the type that the tool read from
+    the first bytes, never from the file name. The signature covers the bytes
+    of the whole form and a fresh nonce (EA3-28).
+    """
+    path = _path(FILE_WRITE_ROUTE, path_params, "POST")
+    if content_type not in RASTER_MIMES:
+        raise RouteRefused("the type is not an image type")
+    if not re.fullmatch(agent_oauth.ATTACHMENT_FILENAME_PATTERN, filename):
+        raise RouteRefused("the file name has another shape")
+    try:
+        body, form_type = _form(filename, content, content_type)
+        headers = signed_request_headers(key, caller, path, [], method="POST", body=body,
+                                         session=session)
+        headers["Content-Type"] = form_type
+        url = _url(path, [])
+    except Exception as exc:  # nothing here may become a 500
+        _log.warning("agent_edge.gateway_request_unbuildable", route=FILE_WRITE_ROUTE,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(FILE_WRITE_ROUTE) from None
+    return await _send("POST", url, headers, body, FILE_WRITE_ROUTE)
 
 
 async def send_call(
@@ -296,12 +386,37 @@ def _values_of(template: str, path: str, names: Sequence[str]) -> dict[str, str]
 
 
 def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """The URL of a request. The signed string holds the plain *path*, and
+    the gateway checks it against the decoded path of the ASGI scope. So the
+    URL carries the path percent-encoded (IMG-3: a space in a file name). An
+    id, a template word and ``/`` stay as they are."""
     base = str(get_settings().agent_edge_gateway_url).rstrip("/")
-    return base + path + (f"?{urlencode(pairs)}" if pairs else "")
+    return base + quote(path, safe="/") + (f"?{urlencode(pairs)}" if pairs else "")
+
+
+async def _capped_bytes(response: httpx.Response, max_bytes: int) -> bytes:
+    """At most ``max_bytes + 1`` bytes of the body of *response* (IMG-3). The
+    read stops at that length, so a longer body is never held whole."""
+    held = bytearray()
+    async for chunk in response.aiter_bytes():
+        held += chunk
+        if len(held) > max_bytes:
+            del held[max_bytes + 1:]
+            break
+    return bytes(held)
+
+
+def _retry_after(raw: str | None) -> int | None:
+    """The seconds of a ``Retry-After`` header (MCP-G10), or ``None`` for no
+    header or a value that is not whole seconds. A date form is not used."""
+    if raw is None or not raw.strip().isdigit():
+        return None
+    return min(max(int(raw.strip()), 1), 3600)
 
 
 async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
-                template: str, timeout_s: float | None = None) -> Answer:
+                template: str, timeout_s: float | None = None,
+                max_bytes: int | None = None) -> Answer:
     # Read at call time, so a test that patches the module constant holds.
     limit = REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     try:
@@ -314,6 +429,14 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
             follow_redirects=False,
             trust_env=False,
         ) as client:
+            if method == _GET and max_bytes is not None:
+                # IMG-3: the binary read. The stream closes when the block
+                # ends, so the rest of a long body is never read.
+                async with client.stream(_GET, url, headers=dict(headers)) as streamed:
+                    content = (await _capped_bytes(streamed, max_bytes)
+                               if 200 <= streamed.status_code < 300 else b"")
+                return Answer(status=streamed.status_code, body=None, content=content,
+                              content_type=streamed.headers.get("content-type"))
             if method == _GET:
                 response = await client.get(url, headers=dict(headers))
             else:
@@ -332,10 +455,13 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
         parsed = response.json() if response.content else None
     except ValueError:
         parsed = None
-    return Answer(status=response.status_code, body=parsed)
+    return Answer(status=response.status_code, body=parsed,
+                  retry_after=_retry_after(response.headers.get("retry-after")))
 
 
 __all__ = [
+    "FILE_FIELD",
+    "FILE_WRITE_ROUTE",
     "REQUEST_TIMEOUT_S",
     "Answer",
     "GatewayNotSent",
@@ -347,4 +473,5 @@ __all__ = [
     "signed_request_headers",
     "use_transport",
     "write",
+    "write_file",
 ]

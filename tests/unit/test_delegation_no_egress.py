@@ -110,6 +110,10 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
+    # but it says open_world as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -137,6 +141,13 @@ def _no_database(monkeypatch):
     """
     import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
+    import orchestrator._tool_injection as _ti_vox
+
+    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
+    # of a lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
+    # SBX-19: compute_run is per org too. The covered run pins a lit org.
+    monkeypatch.setattr(_ti_vox, "_compute_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -561,8 +572,11 @@ def _egress_in(body: dict[str, Any]) -> list[str]:
 
 def _blocked(result: str) -> bool:
     """A call that ran nothing: refused by the H-236 middleware, or not found
-    because the run does not hold the tool."""
-    return "off in this run" in result or "not found" in result
+    because the run does not hold the tool. HRD-1b (task 3230): a delegated
+    run answers a name that it does not hold with the HRD-1 text, which
+    starts "Not run". Its model never reads MAF's own "not found" text."""
+    return ("off in this run" in result or "not found" in result
+            or result.startswith("Not run"))
 
 
 def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # noqa: F811
@@ -813,12 +827,29 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: the gateway, behind one card, and says open_world=False.
 #: 2026-10-25 (WS-55 SW-11a, external_agent_access.md §12.7): needs_attention (a read) joined.
 #: It reads one gateway route, writes nothing and says open_world=False.
+#: 2026-11-11 (WS-55 EA-18d, external_agent_access.md §12.8): agent_questions (a read) and
+#: answer_agent_question (one card) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (WS-39 LP-1a): list_project_updates (a read) and post_project_update (one
+#: card) joined. Each reaches only the gateway, and says open_world=False.
+#: 2026-11-09 (WS-39 SP-5a): list_cycles, cycle_detail (reads), create_cycle, plan_cycle (one
+#: card) and start_cycle, close_cycle (class C) joined. Each reaches only the gateway, and
+#: says open_world=False.
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor. It sends an attached image only to the metered tier-vision model of the
+#: Console, writes nothing, and says open_world=False.
+#: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
+#: the one plan engine, writes nothing and says open_world=False.
+#: 2026-11-08 (SP-8a): set_epic_contract joined. It writes one epic contract through the
+#: gateway, behind one card, and says open_world=False.
+#: 2026-11-11 (SW-43c): change_agent_answer joined. It changes the member's own answer to
+#: an agent through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
+    "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
@@ -829,16 +860,20 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
+    "list_project_updates", "post_project_update", "delete_project_update",
+    "list_cycles", "cycle_detail", "create_cycle", "plan_cycle", "start_cycle", "close_cycle",
+    "set_epic_contract",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
-    "waiting_agent_requests", "needs_attention",
+    "waiting_agent_requests", "needs_attention", "agent_questions", "answer_agent_question",
+    "change_agent_answer",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
     "file_tasks",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task",
+    "find_conflicts", "find_tasks", "fit_for_task", "get_plan",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project", "convert_folder_to_project",
@@ -855,6 +890,9 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",
+    # WS-39 TPL-1a: the templates. Each act is the member's own, through the
+    # gateway, and says open_world=False.
+    "list_templates", "save_as_template", "create_project_from_template",
 })
 
 
@@ -1430,7 +1468,8 @@ def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
     _run_top(PA, ORG_B, cards=False)
     assert email.bodies, "the delegation never ran"
     answer = _results(email.bodies[1])[-1]
-    assert answer.startswith("Nothing changed. This needs your approval on a card"), answer
+    # HRD-7: the email assistant's no-card answer is the one table's.
+    assert answer.startswith("Not shown: a card cannot show here"), answer
     assert "read an answer of an agent" not in answer, answer
 
 
@@ -2477,7 +2516,7 @@ def _task_manager_block() -> str:
 #: and the risky tools of task-manager, whatever else this process imported.
 TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
-    "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
+    "- Read-only (call freely): analyze_image, ask_questions, ask_user, decide, fetch_page, get_errors, "
     "get_workflow_run, github_repo_search, github_search, list_integrations, "
     "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
     "my_tasks_day_digest, my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, "

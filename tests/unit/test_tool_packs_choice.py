@@ -880,10 +880,40 @@ def _callers_of(name: str) -> set[str]:
 
 def test_only_the_stream_run_starts_and_applies_packs() -> None:
     """The WhatsApp path (D115) and every batch run go through ``run_agent``,
-    and a delegated run through ``_run_sub_agent_streaming``. Mutation: call
-    the read or the apply on another path → red."""
-    assert _callers_of("_start_pack_turn") == {"run_agent_stream"}
-    assert _callers_of("_apply_pack_turn") == {"run_agent_stream"}
+    and a delegated run through ``_run_sub_agent_streaming``. G2 (task 3494):
+    the batch run reaches the read and the apply only through
+    ``_apply_batch_packs``, with ``whatsapp=True`` and ``read_only=True``
+    (``test_chat_packs_batch.py``). Mutation: call the read or the apply on
+    another path, or drop either keyword → red."""
+    assert _callers_of("_start_pack_turn") == {"run_agent_stream", "_apply_batch_packs"}
+    assert _callers_of("_apply_pack_turn") == {"run_agent_stream", "_apply_batch_packs"}
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply_batch_packs")
+    keys = {(node.func.id, kw.arg, ast.unparse(kw.value)) for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            for kw in node.keywords}
+    assert ("_start_pack_turn", "whatsapp", "True") in keys
+    assert ("_apply_pack_turn", "read_only", "True") in keys
+
+
+def test_the_read_only_pack_apply_offers_no_loader() -> None:
+    """G2 (task 3494): the read-only branch of ``_apply_pack_turn`` calls
+    ``_apply_tool_packs`` with ``read_only=True`` and ``offer_loader=False``.
+    Mutation: pass ``offer_loader=True`` there -> red."""
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply_pack_turn")
+    seen = []
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_apply_tool_packs"):
+            kw = {k.arg: ast.unparse(k.value) for k in node.keywords}
+            if kw.get("read_only") == "True":
+                seen.append(kw.get("offer_loader"))
+    assert seen == ["False"], seen
 
 
 def _main_try_of_run_agent_stream() -> ast.Try:
@@ -1515,10 +1545,14 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     # OA-8b: the four Projects packs follow it, so the order ends with them.
     # STU-G1: the studio pack is last of all.
     # CAL-1a: calendar-day sits after the Projects packs and before studio.
-    assert list(tp.PACKS)[-10:] == [
+    # WS-39 SP-5a: projects-cycles follows the authority pack.
+    # STB-6b: studio-workflows, the small pack of the workflow writes, follows studio.
+    # WS-67 TS-1b: studio-more, the other 13 Studio tools, sits between them.
+    # WS-STU J2d: studio-share, the one share tool, is last.
+    assert list(tp.PACKS)[-14:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "studio"]
+        "projects-reminders", "projects-reports", "projects-authority", "projects-cycles",
+        "calendar-day", "studio", "studio-more", "studio-workflows", "studio-share"]
     assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.
@@ -1631,6 +1665,9 @@ async def test_a_crm_turn_holds_the_crm_pack_and_no_crm_assistant_tool(
         return "live"
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so the pack keeps each of its
+    # tools. The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     assert "crm_assistant" in _names(orchestrator), "non-vacuity"
     with _tenant():
         applied = await _apply(orchestrator, "Show me my deals in the CRM", allowed=EVERY)
@@ -1848,3 +1885,26 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+@pytest.mark.parametrize("words", [
+    "Change the amount of the Acme deal in the CRM to 50000",
+    "Mark my CRM follow-up task with Acme as done",
+])
+async def test_a_crm_edit_turn_loads_the_record_edit_and_the_task_change(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M2b (crm_conversational.md §8). A CRM turn loads
+    ``crm-records``, and the run then holds both new tools. The base does not
+    hold them: it is at the 110-tool cap. Mutation: drop a tool from the family
+    -> the run lacks it -> red."""
+    for name in ("crm_update_record", "crm_update_task"):
+        assert name not in CONFIG["tool_scope"]
+        assert name not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    held = set(_names(orchestrator))
+    assert {"crm_update_record", "crm_update_task"} <= held
+    assert "crm_update_record" in tp.PACKS["crm-records"].rules
+    assert "crm_update_task" in tp.PACKS["crm-records"].rules

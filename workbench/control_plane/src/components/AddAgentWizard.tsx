@@ -17,6 +17,7 @@
  *   onCancel   — called if user dismisses before completing
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEntry } from "@/app/api/agent/list/route";
@@ -250,6 +251,8 @@ export default function AddAgentWizard({
   const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
   const [stepIndex, setStepIndex] = useState(0);
   const hasFetched = useRef(false);
+  // A bar tap closes the wizard (MOB-9).
+  useCloseOnBarTap(onCancel);
 
   // Build step list from integrations
   const steps = React.useMemo<WizardStep[]>(() => {

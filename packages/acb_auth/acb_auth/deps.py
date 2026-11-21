@@ -421,7 +421,7 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
 ) -> tuple[str, str, str, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
     session key)`` of a well-signed, fresh request, or the reason to
@@ -433,8 +433,12 @@ def _verify_signed_request(
     header, never from a body or a query.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -567,15 +571,19 @@ async def _claim_write(
             )
             if not fresh:
                 return "replay"
+            # MCP-G20: the live cap and window, read at each write
+            # (`AGENT_WRITE_CAP`, `AGENT_WRITE_WINDOW_S`). Each signed write
+            # counts once, so each item of `update_tasks` counts once too.
+            cap, window = agent_oauth.write_cap(), agent_oauth.write_window_s()
             counter = tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id)
             count = int(await client.incr(counter))
             if count == 1:
-                await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-            if count > agent_oauth.WRITE_CAP:
+                await client.expire(counter, window)
+            if count > cap:
                 left = int(await client.ttl(counter))
                 if left < 0:
-                    await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-                    left = agent_oauth.WRITE_WINDOW_S
+                    await client.expire(counter, window)
+                    left = window
                 over = max(left, 1)
     except Exception as exc:
         # Every failure of the store fails closed as the 503: an outage
@@ -634,6 +642,9 @@ def _audit_door(
                 "class": door.route.cls,
                 "request_id": None,
                 "decision": decision,
+                # BR-7b (core_brief.md §8.2): the app scope that the door
+                # checks. The close-out names it on an allowed call.
+                "policy": door.scope,
             },
             organization_id=connection.organization_id,
         ))
@@ -751,6 +762,27 @@ async def _door_gate(
     return refused
 
 
+async def _signed_body(request: Request) -> bytes | None:
+    """The body bytes that the signature of a write covers, or ``None``.
+
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
+    """
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
+    try:
+        return await request.body()
+    except RuntimeError:  # "Stream consumed": a form route with no copy
+        return None
+
+
 
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
@@ -822,7 +854,7 @@ async def _agent_user(request: Request) -> UserContext:
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
             return _refuse_agent("nonce")
-        body = await request.body()
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)
@@ -861,6 +893,10 @@ async def _agent_user(request: Request) -> UserContext:
     # EA-13a fix round 1).
     expected_via = agent_oauth.actor_via_for(
         connection.client_origin, client_id=connection.client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=connection.credential,
+        connection_id=connection.connection_id,
+        client_name=connection.client_name,
     )
     if (
         not connection.client_origin

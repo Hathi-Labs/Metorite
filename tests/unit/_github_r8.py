@@ -283,14 +283,18 @@ def make_private_key(tmp_path: Path) -> Path:
     return path
 
 
-def configure_app(monkeypatch: Any, key_path: Path, *, enabled: bool = True) -> Any:
-    """The App settings of a test box. The flag is ON unless *enabled* is False."""
+def configure_app(
+    monkeypatch: Any, key_path: Path, *, enabled: bool = True, orgs: str = "*",
+) -> Any:
+    """The App settings of a test box. The flag is ON unless *enabled* is False.
+    *orgs* is ``GITHUB_APP_ORGS`` (SW-53). The default ``*`` keeps every org on."""
     from acb_common import get_settings
     from gateway.connections import github_app
 
     settings = get_settings()
     for name, value in {
         "github_app_enabled": enabled,
+        "github_app_orgs": orgs,
         "github_app_id": "4242",
         "github_app_slug": "metorite-test",
         "github_app_client_id": "Iv23.r8-client",

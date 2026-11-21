@@ -28,15 +28,19 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  with a sentence that names
                                                  ``read_attachment`` (incident
                                                  2026-10-09, :func:`binary_file_note`)
-  * a tool of an MCP server (WS-8c, H-299)     → APPROVE with ``mcp_confirm``
-                                                 (the caller shows a card) unless
-                                                 it says read-only and not
-                                                 destructive (:func:`mcp_needs_confirmation`),
-                                                 or with ``mcp_always_confirm``
-                                                 for EVERY tool of a server that
-                                                 an admin set so (H-300), or
-                                                 with ``mcp_read_only_key`` (no
-                                                 card) for every tool of a
+  * a tool of an MCP server (WS-8c, H-299,     → APPROVE with ``mcp_member_run``
+    MCP-NC1)                                     (no card) in a run that a member
+                                                 started, or ``mcp_read_only`` (no
+                                                 card) when it says read-only and
+                                                 not destructive
+                                                 (:func:`mcp_needs_confirmation`).
+                                                 ``mcp_confirm`` (the caller
+                                                 refuses it) only in a run with
+                                                 no member. ``mcp_always_confirm``
+                                                 (a card) for EVERY tool of a
+                                                 server that an admin set so
+                                                 (H-300), and ``mcp_read_only_key``
+                                                 (no card) for every tool of a
                                                  server whose key an admin says
                                                  can only read (MCP-C2)
   * network                                    → APPROVE (open_world is normal),
@@ -143,21 +147,33 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
-# ── A tool of an MCP server (WS-8c, H-299) ───────────────────────────────────
+# ── A tool of an MCP server (WS-8c, H-299, MCP-NC1) ──────────────────────────
 # A native MAF agent calls the tools of an org's MCP servers. The server sends
-# its own hints in ``tools/list`` (``annotations``, MCP 2025-03-26). The rule
-# is one line: a tool needs the member's confirmation card UNLESS it says it
-# is read-only AND does not say it is destructive. A missing hint, a hint that
-# is not a JSON boolean, and no annotations at all each need the card. So the
-# rule fails closed. The hints are the server's own claim, and a hostile
-# server can lie (``agent_architecture.md`` §12.2 WS-8c, known limit).
+# its own hints in ``tools/list`` (``annotations``, MCP 2025-03-26).
+#
+# MCP-NC1 (owner directive, 2026-11-16, task 3603) amends H-299: in a run that
+# a verified member started in Metorite, an MCP tool runs with no card,
+# whatever its hints say. The gate passes the fact ``mcp_member_present``, and
+# only a real ``True`` counts. The fact is false with no verified member, in a
+# WhatsApp run, and in a run that no person watches. So there the H-299 rule
+# stays: a tool that does not say read-only AND not
+# destructive gets ``mcp_confirm``, and the gate refuses it. A missing hint, a
+# hint that is not a JSON boolean, and no annotations at all each count as not
+# read-only, so that rule fails closed. The hints are the server's own claim,
+# and a hostile server can lie (``agent_architecture.md`` §12.2 WS-8c, known
+# limit). The admin's "always confirm" (H-300) and step 3a still ask the card.
 # Fence: tests/unit/test_maf_mcp_confirm.py.
 
-#: The code of an MCP tool that needs the member's confirmation card.
+#: The code of an MCP tool that needs the member's confirmation card. After
+#: MCP-NC1, :func:`decide` gives it only when no member started the run (or
+#: the caller does not say), and the gate then refuses the tool.
 MCP_CONFIRM = "mcp_confirm"
-#: The code of an MCP tool that runs at once. Only this code and
-#: :data:`MCP_READ_ONLY_KEY` skip the card.
+#: The code of an MCP tool that runs at once. This code,
+#: :data:`MCP_MEMBER_RUN` and :data:`MCP_READ_ONLY_KEY` skip the card.
 MCP_READ_ONLY = "mcp_read_only"
+#: The code of an MCP tool that does not say read-only, in a run that a member
+#: started (MCP-NC1, task 3603). The tool runs at once, with no card.
+MCP_MEMBER_RUN = "mcp_member_run"
 #: The code of an egress call in a run that read an answer of an agent that
 #: reads stranger text (WS-17 EM-G11d round 2, ``acb_skills.egress``). It needs
 #: the member's card, and with no card channel it is refused. The caller sets
@@ -174,6 +190,10 @@ MCP_ALWAYS_CONFIRM = "mcp_always_confirm"
 #: :data:`MCP_ALWAYS_CONFIRM` wins over it, and an untrusted answer (step 3a)
 #: still asks the card.
 MCP_READ_ONLY_KEY = "mcp_read_only_key"
+#: The MCP hint names of the ``annotations`` of one tool (MCP 2025-03-26).
+#: The ONE copy (STU-B1b-1). ``orchestrator._maf_mcp`` reads it for the gate,
+#: and ``gateway/studio/mcp_actions.py`` reads it for the action catalog.
+MCP_HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 
 
 def mcp_needs_confirmation(annotations: Any) -> bool:
@@ -183,6 +203,13 @@ def mcp_needs_confirmation(annotations: Any) -> bool:
     with the MCP names (``readOnlyHint``, ``destructiveHint``). Only a real
     ``True`` counts as read-only, and anything but a real ``True`` counts as
     not destructive.
+
+    MCP-NC1: the name is older than the rule. The test now means "the hints
+    do not show a read". A run that a member started shows no card for such a
+    tool (:data:`MCP_MEMBER_RUN`). The test still decides a run with no
+    member, the Studio class of an action (``gateway/studio/mcp_actions.py``),
+    the ``read_only`` field of the MCP index, and which later ``tools/list``
+    may not relax a tool (``orchestrator._maf_mcp``).
     """
     if not isinstance(annotations, dict):
         return True
@@ -285,17 +312,23 @@ def decide(request: Any) -> tuple[bool, str, str]:
     #     for EVERY tool, so the read-only shortcut never applies to it. The
     #     MCP gate passes the flag as the fact ``mcp_always_confirm``.
     #     MCP-C2: a server whose key an admin says can only read needs no
-    #     card, whatever its hints say (fact ``mcp_read_only_key``). The
-    #     order is the rule: step 3a first, then always confirm, then the
-    #     read-only key, then the hints. Only a real ``True`` counts.
+    #     card, whatever its hints say (fact ``mcp_read_only_key``).
+    #     MCP-NC1 (task 3603): in a run that a member started (fact
+    #     ``mcp_member_present``), a tool that does not say read-only runs
+    #     with no card (MCP_MEMBER_RUN). With no member it keeps MCP_CONFIRM,
+    #     and the gate refuses it. The order is the rule: step 3a first, then
+    #     always confirm, then the read-only key, then the hints, then the
+    #     member. Only a real ``True`` counts.
     if _field(request, "mcp_tool"):
         if _field(request, "mcp_always_confirm"):
             return True, MCP_ALWAYS_CONFIRM, tool_name or "(mcp tool)"
         if _field(request, "mcp_read_only_key") is True:
             return True, MCP_READ_ONLY_KEY, tool_name or "(mcp tool)"
-        if mcp_needs_confirmation(_field(request, "mcp_annotations")):
-            return True, MCP_CONFIRM, tool_name or "(mcp tool)"
-        return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
+        if not mcp_needs_confirmation(_field(request, "mcp_annotations")):
+            return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
+        if _field(request, "mcp_member_present") is True:
+            return True, MCP_MEMBER_RUN, tool_name or "(mcp tool)"
+        return True, MCP_CONFIRM, tool_name or "(mcp tool)"
 
     # 4. Named platform tool → consult risk annotations. Reached once the
     #    hard vetoes above have cleared (or didn't apply), so the common case

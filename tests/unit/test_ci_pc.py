@@ -212,6 +212,27 @@ def test_the_local_run_is_full_for_the_selection_jobs() -> None:
         assert 'export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"' in out
 
 
+def _ctx_keys(block: str) -> dict[str, str]:
+    return {k: "x" for k in re.findall(r'--ctx\s+"?([\w.]+)=', block)}
+
+
+def test_every_expression_of_the_shard_job_is_given_by_a_full_and_a_selected_run() -> None:
+    """Task 2198: CIV-17 added `steps.pick.outputs.splits` to pr-check, and the
+    local run died in 0 s on every shard, because run_suite.sh gave a value to
+    the full run only. Both contexts render the `test` job, so a new
+    `${{ ... }}` in it that a context lacks fails here, and not on a box."""
+    text = (_ROOT / "scripts" / "ci_pc" / "run_suite.sh").read_text(encoding="utf-8")
+    full = re.search(r"FULL_RUN=\((.*?)\)\nrm -rf junit", text, re.S)
+    selected = re.search(r"SHARD_CTX=\(--ctx(.*?)\)\nfi\n", text, re.S)
+    assert full and selected, "run_suite.sh no longer builds FULL_RUN and SHARD_CTX this way"
+    for name, block in (("full", full.group(1)), ("selected", "--ctx" + selected.group(1))):
+        ctx = {"matrix.shard": "1", **_ctx_keys(block)}
+        try:
+            steps.render("test", ctx, {})
+        except SystemExit as exc:
+            raise AssertionError(f"the {name} run lacks a value: {exc}") from exc
+
+
 # ── CIV-6: several runs at once on one lane (task 1634) ─────────────────────
 _CI_LOCAL = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
 _REMOTE = (_ROOT / "scripts/ci_pc/remote_run.sh").read_text(encoding="utf-8")

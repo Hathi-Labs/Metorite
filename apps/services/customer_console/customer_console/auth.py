@@ -83,12 +83,18 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
 
 from customer_console import payments, store
 from customer_console.apps import app_attribution
+from customer_console.credits import (
+    RUN_CEILING_INVALID,
+    RunCeilingInvalid,
+    parse_run_ceiling,
+)
 from customer_console.db import get_engine
 from customer_console.keys import (
     is_deployment_key,
@@ -122,6 +128,7 @@ __all__ = [
     "ProvisionCaller",
     "ResolveCaller",
     "SeatAdminCaller",
+    "ServeReadCaller",
     "ServingCaller",
     "SignedWebhook",
     "StaffIdentity",
@@ -281,6 +288,12 @@ class Caller:
     agent: str | None = None
     module_slug: str | None = None
     run_id: str | None = None
+    #: The ceiling of this run that the caller asked for (``X-CC-Run-Ceiling``,
+    #: AUTO-8b-2b), parsed by :func:`_run_ceiling_of`. ``None`` means no header.
+    #: ⚠️ It can only LOWER the fixed tripwire. ``main._spend_refusal`` takes
+    #: ``credits.run_ceiling_for``, the min of the two, and only with the spend
+    #: gate on. It selects no row and authorises nothing.
+    run_ceiling: Decimal | None = None
 
 
 #: What ``control_audit.actor`` records for the SHARED operator token.
@@ -570,12 +583,50 @@ def _caller_from_key(
     )
 
 
+def _run_ceiling_of(raw: str | None, run_id: str | None) -> Decimal | None:
+    """The parsed ``X-CC-Run-Ceiling`` of a call (AUTO-8b-2b), or ``None``.
+
+    Both arms call it AFTER the credential checks, so a caller with no valid
+    credential still gets its 401 or 403 first.
+
+    🔴 **400 ``run_ceiling_invalid``, never the default.** A value that
+    :func:`credits.parse_run_ceiling` refuses is a 400. So is a ceiling with
+    no ``X-CC-Run``: the ceiling binds one run, and a call with no run has
+    nothing to bind. Ignoring it would serve a caller that asked for a lower
+    ceiling with no ceiling at all.
+
+    ⚠️ The 400 holds with the spend gate off too, because the header is a wire
+    contract. A value that parses changes nothing until the gate is on.
+    No meter row is written: the dependency raises before the serving route
+    runs, so ``main._REFUSAL_REASONS`` stays closed.
+    """
+    if raw is None:
+        return None
+    try:
+        ceiling = parse_run_ceiling(raw)
+    except RunCeilingInvalid as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": RUN_CEILING_INVALID, "message": str(exc)},
+        ) from None
+    if not (run_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": RUN_CEILING_INVALID,
+                "message": "X-CC-Run-Ceiling needs X-CC-Run: the ceiling binds one run",
+            },
+        )
+    return ceiling
+
+
 def organization_from_key(
     authorization: Annotated[str | None, Header()] = None,
     x_cc_member: Annotated[str | None, Header()] = None,
     x_cc_agent: Annotated[str | None, Header()] = None,
     x_cc_module: Annotated[str | None, Header()] = None,
     x_cc_run: Annotated[str | None, Header()] = None,
+    x_cc_run_ceiling: Annotated[str | None, Header()] = None,
 ) -> Caller:
     """Resolve the calling organization from its API key, gated on ``can_use_ai``.
 
@@ -584,6 +635,10 @@ def organization_from_key(
     full stop. If a caller sends ``X-CC-Org``, FastAPI ignores it — it is not
     bound anywhere — which is the desired outcome and is pinned by a test rather
     than left to a reader's confidence.
+
+    ``X-CC-Run-Ceiling`` (AUTO-8b-2b) is a number and never names an org. It
+    can only lower the ceiling of the caller's OWN run, because the run spend
+    is summed for the org that the key resolved (:func:`_run_ceiling_of`).
     """
     caller = _caller_from_key(
         authorization, permits=lambda caps: caps.can_use_ai
@@ -594,6 +649,7 @@ def organization_from_key(
         agent=x_cc_agent,
         module_slug=x_cc_module,
         run_id=x_cc_run,
+        run_ceiling=_run_ceiling_of(x_cc_run_ceiling, x_cc_run),
     )
 
 
@@ -607,6 +663,8 @@ def organization_from_key_or_deployment(
     #: "1" when the gateway VERIFIED the member's signed proof (H-73). The
     #: deployment arm requires it. The org arm ignores it.
     x_cc_member_proven: Annotated[str | None, Header()] = None,
+    #: AUTO-8b-2b. Both arms parse it with :func:`_run_ceiling_of`.
+    x_cc_run_ceiling: Annotated[str | None, Header()] = None,
 ) -> Caller:
     """The Router's door, opened by an ORG key or a DEPLOYMENT key (H-152).
 
@@ -662,7 +720,8 @@ def organization_from_key_or_deployment(
     # unchanged. This must never become a ladder that retries.
     if parsed is None or not is_deployment_key(parsed[0]):
         return organization_from_key(
-            authorization, x_cc_member, x_cc_agent, x_cc_module, x_cc_run
+            authorization, x_cc_member, x_cc_agent, x_cc_module, x_cc_run,
+            x_cc_run_ceiling=x_cc_run_ceiling,
         )
 
     prefix, secret = parsed
@@ -762,6 +821,8 @@ def organization_from_key_or_deployment(
     if not capabilities_of(org_status).can_use_ai:
         raise HTTPException(status_code=403, detail=f"organization is {org_status}")
 
+    # AUTO-8b-2b: each `Caller` below parses `X-CC-Run-Ceiling` last, after
+    # every credential, tenant and seat check, as the org arm does.
     if app is not None:
         if not seated:
             _log.warning("deployment_key.app_unseated", extra={"key_prefix": prefix})
@@ -782,6 +843,7 @@ def organization_from_key_or_deployment(
             agent=agent,
             module_slug=module_slug,
             run_id=x_cc_run,
+            run_ceiling=_run_ceiling_of(x_cc_run_ceiling, x_cc_run),
         )
 
     return Caller(
@@ -795,6 +857,7 @@ def organization_from_key_or_deployment(
         agent=x_cc_agent,
         module_slug=x_cc_module,
         run_id=x_cc_run,
+        run_ceiling=_run_ceiling_of(x_cc_run_ceiling, x_cc_run),
     )
 
 
@@ -1093,6 +1156,15 @@ _billing_read_dependency = deployment_or_operator(BILLING_READ_CAPABILITY)
 #: refuse the operator arm, as the billing reads do.
 _billing_purchase_dependency = deployment_or_operator(BILLING_PURCHASE_CAPABILITY)
 
+#: The vendor-health read of a box that serves AI (AO-2, ``customer_console.md``
+#: §6A.17b). A SEVENTH closure from the same factory, and NOT a new capability.
+#: A box that holds ``serve`` sends its chat through the Router, so whether the
+#: Router's vendors can serve is a fact about the service it already uses. The
+#: chat doors take ``serve`` through ``organization_from_key_or_deployment``,
+#: which also admits an org key. This read is for a box only, so it takes the
+#: plain two-arm closure, and its route refuses the operator arm.
+_serve_read_dependency = deployment_or_operator(SERVE_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -1135,6 +1207,12 @@ BillingPurchaseCaller = Annotated[
     DeploymentCaller | None, Depends(_billing_purchase_dependency)
 ]
 
+#: The vendor-health read of a box (AO-2). The same two-arm shape. The route
+#: refuses ``None``: the operator reads ``GET /providers/health`` instead.
+ServeReadCaller = Annotated[
+    DeploymentCaller | None, Depends(_serve_read_dependency)
+]
+
 #: Every dependency in this module that authenticates somebody.
 #:
 #: This exists so CP-2b clause 1's fence
@@ -1163,6 +1241,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     _member_admin_dependency,
     _billing_read_dependency,
     _billing_purchase_dependency,
+    _serve_read_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.

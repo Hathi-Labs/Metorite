@@ -6,6 +6,7 @@
 // everywhere and there is a single place to change them.
 
 import Icon from "@/components/Icon";
+import { accentForHue } from "@/lib/statusAccent";
 import type { RuleAction, RuleConditions } from "../../../lib/types";
 import { HoverPopover } from "../ui";
 import {
@@ -18,6 +19,10 @@ import {
   matchSourceLabel,
   PrettyConditions,
   statusMeta,
+  GONE_MAIL_LABEL,
+  isGoneMailSkip,
+  reasonPrefix,
+  showActionErrors,
 } from "./actionFormat";
 
 // Base field styling WITHOUT a width — compose with `w-full` (INPUT_CLS) or a
@@ -100,6 +105,7 @@ export function RuleResultPill({
   matchSource,
   actionErrors,
   draftPreview,
+  mailGone,
 }: {
   matched: boolean;
   ruleName: string | null;
@@ -113,23 +119,30 @@ export function RuleResultPill({
   matchSource?: string | null;
   actionErrors?: { type: string; error: string }[] | null;
   draftPreview?: string | null;
+  /** The server says this SKIPPED run is a gone-mail skip. */
+  mailGone?: boolean;
 }) {
   // A rule that matched but whose every action the mail server refused is not a
   // success, and showing it in the same green as a real one is how 138 no-op
   // runs stayed invisible for a month. It is not "No match" either — the
   // assistant decided correctly and the mailbox simply never received it.
   const failed = (status || "").toUpperCase() === "FAILED";
+  const gone = isGoneMailSkip({ mail_gone: mailGone });
   const pill = (
     <span
       className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap ${
-        failed
+        gone
+          ? accentForHue("gray").chip
+          : failed
           ? "bg-rose-500/15 text-rose-400"
           : matched
             ? "bg-emerald-500/15 text-emerald-400"
             : "bg-red-500/15 text-red-400"
       }`}
     >
-      {failed
+      {gone
+        ? GONE_MAIL_LABEL
+        : failed
         ? `${ruleName || "Matched"} · didn't apply`
         : matched
           ? ruleName || "Matched"
@@ -140,7 +153,7 @@ export function RuleResultPill({
   const specs = actionSpecs ?? [];
   const types = takenTypes ?? [];
   const typeSummary = conditionTypeSummary(conditions);
-  const sm = statusMeta(status);
+  const sm = statusMeta(status, mailGone);
   const srcLabel = matchSourceLabel(matchSource);
   const errs = actionErrors ?? [];
   const draft = (draftPreview || "").trim();
@@ -149,7 +162,11 @@ export function RuleResultPill({
       <div className="space-y-2">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-xs font-medium text-foreground">
-            {matched ? ruleName || "Matched rule" : "No rule matched"}
+            {gone
+              ? ruleName || GONE_MAIL_LABEL
+              : matched
+                ? ruleName || "Matched rule"
+                : "No rule matched"}
           </span>
           {typeSummary && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground border border-border">
@@ -203,12 +220,12 @@ export function RuleResultPill({
         {reason && (
           <div className="text-[10px] text-muted-foreground/80 bg-secondary/40 rounded-md px-2 py-1.5 italic">
             <span className="not-italic text-muted-foreground/60">
-              Reason for choosing this rule:{" "}
+              {reasonPrefix(gone)}{" "}
             </span>
             {reason}
           </div>
         )}
-        {errs.length > 0 && (
+        {showActionErrors(gone, errs.length) && (
           <div className="text-[10px] text-destructive bg-destructive/10 rounded-md px-2 py-1.5">
             <div className="font-medium mb-0.5 flex items-center gap-1">
               <Icon name="AlertTriangle" size={10} /> Action issues

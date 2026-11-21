@@ -1,5 +1,6 @@
 "use client";
 
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -33,6 +34,7 @@ import { updateEmailAccount } from "./lib/api";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { AutoRunNotice } from "./components/AutoRunNotice";
 import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
@@ -108,7 +110,8 @@ export default function EmailPage() {
   // other way into an automation view clears it too.
   const [processPastFrom, setProcessPastFrom] = useState<string | null>(null);
 
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
 
   // ── Zustand store ──
   const {
@@ -353,16 +356,12 @@ export default function EmailPage() {
   const noAccounts = surface === "empty";
 
   // Tell the mobile bottom bar, so it hides the email tabs that would open
-  // empty sheets (AppShell listens for `cc-email-empty`).
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: noAccounts }));
-  }, [noAccounts]);
-  useEffect(
-    () => () => {
-      window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: false }));
-    },
-    []
-  );
+  // empty sheets (`cc-phone-bar`, MOB-12). Write holds the compose button
+  // that the list toolbar drops on a phone.
+  usePhoneBar({
+    active: sheetTab,
+    hide: noAccounts ? ["email-accounts", "email-automation", "email-compose", "email-ai"] : [],
+  });
 
   // ── First sync ──
   // A new mailbox reports initial_sync_done=false until its first sync ends.
@@ -585,11 +584,17 @@ export default function EmailPage() {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "email-accounts" && accountsDrawerRef.current) {
-        // "Inbox" — folders/labels only (no automation section).
+        // "Mailboxes" — folders/labels only (no automation section).
+        markSheetTab("email-accounts");
         openDrawer(accountsDrawerRef.current);
       } else if (tab === "email-automation" && automationDrawerRef.current) {
         // "Automation" — the email-automation app list.
+        markSheetTab("email-automation");
         openDrawer(automationDrawerRef.current);
+      } else if (tab === "email-compose") {
+        // "Write" — the compose window. It holds the list toolbar's New button.
+        closeDrawer();
+        openCompose();
       } else if (tab === "email-ai" && ONE_ASSISTANT) {
         closeDrawer();
         openAssistant();
@@ -602,7 +607,7 @@ export default function EmailPage() {
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer, closeDrawer]);
+  }, [openDrawer, closeDrawer, markSheetTab, openCompose]);
 
   // Opening an email from a chat card (EmailToolCards) must leave any open
   // automation scene — the full-screen Chat otherwise covers the inbox so the
@@ -1182,6 +1187,14 @@ export default function EmailPage() {
           />
         )}
 
+        {/* ── Auto-run notice (task 2267, EM-G11c2) ──
+            For the Gmail mailbox in view that has an enabled rule and no
+            stored Auto-run choice. The rules step shows its own switch, so
+            the notice waits until the setup ends. */}
+        {selectedAccount && selectedAccount.provider === "gmail" && setupStage !== "rules" && (
+          <AutoRunNotice key={`auto-run-notice-${selectedAccount.id}`} account={selectedAccount} />
+        )}
+
         {/* ── The first import of the mailbox in view ──
             The panel draws only when the gateway reports progress
             (`import_phase`, EM-T6b). The sync banner names each other
@@ -1341,7 +1354,7 @@ export default function EmailPage() {
             })
           : null;
         return (
-          <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+          <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
             <span className="text-foreground">
               {isMessage ? (
                 n.title
@@ -1373,7 +1386,7 @@ export default function EmailPage() {
 
       {/* Undo-send toast — on mobile, sits above the fixed bottom nav bar */}
       {pendingSend && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+        <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
           <span className="text-foreground">Sending message…</span>
           <button
             onClick={() => useEmailStore.getState().undoSend()}

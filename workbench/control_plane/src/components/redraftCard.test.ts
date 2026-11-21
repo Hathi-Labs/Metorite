@@ -44,8 +44,11 @@ import {
   NO_EDITS,
   REVISED_ANSWER,
   confirmationReducer,
+  asNewMailEdits,
   formEditsReducer,
-  liveEdits,
+  closedEdits,
+  heldKeys,
+  type FormEdits,
   liveCards,
   type ConfirmationAction,
   type ConfirmationQueueState,
@@ -58,6 +61,9 @@ import {
   UNCHANGED_LINE,
   UPDATING_LINE,
   cardDraftOf,
+  CHECK_TRAIL,
+  NOT_THE_SAME_LEAD,
+  changedLinkLine,
   changedText,
   changesOf,
   changingLine,
@@ -879,7 +885,7 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     expect(formEditsReducer(one, { key: OLD, value: { ...saved } })).toBe(one);
     const two = formEditsReducer(one, { key: NEW, value: { ...saved, body: "Other." } });
     expect(two.get(OLD)).toBe(saved);
-    expect(two.get(NEW)?.body).toBe("Other.");
+    expect(asNewMailEdits(two.get(NEW))?.body).toBe("Other.");
   });
 
   it("the CHAT keeps the edits, because the queue mounts again on each new message", () => {
@@ -888,10 +894,10 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     // queue again → red.
     const queue = read("components/ConfirmationQueue.tsx");
     expect(queue).not.toContain("formEditsReducer");
-    expect(queue).toContain("savedEdits: savedEdits?.(card.key)");
+    expect(queue).toContain("savedEdits: asNewMailEdits(savedEdits?.(card.key))");
     const chat = read("components/AgentChat.tsx");
-    expect(chat).toContain("const formEditsRef = useRef<FormEdits>(NO_EDITS);");
-    expect(chat).toContain("formEditsRef.current = liveEdits(formEditsRef.current, confirmations);");
+    expect(chat).toContain("const formEditsRef = useRef<FormEdits>(getFormEdits(sessionId) ?? NO_EDITS);");
+    expect(chat).toContain("const next = closedEdits(formEditsRef.current, heldRef.current, now);");
     expect(chat).toContain("savedEdits={savedFormEdits}");
     expect(chat).toContain("onEdits={onFormEdits}");
   });
@@ -909,21 +915,25 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     const kept = formEditsReducer(formEditsReducer(NO_EDITS, { key: OLD, value: saved }), { key: BOB_ID, value: saved });
     // 1. A steer about Kim: Kim turns into a slot, and Bob waits. Both stay.
     const steered = run([{ type: "resolved", requestId: OLD, answer: REVISED_ANSWER }], open);
-    expect(liveEdits(kept, steered)).toBe(kept);
+    expect(closedEdits(kept, heldKeys(open), heldKeys(steered))).toBe(kept);
     // 2. A Send in flight, then a restore after a 5xx: Bob stays all through.
     const card = open.cards[1];
     const sending = run([{ type: "answering", key: BOB_ID }], open);
     expect(sending.cards.some((c) => c.key === BOB_ID)).toBe(false);
-    expect(liveEdits(kept, sending).get(BOB_ID)).toBe(saved);
-    expect(liveEdits(kept, run([{ type: "restore", card }], sending)).get(BOB_ID)).toBe(saved);
+    expect(closedEdits(kept, heldKeys(open), heldKeys(sending)).get(BOB_ID)).toBe(saved);
+    expect(closedEdits(kept, heldKeys(sending), heldKeys(run([{ type: "restore", card }], sending))).get(BOB_ID)).toBe(saved);
     // 3 and 4. A refused steer and a plain message at rest change no card.
-    expect(liveEdits(kept, open)).toBe(kept);
+    expect(closedEdits(kept, heldKeys(open), heldKeys(open))).toBe(kept);
     // The card closes for good: an answer, a slot that a draft took, a reset.
     const answered = run([{ type: "answering", key: BOB_ID }, { type: "answered", key: BOB_ID }], open);
-    expect(liveEdits(kept, answered).has(BOB_ID)).toBe(false);
+    expect(closedEdits(kept, heldKeys(open), heldKeys(answered)).has(BOB_ID)).toBe(false);
     const taken = run([{ type: "requested", value: mailCard(NEW, { ...FORM, revises: OLD, draft: 2 }) }], steered);
-    expect(liveEdits(kept, taken).has(OLD)).toBe(false);
-    expect(liveEdits(kept, run([{ type: "reset" }], open)).size).toBe(0);
+    expect(closedEdits(kept, heldKeys(steered), heldKeys(taken)).has(OLD)).toBe(false);
+    // The rule itself drops the cards of a reset. The CHAT does not apply it to the reset of a chat
+    // switch (task 1893): see the test "a chat switch keeps the edits" below.
+    expect(closedEdits(kept, heldKeys(open), heldKeys(run([{ type: "reset" }], open))).size).toBe(0);
+    // A card that was never in the queue before (the redraw of a switch) never counts as left.
+    expect(closedEdits(kept, new Set(), heldKeys(run([{ type: "reset" }], open)))).toBe(kept);
   });
 });
 
@@ -982,11 +992,11 @@ describe("fix round 6: the card that came back says only what is true", () => {
   const again = { ...FORM, reopened: true };
   const noop = () => {};
   const edited = { subject: "Rates", body: "My text.", ticks: toggleTick(startTicks(replyFromEvent(FORM, OLD)!), true, GEO), fileTicks: [] };
-  const drawn = (state: ConfirmationQueueState, edits: ReturnType<typeof liveEdits>) => {
+  const drawn = (state: ConfirmationQueueState, edits: FormEdits) => {
     const card = state.cards.find((c) => c.key === OLD)!;
     return renderToStaticMarkup(createElement(NewMailCardForm, {
       form: card.reply!, onAnswer: noop, onDiscard: noop, armed: true,
-      savedEdits: edits.get(OLD),
+      savedEdits: asNewMailEdits(edits.get(OLD)),
     }));
   };
 
@@ -1002,17 +1012,35 @@ describe("fix round 6: the card that came back says only what is true", () => {
     const plan = planCardRedraw(log);
     expect(plan.map((c) => [c.requestId, c.waiting])).toEqual([[OLD, true]]);
     const state = run(plan.map((c) => ({ type: "requested" as const, value: c.value })));
-    const edits = liveEdits(NO_EDITS, state);
+    const edits = NO_EDITS;
     expect(edits.size).toBe(0);
     const html = drawn(state, edits);
     expect(html).toContain(REOPENED_CHECK_LINE);
     expect(html).not.toContain("Your edits are still on this card.");
     expect(html).toContain('data-redraft-reopened="check"');
-    // A chat switch drops the edits too, so the card asks the same.
-    const open = run([{ type: "requested", value: mailCard(OLD) }]);
-    const switched = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: edited }), run([{ type: "reset" }], open));
-    expect(drawn(run([{ type: "requested", value: mailCard(OLD, again) }]), switched)).toContain(REOPENED_CHECK_LINE);
+    // Task 1893: a chat switch no longer drops the edits (see "a chat switch keeps the edits" below).
+    // A card that comes back with NO kept edit still asks the member to check it.
     expect(REOPENED_CHECK_LINE).not.toContain("Jev");
+  });
+
+  it("a chat switch keeps the edits: the card that the log redraws keeps the untick and the text (task 1893)", () => {
+    // The edits of each thread live in `chatStore`, so the reset of a switch does not drop them, and a
+    // new mount reads them back. The redrawn form starts from them and says that they are on it.
+    // Mutation: drop the edits at a switch again (read NO_EDITS on a switch) → red.
+    const open = run([{ type: "requested", value: mailCard(OLD) }]);
+    const kept = formEditsReducer(NO_EDITS, { key: OLD, value: edited });
+    const redrawn = run([{ type: "requested", value: mailCard(OLD, again) }]);
+    const html = drawn(redrawn, kept);
+    expect(html).toContain(REOPENED_LINE);
+    expect(html).not.toContain(REOPENED_CHECK_LINE);
+    expect(html).toContain('data-redraft-reopened="kept"');
+    expect(html).toContain("My text.");
+    // The untick stays: Geo's box is not checked, so Send names nobody that the member removed.
+    const geoBox = html.match(new RegExp(`<input[^>]*Send to ${GEO.replace(".", "\.")}[^>]*>`))?.[0] ?? "";
+    expect(geoBox.length).toBeGreaterThan(0);
+    expect(geoBox).not.toContain('checked=""');
+    // The queue state of the switch itself is empty, and the pure rule ignores a card that was not there.
+    expect(closedEdits(kept, new Set(), heldKeys(run([{ type: "reset" }], open)))).toBe(kept);
   });
 
   it("the same mount draws it with the kept edits, so it says they are on it", () => {
@@ -1022,7 +1050,7 @@ describe("fix round 6: the card that came back says only what is true", () => {
       { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
       { type: "requested", value: mailCard(OLD, again) },
     ]);
-    const edits = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: edited }), back);
+    const edits = closedEdits(formEditsReducer(NO_EDITS, { key: OLD, value: edited }), new Set(), heldKeys(back));
     expect(edits.get(OLD)).toBe(edited);
     const html = drawn(back, edits);
     expect(html).toContain(REOPENED_LINE);
@@ -1031,7 +1059,7 @@ describe("fix round 6: the card that came back says only what is true", () => {
     expect(html).toContain("My text.");
     // The edits of a form that itself started bare keep the check line, as
     // after a change of tab. Mutation: read only that edits exist → red.
-    const bare = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: { ...edited, startedBare: true } }), back);
+    const bare = closedEdits(formEditsReducer(NO_EDITS, { key: OLD, value: { ...edited, startedBare: true } }), new Set(), heldKeys(back));
     expect(drawn(back, bare)).toContain(REOPENED_CHECK_LINE);
   });
 
@@ -1050,7 +1078,7 @@ describe("fix round 6: the card that came back says only what is true", () => {
     expect(back.cards.map((c) => [c.key, c.redraft, c.reply?.reopened])).toEqual([[OLD, undefined, true]]);
     expect(back.resolved.has(OLD)).toBe(false);
     // Its edits went with the Send, so it asks the member to check it.
-    expect(drawn(back, liveEdits(NO_EDITS, back))).toContain(REOPENED_CHECK_LINE);
+    expect(drawn(back, NO_EDITS)).toContain(REOPENED_CHECK_LINE);
     // A replay of the same ask keeps one card, and an answer closes it for good.
     expect(run([{ type: "requested", value: mailCard(OLD, again) }], back).cards).toHaveLength(1);
     const answered = run([{ type: "answering", key: OLD }, { type: "answered", key: OLD }], back);
@@ -1217,5 +1245,61 @@ describe("P2: a steer carries at most MAX_CARD_DRAFTS versions, the edited ones 
     const route = read("app/api/agent/chat/route.ts");
     expect(route).toContain("body.cardDraft.slice(0, MAX_CARD_DRAFTS)");
     expect(route).not.toContain("body.cardDraft.length <= 8");
+  });
+});
+
+describe("the line about the card that this card replaces (HRD-8b)", () => {
+  // Mutation: drop `changeOf(value.changed)` from `linkOf`, or drop the
+  // `linkLine` paragraph of `NewMailCardForm` -> red.
+  const link = { revises: OLD, draft: 2 };
+
+  it("a card with no change says nothing", () => {
+    expect(changedLinkLine(undefined)).toBe("");
+    expect(changedLinkLine({})).toBe("");
+    const same = replyFromEvent({ ...FORM, ...link }, NEW)!;
+    expect(same.changed).toBeUndefined();
+  });
+
+  it("a changed Cc is named in plain words, with the people", () => {
+    const line = changedLinkLine({ cc: { added: ["x@y.test"], removed: ["geo@acme.test"] } });
+    expect(line).toBe(
+      `${NOT_THE_SAME_LEAD} The Cc list changed. Added to Cc: x@y.test. Removed from Cc: geo@acme.test. ${CHECK_TRAIL}`,
+    );
+  });
+
+  it("a changed act names both acts, and the To list reads the same way", () => {
+    const line = changedLinkLine({
+      act: { was: "new", now: "forward" },
+      to: { added: ["a@b.test"], removed: [] },
+    });
+    expect(line).toContain("The card before it was a new mail. This card is a forward.");
+    expect(line).toContain("The To list changed. Added to To: a@b.test.");
+    expect(line).not.toContain("Removed from");
+  });
+
+  it("the form reads `changed` only with a link, and only the gateway's shape", () => {
+    const ok = replyFromEvent({ ...FORM, ...link, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
+    expect(ok.revises).toBe(OLD);
+    expect(ok.changed).toEqual({ cc: { added: ["x@y.test"], removed: [] } });
+    // No link, no `changed`.
+    expect(replyFromEvent({ ...FORM, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!.changed).toBeUndefined();
+    // A bad shape is dropped: an unknown act, an act that did not change, a word of a model.
+    const bad = replyFromEvent(
+      { ...FORM, ...link, changed: { act: { was: "new", now: "new" }, to: "all of them", cc: { added: [3], removed: "x" }, extra: 1 } },
+      NEW,
+    )!;
+    expect(bad.changed).toBeUndefined();
+    const unknown = replyFromEvent({ ...FORM, ...link, changed: { act: { was: "new", now: "weird" } } }, NEW)!;
+    expect(unknown.changed).toBeUndefined();
+  });
+
+  it("the card draws the line, and a card with none draws no line", () => {
+    const withLine = replyFromEvent({ ...FORM, ...link, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
+    const html = renderToStaticMarkup(createElement(NewMailCardForm, { form: withLine, onAnswer: () => {}, onDiscard: () => {}, armed: true }));
+    expect(html).toContain("data-redraft-link-changed");
+    expect(html).toContain("The Cc list changed.");
+    const none = replyFromEvent({ ...FORM, ...link }, NEW)!;
+    const plain = renderToStaticMarkup(createElement(NewMailCardForm, { form: none, onAnswer: () => {}, onDiscard: () => {}, armed: true }));
+    expect(plain).not.toContain("data-redraft-link-changed");
   });
 });

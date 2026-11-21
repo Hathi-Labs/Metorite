@@ -7,6 +7,7 @@ register their routes on the shared ``router`` as an import side effect.
 from gateway.routes.tasks import ai as _ai  # noqa: F401
 from gateway.routes.tasks import attachments as _attachments  # noqa: F401
 from gateway.routes.tasks import calendar as _calendar  # noqa: F401
+from gateway.routes.tasks import calendar_connections as _calendar_connections  # noqa: F401
 from gateway.routes.tasks import capability as _capability  # noqa: F401
 from gateway.routes.tasks import capture_email as _capture_email  # noqa: F401
 from gateway.routes.tasks import entries as _entries  # noqa: F401

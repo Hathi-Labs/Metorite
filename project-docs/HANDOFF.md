@@ -83,7 +83,60 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-445 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
+### H-445 · Finish the setup of the Google Cloud dev box `aroh-dev-1`, then delete the temporary office SSH rule · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The Metorite MCP was signed out in the session that built the box.
+- **Why:** D230 approved the box. The VM runs, and nothing else is set up on it. `docs/gcp_aroh.md` §5 and §6 hold the steps and the three traps of `setup.sh`.
+- **Do this:**
+  1. A person signs the box in to Tailscale, with the account of the home server. On the box, `sudo tailscale up --hostname=aroh-dev-1` prints the link.
+  2. Run `BOX_NAME=aroh-dev-1 SETUP_NO_SIGNIN=1 bash setup.sh`, then `dev_toolchain.sh` and `dev_verify.sh` as `dev`.
+  3. A person signs `dev` in to Claude, GitHub and the Metorite MCP.
+  4. Add `aroh-dev-1` to `~/.ssh/config` on the PC. Point `CI_HOME` at `ci@aroh-dev-1` when the CI lane moves there.
+  5. Delete the firewall rule `aroh-vpc-tmp-ssh-office` and the `ufw` rule for `49.204.144.74` on the box.
+- **Check:** `gcloud compute firewall-rules describe aroh-vpc-tmp-ssh-office --project=metorite-513907 --format='value(name)'` prints the name → STILL PENDING. "not found" means step 5 is done. Then confirm `ssh dev@aroh-dev-1 'bash ~/Metorite/scripts/home_server/dev_verify.sh'` passes over Tailscale.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-446 · Ask the Google Cloud admin for four roles that the dev box needs · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** our account cannot change IAM in `metorite-513907`. Without these roles, IAP SSH fails with `4033: not authorized`, and the box sends no logs or metrics.
+- **Ask for:** IAP-secured Tunnel User (`roles/iap.tunnelResourceAccessor`) for the account that runs `gcloud` on the PC. Logs Writer (`roles/logging.logWriter`) and Monitoring Metric Writer (`roles/monitoring.metricWriter`) for `sa-aroh-dev@metorite-513907.iam.gserviceaccount.com`. Storage Admin and Logs Viewer for the account, for backups and logs later.
+- **Check:** `testIamPermissions` for `iap.tunnelInstances.accessViaIAP`, as `docs/gcp_aroh.md` §2 shows. An empty `{}` → STILL PENDING. One permission per call, and HTTP 429 means "ask again later", not "no".
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-447 · Ask the admin about `metorite-vpc` and its two subnets, and the project display name · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** the Google team made `metorite-vpc`, `metorite-app-subnet` (`10.0.1.0/24`) and `metorite-dev-subnet` (`10.0.2.0/24`) on 2026-11-19. They are empty, they break the aroh name of D229, and `10.0.x` is the range most likely to clash with a VPN. The display name of the project is still "Metorite".
+- **Recommend:** delete the VPC and both subnets, and rename the project display name to "aroh". An agent must not delete them, because the admin made them.
+- **Check:** `gcloud compute networks list --project=metorite-513907 --format='value(name)' | grep -c metorite-vpc` → 1 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-448 · Decide where the production database runs on Google Cloud, then test the migration ladder on Cloud SQL · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** production will move to Google Cloud. The data is small, about 200 MB (`specs/backup_and_restore.md`). Supabase also gives Storage for files and backups, and Auth for operator sign-in, so both need a replacement.
+- **Recommend:** Cloud SQL for PostgreSQL 16, apart from the app box, as Supabase is apart today. It gives point-in-time restore, and our migrations only roll forward (R6). Start small and single-zone. The risk to test first: 18 migrations rely on a migration role that bypasses RLS, and Cloud SQL gives no true superuser. Run the whole ladder and the R8 suites on a small instance before any cutover. Supabase is decision D34, so the owner decides.
+- **Check:** `grep -c -E '^### D[0-9]+ .*(Cloud SQL|production database)' project-docs/work_plan.md` → 0 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-449 · Give the AI Router a way to call Gemini 4 Argon on Vertex · [AGENT]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** Google blocks Argon on the Gemini API key route. Vertex serves it, also in the OpenAI shape, but Vertex wants a Google OAuth token, not a fixed key. The Router keeps one fixed secret per provider. `docs/gcp_aroh.md` §7 holds the tests.
+- **Do this:** first ask the Google team two questions. Can a Vertex API key bound to a service account work on the OpenAI endpoint? Or can they open Argon on the Gemini API route for the paid project? A yes to either needs no code. Otherwise, when the app box runs on Google Cloud, add a `vertex_ai` provider that passes the project and the location, and add `google-auth`. The attached service account then signs each call.
+- **Check:** `grep -rc 'vertex_ai/' apps/services/customer_console/customer_console/*.py | grep -v ':0' | wc -l` → 0 means STILL PENDING, unless the Google team's answer removed the need. Record that answer here.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-444 · Close five gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
+- **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because five gaps stay open:
+  1. Nothing limits how many dispatched runs are live. Each run spends the credits of the organization.
+  2. A workflow node that assigns an agent no longer waits for the run. The sink starts the run and returns.
+  3. A `skill-projects` write shows a card. A dispatched run has no chat, so each of those cards denies. Other writes need no card. The `task-manager` agent calls `my_tasks_delegate`, `my_tasks_update` and `my_tasks_move`, and these send no card. So the run can write in some tools and not in others. No test shows which, because the R8 test approves every card.
+  4. **The run has the full access of the assigner.** Spec §6.4 wants `EffectiveAccess.intersect()` with `agent:<name>`. Text that another member wrote in the task description drives the run. That text can make the run read the assigner's private tasks, and the reply lands on the shared timeline. It can also call `my_tasks_delegate` as the assigner. This is a confused-deputy case. Do not flip the flag before this gap closes.
+  5. A write of a dispatched run shows `created_by=<assigner>` and `meta.via=chat:projects-assistant`. The assigner confirmed nothing and no chat existed. Bind an `agent:<name>` actor and a dispatch `via`. D-PM-9 wants every agent edit attributable.
+- **Do this:** Fix each gap with a fence, or record the owner's answer in `project_management_app.md` §9.12.10. Gap 3 is question 2 there. Gap 4 needs the intersect in code, not an answer.
+- **Check:** `grep -c 'live_run_count() >=' apps/services/gateway/gateway/routes/projects/agent_dispatch.py`. A count of 0 means gap 1 is open. `grep -c 'EffectiveAccess' apps/services/gateway/gateway/routes/projects/agent_dispatch.py` with a count of 0 means gap 4 is open. Gaps 2, 3 and 5 stay open until a PR names their fences here. The cap of gap 1 must hold across gateway workers, because `_LIVE` is per process.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10.
+- **Added:** 2026-11-07 · H-240, branch `h240-mt-526d36b7`
+
+### H-450 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
 - **Metorite:** #1843. The task holds the slice record. No own task yet, so the full entry is here.
 - **Why:** Slice 2 made one reader of the internal token. Three gaps stay:
   - The deploy does not copy `GATEWAY_INTERNAL_TOKEN` into `workbench/operator_console/.env.local`. This needs the `deploy-write` grant.
@@ -273,13 +326,6 @@ line — never reclaim a number by deleting the other entry.
   `ssh metorite 'grep -l "\*\*_os.environ" /home/acb/.acb/agents/repos/*/agents.py | wc -l'`.
   A count above 0 means this is open.
 - **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
-
-### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
-- **Metorite:** #621. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
-  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
-  in that handler, means this is open.
-- **Added:** 2026-10-08 · branch `proxy-path-guard`.
 
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
@@ -1491,12 +1537,6 @@ line — never reclaim a number by deleting the other entry.
   → no hit means no app-wide CSP is set.
 - **Added:** 2026-10-04 · the chat click-to-load PR
 
-### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
-- **Metorite:** #688. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
-  → `0` means the gap is open. The sink passes no member to `run_agent`.
-- **Added:** 2026-10-04 · PR #622
-
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Metorite:** #736. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`
@@ -1628,9 +1668,13 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
   Each hit is an unbound read or write on a FORCE RLS table. This entry is
   open until the only hits left are tenant-discovery reads.
-- **State (2026-11-03):** Part (b) is built: the scans bind each listed org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
-  A scheduled run of a listed org has no billing member, so an agent node fails, and five failures disable the workflow.
+- **State (2026-11-12):** Parts (a), (b) and (c) are built. Each door binds an org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
+  The hook door reads the token in each listed org. The event door uses the tenant that the emitter bound. The manual door uses the org of the row.
+  A replayed webhook delivery starts no second run (migration 420). The list stays empty, and only the owner flips it (OWNER-GATE `enforcement-flip`).
+  A run with no member has no billing member, so an agent node fails, and five failures disable the workflow.
   Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
+  Four `await _get_db()` hits stay in `service.py`. `_organization_ids` and `_workflow_billing_member` are discovery reads.
+  `_resolve_workflow_organization` and `_run_session(None)` serve only a run with no org, and no door starts one now. Remove them in a later slice, then close this entry.
 - **Added:** 2026-10-15 · PR #1052 review round 1
 
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]
@@ -1952,9 +1996,4 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #885. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `git grep -n "no-offset\|without an offset" origin/main -- apps/services/gateway/gateway/routes/projects/due.py` prints nothing.
 - **Added:** 2026-10-27 · WS-64 session
-
-### H-437 · Give a web chat run the credential filter of its member · [AGENT] · security
-- **Metorite:** #1120. The task holds the full entry.
-- **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
-- **Added:** 2026-10-30 · H-337 session
 
