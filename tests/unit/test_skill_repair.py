@@ -1287,14 +1287,33 @@ def test_the_checks_refuse_before_any_spend(repairs, setup: str, code: str) -> N
 
 
 def test_a_member_cannot_repair_the_skill_or_the_run_of_another(repairs) -> None:
+    """Another member's skill is the plain 404. On the caller's own skill, a
+    row that cannot start a repair gives 404 ``no_failed_run``, and a row of
+    another member gives the SAME answer as an id that does not exist, so the
+    answer tells nothing about it."""
     failed = _failed(repairs)
     answer = _repair(repairs, failed.id, email=BEN)
-    assert answer.status_code == 404
+    assert (answer.status_code, answer.json()["detail"]) == (404, "Not found")
+    nobody = _repair(repairs, str(uuid.uuid4()))
+    assert nobody.status_code == 404
+    assert nobody.json()["detail"] == {"code": "no_failed_run",
+                                       "message": skill_repair.WORDS["no_failed_run"]}
     other = _failed(repairs, created_by=BEN, run_id="run-ben")
-    assert _repair(repairs, other.id).status_code == 404
     passed = _failed(repairs, passed=True, reason="passed", run_id="run-ok")
-    assert _repair(repairs, passed.id).status_code == 404
+    test_row = _failed(repairs, kind="test", reason="missing_write", test_id="t1",
+                       run_id="run-t")
+    proposal = _failed(repairs, kind="proposal", reason="extra_write",
+                       repair_of=str(uuid.uuid4()), run_id="run-p")
+    for row in (other, passed, test_row, proposal):
+        got = _repair(repairs, row.id)
+        assert (got.status_code, got.json()) == (404, nobody.json()), row.kind
     assert _spent(repairs) == (0, 0)
+
+
+def test_it_was_wrong_with_no_recent_run_is_no_failed_run(repairs) -> None:
+    answer = _app().post(f"/studio/skills/{R_SID}/repairs", json={
+        "said_wrong": True, "instructions": "Add the lead. Always fill the company."})
+    assert answer.status_code == 404 and answer.json()["detail"]["code"] == "no_failed_run"
 
 
 def test_the_org_and_the_member_come_from_the_session(repairs) -> None:
@@ -1628,3 +1647,242 @@ def test_a_repair_waits_on_the_slot_of_f4b(repairs) -> None:
     assert answer.status_code == 429 and answer.json()["detail"]["code"] == "suite_running"
     assert answer.json()["detail"]["message"] == skill_repair.WORDS["suite_running"]
     assert _spent(repairs) == (0, 0) and repairs.proposals == []
+
+
+# ── F12c review round 1 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("instructions", "code"), [
+    ("Add the lead for {{name}}.", "unresolved_variable"),
+    ("Add the lead. " + "Fill each field of the lead with care. " * 900, "too_long")])
+def test_a_proposal_that_cannot_load_spends_nothing_and_writes_no_row(
+        repairs, instructions: str, code: str) -> None:
+    """Review P2: the pack builder refuses it in check 7, so the one repair
+    of the run stays unused. Mutation: drop the build check -> the suite runs
+    and writes a row -> red."""
+    failed = _failed(repairs)
+    answer = _repair(repairs, failed.id, instructions=instructions)
+    assert answer.status_code == 422, answer.text[:300]
+    assert answer.json()["detail"] == {"code": code, "message": skill_repair.WORDS[code]}
+    assert _spent(repairs) == (0, 0) and repairs.proposals == []
+    assert _repair(repairs, failed.id).status_code == 200, "the one repair is still free"
+
+
+def test_the_history_marks_the_rows_that_can_start_a_repair(repairs, monkeypatch) -> None:
+    from gateway.routes.studio import skills as route
+
+    live = _run_row(run_id="r-live")
+    test_row = _run_row(kind="test", reason="missing_write", test_id="t1", run_id="r-t")
+
+    async def history(_db: Any, member: str, sid: str) -> Any:
+        return skill_runs.History(rows=(live, test_row), others={})
+
+    monkeypatch.setattr(route.store, "get_version", route.store.get_version)
+    monkeypatch.setattr(skill_runs, "history", history)
+    out = _app().get(f"/studio/skills/{R_SID}/runs").json()
+    assert [r["repairable"] for r in out["runs"]] == [True, False]
+
+
+async def test_the_skill_read_shows_a_failure_id_only_for_a_repairable_row(monkeypatch) -> None:
+    gw = _ToolGateway(_tried())
+    runs = {"runs": [{"id": "live-1", "kind": "live", "repairable": True, "reason": "tool_error",
+                      "words": "w", "version": 2},
+                     {"id": "test-1", "kind": "test", "repairable": False,
+                      "reason": "missing_write", "words": "w", "version": 2}],
+            "others": {}, "earlier_versions": []}
+
+    async def send(method: str, path: str, body: Any, act: str = "", miss: str = "",
+                   timeout: float = 15.0) -> Any:
+        gw.calls.append((method, path, body))
+        if path.endswith("/runs"):
+            return stools._Reply(200, runs)
+        return stools._Reply(200, gw.read)
+
+    monkeypatch.setattr(stools, "_send", send)
+    monkeypatch.setattr(stools, "_repair_open", lambda: True)
+    out = await stools.studio_skill_list(skill_id=R_SID)
+    assert [r.get("failure_id") for r in out["failures"]["runs"]] == ["live-1", None]
+    assert "test-1" not in repr(out["failures"])
+
+
+async def test_the_skill_read_asks_for_failures_only_on_the_flag(monkeypatch) -> None:
+    """Review P3: no request to the history route while the org is off."""
+    gw = _ToolGateway(_tried())
+    monkeypatch.setattr(stools, "_send", gw.send)
+    monkeypatch.setattr(stools, "_repair_open", lambda: False)
+    out = await stools.studio_skill_list(skill_id=R_SID)
+    assert "failures" not in out
+    assert [p for _m, p, _b in gw.calls] == [f"/studio/skills/{R_SID}"]
+
+
+def test_the_failures_block_is_cut_and_never_the_read() -> None:
+    read = {"ok": True, "instructions": "x" * (stools.MAX_MANIFEST_CHARS - 2000)}
+    block = {"runs": [{"reason": "tool_error", "detail": "d" * 290} for _ in range(10)],
+             "others": {}, "earlier_versions": [{"version": 1, "instructions": "i" * 400}] * 3,
+             "note": "n"}
+    out = stools._with_failures(read, block)
+    assert out["instructions"] == read["instructions"]
+    assert stools._size(out) <= stools.MAX_MANIFEST_CHARS
+    assert out["failures"]["truncated"] is True and len(out["failures"]["runs"]) < 10
+    tight = {"ok": True, "instructions": "x" * stools.MAX_MANIFEST_CHARS}
+    assert stools._with_failures(tight, block)["failures_left_out"] is True
+
+
+def test_a_held_chat_asks_before_the_try(monkeypatch) -> None:
+    """Review P2: in a chat that read outside mail, no credit is spent with
+    no act of the member. Mutation: drop the card -> the route runs -> red."""
+    gw, cards = _tool_world(monkeypatch, _tried(), "stopped")
+
+    async def held() -> bool:
+        return True
+
+    monkeypatch.setattr(stools, "_must_ask", held)
+    out = _call_repair(gw)
+    assert len(cards) == 1 and out["decision"] == "stopped"
+    assert not any(p.endswith("/repairs") for _m, p, _b in gw.calls)
+    gw2, cards2 = _tool_world(monkeypatch, _tried(), "approved")
+    monkeypatch.setattr(stools, "_must_ask", held)
+    assert _call_repair(gw2)["ok"] is True
+    assert len(cards2) == 2, "one card before the try, one card of the change"
+
+
+def test_based_on_is_needed_also_to_remove_an_action(monkeypatch) -> None:
+    gw, cards = _tool_world(monkeypatch, _tried())
+    out = _call_repair(gw, instructions="", based_on="")
+    assert out["ok"] is False and cards == []
+    assert not any(p.endswith("/repairs") for _m, p, _b in gw.calls)
+
+
+def test_the_tool_says_no_failed_run(monkeypatch) -> None:
+    gw, _ = _tool_world(monkeypatch, {"detail": {
+        "code": "no_failed_run", "message": skill_repair.WORDS["no_failed_run"]}}, status=404)
+    out = _call_repair(gw)
+    assert out["code"] == "no_failed_run" and out["say"] == skill_repair.WORDS["no_failed_run"]
+
+
+@pytest.mark.parametrize(("state", "line"), [("published", "The skill becomes a draft."),
+                                             ("draft", "The skill keeps its state.")])
+def test_the_undo_card_says_draft_only_for_a_published_skill(monkeypatch, state, line) -> None:
+    gw, cards = _tool_world(monkeypatch, _tried(), "stopped")
+    gw.read["skill"]["state"] = state
+
+    async def held() -> bool:
+        return True
+
+    monkeypatch.setattr(stools, "_must_ask", held)
+    asyncio.run(stools.studio_skill_undo(skill_id=R_SID, expected_version=3))
+    assert line in cards[0]
+    other = "The skill keeps its state." if state == "published" else "The skill becomes a draft."
+    assert other not in cards[0]
+
+
+def test_a_base_test_named_input_1_stays_a_test(repairs) -> None:
+    """Review P3: the input run is the last result, by position. Mutation:
+    find it by its id -> the member's test takes its place -> red."""
+    repairs.versions[2]["tests"] = [{"id": "input-1", "input": "Add Ravi from Acme",
+                                     "expect": [{"action": "object:lead.create",
+                                                 "fields": {"data.company": "Acme"}}]}]
+    repairs.runner = _RepairRunner({R_INPUT: [(_mail_tool(), {"to": "x"})]})
+    failed = _failed(repairs)
+    out = _repair(repairs, failed.id).json()
+    assert out["tests"] == 1 and out["reason"] == "other_action"
+    assert [(r["test_id"], r["input"]) for r in out["results"]] == [
+        ("input-1", False), ("input-1", True)]
+    assert stools._failed_lines(out) == [
+        f"The request that failed: {skill_repair.WORDS['other_action']}"]
+    good = skill_tests.TestResult(test_id="input-1", passed=True, reason="passed",
+                                  writes=("object:lead.create",))
+    bad = skill_tests.TestResult(test_id="input-1", passed=False, reason="other_action",
+                                 writes=("tool:send_email",))
+    found = skill_repair.outcome(skill_tests.SuiteResult(
+        skill_id=R_SID, version=2, content_hash="c", results=(good, bad)))
+    assert found.writes == ("tool:send_email",) and found.tests == 1
+
+
+def test_same_writes_reads_one_name_for_a_door_op() -> None:
+    """Review P2: the live row names a door op ``<app>.<op>``, and the dry run
+    names its chat tool. Mutation: compare the raw names -> red."""
+    door = "knowledge.list_spaces"
+    assert skill_repair.write_name(door) == "list_spaces"
+    failed = _run_row(writes=({"action": door, "keys": []},))
+    found = skill_repair.Outcome(passed=True, reason="passed", detail="",
+                                 writes=("tool:list_spaces",), credits=Decimal(0),
+                                 run_id=None, tests=0)
+    assert skill_repair.same_writes(found, failed) is True
+    other = dataclasses.replace(found, writes=("tool:send_email",))
+    assert skill_repair.same_writes(other, failed) is False
+
+
+def test_a_body_with_no_actions_key_is_no_empty_subset() -> None:
+    """Review P3: removing the key is a change of the shape, not a subset."""
+    gone = {k: v for k, v in R_BASE.items() if k != "actions"}
+    assert skill_repair.check_contract(R_BASE, {**gone, "instructions": "x"}, _CLASSES) == "widened"
+    bare = {k: v for k, v in R_BASE.items() if k != "actions"}
+    assert skill_repair.check_contract(bare, {**bare, "instructions": "x"}, _CLASSES) is None
+
+
+@pytest.mark.parametrize(("before", "after"), [(1, True), (1, 1.0), (True, 1), ([1], [True])])
+def test_the_other_keys_compare_with_their_types(before: Any, after: Any) -> None:
+    base = {**R_BASE, "cards": before}
+    assert skill_repair.check_contract(base, {**base, "cards": after, "instructions": "x"},
+                                       _CLASSES) == "widened"
+
+
+def test_the_allow_list_drops_the_repair_pack_off_the_flag(monkeypatch) -> None:
+    """Item 3: with the org off a switch, ``choose`` and the loader never see
+    the pack, also with a TOOL_PACKS line."""
+    settings = get_settings()
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: R_ORG)
+    for key in ("studio_orgs", "studio_skill_tests_orgs", "studio_skill_repair_orgs"):
+        monkeypatch.setattr(settings, key, "*", raising=False)
+    allow = frozenset({"studio", "studio-more", "studio-repair"})
+    assert ti._without_closed_repair(allow) == allow
+    monkeypatch.setattr(settings, "studio_skill_repair_orgs", "", raising=False)
+    assert ti._without_closed_repair(allow) == {"studio", "studio-more"}
+    src = (_ROOT / "apps/services/orchestrator/orchestrator/_tool_injection.py").read_text(
+        encoding="utf-8")
+    body = src[src.index("async def _apply_tool_packs("):]
+    assert "allow = _without_closed_repair(allow)" in body[:body.index("\nasync def ", 10)]
+
+
+@pytest.mark.parametrize("repair_on", [True, False])
+async def test_the_repair_pack_builds_through_the_owner_filter(monkeypatch, repair_on) -> None:
+    """Review P2: the real builder of a pack (``_pack_tools``) runs the owner
+    filter, so an org off STUDIO_SKILL_REPAIR_ORGS with a TOOL_PACKS line gets
+    NO repair tool. Mutation: drop the call of
+    ``_drop_studio_repair_unless_open`` -> red."""
+    from acb_skills import tool_packs as tp
+
+    from tests.unit._native_maf_harness import load_agent_module
+    from tests.unit.test_tool_packs_registry import HOLDER, _member_holds
+
+    settings = get_settings()
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: R_ORG)
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    monkeypatch.setattr(ti, "_studio_requests_open", lambda: True)
+    _member_holds(monkeypatch, HOLDER)
+
+    async def clear(_owner: str, _ctx: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(ti, "_pack_held", clear)
+    for key in ("studio_orgs", "studio_skill_tests_orgs"):
+        monkeypatch.setattr(settings, key, "*", raising=False)
+    monkeypatch.setattr(settings, "studio_skill_repair_orgs", "*" if repair_on else "",
+                        raising=False)
+    module = load_agent_module("apps/agents/agent-studio-builder")
+    build = await ti._pack_tools("studio-repair", {tp.PACK_RUN_KEY: "run-key-repair"},
+                                 module=module)
+    assert build is not None and build.owner == "studio-builder"
+    names = tuple(tp_name(t) for t in build.tools)
+    if repair_on:
+        assert names == ("studio_skill_repair", "studio_skill_undo")
+    else:
+        assert names == () and sorted(build.dropped) == ["studio_skill_repair",
+                                                         "studio_skill_undo"]
+
+
+def tp_name(tool: Any) -> str:
+    from acb_skills.tool_guard import tool_name
+
+    return tool_name(tool)

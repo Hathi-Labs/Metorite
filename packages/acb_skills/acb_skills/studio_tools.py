@@ -1829,12 +1829,10 @@ async def studio_skill_list(skill_id: str = "", offset: int = 0, limit: int = 0)
         return _fail(reply, by_id=bool(sid))
     if sid:
         out = _framed_read(_skill_of(reply), _version_of(reply))
-        # TOF-3a F12c: the failures of the skill. The route answers 404 for
-        # an org off STUDIO_SKILL_REPAIR_ORGS, and then the read adds nothing.
+        # TOF-3a F12c: the failures of the skill, only for an org on the
+        # switches of the repair, and inside the size cap of the read.
         failures = await _failures(sid)
-        if failures is not None:
-            out["failures"] = failures
-        return out
+        return out if failures is None else _with_failures(out, failures)
     found = reply.data.get("skills") if isinstance(reply.data, dict) else None
     rows = [r for r in (found if isinstance(found, list) else []) if isinstance(r, dict)]
     page = paged(rows, offset, limit, default=MAX_SKILL_ROWS, maximum=MAX_SKILL_ROWS,
@@ -2375,12 +2373,22 @@ MAX_EARLIER_VERSIONS = 3
 
 _REPAIR_NOTE = "Approve to save version {n}. The skill keeps its state. Reject to save nothing."
 _REPAIR_NOT_FOUND = "Only the owner of this skill can fix it. Ask the owner."
+#: The words of the 404 ``no_failed_run`` of the repair route, when the route
+#: gives no words of its own.
+_REPAIR_NO_RUN = "I cannot find that failed run. Ask me to list the failures."
+#: The card of a held chat before the try, which spends credits (review P2).
+_REPAIR_TRY_NOTE = ("Approve to try a fix with nothing saved. The try spends credits. Reject to "
+                    "try nothing.")
+_REPAIR_NOT_TRIED = "I tried nothing. The decision was {decision}."
 _REPAIR_ONE_WAY = "Send failure_id from the skill read, or said_wrong true. Nothing was tried."
 _REPAIR_NOTHING = "Send new instructions, or the actions to remove. Nothing was tried."
 _REPAIR_NOT_SAVED = "I saved nothing. The decision was {decision}."
 _REPAIR_SAME = ("The tried request made the same changes as the run that failed, so this try "
                 "may not prove the fix.")
-_UNDO_NOTE = "Approve to go back one version. The skill becomes a draft. Reject to keep it."
+_UNDO_NOTE = "Approve to go back one version. Reject to keep the skill as it is."
+#: The F7 undo moves only a published skill to a draft.
+_UNDO_TO_DRAFT = "The skill becomes a draft."
+_UNDO_KEEPS = "The skill keeps its state."
 _UNDO_BAD = "expected_version is the version that the skill read gives. Nothing changed."
 _UNDO_DONE = ("Version {old} is back, as version {new}. The skill is {state} now. "
               "Say publish to use it again.")
@@ -2409,9 +2417,11 @@ def say_text(head: str, tail: list[str]) -> str:
 def _route_words(reply: _Reply) -> tuple[str, str]:
     """The code and the words of a refusal of a repair route. A 404 has two
     causes that the route cannot tell apart. Each one says the same."""
-    if reply.status == 404:
-        return "not_found", _REPAIR_NOT_FOUND
     detail = reply.data.get("detail") if isinstance(reply.data, dict) else None
+    if reply.status == 404:
+        if isinstance(detail, dict) and detail.get("code") == "no_failed_run":
+            return "no_failed_run", _clip(detail.get("message") or _REPAIR_NO_RUN, 300)
+        return "not_found", _REPAIR_NOT_FOUND
     if isinstance(detail, dict):
         return (_tag(detail.get("code"), 32) or f"status_{reply.status}",
                 _clip(detail.get("message") or "", 300))
@@ -2429,12 +2439,30 @@ def _said(message: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "say": say_text(message, []), **extra}
 
 
+def _repair_open() -> bool:
+    """True when the run's org is on the switches of the repair: the test of
+    the tool gate (``_tool_injection._skill_repair_tools_open``). It sends no
+    request, and it fails closed. A package must not import the gateway, so
+    it asks the orchestrator, as :func:`_run_org` does."""
+    try:
+        from orchestrator._tool_injection import _skill_repair_tools_open
+
+        return bool(_skill_repair_tools_open())
+    except Exception:
+        return False
+
+
 async def _failures(sid: str) -> dict[str, Any] | None:
     """The failures of skill *sid* for its read (F12.md "The history read"),
-    or None when the route is closed or does not answer. The instructions of
-    an earlier version sit in an untrusted frame."""
+    or None when the org is off the repair switches (no request then), the
+    route is closed or it does not answer. Only a row that can start a repair
+    (a failed live row) shows its ``id``, so the model never sends the id of a
+    test or a proposal row. The instructions of an earlier version sit in an
+    untrusted frame."""
     from acb_skills.untrusted import UntrustedFrame
 
+    if not _repair_open():
+        return None
     try:
         reply = await _get(f"/studio/skills/{sid}/runs")
     except _Refused:
@@ -2442,18 +2470,25 @@ async def _failures(sid: str) -> dict[str, Any] | None:
     data = reply.data if reply.ok and isinstance(reply.data, dict) else None
     if data is None:
         return None
-    runs = [r for r in (data.get("runs") or []) if isinstance(r, dict)][:MAX_FAILURE_ROWS]
-    rows = [{"id": _tag(r.get("id"), 40), "version": r.get("version"),
-             "kind": _tag(r.get("kind"), 10), "reason": _tag(r.get("reason"), 32),
-             "words": _clip(r.get("words") or "", 200), "detail": _clip(r.get("detail") or "", 300),
-             "created_at": _tag(r.get("created_at"), 40)} for r in runs]
+    runs = paged([r for r in (data.get("runs") or []) if isinstance(r, dict)], 0, 0,
+                 default=MAX_FAILURE_ROWS, maximum=MAX_FAILURE_ROWS, noun="failures")
+    rows = []
+    for r in runs.items:
+        row = {"version": r.get("version"), "kind": _tag(r.get("kind"), 10),
+               "reason": _tag(r.get("reason"), 32), "words": _clip(r.get("words") or "", 200),
+               "detail": _clip(r.get("detail") or "", 300),
+               "created_at": _tag(r.get("created_at"), 40)}
+        if r.get("repairable") is True and r.get("kind") == "live":
+            row["failure_id"] = _tag(r.get("id"), 40)
+        rows.append(row)
     frame = UntrustedFrame.new()
+    versions = paged([v for v in (data.get("earlier_versions") or []) if isinstance(v, dict)],
+                     0, 0, default=MAX_EARLIER_VERSIONS, maximum=MAX_EARLIER_VERSIONS,
+                     noun="earlier versions")
     earlier = [{"version": v.get("version"),
                 "instructions": frame.wrap("SKILL INSTRUCTIONS",
                                            strip_hidden(str(v.get("instructions") or ""))),
-                "truncated": bool(v.get("truncated"))}
-               for v in (data.get("earlier_versions") or [])[:MAX_EARLIER_VERSIONS]
-               if isinstance(v, dict)]
+                "truncated": bool(v.get("truncated"))} for v in versions.items]
     others = data.get("others") if isinstance(data.get("others"), dict) else {}
     out: dict[str, Any] = {"runs": rows, "others": {
         _tag(k, 32): v for k, v in others.items() if isinstance(v, int)}}
@@ -2462,6 +2497,30 @@ async def _failures(sid: str) -> dict[str, Any] | None:
     out["note"] = _FAILURES_NOTE + (" " + frame.note(
         "The instructions of an earlier version are the text of a skill.") if earlier else "")
     return out
+
+
+def _with_failures(read: dict[str, Any], failures: dict[str, Any]) -> dict[str, Any]:
+    """*read* with the block *failures*, inside :data:`MAX_MANIFEST_CHARS`.
+    The cut takes the block, never the read: first the earlier versions,
+    then the failed rows from the oldest. A block that does not fit at all
+    is left out, and the read says so."""
+    block = {**failures, "runs": list(failures.get("runs") or []),
+             "earlier_versions": list(failures.get("earlier_versions") or [])}
+    cut = False
+    while True:
+        shown = {k: v for k, v in block.items() if k != "earlier_versions" or v}
+        if cut:
+            shown["truncated"] = True
+        trial = {**read, "failures": shown}
+        if _size(trial) <= MAX_MANIFEST_CHARS:
+            return trial
+        if block["earlier_versions"]:
+            block["earlier_versions"].pop()
+        elif block["runs"]:
+            block["runs"].pop()
+        else:
+            return {**read, "failures_left_out": True}
+        cut = True
 
 
 def _repair_rows(name: Any, data: dict[str, Any]) -> list[tuple[str, str]]:
@@ -2492,7 +2551,8 @@ def _failed_lines(data: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for r in data.get("results") or []:
         if isinstance(r, dict) and r.get("passed") is not True:
-            which = "The request that failed" if str(r.get("test_id")).startswith("input-") \
+            # The route marks the input run, the last result.
+            which = "The request that failed" if r.get("input") is True \
                 else f"Test {_tag(r.get('test_id'), 64)}"
             out.append(f"{which}: {_clip(r.get('words') or '', 200)}")
     return out
@@ -2516,10 +2576,18 @@ async def studio_skill_repair(
         current = await _get(f"/studio/skills/{sid}")
         if not current.ok:
             return _repair_refused(current)
-        if str(instructions or "").strip():
-            problem = _based_on_problem(current, based_on, {"instructions": instructions})
-            if problem:
-                return _said(problem)
+        # The spec: Mira always sends based_on from her read, also when she
+        # only removes an action.
+        sent = {"instructions": instructions} if str(instructions or "").strip() else {}
+        problem = _based_on_problem(current, based_on, sent)
+        if problem:
+            return _said(problem)
+        if await _must_ask():
+            # A chat that read outside mail never spends credits with no act
+            # of the member: one card first (review P2).
+            held = await _try_card(current, remove)
+            if held is not None:
+                return held
         ask: dict[str, Any] = {"instructions": instructions, "remove_actions": remove}
         if said_wrong:
             ask["said_wrong"] = True
@@ -2537,6 +2605,24 @@ async def studio_skill_repair(
         return await _repair_card(sid, current, data)
     except _Refused as exc:
         return _said(str(exc))
+
+
+async def _try_card(current: _Reply, remove: list[str]) -> dict[str, Any] | None:
+    """The card of a held chat before the try. Return None to go on, or the
+    result after any decision but ``approved``."""
+    name = _skill_of(current).get("name", "")
+    shown, hidden = _shown_count(name)
+    rows = [("skill", f"Skill: {shown}"), *_hidden_rows([("name", hidden)]),
+            *(("actions", f"Remove: {_shown(a)}") for a in remove)]
+    try:
+        context = await _card(_REPAIR_TRY_NOTE, rows)
+    except _Refused as exc:
+        return _said(str(exc))
+    decision = await _decide(f"Try a fix of {_title_name(name)}?",
+                             "The try spends credits. Nothing is saved.", context)
+    if decision == "approved":
+        return None
+    return _said(_REPAIR_NOT_TRIED.format(decision=decision), decision=decision)
 
 
 async def _repair_card(sid: str, current: _Reply, data: dict[str, Any]) -> dict[str, Any]:
@@ -2587,11 +2673,12 @@ async def studio_skill_undo(skill_id: str, expected_version: int) -> dict[str, A
                 return _repair_refused(first)
             name = _skill_of(first).get("name", "")
             shown, hidden = _shown_count(name)
+            moves = _UNDO_TO_DRAFT if _skill_of(first).get("state") == "published" else _UNDO_KEEPS
             rows = [("skill", f"Skill: {shown}"), *_hidden_rows([("name", hidden)]),
-                    ("version", f"Back to version {expected_version - 1}")]
+                    ("version", f"Back to version {expected_version - 1}"), ("state", moves)]
             context = await _card(_UNDO_NOTE, rows)
             decision = await _decide(f"Undo the newest version of {_title_name(name)}?",
-                                     "The skill becomes a draft.", context)
+                                     moves, context)
             if decision != "approved":
                 return _said(_UNDO_NOT_DONE.format(decision=decision), decision=decision)
         done = await _send("POST", f"/studio/skills/{sid}/undo",

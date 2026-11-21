@@ -105,8 +105,8 @@ from fastapi import Body, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
-from gateway.studio import skill_tests
 from gateway.routes.studio.packages import SHARE_RIGHT
+from gateway.studio import skill_tests
 from gateway.studio import skills_store as store
 from pydantic import BaseModel, StrictInt, ValidationError
 
@@ -802,7 +802,18 @@ def _run_out(row: Any) -> dict[str, Any]:
         "words": _words(row.reason),
         "detail": row.detail,
         "created_at": row.created_at,
+        # Only a failed live row can start a repair (check 4).
+        "repairable": row.kind == "live" and not row.passed,
     }
+
+
+def _no_failed_run() -> HTTPException:
+    """404 for a failed run that the caller cannot repair: no such row, a row
+    of another member, a test or a proposal row, a row that passed, or no run
+    of the caller in the last 24 hours. Each case gives the same answer, so
+    the answer tells nothing about a row of another member."""
+    return HTTPException(status_code=404, detail={
+        "code": "no_failed_run", "message": _words("no_failed_run")})
 
 
 @router.get("/skills/{skill_id}/runs")
@@ -849,29 +860,38 @@ async def skill_run_history(
 async def _the_failure(db: Any, member: str, sid: str, req: _Repair,
                        skill_runs: Any) -> tuple[Any, Any | None]:
     """Check 4 and the start of check 5. Answers the failed live row, or the
-    passed row that the member said was wrong and None. 404 when no such row
-    of the caller exists."""
+    passed row that the member said was wrong and None. 404
+    ``no_failed_run`` when no such row of the caller exists."""
     if req.said_wrong:
         passed = await skill_runs.newest_passed_live(db, member, sid)
         if passed is None or not passed.run_id:
-            raise HTTPException(status_code=404, detail=NOT_FOUND)
+            raise _no_failed_run()
         # The unique index allows one failed live row for each run, so a
         # failed row of that run is THE failed row (a second "it was wrong").
         failed = await skill_runs.failed_live_of_run(db, sid, passed.run_id)
         if failed is not None and failed.created_by != member:
-            raise HTTPException(status_code=404, detail=NOT_FOUND)
+            raise _no_failed_run()
         return (failed, None) if failed is not None else (passed, passed)
     failed = await skill_runs.get_run(db, str(req.failure_id))
     if (failed is None or failed.kind != "live" or failed.passed
             or failed.skill_id != sid or failed.created_by != member):
-        raise HTTPException(status_code=404, detail=NOT_FOUND)
+        raise _no_failed_run()
     return failed, None
 
 
+#: The load refusals of ``skill_packs.build`` that the member can repair.
+#: Each other refusal gives ``skill_unloaded``.
+_LOAD_CODES = frozenset({"unresolved_variable", "too_long"})
+
+
 def _the_proposal(base: dict[str, Any], req: _Repair | _Approve,
-                  classes: dict[str, str]) -> tuple[dict[str, Any], str]:
-    """Check 7: the proposal from the base body, its contract and the body
-    checks. Answers the proposal and its repair key. A refusal is 422."""
+                  classes: dict[str, str], skill: Any, org: str) -> tuple[dict[str, Any], str]:
+    """Check 7: the proposal from the base body, its contract, the body
+    checks and the load check of the skill pack. Answers the proposal and its
+    repair key. A refusal is 422, spends nothing and writes no row. The load
+    check is the check of ``run_suite``, so a proposal that the pack builder
+    refuses never runs and never uses the one repair of the run."""
+    from acb_skills import skill_packs, tool_packs
     from gateway.studio import skill_repair
 
     try:
@@ -883,7 +903,14 @@ def _the_proposal(base: dict[str, Any], req: _Repair | _Approve,
     if problem is not None:
         raise _code(422, problem)
     _catalog_check(_precheck(proposed), frozenset(classes))
-    return proposed, skill_repair.body_key(proposed)
+    key = skill_repair.body_key(proposed)
+    pack = skill_packs.build(
+        str(skill.id), skill.name, skill.description, int(skill.current_version or 1),
+        store.content_hash(proposed), proposed, max_tools=tool_packs.MAX_PACK_TOOLS,
+        chat_tools=flags.chat_tools_allowed(org))
+    if isinstance(pack, str):
+        raise _code(422, pack if pack in _LOAD_CODES else "skill_unloaded")
+    return proposed, key
 
 
 async def _the_input(db: Any, member: str, failed: Any,
@@ -947,7 +974,7 @@ async def repair_skill(
             base = await store.get_version(db, member, sid, failed.version)
             if base is None:
                 raise _code(409, "skill_changed")
-            proposed, key = _the_proposal(base.body, req, classes)    # check 7
+            proposed, key = _the_proposal(base.body, req, classes, skill, str(org))  # check 7
             if await skill_runs.repeats_a_failed_body(db, sid, key):   # check 8
                 raise _code(409, "repeat_change")
             said, tests = await _the_input(db, member, failed, base.body)  # checks 9 to 11
@@ -1006,8 +1033,10 @@ async def _dry_run_and_record(org: str, member: str, skill: Any, failed: Any,
         "proposal_id": row.id, "skill_id": skill.id, "base_version": failed.version,
         "passed": found.passed, "reason": found.reason, "tests": found.tests,
         "credits": str(found.credits),
+        # The input run is the last result (``skill_repair.outcome``).
         "results": [{"test_id": r.test_id, "passed": r.passed, "reason": r.reason,
-                     "words": _words(r.reason)} for r in result.results],
+                     "words": _words(r.reason), "input": i == len(result.results) - 1}
+                    for i, r in enumerate(result.results)],
     }
     if not found.passed:
         # The end-state rule: no change goes back for a proposal that failed.

@@ -319,6 +319,7 @@ def test_the_studio_names_come_from_the_skill_families() -> None:
         | frozenset(SKILL_FAMILIES["studio-more"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-workflows"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-share"]["tools"])
+        | frozenset(SKILL_FAMILIES["studio-repair"]["tools"])
     )
     assert pack.STUDIO not in pack.OWNERS  # no specialist, no config.json
 

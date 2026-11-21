@@ -46,7 +46,6 @@ __all__ = [
     "CONTRACT_CODES",
     "EARLIER_VERSIONS",
     "EARLIER_VERSION_CHARS",
-    "INPUT_TEST_ID",
     "OTHER_WORDS",
     "WORDS",
     "Outcome",
@@ -64,6 +63,7 @@ __all__ = [
     "saved_words",
     "try_proposal",
     "words_of",
+    "write_name",
 ]
 
 #: The codes of :func:`check_contract`.
@@ -119,6 +119,12 @@ WORDS: Mapping[str, str] = {
                   "change the skill in AI Studio."),
     "suite_running": "I am already trying a fix for you. Ask again when it finishes.",
     "not_owner": "Only the owner of this skill can fix it. Ask the owner.",
+    "no_failed_run": "I cannot find that failed run. Ask me to list the failures.",
+    "unresolved_variable": ("The instructions cannot hold {{ or }}. Remove them, then ask "
+                            "again. I tried nothing."),
+    "too_long": "The instructions are too long. Make them shorter, then ask again. I tried nothing.",
+    "skill_unloaded": ("This skill cannot load now, so I tried nothing. Check its actions in AI "
+                       "Studio."),
     "failed": ("Version {next} did not pass, so I did not offer it. I saved nothing. Change "
                "the skill in AI Studio, or run it again and tell me what went wrong."),
     "no_tests": "This skill has no tests, so I tried only the request that failed.",
@@ -243,6 +249,19 @@ def _top_class(actions: Collection[str], classes: Mapping[str, str]) -> int:
     return max((class_rank(classes.get(a)) for a in actions), default=-1)
 
 
+def _same(left: Any, right: Any) -> bool:
+    """Equal with the same types at each level, so ``1``, ``True`` and
+    ``1.0`` all differ."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        return set(left) == set(right) and all(_same(left[k], right[k]) for k in left)
+    if isinstance(left, list | tuple):
+        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right,
+                                                                               strict=True))
+    return bool(left == right)
+
+
 def check_contract(base: Mapping[str, Any], proposed: Mapping[str, Any],
                    classes: Mapping[str, str]) -> str | None:
     """The contract of a repair (F12.md "The contract of a repair"). A pure
@@ -263,12 +282,16 @@ def check_contract(base: Mapping[str, Any], proposed: Mapping[str, Any],
     wanted = _actions(proposed)
     if any(a not in held for a in wanted):
         return "widened"
+    # A body with no ``actions`` key is no empty subset: the key stays, or
+    # it stays absent.
+    if ("actions" in proposed) != ("actions" in base):
+        return "widened"
     if "actions" in proposed and not isinstance(proposed.get("actions"), list):
         return "widened"
     for key in set(base) | set(proposed):
         if key in _REPAIR_KEYS:
             continue
-        if key not in base or key not in proposed or base[key] != proposed[key]:
+        if key not in base or key not in proposed or not _same(base[key], proposed[key]):
             return "widened"
     if _top_class(wanted, classes) > _top_class(held, classes):
         return "widened"
@@ -355,9 +378,6 @@ class Outcome:
     tests: int
 
 
-#: The test id of the input-only run of :func:`try_proposal`. ``run_suite``
-#: names the first input run ``input-1``.
-INPUT_TEST_ID = "input-1"
 
 
 async def try_proposal(*, org: str, member: str, skill_id: str,
@@ -384,9 +404,11 @@ def outcome(result: skill_tests.SuiteResult) -> Outcome:
     passed = bool(result.passed) and first is None
     reason = "passed" if passed else (first.reason if first is not None else "not_run")
     detail = "" if passed or first is None else cut_detail(first.detail)
-    held = next((r for r in result.results if r.test_id == INPUT_TEST_ID), None)
+    # The input run is the LAST result: ``run_suite`` adds each input run
+    # after the tests. A test of the member with the id ``input-1`` stays a test.
+    held = result.results[-1] if result.results else None
     writes = tuple(dict.fromkeys(held.writes)) if held is not None else ()
-    tests = sum(1 for r in result.results if r.test_id != INPUT_TEST_ID)
+    tests = max(len(result.results) - 1, 0)
     return Outcome(passed=passed, reason=reason, detail=detail, writes=writes,
                    credits=result.credits, run_id=None if held is None else held.run_id,
                    tests=tests)
@@ -398,9 +420,24 @@ def outcome_writes(found: Outcome) -> list[dict[str, Any]]:
     return safe_writes({"action": a, "keys": []} for a in found.writes)
 
 
+def write_name(action: object) -> str:
+    """THE one name of a write action for :func:`same_writes`: its chat tool
+    (``skill_packs.action_tool``, the one map). A door op ``<app>.<op>`` of
+    the live row and ``tool:<name>`` of the dry run then read alike. A
+    ``tool:`` action that no chat tool map holds keeps its bare name."""
+    from acb_skills.skill_packs import action_tool
+
+    raw = str(action or "").strip()
+    tool = action_tool(raw)
+    if tool:
+        return tool
+    return raw[len("tool:"):] if raw.startswith("tool:") else raw
+
+
 def same_writes(found: Outcome, failed: SkillRun) -> bool:
     """True when the held writes of the input run name the same actions as
     the writes of the failed run (F12.md "A known limit"). The result of the
-    door holds action names only, so the check reads names, not keys."""
-    before = {str(w.get("action")) for w in failed.writes}
-    return bool(before) and before == set(found.writes)
+    door holds action names only, so the check reads names, not keys. Both
+    sides go through :func:`write_name`."""
+    before = {write_name(w.get("action")) for w in failed.writes}
+    return bool(before) and before == {write_name(a) for a in found.writes}

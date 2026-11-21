@@ -3888,6 +3888,10 @@ async def _drop_pack_unless_studio(
     return [], [*dropped, *(_tool_name(t) for t in tools)]
 
 
+#: The pack of the two repair tools (TOF-3a F12c).
+REPAIR_PACK = "studio-repair"
+
+
 def _skill_repair_tools_open() -> bool:
     """True when the run's org is on ``STUDIO_ORGS``,
     ``STUDIO_SKILL_TESTS_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``: the switches
@@ -3899,6 +3903,16 @@ def _skill_repair_tools_open() -> bool:
         return _skill_repair_open() and bool(skill_tests_allowed(_run_org_or_none()))
     except Exception:  # fail closed
         return False
+
+
+def _without_closed_repair(allow: frozenset[str]) -> frozenset[str]:
+    """*allow* less :data:`REPAIR_PACK` while the org of the run is off the
+    switches of the repair (TOF-3a F12c). Then ``tool_packs.choose`` and the
+    loader plan never offer it, also where the owner pack list names it. An
+    *allow* with no repair pack reads no flag."""
+    if REPAIR_PACK in allow and not _skill_repair_tools_open():
+        return allow - {REPAIR_PACK}
+    return allow
 
 
 def _drop_studio_repair_unless_open(
@@ -4524,6 +4538,9 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # TOF-3a F12c: the repair pack is off for an org off the switches of the
+    # repair, so neither ``choose`` nor the loader offers it there.
+    allow = _without_closed_repair(allow)
     # WS-STU F3: the published skills that the words of this turn name. G2: a
     # WhatsApp turn loads none.
     # TOF-3a F12b: the facts of each skill that the turn reads, for the record

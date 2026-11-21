@@ -458,3 +458,34 @@ def test_r8_it_was_wrong_writes_one_failed_row_for_the_run(world) -> None:
     for row in rows:
         for bit in BITS:
             assert bit not in row["whole"], bit
+
+
+def test_r8_a_refused_proposal_and_a_row_that_cannot_start_a_repair(world) -> None:
+    """Review round 1: a proposal that the pack builder refuses gets 422 and
+    writes no row, so the one repair stays free. A passed live row, a row of
+    another member and an id that does not exist give one 404
+    ``no_failed_run``."""
+    a = world.p.org_a
+    thread = _chat(world, a, ANA, WORDS)
+
+    async def go() -> tuple[Any, ...]:
+        sid = await _skill(a)
+        failed = await _failure(a, sid, thread)
+        bad = await _code(_repair(a, sid, failed.id, instructions="Make a task for {{name}}."))
+        async with tenant_session(a) as db:
+            passed = await sr.record_live(
+                db, ANA, sid, version=1, passed=True, reason="passed",
+                body_key=skill_repair.body_key(BODY), input_text=WORDS,
+                run_id=f"run-{uuid.uuid4().hex}", thread_id=thread)
+        theirs = await _failure(a, sid, thread, member=BEN)
+        answers = [await _code(_repair(a, sid, rid))
+                   for rid in (passed.id, theirs.id, str(uuid.uuid4()))]
+        out = await _repair(a, sid, failed.id)
+        return bad, answers, out
+
+    bad, answers, out = _go(world, go)
+    assert bad[0] == 422 and bad[1]["code"] == "unresolved_variable"
+    assert answers[0][0] == 404 and answers[0][1]["code"] == "no_failed_run"
+    assert answers[0] == answers[1] == answers[2]
+    assert out["passed"] is True, "the refusal left the one repair free"
+    assert len([r for r in _rows(world, a) if r["kind"] == "proposal"]) == 1
