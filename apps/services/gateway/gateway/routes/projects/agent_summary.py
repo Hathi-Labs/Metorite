@@ -117,6 +117,7 @@ from typing import Any
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import active_runs, get_settings
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.agent_runs import AGENT_HOST_KINDS
 from gateway.routes.projects.authority import led_projects
 from gateway.routes.projects.core import (
     _tenant_session,
@@ -265,10 +266,19 @@ _BUSY = ", ".join(f"'{s}'" for s in ("queued", *WORKING_STATES))
 #: :data:`_ONE_AGENT` for the drill-down. The map (SW-102) sets it to
 #: :data:`_IN_SUBTREE` for a ``project_id``. The org predicate is defence in
 #: depth beside FORCE RLS, which the session binds. ``session_key`` stays
-#: inside SQL: no reader of ``seen`` puts it in an answer.
+#: inside SQL: no reader of ``seen`` puts it in an answer. SW-106: the
+#: machine, its kind and the model (``agent_host``, ``agent_host_kind`` and
+#: ``agent_model``) are display data. ``box_checked`` is True when the
+#: connection of the run is a box token (``credential = 'box'``), the one
+#: proof of a machine (``agent_coordination.md`` §3.12.3). No ``WHERE`` arm
+#: reads any of them. Fence: ``test_agent_label_fence.py``.
 _SEEN_RUNS_SQL = """
     SELECT r.id, r.client_via, r.status, r.created_at, r.task_id,
            r.member_email, r.connection_id, r.agent_label, r.session_key,
+           r.agent_host, r.agent_host_kind, r.agent_model,
+           EXISTS (SELECT 1 FROM agent_connection bc WHERE bc.id = r.connection_id
+                      AND bc.organization_id = r.organization_id
+                      AND bc.credential = 'box') AS box_checked,
            """ + run_life_at_sql("r") + """ AS life_at,
            {state} AS state,
            COALESCE(r.started_at, r.created_at) AS run_at,
@@ -625,7 +635,7 @@ UNNAMED_SESSION = "Unnamed session"
 MAP_KEYS: tuple[str, ...] = ("people", "sessions", "runs", "lines", "count", "truncated", "viewer")
 MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
-    "quiet_last_at",
+    "quiet_last_at", "host", "host_kind", "host_source", "model",
 )
 MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
@@ -655,6 +665,7 @@ _NODE_SQL = (
 _MAP_CTE = "{head}seen AS (" + _SEEN_RUNS_SQL + """), live AS (
     SELECT seen.id, seen.client_via, seen.task_id, seen.state, seen.run_at,
            seen.life_at, seen.agent_label, lower(seen.member_email) AS person,
+           seen.agent_host, seen.agent_host_kind, seen.agent_model, seen.box_checked,
            """ + _NODE_SQL + """ AS node_id,
            (seen.life_at < now() - interval '{quiet_s} seconds'
             AND seen.state NOT IN ('awaiting', 'waiting')) AS quiet
@@ -663,13 +674,20 @@ _MAP_CTE = "{head}seen AS (" + _SEEN_RUNS_SQL + """), live AS (
 )"""
 
 #: One row for each session node. The order is rule 9 of §3.12.7: a session
-#: that waits on a person, then a working one, then a quiet one.
+#: that waits on a person, then a working one, then a quiet one. SW-106: the
+#: machine, its kind and the model come from the NEWEST open run of the node
+#: that ``seen`` gives the caller, all four from the one run. The read names
+#: no address (``last_seen_addr``) and no chat table (§3.12.4 rules 4 and 5).
 #: ``total_runs`` counts every open run of every node, before the cap.
 _MAP_SESSIONS_SQL = _MAP_CTE + """
 SELECT node_id,
        (array_agg(person ORDER BY life_at DESC, id DESC))[1] AS person,
        (array_agg(agent_label ORDER BY life_at DESC, id DESC))[1] AS agent_label,
        (array_agg(client_via ORDER BY life_at DESC, id DESC))[1] AS client_via,
+       (array_agg(agent_host ORDER BY life_at DESC, id DESC))[1] AS agent_host,
+       (array_agg(agent_host_kind ORDER BY life_at DESC, id DESC))[1] AS agent_host_kind,
+       (array_agg(agent_model ORDER BY life_at DESC, id DESC))[1] AS agent_model,
+       (array_agg(box_checked ORDER BY life_at DESC, id DESC))[1] AS box_checked,
        count(*) AS run_count,
        count(*) FILTER (WHERE quiet) AS quiet_count,
        max(life_at) AS last_at,
@@ -762,6 +780,21 @@ def _session_state(row: Any) -> str:
     return "waiting" if row.waiting else "working"
 
 
+def _place_of(row: Any) -> dict[str, str | None]:
+    """The machine, its kind, its source and the model of a session node
+    (SW-106, §3.12.3). Each text is one :func:`_line`. The kind is one of
+    :data:`AGENT_HOST_KINDS`, or ``None``. The source is ``checked`` when a
+    box token proves the machine (``box_checked``), ``reported`` when the
+    agent named it, and ``None`` when the run has no machine and no kind."""
+    host = _line(row.agent_host) or None
+    kind = row.agent_host_kind if row.agent_host_kind in AGENT_HOST_KINDS else None
+    source = None
+    if host is not None or kind is not None:
+        source = "checked" if row.box_checked is True else "reported"
+    return {"host": host, "host_kind": kind, "host_source": source,
+            "model": _line(row.agent_model) or None}
+
+
 def _empty_map(viewer: str) -> dict[str, Any]:
     return {"people": [], "sessions": [], "runs": [], "lines": [],
             "count": 0, "truncated": False, "viewer": viewer}
@@ -774,8 +807,10 @@ async def _agent_map(
 
     People, session nodes and the open runs that the caller may see, through
     the ONE ``seen`` text. ``lines`` stays empty until SW-107 stores who
-    dispatched whom. No value of the answer holds a session key, an address
-    or a model (§3.12.4 rules 4 and 5). *project_id* is a checked UUID
+    dispatched whom. No value of the answer holds a session key or an address
+    (§3.12.4 rule 5). SW-106: a session node holds the machine, its kind and
+    the model of its newest visible run (:func:`_place_of`). The read lists no
+    chat agent, so no built-in or org agent has a model here (rule 4). *project_id* is a checked UUID
     (:func:`parse_map_query`). A project that the caller cannot see answers
     the one 404 of :func:`_not_found`.
 
@@ -831,6 +866,7 @@ async def _agent_map(
             "run_count": int(s.run_count or 0),
             "quiet_count": int(s.quiet_count or 0),
             "quiet_last_at": _when(s.quiet_last_at),
+            **_place_of(s),
         } for s in kept],
         "runs": [{
             "run_id": str(r.id),
