@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-22, the WS-17 mail incident audit (task 2126, §12.3.13.8.2).** Built, not merged. Main holds the incident fix through other seams, and two of them need a switch. One fence joins: each "no card here" text names what a WhatsApp member gets.
+
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
@@ -15528,6 +15530,47 @@ The owner decides if a held run gets this confirm. Until then, (B) stays withhel
 
 Fence: `tests/unit/test_no_egress_tool_audit.py` (the pinned set of each agent, the held parts,
 the texts, the name line) and `EXPECTED_OPEN_WORLD` in `tests/unit/test_delegation_no_egress.py`.
+
+###### 12.3.13.8.2 The mail hand-off incident of 2026-10-18 (audit, task 2126)
+
+**Status: one fence BUILT on the branch `mailguards2126-mt-de8f397f`, not merged (2026-11-22).**
+No migration and no switch. The fence is a process fence in `tests/fences.json`.
+
+**The incident.** On 2026-10-18 the owner asked over WhatsApp for a mail to a contact. The
+assistant refused each email request of the thread. The member read "an outgoing mail needs
+your approval in the Metorite app, and I can't take that step from here". A session built the
+fix on the branch `mail-handoff-refused` (six parts and fix round 1), and nobody merged it.
+
+**What main holds now.** Main closes the same defects with other seams. Two of them work only
+behind a switch, and the close of the incident depends on those switches:
+
+- **The hand-off card.** `_tool_injection._handoff_child_held` (EM-CR, #1191) asks no card for a
+  hand-off whose child binds `no_egress`.
+- **The sends of a held run.** `egress.CARD_BOUND_SEND_TOOLS` and `HELD_CARD_SEND_TOOLS` (H-374
+  and §21, #1237) keep the card-bound sends in a held run. A new mail and a forward join only with
+  `EMAIL_HELD_CARD_SEND` on. With it off, a held child gets no `send_email`
+  (`test_a_known_mark_still_holds_the_delegated_send`).
+- **The WhatsApp Confirm.** An egress call after an untrusted answer parks for the Confirm buttons
+  (WAC-P4, #1169). An email write parks for a reply code (H-391, #1285, migration 298). Each park
+  needs `WHATSAPP_ASSISTANT_WRITES` on for the org. With it off, a WhatsApp run still refuses.
+- **The mark stays sticky.** Review P1-2 of WAC-P4 refused the end of the mark with the replay
+  window, because a later reply can repeat the relayed text.
+
+**The guard that this audit adds.** `tests/unit/test_mail_handoff_incident.py` reads each string of
+`apps/` and `packages/` that says "no card here" or "go to the app". Each one must name what a
+WhatsApp member gets, in `NO_CARD_TEXTS`. A new text fails until a person names it. A stale entry
+fails too. The regex also reads the incident's own words.
+
+**Not ported, with the reason.**
+
+- **Migration `whatsapp_act_home`.** WAC-P4 runs no stored tool, and H-391 took migration 298.
+- **The end of the mark with the replay window.** Review P1-2 refused it.
+- **The refusal of a card that cuts a call.** `egress.egress_call_view` shows each recipient and
+  each file whole, or it gives no card. It cuts only the other arguments, at 600 characters.
+  That cut is the design of WAC-P4, and risk 2 of §12.3.13.8.1 names it as an open owner
+  proposal. So a change needs an owner decision.
+- **The time limit of a hand-off on WhatsApp.** It is not a guard. A specialist tool still has no
+  time limit, and `call_agent` waits up to 900 seconds. A WhatsApp run ends after 240 seconds.
 
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 
