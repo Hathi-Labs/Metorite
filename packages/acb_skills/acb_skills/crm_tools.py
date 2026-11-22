@@ -1139,7 +1139,7 @@ async def _list_as_module(
     gateway resolves the word as a module (``modules.resolve_module``, the
     one resolver). ONE module serves it, and the first line says which. Else
     the refusal stands, with the route's close module names."""
-    word = _module_word(entity, refusal)
+    mod = _module_word(entity, refusal)
     given = sorted(k for k, v in unused.items() if v not in (None, "", {}))
     if given:
         # A filter is never dropped in silence.
@@ -1151,12 +1151,12 @@ async def _list_as_module(
                              "updated_to": updated_to}
     extra.update({f"custom.{k}": v for k, v in (custom or {}).items()})
     try:
-        data = await _get(f"/crm/modules/{word}/records", {
+        data = await _get(f"/crm/modules/{mod}/records", {
             "q": q, "page": number, "page_size": size, **extra,
         }) or {}
     except _GatewayError as exc:
         raise _not_a_module(refusal, exc) from None
-    mod = str(data.get("module") or word)
+    mod = str(data.get("module") or mod)
     lead = f"{entity!r} is not a core record type, so this is the module {mod}.\n"
     # The route ignores a custom key that the module does not define. Say so,
     # so a page that no filter cut does not read as a filtered one.
@@ -1198,10 +1198,10 @@ async def crm_get_record(entity: str, record_id: str) -> str:
         slug = _entity_slug(entity)
     except GatewayRefusal as refusal:
         # Task 3864: a module named by its name or label serves the read.
-        word = _module_word(entity, refusal)
+        mod = _module_word(entity, refusal)
         try:
-            return (f"{entity!r} is not a core record type, so this is the module {word}.\n"
-                    + await _module_record_answer(word, _record_uuid(record_id), 1))
+            return (f"{entity!r} is not a core record type, so this is the module {mod}.\n"
+                    + await _module_record_answer(mod, _record_uuid(record_id), 1))
         except _GatewayError as exc:
             raise _not_a_module(refusal, exc) from None
     record = _record_uuid(record_id)
