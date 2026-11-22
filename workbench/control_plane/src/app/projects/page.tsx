@@ -149,6 +149,9 @@ import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
 import {
   type AgentFocus,
+  type AnyAgentFocus,
+  type HoldFocus,
+  isHoldFocus,
   type AgentSummary,
   isAgentWork,
   isWaitingOnMe,
@@ -1367,7 +1370,7 @@ function ProjectsWorkspace() {
    * open "Ask an agent" dialog, or null while it is closed.
    */
   const [agentWork, setAgentWork] = useState(false);
-  const [agentFocus, setAgentFocus] = useState<AgentFocus | null>(null);
+  const [agentFocus, setAgentFocus] = useState<AnyAgentFocus | null>(null);
   const [agentSummary, setAgentSummary] = useState<{
     projectId: string;
     counts: AgentSummary;
@@ -4904,6 +4907,13 @@ function ProjectsWorkspace() {
     setWaitingOnMe(next);
     if (next) setAgentFocus(null);
   };
+  // SW-5: "Held by an agent" and "Free" ride the same one focus.
+  const holdFocus = isHoldFocus(agentFocus) ? agentFocus : null;
+  const onHoldFocus = (next: HoldFocus | null) => {
+    if (next) setWaitingOnMe(false);
+    // Clearing the hold filter never clears a strip focus.
+    setAgentFocus((current) => (next === null && !isHoldFocus(current) ? current : next));
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -5169,7 +5179,7 @@ function ProjectsWorkspace() {
           resultCount={taskTotal}
           loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
           agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
-          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          agentFocus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
@@ -5207,6 +5217,8 @@ function ProjectsWorkspace() {
           onEpic={setEpicId}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
+          holdFocus={agentRunsOn ? holdFocus : null}
+          onHoldFocus={agentRunsOn ? onHoldFocus : undefined}
           people={people}
           tags={tags}
           shownFields={shownFields}
@@ -5233,7 +5245,7 @@ function ProjectsWorkspace() {
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
-          focus={waitingOnMe ? "waiting" : agentFocus}
+          focus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onFocus={onAgentFocus}
           hideZero={compactChrome}
         />
