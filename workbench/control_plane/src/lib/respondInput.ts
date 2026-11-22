@@ -32,13 +32,34 @@
 
 import { restartedCardDisplay, restartedCardMessage } from "@/lib/chatRecovery";
 import type { CardAnswer } from "@/lib/cardAnswer";
+import { runCapFromRaw } from "@/lib/runErrors";
 
 export type RespondOutcome = "ok" | "drop" | "retry";
+
+/**
+ * RESUME-3a: a late Approve that started a continuation run (RESUME-2a, the
+ * 200 `{ok, resumed: true, threadId, runId}`). The run is new, with its own
+ * reply row at the end of the chat (case B). `messageId` names that row when
+ * the server sends it.
+ *
+ * RESUME-3b: `sameReply` is true when the run goes on in the parked reply,
+ * under the parked run's id (case A of RESUME-2b). `messageId` then names the
+ * parked reply. A late decline never takes case A, and its 200 has neither.
+ */
+export interface ResumedRun {
+  runId: string;
+  threadId: string;
+  messageId?: string;
+  sameReply?: true;
+}
 
 /** The outcome, plus the message to send instead when the run restarted. */
 export interface RespondResult {
   outcome: RespondOutcome;
   resend: string | null;
+  /** The continuation run that the answer started (RESUME-3a). The chat
+   *  sends no envelope and draws no notice for it. */
+  resumed?: ResumedRun | null;
   /** What the member sees for `resend`: the answered card (owner report,
    *  2026-10-13). Null for an old gateway, and the chat then parses the
    *  envelope (`lib/cardAnswer.ts`). */
@@ -139,6 +160,44 @@ export function respondFailureText(status: number | undefined, body = ""): strin
 }
 
 /**
+ * The continuation run of a 2xx body, or null (RESUME-3a). Only `resumed:
+ * true` with a run id and a thread id that are strings counts. Any other
+ * body is a plain `ok`, as before.
+ */
+export function resumedOf(body: string): ResumedRun | null {
+  try {
+    const j = JSON.parse(body) as {
+      resumed?: unknown; runId?: unknown; threadId?: unknown; messageId?: unknown; sameReply?: unknown;
+    };
+    if (!j || j.resumed !== true) return null;
+    if (typeof j.runId !== "string" || !j.runId || typeof j.threadId !== "string" || !j.threadId) return null;
+    return {
+      runId: j.runId,
+      threadId: j.threadId,
+      ...(typeof j.messageId === "string" && j.messageId ? { messageId: j.messageId } : {}),
+      // RESUME-3b: only the JSON `true` counts. Any other value is case B.
+      ...(j.sameReply === true ? { sameReply: true as const } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why the run cap refused a continuation (RESUME-3a, §4.12.4 item 5), or
+ * null when the body is no `too_many_runs` refusal. The card stays, and the
+ * member answers it again.
+ */
+export function runCapAnswerReason(status: number, body: string): string | null {
+  if (status !== 429) return null;
+  const cap = runCapFromRaw(body);
+  if (!cap) return null;
+  const limit = cap.limit > 0 ? String(cap.limit) : "too many";
+  const count = limit === "1" ? "1 assistant" : `${limit} assistants`;
+  return `You have ${count} running. Wait for one to finish or stop one, then answer the card again.`;
+}
+
+/**
  * What a failed POST means. `status` is undefined for a network fault.
  * A network fault, a 5xx, a 400 and a 422 keep the card (`retry`). Any other
  * 4xx (401, 403, 404, 409) drops it, because a click cannot fix those.
@@ -174,13 +233,21 @@ export async function sendRespondInputResult(
     console.error("respond-input failed — restoring HITL card", err);
     return { outcome: "retry", resend: null, reason: respondFailureText(undefined) };
   }
-  if (res.ok) return { outcome: "ok", resend: null };
+  if (res.ok) {
+    // RESUME-3a: a late Approve that started a continuation run says so.
+    const resumed = resumedOf(await res.text().catch(() => ""));
+    return resumed ? { outcome: "ok", resend: null, resumed } : { outcome: "ok", resend: null };
+  }
   const text = await res.text().catch(() => "");
   const otherAccount = res.status === 409 ? otherAccountOf(text) : null;
   if (otherAccount) {
     // Not sent. The card stays, so the member can answer after the switch.
     return { outcome: "retry", resend: null, otherAccount };
   }
+  // RESUME-3a: the run cap refused the continuation. Nothing ran, the row
+  // still waits, and the card stays with the reason beside its buttons.
+  const capReason = runCapAnswerReason(res.status, text);
+  if (capReason) return { outcome: "retry", resend: null, reason: capReason };
   const outcome = respondFailure(res.status);
   if (outcome === "drop") {
     const resend = res.status === 409 ? restartedCardMessage(text) : null;

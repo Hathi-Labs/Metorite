@@ -236,6 +236,18 @@ describe("Needs you", () => {
     expect(summaryLine(0, 0, failed)).toBe("Your calendar is clear.");
   });
 
+  // AO-2 review. Mutation: take `providers` out of MISSING, and the failed
+  // source reads as the all-clear "Nothing needs you right now."
+  it("words a failed AI vendor alert source, which has no app of the client", () => {
+    const sources = { tasks: "ok", projects: "ok", email: "ok", providers: "failed" } as const;
+    expect(failedLines(sources)).toEqual([
+      "AI providers did not answer, so its AI vendor alerts may be missing.",
+    ]);
+    const failed = failedLines(sources).length > 0;
+    expect(emptyNeedsLine(failed)).toBe("Nothing else needs you right now.");
+    expect(failedLines({ providers: "absent" })).toEqual([]);
+  });
+
   it("draws each app with its own manifest icon", () => {
     expect(appIcon("tasks")).toBe("CheckSquare");
     expect(appIcon("projects")).toBe("FolderKanban");

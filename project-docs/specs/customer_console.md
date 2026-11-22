@@ -1,5 +1,7 @@
 # Customer Console — the subscription, seat and AI-metering engine (WS-31)
 
+> **Dated 2026-11-11, Aroh (D143 and D204.11).** Aroh is not a separate app. Task 2611 removes the Aroh seat kind from the Console. Read the Aroh text in this spec (lines 37 to 40 and 1994 to 2100) as history.
+
 *(Authored 2026-08-12 as the "Platform Control Plane"; renamed **Customer
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
@@ -11308,11 +11310,112 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
-### 6A.18 Model setup in one step (MS) — SPEC ONLY (2026-11-09, Metorite epic task 2458)
+### 6A.17a A billing refusal reads as a 402 — BUILT (task 3681, AO-1)
+
+The 402 rule of 2026-09-29 says an empty vendor account falls over to the next
+vendor. On 2026-11-17 the Anthropic account ran empty. Anthropic answered
+HTTP 400, not 402, so the walk stopped and the DeepSeek steps never ran.
+
+- `router.effective_status(exc, vendor)` gives the status that the walk reads.
+  It gives 402 for a 400, 403 or 429 whose message holds a phrase that
+  `BILLING_PHRASES` lists for THAT vendor. Any other error keeps its status.
+- The phrases are whole vendor sentences, scoped by vendor. Anthropic has "credit
+  balance is too low" and "you have reached your specified api usage limits".
+  OpenAI has "exceeded your current quota". Gemini sends that sentence on a
+  per-minute 429, so it never lifts there. No bare word such as "billing"
+  appears, because a vendor 400 can quote the request back.
+- `walk_chain` calls the function in one place. `on_refusal` gets 402, so
+  `provider_balance` shows the vendor `out` with cause `payment`.
+- A vendor with no balance probe (Anthropic, OpenAI) clears a 402 or a 401 when
+  a call it served is newer than the refusal. A vendor with a probe keeps the
+  probe rule.
+- Native handlers send fixed text and are never lifted. Their own status holds.
+- The refusal log line adds the hint `billing` when the status is 402. The
+  message is matched and never logged, stored or returned.
+
+### 6A.17b An empty vendor account tells the operator's admins — BUILT, dark (task 3683, AO-2)
+
+On 2026-11-17 the Anthropic account ran empty, and nobody knew for more than
+2 hours. AO-1 shows the vendor `out`, but only on a panel that nobody watched.
+The owner chose the channel on 2026-11-18: a Metorite notification, the bell
+and a phone push.
+
+**The direction.** The Console judges, and the gateway tells. The gateway
+reads the Console through the one Console client, because every arrow between
+the planes runs from the box to the Console (`placed_orgs` says why). The
+Console calls no box.
+
+- **The door.** `POST /registry/providers/health` takes the deployment key
+  with the `serve` capability. A box that holds `serve` sends its chat through
+  the Router, so it may ask if the Router's vendors serve. No new capability.
+  The operator arm gets 400.
+- **The answer.** One row for each live platform credential, with four keys:
+  `provider`, `label`, `signal` and `days_left`. The label is the display name
+  of `provider_registry`. `provider_balance.alert_signal` gives the signal.
+  No reason, no probe error and no balance cross, so no vendor text reaches the
+  box.
+- **The signals.** `out` and `low` are the statuses of the same name.
+  `serving` is `ok`, or `unknown` with a served call newer than the last
+  refusal. A vendor with no probe never reads `ok`. `clear` is `unknown` with
+  no such call. `other` is `refusing`, `rate_limited` or `probe_failed`.
+- **The client.** `console_resolve.provider_health_on_console` keeps only the
+  four keys, in a closed shape. It drops a row with an unknown signal.
+- **The job.** `gateway/provider_alerts.py` adds a seed hook to the job queue.
+  For each org that `PROVIDER_ALERT_ORGS` lists, the detached job
+  `provider_alerts.check` reads the door once in each 15-minute bucket.
+- **When it sends.** A change into `out` or `low` sends that alert. `serving`
+  after `out` or `low` sends one "serves again". `clear` and `other` send
+  nothing and keep the alert.
+- **Once an hour.** Before a send, the job claims
+  `key("provider_alerts", "slot", <vendor>, <state>)` with `SET NX EX 3600`.
+  A failed claim sends nothing and keeps the old state, so the alert goes when
+  the hour ends, if the state still holds.
+- **A restart.** The last alert sent for each vendor stays in the tenant Redis
+  of the org, `key("provider_alerts", "sent")`, with no TTL. A new process
+  reads it and finds no change.
+- **A vendor that leaves the answer.** When the Console stops listing a vendor
+  (its credential was revoked), the next pass drops it from the stored state
+  and sends nothing. Its bell row goes. An empty answer drops every vendor.
+- **Who hears it.** The active members of the listed org who pass the shell's
+  admin test (`admin:members:read`). The `owner`, `admin` and `manager` roles
+  hold it. The member list is `kb_access.resolve.load_members` in
+  `tenant_session(org)`. Each grant comes from `resolve_access_in_org` in
+  strict mode. The org comes from the flag and the job worker, never from
+  request input. `OPERATOR_ORG_ID` is not read: the flag is the one config.
+- **A read fault.** The job reads the admins before it claims a slot or
+  writes a state. A fault there stops the pass, and the next bucket tries
+  again. A Redis fault after a slot claim can delay that alert by an hour.
+  The worker gives each job one try (`max_attempts=1`), because the job sends.
+- **The bell.** The needs source `providers` (`routes/shell/needs.py`, kind
+  `provider_alert`) reads the stored state. It shows each vendor that is `out`
+  or `low`, and each "serves again" for 24 hours. The row links to the
+  provider page of the Operator Console. It writes no table.
+- **The push.** `push.sender.send_to_member`, one tag for each vendor, when
+  `WEB_PUSH_ENABLED` is on and the keys are set. The push opens the app,
+  because the sender takes an app path only.
+- **The words.** "Anthropic is out of credit." with "The chat now uses the
+  next model in the chain. Top up the Anthropic account." Then "DeepSeek
+  credit is low: about 2.5 days left." A recovery from `out` says "Anthropic
+  serves again." A recovery from `low` says "DeepSeek has credit again.",
+  because a vendor that was low never stopped serving.
+
+**The flag.** `PROVIDER_ALERT_ORGS` lists the org ids whose admins hear the
+alert. Empty is the default, and it sends nothing. The reader refuses `*`, and
+`env_guard.PLATFORM_ENV_PREFIXES` names `PROVIDER_ALERT_`, so a tenant cannot set
+it. A SIGHUP
+reload applies a change. To turn it on, the box needs `JOB_QUEUE` on, and its
+deployment key needs `serve`.
+
+**Fences.** `test_provider_alerts.py` and `test_provider_balance.py`.
+`test_console_dependency_boundary.py` admits the one new client.
+
+### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
 
 **Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
 
 **Slice tasks:** MS-1 is task 2481, MS-2 is task 2482, MS-3 is task 2483 and MS-4 is task 2484. MS-5 stays closed (owner call 4).
+
+**Status, 2026-11-09:** MS-1 is built on branch `mt-312becee-ms1` (task 2481), and it waits for review and merge. MS-2, MS-3 and MS-4 are spec only. "MS-1 as built" below the slice table lists what the build changed in this text.
 
 #### The problem, with the production facts
 
@@ -11395,7 +11498,7 @@ class RegistryProvider:
 | `sarvam` | Speech to text: `sarvam/saaras:v4/translit` (`native_sarvam`), recommended. Also `sarvam/saaras:v4/codemix` and `sarvam/saaras:v3/translit` | About INR 0.49 per minute. No list call, so the key check is one tiny request |
 | `sarvam` | Chat: `sarvam/sarvam-105b` (`acompletion`) (K) | litellm `openai_like`, base `https://api.sarvam.ai/v1`. ⚠️ Connect stores no `api_base` for Sarvam. The speech handler adds `/speech-to-text` to the host, so a stored `/v1` base breaks speech |
 | `sarvam` | Speech out: `bulbul:v4-flash`, `bulbul:v3` | No handler. Shown as "coming" until MS-5 |
-| `assemblyai` | Speech to text: `assemblyai/universal-3-5-pro/hi,en` (`native_assemblyai`) | Key check: `GET /v2/transcript?limit=1` (K). Async models are not offered |
+| `assemblyai` | Speech to text: `assemblyai/universal-3-5-pro/en` (`native_assemblyai`), recommended. Also `assemblyai/universal-3-5-pro/hi,en`, which writes Hindi in Devanagari script | Key check: `GET /v2/transcript?limit=1` (K). Async models are not offered |
 | `anthropic` | Chat and Image understanding: `anthropic/claude-haiku-5-5` (cheap, recommended), `claude-sonnet-5-5`, `claude-opus-5-5` (`acompletion`) | $0.10 and $0.50, $2 and $10, $4 and $20 per million tokens. List call `GET /v1/models` (K) |
 | `gemini` | Chat and Image understanding: `gemini/gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` (K) | `gemini-2.5-*` ids retire on 2026-12-01 |
 | `gemini` | Image creation: `gemini/gemini-3.1-flash-image` (K). Embeddings: `gemini/gemini-embedding-2` (K). Speech out: `gemini/gemini-3.8-flash-tts` (K) | |
@@ -11442,13 +11545,15 @@ Why the Try comes first: a 400 or a 404 is terminal in the Router. A bad first s
 
 **The Try helpers.** The existing tries walk the chain (`router.py` `_try_chain`). MS adds a single-model mode to them. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
 
-**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 attempts after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
+**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 tries after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. The chat door and the vision door drop a step for a missing key only, because they call `acompletion` with or without a capability row. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
 
 **One writer at a time.** Adopt, a fix and Undo each read a chain and then write it. Each one takes `pg_advisory_xact_lock` on `(tier, task)` first, so two writes to one chain cannot lose one.
 
 **Undo.** Undo writes the chain from before the adopt back as a new row (section 6A.5, insert only). It writes only when the newest chain row still carries the `effective_from` that the adopt wrote. When a later write moved the chain, Undo returns 409 and changes nothing. A declare is an upsert of the `(model, task)` row (`main.py` declare route), so Undo restores a chain, never a verb. `dry_run` returns what the call would write and runs no write.
 
-**`GET /catalog/health`** returns `{ entries: [{ kind, tier, task, model, invocation, reason, fix }] }`. `fix` is `null` or `{ model, invocation }`. **`POST /catalog/health/fix`** takes the entries to repair. It writes each fix as a new declare and a new chain row.
+**`GET /catalog/health`** returns `{ entries, chains }`. Each entry holds `kind`, `rules`, `tier`, `task`, `job`, `rank`, `model`, `model_label`, `invocation`, `reason`, `fix` and `help`. `fix` is `null` or `{ action, model, invocation, label, same_as }`, and `action` is `replace` or `remove`. Each `chains` line is one chain with an entry (rule H5). It holds the entry count, `window_blocked`, the banner text and the H5 fix.
+
+**`POST /catalog/health/fix`** takes `{ entries: [{ tier, task, model }] }`. Each entry must name `model`. A `model` of `null` selects the H5 chain fix, and only when that line has a fix. It writes each fix as a new declare and a new chain row. The Console judges each chain again under its lock, and it never takes a fix from the request. A stale entry answers 409. An entry with no fix answers 400.
 
 #### Health rules
 
@@ -11469,7 +11574,7 @@ Each rule maps to one reason in plain words and, where the registry knows it, on
 
 **The Sarvam case.** The fix of `sarvam.ai/saaras:v4` is `sarvam/saaras:v4/translit`. Its prefix is `sarvam`, and no key sits under `sarvam`. So the entry shows the H6 reason, "The key is saved as 'sarvam.ai'", and holds its model fix until the key sits under `sarvam`. MS-1 shows this reason. MS-2 adds the H6 fix button. Until then the operator can connect Sarvam again.
 
-**The order of fixes.** Each fix gives a model id and a verb. The fixes compose in this order: H2 (the provider), then H4 (the id and its mode), then H1 and H3 (the verb). So `sarvam.ai/saaras:v4` on `acompletion` becomes `sarvam/saaras:v4/translit` on `native_sarvam` in one fix. `assemblyai/nano` fails `native_model_refusal`, so H4 gives the registry default `assemblyai/universal-3-5-pro/hi,en`, and H3 then gives `native_assemblyai`.
+**The order of fixes.** Each fix gives a model id and a verb. The fixes compose in this order: H2 (the provider), then H4 (the id and its mode), then H1 and H3 (the verb). So `sarvam.ai/saaras:v4` on `acompletion` becomes `sarvam/saaras:v4/translit` on `native_sarvam` in one fix. `assemblyai/nano` fails `native_model_refusal`, so H4 gives the registry default `assemblyai/universal-3-5-pro/en`, and H3 then gives `native_assemblyai`. When the chain already has the fixed model, the entry is a remove: "Remove: the chain already has this model". A fix never writes a second copy of a model.
 
 This section absorbs the guards of task 2457. H1 to H4 also run at declare time and bind time. The Console refuses a bad pair, and the 400 body carries the reason and the fix. Today it refuses the shape only.
 
@@ -11495,17 +11600,41 @@ The preview file is `workbench/control_plane/ux-shots/ms-connect/index.html`. It
 
 | Slice | Content | Tier | Done when | Fence (R7) |
 |---|---|---|---|---|
-| **MS-1** (task 2481) | `provider_registry.py`, the alias table, `GET /catalog/providers`, `GET /catalog/health`, `POST /catalog/health/fix`, rules H1 to H5 and H8, the H6 reason (no button), the fix order, the exact-key rule, the per-tier lock, and the declare and bind writes moved into functions that take one connection | HIGH | The production state of 2026-11-08 gives three Speech to text entries. `assemblyai/nano` gets the fix `assemblyai/universal-3-5-pro/hi,en` on `native_assemblyai`. `assemblyai/best` shows "Remove: same as the fix above". `sarvam.ai/saaras:v4` shows the H6 reason and no model fix. `anthropic/claude-haiku-4-5` on `tier-vision` gives no entry | `test_provider_registry.py` (ids, aliases and verbs against `KNOWN_INVOCATIONS`) and `test_catalog_health_r8.py` (R8, real database) |
+| **MS-1** (task 2481) | `provider_registry.py`, the alias table, `GET /catalog/providers`, `GET /catalog/health`, `POST /catalog/health/fix`, rules H1 to H5 and H8, the H6 reason (no button), the fix order, the exact-key rule, the per-tier lock, and the declare and bind writes moved into functions that take one connection | HIGH | The production state of 2026-11-08 gives three Speech to text entries. `assemblyai/nano` gets the fix `assemblyai/universal-3-5-pro/en` on `native_assemblyai`. `assemblyai/best` shows "Remove: same as the fix above". `sarvam.ai/saaras:v4` shows the H6 reason and no model fix. `anthropic/claude-haiku-4-5` on `tier-vision` gives no entry | `test_provider_registry.py` (ids, aliases and verbs against `KNOWN_INVOCATIONS`) and `test_catalog_health_r8.py` (R8, real database) |
 | **MS-2** (task 2482) | `connect` and `adopt`, the live key check, the single-model Try before the bind, the new Try helpers, Undo with its 409, rules H6 (the button) and H7, the declare-time and bind-time guards | HIGH | A fake key returns 400 and stores nothing. On the dev stack with a mocked vendor, adopt declares, tries and then binds. A failed Try binds nothing. Undo restores the old chain, and returns 409 after a later write. A connect with `org_slug` binds nothing | `test_catalog_connect_adopt_r8.py` (R8). A fence asserts that no response, log line or audit row holds the key |
 | **MS-3** (task 2483) | Operator console UI: the connect panel, the health banner, "Advanced" | STANDARD | The owner approved the preview on 2026-11-09. The owner runs Flow 1 on the dev stack | `vitest` for the flow state machine. A fence that no string on the page holds `acompletion`, `atranscription` or `native_` outside "Advanced" |
 | **MS-4** (task 2484) | Fold `providerGuides.ts` into the registry. The page reads `GET /catalog/providers` | LOW | `providerGuides.ts` is gone. `test_operator_console_vendor_slugs.py` reads the registry | The same slug test, pointed at the registry |
 | **MS-5** (closed, owner call 4) | A Sarvam speech-out handler, `native_sarvam_tts`, for `bulbul` | HIGH | Only if the owner wants speech out. A Try plays 2 seconds of Hindi audio | `test_handlers_sarvam_tts.py` |
 
+#### MS-1 as built (2026-11-09, task 2481)
+
+The build is on branch `mt-312becee-ms1`. Its fences are `tests/unit/test_provider_registry.py` and `tests/unit/test_catalog_health_r8.py` (R8). Both are in the must-run lists of `pr-check.yml` and `deploy.yml`, and the first is a safety fence in `tests/fences.json`. The build changed this text in these places:
+
+- **H4.** An id with no mode works by itself, because the Sarvam handler adds `translit`. So it makes no entry alone. A fix still writes the registry id that names the mode. Only a provider with a default mode gets this step, so an AssemblyAI id with no languages keeps its meaning.
+- **H2.** `sarvam` is not in `litellm.provider_list`. litellm loads it from its OpenAI-like `providers.json`. The registry reads both lists, then the native vendors.
+- **H5 is a chain line, not a step entry.** The done-when asks for three Speech to text entries, so H5 adds no fourth one. It gives the banner text and, when a working step sits past the window, the chain of working steps.
+- **The reason an entry shows.** It is the first rule in the fix order, then H8. When the exact-key rule blocks a fix, the entry shows H6 if a platform key sits under an alias, and H8 if not.
+- **A fix writes the working steps first.** A 400 is terminal in the Router, so a dead first step stops the walk. The dead steps that the operator did not pick stay after the working ones. The H5 chain fix drops them.
+- **A fix never writes a chain in which no step works.** It answers 400, "No entry on this job can work. Connect a provider first.", and it writes nothing.
+- **`model` is a required field of a fix entry.** `model: null` names the H5 chain line, and it is legal only when that line has a fix. An entry with no fix answers 400.
+- **The chain lock.** A bind, an unbind and a fix take `pg_advisory_xact_lock` on `(tier, task)`. A fix waits 5 seconds for it, then answers 409. A deadlock (40P01) and a serialization failure (40001) answer 409 too. A chain and a tombstone take their date from `clock_timestamp()` after the lock. An unbind and a fix read the chain at `statement_timestamp()`. With `now()`, a writer that waited would date its write before the chain it waited for. The first MS-1 build left `now()` in the unbind, and the verifier proved that a bind queued ahead of it stayed on the air. A source fence now refuses `now()` in any `INSERT INTO tier_binding` in `main.py`.
+- **The AssemblyAI default is `assemblyai/universal-3-5-pro/en`, not `hi,en`.** Owner call 1 named `hi,en`. On production on 2026-11-09, at about 07:02 UTC, `/catalog/transcribe/try` sent an 8 second English clip. `hi,en` answered in Devanagari script. `/en`, and the id with no languages, answered in clean English in about 1.2 seconds. Production `tier-stt` is now `[assemblyai/universal-3-5-pro/en]`. The change follows that evidence. `hi,en` stays in the registry, with a label that says it writes Hindi in Devanagari script.
+- **The alias rule has a fence.** `test_provider_registry.py::test_the_router_never_applies_an_alias` fails when `router.py` imports the registry or calls `normalise`.
+- **The registry.** Mistral and OpenRouter carry no model, because this section names no model id for them. The live list at connect time (MS-2) adds them. Speech-out items with no handler are not in the registry.
+- **No flag.** The VOX-4 tries shipped with a matrix row and no flag. MS-1 does the same: two VIEWER reads, and a fix with the bind's gate (ADMIN and a window).
+
+**Deferred to MS-2:**
+
+- The H6 button, H7, and the declare-time and bind-time guards.
+- A credential entry for a key under an alias that no chain uses.
+- ⚠️ **A fix can move BYOK customers to a platform key.** Health counts platform keys only. So a step that only a customer's own key (BYOK) serves is a dead step to it. A fix that drops or moves that step sends those customers to a platform key. MS-2 must show that before the write.
+- `providerGuides.ts` still tells the operator to declare `hi,en` for AssemblyAI. MS-4 folds that file into the registry, which holds `/en`.
+
 #### Owner calls
 
 **ANSWERED 2026-11-09 on task 2458:** the owner approved all six recommendations. So the defaults are as in call 1, adopt prepends, the Try runs with its cost shown, MS-5 stays closed, and "Fix all" needs elevation. Call 6 ran on 2026-11-09, because Opus was available again.
 
-1. **Defaults by job.** The spec proposes Speech to text `sarvam/saaras:v4/translit`, with `assemblyai/universal-3-5-pro/hi,en` second and `groq/whisper-large-v3-turbo` third. Chat and Image understanding use `anthropic/claude-haiku-5-5`. Is that the order the owner wants?
+1. **Defaults by job.** The spec proposes Speech to text `sarvam/saaras:v4/translit`, with `assemblyai/universal-3-5-pro/hi,en` second and `groq/whisper-large-v3-turbo` third. Chat and Image understanding use `anthropic/claude-haiku-5-5`. Is that the order the owner wants? *(MS-1, 2026-11-09: the second default is now `assemblyai/universal-3-5-pro/en`, from production evidence. "MS-1 as built" records it.)*
 2. **Adopt prepends or replaces.** The spec proposes prepend, with the old steps kept behind. "Replace the chain" is a checkbox. The owner may want replace as the default.
 3. **Do the Try calls cost money?** Each adopt spends a few cents. The spec proposes to run them and show the cost before the button. The owner may want an off switch.
 4. **Is Sarvam speech out wanted (MS-5)?** If not, the slice stays closed.

@@ -12,12 +12,14 @@
 # main. The job "Unit tests (a signal on a push, a gate on a release)" is its
 # suite.
 #
-# ⚠️ KNOWN GAP: the batch job writes no JUnit file today. Only the R8 shards
-# upload `r8-junit-shard-N`. This script downloads the artifact named in
-# BISECT_ARTIFACT (default `unit-junit`). Until the batch job uploads a file
-# of that name, the download fails and the run is recorded with the message
-# "no failed test id". The workflow change is a later slice. Run
-# scripts/bisect_main.sh by hand with the ids of the log in the meantime.
+# The JUnit report: the batch job runs pytest with --junitxml=junit/test.xml
+# and uploads it as `unit-junit`, also on a red run (CIV-5b, deploy.yml).
+# This script downloads the artifact named in BISECT_ARTIFACT (default
+# `unit-junit`). When a run has no such artifact, or the report names no
+# failed test, the run is recorded with the message "no failed test id".
+#
+# CIV-31: scripts/home_server/auto_revert.py runs this poller and acts on
+# its BISECT_RESULT line. Install metorite-auto-revert OR this unit, not both.
 #
 # ⚠️ The bad sha is the head sha of the run. A batch tests the tip of main,
 # which can be newer. Then the check "the bad commit fails" can exit 3.
@@ -127,7 +129,7 @@ main() {
   trap 'rm -rf "$tmp"' RETURN
   mkdir "$tmp/junit"
   if ! gh_cmd run download "$run_id" -n "$ARTIFACT" -D "$tmp/junit" >/dev/null 2>&1; then
-    log "the artifact ${ARTIFACT} of run ${run_id} is not there (known gap)."
+    log "the artifact ${ARTIFACT} of run ${run_id} is not there, or gh cannot download it."
   fi
   ids_text="$(python3 -I "$ROOT/scripts/junit_failed_ids.py" "$tmp/junit")"
   if [ -z "$ids_text" ]; then

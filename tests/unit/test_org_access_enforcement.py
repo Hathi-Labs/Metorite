@@ -207,6 +207,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # No exemption: the callback runs behind the member session through the
     # BFF. The webhook is a separate router in PUBLIC_ROUTES.
     "gateway.routes.github.connect": set(),
+    # API-2 — the connect flow of an API template (Zoho Books). Gated on
+    # `feature:integrations` after the `API_CONNECTIONS_ORGS` 404, and each
+    # route also needs `integrations:manage`. No exemption: the callback runs
+    # behind the member session through the CRM BFF callback.
+    "gateway.routes.integrations_api_connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },
@@ -410,6 +415,16 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "source also applies the kill switch and the access rule. The route "
             "takes no member and no org from the request "
             "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
+        ),
+    },
+    "gateway.retrieval.names": {
+        "/search/names": (
+            "WS-FIND FIND-5. `FIND_ORGS` answers 404 first. The route asks only "
+            "a source that `Source.reaches` the member: `feature:<app>` and the "
+            "app's switch. The CRM source also applies the access rule, and a "
+            "refusal gives no row (`test_resolve_name_tool.py`). The route takes "
+            "no member and no org from the request "
+            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`)."
         ),
     },
 }

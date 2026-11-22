@@ -67,11 +67,74 @@ def test_the_local_gate_runs_before_the_merge():
     assert "local-staging" in land
 
 
+def test_github_pr_check_is_the_gate():
+    """D218: pr-check gates every slice. ci_local.sh is optional. The local
+    staging gate runs only for a migration or a build-path slice."""
+    land = _flat(_land())
+    assert "The gate is GitHub `pr-check` (D218)" in land
+    assert "`bash scripts/ci_local.sh` is optional" in land
+    assert "adds a migration or changes the build path" in land
+    claude = _flat((ROOT / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "GitHub `pr-check` is the gate (D218)" in claude
+    assert "Gate on GitHub (D218)" in claude
+    assert "The gate (D218)" in PRACTICE
+
+
+def test_the_preview_gates_the_flag_flip():
+    """D218: a slice behind an off flag merges on green, and the owner
+    approves the flag flip. A new screen with no flag still waits."""
+    preview = _flat(NEXT_TICKET[NEXT_TICKET.index("**4b — Preview"):NEXT_TICKET.index("**5 — Verify.**")])
+    assert "Approve the flag flip" in preview
+    assert "with no flag still waits" in preview
+    assert "A HIGH slice keeps its full loop" in preview
+    claude = _flat((ROOT / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "A flag flips only after the owner approves (D218)" in claude
+    assert "Approve the flag flip" in _flat(PRACTICE)
+
+
 def test_no_dispatch_follows_a_merge():
     land = _flat(_land())
     assert "Do not dispatch `deploy.yml` after a merge" in land
     # CIV-21 (D194): three release slots a day, so the next slot, not tonight.
     assert "reaches production at the next release slot" in land
+
+
+def test_a_low_or_standard_slice_hands_over_and_a_high_slice_merges_itself():
+    """CIV-28c fix round 1: a LOW or STANDARD session hands its PR to the merge bot,
+    then waits for the bot's line and acts on it. Nothing else on the box can write
+    to Metorite. The bot never merges HIGH, so a HIGH slice keeps the
+    premerge-and-merge command. The wrapper that the step names exists."""
+    land = _flat(_land())
+    hand = land[
+        land.index("**LOW or STANDARD: hand it over.**") : land.index("**HIGH: merge it yourself**")
+    ]
+    assert "bash scripts/hand_over.sh <PR> <task> <tier>" in hand
+    assert "`waiting: {on: ci, until_minutes: 120}`" in hand
+    assert "bash scripts/hand_over.sh --wait <PR>" in hand
+    # Fix round 2: exit 4 is final and goes to the HIGH path. A session never
+    # reshapes a diff to pass the floor. An unknown result goes to --status.
+    final = hand[hand.index("**Exit 4: the bot never takes this PR.**") :]
+    assert "Merge it yourself, as for HIGH" in final[:400]
+    assert "Never reshape a diff to get past the tier floor" in final[:400]
+    assert "**Exit 1: a refusal that a fix can pass.**" in hand
+    unknown = hand[hand.index("**Exit 3: the box cannot take it, or the result is unknown.**") :]
+    assert "bash scripts/hand_over.sh --status <PR>" in unknown[:500]
+    assert "Exit 5" in unknown[:500] and "run `--wait`" in unknown[:500]
+    assert "Exit 6" in unknown[:500] and "hand it over again, or merge it yourself" in unknown[:500]
+    done = hand[hand.index("**DONE (exit 0).**") : hand.index("**BACK (exit 1).**")]
+    assert "move the task to done" in done and "Watch the batch of `main`" in done
+    assert "Remove the worktree" in done and "`finish_agent_run`" in done
+    back = hand[hand.index("**BACK (exit 1).**") : hand.index("**No line (exit 3).**")]
+    assert "Keep the worktree" in back and "merge it yourself, as for HIGH" in back
+    assert "merge it yourself, as for HIGH" in hand[hand.index("**No line (exit 3).**") :]
+    # The session never ends at the hand-over.
+    assert "end the session" not in hand
+    high = land[land.index("**HIGH: merge it yourself**") :]
+    assert "bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash" in high
+    assert "**A stacked slice**" in high
+    # The batch watch binds after a bot merge until the automatic revert is on.
+    assert "until `AUTO_REVERT_MODE=on`" in land
+    assert (ROOT / "scripts" / "hand_over.sh").is_file()
 
 
 def test_the_spec_names_what_the_pc_cannot_test():

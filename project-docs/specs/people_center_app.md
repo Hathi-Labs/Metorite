@@ -236,6 +236,11 @@ than a validation step bolted onto one:
   carry script and external references, and an avatar is displayed on every page in the
   product. EXIF, colour profiles and trailing payloads do not survive a re-encode, so the
   polyglot-file class of problem is gone rather than filtered for.
+- **Where the decode runs** — in a confined child, never in the request (task 2186,
+  2026-11-21). The child is `signature_image_worker.py` with the kind `avatar`. The parent kills
+  it after 10 seconds, and the child caps its own memory at 1 GB. A source over 12,000 pixels
+  on a side, or over 40 million pixels, is refused. The fence is
+  `tests/unit/test_people_avatar.py` section 5.
 
 **Where it lives:** a column on `people`, as a data URI — the shape
 `agent_avatars.sprite` already uses (migration 64), for the same reason. The roster is

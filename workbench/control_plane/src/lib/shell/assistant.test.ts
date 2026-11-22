@@ -644,11 +644,23 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
   });
 
   it("the allowlist is the control: no pane, no move, except the root", () => {
-    for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
+    for (const path of ["/connect/authorize", "/signup", "/settings", "/settings/members", "/settings/nowhere", "/_next/x", "/centers/sales", "/nowhere"]) {
       expect(navigateAct({ ...live, path }), path).toEqual(none);
     }
     expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, pane: null });
     expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
+  });
+
+  // PAR-1, task 3101: "Open the page where I invite users" moves to Organisation
+  // for an admin, and "Open Appearance" moves for every member.
+  it("opens Organisation for an admin, and Appearance for any member", () => {
+    const org = navigateAct({ ...live, path: "/settings/organization?tab=members" });
+    expect(org.push).toBe(true);
+    expect(org.pane?.href).toBe("/settings/organization");
+    expect(navigateAct({ ...live, path: "/settings/appearance" }).pane?.href).toBe("/settings/appearance");
+    const member = visibleSections(ALL, false);
+    expect(navigateAct({ ...live, sections: member, path: "/settings/organization" })).toEqual(none);
+    expect(navigateAct({ ...live, sections: member, path: "/settings/appearance" }).push).toBe(true);
   });
 
   it("never moves to a pane the member does not hold", () => {
@@ -849,9 +861,10 @@ describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md Â
     expect(stripText({ phase: "waiting_for_you", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
       "Waiting for your answer",
     );
-    // A parked card still waits on the member, so the strip says so.
-    expect(stripText({ phase: "parked", statusText: "Paused. Answer the card to go on", lastPreview: "Old words." })).toBe(
-      "Paused. Answer the card to go on",
+    // A parked card still waits on the member, so the strip says so. D-RES-6:
+    // it reads as a live wait.
+    expect(stripText({ phase: "parked", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
+      "Waiting for your answer",
     );
     // A run with no status text yet falls back to the last reply.
     expect(stripText({ phase: "starting", statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
