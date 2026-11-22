@@ -2019,3 +2019,88 @@ class TestLinkedEvents:
                 assert _lines(w, rid) == ["CI failed on PR 21."]
         finally:
             _drop_ref(w.p, ref)
+
+
+# ── Task 1045d: the task row sends the open strand of its run ────────────────
+
+
+def _strand(w: Any, rid: str, reason: str = "agent_quiet") -> None:
+    """The first miss of the sweep, as the sweep writes it: the run's life
+    clock at the miss goes into ``seen_activity_at``, so the strand fits."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_run_strands"
+            " (organization_id, run_id, task_id, member_email, reason, seen_activity_at)"
+            " SELECT r.organization_id, r.id, r.task_id, r.member_email, :why,"
+            "        GREATEST(r.last_activity_at, r.last_signal_at)"
+            "   FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"), {"r": rid, "why": reason})
+
+
+@_DB_GATE
+class TestTheStrandedRow:
+    async def test_a_stranded_run_shows_on_the_task_row_and_the_list(self, w):
+        """1045d done-when 1. The task row and the list row carry the same
+        strand as the runs wire. Mutation: drop `_attach_stranded`, and the
+        row reads null."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            got = task["agent_stranded"]
+            assert got["reason"] == "agent_quiet"
+            assert got["nudged_at"] is not None and got["recovered_at"] is None
+            assert isinstance(got["idle_s"], int)
+            run = (await call(w.a, "GET", f"/projects/agent-runs/{rid}")).json()["run"]
+            assert run["stranded"]["reason"] == got["reason"]
+            assert run["stranded"]["nudged_at"] == got["nudged_at"]
+            listed = await call(w.a, "GET", "/projects/tasks?q=extruder")
+            rows = {r["id"]: r for r in listed.json()["rows"]}
+            assert rows[w.task_a]["agent_stranded"]["reason"] == "agent_quiet"
+
+    async def test_a_strand_that_the_sweep_cleared_shows_nothing(self, w):
+        """1045d done-when 2. Mutation: read the strand table without
+        `strand_fits_sql`, and a cleared strand still shows."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_agent_run_strands SET cleared_at = now(),"
+                    " cleared_reason = 'new_activity' WHERE run_id = CAST(:r AS uuid)"),
+                    {"r": rid})
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_a_new_activity_ends_the_strand_before_the_sweep_runs(self, w):
+        """The strand stops fitting at once when the agent posts, before the
+        next tick writes `cleared_at` (the rule of `strand_fits_sql`)."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            assert (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()[
+                "agent_stranded"] is not None
+            await _act(call, w.agent_a, rid, type="thought", body="Back at work")
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_a_task_with_no_run_and_the_flag_off_show_nothing(self, w, monkeypatch):
+        async with _session(w.p) as call:
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            from acb_common import get_settings
+
+            monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_another_org_never_sees_the_strand(self, w):
+        """R5: the strand of org A's run never reaches a row of org B."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            other = await call(w.b, "GET", f"/projects/tasks/{w.task_a}")
+            assert other.status_code in (403, 404)
+            listed = await call(w.b, "GET", "/projects/tasks?q=extruder")
+            assert all(r.get("agent_stranded") is None for r in listed.json()["rows"])
