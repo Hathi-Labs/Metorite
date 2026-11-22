@@ -12,6 +12,8 @@
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
+**SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -22,9 +24,9 @@ This spec gates every SW slice (D135.4). The decisions are **D140** in `work_pla
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
 
-**Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`.** No other map slice is built.
+**Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`. SW-113 (the edge tool `get_agent_map`) is built and dark behind the same flag, 2026-11-21 (task 3796).**
 
-**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. Nothing is built.
+**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. SW-113 (the map in the MCP) is built, 2026-11-21.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
 
@@ -2065,6 +2067,7 @@ They keep their own gates.
 - **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The layout gives the same positions for the same input, and no two nodes overlap.
 - **Fence.** `lib/agentMap.test.ts` (new), a vitest for the switch, `src/lib/theme/conformance.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview, because the map is a new view. **Depends on.** SW-102.
+- **Built and dark, 2026-11-21.** The switch, the canvas, the outline and the side sheet are in the code. The side sheet shows the facts of a node and its tasks, and it opens the task. It does not open a run panel, because `AgentRunPanel` reads a task and not a session. The map shows only while `shape=map` answers, so `AGENT_MAP_ORGS` off hides it. The visual review and the owner preview are open.
 
 #### SW-104 · The machine and the model on each run
 
@@ -2082,6 +2085,7 @@ They keep their own gates.
 - **Done when.** A new session on the PC and one on metorite-home each show a machine and a model on the map.
 - **Fence.** `tests/unit/test_mcp_edge_prompts.py` for the protocol line. The text in this repository is advisory (R7).
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-104.
+- **Built (task 3626), 2026-11-21.** Line 1 of the protocol block asks for `agent_label`, `host`, `host_kind` and `model` (protocol version 3, and the sixth line stays free). The claim step of `work_on_task` and of the queued-work message says the same. The text in this repository (`next-ticket.md`, `home_box.md`, `lane-rules.md`, the playbook) asks for it. The `SessionStart` hook of this repository does not give the values yet.
 
 #### SW-106 · The map shows the machine and the model
 
@@ -2098,6 +2102,10 @@ They keep their own gates.
 - **Done when.** R8: a run of the same organization links. A run id of another organization, the run itself and a loop each drop with a warning, and the claim passes. A viewer who cannot see the dispatcher's run gets no line and no node for it.
 - **Fence.** `tests/unit/test_agent_run_dispatch_r8.py` (new), `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py` (extended).
 - **Risk.** HIGH (a migration, and a reference from one run to another). **Gate.** AGENT-SAFE. **Depends on.** SW-102, Q20.
+- **Built (task 3628), 2026-11-21.** Migration 472 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked.
+- **The map line (built, 2026-11-21).** The map read gives `lines`, each with `from` and `to`, two session nodes. A line shows only when the viewer can see both runs through `seen`, and both nodes are on the map. A line joins session nodes, so an ended dispatcher run keeps its line while its session has a node. The read takes one step and never walks the chain. Fence: `tests/unit/test_agent_map_r8.py` (`TestTheLines`).
+- **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
+- **Owner question: the cost of the delete.** No index holds `dispatched_by_run_id`, because the label fence refuses an index that names it. So each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. A task delete or an organization delete removes runs. Is that cost acceptable, or should a later migration add a partial index and change the fence?
 
 #### SW-108 · The orchestrator holds a run and names it
 
@@ -2137,6 +2145,7 @@ They keep their own gates.
 - **Done when.** A project with runs in two sub-projects shows the sessions of both. The view of one sub-project shows only its own. A project with no visible run shows no Agents tab. A session that waits on the viewer sorts first. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
 - **Fence.** `lib/agentMap.test.ts` (from SW-103), `lib/commands.test.ts`, `components/ViewTabs.test.ts`, `src/lib/theme/conformance.test.ts` and `tests/unit/test_chat_parity.py`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. D145 owner preview, because the view is new. **Depends on.** SW-103, and SW-102 with `project_id`.
+- **Built and dark, 2026-11-21.** The Agents tab is the seventh canvas, with the key sequence `v a`. It draws the map of SW-103 for the selected project through `project_id`. The tab and the palette command drop out while the map read answers 404, 401 or 403. A failed read keeps the tab and shows a message with a "Read again" button. A saved view cannot hold `agents`, because `pm_views.view_type` allows `list` and `board` only. Rule 3 ("a project with no visible run shows no tab") and rule 4 ("Outside this project") are NOT built. An empty map shows the empty state instead, and the owner decides. This slice is stacked on SW-103 and needs that slice first. The visual review and the owner preview are open.
 
 #### SW-113 · The map in the MCP
 
@@ -2145,6 +2154,7 @@ They keep their own gates.
 - **Done when.** R8 through the edge: a member gets the same nodes as the read of the UI. A project that the member cannot see gives the not-found error. No answer holds a session key. With `AGENT_MAP_ORGS` off, the tool answers as the dark read does.
 - **Fence.** `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_map_r8.py` (from SW-102, extended) and `tests/unit/test_mcp_edge_prompts.py`.
 - **Risk.** HIGH (visibility across the organization, as SW-102). **Gate.** AGENT-SAFE, dark. **Depends on.** SW-102.
+- **Built and dark, 2026-11-21.** The tool sends `shape=map` to the overview route under the session of the member. The pair `GET /projects/agents/overview` joins `MCP_ROUTES`, and the route is the one route of SW-102. The edge does not read `AGENT_MAP_ORGS`. The gateway gives one 404 for a flag that is off and for a hidden project, so the tool gives one text for both (`tools.TEXT_MAP_NOT_FOUND`). With the runs flag off, the tool gives the empty map, as the read of the UI does. A line keeps `from` and `to` only, each a node id, and the edge drops every other key. The cut at 300 lines sets `truncated` too. The tip `prompts.MAP_RULE` is held back: no prompt shows it yet. The edge does not read `AGENT_MAP_ORGS`, so it cannot show the tip only where the map works. **The slice that flips `AGENT_MAP_ORGS` adds the tip to the work step of `work_on_task`**, and changes `TestTheMapTip`.
 
 #### SW-39 · Child runs
 
