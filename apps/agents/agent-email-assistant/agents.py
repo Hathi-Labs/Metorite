@@ -1040,13 +1040,15 @@ async def _mailbox_name(account_id: str) -> str | None:
     return None
 
 
-#: The answer of ``list_accounts(organization=true)`` to a member who is not
-#: an admin. The gateway route decides, by the right of the member of the run
-#: (``admin:members:read``). No argument of the tool names a member or an
+#: The answer of ``list_accounts(organization=true)`` to a 401 or a 403. The
+#: gateway route decides, by the session of the member of the run: the route
+#: needs ``admin:members:read``, and the email router adds ``feature:email``,
+#: so a 403 can mean either one. No argument of the tool names a member or an
 #: organization (P-2a, task 3111).
 _ORG_COUNTS_REFUSED = (
-    "Only an admin of your organization can read how many members connected "
-    "a mailbox. Your own mailboxes: call list_accounts with no argument."
+    "Not read. The mailbox counts of the organization need the admin right "
+    "to read members, and the Email feature, for this member. One of them is "
+    "missing. Your own mailboxes: call list_accounts with no argument."
 )
 
 
@@ -1980,6 +1982,26 @@ _COUNTS_DATA_WHAT = (
 )
 
 
+#: The answer of a search of every folder that found nothing.
+_SEARCH_NO_MATCH = "No email in any folder but Junk and Trash matched."
+#: The last line of a broadened answer. The route broadens on page 1 only.
+_SEARCH_BROADENED_ONE_PAGE = (
+    "This broadened answer has only this one page. For other mail, search "
+    "again with more exact words."
+)
+#: A page after page 1 that found nothing, with a total of 0. A broadened
+#: page 1 can hold matches that a strict page 2 does not count.
+_SEARCH_PAST_PAGE_ONE = (
+    "Nothing on this page. Page 1 (offset 0) of this search held the matches: "
+    "a search that broadened to ANY word has only one page. For other mail, "
+    "search again with more exact words."
+)
+#: The filters that ``query_inbox(counts=true)`` cannot apply: the counts
+#: route takes only the mailbox and the folder.
+_COUNTS_FILTERS = ("query", "days", "sender_category", "from_email",
+                   "unread_only", "starred_only", "has_attachments", "importance")
+
+
 def _mark_free(value: Any, limit: int) -> str:
     """The highlight of a search row on one line, with no ``<mark>`` tag."""
     return _one_line(re.sub(r"</?mark>", "", str(value or "")), limit)
@@ -1990,16 +2012,26 @@ async def _search_everywhere(
     start: int, size: int,
 ) -> str:
     """``query_inbox(everywhere=true)``: the search bar of the Email app
-    (``GET /email/search``). It searches every folder, sent mail too, and
-    ranks the mail by how well it matches the words. Each row shows the text
-    that matched.
+    (``GET /email/search``). It searches every folder but Junk and Trash,
+    sent mail too (``folder=all``, as the search bar and ``narrow_source``
+    send it). With words it ranks the mail by how well it matches them, and
+    with no words it gives the newest first. Each row shows the text that
+    matched.
+
+    The route broadens to ANY word on page 1 only, when no mail holds every
+    word. A broadened answer therefore has one page, and its answer names no
+    offset (the Email app also stops at page 1 of it). A later page of such a
+    query is a strict search, so a page past page 1 that finds nothing with a
+    total of 0 says that page 1 held the matches. It never says "nothing
+    matched".
 
     *params* holds the filters of ``query_inbox`` in the names of
     ``/email/messages``. This maps them to the names of ``/email/search``.
     The rows sit in one block of a new frame, because a sender wrote the
     names, the subjects and the matched text (EM-G11d)."""
     sp: dict[str, Any] = {
-        "light": "true", "page_size": str(size), "page": str(start // size + 1),
+        "folder": "all", "light": "true",
+        "page_size": str(size), "page": str(start // size + 1),
     }
     if query:
         sp["q"] = query
@@ -2015,7 +2047,9 @@ async def _search_everywhere(
     emails = [e for e in data.get("emails") or [] if isinstance(e, dict)]
     total = data.get("total") or 0
     if not emails:
-        return page_line(total, start, 0) or "No email in any folder matched."
+        if start and not total:
+            return _SEARCH_PAST_PAGE_ONE
+        return page_line(total, start, 0) or _SEARCH_NO_MATCH
     labels = {} if account_id else await _account_labels()
     multi = len(labels) > 1
     rows: list[str] = []
@@ -2029,11 +2063,16 @@ async def _search_everywhere(
             f"{_one_line(frm.get('name') or frm.get('email'), 80)}: "
             f"{_one_line(e.get('subject') or '(no subject)', 160)} — {matched}")
     frame = UntrustedFrame.new()
-    lines = [f"Found {total} emails in every folder, best match first; showing {len(rows)}:"]
-    if data.get("broadened"):
+    order = "best match first" if query else "newest first"
+    lines = [f"Found {total} emails in every folder but Junk and Trash, {order}; "
+             f"showing {len(rows)}:"]
+    broadened = bool(data.get("broadened"))
+    if broadened:
         lines.append("No email held every word, so these hold ANY of the words.")
     lines += [frame.note(_SEARCH_DATA_WHAT), frame.wrap("SEARCH", "\n".join(rows))]
-    if line := page_line(total, start, len(rows)):
+    if broadened:
+        lines.append(_SEARCH_BROADENED_ONE_PAGE)
+    elif line := page_line(total, start, len(rows)):
         lines.append(line)
     return "\n".join(lines)
 
@@ -2095,15 +2134,27 @@ async def query_inbox(
       limit / offset: a page of results (limit at most 100)
     account_id: one mailbox. With none, it reads All inboxes, and each line
       names its mailbox as [label · address].
-    everywhere: true searches EVERY folder (sent mail too) as the search bar
-      of the Email app does: best match first, with the text that matched.
-      Use it for "search all my mail" or when a search of one folder finds
-      nothing. folder and sort do not apply.
+    everywhere: true searches every folder but Junk and Trash (sent mail
+      too) as the search bar of the Email app does: best match first, with
+      the text that matched. Use it for "search all my mail" or when a search
+      of one folder finds nothing. folder and sort do not apply. An answer
+      that broadened to ANY word has one page only.
     counts: true gives only the counts of the folder: emails, unread, no
-      label, and the count for each label. It reads no message.
+      label, and the count for each label. It reads no message. It takes
+      only account_id and folder: with any other filter it reads nothing,
+      so use the normal list (counts=false) for a filtered count.
     Returns the emails with ids. Call read_email for the full text of one.
     """
     if counts:
+        given = {"query": query, "days": days, "sender_category": sender_category,
+                 "from_email": from_email, "unread_only": unread_only,
+                 "starred_only": starred_only, "has_attachments": has_attachments,
+                 "importance": importance}
+        bad = [k for k in _COUNTS_FILTERS if given[k] not in (None, False, "", 0)]
+        if bad:
+            return (f"Nothing read. counts=true cannot apply {', '.join(bad)}: it counts a "
+                    "whole folder only. Call query_inbox again with counts=false and "
+                    "the same filters, and read the total of that list.")
         return await _folder_counts(account_id, folder)
     start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
@@ -6498,13 +6549,21 @@ async def _read_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
         f"Which mailbox? No mailbox is called \"{word}\".", await _accounts(), then)
 
 
+#: Where the folder names of ``list_labels(folders=true)`` come from.
+_FOLDERS_DATA_WHAT = (
+    "The folder names below come from the mailbox at the provider. The member "
+    "or a person who shares the mailbox can name a folder."
+)
+
+
 async def _list_folders(account_id: str) -> str:
     """``list_labels(folders=true)``: the folders of the mailbox at the
     provider, with the count of mail and of unread mail in each, as the
     folder list of the Email app shows them (``GET .../folders``).
 
-    The member or a person who shares the mailbox names a folder, so each
-    name stays on one line."""
+    The member, a person who shares the mailbox or a provider names a
+    folder, so the rows sit in one block of a new frame, as the label
+    counts of ``_folder_counts`` do, and each name stays on one line."""
     box, question = await _read_mailbox(account_id, "list_labels")
     if question:
         return question
@@ -6513,14 +6572,16 @@ async def _list_folders(account_id: str) -> str:
     head = await _mailbox_line(box)
     if not folders:
         return f"{head}\nThe provider lists no folder for this mailbox."
-    lines = [head, f"Folders ({len(folders)}):"]
+    rows: list[str] = []
     for f in folders:
         kind = "your folder" if f.get("type") == "user" else "system folder"
-        lines.append(
+        rows.append(
             f"• {_one_line(f.get('name') or f.get('provider_folder_id'), 120)} "
             f"({kind}): {f.get('message_count', 0)} emails, "
             f"{f.get('unread_count', 0)} unread")
-    return "\n".join(lines)
+    frame = UntrustedFrame.new()
+    return "\n".join([head, f"Folders ({len(folders)}):",
+                      frame.note(_FOLDERS_DATA_WHAT), frame.wrap("FOLDERS", "\n".join(rows))])
 
 
 @_annotate_risk(open_world=False)

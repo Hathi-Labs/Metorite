@@ -312,10 +312,16 @@ at build. Each of these rungs ends in a demo task, and the table names it.
   app. Each read is a mode of an email tool that the `email` pack already
   holds, so no `TOOL_PACKS` line changes. The email ceiling went from 14 to 9.
   - `query_inbox(everywhere=true)` sends the search of the search bar,
-    `GET /email/search`.
+    `GET /email/search` with `folder=all`. It searches each folder but Junk
+    and Trash. The route broadens to any word on page 1 only, so a broadened
+    answer has one page and names no next page.
   - `query_inbox(counts=true)` reads the counts of the quick filters,
-    `GET /email/messages/facets`.
-  - `list_labels(folders=true)` lists the folders of a mailbox.
+    `GET /email/messages/facets`. That route takes only the mailbox and the
+    folder. So a call that also gives a filter reads nothing and names the
+    filters that it cannot apply.
+  - `list_labels(folders=true)` lists the folders of a mailbox. The folder
+    names sit in a frame, because a person who shares the mailbox can name a
+    folder.
   - `get_account_overview(older_than=...)` reads the count and size of the
     older mail that a removal would take out of Metorite.
   - `list_accounts(organization=true)` reads the mailbox counts of the
