@@ -113,7 +113,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "change_agent_answer",
     }),
     "whatsapp-assistant": frozenset({
-        "web_search", "fetch_page", "code_task", "run_script", "run_workflow",
+        # D129 (task 808): an open run no longer holds code_task or run_script.
+        "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
     }),
     "task-manager": frozenset({

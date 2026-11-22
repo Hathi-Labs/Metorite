@@ -31,6 +31,11 @@ and the rules around them: a mode change is logged and cannot be undone, a
 mode that changed since refuses the Undo, a thing that changed again refuses
 it, a private view shows to its owner only, a member who is not an admin
 reads only their own changes, and a row never changes.
+
+The member purge has its own part. It deletes the private change rows of the
+member, and each Undo row goes with its row. Task 1570 (D175.5) adds the
+private saved views: the purge deletes them in the bound org only, a shared
+view stays, and the count is the rows that go.
 """
 
 from __future__ import annotations
@@ -1098,9 +1103,13 @@ def _drop_member_rows(p: Any) -> None:
                   {"e": [ADMIN, PURGE_OWNER]})
 
 
-async def _purge_admin(p: Any, org: str, monkeypatch: Any) -> dict[str, int]:
-    """The real member purge of ``ADMIN`` in *org*, as the app role. Returns
-    ``deleted`` of the purge (``PurgeResult.deleted``)."""
+async def _purge_admin(
+    p: Any, org: str, monkeypatch: Any, *, role: str = "app",
+) -> dict[str, int]:
+    """The real member purge of ``ADMIN`` in *org*. Returns ``deleted`` of
+    the purge (``PurgeResult.deleted``). It runs as the app role. With
+    ``role="superuser"`` it runs as the superuser, which RLS does not bind
+    (task 1570)."""
     from gateway.db import tenant_session
     from gateway.routes.admin import members
     from gateway.routes.admin._common import get_member
@@ -1111,8 +1120,9 @@ async def _purge_admin(p: Any, org: str, monkeypatch: Any) -> dict[str, int]:
 
     monkeypatch.setattr(members, "record_admin_change", lambda *a, **k: None)
     monkeypatch.setattr(questions, "forget_member_keys", _no_keys)
+    url = p.app_url if role == "app" else p.admin_engine.url
     async with (
-        tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+        tenant_engine_scope(url.render_as_string(hide_password=False)),
         tenant_session(org) as session,
     ):
         member = await get_member(session, org, ADMIN)
@@ -1241,6 +1251,137 @@ async def test_log_change_gives_an_undo_row_the_readers_of_the_undone_row(
     rows = _log_state(ns, ns.org_a)
     assert rows[private_row].private_to == rows[private_undo].private_to == ADMIN
     assert rows[org_row].private_to is None and rows[org_undo].private_to is None
+
+
+# ── Task 1570 (D175.5): the purge takes the private saved views ─────────────
+#
+# R7: each test below goes red when the entry `crm_private_views` leaves
+# `members._PURGE_DELETES`. Each one asserts that a private view of the
+# member in the bound org goes, and reads `deleted["crm_private_views"]`.
+# These tests did not run at build (2026-11-21): the database was down. The
+# hermetic twin is `test_admin_member_purge.py`.
+
+
+def _view_row(p: Any, org: str, owner: str, name: str, *, shared: bool) -> str:
+    """One saved view of *org*, written as the superuser. Returns its id."""
+    return str(_one(
+        p, "INSERT INTO crm_views (organization_id, entity, name, owner_email, shared) "
+           "VALUES (CAST(:o AS uuid), 'deals', :n, :e, :s) RETURNING id",
+        o=org, n=name, e=owner, s=shared))
+
+
+def _views(p: Any) -> dict[str, str]:
+    """Each saved view of org A and org B, as the superuser reads it: the id,
+    then the org."""
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            "SELECT id::text, organization_id::text FROM crm_views "
+            "WHERE organization_id = ANY(CAST(:orgs AS uuid[]))"),
+            {"orgs": [p.org_a, p.org_b]}).all()
+    return {r[0]: r[1] for r in rows}
+
+
+@_DB_GATE
+async def test_the_purge_deletes_the_private_views_of_the_member_and_no_other(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 1. The purge of ``ADMIN`` deletes each private view of
+    ``ADMIN`` in the bound org, in any case of the address. The private view
+    of a colleague stays. Without the entry, both views of ``ADMIN`` stay
+    → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        mine = {_view_row(ns, ns.org_a, ADMIN, "Mine", shared=False),
+                _view_row(ns, ns.org_a, ADMIN.upper(), "Mine too", shared=False)}
+        theirs = _view_row(ns, ns.org_a, MEMBER, "Rep's", shared=False)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _views(ns)
+        assert not mine & set(after), "a private view of the member stayed"
+        assert theirs in after, "the purge took the view of a colleague"
+        assert deleted["crm_private_views"] == 2
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_a_shared_view_of_the_member_stays_and_the_private_one_goes(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 2. An admin saves a private view and a shared view through
+    the router. The purge deletes the private view and its private change
+    row. The shared view and its org change row stay. Without the entry, the
+    private view stays → red. Without ``NOT shared``, the shared view goes
+    → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        admin = _admin(ns.org_a)
+        private = await _call(ns, admin, "POST", "/crm/views",
+                              {"entity": "deals", "name": "Mine"})
+        assert private.status_code == 201, private.text
+        shared = await _call(ns, admin, "POST", "/crm/views",
+                             {"entity": "deals", "name": "Team", "shared": True})
+        assert shared.status_code == 201, shared.text
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _views(ns)
+        assert private.json()["id"] not in after, "the private view stayed"
+        assert shared.json()["id"] in after, "the purge took a shared view"
+        assert deleted["crm_private_views"] == 1
+        assert deleted["crm_private_changes"] == 1
+        assert [r.entity_id for r in _rows(ns, ns.org_a)] == [shared.json()["id"]]
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+@pytest.mark.parametrize("role", ["app", "superuser"])
+async def test_a_private_view_of_the_member_in_another_org_stays(
+    ns, app_engine, monkeypatch, role: str,  # noqa: F811
+) -> None:
+    """Done when 3. ``ADMIN`` holds a private view in org A and one in org
+    B. The purge in org A deletes the view of org A only. The superuser run
+    bypasses RLS, so there only the org term of the clause keeps the view of
+    org B. Without the entry, the view of org A stays → red. Without the org
+    term, the superuser run deletes the view of org B → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        here = _view_row(ns, ns.org_a, ADMIN, "Mine", shared=False)
+        there = _view_row(ns, ns.org_b, ADMIN, "Mine in B", shared=False)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch, role=role)
+        after = _views(ns)
+        assert here not in after, "the private view of the bound org stayed"
+        assert there in after, "the purge reached a view of another org"
+        assert deleted["crm_private_views"] == 1
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_the_count_of_the_private_views_is_the_rows_that_go(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 4. Org A holds three private views and one shared view of
+    ``ADMIN``, and a private view of a colleague. Org B holds a private view
+    of ``ADMIN``. The count of the purge equals the rows that went, and each
+    row that went is a private view of ``ADMIN`` in org A. Without the entry,
+    the key is missing and no view goes → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        mine = {_view_row(ns, ns.org_a, ADMIN, f"Mine {i}", shared=False)
+                for i in range(3)}
+        _view_row(ns, ns.org_a, ADMIN, "Team", shared=True)
+        _view_row(ns, ns.org_a, MEMBER, "Rep's", shared=False)
+        _view_row(ns, ns.org_b, ADMIN, "Mine in B", shared=False)
+        before = _views(ns)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        gone = set(before) - set(_views(ns))
+        assert deleted["crm_private_views"] == len(gone) == 3
+        assert gone == mine
+    finally:
+        _drop_member_rows(ns)
 
 
 # ── Fix round 2: the old name of an Undo is taken again ─────────────────────
