@@ -1179,7 +1179,7 @@ DEBT_CEILING: dict[str, int] = {
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
+    "knowledge": 15,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15).
     "memory": 5,
     "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,

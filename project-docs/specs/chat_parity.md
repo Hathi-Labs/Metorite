@@ -17,6 +17,17 @@ live pane (notes, memory, agents). The right of the admin gate (the chat needs
 `admin:members:manage`, the sidebar shows the page for `admin:members:read`) is
 task 3677 (PAR-1c).
 
+**PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
+`KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
+`acb_skills/knowledge_tools.py`: `create_page`, `edit_page`, `create_space`
+and `edit_space`. The Knowledge ceiling goes from 19 to 15. Fences:
+`tests/unit/test_kb_chat_writes.py` and `tests/unit/test_kb_chat_writes_r8.py`.
+
+Each PAR-3 tool shows ONE card with the full text before it saves. A text that
+does not fit whole on one card gets a sentence and no card. A new page is
+always a draft, and no tool publishes (F2). The chat sends no grant. The
+server checks the right, and a 403 comes back as its own sentence.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
