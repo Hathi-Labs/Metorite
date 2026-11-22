@@ -651,11 +651,13 @@ class TestTheTextRoute:
         parses: list[str] = []
         real = tools.parse_bounded
 
-        async def _slow(data: bytes, suffix: str) -> Any:
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
+            # H-253 passes ``on_worker_done``. A fake that refuses the keyword
+            # raises before it records the call, and the wait below spins.
             parses.append(suffix)
             if len(parses) == 1:
                 await gate.wait()
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         monkeypatch.setattr(m, "parse_bounded", _slow)
         first = asyncio.create_task(_text())
@@ -813,6 +815,11 @@ class TestTheParseIsBounded:
 
         monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
         monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
         monkeypatch.setattr(tools, "extract_text", _stuck)
         _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7")
         try:
@@ -841,6 +848,11 @@ class TestTheHoldFollowsTheWorker:
     def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
         monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
 
     @staticmethod
     def _wait(ready: Any) -> None:

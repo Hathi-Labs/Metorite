@@ -12,7 +12,11 @@
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
+**SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
+
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
+
+**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475. No agent token reaches the route until SW-114.**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
@@ -26,7 +30,10 @@ This spec gates every SW slice (D135.4). The decisions are **D140** in `work_pla
 
 **Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`. SW-113 (the edge tool `get_agent_map`) is built and dark behind the same flag, 2026-11-21 (task 3796).**
 
-**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. SW-113 (the map in the MCP) is built, 2026-11-21.
+**Built and dark:** SW-102, SW-103 (the Map view), SW-104 (the machine and the model on each run), SW-106 (the map shows them), SW-107 (who dispatched a run), SW-112 (the Agents view of a project) and SW-113 (the map in the MCP). SW-105 and SW-108 to SW-111 and SW-114 are open.
+
+**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. The kind of machine is built (SW-104 and SW-106). The map in the MCP is built (SW-113). The writer and the way into a session are open.
+
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
 
@@ -1411,6 +1418,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 862. `session-handoff.mjs` reads `my_work` and the `check_due` rows with a short timeout. With no answer or no credential, it prints the snapshot of SW-19b with its date. It never blocks a session and never prints a token.
 - **Fence.** `node .claude/hooks/session-handoff.test.mjs`.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-23 and SW-19b.
+- **Built (task 862), 2026-11-22.** The hook reads `my_work` with the box token in `METORITE_BOX_TOKEN` and a 4 s budget. A row with the reason `check_due` is a Check that is due. A session with no box token, no answer or any error gets the HANDOFF.md snapshot with its date and the reason. A hook cannot use the OAuth sign-in of Claude Code, so a laptop session always gets the snapshot. SW-19b is not built, so `HANDOFF.md` is still the queue of cross-session actions. A live read adds its rows above those entries and never replaces them. The token goes only to `mcp.metorite.com` over https or to this machine.
 
 #### SW-19b · Retire HANDOFF.md as a source
 
@@ -2091,6 +2099,8 @@ They keep their own gates.
 
 - **Metorite task.** 3627.
 - **Scope.** A session node shows its machine and its model. The machine reads "checked" for a box token, and "reported" otherwise. The run panel line shows them too. A switch groups the map by machine. A run with no value reads "Not reported".
+- **Built and dark, 2026-11-22.** A session node shows its machine, its kind, a "checked" or "reported" mark and its model, and "Not reported" for none. The switch "Group by machine" puts a machine node between each person and the sessions. The map read gained `host`, `host_kind`, `host_source` and `model` on each session node, from the newest run that the viewer may see. A box token (`agent_connection.credential = 'box'`) sets "checked".
+- **Built, notes.** The run panel makes no "checked" claim, because the run read has no box proof. Its line shows only when a run has a value. So "Not reported" shows for one field only when the other has a value. This slice is stacked on SW-103. The visual review and the owner preview are open.
 - **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
 - **Fence.** `lib/agentMap.test.ts`, `lib/agentCardLook.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-104.
@@ -2114,6 +2124,7 @@ They keep their own gates.
 - **Done when.** The HathiLabs orchestrator and two of its lanes show their lines on the map.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
+- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
 
 #### SW-109 · The map draws who dispatched whom
 
@@ -2121,6 +2132,7 @@ They keep their own gates.
 - **Scope.** A line from an orchestrator's session node to each session that it dispatched, also across people. The layout puts an orchestrator to the left of its lanes. A lane with no dispatcher stays a root under its person. A quiet orchestrator reads "waiting" with its last event time.
 - **Done when.** `visual-review` passes at four widths. One line joins the sessions of two people. A loop in the data gives no loop in the layout.
 - **Fence.** `lib/agentMap.test.ts`.
+- **Built and dark, 2026-11-22.** Each depth, at most 4, is one session column, and the tasks of a session sit one step right of it. A dashed arrow joins a dispatcher to each lane, and the lane has no person line. A line that closes a loop drops. A quiet session reads "Waiting" with its last event time when one of its lanes is not quiet. The visual review and the owner preview are open.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-107.
 
 #### SW-110 · Sub-agents and machine health on the map
@@ -2168,6 +2180,11 @@ They keep their own gates.
 - **Done when.** R8: a child starts under an open parent while the parent holds the task. A second normal run on the task still gets the lease refusal. A parent of another organization is refused. A parent that ends ends its open children. A viewer who cannot see the parent sees no child.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (new), `tests/unit/test_agent_runs_r8.py` and `tests/unit/test_tenant_coverage.py`.
 - **Risk.** HIGH (a migration, and the lease index). **Gate.** AGENT-SAFE. **Depends on.** None.
+- **Built (task 3799), 2026-11-22.** Migration 475 adds `kind` and `parent_run_id`, with ON DELETE CASCADE and an index on the parent. A child has no task and no app. So every read of task runs leaves it out: the lists, the holder, `unheld`, `my_work`, the counts, the sweep and the map.
+- **The lease index.** The file builds the new index, then drops the old one, then renames the new one, in one statement. So no writer sees the table with no lease index. `pm_agent_runs_one_open` needs no change, because a child has no task.
+- **The write path.** `POST /projects/agent-runs/{run_id}/children` starts a child, and `GET` on the same path reads the children. The parent must be an open task run of the same member and connection, and it must hold its task. Every miss gets one 404 with the same text. A person gets 422.
+- **The end.** `_move_run` and `_take_over` end the open children of a run that ends. The child takes the parent's status.
+- **Not built.** The edge tool, the replay key and the cap of 20 children are SW-114. The pair is not in `MCP_WRITE_ROUTES`, so no agent token reaches the route until SW-114 adds it.
 
 #### SW-114 · The plugin reports sub-agents
 

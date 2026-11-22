@@ -495,6 +495,20 @@ WAITING_RULE = (
     " question: call ask_on_task.")
 
 
+#: SW-108 (``agent_coordination.md`` 3.12, Q20). The step of the dispatcher and
+#: of the lane. It shows only with the runs flag, because ``dispatched_by`` is
+#: the id of a run. It names no organization rule (D186.2). Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheDispatchRule``.
+DISPATCH_RULE = (
+    "When another session handed you this task, its hand-off names its run id."
+    " Pass that id as dispatched_by on claim_task. Write it in the header of"
+    " your notes, so that you find your dispatcher after a restart. Pass"
+    " nothing when nobody handed you the task. When you hand a task to another"
+    " agent, you are an orchestrator. Hold an open run on a coordination task"
+    " of your own, so that you show on the map. Put that run id in each"
+    " hand-off. Before a quiet stretch, post a waiting line with on agent.")
+
+
 def _work_steps(*, runs: bool) -> list[str]:
     """The steps after the context: the work, the progress, the links, the
     review, the done, and the end with one disposition."""
@@ -512,6 +526,7 @@ def _work_steps(*, runs: bool) -> list[str]:
         steps.append(WAITING_RULE)
         # SW-43c: on by default, so an agent posts the thought before the flip.
         steps.append(answer_thought_rule())
+        steps.append(DISPATCH_RULE)
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -554,6 +569,7 @@ __all__ = [
     "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
+    "DISPATCH_RULE",
     "IMAGE_RULE",
     "MAP_RULE",
     "MAX_DIGITS",

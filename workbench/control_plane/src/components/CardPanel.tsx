@@ -28,6 +28,11 @@
  * the page instead (`useCardStop`). The toggle hides, because it has nowhere
  * to go, and the member's choice stays stored for a wider page.
  *
+ * **The motion is the host's.** The host wraps its mount in `SidePanelMotion`
+ * (task 7). At the side stop this host carries `SIDE_DOCKED_ATTR`, and the
+ * card opens and closes with the one motion of a docked panel. Over the page
+ * and on a phone the card shows and goes at once.
+ *
  * This frame is not a `Modal`, because the AI pill must stay in reach (D172.4).
  * So it gives back by hand what the old drawer took from `Modal`: over the page
  * the page goes `inert`, and a close gives the focus to the last control the
@@ -38,6 +43,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect
 
 import { focusLandmark, LANDMARK } from "@/components/ui/Modal";
 import { TASK_CARD_FRAME } from "@/lib/layers";
+import { SIDE_DOCKED_ATTR } from "@/lib/panelMotion";
 import {
   DEFAULT_PANEL_MODE,
   PANEL_WIDTH_CLASS,
@@ -331,7 +337,9 @@ export default function CardPanel({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const aside = asideRef.current;
-      if (!aside) return;
+      // A card on its way out is inert (`SidePanelMotion`). Its close ran
+      // once, and a second Escape must not walk the history again.
+      if (!aside || aside.closest("[inert]")) return;
       const target = event.target as (HTMLElement & KeyTarget) | null;
       const page = aside.closest(`[${CARD_PAGE_ATTR}]`);
       const inReach =
@@ -357,6 +365,9 @@ export default function CardPanel({
     <div
       ref={hostRef}
       className={classes.host}
+      // At the side stop the card is a column of the page row, so the frame
+      // of `SidePanelMotion` round it opens and closes with the one motion.
+      {...(stop === "side" ? { [SIDE_DOCKED_ATTR]: "" } : {})}
       role="presentation"
       onMouseDown={
         stop === "full"

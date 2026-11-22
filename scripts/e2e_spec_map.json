@@ -129,7 +129,7 @@
     "home": {
       "paths": ["src/app/page.tsx", "src/app/api/brief/", "src/components/BreathingCharacter", "src/components/WelcomeDialog"],
       "specs": [
-        "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
+        "my-day-capture.spec.ts", "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
         "chat-starter-pills.spec.ts", "guide-*.spec.ts", "sidebar-row-counts.spec.ts"
       ]
     },
