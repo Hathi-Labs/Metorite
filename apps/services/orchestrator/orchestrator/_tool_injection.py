@@ -5349,7 +5349,10 @@ async def _mcp_may_attach(
     with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
     errs toward True. A fault reads as True (fail closed): then the
     specialist of a mail owner stays, as it did before OA-7i. The rows and
-    their filter are those of :func:`_attachable_rows`."""
+    their filter are those of :func:`_attachable_rows`, and the row rule runs
+    inside the ``try``, so a fault of the rule (a grant that raises) also
+    reads as True. It reads the whole list: the grant is a pure test, and
+    the answer is the answer of a stop at the first row."""
     from acb_common.db import current_tenant
 
     if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
@@ -5364,16 +5367,22 @@ async def _mcp_may_attach(
 
 def _row_may_attach(srv: Any, agent_name: str, is_authorized: Any, *,
                     log_stdio: bool = False) -> bool:
-    """THE one row filter of a lookahead on ``enabled_meta`` (CSY-4, §3.4): a
-    row that is enabled, in scope for *agent_name*, not stdio (D85), on an
-    HTTP transport with a URL, and that the run's grant allows. It is the
-    filter that :func:`_inject_mcp_servers` applies through
-    :func:`_keep_mcp_server` and :func:`_maf_servers`. With *log_stdio* the
-    scope and the stdio test go through :func:`_keep_mcp_server`, which logs
-    ``mcp.stdio_refused``. It logs nothing else."""
+    """THE one row rule of a lookahead on ``enabled_meta`` (CSY-4 §3.4,
+    HRD-1d): a row that is enabled, in scope for *agent_name*, not stdio
+    (D85), on an HTTP transport with a URL, and that the run's grant allows.
+    It is the filter that :func:`_inject_mcp_servers` applies through
+    :func:`_keep_mcp_server` and :func:`_maf_servers`. Each lookahead reads
+    it through :func:`_attachable_rows`, and no other code repeats it. With
+    *log_stdio* the scope and the stdio test go through
+    :func:`_keep_mcp_server`, which logs ``mcp.stdio_refused``. It logs
+    nothing else.
+
+    A falsy ``enabled`` refuses the row, as both rules before the merge did
+    for ``False``. A row with no ``enabled`` field counts as enabled, because
+    ``StoredServer`` always carries the field."""
     from orchestrator import _maf_mcp
 
-    if getattr(srv, "enabled", True) is False:
+    if not getattr(srv, "enabled", True):
         return False
     if log_stdio:
         if not _keep_mcp_server(srv, agent_name):
@@ -5394,10 +5403,13 @@ async def _attachable_rows(agent: Any, agent_name: str, org: Any, is_authorized:
     one ``enabled_meta`` read (no header, no token refresh, inside
     ``tenant_session(org)``), less each row that :func:`_row_may_attach`
     refuses. It raises on a read fault, so each caller picks its own fail
-    side. Three callers: the OA-7i lookahead (:func:`_mcp_may_attach`), the
-    CSY-5 ``mail`` line (:func:`_note_mail_skipped`) and the CSY-4 server
-    words (:func:`_with_server_words`). The caller checks its own exits
-    first: ``no_egress``, an agent that reads stranger text, a held mail pack."""
+    side. Four callers: the OA-7i lookahead (:func:`_mcp_may_attach`), the
+    HRD-1d held-back servers (:func:`_note_withheld_servers`), the CSY-5
+    ``mail`` line (:func:`_note_mail_skipped`) and the CSY-4 server words
+    (:func:`_with_server_words`). The lookahead and the server words check
+    their own exits first: ``no_egress``, an agent that reads stranger text,
+    a held mail pack. The two notes run only at the skip of a held mail pack,
+    and they attach nothing."""
     from orchestrator import _maf_mcp
 
     if not org or not _maf_mcp.is_native_maf_agent(agent):
@@ -5848,6 +5860,10 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # HRD-1d: the model can still call a tool of such a server from the
+        # history of the chat. Its answer then says why the tool did not run.
+        await _note_withheld_servers(
+            agent, agent_name, organization_id=organization_id, is_authorized=is_authorized)
         # CSY-5: the model learns WHY the system is off (reason `mail`).
         await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
@@ -5896,6 +5912,46 @@ async def _inject_mcp_servers(
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+async def _note_withheld_servers(
+    agent: Any, agent_name: str, *, organization_id: str | None, is_authorized: Any,
+) -> None:
+    """HRD-1d (task 3719): tell the unknown-tool answer of this run which MCP
+    servers the run held back, because it holds a pack that reads mail from
+    outside senders (OA-7b).
+
+    The servers are the ones that the injection would try without that pack:
+    :func:`_attachable_rows`, which has the same org, flag and native check as
+    :func:`_inject_mcp_servers`, then :func:`_row_may_attach`, the one row
+    rule. The org is the run's server-side stamp, never a tool argument or
+    the member's text. The read is ``enabled_meta``: no header and no OAuth
+    refresh. The value goes to
+    ``unknown_tool.note_withheld`` as the tool-name prefix of each server
+    (``_maf_mcp.tool_prefix``).
+
+    It reads only when the view holds a chat provider
+    (``unknown_tool.reads_withheld``), so a step and a later agent of the run
+    read nothing. Never raises. A fault leaves no value, and the answer stays
+    the answer of HRD-1c."""
+    try:
+        from acb_skills import unknown_tool
+
+        from orchestrator import _maf_mcp
+
+        if not unknown_tool.reads_withheld(agent):
+            return
+        org = organization_id or _run_org_or_none()
+        # No org, no native agent or the flag off: an empty list, and no read.
+        # An empty list then changes nothing (``note_withheld`` keeps no value).
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+        names = [str(srv.name) for srv in rows]
+        if unknown_tool.note_withheld(
+                agent, [_maf_mcp.tool_prefix(n) for n in names],
+                reason=unknown_tool.WITHHELD_MAIL_REASON):
+            _log.info("mcp.withheld_noted", agent=agent_name, servers=len(names))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.withheld_unavailable", error=type(exc).__name__)
 
 
 #: Tools of the platform that no MCP server may take the look of.
