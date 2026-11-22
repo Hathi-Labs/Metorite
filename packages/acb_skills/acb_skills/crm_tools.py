@@ -2319,10 +2319,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug})) + _resolved_note(params, data)
-    served = str(data.get("entity") or "")
-    used = _module_used(slug, served[len(MODULE_PREFIX):]) if served.startswith(MODULE_PREFIX) else ""
-    if used:
-        note = "\n" + used.rstrip("\n") + note
+    note = _served_note(slug, data) + note
     # §18.16 part 7: each filter, and the values that it counted.
     filters = [line for line in (filters_line(params, data), find_line(data),
                                  no_number_line(params, data)) if line]
@@ -2395,6 +2392,15 @@ def _module_used(asked: Any, served: Any) -> str:
     if not word or not used or word == used:
         return ""
     return f"Used module {used} for '{word}'.\n"
+
+
+def _served_note(slug: str, data: dict[str, Any]) -> str:
+    """The ``Used module`` line of an aggregate on a module named by a label."""
+    served = str(data.get("entity") or "")
+    if not served.startswith(MODULE_PREFIX):
+        return ""
+    used = _module_used(slug, served[len(MODULE_PREFIX):])
+    return "\n" + used.rstrip("\n") if used else ""
 
 
 def _resolved_note(params: dict[str, Any], data: dict[str, Any]) -> str:
