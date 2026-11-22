@@ -233,6 +233,9 @@ async def test_counts_reads_the_quick_filter_counts(gw: Gateway) -> None:
         ({"sender_category": "Newsletter"}, "sender_category"),
         ({"importance": "high"}, "importance"),
         ({"query": "x", "days": 3}, "query, days"),
+        # has_attachments=False means "no attachment", a filter: only None is "not given".
+        ({"has_attachments": False}, "has_attachments"),
+        ({"has_attachments": True}, "has_attachments"),
     ],
 )
 async def test_counts_with_a_filter_reads_nothing(

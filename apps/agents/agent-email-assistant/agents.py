@@ -2150,7 +2150,13 @@ async def query_inbox(
                  "from_email": from_email, "unread_only": unread_only,
                  "starred_only": starred_only, "has_attachments": has_attachments,
                  "importance": importance}
-        bad = [k for k in _COUNTS_FILTERS if given[k] not in (None, False, "", 0)]
+        # has_attachments=False is a filter ("no attachment"), as the list path reads it:
+        # only None means "not given". For every other key False or 0 means off.
+        bad = [
+            k
+            for k in _COUNTS_FILTERS
+            if (given[k] is not None if k == "has_attachments" else given[k] not in (None, False, "", 0))
+        ]
         if bad:
             return (f"Nothing read. counts=true cannot apply {', '.join(bad)}: it counts a "
                     "whole folder only. Call query_inbox again with counts=false and "
