@@ -24,7 +24,12 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
   // INPUT here on purpose and that is not an R11 breach — it is not trusted as
   // identity; ownership is proven by the code round-trip, and the SESSION email
   // is Auth.js's verified value (`auth.ts`'s jwt callback), never this field.
-  const [email, setEmail] = useState("");
+  // OB-0c (task 1340): the invite email links here with `?email=<address>`.
+  // It is a prefill and nothing more, as the field above is. Cut at a length no
+  // address passes, so a long value costs nothing.
+  const [email, setEmail] = useState(() =>
+    (searchParams.get("email") ?? "").trim().slice(0, 254),
+  );
 
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
