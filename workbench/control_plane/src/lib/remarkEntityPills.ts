@@ -215,15 +215,17 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
  * `task 235 «Title»` (task 1595): the fence takes a number only with its
  * `#`, so the `235` before the name is a bare reference. Give it the name as
  * the words after it, so the pill sees that the answer wrote the title there
- * and does not draw the title twice. A `#235 «Title»` never gets here: the
- * fence takes it whole.
+ * and does not draw the title twice. Only the word form: the fence takes a
+ * `#235 «Title»` whole, and a `#235«Title»` with no gap keeps the rule it
+ * had before task 1595.
  */
 function echoInto(out: MdNode[], name: string): void {
   const last = out[out.length - 1];
   const gap = last?.type === "text" && /^\s*$/.test(last.value ?? "") ? (last.value ?? "") : null;
   const ref = gap === null ? last : out[out.length - 2];
   const props = ref?.type === "taskRef" ? ref.data?.hProperties : undefined;
-  if (props) props[TASK_REF_AFTER_ATTR] = `${gap ?? ""}${name}`.slice(0, 200);
+  if (!props || String(props[TASK_REF_ATTR] ?? "").startsWith("#")) return;
+  props[TASK_REF_AFTER_ATTR] = `${gap ?? ""}${name}`.slice(0, 200);
 }
 
 /** The class of the span that keeps a pill and its punctuation together. */
