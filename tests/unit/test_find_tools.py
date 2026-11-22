@@ -195,10 +195,12 @@ class TestTheCoreList:
 
     def test_the_gaps_of_parity_are_closed(self, monkeypatch):
         """FIND-6b (task 3665) closed the three reasons that ``resolve_person``
-        stayed (§5.3): no member, no saved alias, no address. ``resolve_person``
-        itself stays in the core list until the next PR (D-FIND-3, one release
-        later). The pins now say the gaps are closed, so a change that opens
-        one again goes red. Mutations: take ``alias`` out of ``names.MATCHES``,
+        stayed (§5.3): no member, no saved alias, no address. The parity holds
+        except for the limits that ``find_engine.md`` §5.2 lists ("Limits of
+        FIND-6b"). ``resolve_person`` itself stays in the core list until the
+        next PR (D-FIND-3, one release later). The pins now say the three gaps
+        are closed, so a change that opens one again goes red. They do not
+        claim full parity. Mutations: take ``alias`` out of ``names.MATCHES``,
         let ``sources.saved_names`` skip ``_alias_tier``, or make
         ``names.shows_email`` answer False → red."""
         from contextlib import asynccontextmanager

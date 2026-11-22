@@ -1265,9 +1265,10 @@ def build_orchestrator_agent(
     # chat. Fence: tests/unit/test_profile_write_tools.py.
     # WS-FIND FIND-6: `resolve_person` stays in the list. FIND-6b gave
     # `resolve_name` the member, the saved alias and the address, so the
-    # parity of D-FIND-3 holds. `resolve_person` leaves one release later, in
-    # the next PR (find_engine.md §5.3). For an org of FIND_ORGS it takes the
-    # guard of the find tools.
+    # parity of D-FIND-3 holds, except for the limits that find_engine.md
+    # §5.2 lists ("Limits of FIND-6b"). `resolve_person` leaves one release
+    # later, in the next PR (find_engine.md §5.3). For an org of FIND_ORGS it
+    # takes the guard of the find tools.
     if profile_on:
         from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
 

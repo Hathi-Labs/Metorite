@@ -1114,6 +1114,28 @@ class TestTheMembers:
                                  ("email", "sender", ADDRESS, "exact")]
         assert "email" not in answer["rows"][0] and answer["verdict"] == "several"
 
+    @pytest.mark.parametrize("state", ["contractor", "invited", ""])
+    def test_a_colleague_row_with_no_address_keeps_its_sender_row(self, apps, state):
+        """Review round, P2: a person who is not active is of the org, but its
+        row prints no address (`shows_email`). So the sender row of that
+        address stays, the answer shows the address, and the verdict is
+        several, as before FIND-6b. Mutation: let each colleague of the org
+        hide the sender → one, with no address."""
+        person = Named("person", PERSON_2, "Sharat Menon", f"/people/{PERSON_2}",
+                       state=state, email=ADDRESS)
+        apps.records["crm"] = []
+        apps.records["people"].append((person, ""))
+        answer = ask("Sharat")
+        assert _rows(answer) == [("people", "person", PERSON_2, "exact"),
+                                 ("email", "sender", ADDRESS, "exact")]
+        assert "email" not in answer["rows"][0] and answer["verdict"] == "several"
+        assert f"full_id: sender:{ADDRESS}" in cst.format_names(answer)
+        # Non-vacuity: an active person prints the address, so the sender drops.
+        apps.records["people"][-1] = (dataclasses.replace(person, state="active"), "")
+        answer = ask("Sharat")
+        assert _rows(answer) == [("people", "person", PERSON_2, "exact")]
+        assert answer["rows"][0]["email"] == ADDRESS and answer["verdict"] == "one"
+
     @pytest.mark.parametrize(("kind", "state", "inside"), [
         ("alias", "", True), ("member", "", True), ("person", "active", True),
         ("person", "contractor", True), ("person", "invited", True), ("person", "", True),
@@ -1210,6 +1232,38 @@ class TestTheSavedNames:
         # One read with the typed name: no near read, so no alias row.
         assert saved.calls == ["Sharath"]
         assert all(r["kind"] != "alias" for r in answer["rows"])
+
+    @pytest.mark.parametrize(("name", "rule"), [
+        ("शरत", names.NAME_LETTERS), ("Head of the sales team", names.NAME_RULE)])
+    def test_a_saved_name_that_the_matcher_cannot_read_still_wins(self, apps, saved,
+                                                                    name, rule):
+        """Review round, P2: tier 1 of resolve_person folds the whole name and
+        has no word rule. So a saved name in another script, or of more words
+        than the matcher reads, still gives its row, and no app is asked.
+        With no such saved name, the profile off or a kind list without alias,
+        the 422 is the one of before. Mutation: check the name rule before the
+        saved names → 422."""
+        saved.names[name.lower()] = [(name, ALIAS_ADDR)]
+        answer = ask(name)
+        assert _rows(answer) == [("profile", "alias", ALIAS_ADDR, "alias")]
+        assert answer["verdict"] == "one" and answer["searched"] == ["profile"]
+        assert apps.calls == [] and saved.calls == [name]
+        error = refused(name, kinds="person")
+        assert error.status_code == 422 and error.detail == rule
+        saved.open = False
+        assert refused(name).detail == rule
+        saved.open = True
+        saved.names.clear()
+        assert refused(name).detail == rule
+        saved.fail = RuntimeError("down")
+        assert refused(name).detail == rule
+        assert apps.calls == [] and saved.calls == [name, name, name]
+
+    def test_a_name_out_of_bounds_reads_no_saved_name(self, apps, saved):
+        saved.names["x" * 61] = [("x" * 61, ALIAS_ADDR)]
+        assert refused("x" * 61).detail == names.NAME_RULE
+        assert refused("Sha\x00rat").detail == names.NAME_RULE
+        assert saved.calls == [] and apps.calls == []
 
     def test_the_profile_off_reads_no_saved_name(self, apps, saved):
         saved.open = False

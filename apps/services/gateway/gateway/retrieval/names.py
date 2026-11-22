@@ -14,7 +14,10 @@ saved names. No chat model runs, and no module here writes SQL.
   kind and the match ``alias``, and it counts as an exact record. When it
   matched, no person or member row stays (:func:`rows_of`). One address is one
   colleague, and a colleague is no mail sender. A row prints the address only
-  where ``resolve_person`` prints it (:func:`shows_email`).
+  where ``resolve_person`` prints it (:func:`shows_email`). A colleague hides
+  the sender row of its address only when a row prints that address. Tier 1
+  has no word rule, so a saved name that :func:`typed_name` refuses still
+  gives its row (:func:`saved_name_only`).
 
 * **Behind ``FIND_ORGS``.** An org that the flag does not name gets 404,
   before any check of the input, and no source is asked.
@@ -151,6 +154,17 @@ def find_allowed(user: UserContext) -> bool:
     return find.find_allowed(user.organization_id)
 
 
+def bounded_name(raw: Any) -> str:
+    """The name with its spaces folded, or ``""`` when it is out of bounds:
+    :data:`NAME_MIN` to :data:`NAME_MAX` characters, and no control
+    character. Pure."""
+    words = " ".join(str(raw or "").split())
+    if (not NAME_MIN <= len(words) <= NAME_MAX
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in words)):
+        return ""
+    return words
+
+
 def typed_name(raw: Any) -> str:
     """The name with its spaces folded, or a 422 of :data:`NAME_RULE`.
 
@@ -158,11 +172,11 @@ def typed_name(raw: Any) -> str:
     character, and 1 to ``name_match.NEAR_MAX_WORDS`` words of at most
     ``name_match.NEAR_MAX_CHARS`` characters each. One word of 2 letters or
     more in a to z or 0 to 9 at least, or the 422 of :data:`NAME_LETTERS`,
-    before any read: initials alone never hold a name, and the matcher reads
-    no other script. Pure."""
-    words = " ".join(str(raw or "").split())
-    if (not NAME_MIN <= len(words) <= NAME_MAX
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in words)):
+    before any read of an app: initials alone never hold a name, and the
+    matcher reads no other script. Only the member's saved names may still
+    answer such a name (:func:`saved_name_only`). Pure."""
+    words = bounded_name(raw)
+    if not words:
         raise HTTPException(status_code=422, detail=NAME_RULE)
     asked = name_words(words)
     if not any(len(w) > 1 for w in asked):
@@ -490,7 +504,7 @@ def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[d
     then by kind, then in the order of the sources. One row for each record.
     It also gives the count of exact records (:data:`EXACT_MATCHES`). Pure.
 
-    Two rules of ``resolve_person`` (FIND-6b):
+    Three rules of ``resolve_person`` (FIND-6b):
 
     * **Tier 1 wins.** When a saved name matched, no person or member row
       stays. The member saved the name for one colleague on purpose. A CRM
@@ -503,7 +517,10 @@ def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[d
       name, a person or a member of the answer holds gives no row, as the
       mail tier of ``resolve_person`` drops each address of the org. A person
       who left (:data:`LEFT_STATUS`) is not of the org there, so the sender
-      row of an alumnus stays (:func:`in_org`)."""
+      row of an alumnus stays (:func:`in_org`). The colleague must also be
+      one whose row prints the address (:func:`shows_email`). A contractor,
+      an invited person or a person with no status prints none, so the sender
+      row stays and shows the address, as before FIND-6b (review round)."""
     exact: list[tuple[str, Named, str, str]] = []
     near: list[tuple[str, Named, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -529,8 +546,11 @@ def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[d
     ordered = sorted(exact, key=place) + sorted(near, key=place)
     # The addresses of the colleagues of the answer, before tier 1 drops a row.
     # Only a colleague who is still in the org (:func:`in_org`), so the mail of
-    # an alumnus keeps its sender row, as in resolve_person.
-    colleagues = {item[1].email for item in ordered if in_org(item[1])}
+    # an alumnus keeps its sender row, as in resolve_person. And only one whose
+    # row prints the address (:func:`shows_email`): else the sender row is the
+    # one row that shows the address, so it stays (review round).
+    colleagues = {item[1].email for item in ordered
+                  if in_org(item[1]) and shows_email(item[1])}
     if any(item[1].kind == "alias" for item in ordered):
         ordered = [item for item in ordered if item[1].kind not in COLLEAGUE_KINDS]
     rows: list[dict[str, Any]] = []
@@ -599,7 +619,15 @@ async def resolve_names(
         raise HTTPException(status_code=401, detail="Authentication required")
     if not find_allowed(user):
         raise HTTPException(status_code=404, detail="Not Found")
-    typed = typed_name(name)
+    try:
+        typed = typed_name(name)
+    except HTTPException:
+        # FIND-6b, review round: tier 1 of resolve_person has no word rule.
+        # A saved name that the matcher cannot read still wins. Else the 422.
+        only = await saved_name_only(user, name, kinds)
+        if only is None:
+            raise
+        return only
     wanted = wanted_kinds(kinds)
     # An app the member does not reach is not asked, and it is not "skipped":
     # the member has no such app, or its switch is closed.
@@ -620,7 +648,44 @@ async def resolve_names(
     # FIND-11: a record of a mirrored module is no kind of the closed list, so
     # the tool text and the 422 stay as they were. With no `kinds` it joins the
     # rows. Only a CRM that the two flags open gives one.
-    every, exact = rows_of(answers, (*wanted, sources.MODULE_KIND) if not kinds else wanted)
+    return answer_of(typed, wanted, answers,
+                     (*wanted, sources.MODULE_KIND) if not kinds else wanted, began)
+
+
+async def saved_name_only(user: UserContext, name: Any, kinds: str | None) -> dict[str, Any] | None:
+    """The answer for a name that :func:`typed_name` refuses, from the
+    member's own saved names alone, or None (FIND-6b, review round).
+
+    Tier 1 of ``resolve_person`` folds the whole name (``fold``) and has no
+    word rule. So a saved name in another script, or of more words than the
+    matcher reads, still wins there, and here too. The name must still pass
+    :func:`bounded_name`. No app is asked, because the name test of an app
+    cannot read such a name. None, so the caller raises the 422 of the name
+    as before, when the name is out of bounds, ``kinds`` is bad or leaves out
+    ``alias``, the profile is off, the read fails, or no saved name equals
+    the name."""
+    words = bounded_name(name)
+    if not words:
+        return None
+    try:
+        wanted = wanted_kinds(kinds)
+    except HTTPException:
+        return None
+    if "alias" not in wanted or not sources.aliases_reach(user):
+        return None
+    began = asyncio.get_running_loop().time()
+    answer = await ask_aliases(user, words, began + NAMES_BUDGET_S)
+    if answer.skipped or not answer.exact:
+        return None
+    return answer_of(words, wanted, [answer], wanted, began)
+
+
+def answer_of(typed: str, wanted: tuple[str, ...], answers: list[SourceAnswer],
+              kinds: tuple[str, ...], began: float) -> dict[str, Any]:
+    """The answer of the route for *answers*, with the rows of *kinds*, and
+    its log line of counts and a time. *began* is the loop time of the
+    start."""
+    every, exact = rows_of(answers, kinds)
     rows = capped(every)
     skipped = [{"app": a.key, "reason": a.skipped} for a in answers if a.skipped]
     near_skipped = [{"app": a.key, "reason": a.near_skipped} for a in answers
@@ -630,9 +695,9 @@ async def resolve_names(
     sure = any(r["match"] in EXACT_MATCHES and r["kind"] != "sender" for r in every)
     verdict = verdict_of(exact, len(every) - exact, complete=complete, sure=sure)
     _events.info(
-        "search.names", sources=len(reads), rows=len(rows), exact=exact,
+        "search.names", sources=len(answers), rows=len(rows), exact=exact,
         near=len(every) - exact, skipped=len(skipped), near_skipped=len(near_skipped),
-        ms=round((loop.time() - began) * 1000),
+        ms=round((asyncio.get_running_loop().time() - began) * 1000),
     )
     return {
         "name": typed,

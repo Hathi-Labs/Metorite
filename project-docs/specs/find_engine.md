@@ -58,7 +58,8 @@ contact, lead, company and mail sender that holds one name, exact or near.
 a failure as text. With `CONTEXT_RECENCY` on too, a zero of `search_crm`,
 `query_inbox` and `find_tasks` ends with the pointer, and the persona holds
 the standing rule. `resolve_person` stays in the core list, because the
-parity of D-FIND-3 did not hold then (§5.3). FIND-6b closed it.
+parity of D-FIND-3 did not hold then (§5.3). FIND-6b closed it, except for
+the limits that §5.2 lists ("Limits of FIND-6b").
 
 **FIND-6b is built** (task 3665, 2026-11-17, see "As built (FIND-6b)" in
 §5.2). Behind `FIND_ORGS`, `GET /search/names` also gives a member of the
@@ -802,9 +803,10 @@ person.
   `test_resolve_name_tool.py`.
 
 **As built (FIND-6b, task 3665, 2026-11-17).** It closes the three gaps of
-parity with `resolve_person`: the member, the saved alias and the address.
-`resolve_person` stays in the core list. The next PR takes it out
-(D-FIND-3).
+parity with `resolve_person` that §5.3 named: the member, the saved alias and
+the address. The parity holds except for the limits listed below ("Limits
+of FIND-6b"). `resolve_person` stays in the core list. The next PR takes it
+out (D-FIND-3).
 
 - **The member.** People gives the kind `member` too. The read is the read of
   `resolve_person`: `assistant_profile_people.members_named` runs
@@ -834,6 +836,20 @@ parity with `resolve_person`: the member, the saved alias and the address.
   person or a member of the answer holds gives no row. The mail tier of
   `resolve_person` drops each address of the org (`email_in_org`). With
   `kinds=sender`, no colleague is in the answer, so the sender row stays.
+- **Only a row that prints the address hides the sender (review round).** A
+  contractor, an invited person or a person with no status is of the org,
+  but its row prints no address. So the sender row of that address stays.
+  The answer then shows the address, and the verdict is `several`, as before
+  FIND-6b. `names.rows_of` reads `in_org` and `shows_email` together. The
+  fence is `test_a_colleague_row_with_no_address_keeps_its_sender_row`.
+- **A saved name that the matcher cannot read (review round).** Tier 1 of
+  `resolve_person` folds the whole name and has no word rule. So when
+  `typed_name` refuses a name for its letters or its count of words,
+  `names.saved_name_only` still reads the member's saved names. A saved name
+  in another script, or of 4 words or more, then gives its `alias` row, and
+  the route asks no app. A name out of bounds, a closed profile, a kind list
+  without `alias`, a failed read or no saved name gives the 422 of before.
+  The fence is `test_a_saved_name_that_the_matcher_cannot_read_still_wins`.
 - **An alumnus is no colleague there (fix round).** `email_in_org` refuses
   a person with the status `alumni`, and accepts each other status. So the
   mail of an alumnus keeps its sender row, and the answer is `several`, as
@@ -909,6 +925,17 @@ parity with `resolve_person`: the member, the saved alias and the address.
 - The address check of a sender refuses an apostrophe. So a person whose
   address holds one prints no address, and a member or an alias with one
   gives no row. `resolve_person` prints such an address.
+- **A People row with no login has no address form.** `resolve_person`
+  matches the part of the address before the `@` for a People row too.
+  Here only a member record carries that form. So "Chris" finds «Christopher
+  Lee» <chris@…> only when an `app_user` row holds that address.
+- **An alias does not hide a sender from outside the org.** Tier 1 drops the
+  person and member rows only. A mail sender of the same name with an
+  address outside the org stays, so the answer is `several`.
+  `resolve_person` acts on the alias, because its tier 1 wins outright.
+- **A preferred name that the full name does not hold** gives no People row
+  (see "Limits of FIND-5" above). `resolve_person` matches the preferred
+  name itself, so it finds that person.
 
 ### 5.3 How the app search tools wrap the engine
 
@@ -919,7 +946,7 @@ parity with `resolve_person`: the member, the saved alias and the address.
 | `query_inbox` (pack `email`) | Each filter | A sender name tries its near spelling, in the email app's own function. The same zero line | HRD-18b, FIND-6 |
 | `find_contact` (pack `email`) | The address lookup | The one matcher | HRD-18a |
 | `find_tasks` (pack `projects`) | The task filters | Most of the words on a miss. The same zero line | HRD-4, FIND-6 |
-| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the parity gaps. The removal is the next PR (D-FIND-3) | HRD-18a, FIND-6, FIND-6b |
+| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the three named gaps, except for the limits of FIND-6b (§5.2). The removal is the next PR (D-FIND-3) | HRD-18a, FIND-6, FIND-6b |
 
 No app tool gets a second matcher, and no tool reads a second store. So no
 second read path exists.
@@ -958,7 +985,8 @@ second read path exists.
   not hold. `resolve_name` had no source that gave a member (`app_user`). It
   did not read the member's saved aliases. A person row printed no address.
   `resolve_person` gives all three. So FIND-6 kept it in the core list, with
-  the guard. FIND-6b closed the three gaps. The removal is the next PR.
+  the guard. FIND-6b closed the three gaps, except for the limits of FIND-6b
+  (§5.2). The removal is the next PR.
 - **How `resolve_person` leaves (decided by the planner, 2026-11-17).** Option
   (a). FIND-6b (task 3665) gives `GET /search/names` the kind `member`, the
   saved aliases (tier 1, match `alias`) and the address of a person row.
