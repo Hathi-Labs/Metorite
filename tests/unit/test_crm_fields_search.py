@@ -226,7 +226,9 @@ _NO_ROUTE = (404, {"detail": "Not Found"})
 
 
 @pytest.mark.parametrize("search", [_OFF, _NO_ROUTE], ids=["off", "no-route"])
-@pytest.mark.parametrize("entity", ["deals", "module:Products", "module:Nope", "", "bogus"])
+# An empty entity is not here: task 3864 scans every module for a query with no entity
+# (``test_crm_chat_forgive.py``), and a call with neither argument is a refusal.
+@pytest.mark.parametrize("entity", ["deals", "module:Products", "module:Nope", "bogus"])
 def test_a_query_with_the_search_off_answers_as_today(monkeypatch, search, entity) -> None:
     calls = _gateway(monkeypatch, search)
     plain = asyncio.run(T.crm_list_fields(entity))

@@ -182,6 +182,40 @@ def voucher_by_number(voucher_type: str, number: str, *, company: str) -> bytes:
     return _bytes(env)
 
 
+# TLY-4, the local copy: the vouchers changed after one AlterID, in one date
+# range. As with the by-number request, the formula is fixed text, and the
+# three inputs reach Tally only as the values of TDL variables, typed by the
+# bridge (an int and two dates). No member text reaches this request.
+_SINCE = "BridgeVouchersSince"
+_VAR_AFTER = "BridgeAfterAlter"
+_VAR_FROM = "BridgeFromDate"
+_VAR_TO = "BridgeToDate"
+_SINCE_FILTER = f"$AlterID > ##{_VAR_AFTER} AND $Date >= ##{_VAR_FROM} AND $Date <= ##{_VAR_TO}"
+
+
+def vouchers_since(after_alter_id: int, from_date: date, to_date: date, *, company: str) -> bytes:
+    """The vouchers of one date range whose AlterID is above *after_alter_id*."""
+    if not isinstance(after_alter_id, int) or after_alter_id < 0:
+        raise ValueError("after_alter_id is a whole number, 0 or more.")
+    env, desc = _envelope("Collection", _SINCE)
+    _statics(desc, company)
+    sv = desc.find("STATICVARIABLES")
+    ET.SubElement(sv, _VAR_AFTER).text = str(after_alter_id)
+    ET.SubElement(sv, _VAR_FROM).text = to_tally_date(from_date)
+    ET.SubElement(sv, _VAR_TO).text = to_tally_date(to_date)
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": _SINCE, "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Voucher"
+    ET.SubElement(coll, "FETCH").text = ", ".join((*VOUCHER_FETCH, "Guid", "AlterID"))
+    ET.SubElement(coll, "FILTER").text = "BridgeVchSince"
+    ET.SubElement(
+        message, "SYSTEM", {"TYPE": "Formulae", "NAME": "BridgeVchSince"}
+    ).text = _SINCE_FILTER
+    for var, kind in ((_VAR_AFTER, "Number"), (_VAR_FROM, "Date"), (_VAR_TO, "Date")):
+        ET.SubElement(ET.SubElement(message, "VARIABLE", {"NAME": var}), "TYPE").text = kind
+    return _bytes(env)
+
+
 VOUCHER_FETCH = (
     "Date",
     "VoucherTypeName",
