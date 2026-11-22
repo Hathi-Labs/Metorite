@@ -197,6 +197,7 @@ from gateway.routes.crm.field_sql import (
     find_words,
     from_source,
     group_sql,
+    label_resolved,
     lookup_ids,
     matched_values,
     measure_sql,
@@ -515,6 +516,10 @@ class AggregateResponse(BaseModel):
     #: Each key word that the call used, with the real key that it read. A
     #: sum of fields (CRM-Q32-9) gives the list of its keys.
     keys: dict[str, str | list[str]] = {}
+    #: Task 3864: each field key that the call wrote as a LABEL → the real
+    #: key that the route read. Absent when every key was a real key.
+    resolved: dict[str, str] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -1541,6 +1546,7 @@ def _paged_answer(
         field_type=measured.type if measured is not None else None,
         field_label=measured.label if measured is not None else None,
         group_field_label=grouped.label, keys=got.keys,
+        resolved=label_resolved(measured, grouped, grouped2),
         group_field_type=grouped.type, bucket=bucket if dated else None,
         groups=groups, total=total, other=None,
         omitted=max(0, count - len(groups)), zone=got.zone, values=values,
@@ -1940,7 +1946,7 @@ async def _compute(
         field_type=measured.type if measured is not None else None,
         field_label=measured.label if measured is not None else None,
         group_field_label=grouped.label if grouped is not None else None,
-        keys=read.keys,
+        keys=read.keys, resolved=label_resolved(measured, grouped),
         group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,

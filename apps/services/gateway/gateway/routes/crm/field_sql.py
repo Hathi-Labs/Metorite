@@ -244,6 +244,12 @@ GROUP2_KEY = "agf_g2"
 _MODULE = "agf_module"
 
 
+def fold_label(text: Any) -> str:
+    """A field label or key in one form: lower case, with no space, ``_``
+    or ``-`` (task 3864). "Rent Basic Amount" and "rent_basic-amount" match."""
+    return "".join(ch for ch in str(text or "").lower() if ch not in " _-\t")
+
+
 @dataclass(frozen=True)
 class FieldRef:
     """One checked field: its key, its stored type, its label, and the label
@@ -268,6 +274,15 @@ class FieldRef:
     #: filter on it stays a text filter. Only a measure and a range read it
     #: as a number, through :data:`TEXT_NUMBER_PATTERN`.
     text_number: bool = False
+    #: Task 3864: the label that the caller wrote as the key, when
+    #: :meth:`FieldScope.ref` resolved it by label. None otherwise.
+    via: str | None = None
+
+
+def label_resolved(*refs: FieldRef | None) -> dict[str, str]:
+    """Task 3864: asked label → the real key, for each of *refs* that the
+    scope resolved by label. Empty when every key was a real key."""
+    return {r.via: r.key for r in refs if r is not None and r.via}
 
 
 @dataclass(frozen=True)
@@ -310,8 +325,14 @@ class FieldScope:
         ``field.<key>`` for a module (:func:`module_where`)."""
         return f"custom.{key}" if self.column == CORE_COLUMN else f"{FIELD_PREFIX}{key}"
 
-    def ref(self, key: str | None) -> FieldRef:
+    def ref(self, key: str | None, *, by_label: bool = False) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys.
+
+        Task 3864: with *by_label*, a module key that is no key but ONE field
+        label (:meth:`_by_label`) resolves to that field. Only a measure and
+        a group ask for it. A filter name does not, because the readers of
+        the filter probe (``text_matches``, ``lookup_targets``) read the
+        asked name, so a label there would count fewer records than its key.
 
         CRM-Q33: a module also takes the keys of 2 to 5 currency fields
         joined with ``+`` (``IP+Rent+EB_Total_Amount``), as ONE sum of the
@@ -326,6 +347,8 @@ class FieldScope:
                                 detail="'sum_amount' needs deals. A module has no amount.")
         if found is None and (key or "") in KEY_WORDS and self.catalogue:
             raise HTTPException(status_code=422, detail=self._no_key_field(str(key)))
+        if found is None and key and by_label and self.column == MODULE_COLUMN:
+            found = self._by_label(key)
         if found is None:
             close = self.closest(key or "")
             near = f"The closest fields of {self.owner} are: {close}. " if close else ""
@@ -339,6 +362,20 @@ class FieldScope:
                 "key": key or "",
             })
         return found
+
+    def _by_label(self, key: str) -> FieldRef | None:
+        """Task 3864: the ONE field whose LABEL is *key* after :func:`fold_label`
+        (lower case, no space, ``_`` or ``-``), or None. A model that read
+        "Rent Basic Amount" in a field list writes the label as the key. Two
+        labels that fold alike are not guessed, so the 422 lists the fields.
+        A key word and a sum are never a label match. The tool says which
+        key was used (``crm_tools._resolved_note``)."""
+        wanted = fold_label(key)
+        if not wanted:
+            return None
+        hits = [r for k, r in self.fields.items()
+                if k not in KEY_WORDS and not r.parts and fold_label(r.label) == wanted]
+        return replace(hits[0], via=key) if len(hits) == 1 else None
 
     def closest(self, key: str) -> str:
         """At most :data:`CLOSE_MAX` keys of this scope whose key or label is
@@ -732,7 +769,7 @@ def status_field(scope: FieldScope) -> str:
 
 def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
     """The field of a ``sum``, ``avg``, ``min`` or ``max``, or a 422."""
-    ref = scope.ref(key)
+    ref = scope.ref(key, by_label=True)
     # CRM-Q34-11: a text field that holds numbers (`admit_text_numbers`).
     if ref.type not in MEASURE_TYPES and not ref.text_number:
         raise _refuse(
@@ -746,7 +783,7 @@ def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
 def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> FieldRef:
     """The field of ``group_field``, or a 422. A date needs a bucket, and a
     value group takes none."""
-    ref = scope.ref(key)
+    ref = scope.ref(key, by_label=True)
     if ref.parts:
         # CRM-Q32-9: a sum has no single value to group by.
         raise HTTPException(status_code=422, detail={
@@ -780,7 +817,7 @@ def check_groups(scope: FieldScope, key: str | None, key2: str | None,
     """CRM-Q34-10: the two fields of a two-field group, or a 422. The two
     are different fields, and at most one is a date. *bucket* goes to the
     date field. With no date, it goes to the first field, which refuses it."""
-    first, second = scope.ref(key), scope.ref(key2)
+    first, second = scope.ref(key, by_label=True), scope.ref(key2, by_label=True)
     if first.key == second.key:
         raise _refuse("Give two different fields as group_field and group_field2.")
     dated = (first.type in DATE_TYPES, second.type in DATE_TYPES)
