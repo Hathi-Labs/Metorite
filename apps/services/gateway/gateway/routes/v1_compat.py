@@ -903,13 +903,13 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     if refusal is not None:
         return refusal
 
-    # H4: the provider credential this call sends is process-global and this
-    # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,
-    # the deployment-wide LITELLM_MASTER_KEY, so `current_tenant()` is None on
-    # the agent-runtime path. Threading an org from `x-cc-agent` or the body
-    # would be R5 / R11's forbidden move. The full argument, and what a real
-    # fix requires (a tenant-scoped API key — owner gate (f)), is on
-    # `acb_llm.client._ensure_keys_loaded`. MT-1j slice 5, recorded not fixed.
+    # H4: this route has no tenant — `_auth` is `require_llm_api_auth`, the
+    # deployment-wide LITELLM_MASTER_KEY, so `current_tenant()` is None on the
+    # agent-runtime path. Threading an org from `x-cc-agent` or the body would
+    # be R5 / R11's forbidden move. The latch below only seeds the store on
+    # first boot. It writes no process-global key (D58.2, task 625), and the
+    # call's own key is resolved per call below (`call_credentials`). A tenant-
+    # scoped API key for this door is owner gate (f), task 569.
     await _ensure_keys_loaded()
 
     # Observability attribution (E2): the agent runtime stamps its identity on the
@@ -996,6 +996,15 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
         common["api_base"] = api_base
     if api_key:
         common["api_key"] = api_key
+    # D58.2 (task 625): the provider key travels per call, never through a
+    # process global. `call_credentials` adds nothing when the caller named
+    # its own endpoint, so a stored key never goes to a host the caller chose.
+    # H4: this door binds no tenant (`require_llm_api_auth`), so the key store
+    # answers the sole organization's key, none once a second one exists, and
+    # then the operator's platform key. Never an org from a header or the body.
+    from acb_llm.client import call_credentials
+
+    common.update(await call_credentials(model, common))
 
     if stream:
         async def event_generator():

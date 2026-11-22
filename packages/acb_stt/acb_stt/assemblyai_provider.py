@@ -66,7 +66,23 @@ _MAX_BOOST_TERMS = 100
 
 
 def api_key() -> str:
+    """The operator's PLATFORM key from the env, or ``""``. It never writes."""
     return os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
+
+
+async def resolve_api_key() -> str:
+    """The key of ONE transcription, for the organization bound to the call.
+
+    D58.2 (task 625): the key store seam answers the org's stored key, and
+    else the platform key (``ProviderKeyStore.provider_key``). The key travels
+    as an argument, never on the provider object, because one provider object
+    serves every organization. Without the key store package, the platform key.
+    """
+    try:
+        from acb_llm.key_store import caller_provider_key
+    except Exception:  # a stand-alone acb_stt keeps the env key
+        return api_key()
+    return await caller_provider_key("assemblyai")
 
 
 def is_assemblyai_model(model: str) -> bool:
@@ -218,18 +234,17 @@ class AssemblyAISTT(SttProvider):
             languages="multilingual",
         )
 
-    def _headers(self) -> dict[str, str]:
-        key = api_key()
+    def _headers(self, key: str) -> dict[str, str]:
         if not key:
             raise SttError(self.name, "ASSEMBLYAI_API_KEY is not set")
         # AssemblyAI takes the raw key in `authorization` — NOT a Bearer token.
         return {"authorization": key}
 
-    async def _upload(self, client: Any, audio: AudioInput) -> str:
+    async def _upload(self, client: Any, audio: AudioInput, key: str) -> str:
         r = await client.post(
             f"{_API}/upload",
             content=audio.data,
-            headers={**self._headers(), "content-type": "application/octet-stream"},
+            headers={**self._headers(key), "content-type": "application/octet-stream"},
             timeout=_UPLOAD_TIMEOUT_S,
         )
         if r.status_code >= 400:
@@ -272,12 +287,14 @@ class AssemblyAISTT(SttProvider):
         import httpx
 
         model_label = (opts.model or self._model or "assemblyai/universal")
+        key = await resolve_api_key()
+        headers = self._headers(key)  # raises SttError before any upload
         async with httpx.AsyncClient(timeout=60.0) as client:
-            upload_url = await self._upload(client, audio)
+            upload_url = await self._upload(client, audio, key)
             r = await client.post(
                 f"{_API}/transcript",
                 json=self.build_request(upload_url, opts, plural_models=True),
-                headers=self._headers(),
+                headers=headers,
             )
             # The model field is named `speech_models` (list) on the current API
             # and `speech_model` (string) on older accounts. If the plural form
@@ -288,7 +305,7 @@ class AssemblyAISTT(SttProvider):
                 r = await client.post(
                     f"{_API}/transcript",
                     json=self.build_request(upload_url, opts, plural_models=False),
-                    headers=self._headers(),
+                    headers=headers,
                 )
             if r.status_code >= 400:
                 raise SttError(
@@ -303,7 +320,7 @@ class AssemblyAISTT(SttProvider):
                 await asyncio.sleep(_POLL_INTERVAL_S)
                 waited += _POLL_INTERVAL_S
                 p = await client.get(
-                    f"{_API}/transcript/{job_id}", headers=self._headers()
+                    f"{_API}/transcript/{job_id}", headers=headers
                 )
                 if p.status_code >= 400:
                     raise SttError(

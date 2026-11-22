@@ -241,15 +241,17 @@ CONVERTED_FILES: tuple[str, ...] = (
 #: carries a matching ``H4:`` comment in place.
 H4_KEY_STORE_SITES: dict[str, int] = {
     "apps/services/gateway/gateway/main.py":
-        # lifespan startup: no request, no session, no bound tenant — and the
-        # destination (`configure_litellm` → `litellm.<provider>_api_key` +
-        # os.environ) is process-global regardless.
+        # lifespan startup: no request, no session, no bound tenant. The two
+        # calls are the first-boot env seed (`get_all`, `put`). Since task 625
+        # (D58.2) no provider key goes into a process global here.
         2,
     "packages/acb_llm/acb_llm/client.py":
-        # `_ensure_keys_loaded` — a once-per-process latch on the LIVE
-        # completion path, whose only caller (`/v1/chat/completions`) is
+        # `_ensure_keys_loaded` — the first-boot env seed, once per process.
+        # Its caller on the live path (`/v1/chat/completions`) is
         # authenticated by the deployment-wide LITELLM_MASTER_KEY and binds no
-        # tenant. A real fix needs a tenant-scoped API key: owner gate (f).
+        # tenant. Since task 625 each call takes its key per call
+        # (`call_credentials`). A tenant-scoped key for that door is owner
+        # gate (f), task 569.
         2,
 }
 
@@ -435,6 +437,10 @@ def test_every_remaining_untenanted_site_is_an_owner_gated_one():
     startup, and the import-time tier map. Each needs a **tenant-scoped API
     key** and per-request provider credentials, which is a credential-scope
     change and ``work_plan.md`` §6 gate (f).
+
+    🆕 **Task 625 (D58.2) removed ``configure_litellm`` and its ``get_all``.**
+    The remainder below is now the two calls in ``configure_integrations``.
+    ``provider_key`` calls ``self.get`` with the caller's ``organization_id``.
 
     ⚠️ **Known remainder this test does NOT count: three untenanted calls
     inside ``packages/acb_llm/acb_llm/key_store.py`` itself**, verified against

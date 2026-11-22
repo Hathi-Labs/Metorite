@@ -261,30 +261,25 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.chat_tools_warm_skipped", error=str(exc)[:200])
 
-    # Load provider API keys from encrypted Postgres store into litellm SDK.
+    # Seed the encrypted store from the env on first boot, and load the
+    # built-in integration credentials.
     #
     # H4: lifespan startup — there is no request, no session and no bound
-    # tenant, and the destination (`configure_litellm` / `configure_integrations`
-    # → `litellm.<provider>_api_key` + `os.environ`) is process-global anyway.
-    # See `acb_llm.client._ensure_keys_loaded`'s H4 note for the full argument;
-    # MT-1j slice 5 records this site rather than threading a guessed tenant
-    # through it (`saas_multitenancy.md` §11).
+    # tenant. D58.2 (task 625): NO provider key goes into a process global
+    # here. Each direct model call takes its own organization's key per call
+    # (`acb_llm.client.call_credentials`). `configure_integrations` still
+    # writes `os.environ` for integration credentials; that is task 3176
+    # (IN-3), not this site. MT-1j slice 5 records this site rather than
+    # threading a guessed tenant through it (`saas_multitenancy.md` §11).
     try:
-        from acb_llm.key_store import get_key_store
+        from acb_llm.key_store import PROVIDER_ENV_VARS, get_key_store
         store = get_key_store()
         existing = await store.get_all()
         if not existing:
-            _env_to_provider = {
-                "GEMINI_API_KEY": "gemini", "OPENAI_API_KEY": "openai",
-                "ANTHROPIC_API_KEY": "anthropic", "DEEPSEEK_API_KEY": "deepseek",
-                "OPENROUTER_API_KEY": "openrouter", "GROQ_API_KEY": "groq",
-                "MISTRAL_API_KEY": "mistral", "TOGETHER_API_KEY": "together",
-            }
-            for env_var, provider in _env_to_provider.items():
+            for provider, env_var in PROVIDER_ENV_VARS.items():
                 val = os.environ.get(env_var, "")
                 if val and val.strip():
                     await store.put(provider, val.strip())
-        await store.configure_litellm()
         await store.configure_integrations()
         _log.info("gateway.keys_loaded_from_store")
     except Exception as exc:
@@ -916,7 +911,7 @@ async def _prewarm_prompt_cache() -> None:
     if os.environ.get("PROMPT_CACHE_PREWARM", "0") != "1":
         return
     try:
-        from acb_llm.client import _TIER_MODEL, ensure_model_registered
+        from acb_llm.client import _TIER_MODEL, call_credentials, ensure_model_registered
         from acb_llm.prompt_cache import is_anthropic_model
         from litellm import acompletion
         from orchestrator.agents import build_orchestrator_agent
@@ -949,6 +944,9 @@ async def _prewarm_prompt_cache() -> None:
             warmed.add(model)
             ensure_model_registered(model)
             try:
+                # D58.2: no tenant is bound at startup, so `call_credentials`
+                # answers the sole organization's key, or the operator's
+                # platform key. Never a key a process global holds.
                 await acompletion(
                     model=model,
                     messages=[
@@ -957,6 +955,7 @@ async def _prewarm_prompt_cache() -> None:
                     ],
                     max_tokens=1,
                     temperature=0.0,
+                    **(await call_credentials(model)),
                 )
                 _log.info(
                     "gateway.cache_prewarm_complete", tier=tier_id, model=model

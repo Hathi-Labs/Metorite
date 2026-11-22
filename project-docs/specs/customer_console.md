@@ -8134,7 +8134,7 @@ and D56 is what turns it into design.
 
 | Module | Lines | Disposition |
 |---|---:|---|
-| `key_store.py` | 494 | **KEEP.** It still serves **integrations** (`credential_type='integration'`) and **BYOK**. It stops being the path by which the *platform's* provider keys reach a call. ⚠️ `configure_litellm` (`:441`) is the process-global injection that §6 (f) gates — this refactor **shrinks its blast radius** (fewer orgs have platform keys to inject) and **does not close it**; do not claim otherwise |
+| `key_store.py` | 494 | **KEEP.** It still serves **integrations** (`credential_type='integration'`) and **BYOK**. It stops being the path by which the *platform's* provider keys reach a call. ⚠️ `configure_litellm` (`:441`) is the process-global injection that §6 (f) gates — this refactor **shrinks its blast radius** (fewer orgs have platform keys to inject) and **does not close it**. Do not claim otherwise. 🆕 2026-11-22: task 625 removed `configure_litellm`. Each direct call takes its key per call (D58.2), so no provider key is a process global now. §6 (f) stays open for the `/v1` door (task 569) |
 | `model_config.py` | 107 | **RETIRE** with the table, slice 6 |
 | `model_limits.py` | 334 | **REUSE** — context windows and clamps. This is the substance of CP-5's tier-capabilities document; relocating it to the Console is a later, separate move, not slice work |
 | `client.py` `_TIER_ALIAS_MAP` (`:86`) | — | **REFACTOR to a cache**, exactly as D32.7 and CP-5 already specify: the Router publishes tier capabilities, this becomes a cache of that, not truth |
@@ -11770,6 +11770,10 @@ survives (BYOK, flag-off, Console-unreachable), and `configure_litellm`'s proces
 injection is untouched. What changes is narrower and worth having: **the path we serve
 production traffic on stops being the one that cannot name its tenant.** Recorded here so
 the two statements are not read as contradicting each other.
+
+🆕 **2026-11-22 (task 625):** task 625 removed `configure_litellm`, and the local path
+takes its key per call (D58.2). §6 (f) stays open, because the `/v1` door still binds no
+tenant (task 569).
 
 ### 6B.7 Failure semantics — decided now (D57.7)
 

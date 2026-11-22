@@ -3335,11 +3335,11 @@ ratchet's cadence; each PR banks its progress.
 >
 > | Site | Why no tenant is reachable |
 > |---|---|
-> | `acb_llm/client.py::_ensure_keys_loaded` (2 store calls) | a **once-per-process latch** whose whole output is process-global: `configure_litellm()` assigns `litellm.<provider>_api_key` and `os.environ`. Calling it per org would make the LAST org's key the one every caller sends. |
+> | `acb_llm/client.py::_ensure_keys_loaded` (2 store calls) | a **once-per-process latch** whose whole output is process-global: `configure_litellm()` assigns `litellm.<provider>_api_key` and `os.environ`. Calling it per org would make the LAST org's key the one every caller sends. 🆕 **2026-11-22 (task 625, D58.2):** the latch now only seeds the store on first boot, and task 625 removed `configure_litellm`. Each direct call takes the key of its bound organization per call (`acb_llm.client.call_credentials`). |
 > | `routes/v1_compat.py::_handle_chat_completions` (its caller) | authed by `require_llm_api_auth` — the deployment-wide `LITELLM_MASTER_KEY` **every agent holds**. That Bearer resolves through `get_current_user`'s branch 1b to `system:internal`, which never reaches `_with_resolved_access`, so `current_tenant()` is `None`. `X-CC-Agent`/the body are request input — R11 forbids both. |
 > | `acb_llm/client.py::_init_tier_models` (1 blob call) | runs at **import** time and fills the process-global `_TIER_MODEL`. |
 > | `gateway/main.py` lifespan (2 store calls) | startup: no request, no session, no tenant. |
-> | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. |
+> | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. 🆕 Task 625 removed the `os.environ` half (D58.2). |
 >
 > **What a real fix needs:** a **tenant-scoped API key** (`user_management_contract.md`
 > R11's second admitted identity source) plus per-request provider credentials instead of
@@ -3424,6 +3424,9 @@ ratchet's cadence; each PR banks its progress.
 > | `key_store.py:420` (`configure_integrations`) | `self.get(provider)` | `_resolve_org` returns `""` → the read yields `""`, so no stored integration credential reaches `os.environ` |
 > | `key_store.py:433` (`configure_integrations`) | `self.put(...)` — the env→store auto-migration | **RAISES** (`put` fails closed on a write), aborting the loop mid-way; its one caller wraps the whole block in `try/except` → `gateway.key_store_skipped`, so every integration after the raising one is silently left unconfigured rather than the process failing |
 > | `key_store.py:472` (`configure_litellm`) | `self.get_all()` | returns `{}` → no provider key is loaded into `litellm`'s module config |
+>
+> 🆕 **2026-11-22 (task 625):** the `:472` row went with `configure_litellm`. The two
+> `configure_integrations` rows stay, and their scope is task 3176.
 >
 > **Same class as H4, not a separate ticket.** The two methods holding them are called
 > from exactly the places the H4 tables already name: `configure_integrations` only from

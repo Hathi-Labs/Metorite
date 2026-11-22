@@ -245,25 +245,16 @@ _restart_litellm_bg = _recreate_litellm_bg
 
 
 def _inject_env_into_litellm(env_var: str, value: str) -> None:
-    """Update the live os.environ and encrypted key store with a new provider key.
+    """Write a new provider key to the encrypted key store of the caller's org.
 
-    Since there's no separate LiteLLM proxy, keys are set in the current
-    process environment AND the encrypted Postgres key store.  The gateway's
-    /v1 endpoint reads from the key store on every request.
-
-    ⚠️ **The ``os.environ`` half is PROCESS-WIDE and therefore not tenantable
-    here.** ``key_store.configure_litellm`` sets ``litellm.<provider>_api_key``
-    and the matching env var once per process, so a second organization saving
-    its own key would overwrite the first's for every caller. MT-1j slice 5
-    threads the *persisted* half (``_sync_key_to_store`` below, per-org and
-    correct); the in-process half is the same class as
-    ``acb_llm.client._ensure_keys_loaded`` — see its ``H4`` note — and belongs
-    to whichever ticket makes provider credentials per-request rather than
-    per-process. Recorded, not fixed: `saas_multitenancy.md` §11 MT-1j slice 5.
+    D58.2 (task 625, H-43). This once ALSO wrote ``os.environ[env_var]``.
+    That value is process-wide: litellm reads it for every caller that sends
+    no ``api_key``, so a second organization saving its own key overwrote the
+    first's for everyone. Each direct model call now takes its key per call
+    from the store of its own organization (``acb_llm.client.call_credentials``),
+    so the store write is the whole save. The name stays, so the callers and
+    the tests that name it keep working.
     """
-    # Update os.environ immediately so _is_provider_configured() returns True.
-    os.environ[env_var] = value
-    # Also update the encrypted key store (best-effort).
     _sync_key_to_store(env_var, value)
 
 
@@ -569,7 +560,28 @@ def _is_provider_configured(provider: str) -> bool:
             val = (getattr(get_settings(), env_var.lower(), "") or "").strip()
         except Exception:
             pass
-    return bool(val)
+    return bool(val) or _env_file_names(env_var)
+
+
+def _env_file_names(env_var: str) -> bool:
+    """Whether the env file holds a non-empty ``env_var`` line. Never raises.
+
+    D58.2 (task 625): a save no longer writes ``os.environ``. Settings has no
+    field for some provider keys (Deepgram, AssemblyAI), so this read keeps a
+    saved key reading as configured before the next restart. It reads a
+    presence, never returns the value.
+    """
+    try:
+        path = _env_file_path()
+        if not path.exists():
+            return False
+        prefix = f"{env_var}="
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(prefix) and line[len(prefix):].strip():
+                return True
+    except Exception:  # a presence check, best-effort
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -915,9 +927,9 @@ async def set_provider_key(
     _refuse_unsafe_env_write(env_var, req.api_key.strip(), actor=_user.email)
     try:
         _write_env_key(env_var, req.api_key.strip())
-        # Update the live process environment so _is_provider_configured()
-        # returns True immediately without a gateway restart.
-        os.environ[env_var] = req.api_key.strip()
+        # D58.2 (task 625): no `os.environ` write. The env holds the operator's
+        # platform keys only; litellm reads it for every caller. The env file
+        # write above makes `_is_provider_configured` answer True at once.
         # Bust the settings LRU cache so get_settings() also picks up the new value.
         try:
             from acb_common.settings import get_settings as _gs
@@ -927,8 +939,8 @@ async def set_provider_key(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write env: {exc}") from exc
     _log.info("settings.llm.key_updated", provider=req.provider, actor=_user.email)
-    # Inject key into running LiteLLM container immediately (no restart needed).
-    # Fallback: restart the container so it picks up the new .env value.
+    # The key of the caller's organization, in the store. The next direct call
+    # of that organization sends it (no restart needed).
     _inject_env_into_litellm(env_var, req.api_key.strip())
     return {"ok": "true", "env_var": env_var, "provider": req.provider}
 

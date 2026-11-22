@@ -129,8 +129,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # stays refused, so that a tenant cannot bring it back by a write.
     # GMAIL_SA_JSON_PATH is refused by the `_PATH` suffix.
     "ZOHO_REGION", "SMTP_USE_TLS", "GMAIL_DEFAULT_USER",
-    # LLM and speech provider keys. Only the BYOK-gated Models routes and the
-    # key store write them, and each passes them as ``owned``.
+    # LLM and speech provider keys. Only the BYOK-gated Models routes write
+    # them, to the env file, and pass them as ``owned``. No code writes them
+    # into ``os.environ`` (D58.2, task 625).
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
     "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY",
     "GITHUB_COPILOT_TOKEN",
@@ -680,10 +681,10 @@ def check_env_write(key: str, value: str, *, owned: frozenset[str] = frozenset()
 
     ``owned`` names, by exact name, the platform keys that the CALLING surface
     is the one legitimate writer of. Layer B lets them through, and layer A
-    still applies. Two callers pass a set, and a test pins each one:
+    still applies. One caller passes a set, and a test pins it:
     ``routes/settings.py`` (``_MODELS_PAGE_ENV_KEYS``: the BYOK provider keys
-    and ``COPILOT_CHAT_MODEL``) and ``key_store.configure_litellm`` (the
-    provider keys that it loads). Never put a URL in it.
+    and ``COPILOT_CHAT_MODEL``). ``key_store.configure_litellm`` was the
+    second, and task 625 removed it (D58.2). Never put a URL in it.
     """
     problem = control_problem(key)
     if problem:

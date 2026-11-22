@@ -210,13 +210,14 @@ _BASELINE: dict[str, _Entry] = {
         "fifth import [2449 S3]",
     ),
     "packages/acb_llm/acb_llm/client.py": _Entry(
-        {"litellm verb acompletion": 2, "sdk litellm": 8},
+        {"litellm verb acompletion": 2, "sdk litellm": 7},
         "complete and complete_with_tools call litellm when "
         "ROUTER_SERVING_ENABLED is off (H-171), on a dev box only: elsewhere "
         "refuse_direct_arm raises first (task 3554). Found 2026-10-06, and "
         "§2.10 names them since task 3554. "
-        "The eight litellm imports serve those calls, the prompt cache and the "
-        "cost lookups (model_cost, completion_cost, cost_per_token) [2449 S3]",
+        "The seven litellm imports serve those calls, the prompt cache and the "
+        "cost lookups (model_cost, completion_cost, cost_per_token). Task 625 "
+        "removed the eighth, the env key loader (D58.2) [2449 S3]",
     ),
     "apps/services/gateway/gateway/routes/v1_compat.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 3},
@@ -253,12 +254,6 @@ _BASELINE: dict[str, _Entry] = {
         {"sdk litellm": 1},
         "_litellm_info reads litellm's model_cost registry for token limits. "
         "It sends no request [2449: no slice, no request]",
-    ),
-    "packages/acb_llm/acb_llm/key_store.py": _Entry(
-        {"sdk litellm": 1},
-        "configure_litellm loads the stored provider keys into litellm's "
-        "module config, for the litellm calls that ROUTER_SERVING_ENABLED "
-        "turns off (H-171). It sends no request [2449 S3 and S7]",
     ),
     # ── 2449 S1 (2026-11-16): the GitHub Copilot SDK. D84 removes it, and
     # ``test_no_copilot_sdk.py`` holds the same files. Each file that builds a

@@ -639,16 +639,17 @@ class TestTheKeyStoreStartup:
         pytest.param(OVER_CAP, id="over-cap"),
     ])
     async def test_a_bad_llm_key_is_skipped(self, value, monkeypatch):
-        import litellm
-
-        for attr in ("api_key", "anthropic_api_key"):
-            monkeypatch.setattr(litellm, attr, getattr(litellm, attr, None), raising=False)
+        # Task 625 (D58.2): no loader copies a stored key into the env. A
+        # direct call takes it per call from `provider_key`, which refuses a
+        # value that fails layer A, and writes the env in neither case.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         ks, _ = _key_store(monkeypatch, {"openai": value, "anthropic": "sk-ant-good"})
-        await ks.configure_litellm()
+        assert await ks.provider_key("openai", organization_id=None) == ""
+        # A good key still answers.
+        assert await ks.provider_key("anthropic", organization_id=None) == "sk-ant-good"
         assert "OPENAI_API_KEY" not in os.environ
-        # The loader owns the provider names, so a good key still loads.
-        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-good"
+        assert "ANTHROPIC_API_KEY" not in os.environ
 
 
 # ── Layer A: the file form that `source` and systemd read alike ─────────────
@@ -1370,7 +1371,12 @@ class TestTheModelsRoutesUseTheSameGuard:
         out = await _set_key(provider, "sk-proj-AbC123_xyz")
         assert out["env_var"] == env_var
         assert models_env_file.read_bytes() == ENV_BEFORE + f"{env_var}=sk-proj-AbC123_xyz\n".encode()
-        assert os.environ[env_var] == "sk-proj-AbC123_xyz"
+        # Task 625 (D58.2): the save goes to the caller's store, never to the
+        # process env that litellm reads for every caller.
+        assert os.environ.get(env_var) != "sk-proj-AbC123_xyz"
+        assert (provider, "sk-proj-AbC123_xyz") in store.puts
+        # The env file write keeps the key reading as configured at once.
+        assert settings_routes._is_provider_configured(provider)
 
     def test_the_models_routes_own_exactly_their_pinned_set(self):
         # Growing this set lets a route write a platform key, so it is pinned.

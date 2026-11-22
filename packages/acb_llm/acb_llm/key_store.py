@@ -26,7 +26,12 @@ import os
 from typing import Any
 
 from acb_common import get_logger, get_settings
-from acb_common.env_guard import EnvWriteRefused, check_env_write, is_platform_env
+from acb_common.env_guard import (
+    EnvWriteRefused,
+    check_env_write,
+    is_platform_env,
+    value_problem,
+)
 from cryptography.fernet import Fernet, InvalidToken  # noqa: F401 (re-exported)
 
 _log = get_logger("key_store")
@@ -476,58 +481,85 @@ class ProviderKeyStore:
                             env_var=env_var,
                         )
 
-    async def configure_litellm(self) -> None:
-        """Load all stored keys into litellm's module-level config.
+    async def provider_key(self, provider: str, *, organization_id: str | None) -> str:
+        """The key of ONE direct model call to *provider*, or ``""``.
 
-        Call once at startup so litellm.acompletion() can route to any
-        configured provider without needing a proxy.  Also sets os.environ
-        so the Settings UI shows providers as configured.
+        D58.2 (task 625, H-43). A direct litellm call passes this value as
+        ``api_key``. Nothing copies it into ``os.environ`` or into a litellm
+        module attribute, so no other caller in the process can send it.
+
+        The order:
+
+        1. The stored key of *organization_id*. ``None`` resolves to the sole
+           organization, and to nothing once a second one exists
+           (:meth:`_resolve_org`). A caller with no organization therefore
+           never gets a tenant key on a pooled box.
+        2. Else the PLATFORM key: the env var of :data:`PROVIDER_ENV_VARS`,
+           which only the operator sets on the box (:func:`platform_key`).
+
+        A stored value that fails layer A (``acb_common.env_guard``) is not
+        sent, because a control character in a header is an injection. A store
+        that does not answer falls back to the platform key, as the old loader
+        did. The key name is logged, never the value.
+
+        Fence: ``tests/unit/test_llm_call_credentials.py``.
         """
-        import litellm as _litellm
+        if provider not in PROVIDER_ENV_VARS:
+            return ""
+        key = ""
+        try:
+            key = (await self.get(provider, organization_id=organization_id)).strip()
+        except Exception as exc:  # the platform key still answers
+            _log.warning(
+                "key_store.provider_key_unavailable",
+                provider=provider, error=str(exc)[:160],
+            )
+        if key and value_problem(key):
+            _log.warning("key_store.provider_key_refused", provider=provider)
+            key = ""
+        return key or platform_key(provider)
 
-        # Provider slug → (litellm attr, env var name)
-        _provider_config = {
-            "openai":     ("api_key",             "OPENAI_API_KEY"),
-            "anthropic":  ("anthropic_api_key",   "ANTHROPIC_API_KEY"),
-            "gemini":     ("gemini_api_key",      "GEMINI_API_KEY"),
-            "deepseek":   ("deepseek_api_key",    "DEEPSEEK_API_KEY"),
-            "groq":       ("groq_api_key",        "GROQ_API_KEY"),
-            "mistral":    ("mistral_api_key",     "MISTRAL_API_KEY"),
-            "together":   ("together_api_key",    "TOGETHER_API_KEY"),
-            "openrouter": ("openrouter_api_key",  "OPENROUTER_API_KEY"),
-            # Speech-to-text provider (Note Taker STT tier). litellm's Deepgram
-            # transcription handler reads DEEPGRAM_API_KEY from the environment.
-            "deepgram":   ("deepgram_api_key",    "DEEPGRAM_API_KEY"),
-            # AssemblyAI is reached by a NATIVE provider (acb_stt) and by the
-            # live-token endpoint, both of which read the env var directly.
-            "assemblyai": ("assemblyai_api_key",  "ASSEMBLYAI_API_KEY"),
-        }
 
-        # 🔒 Layers A and B (acb_common.env_guard). The provider keys are on
-        # the deny list, and this loader owns exactly the names of its map.
-        owned = frozenset(env for _, env in _provider_config.values())
+#: Store slug → the env var of the PLATFORM key of that provider. The one
+#: provider table of the key store. The env value is the operator's (the env
+#: file of the box). No code path copies a stored key into it (D58.2).
+PROVIDER_ENV_VARS: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    # Speech-to-text (the Note Taker STT tier). litellm's Deepgram handler and
+    # the native AssemblyAI provider both take the key per call.
+    "deepgram": "DEEPGRAM_API_KEY",
+    "assemblyai": "ASSEMBLYAI_API_KEY",
+}
 
-        all_keys = await self.get_all()
-        for provider, key in all_keys.items():
-            if not key:
-                continue
-            cfg = _provider_config.get(provider)
-            if cfg:
-                litellm_attr, env_var = cfg
-                try:
-                    check_env_write(env_var, key, owned=owned)
-                except EnvWriteRefused as exc:
-                    _log.warning(
-                        "key_store.litellm_row_refused",
-                        env_var=env_var,
-                        rule="platform" if exc.platform else "value",
-                    )
-                    continue
-                setattr(_litellm, litellm_attr, key)
-                os.environ[env_var] = key
-                _log.debug("key_store.litellm_configured", provider=provider)
-            else:
-                _log.debug("key_store.unknown_provider", provider=provider)
+#: A litellm provider name → its store slug, where the two differ.
+_LITELLM_PROVIDER_SLUG: dict[str, str] = {"together_ai": "together"}
+
+
+def provider_slug(name: str) -> str | None:
+    """The store slug of a litellm provider name or a model prefix, or None."""
+    slug = _LITELLM_PROVIDER_SLUG.get(name, name)
+    return slug if slug in PROVIDER_ENV_VARS else None
+
+
+def platform_key(provider: str) -> str:
+    """The operator's key for *provider* from the env, or ``""``.
+
+    It READS the env and never writes it. A value that fails layer A is not
+    returned.
+    """
+    env_var = PROVIDER_ENV_VARS.get(provider, "")
+    value = os.environ.get(env_var, "").strip() if env_var else ""
+    if value and value_problem(value):
+        _log.warning("key_store.platform_key_refused", env_var=env_var)
+        return ""
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -543,3 +575,18 @@ def get_key_store() -> ProviderKeyStore:
     if _store is None:
         _store = ProviderKeyStore()
     return _store
+
+
+async def caller_provider_key(provider: str) -> str:
+    """The key of ONE direct call to *provider*, for the bound organization.
+
+    D58.2 (task 625). The one entry point that the direct callers use: the
+    litellm arm (``acb_llm.client.call_credentials``), the live STT token
+    (``gateway.routes.notes.live``) and the AssemblyAI provider. The
+    organization is ``acb_common.db.current_tenant()``, which the auth
+    dependency or a job binds. It never comes from request input (R5, R11).
+    See :meth:`ProviderKeyStore.provider_key` for the order.
+    """
+    from acb_common.db import current_tenant
+
+    return await get_key_store().provider_key(provider, organization_id=current_tenant())

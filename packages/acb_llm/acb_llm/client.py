@@ -285,41 +285,27 @@ def set_tier_model(tier_id: str, model: str) -> bool:
 
 
 async def _ensure_keys_loaded() -> None:
-    """Load provider keys from the encrypted Postgres store into litellm's config.
+    """Seed the encrypted store from the env on first boot. Once per process.
 
-    On first run with an empty store, auto-seeds any keys found in env vars.
-    Falls back to env vars only if the store is completely unreachable.
+    D58.2 (task 625, H-43). This latch used to call
+    ``store.configure_litellm()``, which copied every stored provider key into
+    ``litellm.<provider>_api_key`` and ``os.environ``. Every later call in the
+    process then sent those keys, for whichever organization it served. A box
+    that started with one organization kept sending that organization's key
+    after a second one signed up.
 
-    ⚠️ **H4 — this is the LIVE completion path's key read, and it is NOT
-    tenant-threadable as written.** Two structural reasons, both measured
-    2026-08-19 for MT-1j slice 5 (`saas_multitenancy.md` §11):
+    Now it writes no process-global credential. Each direct call takes its
+    key from :func:`call_credentials`, for the organization bound to the call.
+    This latch only does the one-time migration: on a box whose store is
+    empty, it copies the operator's env keys into the store of the sole
+    organization. With two organizations, ``get_all`` answers ``{}`` and
+    ``put`` raises, so the seed does nothing (MT-0d fails closed).
 
-    1. **It is a once-per-process latch writing PROCESS-GLOBAL state.**
-       ``_keys_loaded`` runs the body exactly once, and
-       ``store.configure_litellm()`` then assigns ``litellm.<provider>_api_key``
-       and ``os.environ[...]`` — module attributes shared by every request in
-       the process. Calling it per organization would not scope anything; it
-       would make the LAST organization's key the one every caller sends.
-    2. **Its caller has no tenant to give it.** The choke point is the
-       gateway's ``/v1/chat/completions``
-       (``routes/v1_compat.py::_handle_chat_completions``), authenticated by
-       ``require_llm_api_auth`` — the deployment-wide ``LITELLM_MASTER_KEY``
-       every agent holds. ``get_current_user`` is not in that route's
-       dependency chain at all (``dependencies=_auth`` discards the pure
-       token check's return; nothing resolves an identity), so
-       ``current_tenant()`` is ``None`` *(mechanism corrected 2026-08-19 at
-       verification — an earlier draft described a ``system:internal``
-       branch this route never takes)*. Deriving the org from ``X-CC-Agent``
-       or the body instead is exactly what R5 /
-       ``user_management_contract.md`` R11 forbid.
-
-    Making the live path per-tenant therefore needs a **tenant-scoped API key**
-    (R11's second admitted source) and per-request provider credentials rather
-    than per-process ones. Widening ``LITELLM_MASTER_KEY``'s scope is a
-    credential-scope change — ``work_plan.md`` §6 gate (f), the owner's act,
-    not this ticket's. Until then the untenanted read fails CLOSED once a
-    second organization exists: no key, a visibly failing completion, never
-    another tenant's key.
+    H4: the seed reads are untenanted on purpose. The seed is the operator's
+    first-boot act, and it has no request and no tenant. The ``/v1`` door
+    that calls this binds no tenant either (``require_llm_api_auth``, the
+    deployment-wide ``LITELLM_MASTER_KEY``). Its credential-scope redesign is
+    ``work_plan.md`` §6 gate (f), task 569, and stays the owner's act.
     """
     global _keys_loaded
     if _keys_loaded:
@@ -327,57 +313,60 @@ async def _ensure_keys_loaded() -> None:
     _keys_loaded = True
 
     try:
-        from acb_llm.key_store import get_key_store
+        from acb_llm.key_store import PROVIDER_ENV_VARS, get_key_store
         store = get_key_store()
 
         # Seed from env vars on first boot (one-time migration)
         existing = await store.get_all()
         if not existing:
-            _env_to_provider = {
-                "GEMINI_API_KEY": "gemini",
-                "OPENAI_API_KEY": "openai",
-                "ANTHROPIC_API_KEY": "anthropic",
-                "DEEPSEEK_API_KEY": "deepseek",
-                "OPENROUTER_API_KEY": "openrouter",
-                "GROQ_API_KEY": "groq",
-                "MISTRAL_API_KEY": "mistral",
-                "TOGETHER_API_KEY": "together",
-                "DEEPGRAM_API_KEY": "deepgram",
-                "ASSEMBLYAI_API_KEY": "assemblyai",
-            }
-            for env_var, provider in _env_to_provider.items():
+            for provider, env_var in PROVIDER_ENV_VARS.items():
                 val = os.environ.get(env_var, "")
                 if val and val.strip():
                     await store.put(provider, val.strip())
                     _log.info("acb_llm.key_seeded_from_env", provider=provider)
-
-        await store.configure_litellm()
-        _log.info("acb_llm.keys_loaded_from_store")
+        _log.info("acb_llm.keys_seed_checked")
     except Exception as exc:
+        # The platform key still answers each call (`call_credentials`).
         _log.warning("acb_llm.key_store_unavailable", error=str(exc))
-        # Fall back to env vars for bootstrap / first-run
-        _load_keys_from_env()
 
 
-def _load_keys_from_env() -> None:
-    """Bootstrap litellm config from environment variables (fallback)."""
-    import litellm as _litellm
+async def call_credentials(
+    model: str, call_kwargs: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """The credentials of ONE direct litellm call to *model*, as kwargs.
 
-    env_map = {
-        "OPENAI_API_KEY": "api_key",
-        "ANTHROPIC_API_KEY": "anthropic_api_key",
-        "GEMINI_API_KEY": "gemini_api_key",
-        "DEEPSEEK_API_KEY": "deepseek_api_key",
-        "GROQ_API_KEY": "groq_api_key",
-        "MISTRAL_API_KEY": "mistral_api_key",
-        "TOGETHER_API_KEY": "together_api_key",
-        "OPENROUTER_API_KEY": "openrouter_api_key",
-    }
-    for env_var, attr in env_map.items():
-        val = os.environ.get(env_var, "")
-        if val:
-            setattr(_litellm, attr, val)
-            _log.debug("acb_llm.key_from_env", provider=attr)
+    D58.2 (task 625): the shape of the Console Router, which passes
+    ``call_kwargs["api_key"] = secret`` per call and keeps no shared state.
+    The caller merges the answer into its own ``acompletion`` or
+    ``atranscription`` kwargs.
+
+    * The organization is the one bound to this context
+      (``acb_common.db.current_tenant()``), never one from request input
+      (R5). With no bound organization, the key store answers the sole
+      organization's key, or none once a second one exists, and then the
+      named platform key (:meth:`ProviderKeyStore.provider_key`).
+    * ``{}`` when the call already names its own ``api_key`` or ``api_base``.
+      A stored key never goes to a host that the caller chose.
+    * ``{}`` for a provider that the store does not hold (ollama, a local
+      vLLM). litellm then reads that provider's own env setting, which only
+      the operator sets.
+    * ``{}`` when no key exists. litellm reads the provider env var then, and
+      that var holds the same platform value or nothing, because no code path
+      writes a stored key into the env.
+
+    Fence: ``tests/unit/test_llm_call_credentials.py``.
+    """
+    if call_kwargs and (call_kwargs.get("api_key") or call_kwargs.get("api_base")):
+        return {}
+    from acb_llm.key_store import caller_provider_key, provider_slug
+
+    slug = provider_slug(ensure_model_registered(model) or "") or provider_slug(
+        (model or "").split("/", 1)[0]
+    )
+    if not slug:
+        return {}
+    key = await caller_provider_key(slug)
+    return {"api_key": key} if key else {}
 
 
 class LLMTier(StrEnum):
@@ -853,6 +842,8 @@ async def complete(
     # per-call `timeout=` still wins here.
     ceiling = _request_timeout_secs()
     extra.setdefault("timeout", ceiling)
+    # D58.2: the key of THIS call's organization, never a process global.
+    creds = await call_credentials(model, extra)
 
     last_exc: Exception | None = None
     for attempt in range(3):
@@ -866,6 +857,7 @@ async def complete(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     **extra,
+                    **creds,
                 ),
                 timeout=ceiling,
             )
@@ -971,6 +963,8 @@ async def complete_with_tools(
     # matters more than bounding the plain-text path, not less.
     ceiling = _request_timeout_secs()
     extra.setdefault("timeout", ceiling)
+    # D58.2: the key of THIS call's organization, never a process global.
+    creds = await call_credentials(model, extra)
 
     last_exc: Exception | None = None
     for attempt in range(3):
@@ -986,6 +980,7 @@ async def complete_with_tools(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     **extra,
+                    **creds,
                 ),
                 timeout=ceiling,
             )

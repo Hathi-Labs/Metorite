@@ -1088,12 +1088,6 @@ line — never reclaim a number by deleting the other entry.
   → `1` means the Console still sends floats.
 - **Added:** 2026-08-30 · console-review session
 
-### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
-- **Metorite:** #625. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
-  `configure_litellm` mean the tenant path still writes process-global credentials.
-- **Added:** 2026-08-26 · AI architecture session
-
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`

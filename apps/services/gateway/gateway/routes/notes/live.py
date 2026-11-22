@@ -41,15 +41,31 @@ _TOKEN_TTL_S = 60  # short — the browser refreshes if a recording runs long
 
 
 def _deepgram_key() -> str:
-    """The long-lived Deepgram master key. Both the startup key-load
-    (``key_store.configure_litellm``) and the Settings key-save
-    (``_inject_env_into_litellm``) write it to ``os.environ``, so that's the
-    single canonical source."""
+    """The operator's PLATFORM Deepgram key from the env, or ``""``.
+
+    D58.2 (task 625): no code path copies a stored key into ``os.environ`` any
+    more, so the env holds only what the operator set on the box. A live token
+    takes the key of the bound organization first (:func:`_stt_keys`)."""
     return os.environ.get("DEEPGRAM_API_KEY", "").strip()
 
 
 def _assemblyai_key() -> str:
+    """The operator's PLATFORM AssemblyAI key from the env, or ``""``."""
     return os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
+
+
+async def _stt_keys() -> tuple[str, str]:
+    """``(assemblyai, deepgram)`` keys for the organization bound to this call.
+
+    The key store seam answers the org's stored key, and else the platform
+    key (``ProviderKeyStore.provider_key``). The browser route binds the
+    member's org (``get_current_user``). The bot route binds none, so the
+    store answers the sole organization, or nothing once a second one exists,
+    and then the platform key. Never another organization's key.
+    """
+    from acb_llm.key_store import caller_provider_key
+
+    return await caller_provider_key("assemblyai"), await caller_provider_key("deepgram")
 
 
 def _configured_stt_model() -> str:
@@ -170,7 +186,7 @@ async def _issue_live_token() -> LiveToken:
     read that key (it runs in its own container), and shipping the master key
     into the container would be both a duplicate source of truth and a wider
     blast radius — so it asks for a short-lived token instead."""
-    aai, dg = _assemblyai_key(), _deepgram_key()
+    aai, dg = await _stt_keys()
     provider = choose_provider(_configured_stt_model(), bool(aai), bool(dg))
     if provider is None:
         raise HTTPException(

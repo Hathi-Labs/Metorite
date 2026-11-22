@@ -718,6 +718,12 @@ by D15/D16) — read their banners before citing either.
   - **D58.2 — standardise on the Router's convention: credentials per call, never
     global.** The fix for §6 (f) is the shape `router.py` already uses. No new
     infrastructure.
+    🆕 **Status 2026-11-22 (task 625, H-43): D58.2 is built for the direct arm.** Each
+    direct litellm call now takes its key per call from `acb_llm.client.call_credentials`,
+    for the organization bound to the call. `configure_litellm` is gone, and no code
+    writes a provider key into `os.environ` or into a litellm attribute. Fence:
+    `tests/unit/test_llm_call_credentials.py`. ⚠️ This does not close §6 (f). The `/v1`
+    door still binds no tenant, and its credential scope is task 569, an owner decision.
   - **D58.3 — do NOT adopt LiteLLM Proxy as the billing or entitlement plane.** Its
     headline features — virtual keys, team budgets, spend logs, rate limits — **duplicate
     `llm_api_key`, `credit_ledger`, `usage_event`, `model_rate_card` and

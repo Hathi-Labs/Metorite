@@ -333,6 +333,7 @@ async def _complete_with_fallback(
     from acb_llm.client import (
         _emit_usage,
         _ensure_keys_loaded,
+        call_credentials,
         ensure_model_registered,
     )
     from acb_llm.jobs import (
@@ -404,12 +405,16 @@ async def _complete_with_fallback(
         fitted, was_truncated = fit_messages_to_context(
             messages, attempt_model, max_output_tokens=max_tokens,
         )
+        call_extra = params_for_model(extra, resolved)
+        # D58.2: each attempt's model may name another provider, so each one
+        # takes the key of the bound organization for THAT provider.
+        creds = await call_credentials(resolved, call_extra)
         try:
             resp = await acompletion(
                 model=resolved, messages=fitted,
                 temperature=temperature, max_tokens=max_tokens,
                 # A thinking parameter only for a model that takes it.
-                **params_for_model(extra, resolved),
+                **call_extra, **creds,
             )
             if is_fallback:
                 _log.info("acb_llm.fallback_succeeded",
@@ -719,6 +724,7 @@ async def _stream_text(
     from acb_llm.client import (
         _emit_usage,
         _ensure_keys_loaded,
+        call_credentials,
         ensure_model_registered,
     )
     from acb_llm.jobs import (
@@ -769,6 +775,9 @@ async def _stream_text(
     first_s = STREAM_FIRST_CHUNK_S if first_chunk_s is None else first_chunk_s
     gap_s = STREAM_IDLE_S if idle_s is None else idle_s
     whole_s = STREAM_TOTAL_S if total_s is None else total_s
+    # D58.2: the key of the bound organization, per call. Resolved before
+    # the clock starts, so a slow store read does not eat the first-chunk bound.
+    creds = await call_credentials(resolved, extra)
     loop = asyncio.get_running_loop()
     started = loop.time()
     total_deadline = started + whole_s
@@ -780,7 +789,7 @@ async def _stream_text(
             acompletion(
                 model=resolved, messages=fitted,
                 temperature=temperature, max_tokens=max_tokens,
-                stream=True, **extra,
+                stream=True, **extra, **creds,
             ),
             timeout=max(0.0, open_deadline - loop.time()),
         )
