@@ -4544,11 +4544,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4560,8 +4562,11 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-218.** The loader writes the GitHub token into each clone's remote URL
   (`loader.py:78`). The mutation container mounts the clone and has a network,
   so code in it can read the token (§15.3).
-- **H-211's root half** closes with WS-43m. Its external half and H-212 close
-  with the change in the sales-assistant repo (WS43-G11).
+- **H-211's root half** closed with task 560 (2026-11-21). The root factory
+  sets no permission handler, and
+  `tests/unit/test_no_first_party_approve_all.py` fails if one comes back.
+  Its external half and H-212 close with the change in the sales-assistant
+  repo (WS43-G11).
 
 ## 15. D84 — the GitHub Copilot SDK leaves the platform
 
@@ -4663,10 +4668,17 @@ H-218 is fixed.
 
 ### 15.4 The root `metorite` agent
 
-Today it is a `GitHubCopilotAgent` with `approve_all` (root
-`agents.py:102-122`), and its working dir is the platform checkout. So the
-model can run any shell command and write any file there, in every
-permission mode (H-211).
+Today it is a `GitHubCopilotAgent` (root `agents.py`). Until task 560
+(2026-11-21) its factory set `approve_all`, so the model could run any shell
+command and write any file, in every permission mode (H-211). Now the
+executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
+keeps its shell. The denylist and the workspace bounds of
+`permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 

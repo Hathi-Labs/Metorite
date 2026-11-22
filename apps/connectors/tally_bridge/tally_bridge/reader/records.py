@@ -243,6 +243,10 @@ class Voucher:
     narration: str
     entries: list[Entry]
     stock: list[StockEntry]
+    # Tally's change number of the voucher. The local copy (TLY-4) copies only
+    # the vouchers whose AlterID is above the last one it holds. 0 when the
+    # answer does not carry it.
+    alter_id: int = 0
 
     @property
     def amount(self) -> Amount:
@@ -280,7 +284,15 @@ def _voucher(el: ET.Element) -> Voucher:
         _deep_text(el, "NARRATION"),
         entries,
         stock,
+        _alter_id(_deep_text(el, "ALTERID")),
     )
+
+
+def _alter_id(text: str) -> int:
+    try:
+        return max(0, int(text.strip()))
+    except ValueError:
+        return 0
 
 
 def vouchers(root: ET.Element) -> list[Voucher]:

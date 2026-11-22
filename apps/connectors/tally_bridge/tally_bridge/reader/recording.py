@@ -96,6 +96,11 @@ RECORDINGS: tuple[Recording, ...] = (
         "get_voucher by type and number: put a voucher type and number from R09 in place of the placeholders",
         lambda c, led: envelope.voucher_by_number("VOUCHER TYPE", "NUMBER", company=c),
     ),
+    Recording(
+        "R13_vouchers_since.xml",
+        "TLY-4 local copy: the vouchers of January 2026 changed after AlterID 0",
+        lambda c, led: envelope.vouchers_since(0, _MONTH_FROM, _MONTH_TO, company=c),
+    ),
 )
 
 
