@@ -866,6 +866,13 @@ parity with `resolve_person`: the member, the saved alias and the address.
 - **The tool.** A member prints "(People member)". A saved alias prints
   "(colleague)" and "[your saved name]". The lines of the skipped and the
   searched apps name the alias read "Your saved names".
+- **The tool description (merge with FIND-11).** Task 3725 caps the
+  description of `resolve_name` at 1082 characters, and
+  `test_find_module_source.py` holds the cap. So the description names the
+  saved names, the member and the seven kinds in short words, and `alias`
+  reads "a saved name". It does not say that the address prints after the
+  name, because the answer shows it. The detail stays in this section and in
+  the comment above the tool in `company_search_tools.py`.
 
 **Limits of FIND-6b.** Each limit below is known, and no test hides it.
 

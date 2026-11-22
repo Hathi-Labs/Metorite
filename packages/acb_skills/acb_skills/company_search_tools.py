@@ -1156,6 +1156,13 @@ search_company_dated = _read_tool(_search_company_dated)
 # print. A saved name prints "(colleague)" and "[your saved name]".
 # ``resolve_person`` stays in the core list. The next PR takes it out
 # (D-FIND-3).
+#
+# The docstring of `resolve_name` is the tool description. Task 3725 caps it
+# at 1082 characters (`test_find_module_source.py`), because the Studio chat
+# sits at its token budget. So it names the saved names and the kinds in short
+# words. The kind `alias` is a name that the member saved for a colleague.
+# The answer prints the colleague address in angle brackets, so the
+# description does not say it. Put new detail here or in `find_engine.md`.
 
 #: The route of :func:`resolve_name`.
 NAMES_ROUTE = "/search/names"
@@ -1419,12 +1426,9 @@ async def resolve_name(name: str, kinds: str | None = None) -> str:
     """Find each record that holds one name: a person, a member, a CRM contact, lead or company, or a mail sender.
 
     Call it when the member names someone and you need the record or the
-    address. It asks the People directory and the members, the CRM and the
-    mail that the member can read, at once, in each app that the member can
-    open. It also reads the names that the member saved for colleagues. Each
-    record comes with its app, its link, its full_id and how it matched:
-    exact, a near spelling, or the member's saved name. A colleague's
-    address comes in angle brackets after the name.
+    address. It asks People, the CRM, the mail and the member's saved names,
+    in each app open to the member. Each record has its app, link, full_id
+    and match: exact, a near spelling or a saved name.
 
     The answer ends with one instruction for its verdict. Follow it.
     "one": one sure record, so use it. "partial": one record, but an app did
@@ -1437,9 +1441,9 @@ async def resolve_name(name: str, kinds: str | None = None) -> str:
     Args:
         name: One name, 2 to 60 characters and at most 3 words, as the member
             said it.
-        kinds: Optional. A comma list of the kinds to find: alias (a name
-            that the member saved for a colleague), person, member, contact,
-            lead, company and sender. Leave it out to find every kind.
+        kinds: Optional. A comma list of: alias (a saved name), person,
+            member, contact, lead, company and sender. Leave it out to find
+            every kind.
     """
     asked = " ".join(str(name or "").split())
     if not 2 <= len(asked) <= NAMES_MAX:

@@ -1824,7 +1824,8 @@ class TestTheToolColleagues:
 
     def test_the_closed_lists_equal_the_routes(self):
         assert cst.NAMES_KINDS == names.KINDS_RULE
-        assert set(cst.NAME_KINDS) == set(names.KINDS)
+        # FIND-11: the tool prints a module record, a kind outside the closed list.
+        assert set(cst.NAME_KINDS) == set(names.KINDS) | {sources.MODULE_KIND}
         named = {k for k, s in sources.REGISTRY.items() if s.named is not None}
         assert set(cst.NAME_APPS) == named | {sources.ALIAS_KEY}
         assert set(cst.NAME_EMAIL_KINDS) == set(names.COLLEAGUE_KINDS) | {"alias"}
