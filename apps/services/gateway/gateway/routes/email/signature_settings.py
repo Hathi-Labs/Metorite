@@ -183,7 +183,9 @@ async def _shallow_fields(request: Request) -> None:
 
 
 def _member(user: UserContext) -> str:
-    return (getattr(user, "email", None) or "").strip().lower() or "anonymous"
+    # As signed in, with no case fold. The mailbox owner column holds the address
+    # of the session verbatim, and every other owner check reads it the same way.
+    return getattr(user, "email", None) or "anonymous"
 
 
 def _tenant_id() -> str | None:

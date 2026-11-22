@@ -833,3 +833,17 @@ def test_the_writer_scan_sees_a_write(source: str) -> None:
 ])
 def test_the_writer_scan_passes_a_read_and_another_table(source: str) -> None:
     assert settings_writes(source) == []
+
+
+def test_the_member_is_the_address_as_signed_in_with_no_case_fold() -> None:
+    """A mixed-case sign-in address must reach the owner check unchanged.
+
+    The mailbox owner column holds the address of the session verbatim, so a
+    lower-cased value would give a 404 on the member's own mailbox.
+    """
+    from types import SimpleNamespace
+
+    from gateway.routes.email import signature_settings as mod
+
+    assert mod._member(SimpleNamespace(email="Vijay.Varada@Fracktal.in")) == "Vijay.Varada@Fracktal.in"
+    assert mod._member(SimpleNamespace(email=None)) == "anonymous"
