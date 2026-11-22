@@ -3475,6 +3475,24 @@ export const agentMapApi = {
 };
 
 /**
+ * WS-MCP SW-103: the orchestration map (`GET /projects/agents/overview?shape=map`).
+ * `null` means the map is dark for this member (404, 401 or 403).
+ */
+export const agentMapApi = {
+  read: async (opts: { showQuiet?: boolean } = {}): Promise<AgentMap | null> => {
+    try {
+      const query = opts.showQuiet ? "shape=map&show_quiet=true" : "shape=map";
+      const map = parseAgentMap(await call<unknown>(`agents/overview?${query}`));
+      if (!map) throw new ProjectsApiError("The map answer could not be read.", 200);
+      return map;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
  * WS-AGA AGA-9: the last runs of one agent (`GET /projects/agents/{key}/runs`).
  * `null` means the member may not see this agent (404, 401 or 403).
  */

@@ -758,6 +758,10 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
     # HRD-9a: the cards of the twelve vocabulary writes read this row, not a
     # read tool. The fence that reaches it is ``test_shared_vocab_guard.py``.
     expected.discard(("GET", "/projects/nodes/{project_id}/vocabulary/reach"))
+    # Task 3636: the cards of the create, bulk, plan and batch acts read this row
+    # to name a person who cannot open the task. No read tool calls it. The fence
+    # that reaches it is ``tests/unit/test_assignee_reach_rows.py``.
+    expected.discard(("GET", "/projects/people/reach"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "
