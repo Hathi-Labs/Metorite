@@ -408,11 +408,20 @@ then call it". The chat needs that recipe.
   the END line tells the model to fix its arguments and try once more.
 - **What the error text removes.** The gate removes each link, key, token and
   header value first, and then it cuts the words to 600 characters. It also
-  removes each value that the run holds for the server: the header values and
-  the key in the server URL. The `mcp.call_error` line holds the server, the
-  tool, the class, the JSON-RPC code and a reason of 120 characters. The
-  reason masks each argument value too. The error marks no session, as an
-  answer marks none.
+  removes each value that the run holds for the server, in any case and after
+  a decode of the percent escapes and the escaped slashes. Those values are the
+  header values, the live OAuth bearer, the password of a Basic header, and
+  the key and the password in the server URL. A bare `Zoho-oauthtoken` scheme
+  loses its token, and the one list of `secret_shapes` holds the Zoho token
+  shape. The error marks no session, as an answer marks none.
+- **What the log holds** (fix round 1). The `mcp.call_error` line holds the
+  server, the tool, the class, the kind, the JSON-RPC code and the length of
+  the server's words. It holds no word of the server, because those can hold
+  member data and a changed form of a secret.
+- **The cap** (fix round 1). MAF stops after 3 errors in a row only when a
+  tool raises. The gate counts the errors of each tool in the run. The third
+  error gives a short stop text, and a later call of that tool in the same
+  turn does not reach the server.
 - **What keeps the old path.** A timeout, a closed or lost session, an HTTP
   status and a fault of the connect still raise, so the model reads "Error:
   Function failed.". The map of `failure_log.mcp_error_code` decides this. The connect

@@ -307,14 +307,167 @@ def test_the_redaction_is_bounded_on_hostile_text() -> None:
         assert len(out) <= _maf_mcp.ERROR_TEXT_MAX
 
 
-async def test_an_argument_inside_a_json_string_is_masked_in_the_log() -> None:
+# ── Fix round 1: the variants of a held value, and the token shapes ─────────
+
+#: The values that the run holds, in the forms of fix round 1, item 3.
+BASIC_USER, BASIC_PASS = "zbooks-svc", "Tr0ub4dor&3xyz"
+URL_PASS = "url-pass-9137"
+LIVE_TOKEN = "live-oauth-access-QW7e9Rt2Yp4Ls8Kd"
+#: A held header value with slashes and a plus, so its escaped and encoded
+#: forms differ from it.
+SLASH_KEY = "k3y/With/Slash+77"
+
+
+def _percent(text: str) -> str:
+    """*text* with each character percent-encoded."""
+    return "".join(f"%{ord(c):02X}" for c in text)
+
+
+def _held_owner(**over: Any) -> Any:
+    """An MCP tool, built as ``attach_mcp_tools`` builds it, with no connect."""
+    import base64
+
+    basic = base64.b64encode(f"{BASIC_USER}:{BASIC_PASS}".encode()).decode()
+    kw: dict[str, Any] = {
+        "name": "zoho-books",
+        "url": f"https://svc:{URL_PASS}@shaurrya.zohomcp.example/mcp/{URL_KEY}/message",
+        "static_headers": {"Authorization": AUTH_HEADER, "X-Basic": f"Basic {basic}",
+                           "X-Account": SLASH_KEY},
+    }
+    kw.update(over)
+    return _maf_mcp._run_scoped_tool_class()(**kw)
+
+
+def _model_text(owner: Any, message: str) -> str:
+    error = _maf_mcp.ServerToolError(message=message, code=None, kind="tool_error",
+                                     error="ToolExecutionException")
+    return _maf_mcp.server_error_text("zoho-books", "zoho-books_ZohoMCP_executeTool", error,
+                                      held=_maf_mcp._held_values(owner))
+
+
+@pytest.mark.parametrize(
+    ("form", "secret"),
+    [
+        (ZOHO_TOKEN.upper(), ZOHO_TOKEN.upper()),
+        (URL_KEY.upper(), URL_KEY.upper()),
+        ("path %2Fmcp%2F" + _percent(URL_KEY) + "%2Fmessage", URL_KEY),
+        ("account " + _percent(SLASH_KEY), "Slash"),
+        ('{"note": "' + SLASH_KEY.replace("/", "\\/") + '"}', "Slash"),
+        (f"the account {BASIC_USER}:{BASIC_PASS} was refused", BASIC_PASS),
+        (f"password {BASIC_PASS} is wrong", BASIC_PASS),
+        (f"the user info held {URL_PASS}", URL_PASS),
+    ],
+    ids=["upper-token", "upper-url-key", "percent-url-key", "percent-header", "escaped-slash",
+         "basic-user-pass", "basic-pass", "url-password"],
+)
+def test_each_variant_of_a_held_value_is_masked_in_the_model_text(form: str, secret: str) -> None:
+    text = _model_text(_held_owner(), f"Report failed: {form}. Fix the date_range argument.")
+    assert secret not in text and secret.lower() not in text.lower(), text
+    assert form not in text, text
+    assert "Fix the date_range" in text
+
+
+def test_the_live_token_of_an_oauth_row_is_held() -> None:
+    """An OAuth row reaches the tool as ``Authorization: Bearer <token>``.
+    The registry puts it in ``StoredServer.headers`` (``gateway.connections.mcp``
+    ``_bearer``), and ``attach_mcp_tools`` gives it to MAF as
+    ``static_headers``. The held set reads it there, and refreshes nothing."""
+    server = _maf_mcp.McpServer(name="zoho-books", url="https://a.example/mcp", oauth=True,
+                                headers={"Authorization": f"Bearer {LIVE_TOKEN}"})
+    owner = _maf_mcp._run_scoped_tool_class()(
+        name=server.name, url=server.url, static_headers=dict(server.headers) or None)
+    held = _maf_mcp._held_values(owner)
+    assert LIVE_TOKEN in held
+    text = _model_text(owner, f"token {LIVE_TOKEN.upper()} is not valid for this org")
+    assert LIVE_TOKEN.lower() not in text.lower(), text
+
+
+def test_a_server_with_no_header_and_no_key_holds_nothing() -> None:
+    owner = _maf_mcp._run_scoped_tool_class()(name="srv", url="https://a.example/mcp")
+    assert _maf_mcp._held_values(owner) == []
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "Zoho-oauthtoken {token}",
+        "sent Zoho-oauthtoken {token} to the API",
+        "Acme-oauthtoken {token}",
+    ],
+    ids=["bare-zoho", "zoho-in-prose", "generic-oauthtoken"],
+)
+def test_a_bare_oauthtoken_scheme_loses_its_token(form: str) -> None:
+    token = "abcDEF12345.ghiJKL67890.mnoPQR"
+    text = _maf_mcp.redact_server_text(form.format(token=token))
+    assert token not in text and "abcDEF12345" not in text, text
+
+
+def test_the_zoho_token_shape_is_in_the_one_list() -> None:
+    from acb_common.secret_shapes import REDACTION_SHAPES
+
+    assert any(rx.search(f"x {ZOHO_TOKEN} y") for rx in REDACTION_SHAPES)
+    text = _maf_mcp.redact_server_text(f"token {ZOHO_TOKEN} expired")
+    assert ZOHO_TOKEN not in text and ZOHO_TOKEN[:20] not in text, text
+    assert not any(rx.search("version 1000.2.3 of the app") for rx in REDACTION_SHAPES)
+
+
+def test_a_quoted_secret_cut_by_the_window_does_not_leak_half() -> None:
+    """The window cuts the value inside its quotes. The final cut to 600
+    characters would hide the tail, so this reads the whole redacted text."""
+    urls = " ".join(f"https://h{i}.example/p" for i in range(400))[:3960]
+    text = _maf_mcp.redact_server_text(f'{urls} password: "correct horse battery staple"',
+                                       limit=100_000)
+    assert "password:" in text, "the window dropped the pair, so this tests nothing"
+    assert "correct" not in text and "horse" not in text, text[-120:]
+
+
+# ── Fix round 1: the retry cap ──────────────────────────────────────────────
+
+
+async def test_an_always_failing_tool_is_called_at_most_three_times_in_a_turn() -> None:
+    """MAF stops after 3 errors in a row only when the tool raises. The gate
+    answers an error with text, so it keeps its own count for each tool."""
     fn = _function()
-    ctx = SimpleNamespace(function=fn, result=None,
-                          arguments={"payload": json.dumps({"invoice": ARG_VALUE})})
+    gate = _gate(fn)
+    call = _Fails(_is_error_answer())
+    results = []
     with structlog.testing.capture_logs() as logs:
-        await _bounded(_gate(fn).process(ctx, _Fails(_is_error_answer())))
-    [line] = [e for e in logs if e["event"] == "mcp.call_error"]
-    assert ARG_VALUE not in line["reason"]
+        for _ in range(5):
+            ctx = _ctx(fn)
+            await _bounded(gate.process(ctx, call))
+            results.append(ctx.result)
+    assert call.count == _maf_mcp.ERROR_RETRY_MAX == 3
+    _assert_error_text(results[0])
+    _assert_error_text(results[1])
+    for text in results[2:]:
+        assert text.startswith(REFUSED) and is_refusal(text), text
+        assert "3 times in this turn" in text
+        assert _blocks(text) == [], "the stop text holds server words"
+    assert [e["outcome"] for e in logs if e["event"] == "mcp.call"] == [
+        "error", "error", "error", "refused", "refused"]
+
+
+async def test_the_cap_counts_each_tool_and_each_run_apart() -> None:
+    fn = _function()
+    other = _function(name="zoho-books_ZohoMCP_getSchema", remote="ZohoMCP_getSchema")
+    gate = _maf_mcp.McpPermissionGate(tools=[SimpleNamespace(
+        name="zoho-books", url=SERVER_URL, _static_headers={}, _functions=[fn, other],
+        _ws8c_tool_meta={
+            "ZohoMCP_executeTool": _maf_mcp.ToolMeta(hints={"readOnlyHint": True}, description=""),
+            "ZohoMCP_getSchema": _maf_mcp.ToolMeta(hints={"readOnlyHint": True}, description=""),
+        })], member_present=True)
+    failing = _Fails(_is_error_answer())
+    for _ in range(4):
+        await _bounded(gate.process(_ctx(fn), failing))
+    assert failing.count == 3
+    other_call = _Fails(_is_error_answer())
+    ctx = _ctx(other)
+    await _bounded(gate.process(ctx, other_call))
+    assert other_call.count == 1, "the cap of one tool stopped another tool"
+    _assert_error_text(ctx.result, tool="zoho-books_ZohoMCP_getSchema")
+    fresh = _Fails(_is_error_answer())
+    await _bounded(_gate(fn).process(_ctx(fn), fresh))
+    assert fresh.count == 1, "the count of one run reached a new run"
 
 
 # ── A transport fault keeps its old path ────────────────────────────────────
@@ -385,25 +538,35 @@ def test_the_classifier_reads_the_map_of_the_failure_log() -> None:
 # ── The log line ─────────────────────────────────────────────────────────────
 
 
+#: Server words that a log must never hold (fix round 1, item 1): member data,
+#: a phone number, and changed forms of a secret.
+_LOG_HOSTILE = (
+    "Invoice INV-7 of Ravi Kumar, phone +91 98450 12345, was not found. "
+    f"Token {ZOHO_TOKEN.upper()} and %2Fmcp%2F{URL_KEY} and "
+    f"https:\\/\\/x.example\\/{URL_KEY} and Basic user zbooks-svc:Tr0ub4dor&3xyz."
+)
+
+
 @pytest.mark.parametrize("make", [_is_error_answer, _json_rpc_error], ids=["is-error", "json-rpc"])
-async def test_the_call_error_line_holds_no_secret_and_no_argument(make: Any) -> None:
+async def test_the_call_error_line_holds_no_server_words_at_all(make: Any) -> None:
     fn = _function()
     ctx = _ctx(fn)
     with structlog.testing.capture_logs() as logs:
-        await _bounded(_gate(fn).process(ctx, _Fails(make())))
+        await _bounded(_gate(fn).process(ctx, _Fails(make(message=_LOG_HOSTILE))))
     lines = [e for e in logs if e["event"] == "mcp.call_error"]
     assert len(lines) == 1, lines
     line = lines[0]
+    assert set(line) == {"event", "log_level", "server", "tool", "error", "kind", "code",
+                         "reason_chars"}, line
     assert line["server"] == "zoho-books"
     assert line["tool"] == "ZohoMCP_executeTool"
     assert line["error"] in ("ToolExecutionException", "McpError")
     assert line["code"] == (None if make is _is_error_answer else -32602)
-    assert 0 < len(line["reason"]) <= _maf_mcp.ERROR_REASON_MAX
-    assert "\n" not in line["reason"]
+    assert line["reason_chars"] == len(_LOG_HOSTILE)
     flat = json.dumps(logs, default=str)
-    for secret in (*SECRETS, ARG_VALUE, BEARER):
-        assert secret not in flat, secret
-    assert "arguments" not in line
+    for word in ("Invoice", "INV-7", "Ravi", "98450", "zbooks-svc", "Tr0ub4dor", URL_KEY,
+                 URL_KEY.upper(), ZOHO_TOKEN.upper(), ARG_VALUE, "not found"):
+        assert word not in flat, word
     assert [e["outcome"] for e in logs if e["event"] == "mcp.call"] == ["error"]
 
 
