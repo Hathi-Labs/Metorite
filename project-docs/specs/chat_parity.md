@@ -19,6 +19,10 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-2a (task 3111, 2026-11-22) is BUILT, with no flag.** It pays five reads of
+the Email app, so the email debt goes from 14 to 9. §6.4, rung 4, names the
+reads and the next slices.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -304,6 +308,26 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 - **Rung 4.** The three actions are mail search, a task from an email and the
   day state. Task 3111 also puts a file from the chat on an email. Both tasks
   are STANDARD on the board.
+- **Built (task 3111, P-2a).** The chat now does five reads of the Email
+  app. Each read is a mode of an email tool that the `email` pack already
+  holds, so no `TOOL_PACKS` line changes. The email ceiling went from 14 to 9.
+  - `query_inbox(everywhere=true)` sends the search of the search bar,
+    `GET /email/search`.
+  - `query_inbox(counts=true)` reads the counts of the quick filters,
+    `GET /email/messages/facets`.
+  - `list_labels(folders=true)` lists the folders of a mailbox.
+  - `get_account_overview(older_than=...)` reads the count and size of the
+    older mail that a removal would take out of Metorite.
+  - `list_accounts(organization=true)` reads the mailbox counts of the
+    organization. The gateway checks the admin right of the run member, and
+    the tool takes no member or organization from the model.
+  - The file from the chat on a draft or a reply was built before, in task
+    3812 (PRs 2607, 2633 and 2634).
+- **Next in P-2.** P-2b puts three writes on one card each: delete a mail,
+  load older mail of a folder, and remove older mail from Metorite. P-2c
+  marks three buttons of the chat's own cards as `chat` exemptions: the draft
+  save, the Bcc and Discard. P-2c also pays the rule generator and the review
+  of learned patterns. The signature image stays with SG-6 (task 2182).
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
