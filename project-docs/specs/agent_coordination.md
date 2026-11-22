@@ -12,6 +12,8 @@
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
+**SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
+
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
@@ -26,7 +28,10 @@ This spec gates every SW slice (D135.4). The decisions are **D140** in `work_pla
 
 **Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`. SW-113 (the edge tool `get_agent_map`) is built and dark behind the same flag, 2026-11-21 (task 3796).**
 
-**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. SW-113 (the map in the MCP) is built, 2026-11-21.
+**Built and dark:** SW-102, SW-103 (the Map view), SW-104 (the machine and the model on each run), SW-106 (the map shows them), SW-107 (who dispatched a run), SW-112 (the Agents view of a project) and SW-113 (the map in the MCP). SW-105 and SW-108 to SW-111 and SW-114 are open.
+
+**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. The kind of machine is built (SW-104 and SW-106). The map in the MCP is built (SW-113). The writer and the way into a session are open.
+
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
 
@@ -2091,6 +2096,8 @@ They keep their own gates.
 
 - **Metorite task.** 3627.
 - **Scope.** A session node shows its machine and its model. The machine reads "checked" for a box token, and "reported" otherwise. The run panel line shows them too. A switch groups the map by machine. A run with no value reads "Not reported".
+- **Built and dark, 2026-11-22.** A session node shows its machine, its kind, a "checked" or "reported" mark and its model, and "Not reported" for none. The switch "Group by machine" puts a machine node between each person and the sessions. The map read gained `host`, `host_kind`, `host_source` and `model` on each session node, from the newest run that the viewer may see. A box token (`agent_connection.credential = 'box'`) sets "checked".
+- **Built, notes.** The run panel makes no "checked" claim, because the run read has no box proof. Its line shows only when a run has a value. So "Not reported" shows for one field only when the other has a value. This slice is stacked on SW-103. The visual review and the owner preview are open.
 - **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
 - **Fence.** `lib/agentMap.test.ts`, `lib/agentCardLook.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-104.

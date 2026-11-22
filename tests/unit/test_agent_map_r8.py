@@ -23,6 +23,16 @@ R7, the mutations (each turns a test here red, see the SW-102 report):
 * **M6** the route takes ``show_quiet: bool`` again, so FastAPI checks it
   before the flags -> the flag-off malformed test (a 422 echoes the input).
 
+SW-106 adds the machine, its kind, its source and the model to a session node.
+R7, the mutations:
+
+* **M8** ``box_checked`` is ``True`` for each run -> the "reported" test.
+* **M9** the place comes from the OLDEST run of the node (``ORDER BY life_at
+  ASC``) -> the newest-run test.
+* **M10** ``_place_of`` skips :func:`_line` -> the control-character test.
+* **M11** the sessions read joins ``agent_connection`` for ``last_seen_addr``
+  -> the address scan of :meth:`test_no_answer_holds_a_session_key`.
+
 SW-107 adds the lines of who dispatched whom (§3.12.3, §3.12.4 rule 1):
 
 * **M8** ``_MAP_LINES_SQL`` joins ``pm_agent_runs`` for the dispatcher, not
@@ -46,6 +56,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 from sqlalchemy import text
 
 from tests.unit import _agent_board_r8 as b
+from tests.unit.test_agent_run_place_model_r8 import _box_connection
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
@@ -58,6 +69,7 @@ MEMBER_A = "sw102-member@a-map.test"
 OTHER_A = "sw102-other@a-map.test"
 LONER_A = "sw102-loner@a-map.test"
 ADMIN_B = "sw102-admin@b-map.test"
+BOX_NAME = "metorite-home"
 
 VIA = "mcp:acme:map-agent"
 VIA_B = "mcp:acme:b-agent"
@@ -188,6 +200,20 @@ def world(promoted):  # noqa: F811 — a fixture
     return ns
 
 
+def _place(p: Any, rid: str, *, host: str | None, kind: str | None, model: str | None,
+           ago_s: int | None = None) -> None:
+    """SW-106. Set the machine, its kind and the model of a run. With *ago_s*,
+    it also moves the last event of the run that many seconds into the past
+    (the newest run of a node wins). Without it, the clock stays."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE pm_agent_runs SET agent_host = :h, agent_host_kind = :k, agent_model = :m,"
+            " last_activity_at = CASE WHEN CAST(:ago AS int) IS NULL THEN last_activity_at"
+            "   ELSE now() - make_interval(secs => CAST(:ago AS int)) END"
+            " WHERE id = CAST(:r AS uuid)"),
+            {"h": host, "k": kind, "m": model, "ago": ago_s, "r": rid})
+
+
 def _seed(w: Any) -> None:
     p = w.p
     b.clear(p)
@@ -202,6 +228,7 @@ def _seed(w: Any) -> None:
                   {"l": LEAD_A, "p": w.led["id"]})
     conn = b._seed_connection(p, p.org_a, OTHER_A)
     conn_m = b._seed_connection(p, p.org_a, MEMBER_A)
+    conn_box = _box_connection(p, p.org_a, OTHER_A, BOX_NAME)
     # SW-113: the member's connection, for the reads through the edge.
     w.conn_m = conn_m
 
@@ -238,7 +265,7 @@ def _seed(w: Any) -> None:
     # A run that waits on an agent, with no event for 3 hours: it does not fold.
     w.r_wait = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
                      "in_progress", via=VIA, last_activity="now() - interval '3 hours'")
-    _label(p, w.r_wait, label="orchestrator", key=key(), conn=conn, waiting=True)
+    _label(p, w.r_wait, label="orchestrator", key=key(), conn=conn_box, waiting=True)
     # An ended run: not on the map.
     w.r_done = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
                      "completed", via=VIA)
@@ -255,18 +282,30 @@ def _seed(w: Any) -> None:
     w.r_private = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.private), OTHER_A,
                         "in_progress", via=VIA)
     _label(p, w.r_private, label="hidden", key=key(), conn=conn)
+    # SW-106: the machine, its kind and the model. worker-1 has two runs: the
+    # older one is on the plain project (the member sees it) and the newer one
+    # on the led project (the lead sees it). The box token proves ``orchestrator``.
+    _place(p, w.r_own, host="VJ laptop", kind="computer", model="Sonnet 5.5", ago_s=600)
+    _place(p, w.r_led, host="led-server", kind="server", model="Opus 5.5")
+    _place(p, w.r_wait, host=BOX_NAME, kind="server", model="Opus 5.5")
+    # A session that only reports "server" is not checked.
+    _place(p, w.r_await, host="claimed-box", kind="server", model=None)
+    _place(p, w.r_mine, host="Claude Code on the web", kind="cloud", model="Haiku 5")
+    _place(p, w.r_quiet, host="tab\there\x07 end", kind=None, model="line1\nline2")
+    _place(p, w.r_private, host="secret-host", kind="cloud", model="Secret Model")
     # Org B: one run, under a name that org A uses too.
     w.proj_b = b.project(p, p.org_b, ADMIN_B, grant="org")
     conn_b = b._seed_connection(p, p.org_b, ADMIN_B)
     w.r_b = b.run(p, p.org_b, b.task(p, p.org_b, ADMIN_B, w.proj_b), ADMIN_B,
                   "awaiting", via=VIA_B)
     _label(p, w.r_b, label=LABEL_1, key=key(), conn=conn_b)
+    _place(p, w.r_b, host="b-only-host", kind="server", model="B Model")
 
     # SW-107: who dispatched whom. An ended run of the orchestrator session,
     # on a task that only the admin sees. Its line outlives it.
     w.r_orch_old = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
                          "completed", via=VIA)
-    _label(p, w.r_orch_old, label="orchestrator", key=key(), conn=conn)
+    _label(p, w.r_orch_old, label="orchestrator", key=key(), conn=conn_box)
     for lane, boss in ((w.r_own, w.r_wait),        # orchestrator -> worker-1
                        (w.r_sub, w.r_private),     # hidden -> the unnamed node
                        (w.r_mine, w.r_orch_old),   # an ended run, the same node
@@ -426,7 +465,9 @@ class TestTheMap:
                 leaked = [k for k in w.keys if k in raw]
                 assert not leaked, (query, leaked)
                 keys = _keys(json.loads(raw))
-                assert not {k for k in keys if "key" in k or "addr" in k or "model" in k}
+                assert not {k for k in keys if "key" in k or "addr" in k}
+                # SW-106: the one model key is the key of a session node.
+                assert {k for k in keys if "model" in k} <= {"model"}
 
     async def test_quiet_runs_fold_and_a_waiting_run_does_not(self, w):
         _, body, _ = await _get(w, w.admin_a)
@@ -453,6 +494,93 @@ class TestTheMap:
             w, w.admin_b, MAP + f"&organization_id={w.p.org_a}&me={MEMBER_A}")
         assert _run_ids(hostile) == _run_ids(plain) == {w.r_b}
 
+
+def _node(body: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(s for s in body["sessions"] if s["name"] == name)
+
+
+def _place_of_node(node: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    return node["host"], node["host_kind"], node["host_source"], node["model"]
+
+
+@_DB_GATE
+class TestThePlaceOfASession:
+    """SW-106 (``agent_coordination.md`` §3.12.3, §3.12.4 rules 1, 4 and 5)."""
+
+    async def test_a_session_reads_its_machine_its_kind_and_its_model(self, w):
+        _, body, _ = await _get(w, w.admin_a)
+        # The newest run of worker-1 (the led project) wins.
+        assert _place_of_node(_node(body, LABEL_1)) == (
+            "led-server", "server", "reported", "Opus 5.5")
+        assert _place_of_node(_node(body, "hidden")) == (
+            "secret-host", "cloud", "reported", "Secret Model")
+
+    async def test_a_box_token_reads_checked_and_the_agent_report_reads_reported(self, w):
+        _, body, _ = await _get(w, w.admin_a)
+        assert _place_of_node(_node(body, "orchestrator")) == (
+            BOX_NAME, "server", "checked", "Opus 5.5")
+        # The same kind, "server", from a plain connection: only reported.
+        assert _place_of_node(_node(body, "asker")) == (
+            "claimed-box", "server", "reported", None)
+        sources = {s["host_source"] for s in body["sessions"]}
+        assert sources <= {"checked", "reported", None}
+        assert [s["name"] for s in body["sessions"] if s["host_source"] == "checked"] == [
+            "orchestrator"]
+
+    async def test_a_run_with_no_machine_and_no_model_reads_null(self, w):
+        _, body, _ = await _get(w, w.admin_a)
+        by_run = {r["run_id"]: r["session_id"] for r in body["runs"]}
+        assert _place_of_node(_sessions(body)[by_run[w.r_sub]]) == (None, None, None, None)
+
+    async def test_the_newest_run_of_a_node_wins(self, w):
+        _, body, _ = await _get(w, w.admin_a)
+        node = _node(body, LABEL_1)
+        assert node["run_count"] == 2
+        assert node["host"] == "led-server" and node["model"] == "Opus 5.5"
+        # The member sees only the older run, and reads its place.
+        _, mine, _ = await _get(w, w.member_a)
+        assert _place_of_node(_node(mine, LABEL_1)) == (
+            "VJ laptop", "computer", "reported", "Sonnet 5.5")
+
+    async def test_a_run_that_the_viewer_cannot_see_leaks_nothing(self, w):
+        _, _, raw_member = await _get(w, w.member_a)
+        for secret in ("led-server", "Opus 5.5", "secret-host", "Secret Model",
+                       "claimed-box", BOX_NAME, "b-only-host", "B Model"):
+            assert secret not in raw_member, secret
+        _, lead, raw_lead = await _get(w, w.lead_a)
+        for secret in ("VJ laptop", "Sonnet 5.5", "secret-host", "Secret Model",
+                       "claimed-box", "Claude Code on the web", "b-only-host"):
+            assert secret not in raw_lead, secret
+        assert _place_of_node(_node(lead, LABEL_1)) == (
+            "led-server", "server", "reported", "Opus 5.5")
+        _, other, raw_b = await _get(w, w.admin_b)
+        assert _place_of_node(_node(other, LABEL_1)) == (
+            "b-only-host", "server", "reported", "B Model")
+        for secret in ("led-server", "VJ laptop", "secret-host", BOX_NAME):
+            assert secret not in raw_b, secret
+        _, _, raw_a = await _get(w, w.admin_a)
+        assert "b-only-host" not in raw_a and "B Model" not in raw_a
+
+    async def test_each_value_is_one_clean_line(self, w):
+        _, body, _ = await _get(w, w.admin_a)
+        node = _node(body, "sleeper")
+        assert node["host"] == "tab here end" and node["model"] == "line1 line2"
+        assert node["host_kind"] is None and node["host_source"] == "reported"
+
+    async def test_the_answer_holds_no_address_and_no_model_for_a_chat_agent(self, w):
+        _, _, raw = await _get(w, w.admin_a)
+        assert "addr" not in raw
+        from gateway.routes.projects import agent_summary as m
+
+        for sql in (m._MAP_SESSIONS_SQL, m._MAP_RUNS_SQL):
+            assert "last_seen_addr" not in sql
+            assert "agent_run " not in sql and "dynamic_agents" not in sql
+        assert tuple(m.MAP_SESSION_KEYS[-4:]) == ("host", "host_kind", "host_source", "model")
+
+    async def test_the_place_follows_the_scope_of_a_project(self, w):
+        _, body, _ = await _get(w, w.admin_a, MAP + f"&project_id={w.led['id']}")
+        assert _place_of_node(_node(body, LABEL_1)) == (
+            "led-server", "server", "reported", "Opus 5.5")
 
 def _node_of(body: dict[str, Any], run_id: str) -> str:
     return next(r["session_id"] for r in body["runs"] if r["run_id"] == run_id)
@@ -701,8 +829,9 @@ def _bare_strings(value: Any) -> list[str]:
 
 
 def _plain_ok(value: str) -> bool:
-    """A bare string of the map is an id, a node id, a state, a time or a
-    viewer level. No name, machine, model or title is ever bare."""
+    """A bare string of the map is an id, a node id, a state, a time, a viewer
+    level, or the kind of a machine or its source (fixed words). No name,
+    machine name, model or title is ever bare."""
     import re
 
     return bool(
@@ -712,6 +841,8 @@ def _plain_ok(value: str) -> bool:
                      "idle", "stopping", "stale", "agent_quiet", "answer_unread",
                      "queued", "answered", "created", "in_progress"}
         or value in {"admin", "lead", "member"}
+        # SW-106: the kind of machine and its source are fixed words.
+        or value in {"computer", "server", "cloud", "checked", "reported"}
         or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:[+-][0-9]{2}:[0-9]{2}|Z)?",
                         value))
 
@@ -950,7 +1081,17 @@ class TestTheMapThroughTheEdge:
             leaked = [k for k in w.keys if k in raw]
             assert not leaked, (args, leaked)
             out = result["structuredContent"]
-            assert not {k for k in _keys(out) if "key" in k or "addr" in k or "model" in k}
+            assert not {k for k in _keys(out) if "key" in k or "addr" in k}
+            # SW-106: the one model key is the key of a session node.
+            assert {k for k in _keys(out) if "model" in k} <= {"model"}
+            # The machine and the model are text that an agent wrote: wrapped.
+            for node in out["sessions"]:
+                for field in ("host", "model"):
+                    value = node[field]
+                    assert value is None or (
+                        isinstance(value, dict) and "untrusted_text" in value), (field, value)
+                assert node["host_kind"] in (None, "computer", "server", "cloud")
+                assert node["host_source"] in (None, "checked", "reported")
             bare = _bare_strings(out)
             assert not [s for s in bare if not _plain_ok(s)], bare
             assert MEMBER_A not in bare and OTHER_A not in bare and LABEL_1 not in bare
