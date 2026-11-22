@@ -567,6 +567,11 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    `globals.css` has no reduced-motion answer. Put an exception in its
    `MOTION_EXEMPT`, with the reason. `DESIGN_SYSTEM.md` §4 holds the
    rules, and §9 and §10 hold the advisory rules for states and words.
+
+   **A side panel has one motion** (task 7, owner 2026-11-22). A panel that
+   docks at the right of a page opens in `components/ui/SidePanelMotion.tsx`,
+   the assistant's dock form on the panel tokens. Do not give a side panel
+   its own open or close. Fence: `src/components/ui/SidePanelMotion.test.ts`.
 14. **Every UI change passes the UI gate** (owner directive, 2026-10-27).
    State the interaction in one sentence. Pass the ratchets. Put the four
    captures on a "Visual review:" line of the PR body. The gate blocks in

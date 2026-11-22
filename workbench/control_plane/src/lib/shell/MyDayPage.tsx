@@ -83,6 +83,7 @@ import { useMyDayPeek } from "./useMyDayPeek";
 import { rereadFeed } from "./feedState";
 import { needsKey } from "./needs";
 import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
@@ -390,7 +391,8 @@ export default function MyDay() {
       />
     </div>
     </div>
-    {peek.panel}
+    {/* A docked card opens and closes with the one side-panel motion (task 7). */}
+    <SidePanelMotion>{peek.panel}</SidePanelMotion>
     </div>
     {peek.reader}
     </div>
