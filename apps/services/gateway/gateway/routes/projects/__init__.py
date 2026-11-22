@@ -39,19 +39,19 @@ routes here use, so ``pm_tasks`` keeps one write path. Spec:
 ``project-docs/specs/project_import.md``.
 """
 
+from gateway.routes.projects import activities as _activities  # noqa: F401
+from gateway.routes.projects import admin as _admin  # noqa: F401
+from gateway.routes.projects import agent_questions as _agent_questions  # noqa: F401
+from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
+from gateway.routes.projects import agent_summary as _agent_summary  # noqa: F401
 from gateway.routes.projects import analytics as _analytics  # noqa: F401
 from gateway.routes.projects import analytics_capacity as _analytics_capacity  # noqa: F401
 from gateway.routes.projects import analytics_conflicts as _analytics_conflicts  # noqa: F401
 from gateway.routes.projects import analytics_dataset as _analytics_dataset  # noqa: F401
 from gateway.routes.projects import analytics_rebalance as _analytics_rebalance  # noqa: F401
-from gateway.routes.projects import activities as _activities  # noqa: F401
-from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
-from gateway.routes.projects import agent_questions as _agent_questions  # noqa: F401
-from gateway.routes.projects import agent_summary as _agent_summary  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
-from gateway.routes.projects import authorities as _authorities  # noqa: F401
-from gateway.routes.projects import admin as _admin  # noqa: F401
 from gateway.routes.projects import attachments as _attachments  # noqa: F401
+from gateway.routes.projects import authorities as _authorities  # noqa: F401
 from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
@@ -77,10 +77,11 @@ from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
 from gateway.routes.projects import refs as _refs  # noqa: F401
+from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import reminders as _reminders  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
-from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
+from gateway.routes.projects import sequences as _sequences  # noqa: F401
 from gateway.routes.projects import tags as _tags  # noqa: F401
 from gateway.routes.projects import tasks as _tasks  # noqa: F401
 from gateway.routes.projects import templates as _templates  # noqa: F401

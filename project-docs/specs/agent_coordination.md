@@ -1370,6 +1370,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** R8: 20 parallel calls get 20 different numbers, as the NOBYPASSRLS role. A second org never sees or moves the first org's sequence.
 - **Fence.** A new R8 suite, `test_project_sequences_r8.py`, and `test_tenant_coverage.py`.
 - **Risk.** HIGH (a new tenant table, concurrency). **Gate.** AGENT-SAFE.
+- **Owner answers (task 861, 2026-11-22, prompt e6f9f76c).** The contributor fleet may add the migration. A released number stays burned: no code lowers `last_value`, so no number comes back. A reservation is `used` on the agent's call, or when a pull request that the task references merges.
+- **Slices.**
+  - **SW-27a** (this row's first slice): migration `473_pm_project_sequences.sql` (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/projects/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
+  - **SW-27b:** the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). A seam: ask first.
+  - **SW-27c:** the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task.
+  - **SW-27d:** the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
+  - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
+- **Non-goals.** No number comes back. No sequence spans two projects or two orgs. Neither table holds a member email.
+- **Rung.** Multi-agent safety (§ order list item 6): it ends the R1 class of number clash at its source. Its demo: two agents reserve a migration number at the same moment and get two numbers.
 
 #### SW-35 · Triage suggestions
 
