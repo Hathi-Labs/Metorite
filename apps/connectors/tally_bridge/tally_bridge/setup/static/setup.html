@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tally bridge setup</title>
+<link rel="stylesheet" href="/setup/app.css?k=__KEY__">
+</head>
+<body>
+<main>
+  <h1>Tally bridge setup</h1>
+  <p class="muted">This page runs on this computer only. Close it when you are done.</p>
+
+  <section id="step1">
+    <h2>1. Find TallyPrime</h2>
+    <p id="tally-line">Looking for TallyPrime...</p>
+    <p class="muted" id="tally-help" hidden>Open TallyPrime. Then turn on its server: F1 (Help), Settings, Connectivity, Client/Server Configuration. Set it to Server or Both, on port 9000.</p>
+    <button type="button" id="recheck">Look again</button>
+  </section>
+
+  <section id="step2">
+    <h2>2. Choose the companies</h2>
+    <p class="muted">Metorite can read only the companies that you tick.</p>
+    <div id="companies"></div>
+    <button type="button" id="save-companies">Save the companies</button>
+    <p id="companies-line" role="status"></p>
+  </section>
+
+  <section id="step3">
+    <h2>3. Connect to Metorite</h2>
+    <p>Address for the Metorite admin: <code id="address">not set</code></p>
+    <p id="token-line"></p>
+    <button type="button" id="new-token">Make a new access token</button>
+    <div id="token-box" hidden>
+      <p><strong>Copy this token now. The page never shows it again.</strong></p>
+      <code id="token"></code>
+      <p class="muted">Give the address and the token to your Metorite admin through a password manager. Never send the token in chat or email.</p>
+    </div>
+  </section>
+
+  <section id="step4">
+    <h2>4. Done</h2>
+    <p id="done-line"></p>
+  </section>
+</main>
+<script src="/setup/app.js?k=__KEY__"></script>
+</body>
+</html>

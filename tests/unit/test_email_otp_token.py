@@ -76,6 +76,7 @@ from gateway.routes import email_otp as route
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -971,10 +972,7 @@ class TestThisSuiteIsArmed:
     ``_DB_GATE``d: a check that the gate is armed must run when it is not."""
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self) -> None:
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8"
-        )
-        assert "tests/unit/test_email_otp_token.py" in workflow
+        assert "tests/unit/test_email_otp_token.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self) -> None:
         spec = (_ROOT / "project-docs/specs/customer_console.md").read_text(

@@ -109,6 +109,19 @@ describe("the categorical ramp", () => {
   });
 });
 
+describe("the hatch stripe of an external event", () => {
+  // CE-5a: the Calendar draws a Google or Outlook event as a stripe over a
+  // muted surface. The stripe is a token, so no colour is written in a component.
+  it("is declared in both modes of the manifest and the stylesheet", () => {
+    for (const mode of ["dark", "light"] as const) {
+      expect(THEME.colors[mode].hatchStripe, mode).toMatch(/^hsl\(.+\/\s*[\d.]+\)$/);
+    }
+    expect(THEME.colors.dark.hatchStripe).not.toBe(THEME.colors.light.hatchStripe);
+    expect(declarationsIn(GLOBALS, ":root")["--hatch-stripe"]).toBe(THEME.colors.dark.hatchStripe);
+    expect(declarationsIn(GLOBALS, ".light")["--hatch-stripe"]).toBe(THEME.colors.light.hatchStripe);
+  });
+});
+
 describe("globals.css is the source, and the manifest mirrors it", () => {
   it("mirrors every dark colour token in :root", () => {
     const root = declarationsIn(GLOBALS, ":root");

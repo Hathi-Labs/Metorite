@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "metorite": {
+      "serverUrl": "https://mcp.metorite.com/mcp"
+    }
+  }
+}

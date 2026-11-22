@@ -35,6 +35,10 @@ export interface FilterSheetProps {
   archivedCount?: number | null;
   waitingOnMe?: boolean;
   onWaitingOnMe?: (next: boolean) => void;
+  /** SP-2a — the Epic filter, as in `FilterBar`. */
+  epic?: string;
+  epics?: readonly { value: string; label: string }[];
+  onEpic?: (next: string) => void;
   agentWork?: boolean;
   onAgentWork?: (next: boolean) => void;
   /** How many tasks the filters now match, for "Show N tasks". */
@@ -55,6 +59,9 @@ export function FilterSheetBody({
   archivedCount,
   waitingOnMe = false,
   onWaitingOnMe,
+  epic = "",
+  epics = [],
+  onEpic,
   agentWork = false,
   onAgentWork,
   resultCount,
@@ -106,6 +113,16 @@ export function FilterSheetBody({
             : []),
         ]}
       />
+      {onEpic && epics.length ? (
+        <SelectButton
+          label="Epic"
+          widthClass="w-full"
+          className={epic ? OFF_DEFAULT : AT_DEFAULT}
+          value={epic}
+          onChange={onEpic}
+          options={[{ value: "", label: "Any epic" }, ...epics]}
+        />
+      ) : null}
 
       <div className="flex flex-wrap gap-2" role="group" aria-label="Quick filters">
         <Button

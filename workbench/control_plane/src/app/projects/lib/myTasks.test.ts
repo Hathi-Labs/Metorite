@@ -88,8 +88,10 @@ describe("the old ids open My tasks with a chip", () => {
     expect(asChip(" Next ")).toBe("next");
   });
 
-  it("the chips are All, New, Today, Next, Waiting, Someday and Done", () => {
-    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "New", "Today", "Next", "Waiting", "Someday", "Done"]);
+  it("the chips are All, New, Today, Next, Waiting, Someday, Done and Archive", () => {
+    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual([
+      "All", "New", "Today", "Next", "Waiting", "Someday", "Done", "Archive",
+    ]);
   });
 });
 
@@ -162,7 +164,8 @@ describe("each chip is the server's rule", () => {
     expect(mine).toContain('elif effective == "SOMEDAY":');
     expect(mine).toContain('elif effective == "DONE":');
     expect(mine).toMatch(/if completed_at is not None or effective != "NEXT" or not is_mine:/);
-    for (const chip of ids.filter((c) => c !== "all")) expect(mine).toContain(`"${chip}"`);
+    // "archive" is not a fold key: the Archive chip reads its own rows (ARC-1).
+    for (const chip of ids.filter((c) => c !== "all" && c !== "archive")) expect(mine).toContain(`"${chip}"`);
   });
 
   it("the Today chip calls the one Today rule", () => {
@@ -300,9 +303,9 @@ describe("the task panel keeps a disposition control", () => {
 // ── The tabs, the phone, the facts and the address ─────────────────────────
 
 describe("the tabs", () => {
-  it("are a project's canvases with the same ids and icons, less the Timeline", () => {
+  it("are a project's canvases with the same ids and icons, less the Timeline and the Agents map", () => {
     expect(MY_TASKS_MODES).toEqual(
-      VIEW_MODES.filter((m) => m.id !== "timeline").map((m) => ({ id: m.id, icon: m.icon })),
+      VIEW_MODES.filter((m) => m.id !== "timeline" && m.id !== "agents").map((m) => ({ id: m.id, icon: m.icon })),
     );
   });
 });

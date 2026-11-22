@@ -77,6 +77,10 @@ const ANSWER: readonly string[] = [
   "my_tasks_plan_day",
   "my_tasks_replan_day",
   "my_tasks_rollover",
+  // AI Studio (STU-F5a): a read of the records draws a live table, a view of
+  // the read like `render_tasks`. Its text result is for the model, and its
+  // card (`components/studio/StudioRecordsCard.tsx`) never writes.
+  "studio_record_list",
 ];
 
 /** Reads. Projects names are manifest class A (held by the Python fence). */
@@ -104,6 +108,9 @@ const EVIDENCE: readonly string[] = [
   "project_authorities",
   // WS-39 LP-1a: the updates of a project.
   "list_project_updates",
+  // WS-39 SP-5a: the cycles of a project, and the status of one cycle.
+  "list_cycles",
+  "cycle_detail",
   // WS-39 TPL-1a: the templates of the organization.
   "list_templates",
   "my_decisions",
@@ -123,6 +130,7 @@ const EVIDENCE: readonly string[] = [
   "report_recipients",
   "waiting_agent_requests",
   "needs_attention",
+  "agent_questions",
   "report_render",
   "open_in_app",
   "show_view",
@@ -175,6 +183,9 @@ const EVIDENCE: readonly string[] = [
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
   "narrow_and_read",
+  // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
+  // STB-6a: the workflows, one workflow, or (STU-E4b) the human steps of one run.
+  "studio_workflow_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */
@@ -190,6 +201,9 @@ const WRITE: readonly string[] = [
   "comment",
   // WS-39 LP-1a: one update of a project, with its health.
   "post_project_update",
+  // WS-39 SP-5a: plan a cycle, and put tasks in it or take them out.
+  "create_cycle",
+  "plan_cycle",
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",
@@ -203,7 +217,11 @@ const WRITE: readonly string[] = [
   "link_tasks_batch",
   // Several edits, a different change for each task, one card with rows.
   "update_tasks",
+  // SP-8a: the contract of an epic, one card.
+  "set_epic_contract",
   "watch",
+  // WS-55 EA-18d: the member answers one agent question, one card.
+  "answer_agent_question",
   "complete",
   "defer",
   "unarchive_task",
@@ -261,10 +279,15 @@ const WRITE: readonly string[] = [
   "unpin_authority",
   // WS-39 LP-1a: the delete of a project update, class C.
   "delete_project_update",
+  // WS-39 SP-5a: a cycle starts and a cycle closes, class C.
+  "start_cycle",
+  "close_cycle",
   // WS-39 TPL-1a: an org-wide template, and a project made from one.
   "save_as_template",
   "create_project_from_template",
   "answer_decision",
+  // SW-43c: the member's own answer to an agent, taken back or changed. Class C.
+  "change_agent_answer",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

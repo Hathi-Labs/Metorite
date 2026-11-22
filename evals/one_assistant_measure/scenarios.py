@@ -140,6 +140,9 @@ class Check:
     arg: Any = None
     #: The name in the report. The kind, when empty.
     label: str = ""
+    #: TS-5b. The arms that run this check. Empty: every arm. A turn at the pack cap
+    #: has one outcome on the ``search`` arm and another on the ``pack`` arm.
+    arms: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -160,6 +163,18 @@ class Plan:
     #: Empty: that arm plays :attr:`calls`. A research turn plays one spawn call
     #: on the spawn arm, and the same reads one by one on the others.
     solo: tuple[tuple[str, dict[str, Any]], ...] = ()
+    #: TS-5b. The queries that the model passes to ``find_tools`` on the ``search``
+    #: arm, one call each, BEFORE the tool calls of the turn. Empty: the turn makes no
+    #: search (the plain chat). Each query must rank its tool in the top 5 of the real
+    #: ranker (``tool_search.rank``), and a test holds it.
+    find: tuple[str, ...] = ()
+    #: TS-5b. The calls of the ``search`` arm after the find, when they differ from
+    #: :attr:`calls`. None: the same calls. ``()``: the model heeds an empty find and
+    #: calls no tool (the member without ``feature:studio``).
+    search_calls: tuple[tuple[str, dict[str, Any]], ...] | None = None
+    #: TS-5b. The answer of the ``search`` arm, when it differs from :attr:`answer`
+    #: (the cap chat: the search arm finds the tool, the pack arm cannot). None: the same.
+    search_answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,8 +194,8 @@ class Scenario:
     #: Earlier turns of the chat, as the browser sends them, before turn 1.
     history: tuple[dict[str, str], ...] = ()
     tags: tuple[str, ...] = field(default_factory=tuple)
-    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``
-    #: or ``fanout``. Only ``email`` runs with the email pack alone.
+    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``,
+    #: ``fanout`` or ``studio`` (TS-5a). Only ``email`` runs with the email pack alone.
     set: str = "email"
     #: OA-8e. The app the member is in, as the dock sends it: ``crm``,
     #: ``projects``, ``tasks``, ``calendar``, ``email``, or "" for none. The
@@ -191,6 +206,11 @@ class Scenario:
     #: OA-8e. A reason to leave the chat out of a run, or "". A skipped chat
     #: is listed and never run. The fan-out chats wait for OA-9b.
     skip: str = ""
+    #: TS-5a. Features that the member of this chat LACKS, for example
+    #: ``("studio",)``. The harness grants every feature of a pane
+    #: (``evals/routing/harness.py``, ``_member_features``), and the run takes these
+    #: out after it. The measure never edits the harness for this.
+    without_features: tuple[str, ...] = ()
 
 
 def _link(m: Mail) -> str:
@@ -395,7 +415,10 @@ def scenario(sid: str) -> Scenario:
 
 
 def all_scenarios() -> tuple[Scenario, ...]:
-    """The email chats, then the CRM, Projects, mixed and fan-out chats."""
+    """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
+    Studio chats (TS-5a). The Studio chats are in no work set: the delegation arm
+    never runs them."""
+    from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
     from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 
-    return (*SCENARIOS, *WORK_SCENARIOS)
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS)

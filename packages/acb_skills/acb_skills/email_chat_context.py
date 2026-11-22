@@ -42,6 +42,10 @@ from collections.abc import Mapping
 from typing import Any
 
 import structlog
+from acb_common.settings import internal_auth_headers
+from acb_common.tool_refusals import strip_id_label
+
+from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE
 
 _log = structlog.get_logger(__name__)
 
@@ -94,9 +98,19 @@ _MAILBOX_LINE = re.compile(r"^Mailbox: .* \(account_id ([^)\s]+)\)$")
 #: The answer of ``send_draft`` when the draft went (``_held_sent_text``).
 _DRAFT_SENT = re.compile(r"^\s*Draft sent\b")
 #: The first words of a result that did not act. Its arguments name nothing
-#: that the run worked on.
+#: that the run worked on. HRD-7: the lead of each card outcome that did
+#: nothing comes from the one table (``ask_tools.CARD_OUTCOMES``). A card
+#: that a chat message closed is not in it: its result names the card's draft,
+#: and the member's next words act on that draft. "Send cancelled" stays for a
+#: result of before HRD-7.
 _NO_ACT = ("Refused", "Not sent", "Nothing changed", "Error", "Could not",
-           "Send cancelled", "Which mailbox", "Send from which mailbox")
+           "Send cancelled", "Which mailbox", "Send from which mailbox",
+           *(f"{o.lead}:" for k, o in CARD_OUTCOMES.items()
+             if k not in (CARD_APPROVED, CLOSED_BY_YOUR_MESSAGE)))
+#: The public name of :data:`_NO_ACT`. The claim check of HRD-13
+#: (``acb_skills.answer_claims``) reads it. Keep the old name too: open work
+#: imports ``_NO_ACT``.
+NO_ACT_LEADS = _NO_ACT
 
 #: The bound of each process cache.
 _CACHE_MAX = 4096
@@ -104,7 +118,7 @@ _CACHE_MAX = 4096
 
 def _ok_id(value: Any) -> str:
     """*value* as an id, or ``""`` when it is not a plain token."""
-    text = str(value or "").strip()
+    text = strip_id_label(value)
     return text if _ID.match(text) else ""
 
 
@@ -482,14 +496,6 @@ def _gateway_url() -> str:
 
     return os.environ.get("GATEWAY_URL", "http://localhost:8080").rstrip("/")
 
-
-def _internal_token() -> str:
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 async def fetch_accounts(member: str) -> list[dict[str, Any]]:
     """``GET /email/accounts`` as *member*. A seam, so a test fakes it.
 
@@ -500,7 +506,7 @@ async def fetch_accounts(member: str) -> list[dict[str, Any]]:
     import httpx
 
     headers = {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": member,
     }

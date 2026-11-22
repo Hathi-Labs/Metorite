@@ -58,6 +58,7 @@ import RecordTabBar from "@/components/RecordTabBar";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
 import { DecisionPanel } from "./DecisionPanel";
+import { TaskCheckBlock } from "./TaskCheckBlock";
 import { activityAttribution, agentKindLabel, viaLabel } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
@@ -317,9 +318,10 @@ export function Entry({
         </span>
       </p>
       {/* WS-57 TR-4 — a comment is Markdown, so an image pasted into it
-          draws inline. Every other entry is a sentence the app wrote, and
-          stays plain text. The byline above is the same for both. */}
-      {activity.type === "comment" ? (
+          draws inline. An agent run's outcome is Markdown too (task 3031: a
+          bare URL or a local file path in it). Every other entry is a sentence
+          the app wrote, and stays plain text. The byline above is the same for both. */}
+      {activity.type === "comment" || (activity.type === "agent_run" && !attribution.reason) ? (
         <div className="min-w-0 break-words text-foreground">
           <MarkdownBody
             content={keepLineBreaks(describeActivity(activity, fields))}
@@ -1037,6 +1039,9 @@ export function TaskBody({
             then the Add row. Nothing that waits on the member hides behind
             a tab (D181, `specs/one_record_card.md` §3.3). */}
         <div className="px-3 py-3">
+          {/* WS-MCP SW-23 — the Check of the task, read only. It draws
+              nothing while the Check flag is off or the task has none. */}
+          <TaskCheckBlock check={task.check} />
           {/* WS-55 EA-12c — the open agent run. ORC-3 moved it from the
               discussion. It draws nothing while the routes are off. */}
           <AgentRunPanel
@@ -1333,7 +1338,7 @@ export function TaskBody({
                 {/* SP-9 — an epic rolls up EVERY slice below it that the reader
                     can see. The board card keeps its direct-child count. */}
                 {rollup ? (
-                  <FieldCell label="Slices" icon="GitBranch">
+                  <FieldCell label="Progress" icon="GitBranch">
                     <span className="text-sm text-foreground" data-testid="epic-rollup">
                       {rollupLine(rollup)}
                     </span>

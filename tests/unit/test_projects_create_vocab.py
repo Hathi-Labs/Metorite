@@ -41,6 +41,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -291,9 +292,9 @@ async def test_an_unticked_row_is_not_written(monkeypatch) -> None:
 async def test_zero_ticked_rows_and_a_declined_card_write_nothing(monkeypatch) -> None:
     answer_rows(monkeypatch, set())
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.create_tags(UUID, THREE) == W.CANCELLED
+    assert await skill_projects.create_tags(UUID, THREE) == card_outcome_text(CARD_DECLINED)
     deny(monkeypatch)
-    assert await skill_projects.create_tags(UUID, THREE) == W.CANCELLED
+    assert await skill_projects.create_tags(UUID, THREE) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -312,7 +313,7 @@ async def test_a_door_that_answers_a_bool_writes_nothing(monkeypatch) -> None:
 
     monkeypatch.setattr(ask_tools, "request_confirmation", yes)
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.create_tags(UUID, THREE) == W.CANCELLED
+    assert await skill_projects.create_tags(UUID, THREE) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
