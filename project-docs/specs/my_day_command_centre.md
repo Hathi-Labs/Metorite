@@ -396,8 +396,8 @@ A fence below is a test to write in the slice named. Each is advisory until that
 | The today's-focus cap holds, from 1 to 10. A mark past it answers 409, and a lower cap keeps the marks that exist | `tests/unit/test_today_focus_cap_r8.py` | CC-2 |
 | A focus-session row is tenant-scoped and private to the member | `tests/unit/test_focus_session_rls_r8.py` | CC-5 |
 | Capture from My Day lands in the Inbox. A time today also sets a reminder, and one Undo removes both | `src/lib/shell/captureTime.test.ts`, `e2e/my-day-capture.spec.ts` | CC-1 |
-| One focus session at a time, from any door | `src/app/tasks/lib/focusStart.test.ts` and `src/app/tasks/lib/focusStart.fence.test.ts` | CC-4 |
-| Focus on a To do task moves it to In progress, with Undo | `src/app/tasks/lib/focusStart.test.ts` (the board PATCH and its Undo; no new SQL, so no R8 test) | CC-4 |
+| One focus session at a time, from any door | `e2e/focus-anywhere.spec.ts` (a second start replaces the session, a double click starts once) and `src/app/tasks/lib/focusStart.fence.test.ts` (one door) | CC-4 |
+| Focus on a To do task moves it to In progress, with Undo | `e2e/focus-anywhere.spec.ts` (one PATCH, Undo puts it back) and `src/app/tasks/lib/focusStart.test.ts` (lane choice and Undo; no new SQL, so no R8 test) | CC-4 |
 | The phase default follows the clock and the day state | `src/app/my-day/phase.test.ts` | CC-7 |
 | A tab exists for each live provider only | `src/lib/shell/needsTabs.test.ts` | CC-11 |
 | `navigation_shell.md` §4.3 names the command centre | `tests/unit/test_my_day_command_centre_spec.py` | CC-0 follow-up |
