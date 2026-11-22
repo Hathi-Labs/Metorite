@@ -9309,7 +9309,7 @@ AGENT_MAP_KEYS: tuple[str, ...] = (
     "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
 AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
-    "quiet_last_at",
+    "quiet_last_at", "host", "host_kind", "host_source", "model",
 )
 AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
@@ -9352,6 +9352,11 @@ _MAP_SESSION_SCHEMA = _object({
     "client": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "last_at": _NULLABLE_STRING,
     "run_count": {"type": "integer"}, "quiet_count": {"type": "integer"},
     "quiet_last_at": _NULLABLE_STRING,
+    # SW-106: the machine, its kind, its source and the model. The machine and
+    # the model are text that an agent wrote: untrusted. The kind and the
+    # source are two fixed words, or null.
+    "host": _UNTRUSTED_OR_NULL, "host_kind": _NULLABLE_STRING,
+    "host_source": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
 })
 _MAP_RUN_SCHEMA = _object({
     "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING, "task_id": _NULLABLE_STRING,
@@ -9381,15 +9386,27 @@ def _map_count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+#: The fixed words of the kind of machine and of its source (SW-104, SW-106).
+#: A copy of ``AGENT_HOST_KINDS`` of the gateway, which the edge may not import.
+_MAP_HOST_KINDS = frozenset({"computer", "server", "cloud"})
+_MAP_HOST_SOURCES = frozenset({"checked", "reported"})
+
+
+def _map_word(value: Any, allowed: frozenset[str]) -> str | None:
+    """One of the fixed *allowed* words, else ``None``."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
 def _map_node(value: Any) -> str | None:
     return value if isinstance(value, str) and _NODE_ID_RE.fullmatch(value) else None
 
 
 def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
     """One session node (§3.12.2), with the pinned keys only. The person, the
-    name of the session and the client are untrusted text (§3.12.4 rule 3).
-    A key that the gateway adds later, such as a machine or a model, does not
-    leave until a slice maps it here as untrusted text."""
+    name of the session, the client, the machine and the model are untrusted
+    text (§3.12.4 rule 3). The kind of machine and its source are fixed words.
+    A key that the gateway adds later does not leave until a slice maps it
+    here."""
     return {
         "id": _map_node(row.get("id")),
         "person": untrusted(row.get("person")),
@@ -9400,6 +9417,10 @@ def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
         "run_count": _map_count(row.get("run_count")),
         "quiet_count": _map_count(row.get("quiet_count")),
         "quiet_last_at": _map_time(row.get("quiet_last_at")),
+        "host": untrusted(row.get("host")),
+        "host_kind": _map_word(row.get("host_kind"), _MAP_HOST_KINDS),
+        "host_source": _map_word(row.get("host_source"), _MAP_HOST_SOURCES),
+        "model": untrusted(row.get("model")),
     }
 
 
