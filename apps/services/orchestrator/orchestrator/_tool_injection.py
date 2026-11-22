@@ -219,7 +219,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
 
 #: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
 #: agent (repo-root ``agents.py``). It edits platform code and runs the tests
-#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: through its Copilot CLI shell, under the B6 handler of the run's mode (its
+#: factory sets no handler since task 560, H-211). Its root
 #: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
 #: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
 #: admin of the first-party organization may run it, through any path, and it
