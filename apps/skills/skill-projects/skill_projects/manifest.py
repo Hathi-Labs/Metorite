@@ -448,6 +448,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A"),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
+    # Task 3636: which known people cannot open a task given to them. A card
+    # reads it before the Approve, as it reads `names`.
+    Route("GET", "/projects/people/reach", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),
     # ── analytics.py · reports.py ────────────────────────────────────────
     Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A"),
@@ -1471,6 +1474,10 @@ _AGENT_LABEL_REASON = (
     "The display name of an outside agent session (SW-7b). Only a signed agent "
     "sends it, and the gateway refuses it from a person, so the chat sends none."
 )
+_DISPATCHED_BY_REASON = (
+    "The run that dispatched an outside agent session (SW-107). Only a signed "
+    "agent sends it, and the gateway refuses it from a person, so the chat sends none."
+)
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
@@ -1587,10 +1594,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "has no claim tool."
         ),
         "agent_label": _AGENT_LABEL_REASON,
+        "dispatched_by": _DISPATCHED_BY_REASON,
     },
     # SW-7b. The start route keeps its other fields in FIELD_PLANNED (G23).
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {
         "agent_label": _AGENT_LABEL_REASON,
+        "dispatched_by": _DISPATCHED_BY_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
@@ -1670,6 +1679,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "mapping": _MAPPING_CARD_REASON,
     },
     ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    # Task 3636: a card reads which known people cannot open a task. The card
+    # passes the addresses of its own assignees. No tool argument names them.
+    ("GET", "/projects/people/reach"): {
+        "emails": "A card passes the assignees that it names (task 3636)."},
     # RX-1: a held card reads these. No tool argument names them.
     ("GET", "/projects/nodes/{project_id}/audience"): {
         "people": _HELD_CARD_REASON,
