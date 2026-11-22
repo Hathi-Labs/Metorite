@@ -47,6 +47,20 @@ async def test_only_an_allowed_row_is_named(monkeypatch) -> None:
     assert [r.name for r in named] == ["allowed"]
 
 
+async def test_a_parked_row_with_enabled_false_is_still_named(monkeypatch) -> None:
+    """A real row of ``needs_reconnect_meta`` reads ``enabled`` False, because
+    ``StoredServer.enabled`` is ``status == connected``. The one row rule
+    (``_row_may_attach``) reads it with ``parked``, so the enabled test does
+    not refuse it. Mutation: drop ``parked=True`` in ``_reconnect_rows`` →
+    no row is named → red."""
+    rows = [S(**{**vars(r), "enabled": False}) for r in _rows()]
+    _fake_meta(monkeypatch, rows)
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda org: True)
+    auth = lambda svc: svc != _maf_mcp.mcp_service("refused")  # noqa: E731
+    named = await ti._reconnect_rows(ORG, "mira", auth)
+    assert [r.name for r in named] == ["allowed"]
+
+
 async def test_no_row_is_named_with_connected_systems_off(monkeypatch) -> None:
     _fake_meta(monkeypatch, _rows())
     monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda org: False)

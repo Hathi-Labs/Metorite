@@ -293,6 +293,10 @@ middle of a turn.
   of a mail pack says that a connected server stops it. Precedence differs
   by layer. In layer (a) the email pack wins and the MCP server stays out.
   In layer (b) the MCP tool wins and the pack stays out.
+- **A server named in the turn (CSY-4).** CSY-4 adds one reason to layer (a),
+  dark behind `MCP_MAIL_PRECEDENCE_ORGS`. A turn that names a connected server
+  evicts each sticky mail pack that it does not name. It acts only in a chat
+  whose mail mark reads set. `chat_connected_systems.md` §3.4 holds the rule.
 - **The refusal acts live.** A load of `email-setup` after `email` gives
   the run every email pack. From that call on, a hand-off to the email
   assistant gets the pack refusal (`PackRun.refusal`). The answer gives the

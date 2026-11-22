@@ -1732,6 +1732,24 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
 
+    # ── Pin a chat from the chat (chat_organization.md §18, WS-CO CO-11b) ──
+    #
+    # `chat_pin_tool_orgs` lists the organization ids where the orchestrator
+    # holds the tool `pin_chat`, or `*` for each one. The owner gave the tool
+    # its own flag on 2026-11-21 (task 3563). So the pin of the chat list can
+    # turn on with no change to the tool list. Empty means off: no chat holds
+    # the tool, and the tool count does not move. The one reader is
+    # `gateway.chat_session_member.pin_tool_allowed`. It is true only when
+    # `chat_pin_orgs` holds the org too, because the routes answer 404 with
+    # the pin off. It fails closed. The name ends in `_orgs`, so a SIGHUP
+    # applies a change at the next run (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-GATE: any value other than empty on a box. Only the owner flips
+    # it, because the tool joins each request and moves the tool cap trade of
+    # chat_organization.md §18.
+    # Fences: tests/unit/test_chat_pin_tool.py, tests/unit/test_flag_reload.py.
+    chat_pin_tool_orgs: str = ""
+
     # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
     #
     # `chat_card_record_orgs` lists the organization ids where a write card
@@ -2586,6 +2604,16 @@ class Settings(BaseSettings):
     # run's org. A reload of the gateway applies a change. Flip: `enforcement-flip`.
     # Fence: tests/unit/test_connected_systems_block.py.
     connected_systems_orgs: str = ""
+
+    # `MCP_MAIL_PRECEDENCE_ORGS` (CSY-4, chat_connected_systems.md §3.4) lists
+    # the organization ids where a turn whose words name a connected server
+    # evicts a sticky mail pack, so the server attaches. It acts only when the
+    # chat's mail mark reads set. Comma list, `*` for all, empty (default) for
+    # none. Empty keeps the choice of main. The reader is
+    # `acb_skills.egress.mcp_mail_precedence_on`, on the run's org. A reload of
+    # the gateway applies a change. Any non-empty value is OWNER-ONLY
+    # (work_plan.md §6 D4). Fence: tests/unit/test_pack_choose_server_words.py.
+    mcp_mail_precedence_orgs: str = ""
 
     # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
     #
