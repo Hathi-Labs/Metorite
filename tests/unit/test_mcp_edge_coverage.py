@@ -250,6 +250,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/agent-access/apps/{app}/requests"),
         # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
         ("POST", "/projects/tasks/{task_id}/attachments"),
+        # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
+        # replaces the plan of the agent's own run.
+        ("PUT", "/projects/agent-runs/{run_id}/plan"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
