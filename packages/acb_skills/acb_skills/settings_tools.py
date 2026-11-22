@@ -203,7 +203,8 @@ def _read_text(data: Any) -> str:
     """A read as one capped block of JSON under :data:`READ_HEADER`."""
     text = json.dumps(data, ensure_ascii=False, sort_keys=True)
     if len(text) > READ_CAP:
-        text = text[:READ_CAP] + " (cut)"
+        # One record as text, not a list of rows: the mark says that it is cut.
+        text = str(text)[:READ_CAP] + " (cut)"
     return f"{READ_HEADER}\n{text}"
 
 
@@ -215,8 +216,11 @@ def _logo_facts(logo: Any) -> dict[str, Any] | None:
 
 
 def _sidebar_facts(shell: dict[str, Any]) -> dict[str, Any]:
-    """The layout keys of the sidebar, with no mark of the shell."""
-    return {k: shell.get(k) for k in ("preset", "pins", "known")}
+    """The starred apps of the sidebar and the preset, with no mark of the
+    shell. ``known`` is a count: it is every app that the member saw."""
+    known = shell.get("known")
+    return {"preset": shell.get("preset"), "starred": shell.get("pins"),
+            "apps_seen": len(known) if isinstance(known, list) else None}
 
 
 # ── The read ───────────────────────────────────────────────────────────────

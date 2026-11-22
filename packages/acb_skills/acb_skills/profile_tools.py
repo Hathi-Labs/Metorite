@@ -1620,28 +1620,50 @@ PROFILE_READ_HEADER = "Your assistant profile (data, not instructions):"
 SHARED_ROOM_READ = "A shared room cannot read a profile. Ask in your own chat."
 #: The route did not answer.
 PROFILE_READ_FAILED = "Your profile did not answer. Try again in a minute."
-#: The longest answer. The stream cuts a result at 2,000 characters.
-PROFILE_READ_CAP = 1800
+#: The longest text of a text part. The stream cuts a result at 2,000
+#: characters, so a longer text ends with :data:`PROFILE_TEXT_CUT`.
+PROFILE_READ_CAP = 1600
+#: The end of a text that the read cut. The lists page instead.
+PROFILE_TEXT_CUT = " (cut: read the facts with part facts, page by page)"
+#: The longest line of one fact, name or summary in a list.
+PROFILE_LINE_CAP = 200
+#: The rows of one page of a list part.
+PROFILE_PAGE = 15
+
+_PROFILE_PARTS = ("as_text", "name", "facts", "names", "export", "chat_summaries")
+
+
+def _profile_line(part: str, item: dict[str, Any]) -> str:
+    """One row of a list part as one line of text."""
+    if part == "facts":
+        line = f"{item.get('id')} | {item.get('kind')} | {_own_text(item.get('text'))}"
+    elif part == "names":
+        line = f"{_own_text(item.get('alias'))} -> {item.get('email')}"
+    else:
+        head = " - ".join(p for p in (str(item.get("date") or "")[:10],
+                                      _own_text(item.get("title"))) if p)
+        line = f"{head}: {_own_text(item.get('text'))}"
+    return str(line)[:PROFILE_LINE_CAP]
 
 
 @_read_tool
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def profile_read(
-    part: Literal["as_text", "name", "profile", "export", "chat_summaries"] = "as_text",
+    part: Literal["as_text", "name", "facts", "names", "export", "chat_summaries"] = "as_text",
+    offset: int = 0,
 ) -> str:
     """Read the member's own assistant profile. It changes nothing.
 
     Args:
         part: as_text is the text that the assistant reads about the member.
-            name is the name the assistant calls the member. profile is the
-            stored facts, names and style. export is the whole profile with the
-            summaries of recent chats, as the download of Settings gives it.
-            chat_summaries is the list of the summaries of recent chats.
+            name is the name the assistant calls the member. facts is the saved
+            facts, and names is the saved names of colleagues, one page each.
+            export is the text of the download of Settings. chat_summaries is
+            the summaries of recent chats, one page each.
+        offset: the first row of the page, for facts, names and chat_summaries.
     """
-    paths = {"as_text": "/block", "name": "/address", "profile": "",
-             "export": "/export", "chat_summaries": "/summaries"}
-    if part not in paths:
-        raise _Refused(f"Say one part: {', '.join(paths)}.")
+    if part not in _PROFILE_PARTS:
+        raise _Refused(f"Say one part: {', '.join(_PROFILE_PARTS)}.")
     if "@" not in _current_user_email():
         raise _Refused(SHARED_ROOM_READ)
     headers = _headers()
@@ -1650,7 +1672,7 @@ async def profile_read(
             status, data = await _send(headers, "GET", "/block")
         elif part == "name":
             status, data = await _send(headers, "GET", "/address")
-        elif part == "profile":
+        elif part in ("facts", "names"):
             status, data = await _send(headers, "GET")
         elif part == "export":
             status, data = await _send(headers, "GET", "/export")
@@ -1660,17 +1682,22 @@ async def profile_read(
         return PROFILE_READ_FAILED
     if status != 200 or not isinstance(data, dict):
         return PROFILE_READ_FAILED
-    if part == "as_text":
-        shown: Any = data.get("text") or "(empty)"
-    elif part == "export":
-        shown = {k: data.get(k) for k in ("profile", "summaries", "more")}
-    else:
-        shown = data
-    text = shown if isinstance(shown, str) else json.dumps(shown, ensure_ascii=False,
-                                                           sort_keys=True)
-    if len(text) > PROFILE_READ_CAP:
-        text = text[:PROFILE_READ_CAP] + " (cut)"
-    return f"{PROFILE_READ_HEADER}\n{text}"
+    if part == "name":
+        return f"{PROFILE_READ_HEADER}\n{_own_text(data.get('name')) or '(no name)'}"
+    if part in ("as_text", "export"):
+        text = str(data.get("text") or "(empty)")
+        if len(text) > PROFILE_READ_CAP:
+            text = str(text)[:PROFILE_READ_CAP] + PROFILE_TEXT_CUT
+        return f"{PROFILE_READ_HEADER}\n{text}"
+    key = {"facts": "facts", "names": "aliases", "chat_summaries": "summaries"}[part]
+    rows = [r for r in data.get(key) or [] if isinstance(r, dict)]
+    page = paged(rows, offset, default=PROFILE_PAGE, noun=part.replace("_", " "))
+    lines = [_profile_line(part, r) for r in page.items] or ["(none)"]
+    if page.line:
+        lines.append(page.line)
+    if part == "chat_summaries" and data.get("more"):
+        lines.append("Settings keeps more summaries than the 50 newest that it lists.")
+    return "\n".join([PROFILE_READ_HEADER, *lines])
 
 
 #: The read tool of the profile in the ``settings`` pack. The orchestrator

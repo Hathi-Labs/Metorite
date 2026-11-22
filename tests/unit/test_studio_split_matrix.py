@@ -194,8 +194,10 @@ def _allowed(workflows: bool) -> frozenset[str]:
     both lists: the matrix holds the split of TS-1b. The dark ``studio-repair``
     (TOF-3a F12c, two tools, no surface) is out for the same reason. Only an
     owner ``TOOL_PACKS`` line turns it on, and the run drops it from the allow
-    list while the org is off its switches (``_tool_injection._apply_tool_packs``)."""
-    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair"}
+    list while the org is off its switches (``_tool_injection._apply_tool_packs``).
+    The dark ``settings`` pack (PAR-5, task 3108, no surface) is out for the
+    same reason."""
+    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "settings"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

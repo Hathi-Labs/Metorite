@@ -104,8 +104,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "settings",
+        "projects-cycles", "settings", "studio", "studio-more", "studio-workflows",
+        "studio-repair", "studio-share",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -871,9 +871,7 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     assert more.words == core.words
     # WS-STU J2d: the dark share pack is last, so the cap drops it first.
     # TOF-3a F12c: the dark repair pack is just before it.
-    # PAR-5 (task 3108): the dark settings pack comes after the Studio packs.
-    assert list(tp.PACKS)[-6:-1] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-1] == "settings"
+    assert list(tp.PACKS)[-5:] == list(STUDIO_PACKS)
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
 

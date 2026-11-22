@@ -282,24 +282,42 @@ async def test_the_profile_read_refuses_a_shared_room(monkeypatch) -> None:
 async def test_the_profile_read_sends_the_route_of_its_part(monkeypatch) -> None:
     monkeypatch.setattr(pt, "_current_user_email", lambda: MEMBER)
     sent: list[tuple[str, str]] = []
+    facts = [{"id": f"f{i}", "kind": "fact", "text": f"fact {i}"} for i in range(20)]
 
     async def send(headers: dict[str, str], method: str, path: str = "",
                    body: Any = None) -> tuple[int, Any]:
         assert headers["X-User-Email"] == MEMBER and "X-Profile-Via" not in headers
         sent.append((method, path))
-        return 200, {"text": "Ravi likes short answers.", "profile": {"facts": []},
+        return 200, {"text": "Ravi likes short answers.", "name": "Ravi", "facts": facts,
+                     "aliases": [{"alias": "Raj", "email": "raj@acme.com"}],
                      "summaries": [], "more": False, "member": MEMBER}
 
     monkeypatch.setattr(pt, "_send", send)
-    out = await pt.profile_read("as_text")
-    assert out == f"{pt.PROFILE_READ_HEADER}\nRavi likes short answers."
-    out = await pt.profile_read("export")
-    assert MEMBER not in out and '"summaries"' in out
-    await pt.profile_read("profile")
+    assert await pt.profile_read("as_text") == (
+        f"{pt.PROFILE_READ_HEADER}\nRavi likes short answers.")
+    assert MEMBER not in await pt.profile_read("export")
     await pt.profile_read("name")
     await pt.profile_read("chat_summaries")
-    assert sent == [("GET", "/block"), ("GET", "/export"), ("GET", ""),
-                    ("GET", "/address"), ("GET", "/summaries")]
+    assert sent == [("GET", "/block"), ("GET", "/export"), ("GET", "/address"),
+                    ("GET", "/summaries")]
+    assert "Raj -> raj@acme.com" in await pt.profile_read("names")
+
+
+async def test_the_profile_read_pages_the_facts(monkeypatch) -> None:
+    """A list is never cut in silence: the page line names what is left."""
+    monkeypatch.setattr(pt, "_current_user_email", lambda: MEMBER)
+    facts = [{"id": f"f{i}", "kind": "fact", "text": f"fact {i}"} for i in range(20)]
+
+    async def send(headers: dict[str, str], method: str, path: str = "",
+                   body: Any = None) -> tuple[int, Any]:
+        return 200, {"facts": facts}
+
+    monkeypatch.setattr(pt, "_send", send)
+    first = await pt.profile_read("facts")
+    assert "f0 | fact | fact 0" in first and "f15 |" not in first
+    assert "20" in first.splitlines()[-1]
+    second = await pt.profile_read("facts", offset=15)
+    assert "f19 | fact | fact 19" in second and "f0 |" not in second
 
 
 # ── The pack is dark ───────────────────────────────────────────────────────

@@ -1360,6 +1360,17 @@ PACKS: dict[str, Pack] = {
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
     ),
+    # PAR-5 (task 3108): the member's settings. The owner is the pack-only owner
+    # ``settings-keeper``. No surface, and NOT in FOLLOWS, so it is dark until the
+    # owner adds a TOOL_PACKS line. It sits before the Studio packs, so the cap
+    # drops the Studio packs first, then this pack.
+    "settings": Pack(
+        slug="settings",
+        when=("Load to read or change your look, time zone, starred apps, number system, "
+              "profile or logo."),
+        rules=_SETTINGS_RULES,
+        words=_SETTINGS_WORDS,
+    ),
     # STU-G1: after the CRM and Projects packs, so the cap drops the Studio packs before
     # them. WS-67 TS-1b: the core of 10 tools. ``studio-more`` (13 tools) and the dark
     # ``studio-workflows`` come after it, so the cap drops them before the core. The words
@@ -1419,16 +1430,6 @@ PACKS: dict[str, Pack] = {
         rules=_STUDIO_SHARE_RULES,
         words=_STUDIO_SHARE_WORDS,
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,
-    ),
-    # PAR-5 (task 3108): the member's settings. The owner is the pack-only owner
-    # ``settings-keeper``. No surface, and NOT in FOLLOWS, so it is dark until the
-    # owner adds a TOOL_PACKS line. It comes last, so the cap drops it first.
-    "settings": Pack(
-        slug="settings",
-        when=("Load to read or change your look, time zone, starred apps, number system, "
-              "profile or logo."),
-        rules=_SETTINGS_RULES,
-        words=_SETTINGS_WORDS,
     ),
 }
 
