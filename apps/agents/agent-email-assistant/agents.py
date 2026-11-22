@@ -1392,13 +1392,35 @@ def _canonical_id(value: Any) -> str | None:
         return None
 
 
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def _clean_email_id(value: Any) -> str:
+    """An email id as the model may write it, without the list label (task 3863).
+
+    The inbox tools print ``id=<uuid>``, and the model copies the label with
+    the value. This strips the space and the quotes round the value, then a
+    leading ``id=`` (any case), then the space again. It changes nothing else.
+    """
+    text = str(value if value is not None else "").strip().strip("\"'`").strip()
+    text = _ID_LABEL.sub("", text, count=1)
+    return text.strip().strip("\"'`").strip()
+
+
+def _clean_email_ids(values: Any) -> list[str]:
+    """``_clean_email_id`` over a list. An empty id drops out."""
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple, set)):
+        values = [] if values is None else [values]
+    return [c for c in (_clean_email_id(v) for v in values) if c]
+
+
 def _email_ref(value: Any) -> str:
     """An email id without the ``email:`` that ``search_company`` prints (HRD-2).
 
     A prefix of another kind (``task:``, ``deal:``) is a refusal that names
     the kind, so the model asks the right tool.
     """
-    return strip_kind_prefix(value, "email", read_tool="query_inbox")
+    return strip_kind_prefix(_clean_email_id(value), "email", read_tool="query_inbox")
 
 
 def _email_link(email_id: Any, account_id: Any = None) -> str:
@@ -1581,7 +1603,7 @@ async def read_thread(email_id: str = "", thread_id: str = "",
     The conversation is read in the mailbox of the email, and you name no
     mailbox (§11.3 rule 1). When two mailboxes hold one thread_id, the tool
     merges nothing and asks for the email_id of one email in the thread."""
-    tid = (thread_id or "").strip()
+    tid = _clean_email_id(thread_id)
     acct = ""
     email_id = _email_ref(email_id) if email_id else email_id
     if email_id:
@@ -2198,8 +2220,9 @@ async def present_email_groups(groups_json: str) -> str:
 
     Pass ``groups_json``: a JSON array of groups, each an object with:
       • ``title``     (str, required) — the group name, e.g. "Finance"
-      • ``email_ids`` (list[str], required) — the ``id=…`` values from
-        find_priority or query_inbox
+      • ``email_ids`` (list[str], required) — the ids from find_priority or
+        query_inbox. Pass the id itself, the value after ``id=``, and not
+        the label ``id=``
       • ``note``      (str, optional) — a short caption for the group
 
     Get the ids first, decide the groups, then call this ONCE with every
@@ -2231,7 +2254,7 @@ async def present_email_groups(groups_json: str) -> str:
         ids_in = g.get("email_ids") or g.get("ids") or []
         ids: list[str] = []
         for i in ids_in if isinstance(ids_in, list) else []:
-            sid = str(i).strip()
+            sid = _clean_email_id(i)
             if sid and sid not in seen:
                 seen.add(sid)
                 ids.append(sid)
@@ -2257,7 +2280,7 @@ async def present_email_groups(groups_json: str) -> str:
     for g in groups:
         rows: list[str] = []
         for sid in g["ids"]:
-            m = meta.get(sid)
+            m = meta.get(sid) or meta.get(sid.lower())
             if m:
                 sender = m.get("from") or "(unknown sender)"
                 subject = m.get("subject") or "(no subject)"
@@ -2388,11 +2411,13 @@ async def manage_inbox(
             messages to the provider's Spam/Junk folder. It is NOT Trash: use
             ``trash`` only to delete. ``flag`` / ``unflag`` set the follow-up
             flag of Outlook (Gmail has none, so use star there).
-        message_ids: ids of the messages to act on
+        message_ids: ids of the messages to act on. Each id is the value
+            after ``id=``, not the label.
         folder: destination for ``action="move"``, an existing folder or
             label ("Archive"). Make a new one with create_label.
         add_labels / remove_labels: label NAMES for ``action="label"``.
     """
+    message_ids = _clean_email_ids(message_ids)
     if action in ("spam", "junk"):
         # One folder key for every provider: the gateway reads "junk" as
         # Gmail SPAM and as Outlook Junk Email, like the MARK_SPAM rule action.
@@ -2480,6 +2505,7 @@ async def draft_reply(
 
     The draft goes to everyone on the mail (Reply all), or to the sender
     alone when nobody else is on it. Say which one in the answer."""
+    email_id = _clean_email_id(email_id)
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -3074,6 +3100,7 @@ async def compose_reply(
     draft in Drafts names the same people. Never tell the member to open the
     Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
+    email_id = _clean_email_id(email_id)
     try:
         from acb_skills import ask_tools
     except ImportError:  # an older platform with no reply card
@@ -4506,7 +4533,8 @@ async def _run_rules_on_one(account_id: str, email_id: str | None, dry_run: bool
     A preview changes nothing and asks nothing. An apply acts as a run of the
     rules does: a held run refuses it while a rule that sends out is on, and
     the card lists each rule that is on."""
-    if not (email_id or "").strip():
+    email_id = _clean_email_id(email_id)
+    if not email_id:
         return "Nothing changed. Name the email in `email_id`."
     if dry_run:
         res = await _post("/email/rules/run-message", {
@@ -6723,6 +6751,7 @@ async def send_email(
             page) or ``"task-file:<attachment id>"`` (a file on a task). The
             server checks that the member can see each one.
     """
+    reply_to_email_id = _clean_email_id(reply_to_email_id) or None
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
                                     bcc=bcc, reply_to_email_id=reply_to_email_id,
@@ -7514,6 +7543,7 @@ async def forward_email(
         files: forward ONLY these files, each by its file name or its
             attachment_id from read_email ("only the PDF").
     """
+    email_id = _clean_email_id(email_id)
     mid = _canonical_id(email_id)
     if mid is None:
         return f"Not forwarded. {email_id!r} is not the id of an email."
@@ -9256,6 +9286,7 @@ async def snooze_email(email_id: str, until: str = "") -> str:
     till Monday". ``until`` is ISO 8601 WITH the member's offset, for example
     ``2026-10-27T09:00:00+05:30``. An empty ``until`` brings the
     conversation back now. Shows a card first."""
+    email_id = _clean_email_id(email_id)
     mid = _canonical_id(email_id)
     if mid is None:
         return f"Nothing changed. {email_id!r} is not the id of an email."
@@ -10198,9 +10229,9 @@ async def mark_thread_done(
     Give the email_id that find_priority, query_inbox, read_email or
     read_thread showed: the email decides its thread and its mailbox. A
     thread_id works too. It shows the user a card first."""
-    tid = (thread_id or "").strip()
+    tid = _clean_email_id(thread_id)
     acct = (account_id or "").strip()
-    eid = (email_id or "").strip()
+    eid = _clean_email_id(email_id)
     if eid:
         tid, box = await _thread_of_email(eid)
         acct = box or acct
@@ -10787,6 +10818,7 @@ async def test_rule_match(
     if recent:
         return await _test_rules_recent(account_id, limit)
     payload: dict[str, Any] = {"account_id": account_id}
+    email_id = _clean_email_id(email_id)
     if email_id:
         payload["email_id"] = email_id
     if subject:
