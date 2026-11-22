@@ -12,12 +12,14 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-22**
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
 > SP-8b, the form in the app, is open.
+> 🟢 **Task 3852 slice 1 BUILT 2026-11-22, not merged** (§14.9 rule 4). Each node that the gateway returns carries `parent_hidden`.
+> `move_node` refuses a move to the top level of a node with a hidden parent. No table and no flag. Slice 2 (task 3885) is open.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
@@ -9787,6 +9789,10 @@ Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEA
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
 Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
+
+**A hidden parent (task 3852, slice 1).** Each node that the gateway returns carries `parent_hidden`. The tree, the node list, the node read and each node echo carry it. The value is true when the node has a parent that the member cannot see. `tree.attach_parent_hidden` decides it through `Visibility.project_clause`, so the gateway has no second rule of visibility. The frontend, the MCP edge and the chat skills read one root rule: no parent id, and no hidden parent.
+
+**The guard.** `move_node` refuses a move to the top level of a node with a hidden parent (403, `tree.HIDDEN_PARENT_MOVE_REFUSED`). The words do not name the parent. A move into a project that the member can see still goes. Slice 2 (task 3885) sends a null `parent_project_id` for such a node, one release later. Fences: `tests/unit/test_hidden_parent_flag_r8.py` (R8) and `tests/unit/test_hidden_parent_flag.py`, with `hiddenParent.test.ts` for the frontend.
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
