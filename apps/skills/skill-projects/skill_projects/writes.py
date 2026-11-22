@@ -94,6 +94,7 @@ from skill_projects.reads import (
     _valid_zone,
     clock_of,
     for_the_model,
+    is_root,
     no_card_channel,
     reminder_clock,
     reminders_off,
@@ -4889,7 +4890,7 @@ def _level_refusal(node: dict[str, Any], payload: dict[str, Any]) -> str:
     """The two level rules of the node routes, before the card: an icon
     belongs to a space, and the lifecycle policy to a root (``tree.py``
     ``_refuse_identity_off_a_space`` and ``_refuse_lifecycle_on_child``)."""
-    if node.get("parent_project_id") is None:
+    if is_root(node):
         return ""
     if {"icon", "icon_slot"} & set(payload):
         return (
@@ -5234,7 +5235,7 @@ def is_team_space(node: dict[str, Any]) -> bool:
     """
     # The gateway's node read always carries the key. A read without it is
     # not judged here, and the gateway still refuses the write.
-    if "parent_project_id" not in node or node.get("parent_project_id"):
+    if "parent_project_id" not in node or not is_root(node):
         return False
     if node.get("personal"):
         return False
@@ -5319,6 +5320,10 @@ async def _root_of(pid: str, node: dict[str, Any]) -> dict[str, Any]:
     """
     current = node
     for _ in range(8):
+        # Task 3852. A hidden parent ends the walk with no root, also when the
+        # gateway sends no id for it (slice 2). The caller names no space.
+        if current.get("parent_hidden") is True:
+            raise LookupError("the parent is hidden")
         parent = current.get("parent_project_id")
         if not parent:
             return current

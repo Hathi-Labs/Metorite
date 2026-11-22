@@ -112,6 +112,7 @@ from gateway.routes.projects.tasks import check_task_values, create_task_in
 from gateway.routes.projects.tree import (
     TREE_RACE_DETAIL,
     _tree_race_as_409,
+    attach_parent_hidden,
     check_node_values,
     create_node_in,
 )
@@ -893,8 +894,11 @@ async def _replay(db: Any, vis: Visibility, org: str, by: str, key: str, digest:
             "The project that this idempotency_key made is gone. Send a new key.",
         )
     project = await load_visible_project(db, vis, str(row.project_id))
+    shown = row_to_dict(project, ProjectModel)
+    # Task 3852 — every node echo carries `parent_hidden`. Additive (R6).
+    await attach_parent_hidden(db, vis, [shown])
     return {
-        "project": row_to_dict(project, ProjectModel),
+        "project": shown,
         "template_id": str(row.template_id) if row.template_id else None,
         "replayed": True,
         "own_statuses": bool(getattr(project, "owns_statuses", False)),
@@ -1240,8 +1244,11 @@ async def apply_template(
             meta={"template_id": tid},
         )
         project = await load_visible_project(db, vis, project_id)
+        shown = row_to_dict(project, ProjectModel)
+        # Task 3852 — every node echo carries `parent_hidden`. Additive (R6).
+        await attach_parent_hidden(db, vis, [shown])
         result = {
-            "project": row_to_dict(project, ProjectModel),
+            "project": shown,
             "template_id": tid,
             "replayed": False,
             "own_statuses": owns,

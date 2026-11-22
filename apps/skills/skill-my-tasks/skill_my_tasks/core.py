@@ -747,9 +747,13 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
 def _is_team_space(row: dict) -> bool:
     """A root of kind project that is not personal: the gateway's rule
     (`core.is_team_space`), read from the node row's own parent id. A project
-    whose parent the member cannot see still carries that parent id."""
+    whose parent the member cannot see carries that parent id, and the flag
+    ``parent_hidden`` too (task 3852). Slice 2 (task 3885) drops the id, so
+    the flag is then the one fact."""
     # A row without the key is not judged here. The gateway still refuses the write.
     if "parent_project_id" not in row or row.get("parent_project_id"):
+        return False
+    if row.get("parent_hidden") is True:
         return False
     if row.get("personal"):
         return False

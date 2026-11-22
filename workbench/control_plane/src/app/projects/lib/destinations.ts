@@ -14,7 +14,7 @@
  * node with `personal: true` stays legal at the top.
  */
 
-import { type ProjectNode, nodeKind, nodeLevel } from "./tree";
+import { type ProjectNode, isTrueRoot, nodeKind, nodeLevel } from "./tree";
 
 export interface DestinationRow {
   node: ProjectNode;
@@ -24,13 +24,13 @@ export interface DestinationRow {
 
 /**
  * True when a node at `depth` is a team space, which holds no tasks. A space
- * is a ROOT (`parent_project_id` empty), not merely a top row: a project whose
+ * is a TRUE root (`tree.isTrueRoot`), not merely a top row: a project whose
  * parent the member cannot see also draws at the top, and it holds tasks.
  */
 export function isTeamSpace(node: ProjectNode & { personal?: boolean }, depth: number): boolean {
   return (
     depth === 0 &&
-    !node.parent_project_id &&
+    isTrueRoot(node) &&
     nodeKind(node) === "project" &&
     node.personal !== true
   );

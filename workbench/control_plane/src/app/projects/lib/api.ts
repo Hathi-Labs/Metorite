@@ -179,6 +179,8 @@ export interface ProjectRow {
   name: string;
   description?: string | null;
   parent_project_id?: string | null;
+  /** Task 3852. The parent is hidden from the member. Read a root through `tree.isTrueRoot`. */
+  parent_hidden?: boolean | null;
   /**
    * WS-64 OP-8 (D-OP-12). False when the server will refuse this member's
    * delete. `/tree` and `/nodes/{id}` carry it, from `authority.py`, the

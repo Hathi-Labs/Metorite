@@ -22,7 +22,7 @@
 
 import { dropIndexFor } from "@/lib/boardDrop";
 
-import { type ProjectNode, moveRefusal, pathTo } from "./tree";
+import { type ProjectNode, isTrueRoot, moveRefusal, pathTo } from "./tree";
 
 /** Where a drag is hovering. */
 export type TreeDropTarget =
@@ -56,7 +56,9 @@ export const POSITION_SPAN = 65536;
  * with. So it takes no part in a top-level drag. (H-257)
  */
 export function hasHiddenParent(node: ProjectNode): boolean {
-  return Boolean(node.parent_project_id);
+  // Task 3852. `parent_hidden` marks it also when the gateway sends no parent
+  // id (slice 2). A parent id alone still marks it, on an old gateway.
+  return !isTrueRoot(node);
 }
 
 const HIDDEN_PARENT_REFUSAL =

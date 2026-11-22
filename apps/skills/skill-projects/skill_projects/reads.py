@@ -208,7 +208,7 @@ async def projects_tree(include_archived: bool = False) -> str:
                 continue
             is_folder = (node.get("kind") or "project") == "folder"
             mine = above
-            if depth == 0 and node.get("parent_project_id"):
+            if depth == 0 and not is_root(node):
                 # A top row whose parent the member cannot see. It is not a
                 # root, so it is not a space: count one hidden project above.
                 mine = 1
@@ -235,6 +235,17 @@ def _tree_counts(node: dict[str, Any]) -> str:
     done = node.get("done") if isinstance(node.get("done"), int) else 0
     cancelled = node.get("cancelled") if isinstance(node.get("cancelled"), int) else 0
     return f" · tasks {total} (done {done}, cancelled {cancelled}), with everything under it"
+
+
+def is_root(node: dict[str, Any]) -> bool:
+    """True for a true root: no parent at all (task 3852).
+
+    A node whose parent the member cannot see draws at the top, but it is not
+    a root. The gateway marks it ``parent_hidden``, and slice 2 (task 3885)
+    sends no ``parent_project_id`` for it. So both facts decide. An old
+    gateway sends no flag, and the id alone decides, as before.
+    """
+    return not node.get("parent_project_id") and node.get("parent_hidden") is not True
 
 
 def tree_level(is_folder: bool, generation: int) -> str:

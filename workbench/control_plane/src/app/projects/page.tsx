@@ -270,6 +270,7 @@ import {
   childCreationOptions,
   filterByCenter,
   flatten,
+  isTrueRoot,
   levelOf,
   pathTo,
   spansMultipleProjects,
@@ -3576,7 +3577,7 @@ function ProjectsWorkspace() {
     mode: isMyTasksApp(app) ? myTasks.mode : mode,
     modes: isMyTasksApp(app) ? MY_TASKS_MODES.map((entry) => entry.id) : undefined,
     hasProject: Boolean(selected),
-    isRoot: Boolean(selected && !selected.parent_project_id),
+    isRoot: Boolean(selected && isTrueRoot(selected)),
     filtered: isFiltered(filters),
     panelOpen: Boolean(openTask),
     panelMode,
@@ -4714,7 +4715,7 @@ function ProjectsWorkspace() {
               <Icon name="Tag" className="h-3.5 w-3.5 text-muted-foreground" />
               Tags
             </button>
-            {!selected.parent_project_id ? (
+            {isTrueRoot(selected) ? (
               <button
                 type="button"
                 role="menuitem"

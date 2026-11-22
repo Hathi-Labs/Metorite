@@ -81,6 +81,7 @@ from skill_projects.reads import (
     _names_of,
     _task_line,
     for_the_model,
+    is_root,
 )
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
@@ -721,6 +722,16 @@ def _spread(others: list[dict[str, Any]], moving: str, index: int) -> list[tuple
     return [(nid, step * (i + 1)) for i, nid in enumerate(order)]
 
 
+#: Task 3852. A node under a parent that the member cannot see. The gateway
+#: refuses its move to the top level with words of its own. The chat says
+#: so before the card, and it never names the parent (§14.9 rule 4).
+HIDDEN_PARENT_REFUSAL = (
+    "Its parent is not visible to you, so it cannot move to the top level, and "
+    "the order of its siblings cannot be read. Move it into a project that you "
+    "can see, or ask a person who can see the parent."
+)
+
+
 def _plan_place(
     rows: list[dict[str, Any]], pid: str, parent_id: str | None, word: str, sibling: str
 ) -> tuple[float, list[tuple[str, float]], str] | str | None:
@@ -734,8 +745,8 @@ def _plan_place(
         # Only the true roots. The tree shows a node whose parent the member
         # cannot see as a root (tree.py `get_tree`). A spread that wrote
         # `parent_project_id: null` for it would make it a space (review
-        # round 1).
-        siblings = [n for n in rows if n.get("parent_project_id") is None]
+        # round 1). Task 3852: the flag marks it, also with no parent id.
+        siblings = [n for n in rows if is_root(n)]
     else:
         parent = _find_node(rows, parent_id)
         if parent is None:
@@ -847,13 +858,18 @@ async def _move_target(
     the refusal. A reorder keeps the node's own parent."""
     parent: dict[str, Any] | None = None
     parent_id = ""
+    # Task 3852. A node under a hidden parent keeps that parent. A move to the
+    # top level and a reorder would both post `parent_project_id: null`, and
+    # the gateway reads that as a real re-parent to the top level.
+    if not parent_project_id.strip() and node.get("parent_hidden") is True:
+        return HIDDEN_PARENT_REFUSAL
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         if parent_id == pid:
             return "A project cannot be moved under itself."
         if not word and str(parent.get("id")) == str(node.get("parent_project_id")):
             return f"{data(node.get('name'))} is already under {data(parent.get('name'))}."
-    elif not reorder and node.get("parent_project_id") is None:
+    elif not reorder and is_root(node):
         return f"{data(node.get('name'))} is already a space."
     rows = ((await get("/projects/tree")) or {}).get("rows") or []
     if not reorder:
@@ -2155,7 +2171,7 @@ async def _revoke_warnings(
     rows = grants.get("rows") or []
     others = [g for g in rows if str(g.get("id")) != str(row.get("id"))]
     clauses = []
-    if not others and not node.get("parent_project_id"):
+    if not others and is_root(node):
         clauses.append(LAST_GRANT_CLAUSE)
     if (
         row.get("yours") is True

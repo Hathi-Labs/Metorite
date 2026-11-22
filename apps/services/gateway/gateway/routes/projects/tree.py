@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -251,6 +251,68 @@ async def attach_levels(db: Any, nodes: list[dict[str, Any]]) -> None:
         node["level"] = (
             None if gen is None else node_level(node_kind(node.get("kind")), gen)
         )
+
+
+#: Task 3852 (``project_management_app.md`` §14.9 rule 4). The parents in
+#: ``:parent_ids`` that the caller may see, by the ONE predicate
+#: ``Visibility.project_clause``. Not a second visibility rule.
+_VISIBLE_PARENTS_SQL = (
+    "SELECT id FROM pm_projects"
+    " WHERE id = ANY(CAST(:parent_ids AS uuid[])) AND {clause}"
+)
+
+
+async def visible_parent_ids(
+    db: Any, vis: Any, parent_ids: Iterable[Any],
+) -> set[str]:
+    """The ids in *parent_ids* that the caller may see. One read, or none."""
+    wanted = sorted({str(p) for p in parent_ids if p})
+    if not wanted:
+        return set()
+    rows = (await db.execute(
+        text(_VISIBLE_PARENTS_SQL.format(clause=vis.project_clause())),
+        {"parent_ids": wanted, **vis.params},
+    )).fetchall()
+    return {str(r.id) for r in rows}
+
+
+async def attach_parent_hidden(
+    db: Any, vis: Any, nodes: list[dict[str, Any]],
+    *, known: Iterable[str] = (),
+) -> None:
+    """Stamp ``parent_hidden`` on each node (task 3852, slice 1).
+
+    True when the node has a parent that the caller may not see. A node that
+    draws at the top because its parent is hidden is not a root, and the
+    clients read this flag to know it. Slice 2 (task 3885) then sends a null
+    ``parent_project_id`` for such a node, so the flag is the one fact left.
+
+    ⚠️ "Not in the drawn set" is NOT "hidden". ``_visible_projects`` leaves
+    out the personal rows, so a team node under the member's OWN personal
+    root draws at the top with a parent that the member sees (migration
+    297). Only ``Visibility.project_clause`` decides. *known* holds ids that
+    that clause already returned in this request, so their children need no
+    read. One read for the rest, and none when nothing is left.
+    """
+    seen = {str(k) for k in known}
+    parents = {
+        str(n["parent_project_id"]) for n in nodes
+        if n.get("parent_project_id")
+    }
+    seen |= await visible_parent_ids(db, vis, parents - seen)
+    for node in nodes:
+        parent = node.get("parent_project_id")
+        node["parent_hidden"] = bool(parent) and str(parent) not in seen
+
+
+#: Task 3852. The words of the 403 when a member moves a node to the top
+#: level, and the node has a parent that the member cannot see. They never
+#: name the parent (§14.9 rule 4).
+HIDDEN_PARENT_MOVE_REFUSED = (
+    "This project is inside a project that you cannot see, so it cannot "
+    "move to the top level. Move it into a project that you can see, or ask "
+    "a person who can see its parent to move it."
+)
 
 
 #: WS-64 OP-10, fix round 1. A share lock on each node of the ancestor
@@ -562,6 +624,11 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
             await attach_can_write_grants(db, user, node)
         # WS-64 OP-11 (audit P1-4) — the level of each node, additive (R6).
         await attach_levels(db, [*nodes.values(), *personal.values()])
+        # Task 3852 — `parent_hidden`, additive (R6). The team rows came from
+        # `vis.project_clause`, so a child of one of them needs no read.
+        await attach_parent_hidden(
+            db, vis, [*nodes.values(), *personal.values()], known=nodes,
+        )
 
     roots = _nest(nodes)
     _attach_progress(roots, counts)
@@ -693,8 +760,14 @@ def _attach_progress(
 @router.get("/nodes")
 async def list_nodes(user: UserContext = Depends(get_current_user)) -> dict:
     async with _tenant_session() as db:
-        rows = await _visible_projects(db, user)
-    return {"rows": [row_to_dict(r, ProjectModel) for r in rows], "total": len(rows)}
+        vis = await resolve_visibility(db, user)
+        rows = await _visible_projects(db, user, vis)
+        result = [row_to_dict(r, ProjectModel) for r in rows]
+        # Task 3852 — `parent_hidden`, additive (R6).
+        await attach_parent_hidden(
+            db, vis, result, known=(str(r.id) for r in rows),
+        )
+    return {"rows": result, "total": len(rows)}
 
 
 @router.get("/nodes/{project_id}")
@@ -720,6 +793,9 @@ async def get_node(
         await attach_can_write_grants(db, user, result)
         # WS-64 OP-10 — the chat refuses before its convert card where this is false.
         await attach_can_convert(db, user, [result])
+        # Task 3852 — the chat and the edge tell a root from a node under a
+        # hidden parent with this flag. Additive (R6).
+        await attach_parent_hidden(db, vis, [result])
         return result
 
 
@@ -1125,6 +1201,8 @@ async def create_node(
         row = await create_node_in(db, user, vis, values, kind)
         project_id = str(row.id)
         result = row_to_dict(row, ProjectModel)
+        # Task 3852 — every node echo carries the flag. Additive (R6).
+        await attach_parent_hidden(db, vis, [result])
 
     await emit("pm.project.created", {"project_id": project_id, "name": values["name"]})
     return result
@@ -1350,7 +1428,10 @@ async def patch_node(
                 assert_run_state_allowed(level)
             _refuse_identity_off_a_space(values, level)
         if not values:
-            return row_to_dict(before, ProjectModel)
+            unchanged = row_to_dict(before, ProjectModel)
+            # Task 3852 — every node echo carries the flag. Additive (R6).
+            await attach_parent_hidden(db, vis, [unchanged])
+            return unchanged
         after = await update_row(db, "pm_projects", project_id, values)
         changes = diff_changes(before, after, _TRACKED_PROJECT_FIELDS)
         if changes:
@@ -1363,6 +1444,8 @@ async def patch_node(
                 changes=changes,
             )
         result = row_to_dict(after, ProjectModel)
+        # Task 3852 — every node echo carries the flag. Additive (R6).
+        await attach_parent_hidden(db, vis, [result])
 
     await emit("pm.project.updated", {"project_id": project_id})
     return result
@@ -1422,6 +1505,21 @@ async def move_node(
         vis = await resolve_visibility(db, user)
         moved = await load_visible_project(db, vis, project_id)
         new_parent = payload.parent_project_id
+        # Task 3852 (§14.9 rule 4). A node whose parent the member cannot see
+        # draws at the top, but it is not a root. A move to the top level
+        # would pull it out of that parent, a change that the member cannot
+        # see the effect of. So it is refused, before the authority check, so
+        # a member who is not the lead gets these words too. A move into a
+        # project that the member CAN see, and a top-level move of a node
+        # whose parent the member sees, go on.
+        current_parent = getattr(moved, "parent_project_id", None)
+        if not new_parent and current_parent is not None and (
+            str(current_parent)
+            not in await visible_parent_ids(db, vis, [current_parent])
+        ):
+            raise HTTPException(
+                status_code=403, detail=HIDDEN_PARENT_MOVE_REFUSED,
+            )
         if new_parent:
             # The 404 for a destination the caller cannot see. Its kind is
             # read after the lock, below.
@@ -1552,6 +1650,8 @@ async def move_node(
         )
         result = row_to_dict(row, ProjectModel)
         result["statuses_remapped"] = remapped
+        # Task 3852 — every node echo carries the flag. Additive (R6).
+        await attach_parent_hidden(db, vis, [result])
 
     await emit("pm.project.moved", {"project_id": project_id})
     return result
@@ -1674,6 +1774,8 @@ async def convert_node(
         result = row_to_dict(after, ProjectModel)
         await attach_can_delete(db, user, [result], kind="project")
         await attach_can_convert(db, user, [result])
+        # Task 3852 — every node echo carries the flag. Additive (R6).
+        await attach_parent_hidden(db, vis, [result])
 
     await emit("pm.project.updated", {"project_id": project_id})
     return result

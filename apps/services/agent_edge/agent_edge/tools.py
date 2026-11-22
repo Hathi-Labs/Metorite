@@ -8464,6 +8464,11 @@ async def _check_parent_level(ctx: Context, parent_id: str, asked: str) -> None:
         raise ToolError(TEXT_PARENT_ARCHIVED)
     level = parent.get("level")
     if level == "folder":
+        # Task 3852. A folder whose parent the member cannot see: the gateway
+        # decides the level, as for a parent that the read below cannot find.
+        # Slice 2 sends no id for that parent, so the flag is the one fact.
+        if parent.get("parent_hidden") is True:
+            return
         above = _id(parent.get("parent_project_id"))
         if above is None:
             raise ToolError(TEXT_BUSY)
@@ -9003,7 +9008,10 @@ async def _check_destination(ctx: Context, project_id: str) -> None:
         raise ToolError(TEXT_MOVE_INTO_ARCHIVED)
     if node.get("kind") == "folder":
         raise ToolError(TEXT_MOVE_INTO_FOLDER)
-    if node.get("parent_project_id") is None and not node.get("personal"):
+    # Task 3852. A project under a parent that the member cannot see is not a
+    # space, also when the gateway sends no id for that parent.
+    if (node.get("parent_project_id") is None and node.get("parent_hidden") is not True
+            and not node.get("personal")):
         raise ToolError(TEXT_MOVE_INTO_SPACE)
 
 

@@ -25,10 +25,15 @@ import { isTeamSpace } from "./destinations";
  */
 export function assistantLevel(
   level: string,
-  node: { parent_project_id?: string | null; kind?: string | null; personal?: boolean },
+  node: {
+    parent_project_id?: string | null;
+    parent_hidden?: boolean | null;
+    kind?: string | null;
+    personal?: boolean;
+  },
 ): string {
   // The same rule as `destinations.isTeamSpace` and the gateway's
-  // `core.is_team_space`: a ROOT (no parent_project_id) of kind project that
+  // `core.is_team_space`: a TRUE root (`tree.isTrueRoot`) of kind project that
   // is not personal. `levelOf` says "space" for any top row, so a project
   // whose parent the member cannot see, and the member's own root, would
   // read as a space. Neither is one.

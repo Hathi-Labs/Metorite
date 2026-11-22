@@ -40,6 +40,7 @@ import { CATEGORY_HINT, CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/status
 
 import { type ProjectRow, projectsApi } from "../lib/api";
 import { importApi } from "../lib/importApi";
+import { isTrueRoot } from "../lib/tree";
 import ImportHistory, { DiscardImportButton, type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import ImportTree from "./ImportTree";
 import { StatusStageTip } from "./StageHelp";
@@ -412,7 +413,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     }
   }, [run, currentMapping, confirmedNewTree]);
 
-  const spaces = roots.filter((r) => !r.parent_project_id && !r.archived_at);
+  // Task 3852: a top row under a hidden parent is not a space.
+  const spaces = roots.filter((r) => isTrueRoot(r) && !r.archived_at);
   const plan = run?.plan;
   const rows = useMemo(() => importTreeRows(plan?.tree ?? [], containers), [plan, containers]);
   const totals = treeTotals(rows);

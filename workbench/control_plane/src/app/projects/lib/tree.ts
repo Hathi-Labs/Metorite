@@ -14,6 +14,13 @@ export interface ProjectNode {
   id: string;
   name: string;
   parent_project_id?: string | null;
+  /**
+   * Task 3852. True when the node has a parent that the member cannot see.
+   * The gateway sends it on every node. Slice 2 (task 3885) then sends a null
+   * `parent_project_id` for such a node, so read a root through `isTrueRoot`.
+   * Absent on an old gateway.
+   */
+  parent_hidden?: boolean | null;
   kind?: string | null;
   /** Migration 196: this node keeps its own status set. Absent on an old gateway. */
   owns_statuses?: boolean | null;
@@ -41,6 +48,21 @@ export interface ProjectNode {
 }
 
 export type NodeKind = "project" | "folder";
+
+/**
+ * True for a TRUE root: a node with no parent at all (task 3852).
+ *
+ * A node whose parent the member cannot see draws at the top, but it is not a
+ * root. Both facts decide. `parent_hidden` marks it when the gateway sends no
+ * parent id (slice 2). The id marks it on an old gateway that sends no flag,
+ * and on a team node under the member's own personal root (migration 297),
+ * whose parent the member sees but whose parent the team tree does not draw.
+ */
+export function isTrueRoot(
+  node: Pick<ProjectNode, "parent_project_id" | "parent_hidden">,
+): boolean {
+  return !node.parent_project_id && node.parent_hidden !== true;
+}
 
 /** A row's kind. Absent/null reads as 'project' (R6 — migration 193). */
 export function nodeKind(node: Pick<ProjectNode, "kind">): NodeKind {
