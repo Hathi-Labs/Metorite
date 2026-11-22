@@ -245,6 +245,27 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_chat_pin_tool_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11b, chat_organization.md §18 (owner, 2026-11-21, task 3563).
+    The reload list holds the key. The one reader of the tool switch sees a
+    change with no restart, and it needs the pin switch too."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert fr.reloadable("CHAT_PIN_TOOL_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    monkeypatch.setenv("CHAT_PIN_TOOL_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme", "CHAT_PIN_TOOL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_TOOL_ORGS",)
+    assert pin_tool_allowed("acme")
+    assert not pin_tool_allowed("globex")
+    assert not pin_tool_allowed(None)
+
+
 def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
     reader of the compute switch sees a change with no restart."""

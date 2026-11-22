@@ -107,7 +107,40 @@ log. The page writes every value as text, never as HTML.
 in a file that only its owner reads. A customer's machine uses Windows DPAPI
 (build step 4).
 
-## Where the tools differ from the brief table
+## The local copy (TLY-4)
+
+With TallyPrime closed, `find_ledgers`, `list_vouchers` and `get_voucher`
+answer from an encrypted local copy, and each answer holds a `source` with the
+copy's time and age. `status` shows `copy_age_minutes` for each company. The
+other tools still need TallyPrime. A write never uses the copy.
+
+The owner answered on task 3769. The copy stays on this machine (LNK-Q8). It runs every
+30 minutes, and its maximum age is 7 days (LNK-Q9).
+
+| Setting | Default | What it does |
+|---|---|---|
+| `COPY_DIR` | empty | The folder of the copy. Empty turns the copy off |
+| `COPY_INTERVAL_MIN` | 30 | Minutes between two copies, 5 to 1440 |
+| `COPY_MAX_AGE_DAYS` | 7 | A copy older than this answers nothing, 1 to 90 |
+
+On a dev box, pass `--dev-copy-key-file <path>` to `serve`. It holds the key
+in a file with mode 600, and it is DEV ONLY. Build step 4 keeps the key with
+DPAPI at machine scope. `python -m tally_bridge delete-copy` deletes every
+copy. A company that leaves the allow-list loses its copy when the setup page
+saves.
+
+How it copies:
+
+1. The first copy of the day reads the ledgers. Then it reads the vouchers of
+   this financial year and the last one, one month in each request.
+2. Each later copy reads the ledgers again. Then it reads only the vouchers
+   with an `AlterID` above the highest one in the copy (recording R13).
+3. A voucher that someone deletes in TallyPrime moves no `AlterID`. The copy
+   keeps it until the next first copy of the day. This is a known gap.
+4. This slice copies the ledgers and the vouchers, because only those tools
+   read the copy. Groups and stock items wait for a tool that needs them.
+
+
 
 - The date inputs are `from_date` and `to_date`, because `from` is a reserved
   word in Python.
@@ -141,7 +174,7 @@ when the recorded one lands.
 | # | Request | Why |
 |---|---|---|
 | R01 | `curl -s -i http://127.0.0.1:9000/` (a GET with no body) | `is_up` reads "up" from any 200 answer. Record the exact body, so that the bridge can tell TallyPrime from another program on port 9000 |
-| R02 to R12 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each. In R11, put the GUID of one voucher from the R09 answer in place of the zeros. In R12, put the type and the number of that voucher in place of the placeholders |
+| R02 to R13 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each. In R11, put the GUID of one voucher from the R09 answer in place of the zeros. In R12, put the type and the number of that voucher in place of the placeholders. R13 must return the January vouchers with an `ALTERID` in each |
 
 Write the requests with the real names. Then send each one, and keep the
 answer and its headers:

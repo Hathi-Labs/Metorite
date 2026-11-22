@@ -18,6 +18,10 @@
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
 > SP-8b, the form in the app, is open.
+> 🟢 **WS-39 task 2886, part 1 BUILT 2026-11-21, not merged** (§14.9). No group may take the slug `all`.
+> `routes/admin/groups.py` refuses it with 400, and `RESERVED_GROUP_SLUGS` holds the word once. No table and no flag.
+> The T-1 team filter must import that set. Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`,
+> is task 3852. Its consumers need a decision first.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
@@ -9791,6 +9795,8 @@ Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEA
 3. **A member in several teams picks one team scope or "All my teams".** These are the altitudes of D87 (`navigation_shell.md` §4.1).
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
+
+The scope value `all` means every team of the member, so no group may take the slug `all` (task 2886). `routes/admin/groups.py` `_clean_slug` refuses it with 400. Fence: `tests/unit/test_admin_groups.py`.
 
 Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
