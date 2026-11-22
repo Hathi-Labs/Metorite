@@ -375,3 +375,12 @@ def test_the_voucher_request_keeps_the_company_as_text_and_is_an_export(value):
 def test_the_voucher_request_refuses_text_that_is_not_a_guid(guid):
     with pytest.raises(ValueError):
         envelope.voucher(guid, company="A")
+
+
+@pytest.mark.parametrize("value", HOSTILE)
+def test_the_by_number_request_keeps_both_inputs_as_values(value):
+    root = SafeET.fromstring(envelope.voucher_by_number(value, value, company="A"))
+    assert [el.text for el in root.iter("TALLYREQUEST")] == ["Export"]
+    sv = root.find("BODY/DESC/STATICVARIABLES")
+    assert sv.find("BridgeVchType").text == value and sv.find("BridgeVchNumber").text == value
+    assert root.find("BODY/DESC/TDL/TDLMESSAGE/SYSTEM").text == envelope._BY_NUMBER_FILTER

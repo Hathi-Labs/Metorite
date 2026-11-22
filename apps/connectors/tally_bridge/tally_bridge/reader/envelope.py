@@ -152,6 +152,36 @@ def voucher(guid: str, *, company: str) -> bytes:
     return _bytes(env)
 
 
+# The TDL of one voucher by its type and number. The formula is fixed text.
+# The member's type and number reach Tally only as the values of the two
+# variables, in STATICVARIABLES, as escaped element text. So no input text can
+# become part of a formula (brief section 6.5 rule 3).
+_BY_NUMBER = "BridgeVoucherByNumber"
+_VAR_TYPE = "BridgeVchType"
+_VAR_NUMBER = "BridgeVchNumber"
+_BY_NUMBER_FILTER = f"$VoucherTypeName = ##{_VAR_TYPE} AND $VoucherNumber = ##{_VAR_NUMBER}"
+
+
+def voucher_by_number(voucher_type: str, number: str, *, company: str) -> bytes:
+    """The vouchers of one type with one number, as a collection export."""
+    env, desc = _envelope("Collection", _BY_NUMBER)
+    _statics(desc, company)
+    sv = desc.find("STATICVARIABLES")
+    ET.SubElement(sv, _VAR_TYPE).text = _value(voucher_type)
+    ET.SubElement(sv, _VAR_NUMBER).text = _value(number)
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": _BY_NUMBER, "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Voucher"
+    ET.SubElement(coll, "FETCH").text = ", ".join((*VOUCHER_FETCH, "Guid"))
+    ET.SubElement(coll, "FILTER").text = "BridgeVchMatch"
+    ET.SubElement(
+        message, "SYSTEM", {"TYPE": "Formulae", "NAME": "BridgeVchMatch"}
+    ).text = _BY_NUMBER_FILTER
+    for var in (_VAR_TYPE, _VAR_NUMBER):
+        ET.SubElement(ET.SubElement(message, "VARIABLE", {"NAME": var}), "TYPE").text = "String"
+    return _bytes(env)
+
+
 VOUCHER_FETCH = (
     "Date",
     "VoucherTypeName",
