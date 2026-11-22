@@ -320,13 +320,6 @@ line — never reclaim a number by deleting the other entry.
   A hit means this is open.
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
-### H-281 · Old auto-synced tool wrappers in the agent clones still give a script the whole env · [AGENT] · security
-- **Metorite:** #691. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** on the box, run
-  `ssh metorite 'grep -l "\*\*_os.environ" /home/acb/.acb/agents/repos/*/agents.py | wc -l'`.
-  A count above 0 means this is open.
-- **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
-
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.

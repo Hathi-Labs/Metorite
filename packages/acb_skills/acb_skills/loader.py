@@ -37,9 +37,11 @@ Security note (ADR-020):
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -1075,6 +1077,258 @@ def _sync_source_to_cache(source_dir: Path, cache_dir: Path) -> None:
                 shutil.copy2(src_file, dst_file)
 
 
+# ---------------------------------------------------------------------------
+# Old auto-sync wrappers (task 691, HANDOFF H-281)
+# ---------------------------------------------------------------------------
+# Before WS-49 BH-1 the wrapper template in ``_sync_new_skills`` gave the
+# script the whole gateway env. A clone that holds such a wrapper keeps it
+# until it changes. So each load upgrades it, and the import refuses one that
+# it cannot upgrade. A wrapper is "generated" when its own structure says so:
+# the signature ``async def <fn>(*args: str) -> str:``, the generator
+# docstring and the ``import asyncio as _a`` alias line. The banner comment is
+# no proof, because a person can add code under it.
+
+#: The docstring that every version of the template writes.
+_WRAPPER_DOC = re.compile(r"\ARun (?P<stem>.+) \((?P<skill>.+)\)\. Pass CLI args as strings\.\Z")
+#: Shape A (b97ed0c5a to 980c04a49^): ``_env = {**_os.environ, <extra>}``.
+_OLD_ENV_LINE = re.compile(
+    r"^(?P<indent>[ \t]+)_env = \{\*\*_os\.environ, (?P<extra>[^\r\n]*)\}[ \t]*(?P<nl>\r\n|\r|\n)",
+    re.MULTILINE,
+)
+#: Shape B (ae2f1ece7, ea496f3a4): a run with no ``env=``, so the child
+#: inherits the whole env.
+_OLD_RUN_LINE = re.compile(
+    r"^(?P<indent>[ \t]+)_r = await _a\.to_thread\(_s\.run, (?P<args>[^\r\n]*), "
+    r"cwd=str\(_d\)\)[ \t]*(?P<nl>\r\n|\r|\n)",
+    re.MULTILINE,
+)
+_CHILD_ENV_IMPORT = "from acb_common.child_env import child_env as _child_env"
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+#: What a refused tool says when the model calls it.
+WRAPPER_REFUSED_TEXT = (
+    "This tool is off. Its wrapper in agents.py passes the whole server "
+    "environment to the script, and Metorite could not upgrade it. Edit the "
+    "wrapper to use child_env (WS-49 BH-1)."
+)
+
+
+def _generated_wrappers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, str]]:
+    """Return each generated wrapper at the top level of *tree*, with its skill."""
+    found: list[tuple[ast.AsyncFunctionDef, str]] = []
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        args = node.args
+        if (
+            args.args or args.posonlyargs or args.kwonlyargs or args.kwarg
+            or args.vararg is None or args.vararg.arg != "args"
+            or not isinstance(node.returns, ast.Name) or node.returns.id != "str"
+            or len(node.body) < 2
+        ):
+            continue
+        match = _WRAPPER_DOC.match(ast.get_docstring(node, clean=False) or "")
+        first = node.body[1]
+        if match is None or not (
+            isinstance(first, ast.Import)
+            and any(a.name == "asyncio" and a.asname == "_a" for a in first.names)
+        ):
+            continue
+        found.append((node, match.group("skill")))
+    return found
+
+
+def _is_child_env_call(node: ast.AST) -> bool:
+    """True for ``_child_env()`` or ``_child_env(extra={<str>: <str>, ...})``."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_child_env" and not node.args):
+        return False
+    for kw in node.keywords:
+        if kw.arg != "extra" or not isinstance(kw.value, ast.Dict):
+            return False
+        for key, value in zip(kw.value.keys, kw.value.values, strict=True):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                return False
+    return True
+
+
+def _wrapper_is_safe(fn: ast.AsyncFunctionDef) -> bool:
+    """True when every spawn of the wrapper passes the ``child_env`` env.
+
+    The check fails closed. It refuses any ``environ`` reference, an ``_env``
+    that is not a ``_child_env(...)`` call, and a call that names ``_s`` (the
+    subprocess alias) with no ``env=`` from the helper.
+    """
+    env_kwargs = 0
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id in {"environ", "os", "subprocess"}:
+            return False
+        if isinstance(node, ast.Attribute) and node.attr in {"environ", "system", "popen"}:
+            return False
+        if isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == "_env" for t in targets) and not (
+                isinstance(node, ast.Assign) and _is_child_env_call(node.value)
+            ):
+                return False
+        if not isinstance(node, ast.Call):
+            continue
+        names_s = any(
+            isinstance(part, ast.Attribute) and isinstance(part.value, ast.Name)
+            and part.value.id == "_s"
+            for part in [node.func, *node.args]
+        )
+        env = next((kw.value for kw in node.keywords if kw.arg == "env"), None)
+        if env is not None:
+            if not ((isinstance(env, ast.Name) and env.id == "_env") or _is_child_env_call(env)):
+                return False
+            env_kwargs += 1
+        elif names_s:
+            return False
+    return env_kwargs > 0
+
+
+def _upgrade_segment(segment: str) -> str | None:
+    """Upgrade the source of one old wrapper. ``None`` when no known shape fits."""
+    env_lines = list(_OLD_ENV_LINE.finditer(segment))
+    run_lines = list(_OLD_RUN_LINE.finditer(segment))
+    if len(env_lines) == 1 and not run_lines:
+        m = env_lines[0]
+        try:
+            extra = ast.literal_eval("{" + m.group("extra") + "}")
+        except (ValueError, SyntaxError):
+            return None
+        if not isinstance(extra, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in extra.items()
+        ):
+            return None
+        indent, nl = m.group("indent"), m.group("nl")
+        new = (
+            f"{indent}{_CHILD_ENV_IMPORT}{nl}"
+            f"{indent}_env = _child_env(extra={{{m.group('extra')}}}){nl}"
+        )
+        return segment[: m.start()] + new + segment[m.end():]
+    if len(run_lines) == 1 and not env_lines:
+        m = run_lines[0]
+        indent, nl = m.group("indent"), m.group("nl")
+        new = (
+            f"{indent}{_CHILD_ENV_IMPORT}{nl}"
+            f"{indent}_r = await _a.to_thread(_s.run, {m.group('args')}, "
+            f"cwd=str(_d), env=_child_env()){nl}"
+        )
+        return segment[: m.start()] + new + segment[m.end():]
+    return None
+
+
+def _refused_segment(segment: str, fn: ast.AsyncFunctionDef, body_start: int) -> str:
+    """Keep the def line and the docstring of *fn*, and make its body raise."""
+    indent = segment[body_start: body_start + fn.body[1].col_offset]
+    nl = _LINE_BREAK.search(segment)
+    newline = nl.group(0) if nl else "\n"
+    return segment[:body_start] + f"{indent}raise RuntimeError({WRAPPER_REFUSED_TEXT!r}){newline}"
+
+
+def upgrade_old_wrappers(
+    text: str, *, refuse: bool = False
+) -> tuple[str, list[tuple[str, str]], list[tuple[str, str]]]:
+    """Upgrade each generated wrapper in *text* that passes the whole env.
+
+    Returns ``(new_text, upgraded, refused)``. Each list holds ``(tool,
+    skill)`` pairs. A wrapper that no known shape fits goes to ``refused``.
+    By default it stays as it is. With ``refuse=True`` its body becomes a
+    ``raise``, for the in-memory import only. Hand-written code and each byte
+    outside a changed wrapper stay the same.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return text, [], []
+    starts = [0, *(m.end() for m in _LINE_BREAK.finditer(text))]
+    upgraded: list[tuple[str, str]] = []
+    refused: list[tuple[str, str]] = []
+    edits: list[tuple[int, int, str]] = []
+    for fn, skill in _generated_wrappers(tree):
+        if _wrapper_is_safe(fn):
+            continue
+        end_line = fn.end_lineno or fn.lineno
+        begin = starts[fn.lineno - 1]
+        end = starts[end_line] if end_line < len(starts) else len(text)
+        segment = text[begin:end]
+        new = _upgrade_segment(segment)
+        if new is not None:
+            try:
+                new_fns = _generated_wrappers(ast.parse(new))
+            except SyntaxError:
+                new_fns = []
+            if len(new_fns) == 1 and new_fns[0][0].name == fn.name and _wrapper_is_safe(new_fns[0][0]):
+                edits.append((begin, end, new))
+                upgraded.append((fn.name, skill))
+                continue
+        refused.append((fn.name, skill))
+        if refuse:
+            body_start = starts[fn.body[1].lineno - 1] - begin
+            edits.append((begin, end, _refused_segment(segment, fn, body_start)))
+    for begin, end, new in sorted(edits, reverse=True):
+        text = text[:begin] + new + text[end:]
+    return text, upgraded, refused
+
+
+def _log_wrappers(
+    agent: str, upgraded: list[tuple[str, str]], refused: list[tuple[str, str]], *, where: str
+) -> None:
+    """Write one line for each upgraded or refused wrapper. No env value."""
+    for tool, skill in upgraded:
+        _log.info("loader.wrapper_env_upgraded", agent=agent, skill=skill, tool=tool, where=where)
+    for tool, skill in refused:
+        _log.warning(
+            "loader.wrapper_refused", agent=agent, skill=skill, tool=tool, where=where,
+            hint="A generated wrapper passes the whole env and no known shape fits. "
+                 "The tool raises until a person edits it to use child_env.",
+        )
+
+
+def _upgrade_agents_file(agent_dir: Path) -> bool:
+    """Upgrade the old wrappers in a clone's ``agents.py`` on disk.
+
+    Returns True when the file changed, and the caller commits it. A refused
+    wrapper stays on disk as it is, because a person may have edited it.
+    ``LoadedAgent.build_agents`` refuses it at the import.
+    """
+    agents_file = agent_dir / "agents.py"
+    try:
+        text = agents_file.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    new_text, upgraded, refused = upgrade_old_wrappers(text)
+    _log_wrappers(agent_dir.name, upgraded, refused, where="clone")
+    if new_text == text:
+        return False
+    agents_file.write_bytes(new_text.encode("utf-8"))
+    return True
+
+
+def _safe_agents_source(agent_name: str, agents_file: Path) -> str | None:
+    """The gate before ``agents.py`` imports (task 691). It fails closed.
+
+    ``None`` when every generated wrapper already passes the one env, so the
+    file imports as it is. Otherwise the text to import: an old wrapper that a
+    known shape fits is upgraded in memory, and any other generated wrapper
+    raises ``WRAPPER_REFUSED_TEXT`` and starts no process. The disk upgrade
+    in ``_sync_new_skills`` can miss: the local-path load never calls it, and
+    a failed commit restores the old file.
+    """
+    try:
+        text = agents_file.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None  # the import reads the same bytes and fails on its own
+    new_text, upgraded, refused = upgrade_old_wrappers(text, refuse=True)
+    if new_text == text:
+        return None
+    _log_wrappers(agent_name, upgraded, refused, where="import")
+    return new_text
+
+
 def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
     """Detect scripts in skills/*/scripts/ not yet referenced in agents.py and add wrappers.
 
@@ -1086,12 +1340,13 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
     Non-fatal — if agents.py doesn't exist, has no tools=[...], or the push fails,
     the loader continues normally; the sync will be retried on the next pull.
     """
-    import re  # noqa: PLC0415
-
     agents_file = agent_dir / "agents.py"
     if not agents_file.exists():
         return
 
+    # Task 691 (H-281): upgrade each old wrapper first, so the commit below
+    # carries the upgrade too.
+    upgraded = _upgrade_agents_file(agent_dir)
     current = agents_file.read_text(encoding="utf-8", errors="replace")
 
     # Discover scripts in skills/*/scripts/ whose stem doesn't appear in agents.py
@@ -1103,6 +1358,12 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
             new_scripts.append(script)
 
     if not new_scripts:
+        if upgraded:
+            _commit_agents_file(
+                agent_dir, settings,
+                "auto-sync: upgrade the old tool wrappers to child_env (WS-49 BH-1)",
+                [],
+            )
         return
 
     _log.info(
@@ -1144,7 +1405,14 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
     # Insert new tool defs immediately before build_agents()
     marker = "\ndef build_agents("
     if marker not in current:
-        return  # unexpected structure — skip silently
+        # Unexpected structure: add no tool, but keep an upgrade.
+        if upgraded:
+            _commit_agents_file(
+                agent_dir, settings,
+                "auto-sync: upgrade the old tool wrappers to child_env (WS-49 BH-1)",
+                [],
+            )
+        return
 
     auto_block = "\n# ── Auto-synced tools (added by Metorite) ──────────────────────────\n"
     auto_block += "".join(tool_defs)
@@ -1161,18 +1429,26 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
 
     agents_file.write_text(updated, encoding="utf-8")
 
-    # Commit locally (no push) — the pending_commit row will appear in the inbox
-    bot_name: str = getattr(settings, "github_bot_name", "metorite-bot")
-    bot_email: str = getattr(settings, "github_bot_email", "") or f"{bot_name}@users.noreply.github.com"
-    _run_git(["config", "user.name", bot_name], cwd=agent_dir)
-    _run_git(["config", "user.email", bot_email], cwd=agent_dir)
-    _run_git(["add", "agents.py"], cwd=agent_dir)
     names_summary = ", ".join(s.stem for s in new_scripts[:5])
     if len(new_scripts) > 5:
         names_summary += f" (+{len(new_scripts) - 5} more)"
     commit_msg = (
         f"auto-sync: add {len(new_scripts)} new tool(s) to agents.py\n\nAdded: {names_summary}"
     )
+    if upgraded:
+        commit_msg += "\n\nUpgraded the old tool wrappers to child_env (WS-49 BH-1)."
+    _commit_agents_file(agent_dir, settings, commit_msg, tool_names)
+
+
+def _commit_agents_file(
+    agent_dir: Path, settings: Any, commit_msg: str, tool_names: list[str]
+) -> None:
+    """Commit ``agents.py`` locally. The pending_commit row waits in the inbox."""
+    bot_name: str = getattr(settings, "github_bot_name", "metorite-bot")
+    bot_email: str = getattr(settings, "github_bot_email", "") or f"{bot_name}@users.noreply.github.com"
+    _run_git(["config", "user.name", bot_name], cwd=agent_dir)
+    _run_git(["config", "user.email", bot_email], cwd=agent_dir)
+    _run_git(["add", "agents.py"], cwd=agent_dir)
     commit_r = _run_git(
         ["commit", "-m", commit_msg],
         cwd=agent_dir,
@@ -1688,8 +1964,14 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
 # Module import helpers
 # ---------------------------------------------------------------------------
 
-def _import_module_file(agent_dir: Path, filename: str, *, module_name: str) -> Any:
-    """Load *filename* from *agent_dir* as an isolated Python module named *module_name*."""
+def _import_module_file(
+    agent_dir: Path, filename: str, *, module_name: str, source: str | None = None
+) -> Any:
+    """Load *filename* from *agent_dir* as an isolated Python module named *module_name*.
+
+    With *source*, run that text in place of the file's bytes. ``__file__``
+    still names the file, so a wrapper finds its scripts beside it.
+    """
     module_file = agent_dir / filename
     if not module_file.exists():
         raise AgentLoadError(f"No {filename} found in {agent_dir}")
@@ -1701,7 +1983,10 @@ def _import_module_file(agent_dir: Path, filename: str, *, module_name: str) -> 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module  # register so relative imports inside the file work
     try:
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        if source is None:
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+        else:
+            exec(compile(source, str(module_file), "exec"), module.__dict__)
     except Exception as exc:
         del sys.modules[module_name]
         raise AgentLoadError(
@@ -1785,7 +2070,8 @@ class LoadedAgent:
 
         module_name = f"_agent_{self.run_id.replace('-', '_')}_agents"
         agents_module = _import_module_file(
-            self.agent_dir, "agents.py", module_name=module_name
+            self.agent_dir, "agents.py", module_name=module_name,
+            source=_safe_agents_source(self.agent_name, agents_file),
         )
         if not hasattr(agents_module, "build_agents"):
             raise AgentLoadError(

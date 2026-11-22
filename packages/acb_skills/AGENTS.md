@@ -15,6 +15,7 @@ not write a second copy of that seam. A bare test file name is under
 `tests/unit/`, and a bare spec name is under `project-docs/specs/`.
 
 1. loader.py -- `load_agent()` is the main entry point. It supports a GitHub `repo_url` and a `local_path`.
+   - Task 691 (H-281): each load upgrades an old auto-sync wrapper in `agents.py` to `child_env`. The import refuses a generated wrapper that it cannot upgrade, and that tool starts no process. Fence: `test_old_wrapper_upgrade.py`.
 2. integrations.py -- `build_integrations()` resolves credentials from the Integration Registry.
 3. agent_tools.py -- `call_agent`, `call_agents_parallel` and `call_agent_background` for cross-agent delegation.
 4. web_tools.py -- `web_search` and `fetch_page` (spec `web_research.md` §3.1). They need no credential.
