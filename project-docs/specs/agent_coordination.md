@@ -2065,6 +2065,7 @@ They keep their own gates.
 - **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The layout gives the same positions for the same input, and no two nodes overlap.
 - **Fence.** `lib/agentMap.test.ts` (new), a vitest for the switch, `src/lib/theme/conformance.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview, because the map is a new view. **Depends on.** SW-102.
+- **Built and dark, 2026-11-21.** The switch, the canvas, the outline and the side sheet are in the code. The side sheet shows the facts of a node and its tasks, and it opens the task. It does not open a run panel, because `AgentRunPanel` reads a task and not a session. The map shows only while `shape=map` answers, so `AGENT_MAP_ORGS` off hides it. The visual review and the owner preview are open.
 
 #### SW-104 · The machine and the model on each run
 
@@ -2082,6 +2083,7 @@ They keep their own gates.
 - **Done when.** A new session on the PC and one on metorite-home each show a machine and a model on the map.
 - **Fence.** `tests/unit/test_mcp_edge_prompts.py` for the protocol line. The text in this repository is advisory (R7).
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-104.
+- **Built (task 3626), 2026-11-21.** Line 1 of the protocol block asks for `agent_label`, `host`, `host_kind` and `model` (protocol version 3, and the sixth line stays free). The claim step of `work_on_task` and of the queued-work message says the same. The text in this repository (`next-ticket.md`, `home_box.md`, `lane-rules.md`, the playbook) asks for it. The `SessionStart` hook of this repository does not give the values yet.
 
 #### SW-106 · The map shows the machine and the model
 
