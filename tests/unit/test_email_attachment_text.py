@@ -266,9 +266,9 @@ def _spy_parse(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     real = tools.parse_bounded
 
-    async def _spy(data: bytes, suffix: str) -> Any:
+    async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
         calls.append(suffix)
-        return await real(data, suffix)
+        return await real(data, suffix, **kw)
 
     monkeypatch.setattr(m, "parse_bounded", _spy)
     return calls
@@ -610,10 +610,10 @@ class TestTheTextRoute:
         parses: list[str] = []
         real = tools.parse_bounded
 
-        async def _slow(data: bytes, suffix: str) -> Any:
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
             parses.append(suffix)
             await gate.wait()
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         async def _until(ready: Any) -> None:
             """A bound on each wait, so a broken guard fails and never hangs."""
@@ -711,9 +711,9 @@ class TestTheParseIsBounded:
         seen: list[bool] = []
         real = tools.parse_bounded
 
-        async def _spy(data: bytes, suffix: str) -> Any:
+        async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
             seen.append(h.session_open)
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         monkeypatch.setattr(m, "parse_bounded", _spy)
         got = await _text()
@@ -750,6 +750,79 @@ class TestTheParseIsBounded:
         while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
             time.sleep(0.05)
         assert _free_slots() == tools.MAX_PARSES
+
+
+class TestTheHoldFollowsTheWorker:
+    """H-253, EM-T11 slot gap. The hold of a member ends with the worker that
+    holds the parse slot, and not with the request."""
+
+    @staticmethod
+    def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+
+    @staticmethod
+    def _wait(ready: Any) -> None:
+        end = time.monotonic() + 30
+        while not ready() and time.monotonic() < end:
+            time.sleep(0.02)
+        assert ready(), "the wait timed out"
+
+    async def test_a_stuck_worker_keeps_the_hold_until_it_ends(self, monkeypatch) -> None:
+        self._fast(monkeypatch)
+        go_on = threading.Event()
+        calls: list[int] = []
+
+        def _extract(_data: bytes, _suffix: str) -> Any:
+            calls.append(1)
+            if len(calls) == 1:
+                go_on.wait(20)
+            raise at.AttachmentRefused("late")
+
+        monkeypatch.setattr(tools, "extract_text", _extract)
+        _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7",
+                 owners=frozenset({OWNER, SECOND}))
+        try:
+            first = await _text()
+            assert "took too long" in (first.reason or "")
+            assert _free_slots() == tools.MAX_PARSES - 1
+            again = await _text()
+            assert (again.kind, again.reason) == ("unreadable", m._BUSY_REASON)
+            assert len(calls) == 1, "the second read of one member parsed"
+            # Member B still gets the free slot.
+            other = await _text(email=SECOND)
+            assert other.reason == "late"
+            assert len(calls) == 2
+        finally:
+            go_on.set()
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+        third = await _text()
+        assert third.reason == "late", "the hold stayed after the worker ended"
+        assert not m._READING
+        await asyncio.to_thread(self._wait, lambda: _free_slots() == tools.MAX_PARSES)
+
+    async def test_the_hold_goes_when_the_worker_raises(self, monkeypatch) -> None:
+        def _boom(_data: bytes, _suffix: str) -> Any:
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr(tools, "extract_text", _boom)
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        got = await _text()
+        assert got.kind == "unreadable"
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+
+    async def test_the_hold_goes_when_no_slot_is_free(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        taken = 0
+        while tools._SLOTS.acquire(blocking=False):
+            taken += 1
+        try:
+            got = await _text()
+            assert "Another file is being read" in (got.reason or "")
+            assert not m._READING, "the hold leaked when no slot was free"
+        finally:
+            for _ in range(taken):
+                tools._SLOTS.release()
 
 
 # ── 3. The download route is unchanged ──────────────────────────────────────

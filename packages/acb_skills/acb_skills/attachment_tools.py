@@ -281,13 +281,32 @@ class _Slot:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._held = True
+        self._after: list[Callable[[], None]] = []
 
     def release(self) -> None:
         with self._lock:
             if not self._held:
                 return
             self._held = False
+            after, self._after = self._after, []
         _SLOTS.release()
+        for call in after:
+            _run_quietly(call)
+
+    def when_released(self, call: Callable[[], None]) -> None:
+        """Run *call* once, when the slot is free. At once if it is free now."""
+        with self._lock:
+            if self._held:
+                self._after.append(call)
+                return
+        _run_quietly(call)
+
+
+def _run_quietly(call: Callable[[], None]) -> None:
+    try:
+        call()
+    except Exception as exc:  # a callback never breaks a slot release
+        _log.warning("attachment.slot_callback_failed", error=type(exc).__name__)
 
 
 def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
@@ -299,6 +318,7 @@ def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
 
 async def parse_bounded(
     data: bytes, suffix: str, *, ocr: bool = True, deadline: float | None = None,
+    on_worker_done: Callable[[], None] | None = None,
 ) -> Extracted | str:
     """The text of *data*, or a sentence that says why there is none.
 
@@ -320,11 +340,31 @@ async def parse_bounded(
     *ocr* ``False`` is a read with no OCR, whatever the flag says. A caller
     with a short budget passes it (fix round 2): the reply drafter reads up
     to six files in 8 to 20 s, and an OCR read would spend that budget.
+
+    *on_worker_done* runs once, when the text parse worker gives its slot
+    back (H-253). A parse past its deadline answers, and keeps its slot. The
+    caller keeps its own hold until this call. It runs at once when no
+    worker holds a slot, and it runs when this call raises or is cancelled.
+    It may run on the worker thread, so it must be thread safe.
     """
+    held: list[_Slot] = []
+    try:
+        return await _parse_bounded(data, suffix, ocr, deadline, held)
+    finally:
+        if on_worker_done is not None:
+            if held:
+                held[0].when_released(on_worker_done)
+            else:
+                _run_quietly(on_worker_done)
+
+
+async def _parse_bounded(
+    data: bytes, suffix: str, ocr: bool, deadline: float | None, held: list[_Slot],
+) -> Extracted | str:
     use_ocr = ocr and attachment_ocr.ocr_enabled()
     if use_ocr and attachment_ocr.image_suffix(suffix):
         return await attachment_ocr.ocr_bounded(data, suffix, deadline=deadline)
-    got = await _parse_text(data, suffix)
+    got = await _parse_text(data, suffix, held)
     if use_ocr and isinstance(got, Extracted) and attachment_ocr.wants_ocr(got):
         return await attachment_ocr.ocr_bounded(
             data, ".pdf", text_layer=got, deadline=deadline,
@@ -332,11 +372,19 @@ async def parse_bounded(
     return got
 
 
-async def _parse_text(data: bytes, suffix: str) -> Extracted | str:
-    """The text parse of :func:`parse_bounded`, on the bounded pool."""
+async def _parse_text(
+    data: bytes, suffix: str, held: list[_Slot] | None = None,
+) -> Extracted | str:
+    """The text parse of :func:`parse_bounded`, on the bounded pool.
+
+    The slot goes into *held* as soon as it exists, so the caller can wait
+    for its release, even when this call is cancelled.
+    """
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
     slot = _Slot()
+    if held is not None:
+        held.append(slot)
     try:
         job: Future[Extracted] = _PARSE_POOL.submit(
             contextvars.copy_context().run, _parse_and_release, data, suffix, slot,
