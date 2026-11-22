@@ -18,7 +18,9 @@ BYPASSRLS), on a database with the whole ladder and two organizations:
    stays a draft, and the version says ``via = chat``;
 4. the REAL ``create_space`` is the server's 403 for a member who is no
    Knowledge manager. For a manager it makes the space with no grant;
-5. a member of org B cannot find a space of org A, and cannot edit its page.
+5. a member of org B cannot find a space of org A, and cannot edit its page;
+6. the REAL ``edit_page`` on a PUBLISHED page makes no card and changes no
+   row. Only ``propose_edit`` changes published text (F2).
 
 Nothing here publishes: each page that a chat tool touched stays a draft.
 """
@@ -190,3 +192,36 @@ async def test_org_b_cannot_find_a_space_or_edit_a_page_of_org_a(
     assert _scalar(ns, "SELECT count(*) FROM kb_pages WHERE title = 'Hijack'") == 0
     assert _scalar(ns, "SELECT body_md FROM kb_pages WHERE id = CAST(:p AS uuid)",
                    p=made["id"]) == "A"
+
+
+async def test_edit_page_never_changes_a_published_page(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """F2: only propose_edit changes published text. The real tool makes no card
+    and no write, and the row and its versions stay as they were."""
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Policies", [{"subject": writer_email, "level": "write"}])
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": space, "title": "Leave", "body_md": "old"}, status=201)
+    await _ok(ns, writer, "POST", f"/knowledge/pages/{made['id']}/publish")
+    before = _rows(ns, "SELECT title, body_md, state, updated_at FROM kb_pages "
+                       "WHERE id = CAST(:p AS uuid)", p=made["id"])
+    versions = _scalar(ns, "SELECT count(*) FROM kb_page_versions WHERE page_id = :p",
+                       p=made["id"])
+    cards = _approve(monkeypatch)
+
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.edit_page(
+        page_id=made["id"], title="Leave v2", body="new"))
+    assert out == kt.PUBLISHED_PAGE
+    assert cards == []
+    after = _rows(ns, "SELECT title, body_md, state, updated_at FROM kb_pages "
+                      "WHERE id = CAST(:p AS uuid)", p=made["id"])
+    assert [tuple(r) for r in after] == [tuple(r) for r in before]
+    assert before[0][2] == "published"
+    assert _scalar(ns, "SELECT count(*) FROM kb_page_versions WHERE page_id = :p",
+                   p=made["id"]) == versions

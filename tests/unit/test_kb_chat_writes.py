@@ -63,6 +63,7 @@ class _Gateway:
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
+        self.spaces: Any = SPACES
         self.write_status = 201
         self.write_body: Any = {"id": PAGE, "title": "Refund policy", "state": "draft"}
         self.page: Any = {"id": PAGE, "title": "Refunds", "state": "draft",
@@ -71,7 +72,7 @@ class _Gateway:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.method == "GET" and request.url.path == "/knowledge/spaces":
-            return httpx.Response(200, json=SPACES)
+            return httpx.Response(200, json=self.spaces)
         if request.method == "GET":
             return httpx.Response(200, json=self.page)
         return httpx.Response(self.write_status, json=self.write_body)
@@ -195,11 +196,35 @@ class TestTheCard:
         assert "New title: Refund policy" in context and BODY.strip() in context
         assert card.calls[0]["detail"] == "The page stays a draft. It is not published."
 
-    def test_a_published_page_card_says_readers_see_the_change(self, gateway, monkeypatch):
+    def test_a_published_page_has_no_card_and_no_write(self, gateway, monkeypatch):
+        """F2: only propose_edit changes published text. Mutation: drop the
+        published check in edit_page -> red."""
         gateway.page = {**gateway.page, "state": "published"}
         card = _card(monkeypatch, gateway)
-        _run(kt.edit_page(PAGE, body="new"))
-        assert "Its readers see the change" in card.calls[0]["detail"]
+        out = _run(kt.edit_page(PAGE, title="New", body="new"))
+        assert out == kt.PUBLISHED_PAGE
+        assert "propose_edit" in out and "KNOWLEDGE_PROPOSALS" in out
+        assert card.calls == [] and gateway.writes() == []
+
+    def test_a_body_that_fits_alone_but_not_with_the_head_lines_is_refused(
+            self, gateway, monkeypatch):
+        """The card holds the head lines too. A body that fits alone but not
+        with them is refused, and nothing is cut."""
+        card = _card(monkeypatch, gateway)
+        body = "x" * (kt.CARD_TEXT_MAX - 10)
+        assert len(body) <= kt.CARD_TEXT_MAX
+        out = _run(kt.create_page("Refund policy", body, space="Company"))
+        assert "too long to show in full on one card" in out
+        out = _run(kt.edit_page(PAGE, body=body))
+        assert "too long to show in full on one card" in out
+        assert card.calls == [] and gateway.writes() == []
+
+    def test_the_space_line_names_the_slug(self, gateway, monkeypatch):
+        card = _card(monkeypatch, gateway)
+        _run(kt.create_page("T", "B", space="Company"))
+        assert "Space: Company (slug: company)" in card.calls[0]["context"].splitlines()
+        _run(kt.edit_space("Company", purpose="New"))
+        assert card.calls[1]["context"].splitlines()[0] == "Space: Company (slug: company)"
 
     def test_an_archived_page_has_no_card(self, gateway, monkeypatch):
         gateway.page = {**gateway.page, "state": "archived"}
@@ -236,6 +261,25 @@ class TestTheWrites:
         card = _card(monkeypatch, gateway)
         assert _run(kt.create_page("T", "B", space="Legal")) == kt.NO_SPACE
         assert card.calls == [] and gateway.writes() == []
+
+    @pytest.mark.parametrize(("names", "asked", "wanted"), [
+        (("Design", "Design Space"), "Design Space", "Design Space"),
+        (("Design", "Design Space"), "design space", "Design Space"),
+        (("Design Space",), "Design Space", "Design Space"),
+        (("Design",), "Design space", "Design"),
+        (("Company",), "company space", "Company"),
+    ])
+    def test_the_whole_name_wins_before_the_short_form(
+            self, gateway, monkeypatch, names, asked, wanted):
+        """Mutation: strip " space" before the whole-name match -> the first
+        two rows find "Design" or two spaces."""
+        gateway.spaces = {"spaces": [
+            {"id": f"3f2c1a4e-0000-4000-8000-00000000010{i}", "slug": f"s{i}",
+             "name": name, "kind": "team", "purpose": ""}
+            for i, name in enumerate(names)]}
+        card = _card(monkeypatch, gateway)
+        _run(kt.create_page("T", "B", space=asked))
+        assert f"Space: {wanted} (slug:" in card.calls[0]["context"]
 
     def test_edit_page_patches_only_what_changes(self, gateway, monkeypatch):
         _card(monkeypatch, gateway)
@@ -313,7 +357,7 @@ class TestTheRefusal:
 
     def test_the_words_are_plain(self):
         for text in (kt.DRAFT_LINE, kt.NOT_SAVED, kt.NO_CARD_SAVED, kt.NO_RIGHT,
-                     kt.BAD_PARENT, kt.NO_SPACE, kt.TWO_SPACES):
+                     kt.BAD_PARENT, kt.NO_SPACE, kt.TWO_SPACES, kt.PUBLISHED_PAGE):
             assert ";" not in text, text
             for sentence in re.split(r"(?<=\.)\s+", text):
                 assert len(sentence.split()) <= 20, sentence

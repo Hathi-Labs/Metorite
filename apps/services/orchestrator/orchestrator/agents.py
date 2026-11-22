@@ -308,8 +308,9 @@ _KB_WRITES_SWAP: tuple[str, str] = (
     _COMPANY_SEARCH_SWAPS[0][1],
     _COMPANY_SEARCH_SWAPS[0][1]
     + "- create_page, edit_page, create_space, edit_space: when the member asks you to\n"
-    "  write, change or file a page or a space in Knowledge. Each one shows the full\n"
-    "  text on a card first. A new page is a draft. You never publish\n",
+    "  write a page, change a draft page, or make or change a space in Knowledge. Each\n"
+    "  one shows the full text on a card first. A new page is a draft. edit_page changes\n"
+    "  only a draft. For a published page, use propose_edit. You never publish\n",
 )
 
 

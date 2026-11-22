@@ -28,6 +28,11 @@ does not fit whole on one card gets a sentence and no card. A new page is
 always a draft, and no tool publishes (F2). The chat sends no grant. The
 server checks the right, and a 403 comes back as its own sentence.
 
+`edit_page` changes only a draft. For a published page it makes no card and
+no write, and it names `propose_edit`, which needs `KNOWLEDGE_PROPOSALS`. The
+PATCH route takes no base version, so a draft edit can overwrite a change
+that a colleague made while the card waited.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -141,10 +146,10 @@ epic sets the order of the waves after it. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Eight ceilings had gone up since P-0 (calendar,
-chat, email, integrations, knowledge, settings, shell, studio), and each one
-names its task now. The CRM wave P-3 had no task, so task 3678 is its task.
-Fence: `tests/unit/test_chat_parity.py`.
+task of the wave of that app. Seven ceilings are above P-0 now (calendar,
+chat, email, integrations, settings, shell, studio), and each one names its
+task. The CRM wave P-3 had no task,
+so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.

@@ -689,7 +689,10 @@ async def propose_edit(
 # checks the member's right on the space, and the version says `via = chat`.
 #
 # A new page is always a draft: `POST /knowledge/pages` inserts `state =
-# 'draft'` and takes no state. No tool here publishes (F2, D-KB-4). The
+# 'draft'` and takes no state. `edit_page` changes only a draft. A published
+# page changes only through `propose_edit` and a person's accept (F2). The
+# PATCH route takes no base version, so the tool sends none. No tool here
+# publishes (F2, D-KB-4). The
 # chat sends no grant of a space (D-PM-40). Fence:
 # `tests/unit/test_kb_chat_writes.py`, and `test_kb_chat_writes_r8.py` on a
 # real database.
@@ -712,6 +715,14 @@ NO_CARD_SAVED = "No card could reach the member, so nothing was saved."
 
 #: What the model reads for a 403 with no sentence from the gateway.
 NO_RIGHT = "You cannot make this change in Knowledge. Nothing was saved."
+
+#: What the model reads for a published page (F2, knowledge_base.md §8.1).
+#: Only ``propose_edit`` changes published text, and a person accepts it.
+PUBLISHED_PAGE = (
+    "The page is published, so this tool does not change it. Nothing was saved. "
+    "Use propose_edit to propose the change. A person accepts it in Knowledge. "
+    "propose_edit needs KNOWLEDGE_PROPOSALS on."
+)
 
 #: What the model reads for a page id that is not a UUID.
 BAD_PARENT = "Give the parent page id: the UUID in a /knowledge/pages/<id> link."
@@ -813,16 +824,35 @@ async def _find_space(space: str, *, tool: str) -> dict[str, Any]:
     if sid:
         found = [s for s in spaces if str(s.get("id")) == sid]
     else:
+        # The whole words first, so "Design Space" finds the space of that
+        # name and never a space called "Design". Only with no match does
+        # the tool try the words without a last " space".
         folded = _fold(want)
-        bare = folded[:-len(" space")] if folded.endswith(" space") else folded
-        found = [s for s in spaces
-                 if bare and bare in (_fold(str(s.get("name") or "")),
-                                      _fold(str(s.get("slug") or "")))]
+        found = _named(spaces, folded)
+        if not found and folded.endswith(" space"):
+            found = _named(spaces, folded[:-len(" space")])
     if not found:
         raise _Refused(NO_SPACE)
     if len(found) > 1:
         raise _Refused(TWO_SPACES)
     return found[0]
+
+
+def _named(spaces: list[dict[str, Any]], folded: str) -> list[dict[str, Any]]:
+    """Each space whose folded name or slug is *folded*."""
+    if not folded:
+        return []
+    return [s for s in spaces
+            if folded in (_fold(str(s.get("name") or "")), _fold(str(s.get("slug") or "")))]
+
+
+def _space_line(space: dict[str, Any] | None) -> str:
+    """The Space line of a card: the name, and the slug in brackets."""
+    if space is None:
+        return "Space: your own space"
+    name = _line(space.get("name")) or "(unnamed)"
+    slug = _line(space.get("slug"))
+    return f"Space: {name}" + (f" (slug: {slug})" if slug else "")
 
 
 def _fits(context: str) -> str | None:
@@ -892,7 +922,7 @@ async def create_page(
     where = _line(found.get("name")) if found else "your own space"
     context = "\n".join([
         f"Title: {shown}",
-        f"Space: {where}",
+        _space_line(found),
         *([f"Under page: /knowledge/pages/{parent}"] if parent else []),
         "",
         FULL_TEXT_LINE,
@@ -921,11 +951,11 @@ async def create_page(
 
 @_read_tool
 async def edit_page(page_id: str, title: str | None = None, body: str | None = None) -> str:
-    """Change the title or the text of a Knowledge page. It never publishes a draft.
+    """Change the title or the text of a DRAFT Knowledge page. It never publishes it.
 
-    One card shows the member the page, its state and the full new text
-    first. Nothing is saved on a "no". A draft stays a draft. If the page is
-    published, its readers see the change when the member approves.
+    One card shows the member the page and the full new text first. Nothing
+    is saved on a "no". The draft stays a draft. A published page is never
+    changed here: propose an edit of it with propose_edit.
 
     Args:
         page_id: The page's id: the UUID in its /knowledge/pages/<id> link.
@@ -950,6 +980,10 @@ async def edit_page(page_id: str, title: str | None = None, body: str | None = N
     state = _line(page.get("state")) or "unknown"
     if state == "archived":
         return "The page is archived, so nothing was saved."
+    if state == "published":
+        return PUBLISHED_PAGE
+    if state != "draft":
+        return "This tool changes only a draft page. Nothing was saved."
     space = _line(page.get("space_name"))
     lines = [
         f"Page: {_line(page.get('title')) or '(untitled)'}",
@@ -968,11 +1002,7 @@ async def edit_page(page_id: str, title: str | None = None, body: str | None = N
     too_long = _fits(context)
     if too_long:
         return too_long
-    detail = (
-        "The page is published. Its readers see the change when you approve."
-        if state == "published" else
-        "The page stays a draft. It is not published."
-    )
+    detail = "The page stays a draft. It is not published."
     if not await _card("Save this change to a Knowledge page?", detail, context):
         return _not_saved()
     payload: dict[str, Any] = {}
@@ -1064,7 +1094,7 @@ async def edit_space(space: str, name: str | None = None, purpose: str | None = 
         return problem
     found = await _find_space(space, tool="edit_space")
     sid = str(uuid.UUID(str(found.get("id"))))
-    lines = [f"Space: {_line(found.get('name')) or '(unnamed)'}"]
+    lines = [_space_line(found)]
     if name is not None:
         lines.append(f"New name: {_line(name)}")
     if purpose is not None:
