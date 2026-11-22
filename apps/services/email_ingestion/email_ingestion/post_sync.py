@@ -86,6 +86,17 @@ def triage_once_per_cycle() -> bool:
     return bool(getattr(get_settings(), "email_triage_once_per_cycle", False))
 
 
+def classify_one_at_a_time() -> bool:
+    """The ONE reader of ``email_classify_one_at_a_time`` (WS-17 EM-T16 H-285).
+
+    True: the gateway runs one Reply Zero classify of a mailbox at a time.
+    Fence: ``tests/unit/test_email_classify_one_at_a_time.py``.
+    """
+    from acb_common.settings import get_settings
+
+    return bool(getattr(get_settings(), "email_classify_one_at_a_time", False))
+
+
 def status_skips_rule_match() -> bool:
     """The ONE reader of ``email_status_skips_rule_match`` (WS-17 EM-T16
     PR-B).
