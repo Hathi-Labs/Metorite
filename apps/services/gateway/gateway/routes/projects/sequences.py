@@ -82,6 +82,7 @@ RETURNING id, value, reserved_at
 _RUN_OF_TASK_SQL = """
 SELECT 1 FROM pm_agent_runs
  WHERE id = CAST(:run AS uuid) AND task_id = CAST(:task AS uuid)
+   AND task_id IS NOT NULL
 """
 
 
