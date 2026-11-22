@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import time
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -817,6 +819,27 @@ class MessageSummariesRequest(BaseModel):
     ids: list[str]
 
 
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def summary_ids(raw: list[str] | None) -> list[str]:
+    """The valid message ids of a summaries request, canonical, in order.
+
+    A client may send ``id=<uuid>``, the label that the list tools print, so
+    the label drops first. An id that is not a UUID drops out. One bad id
+    must never fail the batch: asyncpg raised ``DataError`` for it, and the
+    route answered 500 for every row (task 3863).
+    """
+    out: list[str] = []
+    for item in raw or []:
+        cleaned = _ID_LABEL.sub("", str(item or "").strip().strip("\"'`").strip(), count=1)
+        try:
+            out.append(str(uuid.UUID(cleaned.strip().strip("\"'`").strip())))
+        except ValueError:
+            continue
+    return out
+
+
 @router.post("/messages/summaries")
 async def message_summaries(
     req: MessageSummariesRequest,
@@ -830,7 +853,7 @@ async def message_summaries(
     server-side, so the card is self-contained regardless of which list tool
     (or none) surfaced the id. Owner-scoped; unknown/foreign ids are omitted.
     Order follows the input ``ids`` so the agent's grouping is preserved."""
-    ids = [i for i in (req.ids or []) if i]
+    ids = summary_ids(req.ids)
     if not ids:
         return {"summaries": []}
     async with _tenant_session() as db:

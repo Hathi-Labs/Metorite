@@ -448,6 +448,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A"),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
+    # Task 3636: which known people cannot open a task given to them. A card
+    # reads it before the Approve, as it reads `names`.
+    Route("GET", "/projects/people/reach", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),
     # ── analytics.py · reports.py ────────────────────────────────────────
     Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A"),
@@ -1676,6 +1679,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "mapping": _MAPPING_CARD_REASON,
     },
     ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    # Task 3636: a card reads which known people cannot open a task. The card
+    # passes the addresses of its own assignees. No tool argument names them.
+    ("GET", "/projects/people/reach"): {
+        "emails": "A card passes the assignees that it names (task 3636)."},
     # RX-1: a held card reads these. No tool argument names them.
     ("GET", "/projects/nodes/{project_id}/audience"): {
         "people": _HELD_CARD_REASON,
