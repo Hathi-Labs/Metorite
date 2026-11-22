@@ -41,7 +41,7 @@ org (§15.4).
 the skill rule that the review of PR #635 left (§16.3), with the review
 repairs of 2026-11-22. The orphan rule and the store ask bind every shared
 dir, and each refusal has its own text. A personal dir is exempt from both,
-for a read and for a write. Two gaps stay open in a team dir, and task 3892
+for a read and for a write. Three gaps stay open in a team dir, and task 3892
 carries them (§16.3). No team-instanced agent ships today.
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
@@ -2440,8 +2440,8 @@ These facts change or add to the text above:
   - The tree of the Files routes leaves out each path that
     `_odd_name_form` refuses, so the tree never names a file that GET
     answers 404 for.
-- **Two gaps of the skill rule stay open in a team dir.** Task 3892 carries
-  the fix of both. No team-instanced agent ships today.
+- **Three gaps of the skill rule stay open in a team dir.** Task 3892 carries
+  the fix of each. No team-instanced agent ships today.
   - The file-store rules bind a team dir. But a `code_task` container
     mounts the whole dir read-write. `code_session.py` refuses only a tenant
     key, and `_build_mounts` gives `code_task` no skill cover. So
@@ -2449,6 +2449,9 @@ These facts change or add to the text above:
   - The Files routes save a skill in a team dir with no marker. The file
     store then hides that folder from every run, the author's run too. This
     fails closed.
+  - `recall_notes` and `save_note` check the skill owner in a tenant dir
+    only (`note_tools.py` gates on `is_tenant_instance`). In a team dir they
+    can read the skill of another member.
 - **The residual of the skill rule, named.** The disk can lose a skill
   folder while the store still holds it. Until the marker comes back, a
   covered run of the author cannot write into that folder. The rehydrate at

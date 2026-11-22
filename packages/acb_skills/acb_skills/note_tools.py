@@ -66,8 +66,9 @@ def _notes_target(root: Path, clean: str, path: str) -> tuple[Path, str] | str:
     * a skill folder that is not this member's own (``agent_paths.skill_owner``
       is not MINE) is refused, for both tools (HANDOFF H-245 step 3). That is
       another member's folder, one with no marker, and a new one: a notes tool
-      records no author, so it never makes a skill. A personal agent's dir
-      holds no marker, so the rule binds the tenant dir only.
+      records no author, so it never makes a skill. The rule binds the tenant
+      dir only. A personal dir holds one member's skills. A team dir is a
+      known gap (task 3892).
 
     ``agent-data/`` is not a thread folder, so ``agent-data/NOTES.md`` stays
     one file for the whole tenant dir, as before. That file is shared by every
