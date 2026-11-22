@@ -43,6 +43,12 @@ class Settings:
     max_range_days: int = 92
     max_rows: int = 200
     calls_per_minute: int = 60
+    # TLY-4, the local copy. The owner's answer to LNK-Q9 (task 3769): every
+    # 30 minutes while TallyPrime is open, and a maximum age of 7 days. An
+    # empty COPY_DIR turns the copy off.
+    copy_dir: str = ""
+    copy_interval_min: int = 30
+    copy_max_age_days: int = 7
     log_dir: str = ""
 
     def validate(self) -> Settings:
@@ -60,6 +66,10 @@ class Settings:
             raise SettingsError("CALL_DEADLINE_S must be above 0 and below 30.")
         if not 0 < self.tally_timeout_s <= self.call_deadline_s:
             raise SettingsError("TALLY_TIMEOUT_S must be above 0 and not above CALL_DEADLINE_S.")
+        if not 5 <= self.copy_interval_min <= 1440:
+            raise SettingsError("COPY_INTERVAL_MIN must be between 5 and 1440.")
+        if not 1 <= self.copy_max_age_days <= 90:
+            raise SettingsError("COPY_MAX_AGE_DAYS must be between 1 and 90.")
         if not 1 <= self.calls_per_minute <= 600:
             raise SettingsError("CALLS_PER_MINUTE must be between 1 and 600.")
         if self.public_host and ("/" in self.public_host or ":" in self.public_host):
@@ -88,6 +98,9 @@ _NAMES: dict[str, tuple[str, type]] = {
     "MAX_RANGE_DAYS": ("max_range_days", int),
     "MAX_ROWS": ("max_rows", int),
     "CALLS_PER_MINUTE": ("calls_per_minute", int),
+    "COPY_DIR": ("copy_dir", str),
+    "COPY_INTERVAL_MIN": ("copy_interval_min", int),
+    "COPY_MAX_AGE_DAYS": ("copy_max_age_days", int),
     "LOG_DIR": ("log_dir", str),
 }
 

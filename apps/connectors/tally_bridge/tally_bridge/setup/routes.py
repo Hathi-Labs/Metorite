@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
+from collections.abc import Callable
 from importlib import resources
 from typing import Any
 
@@ -39,7 +40,7 @@ from tally_bridge.reader import (
     records,
 )
 from tally_bridge.secret_store import ReadOnlySecretStore, SecretStore, new_token, token_sha256
-from tally_bridge.settings import LiveSettings, SettingsError, SettingsStore
+from tally_bridge.settings import LiveSettings, Settings, SettingsError, SettingsStore
 from tally_bridge.setup.guard import KEY_HEADER, SECURITY_HEADERS, SetupGuard, refused
 
 MAX_COMPANIES = 50
@@ -61,8 +62,11 @@ def build_setup_routes(
     store: SettingsStore,
     secrets: SecretStore,
     reader: TallyReader,
+    on_saved: Callable[[Settings], object] | None = None,
 ) -> list[Route]:
-    api = _SetupApi(live, store, secrets, reader)
+    """``on_saved`` runs after a new allow-list is saved. Address mode passes
+    the delete of the local copy of each company that left the list (TLY-4)."""
+    api = _SetupApi(live, store, secrets, reader, on_saved)
     return [
         Route("/setup", api.page, methods=["GET"]),
         Route("/setup/app.js", api.asset("setup.js", "text/javascript; charset=utf-8")),
@@ -90,7 +94,9 @@ class _SetupApi:
         store: SettingsStore,
         secrets: SecretStore,
         reader: TallyReader,
+        on_saved: Callable[[Settings], object] | None = None,
     ) -> None:
+        self._on_saved = on_saved
         self._live = live
         self._store = store
         self._secrets = secrets
@@ -174,6 +180,8 @@ class _SetupApi:
         except SettingsError as exc:
             return _json({"error": str(exc)}, 500)
         self._live.replace(new)
+        if self._on_saved is not None:
+            self._on_saved(new)
         return _json({"allowed": list(new.allowed_companies)})
 
     async def token(self, request: Request) -> Response:

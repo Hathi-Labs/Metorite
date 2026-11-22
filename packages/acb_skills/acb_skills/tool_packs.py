@@ -887,7 +887,8 @@ _PROJECTS_REMINDERS_WORDS = (
 #: The words of the authority pack (WS-ALN ALN-4). A bare "pin" is out.
 _PROJECTS_AUTHORITY_WORDS = (
     "authority page", "authority of the project", "authority of this project",
-    "pin this page", "pin the page", "pin a page", "unpin",
+    "pin this page", "pin the page", "pin a page", "unpin this page",
+    "unpin the page", "unpin a page",
     # WS-39 LP-1a: the updates of a project.
     "project update", "project updates",
     # WS-55 EA-18d: the questions that agents put and that wait on the member.
