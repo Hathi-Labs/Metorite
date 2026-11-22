@@ -39,6 +39,13 @@ list tools and the aggregate add one line with both counts. One helper,
 :func:`_short_note`, reads ``GET /crm/sync/short-reads`` once for each tool
 call. A failed read adds nothing.
 
+**An old mirror says so** (CRM-Q30c). For an org on ``CRM_MIRROR_AGE_ORGS``,
+the same helper also reads ``GET /crm/sync/mirror-age`` and adds one line
+for the module that the call read, when the mirror of it is held, not
+available in Zoho, or last read 2 hours ago or more. A fresh module adds
+nothing. :func:`mirror_age_on` asks the one flag reader first, so a dark
+org sends no request.
+
 **The overlay of an empty core slot (WS-53 CRM-Q20-3a, ``crm_platform.md``
 §18.13.5).** An approved role can say that a module plays an empty slot:
 Commercials plays Deals. ``crm_aggregate`` then answers from the module, and
@@ -90,7 +97,7 @@ import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Collection
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -810,18 +817,24 @@ def _entity_label(slug: str) -> str:
 SHORT_READS_PATH = "/crm/sync/short-reads"
 
 
+def _key_name(key: str) -> str:
+    """What a line calls a count key: the API name of a module
+    (``Payment_Made``), or the plural label of a core entity (``Contacts``)."""
+    if key.startswith(MODULE_PREFIX):
+        return key[len(MODULE_PREFIX):]
+    return f"{ENTITY_LABELS[key]}s" if key in ENTITY_LABELS else key
+
+
 def _short_line(row: dict[str, Any]) -> str | None:
     """The one line of a short read, or None for a row of a wrong shape."""
     key = str(row.get("key") or "")
     zoho, readable = row.get("zoho_count"), row.get("readable")
     if not key or not isinstance(zoho, int) or not isinstance(readable, int):
         return None
-    name = key[len(MODULE_PREFIX):] if key.startswith(MODULE_PREFIX) else (
-        f"{ENTITY_LABELS[key]}s" if key in ENTITY_LABELS else key)
     return (
-        f"Note: Zoho holds {zoho:,} {name} records, and the connected Zoho user can "
-        f"read {readable:,}. Totals may be short. An admin can widen that user's "
-        "access in Zoho."
+        f"Note: Zoho holds {zoho:,} {_key_name(key)} records, and the connected Zoho "
+        f"user can read {readable:,}. Totals may be short. An admin can widen that "
+        "user's access in Zoho."
     )
 
 
@@ -831,11 +844,21 @@ async def _short_note(keys: frozenset[str] | None) -> str:
 
     ONE read of the route for each tool call. The line is advice, so a read
     that fails, a refusal included, adds nothing and the tool answers as
-    before (CRM-Q30b item 5)."""
+    before (CRM-Q30b item 5). CRM-Q30c: for *keys*, never for each module,
+    the block also holds the age line of each key (:func:`_age_lines`)."""
+    lines = await _short_lines(keys)
+    if keys is not None:
+        lines += await _age_lines(keys)
+    return "\n" + "\n".join(lines) if lines else ""
+
+
+async def _short_lines(keys: frozenset[str] | None) -> list[str]:
+    """The short-read line of each key of *keys*, or of each module when
+    *keys* is None. A failed read gives none."""
     try:
         rows = await _get(SHORT_READS_PATH)
     except Exception:  # advice only: the answer stands without it
-        return ""
+        return []
     lines = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
@@ -845,7 +868,98 @@ async def _short_note(keys: frozenset[str] | None) -> str:
         line = _short_line(row) if wanted else None
         if line:
             lines.append(line)
-    return "\n" + "\n".join(lines) if lines else ""
+    return lines
+
+
+# ── The age of the mirror (CRM-Q30c) ────────────────────────────────────────
+
+#: The route of the age of the mirror of each module (CRM-Q30c).
+MIRROR_AGE_PATH = "/crm/sync/mirror-age"
+#: A module read less than this long ago is fresh, and its line is empty.
+MIRROR_FRESH_FOR = timedelta(hours=2)
+#: Up to this age the line counts hours. From it, the line counts days.
+MIRROR_HOURS_UNTIL = timedelta(hours=48)
+
+
+def mirror_age_on() -> bool:
+    """True when ``CRM_MIRROR_AGE_ORGS`` names the org of this run (CRM-Q30c).
+
+    The rule is ``gateway.routes.crm.flags.mirror_age_allowed``, the one
+    reader of the flag. The org comes from the run boundary
+    (:func:`_run_org`), never from input. A run with no org, and a process
+    with no gateway, get False. Never raises. So a dark org sends no request
+    for the age."""
+    try:
+        from gateway.routes.crm.flags import mirror_age_allowed
+
+        return mirror_age_allowed(_run_org())
+    except Exception:
+        return False
+
+
+def _utc_now() -> datetime:
+    """The time now, with a zone. A seam, so a test sets the clock."""
+    return datetime.now(UTC)
+
+
+def _checked_time(value: Any) -> datetime | None:
+    """An ISO time of the route as a time with a zone, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _age_line(row: dict[str, Any], now: datetime) -> str | None:
+    """The one age line of a module, or None when it is fresh or the row has
+    a wrong shape. Unavailable wins over held, and held wins over the age."""
+    key = str(row.get("key") or "")
+    if not key:
+        return None
+    name = _key_name(key)
+    if row.get("unavailable") is True:
+        return f"{name} are not available in Zoho now, so they may be old."
+    if row.get("held") is True:
+        return f"{name} are held, so they may be old."
+    raw = row.get("checked_at")
+    if raw is None:
+        # No finished read on record: a first import that did not end, or a
+        # read in progress, whose cursor keeps no stamp.
+        return (f"{name} have no finished read from Zoho on record, so they may be old "
+                "or partial.")
+    checked = _checked_time(raw)
+    if checked is None:
+        return None
+    age = now - checked
+    if age < MIRROR_FRESH_FOR:
+        return None
+    if age < MIRROR_HOURS_UNTIL:
+        count, unit = int(age // timedelta(hours=1)), "hours"
+    else:
+        count, unit = int(age // timedelta(days=1)), "days"
+    return f"{name} were last read from Zoho {count} {unit} ago."
+
+
+async def _age_lines(keys: frozenset[str]) -> list[str]:
+    """The age line of each key of *keys* (CRM-Q30c), in key order. With the
+    flag off it sends no request. A failed read gives none, as a short read
+    does."""
+    if not mirror_age_on():
+        return []
+    try:
+        rows = await _get(MIRROR_AGE_PATH)
+    except Exception:  # advice only: the answer stands without it
+        return []
+    now = _utc_now()
+    found = {
+        str(row.get("key")): row for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and str(row.get("key") or "") in keys
+    }
+    lines = [_age_line(found[key], now) for key in sorted(found)]
+    return [line for line in lines if line]
 
 
 def _record_uuid(record_id: str) -> str:

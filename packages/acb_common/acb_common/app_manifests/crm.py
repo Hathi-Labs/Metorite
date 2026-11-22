@@ -320,6 +320,8 @@ CRM = App(
         # ── sync ──
         Route("GET", "/crm/sync/status", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("GET", "/crm/sync/short-reads", "crm_list_modules", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/sync/mirror-age", "crm_list_module_records", "A",
+              also=("crm_list_records", "crm_aggregate"), off_door=_DOOR_READ),
         Route("GET", "/crm/sync/health", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("POST", "/crm/sync/zoho", "", "C", planned="CRM-M2k", off_door=_CONNECTION),
         Route("PUT", "/crm/sync/modules/{key}", "", "B", planned="CRM-M2k", off_door=_CONNECTION),
