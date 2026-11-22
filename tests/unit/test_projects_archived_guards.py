@@ -138,6 +138,52 @@ async def test_a_members_own_task_root_cannot_be_archived(db: FakeProjectsDB):
     assert "own task root cannot be archived" in err.value.detail
 
 
+async def test_an_author_who_lost_sight_of_the_task_gets_404_on_a_comment_delete(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ARC-2b with R5. The author of a comment on a task in an archived project
+    who can no longer see the task gets 404, as the edit gives. A 409 would say
+    that the project is archived to a person who may not see it."""
+    from gateway.routes.projects import activities
+
+    comment = SimpleNamespace(id="c1", task_id="t1", body="Mine")
+    written: list[str] = []
+
+    class _Session:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def own_comment(db, activity_id, user):
+        return comment
+
+    async def visibility(db, user):
+        return SimpleNamespace()
+
+    async def hidden(db, vis, task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    async def filed(db, task_id):
+        raise HTTPException(status_code=409, detail=core.ARCHIVED_PROJECT_REFUSAL)
+
+    async def write(*_a, **_k):
+        written.append("write")
+
+    monkeypatch.setattr(activities, "_tenant_session", _Session)
+    monkeypatch.setattr(activities, "_load_own_comment", own_comment)
+    monkeypatch.setattr(activities, "resolve_visibility", visibility)
+    monkeypatch.setattr(activities, "load_visible_task", hidden)
+    monkeypatch.setattr(activities, "assert_task_id_project_open", filed)
+    monkeypatch.setattr(activities, "update_row", write)
+    monkeypatch.setattr(activities, "touch_task", write)
+    with pytest.raises(HTTPException) as err:
+        await activities.delete_comment("c1", user=USER)
+    assert err.value.status_code == 404
+    assert written == []
+
+
 def test_the_personal_capture_helper_guards_an_archived_target():
     from gateway.routes.projects import personal
 

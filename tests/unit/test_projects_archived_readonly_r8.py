@@ -205,6 +205,43 @@ def _rows(world: Any, sql: str, **params: Any) -> list[Any]:
         return list(c.execute(text(sql), params).fetchall())
 
 
+def _seed_task(
+    world: Any, key: str, project: str, lane: str, *, number: int,
+    parent: str | None = None,
+) -> str:
+    """One more task of ALICE, seeded as the superuser. ``project`` and
+    ``lane`` are keys of ``world.ids``. A task in the Done lane is completed."""
+    from sqlalchemy import text
+
+    i = world.ids
+    i[key] = str(uuid.uuid4())
+    with world.promoted.admin_engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO pm_tasks (id, title, project_id, root_project_id, status_id, "
+                "created_by, organization_id, task_number, parent_task_id, completed_at) "
+                "VALUES (CAST(:t AS uuid), :title, CAST(:p AS uuid), CAST(:r AS uuid), "
+                "CAST(:s AS uuid), :me, CAST(:o AS uuid), :n, CAST(:parent AS uuid), "
+                "CASE WHEN :done THEN now() END)"
+            ),
+            {"t": i[key], "title": f"Task {key}", "p": i[project], "r": i["space"],
+             "s": i[lane], "me": ALICE, "o": world.org, "n": number,
+             "parent": parent, "done": lane == "done"},
+        )
+    return i[key]
+
+
+def _task(world: Any, task_id: str) -> Any:
+    [row] = _rows(
+        world,
+        "SELECT id::text AS id, status_id::text AS status_id, archived_at, "
+        "parent_task_id::text AS parent_task_id FROM pm_tasks "
+        "WHERE id = CAST(:t AS uuid)",
+        t=task_id,
+    )
+    return row
+
+
 def _refused_requests(w: Any) -> list[tuple[str, str, str, dict[str, Any]]]:
     """``(label, method, path, kwargs)`` for each route family that the filed
     project refuses. Task ``f1`` and ``f2`` live in the filed project."""
@@ -418,3 +455,107 @@ async def test_r8_chat_shows_the_sentence_through_the_skill_client(world, monkey
         release_tenant(token)
     assert text.startswith("Refused:"), text
     assert SENTENCE in text, text
+
+
+async def test_r8_an_open_disposition_never_reopens_a_filed_task(world, monkeypatch) -> None:
+    """D77: NEXT, INBOX or WAITING on a Done task reopens it for the board.
+    The reopen changes the status, which is project work, so a filed project
+    refuses it with the sentence. An overlay write that reopens nothing stays
+    open. The bulk overlay names the refused task and keeps the rest."""
+    pytest.importorskip("asyncpg")
+    from gateway.routes.projects import personal
+
+    w = world
+    i = w.ids
+    f3 = _seed_task(w, "f3", "filed", "done", number=121)
+    l3 = _seed_task(w, "l3", "live", "done", number=122)
+    sent: list[str] = []
+
+    async def record(event_type: str, payload: dict[str, Any]) -> None:
+        sent.append(event_type)
+
+    monkeypatch.setattr(personal, "emit", record)
+
+    # The overlay route.
+    resp = await _one(w, "PATCH", f"/projects/tasks/{f3}/personal",
+                      json={"disposition": "NEXT"})
+    assert resp.status_code == 409 and resp.json()["detail"] == SENTENCE, resp.text
+    # Organize, with steps. The refusal comes before the reopen announces a move.
+    resp = await _one(w, "POST", f"/projects/my/tasks/{f3}/organize", json={
+        "kind": "next", "next_action": "Do it", "subtasks": ["A step"],
+    })
+    assert resp.status_code == 409 and resp.json()["detail"] == SENTENCE, resp.text
+    assert "pm.task.status_changed" not in sent, sent
+    # The bulk overlay: the filed task fails with the sentence, the live one reopens.
+    resp = await _one(w, "POST", "/projects/tasks/bulk", json={
+        "task_ids": [f3, l3], "action": "personal", "personal": {"disposition": "NEXT"},
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["failed"] == [{"task_id": f3, "reason": SENTENCE}], body
+    assert [r["task_id"] for r in body["results"]] == [l3], body
+    assert _task(w, f3).status_id == i["done"]
+    assert _task(w, l3).status_id == i["todo"]
+    assert _rows(w, "SELECT 1 FROM pm_task_personal WHERE task_id = CAST(:t AS uuid)",
+                 t=f3) == []
+    # SOMEDAY reopens nothing, so it stays open, and the task stays Done.
+    resp = await _one(w, "PATCH", f"/projects/tasks/{f3}/personal",
+                      json={"disposition": "SOMEDAY"})
+    assert resp.status_code == 200, resp.text
+    assert _task(w, f3).status_id == i["done"]
+    # NEXT on an OPEN filed task reopens nothing, so it stays open too.
+    resp = await _one(w, "PATCH", f"/projects/tasks/{i['f1']}/personal",
+                      json={"disposition": "NEXT"})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_r8_a_subtree_act_skips_a_subtask_in_a_filed_project(world) -> None:
+    """A parent in a live project can hold a subtask in a filed one. Complete
+    and archive with the subtasks skip it, as they skip a hidden one. A delete
+    of all the subtasks keeps it. A delete that names it is refused, and
+    nothing changes."""
+    pytest.importorskip("asyncpg")
+    w = world
+    i = w.ids
+    # Complete the parent with its subtasks.
+    p1 = _seed_task(w, "p1", "live", "todo", number=131)
+    fc1 = _seed_task(w, "fc1", "filed", "todo", number=132, parent=p1)
+    lc1 = _seed_task(w, "lc1", "live", "todo", number=133, parent=p1)
+    resp = await _one(w, "PATCH", f"/projects/tasks/{p1}",
+                      params={"include_subtasks": "true"}, json={"status_id": i["done"]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["subtasks_completed"] == 1
+    assert _task(w, lc1).status_id == i["done"]
+    assert _task(w, fc1).status_id == i["todo"]
+
+    # Archive the parent with its subtasks.
+    p2 = _seed_task(w, "p2", "live", "todo", number=134)
+    fc2 = _seed_task(w, "fc2", "filed", "todo", number=135, parent=p2)
+    lc2 = _seed_task(w, "lc2", "live", "todo", number=136, parent=p2)
+    resp = await _one(w, "POST", f"/projects/tasks/{p2}/archive",
+                      params={"include_subtasks": "true"})
+    assert resp.status_code == 200, resp.text
+    assert _task(w, lc2).archived_at is not None
+    assert _task(w, fc2).archived_at is None
+
+    # Delete the parent. Naming the filed subtask is refused before any write.
+    p3 = _seed_task(w, "p3", "live", "todo", number=137)
+    fc3 = _seed_task(w, "fc3", "filed", "todo", number=138, parent=p3)
+    lc3 = _seed_task(w, "lc3", "live", "todo", number=139, parent=p3)
+    resp = await _one(w, "DELETE", f"/projects/tasks/{p3}",
+                      params={"delete_subtask_ids": [fc3, lc3]})
+    assert resp.status_code == 409 and resp.json()["detail"] == SENTENCE, resp.text
+    assert _task(w, p3) and _task(w, lc3).parent_task_id == p3
+    assert _task(w, fc3).parent_task_id == p3
+    # Delete all: the live subtask goes, the filed one stays.
+    resp = await _one(w, "DELETE", f"/projects/tasks/{p3}",
+                      params={"delete_all_subtasks": "true"})
+    assert resp.status_code == 200, resp.text
+    cascaded = resp.json()["cascaded"]
+    assert cascaded["subtasks_deleted"] == 1
+    assert cascaded["subtasks_kept_hidden"] == 0
+    gone = _rows(w, "SELECT 1 FROM pm_tasks WHERE id = ANY(CAST(:ids AS uuid[]))",
+                 ids=[p3, lc3])
+    assert gone == []
+    # The parent went, so the kept subtask moves up to the top level.
+    assert _task(w, fc3).parent_task_id is None

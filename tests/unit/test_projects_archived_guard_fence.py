@@ -81,10 +81,18 @@ GUARDED: dict[str, tuple[str, str]] = {
 OPEN: dict[str, str] = {
     "PUT /projects/tasks/{task_id}/watch": "A watch is the member's own subscription.",
     "DELETE /projects/tasks/{task_id}/watch": "A watch is the member's own subscription.",
-    "PATCH /projects/tasks/{task_id}/personal": "The overlay (pm_task_personal) is not project work.",
+    "PATCH /projects/tasks/{task_id}/personal": (
+        "The overlay (pm_task_personal) is not project work, so it stays open. "
+        "The one exception is a reopen: NEXT, INBOX or WAITING on a closed task "
+        "changes its status, and personal.reopen_if_closed refuses that (409)."
+    ),
     "POST /projects/tasks/{task_id}/defer": "The overlay: it hides the task from my list only.",
     "POST /projects/tasks/{task_id}/nudge": "An in-app notice to a person, with a stamp on my overlay.",
-    "DELETE /projects/my/tasks/{task_id}": "The purge of a task in my own personal tree.",
+    "DELETE /projects/my/tasks/{task_id}": (
+        "The purge ends a member's own TRASH of a task in their own personal "
+        "tree that no other member is on. It is the member's own data, not team "
+        "work. It deletes no subtask."
+    ),
     "POST /projects/tasks/{task_id}/asks": "A question to a member (decisions), not a task field.",
     "POST /projects/cycles/{cycle_id}/tasks": "Cycle membership is plan data; cycles refuse an archived node.",
     "DELETE /projects/cycles/{cycle_id}/tasks/{task_id}": "Cycle membership is plan data.",
@@ -125,6 +133,50 @@ def test_each_guarded_route_calls_a_guard() -> None:
         if not any(call in source for call in GUARD_CALLS):
             missing.append(f"{key} -> {module}.{name}")
     assert missing == [], f"These functions hold no archived-project guard: {missing}"
+
+
+#: Helpers that change a task the route did not name: the one reopen of an
+#: overlay write, and the subtree acts. Each one refuses or skips a task in an
+#: archived project, with the call named here.
+INNER_WRITERS: dict[tuple[str, str], str] = {
+    ("personal", "reopen_if_closed"): "assert_task_project_open(",
+    ("cascade", "complete_subtree"): "in_archived_project(",
+    ("cascade", "archive_subtree"): "in_archived_project(",
+    ("tasks", "delete_task_in"): "in_archived_project(",
+}
+
+
+def test_each_inner_writer_checks_the_project_of_the_task_it_changes() -> None:
+    missing = []
+    for (module, name), call in sorted(INNER_WRITERS.items()):
+        mod = importlib.import_module(f"gateway.routes.projects.{module}")
+        if call not in inspect.getsource(getattr(mod, name)):
+            missing.append(f"{module}.{name} -> {call}")
+    assert missing == [], f"These helpers hold no archived-project check: {missing}"
+
+
+def test_the_reopen_refuses_before_it_writes_or_announces() -> None:
+    """A reopen of a Done task changes its status. The guard comes before the
+    status write and before ``pm.task.status_changed``, so a refused reopen
+    writes nothing and announces nothing."""
+    from gateway.routes.projects import personal
+
+    src = inspect.getsource(personal.reopen_if_closed)
+    guard = src.index("assert_task_project_open(")
+    assert guard < src.index("apply_status_transition(db")
+    assert guard < src.index('emit("pm.task.status_changed"')
+
+
+def test_the_bulk_overlay_names_a_refused_reopen() -> None:
+    """The bulk ``personal`` act reports the refused reopen as a failed task
+    with the sentence, and the other tasks go on."""
+    from gateway.routes.projects import bulk
+
+    src = inspect.getsource(bulk._act_on_one)
+    at = src.index('if action == "personal":')
+    branch = src[at:src.index('if action == "delete":')]
+    assert "ARCHIVED_PROJECT_REFUSAL" in branch
+    assert '"failed"' in branch
 
 
 def test_agent_run_routes_never_call_the_guard() -> None:

@@ -386,6 +386,13 @@ async def reopen_if_closed(
     The lane is the first ``todo`` lane of the task's OWN status set. A set
     with no ``todo`` lane falls back to the first lane by position, and when
     that lane closes too the task stays where it is: the lane decides.
+
+    ARC-2b (``one_projects_app.md`` §9b.6 rule 2). The reopen changes the
+    status, and the status is project work. So a task in an archived project
+    answers 409 with ``ARCHIVED_PROJECT_REFUSAL`` here, before the status
+    write and before ``pm.task.status_changed``. An overlay write that
+    reopens nothing never reaches the guard, so it stays open. The bulk
+    ``personal`` act catches this 409 and names the task as failed.
     """
     if disposition not in OPEN_DISPOSITIONS:
         return None
@@ -409,6 +416,8 @@ async def reopen_if_closed(
             return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
+    # ARC-2b: refuse before the write and before the event (docstring).
+    await assert_task_project_open(db, task)
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
     await emit("pm.task.status_changed", {
         "task_id": str(task.id), "from": moved["from"].name,
@@ -1064,6 +1073,8 @@ async def set_personal(
         # member looking at it.
         values["clarified_at"] = now()
         # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
+        # ARC-2b: in an archived project the reopen answers 409, and the
+        # overlay is not written either.
         await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         out = _personal_to_dict(row)
@@ -2985,7 +2996,8 @@ async def _organize(
         shared["estimate_mins"] = payload.time_estimate_mins
     if shared:
         # ARC-2b: a date or an estimate is the team's, so an archived project
-        # refuses it (409). The overlay writes below stay open.
+        # refuses it (409). The overlay writes below stay open, except a
+        # reopen, which `reopen_if_closed` refuses before its event.
         await assert_task_project_open(db, task)
         # The way `patch_task` writes them: the row, then what actually moved
         # through the ONE field_change door, so the timeline shows the

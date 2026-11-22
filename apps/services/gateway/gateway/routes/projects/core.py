@@ -584,7 +584,10 @@ def assert_project_open_for_writes(project: Any) -> None:
     It does not live inside ``load_visible_task`` or ``load_visible_project``,
     because those also serve reads. A member's own overlay
     (``pm_task_personal``) and the agent-run routes are not project work and
-    never call it.
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
     """
     if getattr(project, "archived_at", None) is not None:
         raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)

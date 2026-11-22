@@ -653,12 +653,18 @@ async def delete_comment(
 
     WS-55 MCP-G9: a signed agent deletes only a comment of its own client on a
     task in its reach (``_load_agent_comment``), and the delete writes one
-    timeline row with no text. A person's delete is as it was.
+    timeline row with no text.
+
+    ARC-2b: a person's delete needs sight of the task, as the edit does. So
+    an author who lost sight of the task gets 404, and never learns from the
+    archived-project 409 that the project is filed (R5).
     """
     agent = getattr(user, "agent", None)
     async with _tenant_session() as db:
         if agent is None:
             comment = await _load_own_comment(db, activity_id, user)
+            vis = await resolve_visibility(db, user)
+            await load_visible_task(db, vis, str(comment.task_id))
         else:
             comment = await _load_agent_comment(
                 db, activity_id, user, agent.actor_via)

@@ -429,7 +429,15 @@ async def _act_on_one(
         values["clarified_at"] = now()
         # D77 — un-checking a closed task (the card, Focus mode, Undo all
         # arrive here) reopens it for the board, through the one reopen.
-        await reopen_if_closed(db, task, email, values.get("disposition"))
+        try:
+            await reopen_if_closed(db, task, email, values.get("disposition"))
+        except HTTPException as exc:
+            # ARC-2b. The reopen refuses a task in an archived project before
+            # it writes anything, so this task fails with the sentence, its
+            # overlay stays as it was, and the rest of the selection goes on.
+            if exc.status_code == 409 and exc.detail == ARCHIVED_PROJECT_REFUSAL:
+                return "failed", ARCHIVED_PROJECT_REFUSAL
+            raise
         await _upsert_personal(db, task_id, email, values)
         return "applied", "personal"
 
@@ -586,7 +594,9 @@ async def bulk_edit(
 
             # ARC-2b (spec §9b.6 rule 2). Every act but MY overlay is work on
             # the project, so an archived project refuses it per task, with
-            # the sentence, and the rest go on. The overlay is not project work.
+            # the sentence, and the rest go on. The overlay is not project
+            # work. Only its reopen of a closed task is, and `_act_on_one`
+            # names that task as failed.
             if action != "personal":
                 pid = str(task.project_id)
                 if pid not in archived_projects:

@@ -44,6 +44,7 @@ from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
     emit_all,
+    in_archived_project,
     load_subtree,
     movable_subtree,
     subtree_privacy_refusals,
@@ -55,6 +56,7 @@ from gateway.routes.projects.checks import (
 )
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
+    ARCHIVED_PROJECT_REFUSAL,
     CLIENT_TASK_SOURCES,
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -2005,7 +2007,9 @@ async def delete_task_in(
     not in the set is. A kept one whose parent goes moves up to its nearest
     surviving ancestor, or to the task's own parent when none below the task
     survives (:func:`kept_parents`). ``subtasks_kept_hidden`` counts the
-    hidden ones, with no title. Each row goes through a plain ``DELETE``, so
+    hidden ones, with no title. A descendant in an archived project is never
+    deleted either (ARC-2b): *delete_all* keeps it, and a list that names it
+    is 409. Each row goes through a plain ``DELETE``, so
     the trigger of migration 168 writes one tombstone for each. With neither
     argument the rule is D-PM-38, the rule before D-OP-10.
     """
@@ -2029,6 +2033,20 @@ async def delete_task_in(
             ids = clean_task_ids(delete_ids)
             if ids - seen:
                 raise HTTPException(status_code=422, detail=SUBTASK_NOT_BELOW)
+        # ARC-2b (`one_projects_app.md` §9b.6 rule 2). A subtask in an
+        # archived project is never deleted. `delete_all` keeps it, as it keeps
+        # a hidden one, and it moves up with the other kept rows below. A
+        # list that names it is refused before any write. `seen` stays as it
+        # is, so `subtasks_kept_hidden` counts only the hidden ones.
+        filed_projects: dict[str, bool] = {}
+        filed: set[str] = set()
+        for r in rows:
+            if str(r.id) in ids and await in_archived_project(db, r, filed_projects):
+                filed.add(str(r.id))
+        if filed:
+            if not delete_all:
+                raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+            ids = ids - filed
         # The grandparent is read from the database, for the reason that
         # `lift_subtasks_to_grandparent` gives.
         row = (await db.execute(
