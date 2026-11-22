@@ -476,6 +476,56 @@ class TestTheFailures:
             self._walk(_Sarvam([(200, {"no": "transcript"})]))
 
 
+# ── Task 2452: a vendor body above the cap ───────────────────────────────────
+
+class _Endless(httpx.AsyncByteStream):
+    """A body of 64 MB, yielded in 64 KB chunks. It counts what the reader took."""
+
+    def __init__(self) -> None:
+        self.sent = 0
+
+    async def __aiter__(self):
+        for _ in range(1024):
+            self.sent += 65_536
+            yield b" " * 65_536
+
+
+class TestAnOversizedVendorBody:
+    def _big(self, body: _Endless) -> stt_sarvam.SarvamHandler:
+        return stt_sarvam.SarvamHandler(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=body)))
+
+    def test_the_handler_fails_as_an_upstream_error_and_stops_reading(self):
+        body = _Endless()
+        with pytest.raises(NativeProviderError) as exc:
+            _run(self._big(body), _payload(make_wav(1)))
+        assert exc.value.status_code is None  # no status: the chain moves on
+        assert not exc.value.terminal
+        assert body.sent <= 2 * 1024 * 1024  # it never took the 64 MB
+
+    def test_the_chain_moves_to_the_next_step(self):
+        step = ResolvedTier(tier="tier-stt", model=SARVAM_MODEL, task="transcribe", rank=1)
+        whisper = ResolvedTier(tier="tier-stt", model=WHISPER, task="transcribe", rank=2)
+        handler = self._big(_Endless())
+
+        async def _attempt(tier: ResolvedTier) -> object:
+            if tier is step:
+                return await handler.call("transcribe", _payload(make_wav(1)))
+            return {"text": "from whisper"}
+
+        _answer, resolved = asyncio.run(router_mod.walk_chain([step, whisper], _attempt))
+        assert resolved.model == WHISPER
+
+    def test_a_declared_length_above_the_cap_fails_with_no_read(self):
+        handler = stt_sarvam.SarvamHandler(transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"content-length": str(50 * 1024 * 1024)}, content=b"{}")))
+        with pytest.raises(NativeProviderError):
+            _run(handler, _payload(make_wav(1)))
+
+    def test_a_body_under_the_cap_still_parses(self):
+        assert _run(_Sarvam().handler(), _payload(make_wav(1))).text == "mera phone"
+
+
 # ── The door, with no database ──────────────────────────────────────────────
 
 def _cred() -> router_mod.Credential:

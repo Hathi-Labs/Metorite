@@ -8677,6 +8677,8 @@ customer to shape it, and guessing produces the wrong ceiling.
 adds a native Sarvam call beside the litellm path, because litellm 1.103.0 has
 no Sarvam transcription. §31 owns both slices.
 
+**Vendor body cap (task 2452).** The native handlers read a vendor reply through `vendor_body.post_capped`. It stops at 1 MB. A larger reply fails as a retryable upstream error, so the chain moves on.
+
 ✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
 `main.py::audio_transcriptions`, and all ten clauses below hold.
 `tests/unit/test_customer_console_tasks.py` carries the seven fences.

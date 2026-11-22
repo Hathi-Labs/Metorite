@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from customer_console.vendor_body import VendorBodyTooLarge, post_capped
 from customer_console.wav import read_wav, split_wav
 
 if TYPE_CHECKING:
@@ -221,12 +222,18 @@ class SarvamHandler:
         from customer_console.handlers import NativeProviderError
 
         try:
-            response = await client.post(
+            response = await post_capped(
+                client,
                 url,
                 headers={KEY_HEADER: payload.api_key},
                 data={"model": vendor_model, "mode": mode},
                 files={"file": (_part_name(payload.filename), part, "audio/wav")},
             )
+        except VendorBodyTooLarge as exc:
+            # No status, so the chain moves on. Task 2452.
+            _log.warning("stt_sarvam.body_too_large", extra={"vendor": SARVAM_PROVIDER})
+            self._note_partial(payload, index, total, None)
+            raise NativeProviderError(None, "vendor body too large") from exc
         except httpx.HTTPError as exc:
             # No status: a timeout or a dropped connection. Retryable.
             self._note_partial(payload, index, total, None)

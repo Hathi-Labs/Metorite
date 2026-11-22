@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from customer_console.vendor_body import VendorBodyTooLarge, post_capped
 from customer_console.wav import wav_seconds
 
 if TYPE_CHECKING:
@@ -252,11 +253,16 @@ class AssemblyAIHandler:
             async with httpx.AsyncClient(
                 transport=self._transport, timeout=payload.timeout
             ) as client:
-                response = await client.post(
+                response = await post_capped(
+                    client,
                     url,
                     headers={"Authorization": payload.api_key, MODEL_HEADER: vendor_model},
                     files=files,
                 )
+        except VendorBodyTooLarge as exc:
+            # No status, so the chain moves on. Task 2452.
+            _log.warning("stt_assemblyai.body_too_large", extra={"vendor": ASSEMBLYAI_PROVIDER})
+            raise NativeProviderError(None, "vendor body too large") from exc
         except httpx.HTTPError as exc:
             # No status: a timeout or a dropped connection. Retryable.
             raise NativeProviderError(None, type(exc).__name__) from exc
