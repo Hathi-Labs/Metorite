@@ -86,6 +86,10 @@ READ_FAILED = "Settings did not answer. Try again in a minute."
 ACT_NOT_CHANGED = "The setting did not change."
 ACT_LOGO_STAYS = "The logo stays as it is."
 
+#: The line of a logo card whose change deletes the dark-mode image.
+DARK_IMAGE_DELETED = ("The dark-mode image is deleted. To use it again, upload it in "
+                      "Settings.")
+
 #: Where a change shows. The web app reads the look once, when a page opens.
 SHOWS_AFTER_RELOAD = "It shows after you reload the page."
 
@@ -208,6 +212,20 @@ def _read_text(data: Any) -> str:
     return f"{READ_HEADER}\n{text}"
 
 
+#: The answer when an organization setting changed while the card waited.
+CHANGED_MEANWHILE = ("Nothing changed. Somebody changed this setting while the card "
+                     "waited. Read it again, then ask me again.")
+
+
+async def _changed_meanwhile(path: str, member: str, stamp: Any) -> bool:
+    """True when the organization setting at *path* has a new ``updatedAt``
+    after the card. A failed read counts as a change, so the write stops."""
+    status, now = await _call("GET", path, member)
+    if status != 200 or not isinstance(now, dict):
+        return True
+    return now.get("updatedAt") != stamp
+
+
 def _logo_facts(logo: Any) -> dict[str, Any] | None:
     """A stored logo with no image bytes: the type and the size only."""
     if not isinstance(logo, dict):
@@ -310,10 +328,10 @@ async def settings_set_appearance(
     elif accent is not None:
         new["accent"] = str(accent).strip()
     if new["mode"] is None:
-        # A member with no server copy: the mode is the organization's default.
-        org_status, org = await _call("GET", ORG_APPEARANCE, member)
-        org_look = org.get("org") if org_status == 200 and isinstance(org, dict) else None
-        new["mode"] = (org_look or {}).get("mode") or "dark"
+        # A member with no server copy, who named no mode. The route needs a
+        # mode, and a guess would change the member's look, so ask.
+        return ("Nothing changed. Say dark or light too, because your look needs a "
+                "mode before I can save it.")
     lines = _changes(old, new, {"mode": "Mode", "density": "Density", "accent": "Accent"})
     if not lines:
         return "Nothing changed. Your look already has those values."
@@ -324,9 +342,20 @@ async def settings_set_appearance(
     if status != 200:
         return _failed(status, body)
     _log.info("settings_tools.appearance_set")
-    return (f"Changed your look. {'; '.join(lines)}. {SHOWS_AFTER_RELOAD} To undo, set "
-            f"mode {_shown(old.get('mode'))}, density {_shown(old.get('density'))} and "
-            f"accent {_shown(old.get('accent'))} again.")
+    return (f"Changed your look. {'; '.join(lines)}. {SHOWS_AFTER_RELOAD} "
+            f"To undo, {_appearance_undo(old)}.")
+
+
+def _appearance_undo(old: dict[str, Any]) -> str:
+    """The undo of a change of the member's look, in words. A value that was
+    not set reads as what it means: no mode, the organization's density, no
+    accent of the member's own."""
+    parts = []
+    if old.get("mode"):
+        parts.append(f"set mode {old['mode']}")
+    parts.append(f"set density {old.get('density') or 'organization'}")
+    parts.append(f"set accent {old['accent']}" if old.get("accent") else "reset the accent")
+    return ", ".join(parts[:-1]) + " and " + parts[-1] + " again"
 
 
 @annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
@@ -501,6 +530,8 @@ async def settings_set_org_appearance(
     if not await _approved("Change the default look of your organization?",
                            f"{'; '.join(lines)}. Each member sees the change.", member):
         return _not_done(ACT_NOT_CHANGED)
+    if await _changed_meanwhile(ORG_APPEARANCE, member, data.get("updatedAt")):
+        return CHANGED_MEANWHILE
     status, body = await _call("PUT", ORG_APPEARANCE, member, new)
     if status != 200:
         return _failed(status, body)
@@ -508,11 +539,12 @@ async def settings_set_org_appearance(
     return f"Changed the default look. {'; '.join(lines)}. {SHOWS_AFTER_RELOAD}"
 
 
-@annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def settings_set_logo_style(dark_style: Literal["same", "white", "plate", "own"]) -> str:
     """Change how the organization's logo shows in dark mode, after one card.
-    Only an admin can. It keeps the stored images. A new image is an upload in
-    Settings, not a chat act.
+    Only an admin can. It keeps the logo and the square mark. A change from
+    white or own to same or plate deletes the stored dark-mode image, and the
+    card says so. A new image is an upload in Settings, not a chat act.
 
     Args:
         dark_style: same shows the logo as it is. plate shows it on a small
@@ -538,17 +570,25 @@ async def settings_set_logo_style(dark_style: Literal["same", "white", "plate", 
     if before == dark_style:
         return f"Nothing changed. The logo already uses the style {dark_style}."
     line = f"Logo in dark mode: {before} -> {dark_style}"
-    if not await _approved("Change the logo of your organization?",
-                           f"{line}. Each member sees the change.", member):
+    # The route keeps a dark-mode image only for white and own. So a change to
+    # same or plate deletes a stored one, and the card must say so.
+    deletes = not needs_dark and isinstance(dark, dict) and bool(dark.get("dataUri"))
+    detail = f"{line}. Each member sees the change."
+    if deletes:
+        detail += f" {DARK_IMAGE_DELETED}"
+    if not await _approved("Change the logo of your organization?", detail, member):
         return _not_done(ACT_LOGO_STAYS)
+    if await _changed_meanwhile(BRANDING, member, old.get("updatedAt")):
+        return CHANGED_MEANWHILE
     body = {"logoBase64": logo["dataUri"], "darkStyle": dark_style,
             "logoDarkBase64": dark["dataUri"] if needs_dark else None,
             "logoMarkBase64": mark.get("dataUri") if isinstance(mark, dict) else None}
     status, saved = await _call("PUT", BRANDING, member, body)
     if status != 200:
         return _failed(status, saved)
-    _log.info("settings_tools.logo_style_set")
-    return f"Changed it. {line}. {SHOWS_AFTER_RELOAD}"
+    _log.info("settings_tools.logo_style_set", deleted_dark=deletes)
+    gone = f" {DARK_IMAGE_DELETED}" if deletes else ""
+    return f"Changed it. {line}.{gone} {SHOWS_AFTER_RELOAD}"
 
 
 @annotate(read_only=False, destructive=True, idempotent=True, open_world=False)

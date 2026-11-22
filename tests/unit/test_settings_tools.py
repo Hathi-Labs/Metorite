@@ -107,6 +107,8 @@ def test_each_tool_carries_its_risk() -> None:
         assert risk["open_world"] is False, fn.__name__
         assert risk["read_only"] is (fn.__name__ in reads), fn.__name__
     assert st.settings_remove_logo.__tool_risk__["destructive"] is True
+    # Review round 1, P1-b: a style change can delete the dark-mode image.
+    assert st.settings_set_logo_style.__tool_risk__["destructive"] is True
 
 
 async def test_no_member_sends_no_request(gw, monkeypatch) -> None:
@@ -214,6 +216,28 @@ async def test_my_number_system_follows_the_org_with_none(gw, cards) -> None:
     assert cards == [] and "international again" in out
 
 
+async def test_no_stored_mode_and_no_named_mode_writes_nothing(gw, cards) -> None:
+    """Review round 1, P1-a: a member with no server copy asks for compact. The
+    tool never guesses a mode, so it writes nothing and asks for dark or light."""
+    gate = gw({("GET", "/auth/me/appearance"): (200, {"mode": None, "density": None,
+                                                      "accent": None}),
+               ("GET", "/settings/appearance"): (200, {"org": {"mode": "light"}})})
+    out = await st.settings_set_appearance(density="compact")
+    assert gate.writes() == [] and cards == []
+    assert "dark or light" in out
+
+
+async def test_the_undo_names_the_organization_density_and_the_accent_reset(gw) -> None:
+    gate = gw({("GET", "/auth/me/appearance"): (200, {"mode": "dark", "density": None,
+                                                      "accent": None}),
+               ("PUT", "/auth/me/appearance"): (200, {})})
+    out = await st.settings_set_appearance(mode="light", density="compact",
+                                           accent="#e11d48")
+    assert len(gate.writes()) == 1
+    assert "set mode dark, set density organization and reset the accent again" in out
+    assert "not set" not in out.split("To undo")[1]
+
+
 # ── Organization defaults and the logo: one card ───────────────────────────
 
 
@@ -251,6 +275,79 @@ async def test_the_logo_style_sends_the_stored_images_back(gw, cards) -> None:
     assert gate.writes() == [("PUT", "/settings/branding", {
         "logoBase64": logo["dataUri"], "darkStyle": "plate", "logoDarkBase64": None,
         "logoMarkBase64": mark["dataUri"]})]
+
+
+async def test_own_to_plate_names_the_deletion_and_a_decline_writes_nothing(gw, cards) -> None:
+    """Review round 1, P1-b: the route keeps no dark-mode image for plate, so the
+    card must say that the image is deleted."""
+    branding = {"logo": {"dataUri": "data:image/png;base64,LOGO"},
+                "logoDark": {"dataUri": "data:image/png;base64,DARK"},
+                "darkStyle": "own", "updatedAt": "t1"}
+    gate = gw({("GET", "/settings/branding"): (200, branding),
+               ("PUT", "/settings/branding"): (200, {})})
+    cards.answer = False
+    assert (await st.settings_set_logo_style("plate")).startswith("Not done.")
+    assert gate.writes() == []
+    assert st.DARK_IMAGE_DELETED in cards[0][1]
+    cards.answer = True
+    out = await st.settings_set_logo_style("plate")
+    assert st.DARK_IMAGE_DELETED in out
+    (_v, _p, body), = gate.writes()
+    assert body["logoDarkBase64"] is None and body["darkStyle"] == "plate"
+
+
+async def test_same_to_plate_names_no_deletion(gw, cards) -> None:
+    gw({("GET", "/settings/branding"): (200, {"logo": {"dataUri": "x"},
+                                             "darkStyle": "same"}),
+        ("PUT", "/settings/branding"): (200, {})})
+    await st.settings_set_logo_style("plate")
+    assert st.DARK_IMAGE_DELETED not in cards[0][1]
+
+
+async def test_a_declined_org_look_card_writes_nothing(gw, cards) -> None:
+    org = {"themeId": "rapidtool", "mode": "dark", "density": "default",
+           "allowUserOverride": True}
+    gate = gw({("GET", "/settings/appearance"): (200, {"org": org})})
+    cards.answer = False
+    assert (await st.settings_set_org_appearance(mode="light")).startswith("Not done.")
+    assert gate.writes() == [] and len(cards) == 1
+
+
+async def test_an_org_look_that_changed_while_the_card_waited_writes_nothing(
+        gw, cards, monkeypatch) -> None:
+    """P2: after the approve the tool reads again. A new updatedAt stops it."""
+    org = {"themeId": "rapidtool", "mode": "dark", "density": "default",
+           "allowUserOverride": True}
+    reads = iter([{"org": org, "updatedAt": "t1"}, {"org": org, "updatedAt": "t2"}])
+    gate = gw({("PUT", "/settings/appearance"): (200, {})})
+    base = gate.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            gate.calls.append(("GET", request.url.path, None, ""))
+            return httpx.Response(200, json=next(reads))
+        return base(request)
+
+    monkeypatch.setattr(st, "_transport", lambda: httpx.MockTransport(handler))
+    assert await st.settings_set_org_appearance(mode="light") == st.CHANGED_MEANWHILE
+    assert gate.writes() == []
+
+
+async def test_a_logo_that_changed_while_the_card_waited_writes_nothing(
+        gw, cards, monkeypatch) -> None:
+    first = {"logo": {"dataUri": "x"}, "darkStyle": "same", "updatedAt": "t1"}
+    reads = iter([first, {**first, "updatedAt": "t2"}])
+    gate = gw({("PUT", "/settings/branding"): (200, {})})
+    base = gate.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=next(reads))
+        return base(request)
+
+    monkeypatch.setattr(st, "_transport", lambda: httpx.MockTransport(handler))
+    assert await st.settings_set_logo_style("plate") == st.CHANGED_MEANWHILE
+    assert gate.writes() == []
 
 
 async def test_a_style_that_needs_a_dark_image_with_none_writes_nothing(gw, cards) -> None:
