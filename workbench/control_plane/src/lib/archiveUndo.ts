@@ -139,7 +139,7 @@ export function unarchivePath(kind: ArchiveKind, id: string): string {
 export function browserArchiveIo(fetchFn: typeof fetch = fetch): ArchiveIo {
   return {
     async unarchive(kind, id, ifMatch) {
-      const res = await fetchFn(unarchivePath(kind, id), {
+      const res = await fetchFn(`/api/projects/${kind === "task" ? "tasks" : "nodes"}/${encodeURIComponent(id)}/unarchive`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "If-Match": ifMatch },
