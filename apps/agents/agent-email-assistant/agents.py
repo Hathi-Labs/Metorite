@@ -36,6 +36,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_id_label,
     strip_kind_prefix,
 )
 from acb_common.tool_refusals import data as _fenced
@@ -1392,19 +1393,13 @@ def _canonical_id(value: Any) -> str | None:
         return None
 
 
-_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
-
-
 def _clean_email_id(value: Any) -> str:
     """An email id as the model may write it, without the list label (task 3863).
 
     The inbox tools print ``id=<uuid>``, and the model copies the label with
-    the value. This strips the space and the quotes round the value, then a
-    leading ``id=`` (any case), then the space again. It changes nothing else.
+    the value. ``strip_id_label`` is the one stripper (task 3882).
     """
-    text = str(value if value is not None else "").strip().strip("\"'`").strip()
-    text = _ID_LABEL.sub("", text, count=1)
-    return text.strip().strip("\"'`").strip()
+    return strip_id_label(value)
 
 
 def _clean_email_ids(values: Any) -> list[str]:
@@ -2255,6 +2250,9 @@ async def present_email_groups(groups_json: str) -> str:
         ids: list[str] = []
         for i in ids_in if isinstance(ids_in, list) else []:
             sid = _clean_email_id(i)
+            # One form per mail: braced, no-dash and upper-case UUIDs fold
+            # to the canonical one (task 3882). A non-UUID stays as it is.
+            sid = _canonical_id(sid) or sid
             if sid and sid not in seen:
                 seen.add(sid)
                 ids.append(sid)
