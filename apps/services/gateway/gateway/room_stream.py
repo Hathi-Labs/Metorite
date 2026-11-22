@@ -13,8 +13,8 @@ refreshed on every write. Two streams with two lifecycles is the honest model;
 one stream would force a choice between losing run-replay exactness and losing
 the room's memory of itself.
 
-    cc:room:{thread_id}       room events, never reset, 24h idle TTL
-    cc:presence:{thread_id}   hash of email -> last-seen epoch seconds
+    cc:<org>:room:{thread_id}       room events, never reset, 24h idle TTL
+    cc:<org>:presence:{thread_id}   hash of email -> last-seen epoch seconds
 
 Presence is a hash rather than one key per person because the only question
 ever asked is "who is here", which is one ``HGETALL`` instead of a scan. Stale
@@ -23,6 +23,17 @@ heartbeating, and the next person to look is the one who cares.
 
 Event names mirror AG-UI's SCREAMING_SNAKE convention so the frontend
 translator handles run events and room events with one switch.
+
+The tenant (task 570, H5, R5). Both keys go through the tenant Redis wrapper
+(``acb_common.tenant_redis``). Each function takes the org of the caller's
+session as ``organization_id``, never a request field. The org binds around
+each command only, never across a ``yield``. With no org, a write writes
+nothing and a read reads nothing. The live tail blocks for 15 s, so it reads
+on the blocking pool (``get_tenant_redis(blocking=True)``), as the activity
+feed does. Keys of the old shape ``cc:room:*`` and ``cc:presence:*`` are not
+read. The transcript (``chat_message``) is the durable record, presence lives
+45 s, and the room stream is a live layer, so the release drops nothing that
+a member needs. Fence: ``tests/unit/test_room_stream_tenant.py``.
 """
 from __future__ import annotations
 
@@ -31,13 +42,14 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-import redis.asyncio as aioredis
-from acb_common import get_logger, get_settings
+from acb_common import get_logger
+from acb_common.tenant_redis import TenantKey, get_tenant_redis, key, organization_scope
 
 _log = get_logger("gateway.room_stream")
 
-ROOM_STREAM_PREFIX = "cc:room"
-PRESENCE_PREFIX = "cc:presence"
+#: The namespaces of the two keys in the tenant wrapper.
+ROOM_NAMESPACE = "room"
+PRESENCE_NAMESPACE = "presence"
 
 #: Bounded so a long-lived room cannot grow without limit. The transcript is
 #: the durable record (chat_message); this stream is the live layer, and a
@@ -50,53 +62,46 @@ ROOM_STREAM_TTL_SECONDS = 24 * 3600
 #: presence rail is not a list of ghosts.
 PRESENCE_TTL_SECONDS = 45
 
-_client: aioredis.Redis | None = None
+
+def room_key(thread_id: str) -> TenantKey:
+    """``cc:<org>:room:<thread>``. Call it with the org bound."""
+    return key(ROOM_NAMESPACE, thread_id)
 
 
-def _get_client() -> aioredis.Redis:
-    global _client
-    if _client is None:
-        _client = aioredis.from_url(
-            get_settings().redis_url,
-            decode_responses=True,
-            max_connections=16,
-            health_check_interval=30,
-        )
-    return _client
-
-
-def room_key(thread_id: str) -> str:
-    return f"{ROOM_STREAM_PREFIX}:{thread_id}"
-
-
-def presence_key(thread_id: str) -> str:
-    return f"{PRESENCE_PREFIX}:{thread_id}"
+def presence_key(thread_id: str) -> TenantKey:
+    """``cc:<org>:presence:<thread>``. Call it with the org bound."""
+    return key(PRESENCE_NAMESPACE, thread_id)
 
 
 # ---------------------------------------------------------------------------
 # Publishing
 # ---------------------------------------------------------------------------
 
-async def publish_room_event(thread_id: str, event: dict[str, Any]) -> str | None:
+async def publish_room_event(
+    thread_id: str, event: dict[str, Any], *, organization_id: str | None,
+) -> str | None:
     """Append one event to a room's stream. Never raises.
 
     Room events are a live convenience layer over a durable transcript, so a
     Redis blip must degrade the presence rail, never fail the request that was
     trying to do real work (send a message, add a participant).
+    *organization_id* is the org of the caller's session. With none, the
+    event is not written.
     """
-    if not thread_id:
+    if not thread_id or not organization_id:
         return None
     payload = {**event, "threadId": thread_id}
     payload.setdefault("ts", int(time.time() * 1000))
     try:
-        r = _get_client()
-        eid = await r.xadd(
-            room_key(thread_id),
-            {"event": json.dumps(payload, default=str)},
-            maxlen=ROOM_STREAM_MAXLEN,
-            approximate=True,
-        )
-        await r.expire(room_key(thread_id), ROOM_STREAM_TTL_SECONDS)
+        r = get_tenant_redis()
+        with organization_scope(organization_id):
+            eid = await r.xadd(
+                room_key(thread_id),
+                {"event": json.dumps(payload, default=str)},
+                maxlen=ROOM_STREAM_MAXLEN,
+                approximate=True,
+            )
+            await r.expire(room_key(thread_id), ROOM_STREAM_TTL_SECONDS)
         return str(eid)
     except Exception:
         _log.warning(
@@ -124,13 +129,16 @@ def _parse(eid: str, fields: dict[str, str]) -> dict[str, Any] | None:
 
 async def replay_room_events(
     thread_id: str, since_id: str = "0", limit: int = 500,
+    *, organization_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Everything after ``since_id``. ``"0"`` means the whole retained window."""
-    if not thread_id:
+    """Everything after ``since_id``. ``"0"`` means the whole retained window.
+    With no *organization_id*, nothing."""
+    if not thread_id or not organization_id:
         return []
     try:
-        r = _get_client()
-        entries = await r.xread({room_key(thread_id): since_id}, count=limit)
+        r = get_tenant_redis()
+        with organization_scope(organization_id):
+            entries = await r.xread({room_key(thread_id): since_id}, count=limit)
     except Exception:
         _log.warning("room_stream.replay_failed", thread_id=thread_id, exc_info=True)
         return []
@@ -145,20 +153,32 @@ async def replay_room_events(
 
 async def subscribe_room_events(
     thread_id: str, since_id: str = "$", block_ms: int = 15_000,
+    *, organization_id: str | None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Live tail. Yields until the caller stops consuming.
 
     Unlike ``subscribe_events`` for run streams there is no terminal event — a
     room does not end, it goes quiet. The caller (the SSE endpoint) decides when
     to stop, which is when the client disconnects.
+
+    *organization_id* is the org of the caller's session, taken before the
+    stream starts. The org binds around each read only, never across a
+    ``yield``, so the consumer's context never holds it. With none, nothing.
     """
-    if not thread_id:
+    if not thread_id or not organization_id:
         return
     cursor = since_id
-    r = _get_client()
+    try:
+        r = get_tenant_redis(blocking=True)
+    except Exception:
+        _log.warning("room_stream.subscribe_failed", thread_id=thread_id, exc_info=True)
+        return
     while True:
         try:
-            entries = await r.xread({room_key(thread_id): cursor}, block=block_ms, count=100)
+            with organization_scope(organization_id):
+                entries = await r.xread(
+                    {room_key(thread_id): cursor}, block=block_ms, count=100,
+                )
         except Exception:
             _log.warning("room_stream.subscribe_failed", thread_id=thread_id, exc_info=True)
             return
@@ -177,43 +197,54 @@ async def subscribe_room_events(
 # Presence
 # ---------------------------------------------------------------------------
 
-async def touch_presence(thread_id: str, email: str, *, state: str = "viewing") -> None:
-    """Record that this person is in this room right now. Never raises."""
-    if not thread_id or not email:
+async def touch_presence(
+    thread_id: str, email: str, *, state: str = "viewing", organization_id: str | None,
+) -> None:
+    """Record that this person is in this room right now. Never raises.
+    With no *organization_id*, nothing is written."""
+    if not thread_id or not email or not organization_id:
         return
     try:
-        r = _get_client()
-        await r.hset(
-            presence_key(thread_id), email,
-            json.dumps({"at": int(time.time()), "state": state}),
-        )
-        # The hash outlives any single beat but not an empty room.
-        await r.expire(presence_key(thread_id), ROOM_STREAM_TTL_SECONDS)
+        r = get_tenant_redis()
+        with organization_scope(organization_id):
+            await r.hset(
+                presence_key(thread_id), email,
+                json.dumps({"at": int(time.time()), "state": state}),
+            )
+            # The hash outlives any single beat but not an empty room.
+            await r.expire(presence_key(thread_id), ROOM_STREAM_TTL_SECONDS)
     except Exception:
         _log.debug("room_stream.presence_failed", thread_id=thread_id, exc_info=True)
 
 
-async def clear_presence(thread_id: str, email: str) -> None:
+async def clear_presence(
+    thread_id: str, email: str, *, organization_id: str | None,
+) -> None:
     """Drop someone from the rail immediately (an explicit leave/close)."""
-    if not thread_id or not email:
+    if not thread_id or not email or not organization_id:
         return
     try:
-        await _get_client().hdel(presence_key(thread_id), email)
+        with organization_scope(organization_id):
+            await get_tenant_redis().hdel(presence_key(thread_id), email)
     except Exception:
         _log.debug("room_stream.presence_clear_failed", thread_id=thread_id, exc_info=True)
 
 
-async def read_presence(thread_id: str) -> list[dict[str, Any]]:
+async def read_presence(
+    thread_id: str, *, organization_id: str | None,
+) -> list[dict[str, Any]]:
     """Who is here, freshest first, with entries older than the TTL pruned.
 
     Pruning on read (rather than relying on per-field expiry, which Redis
     hashes do not have) keeps the rail honest without a background sweeper.
+    With no *organization_id*, nobody.
     """
-    if not thread_id:
+    if not thread_id or not organization_id:
         return []
     try:
-        r = _get_client()
-        raw = await r.hgetall(presence_key(thread_id))
+        r = get_tenant_redis()
+        with organization_scope(organization_id):
+            raw = await r.hgetall(presence_key(thread_id))
     except Exception:
         _log.debug("room_stream.presence_read_failed", thread_id=thread_id, exc_info=True)
         return []
@@ -236,7 +267,8 @@ async def read_presence(thread_id: str) -> list[dict[str, Any]]:
 
     if stale:
         try:
-            await _get_client().hdel(presence_key(thread_id), *stale)
+            with organization_scope(organization_id):
+                await r.hdel(presence_key(thread_id), *stale)
         except Exception:
             _log.debug("room_stream.presence_prune_failed", exc_info=True)
 

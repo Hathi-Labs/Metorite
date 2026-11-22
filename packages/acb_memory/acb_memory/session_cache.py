@@ -19,6 +19,15 @@ fetch fresh (the pre-Phase-4 behaviour).
 
 This module deliberately takes an injected Redis client + builder coroutine so
 ``acb_memory`` never imports the orchestrator's stream_relay (layering).
+
+The tenant (task 570, H5, R5). The block holds the member's private facts and
+the org's memory, so its key carries the org. The caller passes the tenant
+Redis wrapper (``acb_common.tenant_redis.get_tenant_redis()``) and the org of
+the session. The key is ``cc:<org>:session-mem:<thread>[:<clearance>]``. With
+no org, nothing is cached and ``build`` runs each turn. A key of the old shape
+``session_mem:<thread>`` is not read: it is a cache of 600 s, so the release
+costs one rebuild for each open thread. Fence:
+``tests/unit/test_session_memory_cache.py``.
 """
 from __future__ import annotations
 
@@ -27,11 +36,17 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.tenant_redis import key, match, organization_scope
 
 _log = get_logger("acb_memory.session_cache")
 
-# Redis key prefix for a session's assembled memory block.
-_KEY_PREFIX = "session_mem:"
+#: The namespace of a session's assembled memory block in the tenant wrapper.
+NAMESPACE = "session-mem"
+
+
+def _key(thread_id: str, clearance: str) -> Any:
+    """The tenant key of one block. Call it with the org bound."""
+    return key(NAMESPACE, thread_id, clearance) if clearance else key(NAMESPACE, thread_id)
 
 
 def _enabled() -> bool:
@@ -48,6 +63,7 @@ def _ttl() -> int:
 async def get_session_memory(
     *,
     redis: Any,
+    organization_id: str | None,
     thread_id: str | None,
     build: Callable[[], Awaitable[str]],
     clearance: str = "",
@@ -55,8 +71,11 @@ async def get_session_memory(
     """Return the session's memory block, fetching+caching it once per thread.
 
     Args:
-        redis: an async Redis client (``get``/``setex`` coroutines). Pass the
-            gateway's shared pooled client. If ``None``, caching is skipped.
+        redis: the tenant Redis wrapper (``get_tenant_redis()``). If ``None``,
+            caching is skipped.
+        organization_id: the org of the session, from the server side, never
+            from a request field. It prefixes the key. If ``None``, caching is
+            skipped and ``build`` runs.
         thread_id: the conversation thread key. When ``None`` (a one-off run
             with no session) caching is skipped and ``build`` is called directly.
         build: a zero-arg coroutine that fetches + assembles the fresh memory
@@ -76,16 +95,15 @@ async def get_session_memory(
         error it falls back to calling ``build`` directly, so a cache outage
         degrades to the pre-Phase-4 fetch-every-turn behaviour.
     """
-    if not _enabled() or redis is None or not thread_id:
+    if not _enabled() or redis is None or not thread_id or not organization_id:
         return await build()
 
-    key = f"{_KEY_PREFIX}{thread_id}"
-    if clearance:
-        key = f"{key}:{clearance}"
-
     # ── Cache read ────────────────────────────────────────────────────
+    # The org binds for each command only, never across ``build()``. An org
+    # id that the wrapper refuses is a read that failed: the block builds.
     try:
-        cached = await redis.get(key)
+        with organization_scope(organization_id):
+            cached = await redis.get(_key(thread_id, clearance))
     except Exception as exc:
         _log.debug("session_mem.read_failed", error=str(exc))
         cached = None
@@ -101,7 +119,8 @@ async def get_session_memory(
     try:
         # Store even an empty string: a session with no memory should not
         # re-run the (expensive) semantic search on every turn.
-        await redis.setex(key, _ttl(), block)
+        with organization_scope(organization_id):
+            await redis.setex(_key(thread_id, clearance), _ttl(), block)
         _log.debug(
             "session_mem.stored",
             thread=thread_id[:12],
@@ -113,7 +132,9 @@ async def get_session_memory(
     return block
 
 
-async def invalidate_session_memory(*, redis: Any, thread_id: str) -> None:
+async def invalidate_session_memory(
+    *, redis: Any, organization_id: str | None, thread_id: str,
+) -> None:
     """Drop every cached memory block for a thread (e.g. after a memory write).
 
     A thread has one entry PER CLEARANCE since the key gained that suffix, so
@@ -122,10 +143,11 @@ async def invalidate_session_memory(*, redis: Any, thread_id: str) -> None:
     a written fact would take up to the TTL to appear.
 
     Best-effort — a failure just means the blocks live out their TTL.
+    *redis* is the tenant wrapper, and *organization_id* is the org of the
+    session. With no org, nothing is dropped: the blocks live out their TTL.
     """
-    if redis is None or not thread_id:
+    if redis is None or not thread_id or not organization_id:
         return
-    base = f"{_KEY_PREFIX}{thread_id}"
 
     # The bare key first, in its own try: it is the only one a client without
     # SCAN can have written, and it must not be left behind because the sweep
@@ -133,21 +155,28 @@ async def invalidate_session_memory(*, redis: Any, thread_id: str) -> None:
     # missing `scan` silently skip the delete entirely — worse than the
     # single-key behaviour this replaced.
     try:
-        await redis.delete(base)
+        with organization_scope(organization_id):
+            await redis.delete(_key(thread_id, ""))
     except Exception as exc:
         _log.debug("session_mem.invalidate_failed", error=str(exc))
 
     # Then every per-clearance variant. A thread has at most a handful, so the
     # scan is bounded and cheap.
+    # The scan pattern is the wrapper's, so it cannot leave this org. A found
+    # name is a wire string. The clearance is its last part, and the delete
+    # rebuilds a typed key from it.
     try:
-        keys: list[str] = []
-        cursor = 0
-        while True:
-            cursor, found = await redis.scan(cursor, match=f"{base}:*", count=64)
-            keys.extend(found)
-            if cursor == 0:
-                break
-        if keys:
-            await redis.delete(*keys)
+        with organization_scope(organization_id):
+            found = [
+                name async for name in redis.scan_iter(match(NAMESPACE, thread_id), count=64)
+            ]
+            prefix = f"{_key(thread_id, '').value}:"
+            variants = [
+                _key(thread_id, name[len(prefix):])
+                for name in found
+                if isinstance(name, str) and name.startswith(prefix) and name[len(prefix):]
+            ]
+            if variants:
+                await redis.delete(*variants)
     except Exception as exc:
         _log.debug("session_mem.invalidate_variants_failed", error=str(exc))

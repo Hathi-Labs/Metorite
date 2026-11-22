@@ -1355,6 +1355,7 @@ async def enrich_instructions_with_memory(
     user_id: str,
     user_query: str,
     thread_id: str | None = None,
+    organization_id: str | None = None,
 ) -> str:
     """Return an instructions string with Mem0 + Graphiti context appended.
 
@@ -1367,6 +1368,8 @@ async def enrich_instructions_with_memory(
     session in Redis (specs/llm_caching_memory.md Phase 4) so it stays
     byte-stable across turns — otherwise Mem0's per-query semantic search
     returns a different block each turn and defeats cross-turn prompt caching.
+    The cache key carries *organization_id*, the org of the caller's
+    server-side ``UserContext`` (task 570). With no org, nothing is cached.
 
     A CACHE BREAK sentinel is inserted between the stable base instructions and
     the dynamic memory block so the acb_llm.prompt_cache transform can put an
@@ -1397,13 +1400,14 @@ async def enrich_instructions_with_memory(
 
         _redis = None
         try:
-            from orchestrator.stream_relay import _get_client  # noqa: PLC0415
-            _redis = await _get_client()
+            from acb_common.tenant_redis import get_tenant_redis  # noqa: PLC0415
+            _redis = get_tenant_redis()
         except Exception:  # noqa: BLE001 — no Redis → fetch fresh each turn
             _redis = None
 
         memory_block = await get_session_memory(
-            redis=_redis, thread_id=thread_id, build=_build_memory_block
+            redis=_redis, organization_id=organization_id,
+            thread_id=thread_id, build=_build_memory_block,
         )
     except ImportError:
         memory_block = await _build_memory_block()

@@ -1578,6 +1578,7 @@ if _HAS_MAF:
                 enriched = await enrich_instructions_with_memory(
                     agent, user_id, last_user_msg,
                     thread_id=_thread_id_for_mem,
+                    organization_id=_organization_id,
                 )
                 opts = agent.default_options
                 if isinstance(opts, dict) and enriched:

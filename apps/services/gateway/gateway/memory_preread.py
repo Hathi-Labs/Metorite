@@ -106,11 +106,13 @@ async def _graph_parts(message: str, has_user: bool) -> list[str]:
     return ["## Timeline facts from knowledge graph\n" + graph_ctx] if graph_ctx else []
 
 
-async def _redis_client() -> Any:
+def _redis_client() -> Any:
+    """The tenant Redis wrapper (task 570). None when it cannot be built:
+    then the block is fetched fresh each turn."""
     try:
-        from orchestrator.stream_relay import _get_client
+        from acb_common.tenant_redis import get_tenant_redis
 
-        return await _get_client()
+        return get_tenant_redis()
     except Exception:  # no Redis → fetch fresh each turn
         return None
 
@@ -156,8 +158,13 @@ async def memory_preread(
         )
         return "\n\n".join([*private, *scoped, *graph])
 
+    from acb_common.db import current_tenant
+
     return await get_session_memory(
-        redis=await _redis_client(),
+        redis=_redis_client(),
+        # The org that the caller bound from the session or the link row
+        # (task 570). It prefixes the cache key. With none, no cache.
+        organization_id=current_tenant(),
         thread_id=thread_id,
         build=_build_memory_block,
         # Without this a thread cached while solo would keep serving the

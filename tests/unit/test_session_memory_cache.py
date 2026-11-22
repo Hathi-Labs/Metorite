@@ -6,10 +6,17 @@ turns, so ``[stable prefix + memory]`` stays byte-stable and cache-eligible.
 from __future__ import annotations
 
 import pytest
+from acb_common.tenant_redis import TenantRedis
 from acb_memory.session_cache import (
     get_session_memory,
     invalidate_session_memory,
 )
+
+#: Task 570: the block is keyed by the org, through the tenant wrapper. Each
+#: fake below is the RAW client behind ``TenantRedis``, so a test sees the
+#: wire keys that production writes.
+ORG = "org-aaaaaaaa"
+ORG_B = "org-bbbbbbbb"
 
 
 class _FakeRedis:
@@ -50,10 +57,10 @@ async def test_builds_once_then_reuses_across_turns():
         return f"MEM v{calls['n']}"
 
     # Turn 1 — miss → build + store.
-    b1 = await get_session_memory(redis=redis, thread_id="t1", build=build)
+    b1 = await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t1", build=build)
     # Turns 2 & 3 — hits → reuse, no rebuild.
-    b2 = await get_session_memory(redis=redis, thread_id="t1", build=build)
-    b3 = await get_session_memory(redis=redis, thread_id="t1", build=build)
+    b2 = await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t1", build=build)
+    b3 = await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t1", build=build)
 
     assert b1 == b2 == b3 == "MEM v1"  # byte-stable across the session
     assert calls["n"] == 1             # built exactly once
@@ -69,8 +76,8 @@ async def test_empty_block_is_cached_too():
         calls["n"] += 1
         return ""
 
-    await get_session_memory(redis=redis, thread_id="t2", build=build)
-    await get_session_memory(redis=redis, thread_id="t2", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t2", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t2", build=build)
     assert calls["n"] == 1
     assert redis.setex_calls == 1
 
@@ -83,8 +90,8 @@ async def test_no_thread_id_skips_cache_builds_every_time():
         calls["n"] += 1
         return "X"
 
-    await get_session_memory(redis=redis, thread_id=None, build=build)
-    await get_session_memory(redis=redis, thread_id=None, build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id=None, build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id=None, build=build)
     assert calls["n"] == 2
     assert redis.get_calls == 0  # never touched the cache
 
@@ -98,8 +105,8 @@ async def test_disabled_flag_bypasses_cache(monkeypatch):
         calls["n"] += 1
         return "X"
 
-    await get_session_memory(redis=redis, thread_id="t3", build=build)
-    await get_session_memory(redis=redis, thread_id="t3", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t3", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t3", build=build)
     assert calls["n"] == 2
     assert redis.get_calls == 0
 
@@ -111,7 +118,7 @@ async def test_no_redis_degrades_to_fresh_fetch():
         calls["n"] += 1
         return "X"
 
-    out = await get_session_memory(redis=None, thread_id="t4", build=build)
+    out = await get_session_memory(redis=None, organization_id=ORG, thread_id="t4", build=build)
     assert out == "X"
     assert calls["n"] == 1
 
@@ -130,7 +137,7 @@ async def test_redis_error_falls_back_to_build():
         calls["n"] += 1
         return "FRESH"
 
-    out = await get_session_memory(redis=_Broken(), thread_id="t5", build=build)
+    out = await get_session_memory(redis=TenantRedis(_Broken()), organization_id=ORG, thread_id="t5", build=build)
     assert out == "FRESH"  # never raised; degraded to a fresh build
     assert calls["n"] == 1
 
@@ -141,10 +148,11 @@ async def test_invalidate_drops_the_session_block():
     async def build() -> str:
         return "A"
 
-    await get_session_memory(redis=redis, thread_id="t6", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t6", build=build)
     assert redis.store  # something cached
-    await invalidate_session_memory(redis=redis, thread_id="t6")
-    assert "session_mem:t6" not in redis.store
+    await invalidate_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t6")
+    assert f"cc:{ORG}:session-mem:t6" not in redis.store
+    assert redis.store == {}
 
 
 @pytest.mark.asyncio
@@ -157,16 +165,18 @@ async def test_invalidate_clears_every_clearance_variant():
     async def build() -> str:
         return "A"
 
-    await get_session_memory(redis=redis, thread_id="t7", build=build, clearance="solo")
-    await get_session_memory(redis=redis, thread_id="t7", build=build, clearance="room")
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t7", build=build, clearance="solo")
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t7", build=build, clearance="room")
     assert len(redis.store) == 2
 
-    async def _scan(cursor, match="", count=64):
+    async def _scan_iter(match="", count=64):
         prefix = match.rstrip("*")
-        return 0, [k for k in redis.store if k.startswith(prefix)]
+        for k in list(redis.store):
+            if k.startswith(prefix):
+                yield k
 
-    redis.scan = _scan
-    await invalidate_session_memory(redis=redis, thread_id="t7")
+    redis.scan_iter = _scan_iter
+    await invalidate_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t7")
     assert redis.store == {}
 
 
@@ -183,7 +193,107 @@ async def test_invalidate_still_drops_the_base_key_without_scan():
     async def build() -> str:
         return "A"
 
-    await get_session_memory(redis=redis, thread_id="t8", build=build)
+    await get_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t8", build=build)
     assert redis.store
-    await invalidate_session_memory(redis=redis, thread_id="t8")   # no .scan
+    await invalidate_session_memory(redis=TenantRedis(redis), organization_id=ORG, thread_id="t8")   # no .scan_iter
     assert redis.store == {}
+
+
+# ---------------------------------------------------------------------------
+# Task 570 (H5, R5): the key carries the org.
+# ---------------------------------------------------------------------------
+
+
+async def test_the_key_is_prefixed_by_the_org_with_the_same_ttl():
+    redis = _FakeRedis()
+    ttls: list[int] = []
+    setex = redis.setex
+
+    async def _setex(key: str, ttl: int, value: str) -> None:
+        ttls.append(ttl)
+        await setex(key, ttl, value)
+
+    redis.setex = _setex
+
+    async def build() -> str:
+        return "A"
+
+    await get_session_memory(
+        redis=TenantRedis(redis), organization_id=ORG, thread_id="t9",
+        build=build, clearance="fp1",
+    )
+    assert list(redis.store) == [f"cc:{ORG}:session-mem:t9:fp1"]
+    assert ttls == [600]
+
+
+async def test_two_orgs_with_the_same_thread_do_not_share_a_block():
+    """The same thread id in two orgs is two keys. Org B never reads the
+    private block that org A cached."""
+    redis = _FakeRedis()
+
+    async def build_a() -> str:
+        return "ORG A PRIVATE FACTS"
+
+    async def build_b() -> str:
+        return "org b facts"
+
+    first = await get_session_memory(
+        redis=TenantRedis(redis), organization_id=ORG, thread_id="same", build=build_a,
+    )
+    second = await get_session_memory(
+        redis=TenantRedis(redis), organization_id=ORG_B, thread_id="same", build=build_b,
+    )
+    assert first == "ORG A PRIVATE FACTS"
+    assert second == "org b facts"
+    assert sorted(redis.store) == [
+        f"cc:{ORG}:session-mem:same", f"cc:{ORG_B}:session-mem:same",
+    ]
+    await invalidate_session_memory(
+        redis=TenantRedis(redis), organization_id=ORG_B, thread_id="same",
+    )
+    assert list(redis.store) == [f"cc:{ORG}:session-mem:same"]
+
+
+async def test_no_org_caches_nothing_and_builds_each_turn():
+    redis = _FakeRedis()
+    calls = {"n": 0}
+
+    async def build() -> str:
+        calls["n"] += 1
+        return "X"
+
+    for _ in range(2):
+        out = await get_session_memory(
+            redis=TenantRedis(redis), organization_id=None, thread_id="t10", build=build,
+        )
+        assert out == "X"
+    assert calls["n"] == 2
+    assert redis.get_calls == 0 and redis.store == {}
+
+
+async def test_an_org_id_that_the_wrapper_refuses_builds_and_never_raises():
+    redis = _FakeRedis()
+
+    async def build() -> str:
+        return "Y"
+
+    out = await get_session_memory(
+        redis=TenantRedis(redis), organization_id="bad:org*", thread_id="t11", build=build,
+    )
+    assert out == "Y"
+    assert redis.store == {}
+
+
+async def test_a_raw_string_client_path_is_gone():
+    """The old raw shape ``session_mem:<thread>`` is never read or written."""
+    redis = _FakeRedis()
+    redis.store["session_mem:t12"] = "STALE RAW BLOCK"
+
+    async def build() -> str:
+        return "fresh"
+
+    out = await get_session_memory(
+        redis=TenantRedis(redis), organization_id=ORG, thread_id="t12", build=build,
+    )
+    assert out == "fresh"
+    assert redis.store["session_mem:t12"] == "STALE RAW BLOCK"

@@ -785,7 +785,9 @@ BINARY_POOL_MAX_CONNECTIONS = 4
 _BLOCKING_POOL: Any = None
 
 #: Connection ceiling of the blocking pool. One connection for each open feed.
-BLOCKING_POOL_MAX_CONNECTIONS = 16
+#: Task 570 moved the live room tail (``gateway.room_stream``) here from its
+#: own pool of 16, so the ceiling is the two ceilings of before: 16 + 16.
+BLOCKING_POOL_MAX_CONNECTIONS = 32
 
 
 def get_tenant_redis(*, binary: bool = False, blocking: bool = False) -> TenantRedis:

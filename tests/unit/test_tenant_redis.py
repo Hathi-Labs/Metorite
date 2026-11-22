@@ -717,8 +717,6 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: cc:stream, cc:active, cc:runactor, cc:runsource, cc:runfloor, "
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
-    "apps/services/gateway/gateway/room_stream.py":
-        "FOLLOW-UP: cc:room:{tid} stream + cc:presence:{tid} hash",
     "apps/services/ingestion/ingestion/queue.py":
         "FOLLOW-UP: ingestion:{clickup,zoho,gmail,dlq} streams (sync client)",
     "apps/services/ingestion/ingestion/consumer.py":
@@ -828,8 +826,6 @@ _ALLOWED_CC_LITERALS: dict[str, str] = {
     "apps/services/orchestrator/orchestrator/steer.py":
         "FOLLOW-UP: STEER_PREFIX (:55); borrows stream_relay's client, so the "
         "import ratchet cannot see it",
-    "apps/services/gateway/gateway/room_stream.py":
-        "FOLLOW-UP: ROOM_STREAM_PREFIX / PRESENCE_PREFIX (:39-40)",
     # Incident 2026-10-09. Four keys belong to a PROCESS, not to a tenant: its
     # heartbeat, the set of processes, the sweep's claim, and the runs one
     # process holds. That last hash, cc:instance-runs:{id}, DOES hold the org

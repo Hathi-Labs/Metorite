@@ -692,7 +692,7 @@ async def _apply_turn_decision(
             "text": text[:500],
             "appliedAt": "tool_boundary",
             "delivered": bool(signal.get("delivered")),
-        })
+        }, organization_id=current_tenant())
 
     _log.info(
         "agent.turn_steered",
@@ -3277,7 +3277,9 @@ async def run_agent_stream_endpoint(
         )
 
     if _room_event is not None:
-        await publish_room_event(req.thread_id or "", _room_event)
+        await publish_room_event(
+            req.thread_id or "", _room_event, organization_id=_room_org,
+        )
 
     _taken_steers: list[dict[str, Any]] = []
     _TAKEN_STEERS.set(_taken_steers)

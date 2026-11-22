@@ -291,7 +291,7 @@ async def get_room(
 
     state, presence = await asyncio.gather(
         asyncio.to_thread(_load_room_state, session_id, user.organization_id),
-        read_presence(session_id),
+        read_presence(session_id, organization_id=user.organization_id),
     )
     cap = await _capability_cap(session_id, access.members)
     row = state["session"]
@@ -438,7 +438,7 @@ async def add_participant(
     await publish_room_event(session_id, {
         "type": "PARTICIPANT_JOINED",
         "subject": subject, "role": req.role, "addedBy": email,
-    })
+    }, organization_id=user.organization_id)
 
     fresh = await asyncio.to_thread(
         resolve_room_access, session_id, email,
@@ -494,7 +494,7 @@ async def patch_participant(
     await publish_room_event(session_id, {
         "type": "PARTICIPANT_ROLE_CHANGED",
         "subject": subject, "role": req.role, "changedBy": email,
-    })
+    }, organization_id=user.organization_id)
     return {"ok": True}
 
 
@@ -570,7 +570,7 @@ async def remove_participant(
     await publish_room_event(session_id, {
         "type": "PARTICIPANT_LEFT",
         "subject": subject, "removedBy": email, "self": leaving,
-    })
+    }, organization_id=user.organization_id)
     return {"ok": True, "left": leaving}
 
 
@@ -654,7 +654,7 @@ async def patch_room(
     )
     await publish_room_event(session_id, {
         "type": "ROOM_SETTINGS_CHANGED", "changedBy": email, "settings": updates,
-    })
+    }, organization_id=user.organization_id)
     return {"ok": True, "changed": sorted(updates)}
 
 
@@ -719,7 +719,7 @@ async def add_room_agent(
     await publish_room_event(session_id, {
         "type": "AGENT_ADDED", "agentName": agent_name,
         "role": req.role, "addedBy": email,
-    })
+    }, organization_id=user.organization_id)
     return {"ok": True, "agentName": agent_name, "role": req.role}
 
 
@@ -782,7 +782,7 @@ async def remove_room_agent(
         raise HTTPException(status_code=404, detail="That agent is not in this room")
     await publish_room_event(session_id, {
         "type": "AGENT_REMOVED", "agentName": agent_name, "removedBy": email,
-    })
+    }, organization_id=user.organization_id)
     return {"ok": True}
 
 
@@ -840,8 +840,12 @@ async def heartbeat(
     if not access.is_shared:
         return {"ok": True, "presence": []}
 
-    await touch_presence(session_id, email, state=req.state)
-    return {"ok": True, "presence": await read_presence(session_id)}
+    await touch_presence(
+        session_id, email, state=req.state, organization_id=user.organization_id,
+    )
+    return {"ok": True, "presence": await read_presence(
+        session_id, organization_id=user.organization_id,
+    )}
 
 
 @router.get("/sessions/{session_id}/room-stream", summary="Live room events (SSE)")
@@ -865,15 +869,22 @@ async def room_stream(
     )
     if not access.can_read:
         _refuse_unreadable(access)
+    # Task 570: the org of the session, taken here, before the stream
+    # starts. The generator runs after the request scope ends.
+    org = user.organization_id
 
     async def _gen():
         try:
-            for evt in await replay_room_events(session_id, since_id=since):
+            for evt in await replay_room_events(
+                session_id, since_id=since, organization_id=org,
+            ):
                 yield f"data: {json.dumps(evt, default=str)}\n\n"
             yield 'data: {"type":"ROOM_REPLAY_DONE"}\n\n'
 
             last_beat = 0.0
-            async for evt in subscribe_room_events(session_id, since_id="$"):
+            async for evt in subscribe_room_events(
+                session_id, since_id="$", organization_id=org,
+            ):
                 if await request.is_disconnected():
                     break
                 if evt.get("type") == "ROOM_PING":
@@ -885,7 +896,7 @@ async def room_stream(
                 now = time.time()
                 if now - last_beat > 15:
                     last_beat = now
-                    await touch_presence(session_id, email)
+                    await touch_presence(session_id, email, organization_id=org)
         except asyncio.CancelledError:
             raise
         except Exception:

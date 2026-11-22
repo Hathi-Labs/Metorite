@@ -244,6 +244,7 @@ async def test_sharing_a_thread_does_not_serve_it_the_cached_solo_block() -> Non
     fetch. Verified against a fake Redis so the key, not the intention, is what
     is asserted.
     """
+    from acb_common.tenant_redis import TenantRedis
     from acb_memory.session_cache import get_session_memory
 
     store: dict[str, str] = {}
@@ -265,14 +266,14 @@ async def test_sharing_a_thread_does_not_serve_it_the_cached_solo_block() -> Non
         return "room facts only"
 
     first = await get_session_memory(
-        redis=_Redis(), thread_id=TID, build=_solo_block,
+        redis=TenantRedis(_Redis()), organization_id=ORG, thread_id=TID, build=_solo_block,
         clearance=solo.fingerprint,
     )
     assert first == "ALICE'S PRIVATE FACTS"
 
     # Alice shares the thread. The very next run must rebuild, not hit.
     after = await get_session_memory(
-        redis=_Redis(), thread_id=TID, build=_room_block,
+        redis=TenantRedis(_Redis()), organization_id=ORG, thread_id=TID, build=_room_block,
         clearance=room.fingerprint,
     )
     assert after == "room facts only"
