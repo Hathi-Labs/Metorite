@@ -17,27 +17,32 @@
 -- **The fault.** Migration 125 made `owner_email` alone the primary key of
 -- `copilot_config` (`copilot_config_pkey`). Migration 99 made
 -- `(user_id, lower(term))` unique over all orgs on `notes_glossary`
--- (`notes_glossary_user_term_idx`). FORCE RLS hides the row of another org,
+-- (`notes_glossary_user_term_idx`).
+--
+-- FORCE RLS hides the row of another org,
 -- but a unique index does not. So when org A holds a key, the insert of
 -- org B fails with a unique violation. That error tells org B that another
 -- org holds the key. Each organization must own its own keys.
 --
 -- **Expand now, contract one release later (R6).** The deploy applies
 -- migrations BEFORE it restarts the services. So the OLD gateway runs against
--- this schema for a short time. The old code names `ON CONFLICT (owner_email)`
+-- this schema for a short time.
+--
+-- The old code names `ON CONFLICT (owner_email)`
 -- and `ON CONFLICT (user_id, lower(term))`. Postgres needs a unique rule on
 -- exactly those columns for each clause. The notes router is mounted in
 -- production, and `feature:*` (migration 207) gives `notes` to each role but
--- `guest`. So old code can reach both writes during a deploy. This file
--- therefore keeps the old keys and only adds the new indexes.
+-- `guest`. So old code can reach both writes during a deploy. So this file
+-- keeps the old keys and only adds the new indexes.
 --
 --   Release N (this file): both keys exist on each table. The new code names
 --     the new indexes as its conflict targets. A same-org write updates the
 --     row. A write of a key that ANOTHER org holds still fails on the old
 --     key. It never reaches the row of the other org.
 --     `tests/unit/test_notes_keys_per_org_r8.py` pins this on purpose.
---   Release N+1 (the contract, a later numbered file): drop
---     `copilot_config_pkey` and `notes_glossary_user_term_idx`. Only then can
+--   Release N+1 (the contract, task 3886, a later numbered file): move the
+--     primary key of `copilot_config` to `copilot_config_org_owner_key`, and
+--     remove `notes_glossary_user_term_idx`. Only then can
 --     org B hold a key that org A holds. It must NOT ship with this file. If
 --     it did, the old code's upserts would fail on each write until the
 --     restart, because no unique rule on the old columns would remain.
@@ -71,6 +76,7 @@
 -- tables. Both tables are small, so the hold is short. Never wait for a lock:
 -- the file sets lock_timeout first, as 414 does. On a lock timeout the runner
 -- tries the whole file again, and the file is idempotent.
+--
 -- Depends on: 99_note_taker_slice2.sql (notes_glossary and its key),
 --             125_meeting_agenda.sql (copilot_config and its primary key),
 --             130_org_access_control.sql (organization).
