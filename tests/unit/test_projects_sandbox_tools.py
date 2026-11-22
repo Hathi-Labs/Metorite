@@ -1053,7 +1053,12 @@ async def test_no_member_takes_a_folder_with_files_and_no_author(sandbox) -> Non
 #   test (its write of a new skill while the store is down);
 # * ``claim_skill`` raises IN_USE or STORE_UNREAD as FOREIGN, or the route
 #   answers 403 for each reason (P2): the store-row, the store-error and the
-#   route-status tests.
+#   route-status tests;
+# * ``claim_skill`` raises the orphan refusal as FOREIGN (P2): the
+#   no-author claim test;
+# * the store reads its dir kind, or the claim its store key, from
+#   ``.cc-instance`` (P1, P3): the binding-not-marker test;
+# * the route passes no store key (P3): the route-status test.
 
 
 async def test_the_store_hides_a_folder_with_files_and_no_author(sandbox) -> None:  # noqa: F811
@@ -1136,6 +1141,30 @@ async def test_a_claim_is_refused_when_the_store_cannot_answer(sandbox) -> None:
     sandbox.store_error = RuntimeError("no database")
     await y_store.write("agent-data/skills/chart/more.md", "still mine")
     assert len(sandbox.store_asks) == asks
+
+
+async def test_the_store_takes_the_dir_kind_from_the_binding_not_the_marker(sandbox) -> None:  # noqa: F811
+    """H-245 review, P1 and P3. A container can rewrite ``.cc-instance``. The
+    store takes the dir kind and the store key from the broker's binding, so
+    a rewritten marker neither switches the orphan rule off nor changes the
+    key that the claim asks for."""
+    from acb_skills.agent_paths import tenant_instance
+
+    ws = _store(sandbox, member=_X)[1]
+    # The marker changes before the store is built and before each call.
+    (ws / ".cc-instance").write_text(f"u:{_X}", encoding="utf-8")
+    x_store = _store(sandbox, member=_X)[0]
+    assert (ws / ".cc-instance").read_text(encoding="utf-8") == f"u:{_X}"
+    bare = ws / "agent-data" / "skills" / "bare"
+    bare.mkdir(parents=True)
+    (bare / "SKILL.md").write_text("ORPHAN TEXT")
+    with pytest.raises(ValueError, match="no author"):
+        await x_store.read("agent-data/skills/bare/SKILL.md")
+    assert await x_store.file_exists("agent-data/skills/bare/SKILL.md") is False
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    assert sandbox.store_asks == [
+        (PA, "agent-data/skills/chart", (tenant_instance(ORG_A), "")),
+    ]
 
 
 @pytest.mark.parametrize("cls", ["WorkspaceFileStore", "TenantFileStore"])
