@@ -2793,21 +2793,22 @@ _INSERT_CHILD_SQL = (
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
-#: SW-39. The columns of a child, in the org of the bound session
-#: (``filters.BOUND_ORG_SQL``) beside FORCE RLS.
+#: SW-39. The columns of the children of one run, in the org of the bound
+#: session (``filters.BOUND_ORG_SQL``) beside FORCE RLS. A child names its
+#: own subject, ``kind = 'child'``.
 _CHILD_SELECT = (
     "SELECT c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
     " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
     " c.last_activity_at"
     " FROM pm_agent_runs c"
     f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON c.organization_id = bound_org.id"
+    " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
 )
 
 #: SW-39. The children of one run, newest first. The caller reads the parent
 #: first, with the visibility of its task.
 _CHILDREN_SQL = (
     f"{_CHILD_SELECT}"
-    " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
     "   AND (CAST(:child AS uuid) IS NULL OR c.id = CAST(:child AS uuid))"
     " ORDER BY c.created_at DESC, c.id DESC LIMIT :limit"
 )
@@ -2816,11 +2817,7 @@ MAX_CHILDREN = 100
 
 #: SW-114. The one child of a parent with this key (:func:`child_key`). The
 #: key names the parent too, and the read names both.
-_CHILD_BY_KEY_SQL = (
-    f"{_CHILD_SELECT}"
-    " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
-    "   AND c.idempotency_key = :key"
-)
+_CHILD_BY_KEY_SQL = f"{_CHILD_SELECT} AND c.idempotency_key = :key"
 
 #: SW-114. The count of the open children of one run, for the cap. The
 #: parent row is locked first, so two starts under one parent count in turn.

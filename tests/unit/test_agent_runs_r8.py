@@ -2115,7 +2115,7 @@ class TestChildRunsBesideTheRunRoutes:
     async def _parent_and_child(self, w: Any, call: Any) -> tuple[str, str]:
         rid = (await _start(w, call, idempotency_key=_key()))["id"]
         made = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/children",
-                          {"agent_label": "implementer"})
+                          {"agent_id": f"sub-{_key()}", "agent_label": "implementer"})
         assert made.status_code == 201, made.text
         return rid, made.json()["run"]["id"]
 
