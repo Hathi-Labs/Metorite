@@ -564,6 +564,11 @@ def _is_database_fault(exc: BaseException) -> bool:
 #: uvicorn with no ``--workers``, ``deploy/hostinger/acb-gateway.service``),
 #: and the parse pool of ``attachment_tools`` is one for each process too. A
 #: second process would need a lock in Redis.
+#: ⚠️ The loop thread changes it and ``_WAITERS`` (task 3888). The parse
+#: worker thread calls ``_ReadHold.release`` (H-253), and the release then
+#: runs on the loop. Only a release after the loop closed drops a key from
+#: another thread. Fence: tests/unit/test_email_attachment_text.py
+#: (``TestTheReleaseFromTheWorkerThread``).
 _READING: set[tuple[str, str]] = set()
 
 
@@ -582,6 +587,14 @@ _WAITERS: dict[tuple[str, str], list[asyncio.Future[None]]] = {}
 HOLD_WAIT_S = 20.0
 
 
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """The loop that runs in this thread, or ``None`` in a thread with no loop."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 class _ReadHold:
     """One member's right to read a file now, at most one at a time.
 
@@ -591,13 +604,16 @@ class _ReadHold:
     the event loop with no ``await`` between the test and the add, so two
     requests of one member cannot both take it. ``take_waiting`` queues
     behind the holder for at most :data:`HOLD_WAIT_S`, so a burst of reads
-    runs one after the other and does not refuse.
+    runs one after the other and does not refuse. ``release`` is safe from
+    any thread (task 3888).
     """
 
     def __init__(self, user: UserContext) -> None:
         self._key = (str(user.organization_id or ""), (user.email or "").strip().lower())
         self._held = False
         self._handed = False
+        #: The loop that owns ``_READING`` and ``_WAITERS`` for this hold.
+        self._loop = _running_loop()
 
     def take(self) -> bool:
         if self._held:
@@ -647,6 +663,29 @@ class _ReadHold:
                 return
 
     def release(self) -> None:
+        """Give the hold back and wake the next waiter. Safe from any thread.
+
+        H-253 calls it on the parse worker thread. ``Future.set_result`` from
+        that thread does not wake the loop, and in debug mode it raises. So a
+        call from another thread only sends the release to the loop of the
+        hold (task 3888). A call on that loop releases at once.
+        """
+        loop = self._loop
+        if loop is None or _running_loop() is loop:
+            self._release_here()
+            return
+        try:
+            loop.call_soon_threadsafe(self._release_here)
+        except RuntimeError as exc:
+            # The loop is closed, so no waiter of it is left. Drop the key, so
+            # the hold cannot stay for ever. The log holds no member address.
+            if self._held:
+                _READING.discard(self._key)
+                self._held = False
+            _log.warning("attachment_text.hold_loop_closed", error=type(exc).__name__)
+
+    def _release_here(self) -> None:
+        """The release itself, on the loop thread of the hold."""
         if self._held:
             _READING.discard(self._key)
             self._held = False
@@ -974,6 +1013,7 @@ async def attachment_text(  # noqa: C901 - one branch over the limit: the hold w
             options["ocr"] = False  # the caller asked for no OCR
         # H-253: the hold ends when the worker gives its parse slot back, and
         # not when this request answers. A parse past its deadline keeps the slot.
+        # The worker thread calls it, and the release runs on this loop (task 3888).
         options["on_worker_done"] = hold.release
         hold.hand_off()
         parsed = await parse_bounded(got.content, suffix, **options)

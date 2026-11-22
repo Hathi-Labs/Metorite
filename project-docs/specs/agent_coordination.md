@@ -1421,6 +1421,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 871. The session-start hook prints the six steps of CLAUDE.md "Work under a Metorite task", and the tasks that this member's sessions hold. A PreToolUse hook on `gh pr create` reminds an agent when the body has no task URL. It warns in build and blocks in a `harden` pull request.
 - **Done when.** A `gh pr create` with no task URL gets the reminder, and the hook tests cover both paths.
 - **Risk.** LOW. **Gate.** OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30.
+- **Built (task 871), 2026-11-22, without the settings entry.** The session-start hook prints the rule in three lines, and a live read names the tasks that the member's sessions hold (reason `held_by_you`). The new hook `pr-task-url.mjs` warns with `additionalContext`, and refuses with exit 2 when `TASK_URL_BLOCK=1`. It sets no `permissionDecision`. It cannot read a body that comes from a pipe or an unset variable, so it stays silent then. `next-ticket.md` step 7 and `handoff.md` point at CLAUDE.md §4. The grant opens `guard-write` for the owner's agents only. So the contributor's fleet did not edit `.claude/settings.json`. The hook does not run until the owner adds its entry. The entry is a `PreToolUse` entry with matcher `Bash` and the command `node "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-task-url.mjs"`.
 
 #### SW-19a · The session-start hook reads Metorite
 
