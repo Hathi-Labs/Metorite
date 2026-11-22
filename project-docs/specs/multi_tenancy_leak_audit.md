@@ -727,12 +727,16 @@ Stated plainly, so nobody reads silence as clearance.
    with SQLSTATE 23503, for each role. It keeps the rule of 471, so the delete of a meeting
    or a recording still works.
 
-   Each write route of `gateway/routes/notes/` loads the meeting under the bound tenant first.
-   A background write reads the parent id from a row that a route read under that tenant. So
-   the guard is defence in depth. Fence: `tests/unit/test_notes_fk_same_org_r8.py`. It reads
-   `pg_constraint`, so a new notes key with no guard fails it. Three keys name tables outside
-   the notes set and stay open: `action_item.assignee_id`, `action_item.resulting_task_id`
-   and `transcript_segment.speaker_person_id`.
+   Each request route of `gateway/routes/notes/` that inserts a child loads the meeting under
+   the bound tenant first. Five background writes use `get_db`, which binds no tenant (H4):
+   `enqueue_summary`, `generate_notes`, `run_transcription`, `_ingest_recording` and
+   `copilot._persist`. Under FORCE RLS such a session reads no row and cannot write one. So
+   the guard is defence in depth.
+
+   Fence: `tests/unit/test_notes_fk_same_org_r8.py`. It reads `pg_constraint`, so a new notes
+   key with no guard fails it. Three keys name tables outside the notes set and stay open:
+   `action_item.assignee_id`, `action_item.resulting_task_id` and
+   `transcript_segment.speaker_person_id`.
 6. **The frontend.** `workbench/control_plane` was out of scope; if any org identity is derived
    client-side it would compound S1-1's wrong `/auth/me` answer.
 

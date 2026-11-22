@@ -22,6 +22,8 @@ load the meeting under the bound tenant first, so this is defence in depth
   guard compares the orgs, and does not rely on RLS to hide the row.
 * An UPDATE that sets the key to the parent of org B is refused (23503).
   ``SET <key> = <key>`` works, and an UPDATE of another column works.
+* An UPDATE of the org alone does not call the guard (the column list holds
+  only the key). For the app role, RLS WITH CHECK refuses it.
 * The two upserts of the routes (``meeting_note`` and ``live_session``) work
   in one org.
 * The deletes still work: a meeting with each kind of child, a recording
@@ -84,6 +86,9 @@ from tests.unit import _r8_lists as r8_lists
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     promoted,
+)
+from tests.unit.test_notes_tenant_isolation_r8 import (
+    NOTES_TABLES as _ISOLATION_TABLES,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -159,11 +164,9 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
 }
 
 #: The notes tables. Each foreign key that names one of them needs a guard.
-NOTES_TABLES = frozenset({
-    "meeting", "action_item", "meeting_recording", "transcript_segment",
-    "meeting_note", "summary_run", "notes_glossary", "meeting_bot",
-    "copilot_config", "live_session", "copilot_event",
-})
+#: One list: the isolation suite owns it, and its fence
+#: ``test_each_child_of_a_notes_table_is_listed`` makes a new child join it.
+NOTES_TABLES = frozenset(t.name for t in _ISOLATION_TABLES)
 
 #: The keys of a notes table that name a table outside the notes set. Each
 #: was reviewed, and each carries its reason. Task 3845 left them open.
@@ -457,6 +460,24 @@ class TestTheUpdateProbes:
                 f"UPDATE {table} SET organization_id = organization_id "
                 f"WHERE {pk}::text = :k"), {"k": mine}).rowcount
         assert (same, other) == (1, 1)
+
+    @pytest.mark.parametrize("key", _KEYS, ids=_ids(_KEYS))
+    def test_the_app_cannot_move_a_child_to_the_other_org(
+            self, world, key: tuple[str, str]) -> None:
+        """The column list holds only the key, so an UPDATE of the org alone
+        does not call the guard. RLS WITH CHECK refuses it instead: the app
+        role can write only the bound org. If this goes green with no refusal,
+        the column list is a hole."""
+        promoted_, eng, a, _b = world
+        table, column = key
+        pk = "meeting_id" if table == "meeting_note" else "id"
+        with _bound(eng, promoted_.org_a) as c:
+            mine = _seed_child(c, table, column, a)
+            with pytest.raises(DBAPIError) as exc:
+                c.execute(text(
+                    f"UPDATE {table} SET organization_id = :b WHERE {pk}::text = :k"),
+                    {"b": promoted_.org_b, "k": mine})
+        assert "row-level security" in str(exc.value).lower(), exc.value
 
     def test_the_two_route_upserts_work_in_one_org(self, world) -> None:
         """``summaries.put_note`` and ``live_session.begin``, same org."""
