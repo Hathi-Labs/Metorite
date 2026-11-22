@@ -1240,7 +1240,7 @@ async def create_task(
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
     lines = [*_task_line(task, status_label), *level_note(edit.asked(priority), task),
-             *edit.lines()]
+             *edit.lines(status_label)]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
     receipt = repeating.receipt(task, lines, saved, failed, new.extra)
@@ -1548,11 +1548,77 @@ class _CardEdit:
         flag on the card: the level of the call no longer holds."""
         return "" if {"important", "leveraged"} & set(self.changes) else priority
 
-    def lines(self) -> list[str]:
-        """The receipt's line of each stranger, in the words of the card line."""
-        if not self.strangers:
+    def lines(self, status_label: str = "") -> list[str]:
+        """The receipt lines of an edited card (EAC-1b), or ``[]`` for none.
+
+        With no change (a plain approve, a late approve, a no-change edit,
+        the card off), the receipt is the receipt of before. With changes,
+        the note of the written values comes first, then the line of each
+        stranger, in the words of the card line."""
+        if not self.changes:
             return []
-        return [f"  not in the directory: {', '.join(self.strangers)}"]
+        out = [_edit_note(self.changes, self.new, status_label or self.new.status_label)]
+        if self.strangers:
+            out.append(f"  not in the directory: {', '.join(self.strangers)}")
+        return out
+
+
+#: What the model reads after an edit card, ahead of the changed values (EAC-1b).
+#: It is our result text, so it holds in no tool description.
+_EDIT_NOTE_LEAD = (
+    "The member edited the card before they approved it. These are the approved "
+    "values. Treat them as final:"
+)
+
+
+#: The longest text of the member that the note shows, and the most people.
+_NOTE_ITEM_MAX = 120
+_NOTE_PEOPLE_MAX = 10
+
+
+def _note_item(text: str) -> str:
+    """One text of the member for the note: cut, then fenced by ``data()``."""
+    flat = " ".join(str(text).split())
+    if len(flat) > _NOTE_ITEM_MAX:
+        flat = flat[: _NOTE_ITEM_MAX - 1] + "…"
+    return data(flat)
+
+
+def _edit_note(changes: dict[str, Any], new: _NewTask, status_label: str) -> str:
+    """The receipt line of a changed edit card: the changed keys, each with
+    the value that the write sent (EAC-1b). No original value appears.
+
+    The text of the member (a lane, a person) goes through ``data()``. A
+    description is named and never quoted. A key that did not change is left
+    out. The order is the order of ``changed_values``."""
+    from acb_skills.task_card import TASK_EDIT_KEYS
+
+    payload = new.payload
+    parts: list[str] = []
+    for key in sorted(TASK_EDIT_KEYS):
+        if key not in changes:
+            continue
+        if key in ("due", "start"):
+            day = payload.get("due_at" if key == "due" else "start_date")
+            parts.append(f"{key} {day or 'none'}")
+        elif key == "status":
+            known = "status_id" in payload or new.parent or status_label not in ("", "the default")
+            lane = status_label if known else ""
+            parts.append(f"status {_note_item(lane) if lane else 'the default lane'}")
+        elif key == "assignees":
+            shown = ", ".join(_note_item(w) for w in new.who[:_NOTE_PEOPLE_MAX])
+            more = len(new.who) - _NOTE_PEOPLE_MAX
+            if more > 0:
+                shown += f" and {more} more"
+            parts.append("people " + (shown or "none"))
+        elif key == "important":
+            value = changes[key]
+            parts.append("important " + ("not judged" if value is None else "yes" if value else "no"))
+        elif key == "leveraged":
+            parts.append("leveraged " + ("yes" if changes[key] else "no"))
+        else:
+            parts.append("description (changed, read the task)")
+    return f"  {_EDIT_NOTE_LEAD} {' · '.join(parts)}."
 
 
 async def _card_edit(

@@ -20,6 +20,16 @@ import Icon from "@/components/Icon";
 import { classify } from "../lib/assignees";
 import { labelWith } from "../lib/grouping";
 
+/**
+ * The remove x is 11 to 13 px, which a fingertip cannot hit (task 3559, measured
+ * at 390 px under touch emulation). On a touch screen only, an invisible
+ * pseudo-element grows the tap area to about 35 px. The drawn box does not move,
+ * and no badge clips it. A mouse or a wide window gets none of these classes.
+ * Fence: `AssigneeChips.test.ts` and `e2e/touch-targets.spec.ts`.
+ */
+export const CHIP_REMOVE_TOUCH =
+  "pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:-inset-3 pointer-coarse:before:content-['']";
+
 export function AssigneeChips({
   assignees,
   disabled = false,
@@ -58,7 +68,7 @@ export function AssigneeChips({
               disabled={disabled}
               aria-label={`Unassign ${who}`}
               onClick={() => onRemove(who)}
-              className="opacity-70 hover:opacity-100"
+              className={`opacity-70 hover:opacity-100 ${CHIP_REMOVE_TOUCH}`}
             >
               <Icon name="X" className="h-3 w-3" />
             </button>
