@@ -37,6 +37,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
+# H2 (task 566): `agent_skill_setting` is a tenant table. Both handlers run in a
+# member's request, where `get_current_user` bound the tenant from the identity,
+# so the ambient `tenant_session()` is the right seam. The block is ONE
+# transaction and COMMITS ON EXIT: a `commit()` inside it ends the transaction and
+# drops the bind (`SET LOCAL`), and the next read then returns no row under RLS.
+# So each handler reads its answer INSIDE the block. Fence:
+# `tests/unit/test_agent_skills_per_org_r8.py`.
+from gateway.db import tenant_session as _tenant_session  # noqa: E402
+
 _log = get_logger("gateway.agent_skills")
 
 router = APIRouter(prefix="/agent", tags=["agents"])
@@ -67,12 +76,6 @@ class SkillSettingsRequest(BaseModel):
 
 
 # ── Seams (module-level so tests patch the SUT submodule, hermetically) ─────
-
-async def _get_db() -> Any:
-    """Async session from the shared pooled engine (admin kernel recipe)."""
-    from gateway.routes.admin._common import get_db  # noqa: PLC0415
-    return await get_db()
-
 
 def _known_agent_names() -> set[str] | None:
     """Registered agent names, or ``None`` when the registry is unavailable
@@ -163,8 +166,7 @@ async def get_agent_skills(
 ) -> dict[str, Any]:
     """Stored skill settings for one agent (agent-wide instance)."""
     _require_known_agent(name)
-    db = await _get_db()
-    async with db:
+    async with _tenant_session() as db:
         return await _settings_payload(db, name)
 
 
@@ -212,8 +214,7 @@ async def set_agent_skills(
         seen.add(family)
         cleaned.append((family, bool(entry.enabled), entry.reason or ""))
 
-    db = await _get_db()
-    async with db:
+    async with _tenant_session() as db:
         await db.execute(
             text(
                 "DELETE FROM agent_skill_setting "
@@ -231,7 +232,8 @@ async def set_agent_skills(
                 {"name": name, "family": family, "enabled": enabled,
                  "reason": reason, "by": admin.email},
             )
-        await db.commit()
+        # No `commit()` here: the block commits on exit, and the read below
+        # must run in the same bound transaction.
         payload = await _settings_payload(db, name)
 
     _log.info("agent_skills_set", agent=name, by=admin.email,
