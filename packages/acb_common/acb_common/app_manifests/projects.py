@@ -462,6 +462,7 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         # ── assignees.py ──
         Route("GET", "/projects/people/names", "people_for", "A", off_door=LATER),
+        Route("GET", "/projects/people/reach", "people_for", "A", off_door=LATER),
         Route("GET", "/projects/assignees", "people_for", "A", off_door=LATER),
         # ── analytics.py · reports.py ──
         Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A", off_door=LATER),
