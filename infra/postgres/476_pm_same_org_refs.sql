@@ -31,7 +31,7 @@
 --   pm_agent_runs             connection_id         agent_connection      SET NULL
 --   pm_agent_runs             dispatched_by_run_id  pm_agent_runs         SET NULL
 --   pm_agent_runs             parent_run_id         pm_agent_runs         CASCADE
---   pm_agent_run_activities   run_id               pm_agent_runs         CASCADE
+--   pm_agent_run_activities   run_id                pm_agent_runs         CASCADE
 --   pm_agent_run_activities   task_id               pm_tasks              CASCADE
 --   pm_agent_run_activities   in_reply_to           pm_agent_run_activities SET NULL
 --   pm_agent_run_activities   pm_activity_id        pm_activities         SET NULL
