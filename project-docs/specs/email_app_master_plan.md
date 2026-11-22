@@ -4690,6 +4690,8 @@ The text was verified against code on 2026-10-06. The spec-auditor gave GO-NARRO
 holds its corrections. The "As built" notes below record the build. The owner reported the gap: a
 chat answered that it could not read the files of a mail.
 
+**EM-T11 slot gap closed (2026-11-22, H-253).** The hold of a member (`_ReadHold`) now ends when the parse worker gives its slot back. `parse_bounded` takes `on_worker_done`, and the route passes `hold.release`. A parse past its deadline still answers "took too long", and its member cannot start a second read until the worker ends.
+
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It adds one read route and one agent tool. The
 route reads mail of the member, so it takes the full review loop and a security review.
 
