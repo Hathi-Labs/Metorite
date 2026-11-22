@@ -81,6 +81,13 @@ const CASES = [
     const r = run('gh pr create --body-file /dev/zero')
     return silent(r) && Date.now() - t0 < 5000
   }],
+  ['a -F inside the --body text is not a flag, so the reminder still comes', () =>
+    warned(run('gh pr create --title t --body "see -F foo for the rest"'))],
+  ['a very long command is skipped, in good time', () => {
+    const t0 = Date.now()
+    const r = run('gh pr create --body x\n' + 'cat <<EOF\n'.repeat(20000), { env: { TASK_URL_BLOCK: '1' } })
+    return silent(r) && Date.now() - t0 < 5000
+  }],
   ['a directory as body file is silent', () => silent(run('gh pr create --body-file .'))],
 
   // The hook cannot prove an absence it cannot see.

@@ -36,10 +36,14 @@ const TASK_URL = /app\.metorite\.com\/projects\?task=[0-9a-f-]{8,}/i
 // It runs on the command with quoted text and heredocs blanked (see `blank`), so
 // a commit message or an echo that only names the command does not match.
 const PR_CREATE = /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*gh\s+pr\s+create(?=\s|$)/
-const BODY_FILE = /(?:^|\s)(?:--body-file|-F)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/
+const BODY_FLAG = /(?:^|\s)(?:--body-file|-F)(?:=|\s+)/
+const BODY_PATH = /^(?:"([^"]+)"|'([^']+)'|(\S+))/
 // Calls that open nothing: help, and the browser form.
 const NO_PR = /(?:^|\s)(?:--help|-h|--web|-w)(?=\s|$)/
 const MAX_BODY_BYTES = 1_000_000
+// A command this long is not a call to read. The blanking below is quadratic on
+// a heredoc with no end line, so the hook skips it and stays silent.
+const MAX_COMMAND_CHARS = 64_000
 
 const REMINDER =
   'This pull request has no Metorite task URL in its body (CLAUDE.md §4, step 4). ' +
@@ -69,8 +73,12 @@ function expand(p) {
 
 /** The text of the body file: a string, or null when the hook cannot read it. */
 function readBodyFile(command, cwd) {
-  const m = command.match(BODY_FILE)
-  if (!m) return undefined // no body file named
+  // The flag is found with quoted text blanked, so a `-F` inside --body text is
+  // not a flag. The path is read from the real text, because it may be quoted.
+  const flag = BODY_FLAG.exec(blank(command))
+  if (!flag) return undefined // no body file named
+  const m = command.slice(flag.index + flag[0].length).match(BODY_PATH)
+  if (!m) return null
   const named = expand(m[1] || m[2] || m[3] || '')
   if (!named || named === '-' || /\$/.test(named)) return null
   // A pipe, a device or a huge file must never stall the call: only a plain,
@@ -101,6 +109,7 @@ try {
 }
 
 const command = input?.tool_input?.command
+if (typeof command === 'string' && command.length > MAX_COMMAND_CHARS) done()
 const blanked = typeof command === 'string' ? blank(command) : ''
 const found = PR_CREATE.exec(blanked)
 if (!found) done()
