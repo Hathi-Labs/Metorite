@@ -459,8 +459,9 @@ def _save_avatar(
     agent_name)``, the unique index of migration 354. A save never matches
     a row of another org.
 
-    Migration 474 (the contract, HANDOFF H-443) dropped the old primary key
-    on ``agent_name`` alone. A save of a name that another org holds now
+    Migration 474 (the contract, task 1719) re-pointed the primary key from
+    ``agent_name`` alone to ``(organization_id, agent_name)``. A save of a name
+    that another org holds now
     inserts that org's own row, and never touches the other row.
     """
     from acb_graph import tenant_session  # noqa: PLC0415

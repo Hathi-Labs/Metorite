@@ -9,8 +9,9 @@ it restarts the services:
   ``uq_agent_avatars_org_agent`` on ``(organization_id, agent_name)`` and
   kept the old primary key. ``_save_avatar`` names the new index as its
   conflict target.
-* **Contract (migration 474, this release, HANDOFF H-443).** It drops
-  ``agent_avatars_pkey``. Then each org keeps its own avatar for one name.
+* **Contract (migration 474, this release, task 1719).** It re-points the
+  primary key from ``agent_name`` alone to ``(organization_id, agent_name)``.
+  Then each org keeps its own avatar for one name.
   The merger ships it only after 354 is in the production ledger from an
   earlier release.
 
@@ -22,8 +23,10 @@ sees each org's row.
 
 Mutations this suite catches (R7):
 
-* the DROP removed from migration 474: the old key is still there, and the
+* the re-key removed from migration 474: the old key is still there, and the
   cross-org save fails on ``agent_avatars_pkey``;
+* the new primary key missing from 474 (a bare DROP): the schema test fails,
+  because the table would have no primary key;
 * the CREATE UNIQUE INDEX removed from migration 354: the same-org save is
   500, because no unique rule matches the conflict target;
 * ``_save_avatar`` back to ``ON CONFLICT (agent_name)``: the cross-org save
@@ -66,6 +69,7 @@ pytestmark = _DB_GATE
 
 _INDEX = "uq_agent_avatars_org_agent"
 _OLD_KEY = "agent_avatars_pkey"
+_NEW_KEY = "agent_avatars_org_agent_pkey"
 
 
 def _name() -> str:
@@ -111,11 +115,20 @@ def _index_columns(promoted, index: str) -> tuple[bool, list[str]] | None:  # no
 # ── Contract: the per-tenant key alone ──────────────────────────────────────
 
 def test_the_contract_schema_holds_only_the_per_tenant_key(graph_as_app):  # noqa: F811
-    """Migration 474 drops the old primary key and keeps the per-tenant
-    index. No unique or primary key of the table is on ``agent_name`` alone."""
+    """Migration 474 re-points the primary key to ``(organization_id,
+    agent_name)`` and keeps the per-tenant index of 354. No unique or primary
+    key of the table is on ``agent_name`` alone, and the table keeps a primary
+    key (so a publication can replicate its UPDATE and DELETE)."""
     assert _index_columns(graph_as_app, _INDEX) == (
         True, ["organization_id", "agent_name"])
     assert _index_columns(graph_as_app, _OLD_KEY) is None
+    assert _index_columns(graph_as_app, _NEW_KEY) == (
+        True, ["organization_id", "agent_name"])
+    kinds = _admin_one(graph_as_app, """
+        SELECT array_agg(conname ORDER BY conname) AS names
+          FROM pg_constraint
+         WHERE conrelid = 'agent_avatars'::regclass AND contype = 'p'""")
+    assert list(kinds.names) == [_NEW_KEY], "the table must hold ONE primary key"
     row = _admin_one(graph_as_app, """
         SELECT count(*) AS n
           FROM pg_index i
