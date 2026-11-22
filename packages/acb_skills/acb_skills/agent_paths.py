@@ -769,8 +769,8 @@ def skill_folder_orphaned(workspace: Path, top_rel: str) -> bool:
 
     Such a folder came from a writer that records no author, from before
     PR #603, or from a rehydrate that failed part way and brought back a
-    member's files with no marker. No member may take it (:func:`claim_skill`),
-    and the covered file store reads none of it (H-245 step 1). A folder that
+    member's files with no marker. In a shared dir, no member may take it
+    (:func:`claim_skill`), and the file store reads none of it (H-245 step 1). A folder that
     cannot be listed (a link, a read error) is orphaned too, so the rule fails
     closed. A missing or empty folder is not.
     """
@@ -841,9 +841,10 @@ def claim_skill(
     secret), because a skill with no author never loads. Raises
     :class:`SkillOwnedElsewhere` when the folder is not this member's,
     also when another member claimed it between the check and the write. It
-    raises it too for a folder with files and no marker
-    (:func:`skill_folder_orphaned`), and, in a shared dir, for a folder that
-    the blob store still holds or cannot answer for (:func:`_store_refusal`).
+    raises it too, in a shared dir (:func:`is_shared_instance`), for a folder
+    with files and no marker (:func:`skill_folder_orphaned`), and for a folder
+    that the blob store still holds or cannot answer for (:func:`_store_refusal`).
+    In a personal dir, its member claims an unmarked folder.
     Its :attr:`~SkillOwnedElsewhere.reason` says which. So ``None`` always
     means "this member's folder", and the caller may write.
 
@@ -869,9 +870,12 @@ def claim_skill(
     from acb_skills import safe_open
 
     # A folder that already holds files and no marker came from a writer that
-    # records no author, or from before PR #603. The routes and the file store
-    # hide it from every member, so no member may take it and read what is in it.
-    if skill_folder_orphaned(workspace, top):
+    # records no author, or from before PR #603. In a shared dir the routes and
+    # the file store hide it from every member, so no member may take it and
+    # read what is in it. A personal dir (``u:``) holds only its member's files,
+    # and the Files routes write no marker there, so its member claims the
+    # folder (H-245 review, P1).
+    if is_shared_instance(instance) and skill_folder_orphaned(workspace, top):
         raise SkillOwnedElsewhere(
             "that skill folder has no author, so no member can take it",
             reason=SkillClaimRefusal.IN_USE,

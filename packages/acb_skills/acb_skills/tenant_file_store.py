@@ -241,15 +241,17 @@ class TenantFileStore(FileSystemAgentFileStore):
         * Another member's folder, and one whose marker cannot be read, empty
           or unknown (``agent_paths.skill_owner`` fails closed).
         * In a shared dir (a tenant or a team dir), a folder with no marker
-          that holds files (H-245 step 1, task 618 F1), the rule of ``agent_paths.claim_skill``. A rehydrate
-          that fails part way can bring back a member's files with no marker,
-          and no member may take them. A missing or empty folder stays free,
-          so a run still makes a new skill.
+          that holds files (H-245 step 1, task 618 F1). It is the rule of
+          ``agent_paths.claim_skill``. A rehydrate that fails part way can
+          bring back a member's files with no marker, and no member may take
+          them. A missing or empty folder stays free, so a run still makes a
+          new skill.
 
         A personal dir (H-245 review, P1): the Files routes save a skill
         there with no marker (``workspace._skill_top``), so the orphan rule
-        would hide the member's own skills. The FOREIGN rule still binds,
-        because :meth:`_claim` writes a marker in every dir.
+        would hide the member's own skills. Its member reads that folder, and
+        a write claims it (``claim_skill`` writes the marker). The FOREIGN
+        rule still binds, because :meth:`_claim` writes a marker in every dir.
         """
         from acb_skills.agent_paths import (
             SKILL_FOREIGN,

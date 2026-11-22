@@ -1210,6 +1210,12 @@ async def test_a_personal_dir_reads_its_own_skill_with_no_marker(cls, sandbox) -
     assert {e.name for e in await store.list_children("agent-data/skills/old")} == {
         "SKILL.md", "scripts",
     }
+    # A write into that unmarked folder claims it for its one member, so the
+    # folder then carries the member's marker (H-245 review round 3, P1).
+    assert not _marker(ws, "old").exists()
+    await store.write("agent-data/skills/old/scripts/plot.py", "print('X NEW CODE')")
+    assert _marker(ws, "old").read_text() == skill_author_id(_X)
+    assert await store.read("agent-data/skills/old/scripts/plot.py") == "print('X NEW CODE')"
     # A new skill while the store is down: no ask, so no refusal.
     sandbox.store_error = RuntimeError("no database")
     await store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
@@ -1256,6 +1262,10 @@ async def test_a_team_dir_hides_a_folder_with_files_and_no_author(sandbox) -> No
     with pytest.raises(SkillOwnedElsewhere) as caught:
         claim_skill(ws, "agent-data/skills/bare/x.md", _X, instance=_TEAM)
     assert caught.value.reason.name == "IN_USE"
+    # The same write that claims an unmarked folder in a personal dir is
+    # refused here (H-245 review round 3, P1).
+    with pytest.raises(ValueError, match=r"That skill name is in use\. Pick another name\."):
+        await x_store.write("agent-data/skills/bare/x.md", "mine now")
     assert not _marker(ws, "bare").exists()
 
 
