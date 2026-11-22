@@ -394,6 +394,8 @@ interface EmailState {
   /** True when the last search was re-ranked semantically (hybrid) by the server
    *  — lets the UI show a "Smart results" indicator. False for lexical/no search. */
   searchIsSemantic: boolean;
+  /** True when no mail held every word and the list shows mail with at least one. */
+  searchBroadened: boolean;
   /** Checkbox multi-selection in the list, shared with the unified toolbar so
    *  bulk actions can live in the page-level bar instead of inside EmailList. */
   selectedIds: Set<string>;
@@ -1061,6 +1063,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   searchScope: null,
   searchFilters: [],
   searchIsSemantic: false,
+  searchBroadened: false,
   selectedIds: new Set<string>(),
   viewerCommand: null,
 
@@ -1255,6 +1258,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // hybrid:true asks for semantic re-ranking; the server applies it only
       // when semantic search is enabled and returns whether it did.
       let searchIsSemantic = false;
+      let searchBroadened = false;
       const result = searchActive(get())
         ? await (async () => {
             const r = await api.searchEmails({
@@ -1266,6 +1270,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
               pageSize: PAGE_SIZE,
             });
             searchIsSemantic = r.hybrid;
+            searchBroadened = r.broadened;
             return r;
           })()
         : await api.listEmails({
@@ -1305,6 +1310,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         emailsTotal: total,
         emailsPage: 1,
         searchIsSemantic,
+        searchBroadened,
         ...(checks ? { selectedIds: checks } : {}),
       });
     } catch (err: any) {
@@ -1387,6 +1393,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       setListRows(set, {
         emails: overlayPatches(result.emails, now.messagePatches),
         emailsTotal: result.total,
+        searchBroadened: "broadened" in result && result.broadened === true,
         availableLabels: [...labelSet].sort(),
         ...(checks ? { selectedIds: checks } : {}),
       });
@@ -1401,7 +1408,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       selectedAccountId, selectedFolder,
       emailsPage, emails, loadingMore, emailsTotal,
     } = state;
-    if (loadingMore || emails.length >= emailsTotal) return;
+    // A broadened answer exists on page 1 only: page 2 would run the strict
+    // AND query again and overwrite the total with 0 (task 2975 verifier).
+    if (loadingMore || state.searchBroadened || emails.length >= emailsTotal) return;
     set({ loadingMore: true });
     // A newer read or a change of the pool replaced the list this page
     // extends (EM-T8g-2 review F4).
@@ -1602,6 +1611,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
+      searchBroadened: false,
     });
     get().fetchEmails();
   },
@@ -1739,6 +1749,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
+      searchBroadened: false,
       selectedEmailId: null,
       selectedEmailOverride: null,
     });
