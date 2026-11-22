@@ -12,7 +12,7 @@ The skip (``_tool_injection._inject_mcp_servers``) now hands the provider of
 the run the tool-name prefix of each server that it held back
 (``_note_withheld_servers`` -> ``unknown_tool.note_withheld``). The value
 comes from the registry rows of the run's org, through the one row rule of
-the lookahead (``_attachable_server_names``), never from a tool argument or
+the lookahead (``_attachable_rows`` and ``_row_may_attach``), never from a tool argument or
 the member's text. A call of a tool of such a server gets
 ``unknown_tool.WITHHELD_MAIL``. A truly unknown name keeps its answer.
 
@@ -815,16 +815,33 @@ async def test_a_step_reads_nothing_and_keeps_not_in_step(monkeypatch) -> None:
 
 def test_one_row_rule_and_one_hook() -> None:
     """The lookahead and the held-back servers read ONE row rule. The skip
-    hands the value over, and no second maker of the provider exists."""
+    hands the value over, and no second maker of the provider exists.
+
+    The rule is ``_row_may_attach``, read through ``_attachable_rows`` (one
+    ``enabled_meta`` read). The merge of CSY-4 and HRD-1d made the two rules
+    one, so each of the four readers calls ``_attachable_rows`` and none of
+    them repeats a row test. ``_reconnect_rows`` (task 3866) reads
+    ``needs_reconnect_meta``, so it calls ``_row_may_attach`` itself, with
+    ``parked``."""
     import inspect
 
     from orchestrator import _tool_injection as ti
     from orchestrator import executor as ex
 
-    assert "_attachable_server_names(" in inspect.getsource(ti._mcp_may_attach)
+    rows = inspect.getsource(ti._attachable_rows)
+    assert "_row_may_attach(" in rows and "enabled_meta(" in rows
+    assert "servers_for_org" not in rows, "no header read and no OAuth refresh"
     note = inspect.getsource(ti._note_withheld_servers)
-    assert "_attachable_server_names(" in note and "enabled_meta(" in note
     assert "servers_for_org" not in note, "no header read and no OAuth refresh"
+    for reader in (ti._mcp_may_attach, ti._note_withheld_servers, ti._note_mail_skipped,
+                   ti._with_server_words):
+        src = inspect.getsource(reader)
+        assert "_attachable_rows(" in src, reader.__name__
+        assert "_MAF_HTTP_TRANSPORTS" not in src, f"{reader.__name__} repeats the row rule"
+    parked = inspect.getsource(ti._reconnect_rows)
+    assert "_row_may_attach(" in parked and "parked=True" in parked
+    assert "_MAF_HTTP_TRANSPORTS" not in parked, "_reconnect_rows repeats the row rule"
+    assert not hasattr(ti, "_attachable_server_names"), "a second row rule"
     inject = inspect.getsource(ti._inject_mcp_servers)
     assert inject.index("mcp.untrusted_pack_skipped") < inject.index("_note_withheld_servers(")
     assert inspect.getsource(ex).count("UnknownToolProvider(") == 1

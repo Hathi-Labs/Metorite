@@ -887,7 +887,8 @@ _PROJECTS_REMINDERS_WORDS = (
 #: The words of the authority pack (WS-ALN ALN-4). A bare "pin" is out.
 _PROJECTS_AUTHORITY_WORDS = (
     "authority page", "authority of the project", "authority of this project",
-    "pin this page", "pin the page", "pin a page", "unpin",
+    "pin this page", "pin the page", "pin a page", "unpin this page",
+    "unpin the page", "unpin a page",
     # WS-39 LP-1a: the updates of a project.
     "project update", "project updates",
     # WS-55 EA-18d: the questions that agents put and that wait on the member.
@@ -1828,6 +1829,16 @@ class PackTurn:
     #: WhatsApp turn. So a WhatsApp turn never changes the sticky packs of
     #: the web chat, also on a thread that both channels use.
     namespace: str = NAMESPACE
+    #: CSY-4 (``chat_connected_systems.md`` §3.4). The MCP servers that may
+    #: attach to this run, each as ``(name, words)`` in name order, with the
+    #: words of ``server_match.server_words``. The run fills it before
+    #: ``choose`` only while ``MCP_MAIL_PRECEDENCE_ORGS`` names the org and
+    #: the words of the turn name one of them. Else it is empty.
+    servers: tuple[tuple[str, frozenset[str]], ...] = ()
+    #: CSY-4. True only when the chat's mail mark reads ``MARK_MARKED``. A
+    #: clear mark, an unknown mark and a fault read False, so they evict
+    #: nothing (fail closed).
+    mail_marked: bool = False
 
 
 @dataclass(frozen=True)
@@ -1855,6 +1866,10 @@ class Choice:
     #: ``skill_packs.SkillPack``, "pack_cap" or "pack_off", and the slugs of
     #: the packs that it lacked. Such a skill is not in :attr:`skills_skipped`.
     skills_refused: tuple[tuple[Any, str, tuple[str, ...]], ...] = ()
+    #: CSY-4. The sticky packs of :attr:`evicted` that left for the reason
+    #: ``server_named`` (:func:`_server_named`). Only the log line of the apply
+    #: reads it.
+    server_named: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2539,6 +2554,9 @@ def choose(
     1. The decay: a sticky pack leaves when the chat did not use it in the
        last :data:`DECAY_TURNS` member turns: no tool of it ran, and the model
        did not load it (task 1747).
+       CSY-4: a sticky mail pack also leaves, with the reason
+       ``server_named``, when the turn names a connected server
+       (:func:`_server_named`). It goes into ``evicted`` too, the one list.
     2. The sticky packs that *allowed* names, in their first-load order.
     3. Each other allowed pack whose reference or words the member sent,
        typed or tapped (D-PZ-37), in the order of :data:`PACKS`.
@@ -2594,6 +2612,11 @@ def choose(
             evicted.append(entry.slug)
         elif entry.slug in allow:
             live.append(entry)
+    # CSY-4: a turn that names a connected server evicts each sticky mail pack,
+    # so the server attaches. All of them or none.
+    named_server = _server_named(turn, live, allow, skill_packs)
+    live = [entry for entry in live if entry.slug not in named_server]
+    evicted.extend(named_server)
     layers: dict[str, str] = {entry.slug: "sticky" for entry in live}
     order = [entry.slug for entry in live]
     for slug in PACKS:
@@ -2696,7 +2719,56 @@ def choose(
                   evicted=tuple(s for s in evicted if s not in brought),
                   skipped=tuple(skipped),
                   skills=skills, skills_skipped=skills_skipped,
-                  skills_refused=refused)
+                  skills_refused=refused,
+                  server_named=tuple(s for s in named_server if s not in brought))
+
+
+def _server_named(
+    turn: PackTurn, live: Sequence[Sticky], allow: frozenset[str],
+    skill_packs: Mapping[str, Sequence[str]] | None = None,
+) -> tuple[str, ...]:
+    """The sticky packs that leave for the reason ``server_named`` (CSY-4), or ().
+
+    ``chat_connected_systems.md`` §3.4 and D-CSY-2. Each live sticky pack whose
+    owner reads stranger text (:func:`_reads_strangers`) leaves when all of
+    these hold:
+
+    - ``MCP_MAIL_PRECEDENCE_ORGS`` names the org (``egress.mcp_mail_precedence_on``);
+    - the chat's mail mark reads set (:attr:`PackTurn.mail_marked`), so each
+      MCP call of the run still asks the member's card (step 3a of
+      ``permission_policy.decide``);
+    - the member's words of this turn name a server of :attr:`PackTurn.servers`
+      (``server_match.named_servers``).
+
+    It evicts all of them or none. No pack of such an owner that this turn
+    names (the words, a reference or the screen, :func:`_asked_now`) leaves,
+    and no sticky one that the last member turn used (the fresh guard). While
+    one such pack stays, the server cannot attach (OA-7b), so then none
+    leaves. TOF-1b: a skill of the turn that needs such a pack (*skill_packs*)
+    counts as a name, so then none leaves either. :func:`choose` also takes a
+    pack that a skill brings back out of the result. It reads no Redis."""
+    if not (turn.servers and turn.mail_marked):
+        return ()
+    from acb_skills.egress import mcp_mail_precedence_on
+    from acb_skills.server_match import named_servers
+
+    if not mcp_mail_precedence_on(turn.org):
+        return ()
+    if not named_servers(turn.words, dict(turn.servers)):
+        return ()
+    mail = [entry for entry in live if _reads_strangers(entry.slug)]
+    if not mail:
+        return ()
+    if any(turn.turn - entry.used <= 1 for entry in mail):
+        return ()
+    if any(slug in allow and _reads_strangers(slug) and _asked_now(turn, slug) is not None
+           for slug in PACKS):
+        return ()
+    needs = skill_packs or {}
+    if any(_reads_strangers(str(p)) for found in turn.skills
+           for p in needs.get(str(getattr(found, "slug", "")), ())):
+        return ()
+    return tuple(entry.slug for entry in mail)
 
 
 def _skills_of(

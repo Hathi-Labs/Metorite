@@ -260,9 +260,12 @@ async def test_an_empty_list_answers_as_before(finds, app_engine, monkeypatch) -
     # a retired field. The search leaves it out (test 4).
     assert plain.startswith("Products fields (5):")
     assert "fill" not in plain and "75%" not in plain
+    # Task 3864: no entity and no query is a refusal. A query with no entity
+    # scans every module, which a search that is off cannot do for the org.
     nowhere = await _tool(p, p.org_a, monkeypatch, entity="")
-    assert await _tool(p, p.org_a, monkeypatch, query="unit price") == nowhere
-    assert nowhere.startswith("Refused:")
+    assert nowhere.startswith("Refused:") and "needs an entity or a query" in nowhere
+    scanned = await _tool(p, p.org_a, monkeypatch, query="unit price")
+    assert "Products · Unit_Price (Unit Price, currency)" in scanned
 
 
 async def test_a_listed_org_gets_the_hits_through_the_tool(finds, app_engine, monkeypatch) -> None:

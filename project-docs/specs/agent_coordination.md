@@ -16,6 +16,8 @@
 
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
 
+**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475. No agent token reaches the route until SW-114.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -1416,6 +1418,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 862. `session-handoff.mjs` reads `my_work` and the `check_due` rows with a short timeout. With no answer or no credential, it prints the snapshot of SW-19b with its date. It never blocks a session and never prints a token.
 - **Fence.** `node .claude/hooks/session-handoff.test.mjs`.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-23 and SW-19b.
+- **Built (task 862), 2026-11-22.** The hook reads `my_work` with the box token in `METORITE_BOX_TOKEN` and a 4 s budget. A row with the reason `check_due` is a Check that is due. A session with no box token, no answer or any error gets the HANDOFF.md snapshot with its date and the reason. A hook cannot use the OAuth sign-in of Claude Code, so a laptop session always gets the snapshot. SW-19b is not built, so `HANDOFF.md` is still the queue of cross-session actions. A live read adds its rows above those entries and never replaces them. The token goes only to `mcp.metorite.com` over https or to this machine.
 
 #### SW-19b · Retire HANDOFF.md as a source
 
@@ -2121,6 +2124,7 @@ They keep their own gates.
 - **Done when.** The HathiLabs orchestrator and two of its lanes show their lines on the map.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
+- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
 
 #### SW-109 · The map draws who dispatched whom
 
@@ -2128,6 +2132,7 @@ They keep their own gates.
 - **Scope.** A line from an orchestrator's session node to each session that it dispatched, also across people. The layout puts an orchestrator to the left of its lanes. A lane with no dispatcher stays a root under its person. A quiet orchestrator reads "waiting" with its last event time.
 - **Done when.** `visual-review` passes at four widths. One line joins the sessions of two people. A loop in the data gives no loop in the layout.
 - **Fence.** `lib/agentMap.test.ts`.
+- **Built and dark, 2026-11-22.** Each depth, at most 4, is one session column, and the tasks of a session sit one step right of it. A dashed arrow joins a dispatcher to each lane, and the lane has no person line. A line that closes a loop drops. A quiet session reads "Waiting" with its last event time when one of its lanes is not quiet. The visual review and the owner preview are open.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-107.
 
 #### SW-110 · Sub-agents and machine health on the map
@@ -2175,6 +2180,11 @@ They keep their own gates.
 - **Done when.** R8: a child starts under an open parent while the parent holds the task. A second normal run on the task still gets the lease refusal. A parent of another organization is refused. A parent that ends ends its open children. A viewer who cannot see the parent sees no child.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (new), `tests/unit/test_agent_runs_r8.py` and `tests/unit/test_tenant_coverage.py`.
 - **Risk.** HIGH (a migration, and the lease index). **Gate.** AGENT-SAFE. **Depends on.** None.
+- **Built (task 3799), 2026-11-22.** Migration 475 adds `kind` and `parent_run_id`, with ON DELETE CASCADE and an index on the parent. A child has no task and no app. So every read of task runs leaves it out: the lists, the holder, `unheld`, `my_work`, the counts, the sweep and the map.
+- **The lease index.** The file builds the new index, then drops the old one, then renames the new one, in one statement. So no writer sees the table with no lease index. `pm_agent_runs_one_open` needs no change, because a child has no task.
+- **The write path.** `POST /projects/agent-runs/{run_id}/children` starts a child, and `GET` on the same path reads the children. The parent must be an open task run of the same member and connection, and it must hold its task. Every miss gets one 404 with the same text. A person gets 422.
+- **The end.** `_move_run` and `_take_over` end the open children of a run that ends. The child takes the parent's status.
+- **Not built.** The edge tool, the replay key and the cap of 20 children are SW-114. The pair is not in `MCP_WRITE_ROUTES`, so no agent token reaches the route until SW-114 adds it.
 
 #### SW-114 · The plugin reports sub-agents
 

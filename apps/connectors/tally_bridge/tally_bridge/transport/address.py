@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from tally_bridge.localcopy.store import CopyStore
 from tally_bridge.reader import TallyReader
 from tally_bridge.secret_store import SecretStore, token_matches
 from tally_bridge.settings import LiveSettings, Settings, SettingsError, SettingsStore
@@ -44,6 +45,7 @@ def build_address_app(
     secrets: SecretStore,
     reader: TallyReader,
     store: SettingsStore | None = None,
+    copy: CopyStore | None = None,
 ) -> ASGIApp:
     """The app of address mode: ``/mcp``, ``/health`` and the setup page.
 
@@ -52,7 +54,7 @@ def build_address_app(
     """
     live = settings if isinstance(settings, LiveSettings) else LiveSettings(settings)
     settings = live.current
-    mcp = build_read_server(reader, live)  # type: ignore[arg-type]
+    mcp = build_read_server(reader, live, copy)  # type: ignore[arg-type]
     mcp.settings.streamable_http_path = MCP_PATH
     mcp.settings.stateless_http = True
     mcp.settings.json_response = True
@@ -73,7 +75,14 @@ def build_address_app(
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     app.router.routes.extend(
-        build_setup_routes(live, store or _NoSaveStore(settings), secrets, reader)
+        build_setup_routes(
+            live,
+            store or _NoSaveStore(settings),
+            secrets,
+            reader,
+            # TLY-4: a company that leaves the allow-list loses its copy at once.
+            on_saved=(lambda new: copy.keep_only(new.allowed_companies)) if copy else None,
+        )
     )
     return BearerGuard(app, secrets)
 
