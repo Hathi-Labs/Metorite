@@ -5635,8 +5635,9 @@ mutation of one layer alone stays green. The table shows those too.
 | the run doors with no stream skip the guard | 2 |
 
 **Fix round 4 (HANDOFF H-242, task 689, 2026-11-22).** The round 3 review
-of PR #616 found three edges of the new-chat step. Each test below failed
-on main at `9d0ea8444` (R8, on the box). Each one passes after the fix.
+of PR #616 found three edges of the new-chat step. Seven R8 tests failed
+on main at `9d0ea8444`, on the box. The box went offline before the run
+after the fix, so pr-check must show them green. The hermetic fences pass.
 
 1. **A room of `None` no longer skips the step** (residual 8). A run door
    read a room of `None` as "not new". `_resolve_room` gives `None` to a
@@ -5670,14 +5671,20 @@ on main at `9d0ea8444` (R8, on the box). Each one passes after the fix.
    one worker thread, inside one `with` block, so a cancelled request never
    leaves the lock held. A wait for the lock of more than 10 s answers 503.
 
-| Mutation | Tests that fail |
+Each mutation below turned the hermetic fences of
+`tests/unit/test_h227_thread_scope.py` red on the PC, on 2026-11-22. The
+home box went offline after the red run on main. So the R8 tests have no
+mutation count yet, and pr-check runs them.
+
+| Mutation | Hermetic tests that fail |
 |---|---|
-| a room of `None` skips the step for every caller again | 3 |
-| the purge keeps a file that another session rewrote again | 2 |
+| a room of `None` skips the step for every caller again | 1 |
+| the purge keeps a file that another session rewrote again | 1 |
 | the step takes no advisory lock | 1 |
-| the step does not check again for the row under the lock | 1 |
-| the run door makes no row in the step | 2 |
+| the step does not check again for the row under the lock | 2 |
+| the purge runs in a session of its own | 1 |
 | a failed insert only logs, and the run goes on | 1 |
+| the store commits the caller's session | 1 |
 
 A pause hook in `chat.prepare_new_session` holds door A in the purge. The
 test starts door B only then. So the order is fixed, and the test does not
