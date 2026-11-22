@@ -5790,7 +5790,10 @@ async def _inject_mcp_servers(
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
         # Task 3866: a row in needs_reconnect is not read for a run, so it is
         # named from a metadata read. Its tools never attach.
-        parked = await _reconnect_rows(str(org), agent_name, is_authorized)
+        held_names = {str(srv.name) for srv in servers}
+        # A row that this read held was named by the connect (``failures``).
+        parked = [p for p in await _reconnect_rows(str(org), agent_name, is_authorized)
+                  if str(p.name) not in held_names]
         for srv in parked:
             reasons.setdefault(str(srv.name), "reconnect")
         if maf_servers or parked:
