@@ -177,6 +177,13 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
                    {"owner_email": PRIYA, "shared": False},
                    {"owner_email": PRIYA, "shared": False},
                    {"owner_email": PRIYA, "shared": True})
+    # ── her CRM saved views (task 1570, D175.5): two private views and one
+    #    shared view, and a private view of Ravi. Only her private ones go. ──
+    fake.seed_rows("crm_views",
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": True},
+                   {"owner_email": RAVI, "shared": False})
     return fake
 
 
@@ -531,6 +538,9 @@ async def test_the_response_says_what_happened_table_by_table(
         "crm_member_rules": 0,
         # WS-CRM CRM-M1: the fake holds no private Change history row.
         "crm_private_changes": 0,
+        # Task 1570 (D175.5): her two private CRM saved views. Her shared
+        # view and the view of Ravi stay.
+        "crm_private_views": 2,
         # WS-61 KB-2f: the fake holds no star of the member.
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
@@ -1133,7 +1143,8 @@ def test_the_member_s_private_change_history_goes() -> None:
 
     A row private to the member holds the text of a private view or an own
     rule, which only the member reads, so the row goes too. The purge
-    deletes the own rules, and not the saved views. The clause keys on
+    deletes the own rules and the private saved views too (task 1570, the
+    test below). The clause keys on
     ``private_to``, not on the actor, because an admin may change a
     member's rule and that row is still the member's. The org's rows stay
     with the address, as ``app_audit`` does, and are not on the keep side.
@@ -1151,6 +1162,35 @@ def test_the_member_s_private_change_history_goes() -> None:
     assert "crm_change_log" not in {r.table for r in _PURGE_KEEPS}
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("crm_private_changes") < keys.index("member_record")
+
+
+def test_the_private_crm_views_of_this_org_go_and_the_shared_ones_stay() -> None:
+    """Task 1570 (D175.5, the owner's decision of 2026-11-04): the purge
+    deletes the member's private CRM saved views. Only the owner reads a
+    private view. A shared view stays with the address, and it is not
+    counted as kept, as the org's rows of ``crm_change_log`` are not.
+
+    The clause names ``NOT shared``, the member and the bound org. So a
+    shared view and the views of the same address in another org stay. No
+    table hangs off ``crm_views``, so the count misses no cascade.
+
+    ⚠️ Mutation-checked (2026-11-21): removing the entry fails here and in
+    the count dict above, and so does dropping ``NOT``. The purge tests (R8)
+    in ``test_crm_change_history.py`` hold the four cases on a real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "crm_views"]
+    assert gone.key == "crm_private_views"
+    assert gone.where == (
+        f"NOT shared AND lower(owner_email) = :email AND organization_id = {_BOUND_ORG}")
+    assert "crm_views" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("crm_private_views") < keys.index("member_record")
+    assert cascade_closure("crm_views") == set()
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
