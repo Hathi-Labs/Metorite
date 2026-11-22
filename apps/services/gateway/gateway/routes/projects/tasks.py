@@ -2784,8 +2784,9 @@ class ClaimIn(BaseModel):
     SW-7b: it may also send ``agent_label``, the display name of its session,
     and a person's body that names one is 422. SW-104: ``host``, ``model``
     and ``host_kind`` name the machine and the model of the session, by the
-    same rule and the same bounds as ``StartIn``. The tenant and the member
-    never come from this body (R5)."""
+    same rule and the same bounds as ``StartIn``. SW-107: ``dispatched_by``
+    names the run that dispatched the session, by the same rule. The tenant
+    and the member never come from this body (R5)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2796,6 +2797,9 @@ class ClaimIn(BaseModel):
     model: str | None = Field(default=None, max_length=200,
                               pattern=r"^[^\x00-\x1f\x7f-\x9f]+$")
     host_kind: Literal["computer", "server", "cloud"] | None = None
+    dispatched_by: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 #: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
@@ -2887,6 +2891,8 @@ async def claim_task(
     label = agent_runs.agent_label_of(user, payload.agent_label)
     # SW-104: its machine, its kind and its model. A person's is 422.
     place = agent_runs.agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-107: the run that dispatched it. A person's is 422.
+    dispatched_by = agent_runs.dispatched_by_of(user, payload.dispatched_by)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
@@ -2927,6 +2933,15 @@ async def claim_task(
         # the run back with the claim. None for a member.
         run_id = await agent_runs.open_run_for_claim(db, task_id, user, link, label,
                                                     place)
+        # SW-107: the run's dispatcher, read in this tenant session, so RLS
+        # hides a run of another organization. A bad value drops, and the
+        # claim goes on with a warning. The chain read takes no lock. The
+        # UPDATE writes only the claim's own run, and its foreign key check
+        # takes a KEY SHARE lock on the dispatcher row. That lock waits on a
+        # delete and on a run write that holds the dispatcher row FOR UPDATE
+        # (`_lock_run`). Such a write locks only its own run and its task, so
+        # it never waits on the claim, and no cycle forms.
+        dropped = await agent_runs.set_run_dispatcher(db, run_id, dispatched_by)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -2993,6 +3008,8 @@ async def claim_task(
         result["agent_run_id"] = run_id
         # SW-63: a task with open subtasks still claims. The result warns.
         await _warn_open_subtasks(db, vis, task_id, result)
+        # SW-107: a dropped dispatcher adds its fixed text after that warning.
+        agent_runs.warn_dispatch(result, dropped)
 
     if added:
         await emit("pm.task.assigned", {
