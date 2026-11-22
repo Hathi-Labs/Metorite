@@ -229,6 +229,11 @@ async def test_docker_a_member_never_reads_another_members_skill(
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "gateway_session_secret", SKILL_SECRET, raising=False)
+    # This half tests the mounts. The claim asks the blob store (H-245), and
+    # with no database that ask fails closed, so it answers "no row" here.
+    from acb_memory import blob_store
+
+    monkeypatch.setattr(blob_store, "has_rows_under", lambda *a, **k: False)
     broker = real_projects["broker"]
     tx, ty = new_thread(), new_thread()
     with bound_run(DOCKER_ORG, agent=PA, thread=tx, member=_X) as ws:

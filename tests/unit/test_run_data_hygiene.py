@@ -54,12 +54,13 @@ WS-43v (each run red once by hand on 2026-10-05):
 * the write rules do not bring a lost marker back from the store, or a
   DELETE of a skill folder answers 400: the Files-routes skill test.
 
-H-245 (each run red once by hand on 2026-11-22):
+H-245 (2026-11-22):
 
 * ``note_tools._notes_target`` drops its skill owner check: the notes-tools
-  skill test;
+  skill test. Run red once by hand.
 * ``claim_skill`` drops its ask of the store, or the ask matches with
-  ``LIKE``: the store-name route test (R8).
+  ``LIKE``: the store-name route test (R8). Not run yet: the box that runs
+  the R8 suites was offline. Run it red once by hand before the merge.
 """
 from __future__ import annotations
 
