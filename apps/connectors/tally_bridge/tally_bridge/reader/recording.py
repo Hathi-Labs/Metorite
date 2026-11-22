@@ -30,6 +30,7 @@ class Recording:
 
 _FY_FROM, _FY_TO = date(2025, 4, 1), date(2026, 3, 31)
 _MONTH_FROM, _MONTH_TO = date(2026, 1, 1), date(2026, 1, 31)
+_SAMPLE_GUID = "00000000-0000-0000-0000-000000000000-00000000"
 
 RECORDINGS: tuple[Recording, ...] = (
     Recording(
@@ -84,6 +85,16 @@ RECORDINGS: tuple[Recording, ...] = (
         "R10_stock_summary.xml",
         "stock_summary on one date",
         lambda c, led: envelope.report("Stock Summary", company=c, to_date=_FY_TO),
+    ),
+    Recording(
+        "R11_one_voucher.xml",
+        "get_voucher: put the GUID of one voucher from R09 in place of the zeros",
+        lambda c, led: envelope.voucher(_SAMPLE_GUID, company=c),
+    ),
+    Recording(
+        "R12_voucher_by_number.xml",
+        "get_voucher by type and number: put a voucher type and number from R09 in place of the placeholders",
+        lambda c, led: envelope.voucher_by_number("VOUCHER TYPE", "NUMBER", company=c),
     ),
 )
 

@@ -127,7 +127,9 @@ ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tag
              # WS-39 LP-1a: the updates of a project, newest first.
              "list_project_updates",
              # WS-39 TPL-1a: the templates of the organization.
-             "list_templates"]
+             "list_templates",
+             # WS-MCP SW-113: the agent map of SW-102.
+             "get_agent_map"]
 
 
 def _uuid(n: int) -> str:

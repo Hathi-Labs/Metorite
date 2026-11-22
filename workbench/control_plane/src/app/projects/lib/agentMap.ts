@@ -14,6 +14,14 @@
 import { agentStateChip, agentStateVisual } from "@/lib/statusAccent";
 import { relativeTime } from "@/lib/taskCard";
 
+import {
+  type HostKind,
+  type HostSource,
+  KIND_RANK,
+  NOT_REPORTED,
+  type Place,
+  placeOfRow,
+} from "./agentPlace";
 import { outcomeWord } from "./agentsAtWork";
 
 export type MapSessionState = "waiting_on_person" | "waiting" | "working" | "quiet";
@@ -33,6 +41,15 @@ export interface MapSession {
   run_count: number;
   quiet_count: number;
   quiet_last_at: string | null;
+  /**
+   * SW-106. The machine, its kind, how it is known and the model. The agent
+   * chose the name and the model, so both are untrusted text. `null` is "Not
+   * reported". `source` is `checked` only for a box token.
+   */
+  host: string | null;
+  host_kind: HostKind | null;
+  host_source: HostSource | null;
+  model: string | null;
 }
 
 export interface MapRun {
@@ -76,8 +93,10 @@ export const CANVAS_LABEL = "Map of people, sessions and tasks";
 export const OUTLINE_LABEL = "Outline of people, sessions and tasks";
 export const MAP_ERROR_COPY = "The map did not load. Check your connection, then open it again.";
 export const MAP_EMPTY_COPY = "No agent session is open now.";
+export const PROJECT_MAP_EMPTY_COPY = "No agent works on this project yet.";
 export const MAP_TRUNCATED_COPY = "The map shows the first sessions and runs only.";
 export const SHOW_QUIET_LABEL = "Show quiet runs";
+export const GROUP_BY_MACHINE_LABEL = "Group by machine";
 export const OPEN_TASK_LABEL = "Open task";
 
 const SESSION_STATES: readonly MapSessionState[] = ["waiting_on_person", "waiting", "working", "quiet"];
@@ -144,6 +163,12 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** The four place fields of a session row (SW-106). Each bad value is `null`. */
+function placeFields(row: Record<string, unknown>): Pick<MapSession, "host" | "host_kind" | "host_source" | "model"> {
+  const { host, kind, source, model } = placeOfRow(row);
+  return { host, host_kind: kind, host_source: source, model };
+}
+
 function rows(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -176,6 +201,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
       run_count: whole(row.run_count),
       quiet_count: whole(row.quiet_count),
       quiet_last_at: text(row.quiet_last_at) || null,
+      ...placeFields(row),
     });
   }
 
@@ -228,7 +254,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
 
 /* ── The layout ─────────────────────────────────────────────────────────── */
 
-export type MapNodeKind = "person" | "session" | "task" | "quiet";
+export type MapNodeKind = "person" | "machine" | "session" | "task" | "quiet";
 
 export interface MapNode {
   id: string;
@@ -245,12 +271,14 @@ export interface MapNode {
   /** The raw run state, for a task node. */
   runState?: string;
   quiet?: boolean;
-  /** The session id, the task id or the person, by kind. */
+  /** The session id, the task id, the person or the machine key, by kind. */
   ref: string;
   /** The task id of a task node. */
   taskId?: string;
   /** The session a node belongs to. */
   sessionId?: string;
+  /** SW-106. The machine and the model of a session or a machine node. */
+  place?: Place;
 }
 
 export interface MapEdge {
@@ -265,9 +293,20 @@ export interface MapLayout {
   edges: MapEdge[];
 }
 
-export const COLUMN_X = { person: 0, session: 300, task: 620 } as const;
-export const NODE_W = { person: 220, session: 250, task: 300, quiet: 300 } as const;
-export const NODE_H = { person: 48, session: 72, task: 52, quiet: 32 } as const;
+export interface MapLayoutOptions {
+  /** SW-106. Group the sessions under a machine node. The default is off. */
+  groupByMachine?: boolean;
+}
+
+export const COLUMN_X = { person: 0, session: 300, task: 640 } as const;
+/**
+ * The columns of the map grouped by machine: machine, session, task. No person
+ * node and no person line: the person shows on the client line of each session.
+ */
+export const COLUMN_X_BY_MACHINE = { machine: 0, session: 280, task: 620 } as const;
+export const NODE_W = { person: 220, machine: 220, session: 280, task: 300, quiet: 300 } as const;
+/** Each height is fixed. A session holds four lines: name, state, machine, model. */
+export const NODE_H = { person: 48, machine: 48, session: 96, task: 52, quiet: 32 } as const;
 const GAP = 12;
 const BLOCK_GAP = 24;
 
@@ -275,12 +314,13 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Waiting first, then working, then quiet. Ties by name, then by id. */
+/** Waiting first, then working, then quiet. Ties by name, person, then id. */
 export function sortSessions(sessions: readonly MapSession[]): MapSession[] {
   return [...sessions].sort(
     (a, b) =>
       STATE_RANK[a.state] - STATE_RANK[b.state] ||
       compareText(a.name.toLowerCase(), b.name.toLowerCase()) ||
+      compareText(a.person, b.person) ||
       compareText(a.id, b.id),
   );
 }
@@ -316,91 +356,186 @@ function groupByPerson(map: AgentMap): Array<[string, MapSession[]]> {
     .sort((a, b) => STATE_RANK[a[1][0].state] - STATE_RANK[b[1][0].state] || compareText(a[0], b[0]));
 }
 
+export function sessionPlace(s: Pick<MapSession, "host" | "host_kind" | "host_source" | "model">): Place {
+  return { host: s.host, kind: s.host_kind, source: s.host_source, model: s.model };
+}
+
+/** One machine of the grouped map (SW-106, §3.12.7 rule 5). */
+export interface MachineGroup {
+  key: string;
+  place: Place;
+  sessions: MapSession[];
+}
+
+/** The key of the group with no machine and no kind: it sorts last. */
+export const NO_MACHINE_KEY = "none";
+
+/**
+ * Group the sessions by the kind of machine, then by its name, then by its
+ * source. A reported machine never joins a checked machine of the same name,
+ * so the mark "checked" of a box token cannot flip. A session that reports
+ * neither a name nor a kind goes in the group "Not reported", which comes
+ * last. The order is fixed: the same input gives the same groups.
+ */
+export function groupByMachine(sessions: readonly MapSession[]): MachineGroup[] {
+  const groups = new Map<string, MapSession[]>();
+  for (const s of sessions) {
+    const key =
+      !s.host && !s.host_kind
+        ? NO_MACHINE_KEY
+        : `${s.host_kind ?? "-"}|${(s.host ?? "").toLowerCase()}|${s.host_source ?? "-"}`;
+    const list = groups.get(key) ?? [];
+    list.push(s);
+    groups.set(key, list);
+  }
+  const rank = (key: string, first: MapSession): number =>
+    key === NO_MACHINE_KEY ? 4 : first.host_kind ? KIND_RANK[first.host_kind] : 3;
+  return [...groups.entries()]
+    .map(([key, list]): MachineGroup => {
+      const ordered = sortSessions(list);
+      const first = ordered[0];
+      const allChecked = ordered.every((s) => s.host_source === "checked");
+      return {
+        key,
+        sessions: ordered,
+        place: {
+          host: first.host,
+          kind: first.host_kind,
+          source: !first.host && !first.host_kind ? null : allChecked ? "checked" : "reported",
+          model: null,
+        },
+      };
+    })
+    .sort(
+      (a, b) =>
+        rank(a.key, a.sessions[0]) - rank(b.key, b.sessions[0]) ||
+        compareText((a.place.host ?? "").toLowerCase(), (b.place.host ?? "").toLowerCase()) ||
+        compareText(a.key, b.key),
+    );
+}
+
 /**
  * Place the nodes. Three columns from left to right: person, session, task.
- * The same input gives the same output. Each block of one session takes the
+ * With `groupByMachine`, the columns are machine, session and task. The
+ * sessions sit in blocks beside their machine, and no person node or person
+ * line is drawn: the person shows on the client line of the session. The
+ * same input gives the same output. Each block of one session takes the
  * height of its tasks, so no two nodes overlap. No layout library.
  */
-export function layoutAgentMap(map: AgentMap, nowMs: number = Date.now()): MapLayout {
+export function layoutAgentMap(
+  map: AgentMap,
+  nowMs: number = Date.now(),
+  options: MapLayoutOptions = {},
+): MapLayout {
   const nodes: MapNode[] = [];
   const edges: MapEdge[] = [];
   const sessionIds = new Set<string>();
+  const grouped = options.groupByMachine === true;
+  const columns = grouped ? COLUMN_X_BY_MACHINE : { ...COLUMN_X, machine: 0 };
+  // Grouped, the person joins the client line of the session (it has no node).
+  const detailOf = (s: MapSession): string => (grouped ? `${s.client} \u00b7 ${s.person}` : s.client);
   let y = 0;
 
-  for (const [person, sessions] of groupByPerson(map)) {
-    const personId = `p:${person}`;
-    nodes.push({
-      id: personId,
-      kind: "person",
-      x: COLUMN_X.person,
-      y,
-      w: NODE_W.person,
-      h: NODE_H.person,
-      label: person,
-      detail: sessions.length === 1 ? "1 session" : `${sessions.length} sessions`,
-      state: null,
-      ref: person,
-    });
-    for (const session of sessions) {
-      const sid = `s:${session.id}`;
-      sessionIds.add(sid);
-      const runs = runsOf(map, session.id);
-      const hidden = hiddenQuiet(session, runs);
-      let ty = y;
-      for (const run of runs) {
-        const tid = `t:${run.run_id}`;
-        nodes.push({
-          id: tid,
-          kind: "task",
-          x: COLUMN_X.task,
-          y: ty,
-          w: NODE_W.task,
-          h: NODE_H.task,
-          label: run.title,
-          detail: run.task_number === null ? "" : `Task ${run.task_number}`,
-          state: null,
-          runState: run.state,
-          quiet: run.quiet,
-          ref: run.run_id,
-          taskId: run.task_id,
-          sessionId: session.id,
-        });
-        edges.push({ id: `${sid}>${tid}`, from: sid, to: tid, kind: "tree" });
-        ty += NODE_H.task + GAP;
-      }
-      if (hidden > 0) {
-        const qid = `q:${session.id}`;
-        nodes.push({
-          id: qid,
-          kind: "quiet",
-          x: COLUMN_X.task,
-          y: ty,
-          w: NODE_W.quiet,
-          h: NODE_H.quiet,
-          label: quietLine(hidden, session.quiet_last_at, nowMs),
-          detail: "",
-          state: "quiet",
-          ref: session.id,
-          sessionId: session.id,
-        });
-        edges.push({ id: `${sid}>${qid}`, from: sid, to: qid, kind: "tree" });
-        ty += NODE_H.quiet + GAP;
-      }
+  /** Place one session and its tasks at `y`, then move `y` below the block. */
+  const placeSession = (session: MapSession, personId: string | null, machineId: string | null): void => {
+    const sid = `s:${session.id}`;
+    sessionIds.add(sid);
+    const runs = runsOf(map, session.id);
+    const hidden = hiddenQuiet(session, runs);
+    let ty = y;
+    for (const run of runs) {
+      const tid = `t:${run.run_id}`;
       nodes.push({
-        id: sid,
-        kind: "session",
-        x: COLUMN_X.session,
-        y,
-        w: NODE_W.session,
-        h: NODE_H.session,
-        label: session.name,
-        detail: session.client,
-        state: session.state,
+        id: tid,
+        kind: "task",
+        x: columns.task,
+        y: ty,
+        w: NODE_W.task,
+        h: NODE_H.task,
+        label: run.title,
+        detail: run.task_number === null ? "" : `Task ${run.task_number}`,
+        state: null,
+        runState: run.state,
+        quiet: run.quiet,
+        ref: run.run_id,
+        taskId: run.task_id,
+        sessionId: session.id,
+      });
+      edges.push({ id: `${sid}>${tid}`, from: sid, to: tid, kind: "tree" });
+      ty += NODE_H.task + GAP;
+    }
+    if (hidden > 0) {
+      const qid = `q:${session.id}`;
+      nodes.push({
+        id: qid,
+        kind: "quiet",
+        x: columns.task,
+        y: ty,
+        w: NODE_W.quiet,
+        h: NODE_H.quiet,
+        label: quietLine(hidden, session.quiet_last_at, nowMs),
+        detail: "",
+        state: "quiet",
         ref: session.id,
         sessionId: session.id,
       });
-      edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
-      y += Math.max(NODE_H.session, ty - y - GAP) + BLOCK_GAP;
+      edges.push({ id: `${sid}>${qid}`, from: sid, to: qid, kind: "tree" });
+      ty += NODE_H.quiet + GAP;
+    }
+    nodes.push({
+      id: sid,
+      kind: "session",
+      x: columns.session,
+      y,
+      w: NODE_W.session,
+      h: NODE_H.session,
+      label: session.name,
+      detail: detailOf(session),
+      state: session.state,
+      ref: session.id,
+      sessionId: session.id,
+      place: sessionPlace(session),
+    });
+    if (personId) edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
+    if (machineId) edges.push({ id: `${machineId}>${sid}`, from: machineId, to: sid, kind: "tree" });
+    y += Math.max(NODE_H.session, ty - y - GAP) + BLOCK_GAP;
+  };
+
+  const personNode = (person: string, count: number, at: number): MapNode => ({
+    id: `p:${person}`,
+    kind: "person",
+    x: COLUMN_X.person,
+    y: at,
+    w: NODE_W.person,
+    h: NODE_H.person,
+    label: person,
+    detail: count === 1 ? "1 session" : `${count} sessions`,
+    state: null,
+    ref: person,
+  });
+
+  if (!grouped) {
+    for (const [person, sessions] of groupByPerson(map)) {
+      nodes.push(personNode(person, sessions.length, y));
+      for (const session of sessions) placeSession(session, `p:${person}`, null);
+    }
+  } else {
+    for (const group of groupByMachine(map.sessions)) {
+      const machineId = `m:${group.key}`;
+      nodes.push({
+        id: machineId,
+        kind: "machine",
+        x: columns.machine,
+        y,
+        w: NODE_W.machine,
+        h: NODE_H.machine,
+        label: group.place.host ?? NOT_REPORTED,
+        detail: group.sessions.length === 1 ? "1 session" : `${group.sessions.length} sessions`,
+        state: null,
+        ref: group.key,
+        place: group.place,
+      });
+      for (const session of group.sessions) placeSession(session, null, machineId);
     }
   }
 
@@ -433,6 +568,8 @@ export interface OutlineSession {
   state: MapSessionState;
   word: string;
   chip: string;
+  /** SW-106. The machine and the model of the session. */
+  place: Place;
   tasks: OutlineTask[];
   quiet: string | null;
 }
@@ -456,6 +593,7 @@ export function agentMapOutline(map: AgentMap, nowMs: number = Date.now()): Outl
         state: s.state,
         word: sessionStateWord(s.state),
         chip: sessionStateChip(s.state),
+        place: sessionPlace(s),
         tasks: runs.map((r) => ({
           runId: r.run_id,
           taskId: r.task_id,

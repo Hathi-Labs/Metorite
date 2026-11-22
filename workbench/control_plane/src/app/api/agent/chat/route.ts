@@ -51,6 +51,7 @@ import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
 import { RUN_PHASE_EVENT, takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
+import { SAVED_FAILURE_CODES, failedMarker } from "@/lib/chatRunFailed";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
@@ -571,6 +572,11 @@ async function translateAndPersistStream(
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.
+          // AO-3b: a failure whose card must survive a reload leaves its
+          // marker on the saved reply (`lib/chatRunFailed.ts`).
+          if (typeof ev.code === "string" && SAVED_FAILURE_CODES.has(ev.code)) {
+            customEvents.push(failedMarker(ev.code, typeof ev.ref === "string" ? ev.ref : null, segments.length));
+          }
           out = {
             type: "error",
             content: String(ev.message ?? "Agent run error"),

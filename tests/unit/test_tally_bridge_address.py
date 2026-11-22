@@ -70,6 +70,11 @@ class _UpReader:
     async def is_up(self) -> bool:
         return True
 
+    async def post(self, envelope: bytes):
+        from defusedxml import ElementTree
+
+        return ElementTree.fromstring("<ENVELOPE><COLLECTION/></ENVELOPE>")
+
 
 class _HungReader:
     async def is_up(self) -> bool:
@@ -170,7 +175,17 @@ def test_tools_list_with_tally_closed_is_fast():
     assert r.status_code == 200
     assert took < 2.0
     tools = r.json()["result"]["tools"]
-    assert [t["name"] for t in tools] == ["status"]
+    assert [t["name"] for t in tools] == [
+        "status",
+        "find_ledgers",
+        "trial_balance",
+        "profit_and_loss",
+        "ledger_statement",
+        "outstanding",
+        "list_vouchers",
+        "get_voucher",
+        "stock_summary",
+    ]
 
 
 def test_tools_list_hints_and_size():
@@ -199,6 +214,7 @@ def test_status_with_tally_up():
     assert json.loads(result["content"][0]["text"]) == {
         "tally": "up",
         "bridge_version": __version__,
+        "companies": [],
     }
 
 

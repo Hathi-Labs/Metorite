@@ -65,6 +65,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
 import AppLauncher from "./AppLauncher";
+import MyDayCapture from "./MyDayCapture";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import BriefCard from "./BriefCard";
 import { BRIEF_KEY, fetchBrief } from "./briefCard";
@@ -82,6 +83,7 @@ import { useMyDayPeek } from "./useMyDayPeek";
 import { rereadFeed } from "./feedState";
 import { needsKey } from "./needs";
 import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
@@ -269,6 +271,9 @@ export default function MyDay() {
         </div>
       </div>
 
+      {/* The capture box (CC-1): the door to the one capture flow. */}
+      <MyDayCapture className="mt-4" />
+
       {/* The brief card (BR-2c-2): a component of its own above both
           layouts, outside the feed flag. It draws nothing on a 404. */}
       {briefOn && !accessLoading && !briefPending ? (
@@ -386,7 +391,8 @@ export default function MyDay() {
       />
     </div>
     </div>
-    {peek.panel}
+    {/* A docked card opens and closes with the one side-panel motion (task 7). */}
+    <SidePanelMotion>{peek.panel}</SidePanelMotion>
     </div>
     {peek.reader}
     </div>

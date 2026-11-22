@@ -355,3 +355,32 @@ def test_a_non_200_answer_is_an_answer_error():
     c = TallyClient("http://127.0.0.1:9000", 1, transport=t)
     with pytest.raises(TallyAnswerError):
         asyncio.run(c.post(envelope.collection("BridgeCompanies", company=None)))
+
+
+GOOD_GUID = "a1b2c3d4-0000-1111-2222-333344445555-00000065"
+
+
+@pytest.mark.parametrize("value", HOSTILE)
+def test_the_voucher_request_keeps_the_company_as_text_and_is_an_export(value):
+    root = SafeET.fromstring(envelope.voucher(GOOD_GUID, company=value))
+    assert [el.text for el in root.iter("TALLYREQUEST")] == ["Export"]
+    assert root.find("BODY/DESC/STATICVARIABLES/SVCURRENTCOMPANY").text == value
+    assert root.find("HEADER/ID").text == GOOD_GUID
+
+
+@pytest.mark.parametrize(
+    "guid",
+    ["", "abc", GOOD_GUID + "<x>", "</ID><TALLYREQUEST>Import</TALLYREQUEST>", " " + GOOD_GUID],
+)
+def test_the_voucher_request_refuses_text_that_is_not_a_guid(guid):
+    with pytest.raises(ValueError):
+        envelope.voucher(guid, company="A")
+
+
+@pytest.mark.parametrize("value", HOSTILE)
+def test_the_by_number_request_keeps_both_inputs_as_values(value):
+    root = SafeET.fromstring(envelope.voucher_by_number(value, value, company="A"))
+    assert [el.text for el in root.iter("TALLYREQUEST")] == ["Export"]
+    sv = root.find("BODY/DESC/STATICVARIABLES")
+    assert sv.find("BridgeVchType").text == value and sv.find("BridgeVchNumber").text == value
+    assert root.find("BODY/DESC/TDL/TDLMESSAGE/SYSTEM").text == envelope._BY_NUMBER_FILTER

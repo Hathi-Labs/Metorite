@@ -79,4 +79,43 @@ describe("AgentMapView", () => {
     expect(view({})).toContain("Show quiet runs");
     expect(view({ read: { kind: "error" } })).toContain("The map did not load");
   });
+  it("shows the machine and the model on the outline, and Not reported for none", () => {
+    const placed = parseAgentMap({
+      sessions: [
+        {
+          id: "s1", person: "ana@example.com", name: "box-loop", client: "Claude Code", state: "working",
+          host: "metorite-home", host_kind: "server", host_source: "checked", model: "Sonnet 5.5",
+        },
+        { id: "s2", person: "ana@example.com", name: "bare", client: "Claude Code", state: "working" },
+      ],
+      runs: [],
+      lines: [],
+      count: 0,
+      truncated: false,
+      viewer: "admin",
+    });
+    const out = view({ read: { kind: "ready", map: placed! } });
+    expect(out).toContain("metorite-home");
+    expect(out).toContain("Sonnet 5.5");
+    expect(out).toContain('data-map-source="checked"');
+    expect(out).toContain("Not reported");
+  });
+  it("shows the Group by machine switch beside Show quiet runs on the canvas, and not on a phone", () => {
+    expect(view({ phone: false })).toContain("Group by machine");
+    expect(view({ phone: false })).toContain("data-agent-map-group");
+    expect(view({ phone: true })).not.toContain("Group by machine");
+  });
+});
+
+describe("AgentsCanvas (SW-112)", () => {
+  it("says no agent works on the project when the map has no session", async () => {
+    const { AgentsCanvas } = await import("./AgentsCanvas");
+    const empty = parseAgentMap({ sessions: [], runs: [], lines: [], count: 0, truncated: false, viewer: "admin" });
+    const read: AgentMapRead = empty ? { kind: "ready", map: empty } : { kind: "loading" };
+    const html = renderToStaticMarkup(
+      createElement(AgentsCanvas, { read, showQuiet: false, onShowQuiet: () => {} }),
+    );
+    expect(empty).not.toBeNull();
+    expect(html).toContain("No agent works on this project yet.");
+  });
 });

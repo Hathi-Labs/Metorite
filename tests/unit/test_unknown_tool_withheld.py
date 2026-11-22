@@ -820,7 +820,9 @@ def test_one_row_rule_and_one_hook() -> None:
     The rule is ``_row_may_attach``, read through ``_attachable_rows`` (one
     ``enabled_meta`` read). The merge of CSY-4 and HRD-1d made the two rules
     one, so each of the four readers calls ``_attachable_rows`` and none of
-    them repeats a row test."""
+    them repeats a row test. ``_reconnect_rows`` (task 3866) reads
+    ``needs_reconnect_meta``, so it calls ``_row_may_attach`` itself, with
+    ``parked``."""
     import inspect
 
     from orchestrator import _tool_injection as ti
@@ -836,6 +838,9 @@ def test_one_row_rule_and_one_hook() -> None:
         src = inspect.getsource(reader)
         assert "_attachable_rows(" in src, reader.__name__
         assert "_MAF_HTTP_TRANSPORTS" not in src, f"{reader.__name__} repeats the row rule"
+    parked = inspect.getsource(ti._reconnect_rows)
+    assert "_row_may_attach(" in parked and "parked=True" in parked
+    assert "_MAF_HTTP_TRANSPORTS" not in parked, "_reconnect_rows repeats the row rule"
     assert not hasattr(ti, "_attachable_server_names"), "a second row rule"
     inject = inspect.getsource(ti._inject_mcp_servers)
     assert inject.index("mcp.untrusted_pack_skipped") < inject.index("_note_withheld_servers(")
