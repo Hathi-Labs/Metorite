@@ -106,6 +106,13 @@ _CARD_ANSWER_REASON = (
     "Only the run's member answers an agent's request, on the task card (EA3-40, "
     "D-OP-13). The chat lists the request and links the card."
 )
+#: SW-39 (task 3799). A child run is a sub-agent of an open run. A hook of
+#: the agent writes it, and only a signed agent may (a person gets 422). The
+#: chat starts no sub-agent, and SW-114 adds the edge tool.
+_CHILD_RUN_REASON = (
+    "A child run is a sub-agent of an open run. Only a signed agent starts one, "
+    "through its hook, and the parent run shows it (SW-39). The chat starts no sub-agent."
+)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
@@ -572,6 +579,9 @@ MANIFEST: tuple[Route, ...] = (
     # WS-64 OP-6e (D-OP-13): only the run's member answers, on the task card.
     # The chat lists the request (`waiting_agent_requests`) and links the card.
     Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X", _CARD_ANSWER_REASON),
+    # SW-39: the child runs of a run. Not a chat act (see the reason).
+    Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
+    Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
     # is class X: the chat never reaches it. `test_mcp_edge_coverage.py`
     # names it as the one class X pair that the edge may hold (§9.5).

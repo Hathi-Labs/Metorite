@@ -46,7 +46,8 @@ GROUPS = frozenset({
     "card-answer",    # the answer to an agent request, given on the task card only
 })
 
-#: Where OP-6 ends. 28 routes, and WS-64 OP-11 adds the My tasks Overview.
+#: Where OP-6 ends. 28 routes, WS-64 OP-11 adds the My tasks Overview, and
+#: SW-39 adds the two child-run routes.
 STAYS_X: dict[str, str] = {
     # client plumbing, or a second door to a read the chat has
     "GET /projects/nodes": "plumbing",
@@ -84,6 +85,10 @@ STAYS_X: dict[str, str] = {
     "GET /projects/vocabulary/{kind}/{row_id}/impact": "admin-count",
     # EA3-51, pinned by test_mcp_edge_coverage.py
     "POST /projects/tasks/{task_id}/agent-delete": "mcp-door",
+    # SW-39 (task 3799): a child run is a sub-agent of an open run. Only a
+    # signed agent starts one, through its hook. SW-114 adds the edge tool.
+    "GET /projects/agent-runs/{run_id}/children": "mcp-door",
+    "POST /projects/agent-runs/{run_id}/children": "mcp-door",
     # WS-64 OP-6e, D-OP-13 and EA3-40: only the run's member answers, on the card
     "POST /projects/agent-runs/{run_id}/archive-approval": "card-answer",
 }
@@ -135,11 +140,12 @@ def test_the_counts_the_spec_states() -> None:
     """39 routes were class X on 2026-10-23. OP-6a took 3, OP-6c took 3, OP-6b
     took 2 and OP-6d took 4. The 27 that remain all stay. OP-6e moved the
     archive approval INTO class X (D-OP-13), so 28 stay. WS-64 OP-11 added
-    the Overview of My tasks, a second door to a read the chat has: 29."""
-    assert len(STAYS_X) == 29
+    the Overview of My tasks, a second door to a read the chat has: 29.
+    SW-39 added the two child-run routes of an agent: 31."""
+    assert len(STAYS_X) == 31
     assert len(PENDING_OP6) == 0
     assert len(PENDING_TOOL) == 0
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 29
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 31
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:
