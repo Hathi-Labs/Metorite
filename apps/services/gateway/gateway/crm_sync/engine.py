@@ -66,6 +66,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import hashlib
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -77,6 +79,7 @@ from acb_common import get_logger
 from acb_common.db import tenant_session
 from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from gateway.connections import store
 from gateway.crm_sources.base import (
@@ -272,6 +275,22 @@ FIELD_RULES_ROW = f"{PROVIDER}:field_rules"
 #: still costs one credit for each read, and ten idle modules on every run
 #: would double the cost of a run and slow the Leads and Deals.
 MODULE_READ_EVERY = timedelta(hours=1)
+#: Task 3869: a generic module that a cursor reads (not by offset) is read
+#: again in full once in this long, for an org on ``CRM_MODULE_REREAD_ORGS``
+#: (:func:`_weekly_reread`). Zoho can change a status or rename a pick-list
+#: value and leave ``Modified_Time`` as it was, so only a full read sees it.
+MODULE_REREAD_EVERY = timedelta(days=7)
+#: Task 3869: the marks of the pick-list drift of each generic module, in the
+#: state of :data:`FIELD_RULES_ROW`: ``{entity: [mark, ...]}``. A mark is a
+#: short hash of one stored value that the current options do not list
+#: (:func:`_drift_mark`). It holds no Zoho text. A module joins the label list
+#: (:data:`LABEL_REREAD_KEY`) only for a mark that is not here yet, so a value
+#: that a full read cannot repair queues no second read.
+LABEL_DRIFT_KEY = "label_drift"
+#: The most missing values that one drift check reads for one module.
+LABEL_DRIFT_CAP = 50
+#: The LOCAL ``statement_timeout`` of one drift check, in milliseconds.
+LABEL_DRIFT_TIMEOUT_MS = 5_000
 
 LEAD_STATUSES = "crm_lead_statuses"
 DEAL_STATUSES = "crm_deal_statuses"
@@ -2015,7 +2034,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic and not parent_only
-    rereading = generic and (_module_reread(ctx, row) or _final_reread(ctx, row))
+    rereading = generic and (_module_reread(ctx, entity, row) or _final_reread(ctx, row))
     # CRM-Z10b: the final sync of the switch reads each module, also one that
     # it read less than MODULE_READ_EVERY ago. An edit of that hour is in it.
     if generic and not rereading and not ctx.final and _module_read_recently(ctx, row):
@@ -2277,6 +2296,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     await _rule_reread_done(ctx, db, entity)
                 if last_page and label_reread:
                     await _save_label_rereads(ctx, db, ctx.label_rereads - {entity})
+                if last_page and rereading:
+                    await _module_label_read_done(ctx, db, entity)
                 if last_page and recovering:
                     await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
@@ -2287,22 +2308,52 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         ctx.stamp = None
 
 
-def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
-    """True when a generic module that hides ``Modified_Time`` is due for its
-    full re-read (CRM-Q6a), or one that stopped at the reserve goes on.
+def _module_reread(ctx: _Ctx, entity: str, row: CursorRow) -> bool:
+    """True when a generic module is due for its full re-read, or one that
+    stopped at the reserve goes on. This is the one rule of that read.
 
-    Such a module pages by offset and has no cursor to move, so an incremental
-    read cannot see a new record. It is read again in full once each
-    :data:`RECONCILE_EVERY`. The door skips each record that did not change,
-    so a re-read that finds nothing new writes nothing. It deletes nothing.
+    A module that hides ``Modified_Time`` pages by offset and has no cursor
+    to move, so an incremental read cannot see a new record. It is read again
+    in full once each :data:`RECONCILE_EVERY` (CRM-Q6a). Any other module
+    follows :func:`_weekly_reread` (task 3869). The door skips each record
+    that did not change, so a re-read that finds nothing new writes nothing.
+    It deletes nothing.
+
+    A read that is in progress goes on as the read that it is. So a stopped
+    incremental read never turns into a second, full read, and a stopped full
+    read never starts again from page 1 (outside the final sync).
     """
     state = row.state or {}
     if state.get("in_progress"):
         return bool(state.get("reread"))
-    if row.initial_done_at is None or not state.get("offset_paged"):
+    if row.initial_done_at is None:
         return False
+    if not state.get("offset_paged"):
+        return _weekly_reread(ctx, entity, row)
     done = row.last_reconciled_at
     return done is None or ctx.started - done >= RECONCILE_EVERY
+
+
+def _weekly_reread(ctx: _Ctx, entity: str, row: CursorRow) -> bool:
+    """True when a generic module that a cursor reads is due for a full read
+    (task 3869, ``crm_platform.md`` §18.7, CRM-Q6a).
+
+    Only for an org on ``CRM_MODULE_REREAD_ORGS``. Off the list, such a module
+    reads its changes only, as before. A held key (CRM-Q16) is never read in
+    full here, also in an "on its own" run that names it. The read is due
+    when the last full read ended :data:`MODULE_REREAD_EVERY` ago or more
+    (``last_reconciled_at``, which the first import and each full read set),
+    or when the drift check of discovery put the module on the label list
+    (:func:`_check_label_drift`). The read uses the full-read path of
+    :func:`_changed_pass`, so the reserve and the budget stop it page by
+    page, and the next run goes on from its cursor.
+    """
+    if count_key(entity) in ctx.held or not flags.module_reread_allowed(ctx.org):
+        return False
+    if entity in ctx.label_rereads:
+        return True
+    done = row.last_reconciled_at
+    return done is None or ctx.started - done >= MODULE_REREAD_EVERY
 
 
 def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
@@ -3228,6 +3279,10 @@ async def _discover(ctx: _Ctx) -> None:
     call. A section that cannot be read keeps the value of the previous profile.
     A fatal failure (a dead token, a spent budget, a throttle) ends the run, and
     any other failure only costs the section.
+
+    Task 3869: after the profile is stored, the drift check compares the
+    stored select values of each generic module with the options read now
+    (:func:`_check_label_drift`).
     """
     if ctx.discovery_tried or not _discovery_due(ctx):
         return
@@ -3277,6 +3332,9 @@ async def _discover(ctx: _Ctx) -> None:
             await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
         await _write_module_field_defs(ctx, db, module_fields)
         ctx.profile = await profiles.latest(db, ctx.org)
+    # Task 3869: after the commit, with the field rows read now. A read that
+    # failed above never reaches it, so a refused discovery queues nothing.
+    await _check_label_drift(ctx, module_fields)
 
 
 #: The Zoho pipelines that this org already mirrors (CRM-Q10).
@@ -3465,12 +3523,14 @@ async def _execute(ctx: _Ctx) -> None:
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
 ) -> CursorRow:
-    """The rules cursor row with a new state. The label list rides along."""
+    """The rules cursor row with a new state. The label list and the drift
+    marks of task 3869 ride along."""
     old = _row(ctx, FIELD_RULES_ROW)
     state = field_rules.state_of(applied, reread)
-    labels = (old.state or {}).get(LABEL_REREAD_KEY)
-    if labels:
-        state[LABEL_REREAD_KEY] = labels
+    for key in (LABEL_REREAD_KEY, LABEL_DRIFT_KEY):
+        kept = (old.state or {}).get(key)
+        if kept:
+            state[key] = kept
     return CursorRow(
         FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
@@ -3598,14 +3658,25 @@ async def _add_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
     ctx.rule_rereads |= entities
 
 
-async def _save_label_rereads(ctx: _Ctx, db: Any, entities: set[str]) -> None:
+async def _save_label_rereads(
+    ctx: _Ctx, db: Any, entities: set[str],
+    drift: dict[str, list[str]] | None = None,
+) -> None:
     """Write the label list in the rules cursor row, in the caller's transaction
     (:data:`LABEL_REREAD_KEY`). The check of ``_mirror_statuses`` adds to it, and
-    the last page of a read with the label mark takes its entity off it."""
+    the last page of a read with the label mark takes its entity off it.
+
+    Task 3869: the drift check of a generic module adds to the same list
+    (:func:`_check_label_drift`). It passes its marks as *drift*, and they
+    replace :data:`LABEL_DRIFT_KEY`. ``None`` keeps the stored marks."""
     old = _row(ctx, FIELD_RULES_ROW)
     state = {k: v for k, v in (old.state or {}).items() if k != LABEL_REREAD_KEY}
     if entities:
         state[LABEL_REREAD_KEY] = sorted(entities)
+    if drift is not None:
+        state.pop(LABEL_DRIFT_KEY, None)
+        if drift:
+            state[LABEL_DRIFT_KEY] = {e: sorted(m) for e, m in sorted(drift.items())}
     saved = CursorRow(
         FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
@@ -3646,6 +3717,173 @@ async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
     saved = _rules_row(ctx, field_rules.applied_of(state), reread)
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
+
+
+# ── The pick-list drift of a generic module (task 3869) ─────────────────────
+
+#: The stored values of the select fields of one module that the current
+#: options do not list, one row for each ``(key, value)``. ``:labels`` maps
+#: each select field to the labels of its current options. A v2 record
+#: carries the LABEL of a value (:func:`_picklist_values`), so a label is the
+#: test. The module is a bound parameter. The unique index
+#: ``(organization_id, ext_source, module, ext_id)`` serves the scan, and the
+#: ORDER BY makes the capped answer the same on each day.
+_LABEL_DRIFT_SQL = (
+    "SELECT DISTINCT f.key AS key, r.fields ->> f.key AS value "
+    "FROM crm_module_records r "
+    "CROSS JOIN jsonb_each(CAST(:labels AS jsonb)) AS f(key, labels) "
+    "WHERE r.organization_id = CAST(:org AS uuid) AND r.ext_source = :src "
+    "AND r.module = :module AND jsonb_typeof(r.fields -> f.key) = 'string' "
+    "AND r.fields ->> f.key NOT IN ('', '-None-') "
+    "AND NOT (f.labels ? (r.fields ->> f.key)) "
+    "ORDER BY 1, 2 LIMIT :cap"
+)
+_DRIFT_TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+
+
+def _drift_mark(key: str, value: str) -> str:
+    """A short hash of one missing value of one field. It holds no Zoho text."""
+    return hashlib.sha256(f"{key}\x00{value}".encode()).hexdigest()[:16]
+
+
+def _select_labels(
+    ctx: _Ctx, api_name: str, definitions: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """The labels of the current options of each select field of a module,
+    from the field rows that discovery read now. The mapping of the field
+    definition makes each label (:func:`mapping._field_def_row`). A select
+    field with no label is left out, so it can never look like drift."""
+    labels: dict[str, list[str]] = {}
+    for position, definition in enumerate(definitions):
+        row = ctx.mapping.map_module_field_def(api_name, definition, position)
+        if row is None or row.get("type") != "select":
+            continue
+        options = row.get("options") if isinstance(row.get("options"), list) else []
+        names = sorted({
+            str(o["label"]) for o in options if isinstance(o, dict) and o.get("label")
+        })
+        if names:
+            labels[str(row["key"])] = names
+    return labels
+
+
+def _drift_checkable(ctx: _Ctx, entity: str) -> bool:
+    """True when the drift check may queue a read of *entity*. Its first
+    import is done, no read of it is in progress, the account does not refuse
+    it, and it is not held. A read in progress is checked by the next
+    discovery, so a check never doubles a read."""
+    row = _row(ctx, changed_module(entity))
+    state = row.state or {}
+    return (
+        row.initial_done_at is not None and not state.get("in_progress")
+        and not state.get("unavailable") and count_key(entity) not in ctx.held
+    )
+
+
+async def _missing_labels(
+    ctx: _Ctx, api_name: str, labels: dict[str, list[str]],
+) -> list[str] | None:
+    """The drift marks of one module: one mark for each stored value of a
+    select field that ``labels`` does not list, at most
+    :data:`LABEL_DRIFT_CAP`. ``None`` when the read failed.
+
+    One statement in its own ``tenant_session`` of the org, under a LOCAL
+    ``statement_timeout`` (the shape of ``fill.py``). It reads no record into
+    the gateway, only the missing values, and it never fails the run. A log
+    line names the class of a failure, never a value.
+    """
+    try:
+        async with tenant_session(ctx.org) as db:
+            await db.execute(
+                text(_DRIFT_TIMEOUT_SQL), {"ms": str(LABEL_DRIFT_TIMEOUT_MS)},
+            )
+            rows = (await db.execute(text(_LABEL_DRIFT_SQL), {
+                "org": ctx.org, "src": EXT_SOURCE, "module": api_name,
+                "labels": json.dumps(labels), "cap": LABEL_DRIFT_CAP,
+            })).fetchall()
+    except SQLAlchemyError as exc:
+        _log.warning(
+            "crm.sync.label_drift_failed module=%s error=%s", api_name, type(exc).__name__,
+        )
+        return None
+    return sorted({_drift_mark(str(r.key), str(r.value)) for r in rows})
+
+
+def _drift_marks(state: dict[str, Any] | None) -> dict[str, list[str]]:
+    """The stored :data:`LABEL_DRIFT_KEY` marks. A bad value is dropped."""
+    raw = (state or {}).get(LABEL_DRIFT_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(e): sorted(str(m) for m in v)
+        for e, v in raw.items() if isinstance(v, list)
+    }
+
+
+async def _check_label_drift(
+    ctx: _Ctx, module_fields: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Queue ONE full read of each generic module whose stored select values
+    left the current options (task 3869, ``crm_platform.md`` §18.7).
+
+    Discovery calls it after it stored the profile, with the field rows that
+    it read now. A module whose fields it could not read is not here, and a
+    refused discovery never calls it. Only for an org on
+    ``CRM_MODULE_REREAD_ORGS``.
+
+    A Zoho admin who renames a pick-list value changes its label, and the
+    record keeps its ``Modified_Time``. So an incremental read never brings
+    the new label, and the mirror keeps the old one. The check reads the
+    stored values that no current option lists (:func:`_missing_labels`).
+    For a mark that it has not seen, it puts the module on the label list of
+    task 1096 (:data:`LABEL_REREAD_KEY`). :func:`_weekly_reread` then reads
+    the module in full, and the end of that read takes it off the list. A
+    value that a full read cannot repair keeps its mark, so it queues no
+    second read. A module with no missing value loses its marks.
+    """
+    if not module_fields or not flags.module_reread_allowed(ctx.org):
+        return
+    found: dict[str, list[str]] = {}
+    for api_name, definitions in module_fields.items():
+        entity = ctx.mapping.module_entity(api_name)
+        labels = _select_labels(ctx, api_name, definitions)
+        if not labels or not _drift_checkable(ctx, entity):
+            continue
+        marks = await _missing_labels(ctx, api_name, labels)
+        if marks is not None:
+            found[entity] = marks
+    await _save_label_drift(ctx, found)
+
+
+async def _save_label_drift(ctx: _Ctx, found: dict[str, list[str]]) -> None:
+    """Write what the drift check found, in one short page. Writes nothing
+    when the label list and the marks stay as they are."""
+    state = _row(ctx, FIELD_RULES_ROW).state or {}
+    queued = {str(e) for e in state.get(LABEL_REREAD_KEY) or ()}
+    stored = _drift_marks(state)
+    marks = dict(stored)
+    wanted = set(queued)
+    for entity, current in found.items():
+        if not current:
+            marks.pop(entity, None)
+            continue
+        if set(current) - set(stored.get(entity, ())):
+            wanted.add(entity)
+            _log.info("crm.sync.label_drift entity=%s values=%s", entity, len(current))
+        marks[entity] = current
+    if marks == stored and wanted == queued:
+        return
+    async with ctx.page() as db:
+        await _save_label_rereads(ctx, db, wanted, marks)
+
+
+async def _module_label_read_done(ctx: _Ctx, db: Any, entity: str) -> None:
+    """A full read of a generic module ended, in the transaction of its last
+    page. It read each record with the current labels, so the module leaves
+    the label list of task 3869. Any full read counts, also the 24 h read of
+    an offset-paged module and the final sync."""
+    if entity in ctx.label_rereads:
+        await _save_label_rereads(ctx, db, ctx.label_rereads - {entity})
 
 
 # ── The generic record store (CRM-Q6a) ──────────────────────────────────────

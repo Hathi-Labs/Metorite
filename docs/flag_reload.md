@@ -354,6 +354,19 @@ Its one reader is `gateway.routes.crm.flags.module_find_allowed`, and each
 module read asks it. A reload applies a change. A name in the list spends
 nothing, so the flip is `enforcement-flip`.
 
+`CRM_MODULE_REREAD_ORGS` turns on the weekly full read of the generic modules
+of the Zoho mirror (`crm_platform.md` §18.7, task 3869). For each listed org,
+the sync reads each module that a cursor reads (Invoices, Quotes, a custom
+module) again in full once in 7 days. Discovery also queues one full read of a
+module whose stored pick-list values left the current options. `*` lists every
+org, and the default is empty. Empty keeps the read of changes only, byte for
+byte.
+
+Its one reader is `gateway.routes.crm.flags.module_reread_allowed`. The re-read
+rule of the engine and the drift check ask it on each run. A reload applies a
+change. A full read spends Zoho API credits inside the budget of the sync run,
+so the flip is `enforcement-flip`.
+
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
 the default is `off`. The flag is global, but the check acts only for an org
