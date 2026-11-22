@@ -43,6 +43,7 @@ import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { agentCardLook, splitPlanProgress } from "../lib/agentCardLook";
+import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -57,7 +58,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, isHeldByAgent, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -1114,6 +1115,19 @@ export function TaskBoard({
                 <span className="truncate">{agentLook.line}</span>
               );
             })()}
+          </p>
+        ) : null}
+        {/* SW-5: who holds the task, and since when. */}
+        {task.held_by && isHeldByAgent(task) ? (
+          <p
+            data-agent-holder
+            className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            // The live line above already names the session. The tooltip keeps
+            // the session label too, and the visible text keeps the part that
+            // truncation must not cut: who holds the task, and since when.
+            title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
+          >
+            {holderLine(task.held_by, personLabels)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />

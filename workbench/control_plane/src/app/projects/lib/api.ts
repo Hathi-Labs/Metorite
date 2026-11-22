@@ -28,6 +28,7 @@ import {
   questionsPage,
   questionsQuery,
 } from "./agentQuestions";
+import type { TaskHeldBy } from "./agentHolder";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -1868,6 +1869,11 @@ export interface TaskRow {
    * "backend-worker-3". Display data only. The card shows it beside the client.
    */
   agent_label?: string | null;
+  /**
+   * SW-5 — who holds the task now: the member, the client, since when. The
+   * gateway sets it for an open run (`filters.held_by_of`). Null for a free task.
+   */
+  held_by?: TaskHeldBy | null;
   /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
