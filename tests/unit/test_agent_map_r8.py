@@ -829,8 +829,9 @@ def _bare_strings(value: Any) -> list[str]:
 
 
 def _plain_ok(value: str) -> bool:
-    """A bare string of the map is an id, a node id, a state, a time or a
-    viewer level. No name, machine, model or title is ever bare."""
+    """A bare string of the map is an id, a node id, a state, a time, a viewer
+    level, or the kind of a machine or its source (fixed words). No name,
+    machine name, model or title is ever bare."""
     import re
 
     return bool(
@@ -840,6 +841,8 @@ def _plain_ok(value: str) -> bool:
                      "idle", "stopping", "stale", "agent_quiet", "answer_unread",
                      "queued", "answered", "created", "in_progress"}
         or value in {"admin", "lead", "member"}
+        # SW-106: the kind of machine and its source are fixed words.
+        or value in {"computer", "server", "cloud", "checked", "reported"}
         or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:[+-][0-9]{2}:[0-9]{2}|Z)?",
                         value))
 
@@ -1078,7 +1081,17 @@ class TestTheMapThroughTheEdge:
             leaked = [k for k in w.keys if k in raw]
             assert not leaked, (args, leaked)
             out = result["structuredContent"]
-            assert not {k for k in _keys(out) if "key" in k or "addr" in k or "model" in k}
+            assert not {k for k in _keys(out) if "key" in k or "addr" in k}
+            # SW-106: the one model key is the key of a session node.
+            assert {k for k in _keys(out) if "model" in k} <= {"model"}
+            # The machine and the model are text that an agent wrote: wrapped.
+            for node in out["sessions"]:
+                for field in ("host", "model"):
+                    value = node[field]
+                    assert value is None or (
+                        isinstance(value, dict) and "untrusted_text" in value), (field, value)
+                assert node["host_kind"] in (None, "computer", "server", "cloud")
+                assert node["host_source"] in (None, "checked", "reported")
             bare = _bare_strings(out)
             assert not [s for s in bare if not _plain_ok(s)], bare
             assert MEMBER_A not in bare and OTHER_A not in bare and LABEL_1 not in bare
