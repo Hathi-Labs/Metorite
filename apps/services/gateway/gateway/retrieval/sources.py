@@ -329,6 +329,17 @@ class Source:
     #: They are no closed kind of ``resolve_name``: the module record of the
     #: CRM. ``names`` stays the one list of the kinds that the tool declares.
     named_extra: tuple[str, ...] = ()
+    #: True when a zero of this app may prove that none of its records holds
+    #: a word (FIND-4b, ``find_engine.md`` §3.6). Its search must read EVERY
+    #: field that its hits print, and every field that holds a word that a
+    #: member can type. Only then can the zero of that word alone, with the
+    #: three parts of ``find.proves_absence``, prove that no record holds it.
+    #: ``find.proves_absence`` reads the declaration of each app that answered.
+    #: One app that answered with False stops every claim. No source declares
+    #: True yet, because no slice has audited a source. The slice that audits
+    #: a source and sets True must name its evidence in §3.6. Fence:
+    #: ``test_find_absence_declared.py``.
+    proves_absence: bool = False
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""

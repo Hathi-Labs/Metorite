@@ -145,6 +145,19 @@ LANE_ASK_RULE = (
 IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
               " you start.")
 
+#: WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tip for an
+#: orchestrator. ⚠️ HELD BACK: no prompt holds it yet. ``AGENT_MAP_ORGS`` is
+#: off, and only the gateway reads it (``agent_summary.agent_map_allowed``),
+#: so the edge cannot show the tip only where the map works. An agent of an
+#: org off the flag would get ``TEXT_MAP_NOT_FOUND`` and could think that it
+#: lost access. The slice that flips ``AGENT_MAP_ORGS`` adds the tip to the
+#: work step of ``_work_steps``. Fence: ``test_mcp_edge_prompts.py``
+#: ``TestTheMapTip``.
+MAP_RULE = (
+    " Before you dispatch a sub-agent or another session, call get_agent_map"
+    " for the project of the task. It shows which sessions already work on"
+    " which tasks, so that two agents do not take one task.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -388,7 +401,7 @@ def _queued_text() -> str:
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
         " Then call claim_task with the task_id and the version of the row."
-        + _LINK_HINT +
+        + _LINK_HINT + _PLACE_HINT +
         " When claim_task returns a warning about open subtasks, claim a"
         " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
@@ -423,6 +436,15 @@ _LINK_HINT = (
     " pass it as external_link.")
 
 
+#: SW-105. One sentence at the claim step: the name, the place and the model of
+#: the session. The map shows what the agent reports (agent_coordination.md
+#: 3.12). Fence: ``test_mcp_edge_prompts.py``.
+_PLACE_HINT = (
+    " Pass your session name as agent_label, the name of your machine as host,"
+    " its kind as host_kind (computer, server or cloud) and your model as"
+    " model. Pass a value only when you know it.")
+
+
 def _context_step(*, start_run: bool) -> str:
     """Step 4 of the protocol: the context after the claim, then a run only
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
@@ -448,6 +470,7 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " machine or another terminal. Stop, and tell me. Do not work on a held"
         " task.",
         "Call claim_task with that version as expected_version." + _LINK_HINT
+        + _PLACE_HINT
         + " When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",
@@ -532,6 +555,7 @@ __all__ = [
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
+    "MAP_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
     "PR_RULE",

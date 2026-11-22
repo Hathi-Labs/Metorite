@@ -43,6 +43,7 @@ from typing import Any
 
 import structlog
 from acb_common.settings import internal_auth_headers
+from acb_common.tool_refusals import strip_id_label
 
 from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE
 
@@ -117,7 +118,7 @@ _CACHE_MAX = 4096
 
 def _ok_id(value: Any) -> str:
     """*value* as an id, or ``""`` when it is not a plain token."""
-    text = str(value or "").strip()
+    text = strip_id_label(value)
     return text if _ID.match(text) else ""
 
 
