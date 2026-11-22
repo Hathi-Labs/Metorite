@@ -2,6 +2,9 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
 
+> **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
+> **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
+
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
@@ -147,6 +150,17 @@
 > member reads them, also with no client mode. The start over and "Change CRM
 > setup" each clear the names and the two stamps. The admin renames the record
 > types in Fields, "Record names". A list name alone is enough.
+
+> **Built: CRM-Q34-1 and CRM-Q34-2 (tasks 3693 and 3694, 2026-11-17).** A
+> number range and a lookup by the id of a core record answer. The refusals
+> of a module total name a step that works. Built on
+> `crm-rung0-mt-c18dfcf9`, not merged. No migration and no flag. §18.17 holds
+> the slices and their status.
+
+> **Built dark: CRM-Q34-7 (task 3700, 2026-11-17).** `q` on a module list and
+> a module total finds across the module, behind `CRM_MODULE_FIND_ORGS`
+> (empty). Built on `crm-q34-7-mt-66a5c0f2`, not merged. No migration.
+> §18.17.2 holds the slice.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -8400,6 +8414,406 @@ incident's shape with synthetic values, in
   direction. HANDOFF lists the hardening.
 
 ---
+
+### 18.17 The chat reads every module (CRM-Q34, 2026-11-17)
+
+The production log of 2026-11-17 holds 61 `crm_aggregate` calls of one
+member. Nine got 422, although the fields existed. The typed total refused
+four common query shapes, and it answered one more shape with a silent zero.
+No refusal named a step that works. So the model guessed again, spent its
+budget, and gave up or answered with another figure.
+
+**Flags on rung 0.** None. Each change turns a refusal or a silent zero into
+an answer or better words, and no answer that was right changes. This is the
+precedent of CRM-Q25e parts 1 to 4.
+
+#### 18.17.1 Rung 0: one CRM builder, three slices
+
+**CRM-Q34-1 · A number range, and a lookup by the id of a core record.**
+Status: built 2026-11-17 on `crm-rung0-mt-c18dfcf9` (task 3693), not merged.
+
+- **Outcome.** A range on a number field of a module answers. A lookup filter
+  that carries the Metorite id of a core record counts that record's rows.
+- **Scope.**
+  - `field.<key>.from` and `.to` on a field of `MEASURE_TYPES` compare the
+    guarded number of `_amount` with `>=` and `<=`. Each end is inclusive.
+  - A value that is no plain number reads as NULL and matches nothing. A JSON
+    number and a plain decimal string are values. `Rs. 0.00`, `NA`, `-`, an
+    empty string, null, an object, an array, `1e999` and `12,50` are not.
+  - The bound value takes the guard of the equality filter (`_decimal`). A
+    `from` past its `to` gives no record, as a date range does.
+  - `lookup_targets` and `lookup_ids` also resolve an id whose lookup target
+    is a core entity. The table comes from `modules.KNOWN_TARGETS`, the one
+    map that `resolve_links` reads, never from the caller. The read names the
+    org, and RLS holds the session. It reads `ext_id` by `id`, one read for
+    each such filter.
+- **Limit.** A Native record has no Zoho id, so its id still matches nothing.
+- **Fences.** `tests/unit/test_crm_rung0_r8.py` (dirty values, a core
+  contact, an org B contact) and `tests/unit/test_crm_large_reads.py` (the
+  core target reads its core table).
+
+**CRM-Q34-2 · The route's refusals name a working field, module or filter.**
+Status: built 2026-11-17 on `crm-rung0-mt-c18dfcf9` (task 3694), not merged.
+
+1. `q` on a module total: the route checks it after `module_scope`. Its 422
+   names the step `field.<lookup>=<the exact name>` first. Then it names the
+   lookup fields of the module, each with its target module, and the text
+   fields. Rung 1 makes `q` work.
+2. `group_by=status` on a module reads `group_field=@status` when the
+   catalogue names a status field. Else its 422 names the select fields.
+3. `unknown_field` names the key without `.from` or `.to`. It names at most 3
+   close fields of the module, by key or label (`difflib`, cutoff 0.5). When
+   the key or label is on another mirrored module of the org, it names at
+   most 3 such modules. One read of `crm_field_defs` over the mirrored set,
+   on the 422 path only, in `field_sql.py`. Each name is cut to 60
+   characters and quoted.
+4. A range on a text field is a 422. It names the date and number fields of
+   the module, and the filter `field.<key>=<value>`.
+
+- **Fences.** `tests/unit/test_crm_rung0.py` (each refusal, and an AST fence
+  on the steps of `aggregate._read`) and `tests/unit/test_crm_rung0_r8.py`
+  (the field-home read never names a field of org B).
+
+**CRM-Q34-3 · The tool's text: a zero says it, and a refusal costs no total.**
+Status: a second builder takes it, in `crm_tools.py` only.
+
+- A total whose filters matched no record says "No record matches these
+  filters". A 422 spends no `AGGREGATE_BUDGET` count. `status=` on a module
+  names `field_filters {'@status': <value>}`.
+
+**CRM-Q34-11 · A text field that holds numbers gives a total.**
+Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
+
+- **Why.** A member's module `Invoices` keeps a fiber length and a battery
+  fee in TEXT fields. The chat said "the field is free text" and gave no
+  month totals.
+- **The rule: strict, never a guess.** A wrong total that looks right is
+  worse than a refusal. A text value is a number only when its whole shape
+  is clearly a number. The route counts each other value and names it.
+- **Scope.** Module fields of type `text` only. The core custom fields of
+  contacts, leads, deals and companies are out of this slice. Nothing
+  changes the type in `crm_field_defs`, because the sync owns it.
+- **A number** (`field_sql.TEXT_NUMBER_PATTERN`):
+  - ASCII digits only. No leading zero, so `0` and `0.5` are numbers and
+    `007` is a code.
+  - An optional minus, only as the first character and before any
+    currency mark. `-₹500` and `-Rs 500` are -500. `Rs-5`, `RS-485`,
+    `₹-500` and `- 5` are not numbers, because a code such as `RS-232`
+    has that shape.
+  - Commas only in a Western (`1,234,567`) or an Indian (`12,34,567`)
+    grouping. `1,5`, `12,34` and `1,2,3` are not numbers.
+  - An optional `.` and 1 to 30 digits. At most 30 digits before it.
+  - One currency mark before or after it (`₹`, `Rs`, `Rs.`, `INR`, in any
+    case), or a `%` after it. Outer white space and U+00A0 are trimmed.
+  - At most 32 characters. A JSON number stays a number.
+- **Not a number.** Ranges, dates, any slash, exponents, `NaN` and
+  `Infinity` are not numbers. A unit word (`500 m`), two numbers, brackets
+  and a trailing minus are not numbers either. Nor is a digit of another
+  script, or a JSON list, object or boolean.
+- **No value.** A blank value, `-`, `—`, `NA`, `N/A`, `nil`, `none`,
+  `null` in any case, a JSON null and a missing key. Zero is a number.
+- **The gate** (`admit_text_numbers`). ONE statement reads three counts
+  over the whole module. It counts the numbers, the values with no value,
+  and the values that are not numbers. With no number, the read is a 422
+  with the three counts. Below half of the filled values, the field is a
+  code or free text. Then the 422 also names the most common shapes.
+- **The shapes.** The same statement reads the 2 most common shapes of
+  the values that are not numbers. A shape keeps the structure only: a
+  digit run is `9` and a letter run is `a`. So no stored value leaves the
+  database.
+- **One scan for every key** (`text_numbers_sql`). The statement reads
+  the module once, for all the text keys of the call. A LATERAL VALUES
+  list gives one row for each record and key. So a split of three text
+  keys detoasts the module once, and not three times.
+- **Three places read it.** A measure (`sum`, `avg`, `min`, `max`), a
+  split of `fields=` and a `.from` or `.to` range. They use the one
+  builder, `_amount`. A text equality filter stays a text filter, in a
+  call that also sums the field.
+- **What the model reads.** The answer names the three counts and the
+  shapes. The answer of a grouped total names them as well, also when no
+  matched value is a number. `crm_list_fields` names the use of a text field of a module.
+  No tool docstring changed.
+- **No flag.** Each call that this changes was a 422 before. A call that
+  names no text field sends the same statements, and its answer is the
+  same to the byte.
+- **Limit.** The count reads each record of the module once more, on each
+  call that names a text field. This is one scan, for any number of text
+  keys. The statement timeout of the read holds it. Nobody measured it
+  yet on a large module.
+- **Next (CRM-Q34-11b, planned).** A number with one unit word, then
+  negatives in brackets and lakh or crore words, when the data shows them.
+- **Fences.** `tests/unit/test_crm_text_numbers.py` is hermetic. It pins
+  the SQL of every other field to the byte, the pattern, the gate, the
+  equality filter, the wire and the tool text.
+  `tests/unit/test_crm_text_numbers_r8.py` runs on Postgres. Its matrix
+  reads each raw value back through the route. It also proves a month
+  sum against an independent SQL sum, the gate, org B, and a number field
+  as before.
+
+**SEM-6 · The scripted replay of the refusal shapes.** Status: built 2026-11-17
+(task 3723), no flag, no model. `evals/semantic/` sends the shapes of
+CRM-Q34-1 to CRM-Q34-3 to the real routes on a synthetic org, and asks 20 fixed
+questions. Its fence is `tests/unit/test_semantic_eval_scripted.py`.
+
+#### 18.17.2 Rung 1
+
+`q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
+builder for a module list and a module total (CRM-Q34-4) is Rung 1 too.
+
+**CRM-Q34-7 · `q` finds across a module.**
+Status: built dark 2026-11-17 on `crm-q34-7-mt-66a5c0f2` (task 3700), not
+merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
+
+- **Outcome.** `q` works on `GET /crm/modules/{module}/records`, and on
+  `GET /crm/aggregate` with `entity=module:<Name>`. It finds the records
+  that hold each word of `q` in the name, a lookup name or a text value.
+  Case does not matter.
+  The total counts exactly the rows that the list shows for the same `q`.
+- **The one predicate.** `field_sql.find_where`. The total (`aggregate._read`)
+  and the list (`modules._find_page`) both call it. Each row builds ONE text,
+  `concat_ws` of the name and each value, over the detoasted copy
+  (`DETOAST_JOIN`). Then `ILIKE ALL` takes one pattern for each word.
+- **The fields.** The fields of type `text`, `textarea`, `email`, `phone`,
+  `url` and `lookup` in the field definitions of the module, by position. A
+  lookup gives the name of an object or a string. A text field gives a
+  string, a number or the name of an object. An array and each other value
+  give nothing, so the JSON text of a value never matches. At most 40
+  fields (`FIND_KEYS_MAX`), because Postgres takes at most 100 arguments in
+  one call. A field past the cap is not searched, and the tool text says so.
+- **The words.** The words are the ones of `core.search_words`, the splitter
+  of the core lists. A word holds a letter or a digit, so `&`, `/` or `-`
+  between two words is no word. A `q` with no letter and no digit is no
+  `q`. A `q` of more than 8 words is one phrase. A `q` of more than 200
+  characters is the 422 of `search_words`, and a NUL is the 422 of
+  `refuse_nul`. `%`, `_` and `\` in `q` are literal: `like_pattern` escapes
+  them. The core lists do not escape them (`core.search_where`), and this
+  slice does not change them.
+- **The near pass.** Only when the exact pass counts no row. ONE read takes
+  at most 2,000 stored names (`NEAR_NAMES_SCAN`) under the same filters. A
+  stored name is the record name or a lookup name. The most frequent come
+  first, then the order is by name.
+  `acb_common.name_match` scores them in a thread, with the deadline of
+  HRD-18b. The words are the ones of `core.near_words`: a `q` of at most 3
+  words gets the pass, and each word of 4 letters or more. Such a word also
+  matches a row that holds one of its 10 nearest names (`NEAR_SCORE`). A
+  name that holds the word itself is no near name. The answer then carries
+  `near`: the names it counted. Each list row of the near pass carries `near: true` and its name
+  in `matched`.
+- **A zero.** When no row matches, the answer carries `nearest`: at most 3
+  stored names whose `name_score` against `q` reaches
+  `NEAR_CANDIDATE_SIMILARITY`. Each name is one line of at most 60
+  characters. The chat tools put each name between double quotes and keep
+  an apostrophe, so the next `q` with that name finds the record.
+- **Timeout.** The list reads run under the LOCAL statement timeout of the
+  total, 10 s, and a cancel is the same 503 `aggregate_timeout`.
+- **Visibility.** The reads run in the member's tenant session, so RLS keeps
+  them in the org. A module record has no visibility of its own: the CRM
+  access rule admits the member to every record of the org, or to none.
+- **Flag off.** `q` on a module total is the 422 of CRM-Q34-2, and the list
+  matches the record name only, byte for byte.
+- **Not in this slice.** `field.<key>` on the module list (CRM-Q34-4 below),
+  and an index of the row text (no migration).
+- **Fences.** `tests/unit/test_crm_module_find.py` holds the AST fence on
+  the one builder, the flag, the caps, the escape and the near bounds.
+  `tests/unit/test_crm_module_find_r8.py` proves that the list and the total
+  agree and that org B stays out. It also proves that 30,000 rows of 3 KB
+  answer inside the 10 s timeout.
+
+**CRM-Q34-4 · One filter builder for a module list and a module total.**
+Status: built dark 2026-11-19 on `crm-q34-4-v2-mt-3697` (task 3697), on
+main after CRM-Q34-7, and not merged. Flag `CRM_MODULE_FIND_ORGS`.
+
+- **Outcome.** `GET /crm/modules/{module}/records` takes `field.<key>` and its
+  `.from` and `.to` ends. A list and a total with the same filters hold the
+  same records. The route is the whole slice: the tool is not changed, so it costs no
+  token of the Studio budget. The tool arguments are the follow-up
+  (CRM-Q34-4c below).
+- **One builder.** The list calls `field_sql.module_field_where`. It makes the
+  same three calls as the total: `text_matches`, `lookup_ids` and
+  `module_where`. `custom.<key>` stays for the UI in this slice. A later slice
+  sends it through the same builder.
+- **Flag off.** A list with a `field.<key>` is a 422 that names `crm_aggregate`
+  with `field_filters`. The list never drops a filter in silence. A list with
+  no `field.<key>`, and `custom.<key>`, answer byte for byte as before.
+- **Token budget.** The Studio chat at the pack cap fits its found tools in
+  30,000 schema tokens. Each CRM tool text counts about three times, because
+  the request holds the CRM tools more than once. The texts of `crm_aggregate`
+  and `crm_list_module_records` are NOT changed here.
+- **Fences.** `tests/unit/test_crm_module_list_filters.py` holds the AST fence
+  on the one builder and the tool. `tests/unit/test_crm_module_list_filters_r8.py`
+  proves that a list and a total count the same records, that an unknown field
+  is a 422 on both, and that org B stays out.
+- **CRM-Q34-4c (follow-up row, not built).** `crm_list_module_records` takes
+  `field_filters` (sent as `field.<key>`), and `fields`: 1 to 5 distinct keys
+  that show each value on each row, cut at 80 characters. `field_filters`
+  alone costs about 49 tokens of the Studio budget (room 1186 against main
+  1235), and `fields` costs more. The owner choice is to raise
+  `FIND_SCHEMA_TOKENS` by about 60. Without that, another tool text must free
+  the tokens.
+
+**CRM-Q34-5 · The filter words that a member needs.**
+Status: built dark 2026-11-20 on `crm-q34-5-mt-963474b0` (task 3698), not
+merged. Flag `CRM_MODULE_FIND_ORGS` (`flags.module_find_allowed`).
+
+- **Outcome.** A module total and a module list take five filter words after
+  `field.<key>`. The Rung 4 filter sidebar sends the same words.
+  - `.has=<text>`: the value holds the text, in any case.
+  - `.starts=<text>`: the value starts with the text.
+  - `.not=<value>`: the exact negation of `=`. A record with no value matches.
+  - `.in=a,b`: one of the values. Each value matches as `=` matches it.
+  - `.empty=true|false`: the field holds no value, or a value.
+- **One parser, one builder.** `field_sql.filter_end` parses each word, and it
+  also parses `.from` and `.to`. A key of the module wins over a word. So a
+  field whose key is `Notes.has` stays that field. `_word_filter` builds each
+  clause, and `_filter` calls it. `module_where` serves the total and the
+  list, so both count the same records.
+- **The query grammar.** `lower_pair` lowers each word to the op of a query
+  leaf: `contains`, `starts`, `ne`, `in` and `is_empty`. A lowered leaf builds
+  the clause of its word through `_filter`. `starts` is no op of
+  `acb_common.studio_query`, and that module did not change. No native query
+  leaf takes a word yet (`QUERY_OPS` did not change). `lower_pair` has no
+  production caller: only tests call it, until SEM-1b-2.
+- **A trap for SEM-1b-2.** `_QUERY_ENDS` maps `ne`, `is_empty`, `contains` and
+  `in` to the word ends. The CRM `.not` holds the records with no value, and
+  the Studio `ne` does not. When SEM-1b-2 admits a native `ne`, it must not
+  reuse the end `.not` without a decision.
+- **The matrix.** A text field, a picklist, a lookup and each other type take
+  `=` and the five words. A text field takes a range only when it holds
+  numbers (CRM-Q34-11).
+
+  | Type | `=` | `.from` `.to` | `.has` `.starts` | `.not` | `.in` | `.empty` |
+  |---|---|---|---|---|---|---|
+  | number, decimal, currency, percent, a sum | yes | yes | 422 | yes | yes | yes |
+  | date, datetime | yes | yes | 422 | yes | yes | yes |
+  | boolean | yes | 422 | 422 | yes | 422 | yes |
+  | text, select, lookup, multiselect | yes | 422 | yes | yes | yes | yes |
+
+  Each 422 of a word names every word that the field takes.
+- **`.has` and `.starts`.** `ILIKE` with `like_pattern`, the escape of the
+  module find. So `%`, `_` and `\` are literal. Case folds in the collation of
+  the database, as `q` does. Nothing removes an accent. A lookup reads the
+  name of its target and never its id. A text field reads a string, a number
+  or the name of an object. In a list it reads each string, number and
+  object name. A name counts only when it is a JSON string or number
+  (`_name_text`), and `q` of CRM-Q34-7 reads the same guarded name. It never
+  reads an element that is a list. So the JSON text of
+  a value or of an element never matches. The text holds 1 to 200 characters.
+- **`.not`.** `NOT coalesce(<the clause of =>, false)`. A text value counts
+  its stored variants, as `=` does. A lookup by a Metorite id also matches its
+  Zoho id.
+- **`.in`.** The grammar of `custom.<key>.in`: `core.in_parts` splits on
+  commas, trims each part and drops an empty part. At most 50 values of at
+  most 200 characters. More is a 422 before any read. A comma cannot be
+  inside a value. `text_matches` reads the stored values of a key once, for
+  all the values of an `.in`.
+- **`.empty`.** No value is a missing key, a JSON null, a text that trims to
+  nothing, or an empty list. This is the one meaning on a text field, also
+  when the same call reads the field as numbers. `NA` and `-` are values for
+  `.empty`. The words of `NO_VALUE_WORDS` count only for the number read of
+  CRM-Q34-11. A number field reads each value that is no plain number as
+  empty, through `_amount`. A date that does not exist is a value.
+- **The answer.** The answer names the filters that the route read as words
+  (`filter_words`, absent with none). `filters_line` says only those in
+  words, so a real field `Notes.has` keeps its old text. `.not` reads "is not
+  X, or has no value". After a call with a word, the tool says how many
+  matching records hold no plain number in the measured field, from `values`
+  against `records`. The text of each older
+  call does not change. The field search (`FIELDS_SEARCH_HINT`) names the
+  words. No tool docstring and no parameter changed, so the Studio room did
+  not change.
+- **Flag off.** A word is the 422 `unknown_field` of before. Each other call
+  builds the SQL of before, to the byte, and its answer is the same.
+- **A range on a text field of numbers.** `.from` and `.to` on a CRM-Q34-11
+  text field work on the total only. The list never admits text numbers, so
+  there the range is the 422 of a text field. This is as before this slice.
+- **Limit of the filter line.** `=` writes each counted stored value as it
+  is stored, so a newline or a quote in it reaches the line. This is old
+  text on main, and a quoted form would change the text of each older call.
+  A word quotes each counted value, and it drops each quote of member text.
+- **Not in this slice.** The overlay of a core entity (`overlay_where`) and
+  `custom.<key>` of the core lists take no word. A native query leaf takes no
+  word. This slice adds no index for `.has`, and no migration.
+- **Cost.** `.has` reads the one detoasted copy of each row. The box measured
+  30,000 rows of 3 KB on 2026-11-20, and the statement ran in 89
+  milliseconds. A whole total answered in 0.11 seconds, and a list page in
+  0.20 seconds. The timeout of 10 seconds and the paging of 50 groups did not
+  change.
+- **Fences.** `tests/unit/test_crm_filter_words.py` is hermetic. It holds the
+  parser, a key over a word, the matrix and the flag off. It pins the SQL of
+  before as hashes from the base commit. It also holds the escape, the limits
+  of `.in` and the tool text. `tests/unit/test_crm_filter_words_r8.py` runs on Postgres with hostile
+  and dirty values. It proves each word against an independent SQL count, on
+  the total and the list. It also proves org B, the flag off and the time
+  over 30,000 rows.
+
+**CRM-Q34-10 · Two group fields, and pages of groups.**
+Status: built 2026-11-18 on `crm-q34-10-mt-a22ac1fb` (task 3727), not merged.
+Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
+
+- **Need.** A member asked for each site by month, over several hundred sites.
+  The total took only one field as its group, and it kept only the 50
+  largest groups.
+- **Outcome.** A module total takes `group_field2`, a second group field. At
+  most one of the two fields is a date, and `bucket` goes to it. The route
+  pages such groups in SQL with `group_page` and `group_page_size` (1 to
+  200, default 50). A total of one field can go past its 50 largest groups
+  with `group_page=2` and on. A paged answer gives `group_count`,
+  `group_page` and `group_pages`.
+- **Scope.**
+  - A page of two fields is in the order of the value, largest first, then
+    each key. A key ends the order, so two pages never share a group.
+  - Page 1 of one field is the answer of today, byte for byte, with one
+    exception. On the list, a value group of a module with more than 50
+    groups cuts its 50 groups in the order of page 2 (`aggregate.cut_key`),
+    so page 2 continues it. With 50 groups or fewer, off the list, on a core
+    entity, and for a date group, a split, a key word or `q`, page 1 keeps
+    the order of today. When page 1 leaves groups out on the
+    list, it carries `next_group_page: 2`. The tool
+    then ends its "Other" line with "Ask for page 2 for the next groups." in
+    place of "Narrow the filter to see them."
+  - Page 2 on of one field takes the order in which page 1 cut its 50
+    groups: the value rounded to 2 places, largest first, then the label of
+    the group by code point, then the key by code point with a NULL key last
+    (`field_sql.one_group_order`). Page 1 breaks a tie the same way
+    (`aggregate.cut_key`). So page 2 starts where page 1 stops.
+  - A later page of one field holds 50 groups, as page 1 does. Another
+    `group_page_size` gives a 422. Two fields take 1 to 200.
+  - `total` and `records` stay the answer over every group. A group with no
+    value in a field is its own group, with the label "(none)".
+  - The filters are the ones of the module total of today, through one
+    helper (`aggregate._module_filters`). That covers the filter words of
+    CRM-Q34-5 and the `query` of SEM-1b, so a paged answer counts the same
+    records. A paged answer carries `filter_words` and `text_numbers` too.
+  - A core entity, two date fields, one field twice, a bucket on a value
+    field, and a split with two fields each give a 422.
+  - Off the list, `group_field2` gives a 422. It names the way without it:
+    group by one field, and filter by the other. The route ignores
+    `group_page` and `group_page_size`, so every other call gives the answer
+    of today. A `group_page` past 1,000,000 gives a 422 on the list.
+  - The tool `crm_aggregate` takes `group_field2` and always sends it. It
+    sends the page only with `group_field2`, or for page 2 on of one module
+    group.
+- **Limits.** A page past 1 of one date group gives the answer of page 1
+  again. So does a page past 1 with a split, a `group_by` key word or a `q`.
+  Those groups cannot continue in the order of the value, and that answer
+  says to narrow the filter. A paged answer has no findings of one day. Its
+  `other` is None, and its `omitted` counts the groups that are not on the
+  page. A `q` filters a two-field
+  answer by its exact words, with no near pass. On the list, page 1 of a
+  value group of a module with more than 50 groups rounds the exact numeric
+  of each group. It rounds
+  half away from zero, as page 2 does (`aggregate.cents`). There, two groups whose
+  values differ by under half a cent can change places on page 1. So can the
+  set of groups at the cut of 50, and `other`. The shown values and the
+  total do not change.
+- **Fences.** `tests/unit/test_crm_two_group.py` holds each refusal, the SQL
+  of one group field, both orders and the tool text.
+  `tests/unit/test_crm_two_group_r8.py` checks each group of each page
+  against an independent `GROUP BY`. It also checks the list count, org B,
+  the base answer byte for byte, the 503, and 30,000 records in 200 groups.
+  Through the tool, it checks a split, the near pass of `q`, and a date
+  group in time order. It walks 122 tied groups whose names sort the other
+  way from their ids.
 
 ## 19. The daily-use UX (2026-10-12)
 

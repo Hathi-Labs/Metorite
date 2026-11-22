@@ -16,6 +16,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import honorifics
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
+from acb_skills.card_revise import draft_digest, draft_files_digest
 from acb_skills.untrusted import UntrustedFrame
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.persist import TRUNCATION_MARKER
@@ -3702,6 +3703,60 @@ class DraftUpsertRequest(BaseModel):
     # are normalised before the save. The Email app's composer sends False,
     # so its saves are as before.
     from_chat: bool = False
+    # Task 3605: True when ``body`` is Markdown, as the email assistant writes
+    # it. A draft holds text only, so the save keeps the text part of
+    # ``markdown_mail.mail_bodies``: the Markdown as written, less the bidi
+    # controls. The answer says ``formatting: "text_only"`` when the body had
+    # real structure that the draft does not show.
+    body_markdown: bool = False
+    # HRD-10d-1 (``chat_failure_modes.md`` §6): the email assistant's
+    # ``edit_draft`` sends ``acb_skills.card_revise.draft_digest`` of the read
+    # that its card showed. Only an update by ``draft_id`` reads it. A draft
+    # whose digest differs now gets 412 and no write. None, the default, is
+    # the save of before, so the Email app's composer does not change.
+    expect_digest: str | None = Field(default=None, max_length=64)
+
+
+#: HRD-10d-1: the most characters of the text in the ``current`` of a 412.
+PRECONDITION_TEXT_MAX = 500
+
+
+async def _refuse_changed_draft(db: Any, req: DraftUpsertRequest) -> None:
+    """Answer 412 when the draft changed after the read of ``expect_digest``.
+
+    HRD-10d-1 (``chat_failure_modes.md`` §6). The chat's ``edit_draft`` takes
+    ``draft_digest`` of its ``GET /email/messages/{id}`` read before the card.
+    Here the route reads the row through :func:`_fetch_message_dict`, the same
+    ``_row_to_message`` shape, and folds it with the same function. A row of
+    another mailbox, or a row that is not a draft, gets the 404 of the update,
+    so no 412 shows a message of another mailbox (D-EM-4). The read runs
+    before any provider call, and a 412 writes nothing. It takes no ``FOR
+    UPDATE``, because the route keeps its session open across the provider
+    call. ``current`` holds the subject, the three address lists and the
+    first :data:`PRECONDITION_TEXT_MAX` characters of the text."""
+    row = await _fetch_message_dict(db, str(req.draft_id))
+    same_box = str(row.get("account_id") or "").lower() == str(req.account_id).strip().lower()
+    if (not row or not same_box
+            or str(row.get("folder") or "").lower() not in ("drafts", "draft")):
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft_digest(row) == req.expect_digest:
+        return
+    raise HTTPException(status_code=412, detail={
+        "error": "precondition_failed",
+        "message": "This draft changed since the chat read it.",
+        "current": {
+            "subject": str(row.get("subject") or ""),
+            "to": _draft_addresses(row.get("to_addresses") or []),
+            "cc": _draft_addresses(row.get("cc_addresses") or []),
+            "bcc": _draft_addresses(row.get("bcc_addresses") or []),
+            "text": str(row.get("body_text") or "")[:PRECONDITION_TEXT_MAX],
+        },
+    })
+
+
+#: The ``formatting`` key of the answer of a save of a Markdown body that had
+#: formatting (task 3605). The draft holds the text only.
+FORMATTING_TEXT_ONLY = "text_only"
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3799,6 +3854,22 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
     return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
 
 
+def _markdown_draft_text(req: DraftUpsertRequest) -> tuple[DraftUpsertRequest, dict[str, str]]:
+    """A save of a Markdown body (task 3605): the request with the text part
+    of ``markdown_mail.mail_bodies`` as its body, and the ``formatting`` key
+    of the answer. A draft holds text only, so a body with real structure
+    shows no formatting there, and the answer says so. A save that keeps
+    the stored body does not change."""
+    if not req.body_markdown or req.keep_body:
+        return req, {}
+    from gateway.routes.email.markdown_mail import draft_text
+
+    body, lost = draft_text(req.body)
+    if body != req.body:
+        req = req.model_copy(update={"body": body})
+    return req, ({"formatting": FORMATTING_TEXT_ONLY} if lost else {})
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3814,8 +3885,13 @@ async def upsert_draft(
     _refuse_bad_draft_id(req.draft_id)
     if req.from_chat:
         req = _chat_draft_text(req)
+    req, formatting = _markdown_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
+        if req.draft_id and req.expect_digest:
+            # HRD-10d-1: before the provider session opens. With no
+            # ``expect_digest`` the route runs the statements of before.
+            await _refuse_changed_draft(db, req)
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
@@ -3925,8 +4001,57 @@ async def upsert_draft(
                 clear_html=gmail and not req.keep_html,
             )
         if gmail:
-            return {**await _fetch_message_dict(db, local_id), "html": html_state}
-        return await _fetch_message_dict(db, local_id)
+            return {**await _fetch_message_dict(db, local_id), "html": html_state,
+                    **formatting}
+        saved = await _fetch_message_dict(db, local_id)
+        return {**saved, **formatting} if formatting else saved
+
+
+async def save_chat_draft(
+    fields: dict[str, Any], user: UserContext, *, thread: str, member: str, org: str,
+    replaces: str = "", act: str = "new_mail",
+    upsert: Callable[[DraftUpsertRequest, UserContext], Awaitable[Any]] | None = None,
+) -> Any:
+    """Save a NEW draft of a chat card through :func:`upsert_draft`, under the
+    one-draft rule of ``acb_skills.card_revise.save_one_draft`` (task 3814).
+
+    *fields* are the fields of a :class:`DraftUpsertRequest` with no
+    ``draft_id``. *thread* is the chat thread that the card's record holds,
+    and *member* and *org* come from the session, never from a request field
+    (R5). *replaces* is the id that the card's record holds, the draft that
+    the card said it replaces. With ``CHAT_CARD_REVISE_ORGS`` off, or with no
+    such id, it is the one save of before. The read of the earlier draft is
+    the read of :func:`_fetch_message_dict`, and the delete is the delete of
+    a message (``DELETE /email/messages/{id}``). *upsert* lets a caller pass
+    the ``upsert_draft`` that it imported. It answers the ``SavedDraft``."""
+    from acb_skills.card_revise import save_one_draft
+    from gateway.routes.email.transport.messages import delete_message
+
+    save = upsert or upsert_draft
+    account_id = str(fields.get("account_id") or "")
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await save(DraftUpsertRequest(**body), user)
+
+    async def read(draft_id: str) -> dict[str, Any] | None:
+        async with _tenant_session() as db:
+            row = await _fetch_message_dict(db, draft_id)
+        return row if row and str(row.get("account_id") or "") == account_id else None
+
+    async def delete(draft_id: str) -> Any:
+        return await delete_message(draft_id, user)
+
+    return await save_one_draft(put, fields, replaces=replaces, thread=thread, member=member,
+                                act=act, read=read, delete=delete, org=org)
+
+
+def replace_fields(saved: Any, rec: dict[str, Any]) -> dict[str, Any]:
+    """The keys of a card act's answer for the one-draft rule (task 3814):
+    the outcome and the earlier draft, only when the record named one. A card
+    with no ``replaces`` answers no new key."""
+    if not rec.get("replaces"):
+        return {}
+    return {"replace_outcome": saved.outcome, "replaced": saved.earlier}
 
 
 class DraftExpect(BaseModel):
@@ -3943,6 +4068,17 @@ class DraftExpect(BaseModel):
     cc: list[str] = []
     bcc: list[str] = []
     text_digest: str | None = Field(default=None, max_length=64)
+    # HRD-10d-2 (``chat_failure_modes.md`` §6): ``acb_skills.card_revise.
+    # draft_files_digest`` of the read that the card showed. Only the email
+    # assistant sends it, and only with ``CHAT_CARD_PRECONDITION_ORGS`` on for
+    # its org. None, the default, checks no file, as before. Expand-only (R6):
+    # a schedule stored before it carries no key.
+    files_digest: str | None = Field(default=None, max_length=64)
+
+    def stored(self) -> dict[str, Any]:
+        """The ``expect`` that a schedule stores. With no ``files_digest`` it
+        is the dict of before, with no new key."""
+        return self.model_dump(exclude={"files_digest"} if self.files_digest is None else None)
 
 
 class DraftSendRequest(BaseModel):
@@ -3988,6 +4124,10 @@ def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
 DRAFT_TEXT_CHANGED_DETAIL = (
     "The subject or the text of this draft changed after the card showed it. "
     "Nothing was sent.")
+#: The answer when the files of the draft changed after the card (HRD-10d-2).
+#: The send-later job shows its own reason for it (``send_later._why``).
+DRAFT_FILES_CHANGED_DETAIL = (
+    "The files of this draft changed after the card showed them. Nothing was sent.")
 #: The answer when the provider did not give the text of the draft.
 DRAFT_TEXT_READ_FAILED_DETAIL = (
     "The mail provider did not give the text of this draft, so the send could "
@@ -4107,6 +4247,35 @@ async def _check_chat_send(
         await _check_text_seal(provider, drow, expect, signature)
 
 
+async def check_draft_files(db: Any, draft_id: str, expect: DraftExpect) -> None:
+    """409 when the files of the draft are not the files that the card showed.
+
+    HRD-10d-2 (``chat_failure_modes.md`` §6). Only an ``expect`` with
+    ``files_digest`` runs it, so each other caller runs the statements of
+    before. The route reads the stored row and its ``email_attachments``
+    rows in the shape of ``GET /email/messages/{id}``, and folds them with
+    the one function of the tool, ``card_revise.draft_files_digest``. It
+    never trusts a digest of the request for the files that are there now.
+    It runs before any provider call, so a 409 sends nothing."""
+    if expect.files_digest is None:
+        return
+    head = (await db.execute(text(
+        "SELECT has_attachments FROM email_messages WHERE id = CAST(:id AS uuid)"
+    ), {"id": str(draft_id)})).fetchone()
+    flagged = bool(head is not None and head.has_attachments)
+    files: list[dict[str, Any]] = []
+    if flagged:
+        rows = (await db.execute(text(
+            "SELECT id, filename, size_bytes FROM email_attachments "
+            "WHERE message_id = CAST(:id AS uuid)"
+        ), {"id": str(draft_id)})).fetchall()
+        files = [{"id": str(r.id), "filename": r.filename, "size_bytes": r.size_bytes}
+                 for r in rows]
+    now = draft_files_digest({"has_attachments": flagged, "attachments": files})
+    if now != expect.files_digest:
+        raise HTTPException(status_code=409, detail=DRAFT_FILES_CHANGED_DETAIL)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -4205,6 +4374,9 @@ async def send_draft_endpoint(
         if req.expect is not None and not _draft_matches(drow, req.expect):
             raise HTTPException(
                 status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
+        # HRD-10d-2: the files that the card showed, when it sent them.
+        if req.expect is not None:
+            await check_draft_files(db, req.draft_id, req.expect)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:

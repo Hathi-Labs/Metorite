@@ -128,6 +128,7 @@ __all__ = [
     "ProvisionCaller",
     "ResolveCaller",
     "SeatAdminCaller",
+    "ServeReadCaller",
     "ServingCaller",
     "SignedWebhook",
     "StaffIdentity",
@@ -1155,6 +1156,15 @@ _billing_read_dependency = deployment_or_operator(BILLING_READ_CAPABILITY)
 #: refuse the operator arm, as the billing reads do.
 _billing_purchase_dependency = deployment_or_operator(BILLING_PURCHASE_CAPABILITY)
 
+#: The vendor-health read of a box that serves AI (AO-2, ``customer_console.md``
+#: §6A.17b). A SEVENTH closure from the same factory, and NOT a new capability.
+#: A box that holds ``serve`` sends its chat through the Router, so whether the
+#: Router's vendors can serve is a fact about the service it already uses. The
+#: chat doors take ``serve`` through ``organization_from_key_or_deployment``,
+#: which also admits an org key. This read is for a box only, so it takes the
+#: plain two-arm closure, and its route refuses the operator arm.
+_serve_read_dependency = deployment_or_operator(SERVE_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -1197,6 +1207,12 @@ BillingPurchaseCaller = Annotated[
     DeploymentCaller | None, Depends(_billing_purchase_dependency)
 ]
 
+#: The vendor-health read of a box (AO-2). The same two-arm shape. The route
+#: refuses ``None``: the operator reads ``GET /providers/health`` instead.
+ServeReadCaller = Annotated[
+    DeploymentCaller | None, Depends(_serve_read_dependency)
+]
+
 #: Every dependency in this module that authenticates somebody.
 #:
 #: This exists so CP-2b clause 1's fence
@@ -1225,6 +1241,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     _member_admin_dependency,
     _billing_read_dependency,
     _billing_purchase_dependency,
+    _serve_read_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.

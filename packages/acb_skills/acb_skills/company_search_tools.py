@@ -94,6 +94,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+from acb_common.settings import internal_auth_headers
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -294,13 +295,6 @@ def _with_current_chat(params: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
-def _internal_token() -> str:
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """The bearer and the acting member. With no member, refuse."""
     user = _current_user_email()
@@ -312,7 +306,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -1181,7 +1175,7 @@ NAMES_CUT = "The answer has more records than it shows. Ask the member for the f
 NAME_APPS: dict[str, str] = {"crm": "CRM", "people": "People", "email": "Email"}
 NAME_KINDS: dict[str, str] = {
     "person": "person", "contact": "contact", "lead": "lead", "company": "company",
-    "sender": "mail sender",
+    "sender": "mail sender", "module_record": "record",
 }
 NAME_SKIPS: dict[str, str] = {
     "timed_out": "ran out of time", "failed": "failed", "refused": "not open to you",
@@ -1272,6 +1266,9 @@ def _name_lines(row: Any) -> list[str]:
     status = str(row.get("status") or "")
     noun = NAME_KINDS[kind] + (f", {status}" if kind == "person" and status in NAME_STATUSES
                                else "")
+    if kind == "module_record" and _name_text(row.get("module"), 40):
+        # FIND-11: the label of the module, as a name, so the member sees where it is.
+        noun += f", {_name_text(row.get('module'), 40)}"
     name = _name_text(row.get("name")) or "(no name)"
     href = str(row.get("href") or "")
     link = f" {href}" if href.startswith("/") and not href.startswith("//") \
@@ -1341,7 +1338,7 @@ def _names_headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(NAMES_SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
