@@ -55,7 +55,8 @@ from urllib.parse import quote
 import httpx
 from acb_common import get_logger
 
-from acb_skills.company_search_tools import _gateway_url, _internal_token
+from acb_common.settings import internal_auth_headers
+from acb_skills.company_search_tools import _gateway_url
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 _log = get_logger("acb_skills.chat_pin_tools")
@@ -194,7 +195,7 @@ async def _send(method: str, path: str, member: str) -> tuple[int, Any]:
     type, and nothing else. Returns the status and the JSON body. A fault of
     the request gives status 0. Never raises."""
     headers = {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "X-User-Email": member,
         "Content-Type": "application/json",
     }
