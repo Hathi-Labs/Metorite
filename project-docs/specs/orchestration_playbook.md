@@ -135,7 +135,7 @@ The kit is the static part of the playbook. It is a set of files that a member p
 
 **The protocol that the core teaches.** It has at most 12 lines:
 
-1. Call `my_work` first, then `claim_task`.
+1. Call `my_work` first, then `claim_task`. Send your name, machine and model with the claim.
 2. Call `get_task_context`, and call `get_plan` for the order of the slices.
 3. Work in a worktree and on a branch. Put the task short id in the branch name.
 4. Post activity at least once a minute.
