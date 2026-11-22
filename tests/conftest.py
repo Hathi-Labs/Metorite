@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 
 import pytest
 
@@ -391,7 +392,15 @@ def _restore_the_database_url():
         os.environ["DATABASE_URL"] = before
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
+    # CIV-15b (task 2187). pyproject.toml sets ``timeout_method = "signal"``,
+    # and Windows has no SIGALRM, so pytest-timeout stopped every run with an
+    # INTERNALERROR before the first test. The command line option wins over
+    # the ini value, so a platform with no SIGALRM takes ``thread``. Linux and
+    # CI keep ``signal``. Fence: tests/unit/test_pytest_timeout_platform.py.
+    if config.getoption("timeout_method", None) is None and not hasattr(signal, "SIGALRM"):
+        config.option.timeout_method = "thread"
     config.addinivalue_line(
         "markers",
         "direct_arm_guard: the test runs the real guard of the direct AI arm "

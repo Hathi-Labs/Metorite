@@ -134,6 +134,20 @@ SEARCH_KINDS = frozenset(
 )
 
 
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def strip_id_label(value: Any) -> str:
+    """*value* without the ``id=`` label that the list tools print (task 3882).
+
+    It trims space and quotes, cuts one leading ``id=`` (any case, space
+    allowed), and trims again. It changes nothing else.
+    """
+    text = str(value if value is not None else "").strip().strip("\"'`").strip()
+    text = _ID_LABEL.sub("", text, count=1)
+    return text.strip().strip("\"'`").strip()
+
+
 def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") -> str:
     """*value* without a known ``kind:`` prefix of the tool's own kind (HRD-2).
 

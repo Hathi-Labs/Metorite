@@ -1773,6 +1773,7 @@ class TestTheBackgroundFetch:
         h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
         _slow_provider(monkeypatch, h.payload, 1.0)
         monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(route, "HOLD_WAIT_S", 0.05)  # Task 3865
         with pytest.raises(HTTPException):
             await _text()
         assert route._READING and (ORG_A, OWNER) in route._READING, "the route freed the hold"
