@@ -1240,7 +1240,7 @@ def strand_fits_sql(strand: str, run: str) -> str:
     (SW-10a): the strand is not cleared, the run is still ``in_progress``,
     and no activity came on the run since the first miss. ONE text for
     ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
-    wire (``agent_runs._OPEN_STRANDS_SQL``).
+    wire and ``agent_stranded`` on the task row (:data:`OPEN_STRANDS_SQL`).
 
     Task 1045b: ``seen_activity_at`` holds the life clock of the run at the
     first miss (:func:`run_life_at_sql`), so a linked event ends the fit
@@ -1261,6 +1261,33 @@ def open_strand_sql(alias: str) -> str:
         "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
         f" WHERE {strand_fits_sql('fs', alias)})"
     )
+
+
+#: SW-10a (spec §12.6). The open strand of each run that still fits it, by
+#: the rule of :func:`strand_fits_sql`. ONE text for ``stranded`` on the runs
+#: wire (``agent_runs._runs_out``) and ``agent_stranded`` on the task row
+#: (:func:`attach_agent_state`, task 1045d), so the card and the run panel
+#: cannot disagree.
+OPEN_STRANDS_SQL = f"""
+SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
+  FROM pm_agent_run_strands s
+  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
+ ORDER BY s.run_id, s.nudged_at DESC
+"""
+
+
+def stranded_of(found: Any, idle_s: Any) -> dict[str, Any]:
+    """The shape of one open strand: the reason, the first miss, the second
+    miss (the recovery record) and the seconds since the last activity. ONE
+    shape for ``stranded`` on the runs wire and ``agent_stranded`` on the
+    task row (task 1045d)."""
+    return {
+        "reason": found.reason,
+        "nudged_at": wire(found.nudged_at),
+        "recovered_at": wire(found.recovered_at),
+        "idle_s": int(float(idle_s)) if idle_s is not None else None,
+    }
 
 
 def open_recovery_sql(strand: str, run: str) -> str:
@@ -1372,7 +1399,7 @@ def agent_state_sql(task_filter: str) -> str:
     in the org of the run. Defence in depth beside FORCE RLS.
     """
     return f"""
-SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
+SELECT DISTINCT ON (r.task_id) r.task_id, r.id AS run_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
        r.agent_label,
        r.waiting_on, r.waiting_until,
@@ -1512,6 +1539,12 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     Task 1045a: ``agent_waiting`` is ``{on, until}`` while the state reads
     ``waiting`` (:func:`waiting_of`), so the card can say "waiting on CI".
 
+    Task 1045d: ``agent_stranded`` is the open strand of the task's open run
+    (:data:`OPEN_STRANDS_SQL`, :func:`stranded_of`), so the card can say
+    "No word since HH:MM". It is ``None`` for a task with no open run, and for
+    a run whose strand the sweep cleared or a new activity ended. One more
+    batched query, only when an open run exists on the page.
+
     EA-13d and EA-13e ride the same call, because every route that hands a
     task row to the client already calls it, and the client merges the row
     over its own copy (a missing ``pr`` would erase the chip). So the call
@@ -1520,7 +1553,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, agent_label=None, agent_waiting=None, held_by=None)
+                   agent_note=None, agent_label=None, agent_waiting=None, held_by=None,
+                   agent_stranded=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1538,9 +1572,27 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                                getattr(hit, "waiting_until", None)))
                 if hit.run_status in AGENT_RUN_OPEN_STATUSES:
                     row["held_by"] = held_by_of(hit)
+        await _attach_stranded(db, rows, by_task)
     await attach_pr_chip(db, rows)
     await attach_agent_worked(db, rows)
     return rows
+
+
+async def _attach_stranded(db: Any, rows: list[dict[str, Any]], by_task: dict[str, Any]) -> None:
+    """Task 1045d. Fill ``agent_stranded`` from the open strand of each row's
+    open run (the run that the pill picked). One query for the page, and none
+    when the page has no open run."""
+    runs = {str(hit.run_id): hit for hit in by_task.values()
+            if hit.run_status in AGENT_RUN_OPEN_STATUSES and getattr(hit, "run_id", None)}
+    if not runs:
+        return
+    strands = {str(f.run_id): f for f in (await db.execute(
+        text(OPEN_STRANDS_SQL), {"ids": list(runs)})).fetchall()}
+    for row in rows:
+        hit = by_task.get(str(row["id"]))
+        found = strands.get(str(getattr(hit, "run_id", ""))) if hit is not None else None
+        if found is not None:
+            row["agent_stranded"] = stranded_of(found, getattr(hit, "idle_s", None))
 
 
 # ── WS-55 EA-13d: the PR chip (external_agent_access.md §12.2 item 2, EA3-48) ──
