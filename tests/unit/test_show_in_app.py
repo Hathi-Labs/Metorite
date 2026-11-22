@@ -654,3 +654,12 @@ def test_the_tool_text_names_every_page_it_opens() -> None:
     assert re.search(r"/settings/organization: Invite members", doc)
     for dead in ("/tasks,", "/notes", "/dashboard"):
         assert dead not in doc, dead
+
+
+def test_tasks_is_refused_and_the_refusal_names_projects() -> None:
+    """Task 3865: ``/tasks`` is a preview pane that redirects into Projects."""
+    got = iap.refusal("/tasks", frozenset({"tasks", "projects"}))
+    assert got == "no page of this app at that path. Open /projects instead."
+    assert iap.refusal("/tasks?x=1", None) == got
+    assert "/tasks" not in {p.href for p in iap.PANES}
+    assert iap.refusal("/nowhere", None) == "no page of this app at that path"

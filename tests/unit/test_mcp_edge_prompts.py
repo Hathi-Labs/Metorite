@@ -628,6 +628,36 @@ class TestTheImageRule:
         assert "get_attachment" in tools.TOOLS
 
 
+class TestTheMapTip:
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12, R7). The
+    tip that sends an orchestrator to ``get_agent_map`` is HELD BACK. The
+    edge does not read ``AGENT_MAP_ORGS``, so it cannot show the tip only
+    where the map works. No prompt holds it, with the map flag off or on, and
+    with the runs flag off or on. The slice that flips the flag adds it, and
+    changes this test. Mutation: add ``MAP_RULE`` to the work step in
+    ``prompts.py``, and ``test_no_prompt_holds_the_tip`` fails."""
+
+    def test_the_tip_names_the_map_tool(self):
+        assert "Before you dispatch a sub-agent or another session" in prompts.MAP_RULE
+        assert "call get_agent_map" in prompts.MAP_RULE
+        assert "get_agent_map" in tools.TOOLS
+
+    @pytest.mark.parametrize("map_orgs", ["", "*"])
+    @pytest.mark.parametrize("runs", [True, False])
+    async def test_no_prompt_holds_the_tip(self, armed, monkeypatch, runs, map_orgs):
+        monkeypatch.setattr(get_settings(), "agent_map_orgs", map_orgs)
+        if not runs:
+            _runs_off(monkeypatch)
+        texts = [await _prompt_text({"task": TASK})]
+        if runs:
+            texts.append(await _prompt_text())  # the queued form of my_work
+        texts.append(await _instructions())
+        for text in texts:
+            flat = " ".join(text.split())
+            assert prompts.MAP_RULE.strip() not in flat
+            assert "get_agent_map" not in flat
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # P11, P12: the checks of §9.6 and the other methods
 # ═══════════════════════════════════════════════════════════════════════════

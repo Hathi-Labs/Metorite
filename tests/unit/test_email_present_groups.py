@@ -235,3 +235,32 @@ def test_every_id_taking_tool_is_in_the_strip_tests() -> None:
         and _ID_PARAMS & set(inspect.signature(getattr(fn, "__wrapped__", fn)).parameters)
     }
     assert found <= _COVERED, f"a tool takes an email id and no strip test covers it: {found - _COVERED}"
+
+
+@pytest.mark.parametrize(
+    "tool,extra", [("read_thread", {}), ("mark_thread_done", {"account_id": "acc"})]
+)
+async def test_thread_tools_strip_the_label_from_thread_id(monkeypatch, tool, extra) -> None:
+    seen = _recorders(monkeypatch)
+    with contextlib.suppress(Exception):  # a later step may fail on the empty fakes
+        await _bare(tool)(thread_id=f"id={_UID}", **extra)
+    text = " ".join(seen)
+    assert _UID in text, (tool, seen)
+    assert "id=" + _UID not in text and "id%3D" not in text, (tool, seen)
+
+
+async def test_present_groups_folds_each_uuid_form_to_one(monkeypatch) -> None:
+    sent: list[dict] = []
+
+    async def fake_post(path, body):
+        sent.append(body)
+        return {"summaries": [{"id": _UID, "from": "HR Team", "subject": "Onboarding"}]}
+
+    monkeypatch.setattr(agents, "_post", fake_post)
+    forms = [f"{{{_UID.upper()}}}", _UID.replace("-", ""), _UID.upper(), f"id={_UID}"]
+    out = await agents.present_email_groups(
+        json.dumps([{"title": "HR", "email_ids": forms}])
+    )
+    assert sent == [{"ids": [_UID]}]
+    assert out.count(f"• id={_UID} | HR Team: Onboarding") == 1
+    assert out.count("• id=") == 1

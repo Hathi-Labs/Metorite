@@ -2039,6 +2039,18 @@ class Settings(BaseSettings):
     # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
     email_triage_once_per_cycle: bool = False
 
+    # ── One Reply Zero classify of a mailbox at a time (WS-17 EM-T16 H-285)
+    #
+    # True: a second call of the classify for a mailbox skips while a first
+    # call of the same mailbox runs. The webhook, the manual sync and the
+    # scheduler hook all end in that call. A mailbox with no running call,
+    # and any other mailbox, runs as before. False is the default, and then
+    # two calls can run at once. The guard lives in one gateway process.
+    # The one reader is `email_ingestion.post_sync.classify_one_at_a_time`.
+    # A value of `true` on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_email_classify_one_at_a_time.py.
+    email_classify_one_at_a_time: bool = False
+
     # ── No rule match when the conversation status decides (WS-17 EM-T16 PR-B)
     #
     # True: in `on` of `email.thread_status`, the rules job and the Reply

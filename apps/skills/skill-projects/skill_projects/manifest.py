@@ -339,13 +339,8 @@ MANIFEST: tuple[Route, ...] = (
     Route(
         "GET",
         "/projects/my/tasks/{task_id}/lanes",
-        "",
-        "X",
-        "The task panel's Status select (WS-39 S6e): the lanes one of my "
-        "tasks can be in, behind the membership check rather than the project "
-        "grant. The chat reads a lane through my_task's workflow_stage and "
-        "the vocabulary of a project through `vocabulary`; a second door onto "
-        "the same lane list is a browser need, not a chat one.",
+        "vocabulary",
+        "A",
     ),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),

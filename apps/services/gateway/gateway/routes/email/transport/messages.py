@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import functools
 import json
-import re
 import time
 import uuid
 from typing import Any, Literal
@@ -13,6 +12,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
@@ -819,9 +819,6 @@ class MessageSummariesRequest(BaseModel):
     ids: list[str]
 
 
-_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
-
-
 def summary_ids(raw: list[str] | None) -> list[str]:
     """The valid message ids of a summaries request, canonical, in order.
 
@@ -832,9 +829,8 @@ def summary_ids(raw: list[str] | None) -> list[str]:
     """
     out: list[str] = []
     for item in raw or []:
-        cleaned = _ID_LABEL.sub("", str(item or "").strip().strip("\"'`").strip(), count=1)
         try:
-            out.append(str(uuid.UUID(cleaned.strip().strip("\"'`").strip())))
+            out.append(str(uuid.UUID(strip_id_label(item))))
         except ValueError:
             continue
     return out
