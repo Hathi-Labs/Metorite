@@ -1,4 +1,4 @@
-# People intelligence: what other products do, and the law (research record)
+# People intelligence: what other products do, the law, and workplace games (research record)
 
 > **Research record for `project-docs/specs/people_intelligence.md`** (task 3867, 2026-11-22). This file is evidence, not a contract. The spec owns every rule.
 >
@@ -13,6 +13,8 @@
 ---
 
 Method: web search only. Search tool returned summaries, so most claims rest on secondary sources. Items marked **UNVERIFIED** were not confirmed from a first-hand source. Items marked *(background)* come from prior knowledge and were not re-checked in this session.
+
+## Part 1. HR products, people analytics and the law (2026-11-22)
 
 ## 1. Summary: lessons that should shape the design
 
@@ -155,3 +157,181 @@ Pointers for the first (Indian) customers: DPDP s.7(i) covers company-system wor
 ## 6. Gaps to close before the spec is final
 
 Confirm on first-hand sources: EUR-Lex text of Regulation 2026/1744, DPDP Rules rule numbers and whether notice applies under s.7(i), Colorado SB 26-189 employment scope and the court stay, Illinois final rules, CT/DE statutes, BetrVG s.87(1) no.6 case law, Workday-Confirm, Gloat, Beamery, SuccessFactors skills mechanics, Peoplelogic, independent evidence on monitoring backlash, Jellyfish and LinearB official per-person policies. Get counsel to review before any EU or California customer is onboarded.
+
+---
+
+## Part 2. Workplace games and fair scores across roles (2026-11-22)
+
+> Written for the owner's second message (scores, a leaderboard, fair scores across roles). The same method and labels apply. **[VERIFIED]** means a search result confirmed the claim this session. **[MEMORY]** means prior knowledge that nobody checked again.
+
+Date: 2026-11-22. Method: web search plus a few page reads. Labels: **[VERIFIED]** = confirmed in a search result this session. **[MEMORY]** = my prior knowledge, not re-checked. **[UNVERIFIED]** = could not confirm. Peer-reviewed work and vendor claims are marked apart. Not legal advice.
+
+### 1. Summary (10 lines)
+
+1. Gamification works on average, but effects are small to medium and very context-dependent. The 2019 review of 819 studies found positive leaning results with a "remarkable" amount of mixed ones.
+2. Most rigorous evidence comes from education, not work. Work evidence is thin, and much of the pro-gamification work evidence is vendor claims.
+3. Consent decides the sign. Mollick and Rothbard: games raised positive affect only for people who consented, and lowered it for those who did not.
+4. Public rank is a double-edged tool. It lifts effort for some, but in field experiments it also caused complacency in leaders, disengagement in low ranks, and in one sweater factory a net drop in output.
+5. Rank for status alone, with no money, still raises effort, but a minority sabotage peers or cheat (Charness et al.).
+6. Linking points to pay, firing or ratings produces gaming: Wells Fargo, Microsoft stack ranking, Google's own OKR pay experiment.
+7. Scores that rank unlike roles on one raw scale are unfair. Use each person's attainment against their own role target, then compare inside a role cohort.
+8. Never score engineers on one per-person metric. The SPACE authors list "one metric tells everything" as a myth.
+9. Safest design: opt-in, self-comparison first, team boards, short seasons, a visible formula, "how to improve" guidance, and a hard wall between the game and pay or appraisal.
+10. Legal: a named employee ranking is likely to need works council consent in Germany, a DPIA and transparency under GDPR, and may be Annex III high-risk under the EU AI Act (from 2 Dec 2027). India: no specific rule found, DPDP Act 2023 general duties apply.
+
+### 2. Findings by question
+
+### Q1. Does workplace gamification work?
+
+| Source | Type | Finding | Status |
+|---|---|---|---|
+| Hamari, Koivisto, Sarsa 2014 (HICSS) | Review, 24 studies | Mostly positive, but depends on context and the users | VERIFIED |
+| Koivisto & Hamari 2019 (Int. J. Info. Mgmt) | Review, 819 studies | Leans positive, "the amount of mixed results is remarkable", the authors call the 2014 review modest | VERIFIED |
+| Sailer & Homner 2020 (Educ. Psych. Review) | Meta-analysis, learning | Cognitive g = .49 (k=19), motivational g = .36 (k=16), behavioural effect not retrieved. Motivational and behavioural effects were less stable in high-rigor studies. Fiction and mixing competition with collaboration helped behaviour outcomes | VERIFIED (behavioural g: UNVERIFIED) |
+| Mollick & Rothbard 2014 "Mandatory Fun" | Field experiment, 200+ salespeople, plus lab | With consent, games raised positive affect. Without it, they lowered it. Consent came from legitimation and a sense of individual agency. Wharton summary: no sales gain overall and some drop for non-consenters | VERIFIED |
+| Cardador, Northcraft, Whicker 2017 (Human Resource Mgmt Review) | Theory | Argues effects depend on design and on fit to the work. Details | MEMORY |
+| Landers, Bauer, Callan 2017 | Experiment on leaderboards | Leaderboards work through goal setting: they raise performance when they give a clear, specific, hard goal. Details | MEMORY |
+
+Reading: the education meta-analysis is the best effect-size evidence, and it does not transfer straight to adult work. No result I found shows a large, robust gain in knowledge-worker output from points and badges.
+
+### Q2. Rank feedback and leaderboards in field experiments
+
+| Study | Setting | Result | Status |
+|---|---|---|---|
+| Barankay, "Rank Incentives" | Furniture salespeople, n=1,754, randomized | Removing rank feedback raised sales about 11% (0.1 SD). Effect was in men only. Leaders grow complacent ("already No. 1") | VERIFIED |
+| Barankay (crowd-sourcing task) | Online workers | Those told their rank were less likely to return and less productive than a control | VERIFIED (through summary) |
+| Ashraf and Bandiera-linked work | Sweater factory | Private rank had no effect. Public rank cut productivity, driven by high-ranked workers | VERIFIED (through summary, exact citation UNVERIFIED) |
+| Azmat & Iriberri 2010 (J. Public Econ.) | School, natural experiment | Telling students their grade against the class average raised grades about 5%, across the whole distribution. The gain vanished when the feedback stopped | VERIFIED |
+| Blanes i Vidal & Nossol 2011 (Mgmt Sci.) | Firm personnel records | Rank feedback without prizes raised output. Search failed. Details | UNVERIFIED |
+| Charness, Masclet, Villeval 2014 (Mgmt Sci., "dark side of competition for status") | Lab, real effort | Learning relative standing raised effort. Some paid to sabotage others or inflate their own rank. Strong group identity cut sabotage | VERIFIED |
+| Bandiera, Barankay, Rasul (team incentives and rank) | Fruit farm | Not searched | UNVERIFIED |
+| Disengagement at bottom ranks | | The crowd-sourcing result above and the sweater result point that way. No large field study of "bottom of a leaderboard" found | PARTIAL |
+
+When public rank helps: simple repeated tasks, a clear and measurable objective, a close race, a short horizon, and a population that opted in. When it hurts: leaders coast, low ranks quit, outcome is not fully in the person's control, rank is public and permanent, and quality is not measured. Gender and personality moderate it (Barankay: men only).
+
+### Q3. Real company cases
+
+| Case | What happened | Lesson | Status |
+|---|---|---|---|
+| Wells Fargo 2016 | Aggressive cross-sell goals. USD 185M fine, about 5,300 fired (2011 to Mar 2016). Later estimates about 3.5M improper accounts. Regulator said the pay plan enabled the abuse and the bank did not monitor it | Hard targets plus pay equals fraud | VERIFIED (news) |
+| Microsoft stack ranking | Ended Nov 2013. A 2012 Vanity Fair article quoted engineers describing sabotage of colleagues | Forced ranking punishes collaboration | VERIFIED (through secondary source) |
+| GE, Adobe, Deloitte | Dropped forced or annual ratings (Adobe 2012, GE 2015, Deloitte 2014 study: 58% of executives called performance management a waste of time) | Ranking people is costly, weak at improving them | VERIFIED (through SHRM summary) |
+| Amazon FC Games (2019, expanded 2021) | Mini-games with points and badges on workstations. Amazon said it does not penalize non-players. Workers were mixed: some liked the break, some feared tracking | Reaction depends on trust that it is not surveillance | VERIFIED (news) |
+| Disneyland Anaheim hotel laundry (2011) | Monitors ranked workers by name and speed. Workers called it the "electronic whip". Reports of skipped breaks, stress, injuries (union claim) | Named speed rankings read as surveillance | VERIFIED (secondary, LA Times original not read) |
+| GitHub streaks (May 2016) | Streak counters removed without announcement, during a profile redesign. Critics said the graph rewards activity on many days. A research paper finds behaviour changed after removal | Streaks reward quantity and cause unhealthy habits. GitHub's own reason: UNVERIFIED | VERIFIED (partly) |
+| Google OKRs | Grade 0.0 to 1.0, 0.6 to 0.7 is the "sweet spot" for aspirational goals. Committed goals aim for 1.0. Re:Work says do not use OKRs for reviews. Bock said an earlier OKR-to-pay link led to gaming | Keep goals apart from pay | VERIFIED (through secondary sources) |
+| CNIL v Amazon France Logistique (Dec 2023) | EUR 32M fine under GDPR for scanner-based performance monitoring seen as excessively intrusive and putting "disproportionate pressure" on staff | Fine-grained individual speed tracking is a legal risk | VERIFIED. Appeal: Conseil d'Etat 23 Dec 2025 found an error of assessment on one point. Final outcome UNVERIFIED |
+| Sales gamification vendors (Ambition, Spinify, SalesScreen, Hoopla, Zoho Motivator, Salesforce) | Vendor case studies claim uplift. I found no independent peer-reviewed test | Treat as vendor claims | UNVERIFIED (not searched) |
+| Peer recognition (Bonusly, Kudos) | Not searched. Evidence is vendor-led | | UNVERIFIED |
+| Duolingo streaks, Stack Overflow reputation | Non-work references. Not searched | | UNVERIFIED |
+
+### Q4. Fair scoring across different roles
+
+- **Attainment against own target.** Quota attainment is the sales standard. It makes a 90% attainer in a hard territory comparable to a 90% attainer in an easy one only if targets are set fairly. Most fairness risk sits in target setting. [MEMORY]
+- **Within-cohort percentile or z-score.** Fair when cohorts are comparable and large enough (rule of thumb: 8 or more, UNVERIFIED). Percentiles force a bottom, which is the stack-ranking problem. Do not show a percentile to the person in a small cohort.
+- **Personal best and trend.** Compares you to you. Avoids social-comparison harm. Azmat and Iriberri show relative feedback helps while shown, but that is school evidence.
+- **Team scores.** Good for roles with shared outcomes. The Charness result suggests group identity reduces sabotage.
+- **Calibration.** Managers review outliers. Ratings calibration is common in HR practice, but its fairness evidence is mixed [MEMORY].
+- **Role metric norms** [MEMORY unless noted]:
+  - Sales: quota attainment, pipeline coverage, win rate, cycle length.
+  - Marketing: pipeline sourced and influenced, campaign results against plan, cost per qualified lead.
+  - Engineering: DORA team measures (deployment frequency, lead time, change failure rate, recovery time). SPACE has five dimensions: satisfaction and well-being, performance, activity, communication and collaboration, efficiency and flow. Its authors list "one productivity metric can tell us everything" as a myth, and say context matters. VERIFIED.
+  - Support: CSAT, first response and resolution time, reopen rate.
+- **Goodhart and Campbell.** When a measure becomes a target it stops measuring well. Work examples: Wells Fargo accounts, GitHub single-commit days (VERIFIED above), lines of code, tickets closed by splitting tickets, deals pulled forward into the quarter.
+- **Stopping gaming.** Pair every volume measure with a quality measure (deal kept, PR reverted, ticket reopened). Cap rewards for volume. Audit random samples. Keep rules visible. Make the score unusable for pay, so gaming has nothing to win.
+
+### Q5. Design patterns the evidence supports
+
+| Choice | Evidence-based leaning | Basis |
+|---|---|---|
+| Opt-in vs mandatory | Opt-in, with a clear why and a way out | Mollick & Rothbard (VERIFIED) |
+| Self vs social comparison | Self first. Social comparison optional | Barankay, sweater factory (VERIFIED) |
+| Top N vs full ranking vs near you | Full public rank is the riskiest. Top N shows the leader a ceiling and shames no one. A band "near you" is plausible but I found no direct test | UNVERIFIED for "near you" |
+| Team boards | Reduce sabotage and bottom-rank shame | Charness (VERIFIED) |
+| Time-boxed seasons | Resets leaders' complacency and gives low ranks a fresh start. Supported by theory, no field test found | Reasoning, not test |
+| Recognition and badges | Low harm. Effect small | Sailer & Homner (VERIFIED) |
+| Formula transparency | Needed for legitimacy and for GDPR. Legitimation drives consent | Mollick & Rothbard (VERIFIED) |
+| "How to improve" guidance | Fits goal-setting theory: specific, hard goals, with feedback. The Landers result is MEMORY | |
+| Separate from pay and appraisal | Strongly supported by cases | Google, Wells Fargo, Microsoft (VERIFIED) |
+
+Self-determination lens: autonomy (opt-in, own goals), competence (clear feedback, how to improve), relatedness (team boards, recognition). Rankings and pay links undermine autonomy and relatedness. SDT as a framework is MEMORY.
+
+### Q6. Law and works councils (not legal advice)
+
+- **EU AI Act.** Annex III treats AI that monitors and evaluates worker performance and behaviour as high-risk (I recall this as Annex III point 4(b), not re-checked, UNVERIFIED). The Digital Omnibus moved the application date for Annex III systems from 2 Aug 2026 to 2 Dec 2027. One source says the Council approved it on 29 Jun 2026, and a law firm update of July 2026 calls it final. VERIFIED. A plain arithmetic score from rules may fall outside "AI system", an AI-generated score or ranking is more likely inside. Needs counsel.
+- **GDPR.** Employee scores are personal data. Needs a lawful basis (consent is weak in employment, so expect legitimate interest), transparency (Arts 12-14), data minimisation, and likely a DPIA [MEMORY]. Art. 22 limits decisions based solely on automated processing with legal or similarly significant effect, so a score must not feed hiring, pay or firing without human review [MEMORY]. The CNIL fine above shows regulators act on performance tracking.
+- **Germany.** BetrVG section 87(1) no. 6 gives the works council a co-determination right over technical systems designed to monitor behaviour or performance. The BAG held software counts (1 ABR 6/94, VERIFIED through summary) and individualisable data is the key test (1 ABR 45/11, VERIFIED through summary). I found no ruling about leaderboards specifically. UNVERIFIED. In practice a named ranking would need a works agreement where a council exists.
+- **France.** CNIL guidance on employee rankings: not found beyond the Amazon decision. French law also requires informing and consulting the CSE before monitoring tools [MEMORY].
+- **India.** No specific rule on employee leaderboards found. The Digital Personal Data Protection Act 2023 applies general duties (notice, purpose limits), though rules phasing is UNVERIFIED. Confirmed only as "nothing specific found", not as "none exists".
+
+### 3. Design rules
+
+**Do**
+1. Make it opt-in, and let people leave without cost. (Mollick & Rothbard)
+2. Default to a private view of your own score and trend. (Barankay, sweater-factory result)
+3. Compare each person to their own role target and past self. (Quota attainment practice, Azmat & Iriberri)
+4. Show team boards and recognition on the public surface. (Charness: group identity reduces sabotage)
+5. Pair every volume measure with a quality measure. (Wells Fargo, GitHub streaks)
+6. Show the full formula and the data behind each point. (Mollick & Rothbard, GDPR Arts 12-14)
+7. Show "what moves your score next" for each person. (Goal-setting theory, Landers: MEMORY)
+8. Run short seasons with reset and leave old scores behind. (Barankay complacency, reasoning)
+9. Keep the score away from pay, ratings and firing, in code and in written policy. (Google, Microsoft, Wells Fargo)
+10. Audit for gaming by sampling and by outlier alerts. (Goodhart cases above)
+11. Consult employee representatives before launch where law requires. (BetrVG 87(1) no. 6)
+
+**Do not**
+1. Do not rank all staff in public by default. (Sweater factory, crowd-sourcing, Disneyland)
+2. Do not use one number per engineer. (SPACE)
+3. Do not rank different roles on one raw scale. (Role norms)
+4. Do not use streaks that punish a missed day. (GitHub 2016)
+5. Do not force a bottom percentile. (Microsoft)
+6. Do not hide bottom-rank people's data. Do not show them a shame row. (Charness, Disneyland)
+7. Do not let an automated score decide hiring, pay or dismissal alone. (GDPR Art 22)
+8. Do not track fine-grained speed per person without need. (CNIL v Amazon)
+9. Do not claim vendor uplift figures as proof. (No independent evidence found)
+
+### 4. Proposed fair-scoring model for mixed roles (SYNTHESIS, not from a single study)
+
+**Principle:** score each person against their own plan, inside their role, with a quality gate, and compare ranks only within a role cohort, and only if the person opts in.
+
+1. **Role scorecard.** Each role has 3 to 5 measures from the role norms above. Weights are visible. Each measure has an outcome part (for sales: quota attainment) and a quality part (for sales: revenue kept, no refunds). Engineering uses team-level delivery measures plus personal contribution evidence, never a single count.
+2. **Attainment, not raw volume.** For each measure, attainment = actual / own target, capped (for example at 120%) so volume cannot dominate. Targets come from the existing goals and measures, and are set by the person and manager.
+3. **Quality gate.** The score is multiplied or capped by a quality factor. A fall in quality cuts the score faster than volume adds to it.
+4. **Score = weighted attainment (0 to 100).** The headline is the person's own score and trend against their last season. This is the default view.
+5. **Cohort view (opt-in).** Within a role cohort of enough size, show the band (top third, middle, rest) or "people near you", not the full list. Below the minimum cohort size, show nothing. No cross-role ranking.
+6. **Team and cross-role view.** Cross-role comparison happens only at team level: team goal attainment. This is fair because every team uses its own targets.
+7. **Seasons.** Quarterly seasons. Each starts fresh. Badges record effort and quality (for example, "closed the loop on all reviews"), not rank.
+8. **Explain and improve.** Each score card lists the top two gaps and the evidence rows behind them, with the likely next step.
+9. **Wall.** A flag in the data model marks the score "not for appraisal". Pay, rating and firing screens never read it. Add an automated test for that (test fence). An audit log shows who viewed whose score.
+10. **Governance.** Written purpose, DPIA, works council or employee-representative consultation by market, review of the formula each season, and a review for gaming. An appeal path lets a person contest wrong evidence.
+11. **Open points for the founder.** Is ranking needed at all, or is self-score plus team board enough? The evidence says self-score plus team board carries the least risk. Pilot with one willing team before wide launch, and measure engagement of the bottom third explicitly.
+
+### 5. Sources
+
+Peer-reviewed or first-hand
+- Sailer & Homner 2020: https://link.springer.com/article/10.1007/s10648-019-09498-w
+- Hamari, Koivisto, Sarsa 2014: https://research.aalto.fi/fi/publications/does-gamification-work-a-literature-review-of-empirical-studies-o/
+- Koivisto & Hamari 2019 (summary page): https://webpages.tuni.fi/gamification/2019/06/24/the-rise-of-motivational-information-systems-a-review-of-gamification-research/
+- Mollick & Rothbard, Mandatory Fun: https://papers.ssrn.com/abstract=2277103
+- Barankay, Rank Incentives: https://repository.upenn.edu/bepp_papers/75
+- Barankay interview: https://knowledge.wharton.upenn.edu/article/why-its-sometimes-better-not-to-tell-employees-where-they-stand/
+- Azmat & Iriberri 2010: https://econpapers.repec.org/RePEc:eee:pubeco:v:94:y:2010:i:7-8:p:435-452
+- Charness, Masclet, Villeval (IZA DP 5034): https://docs.iza.org/dp5034.pdf
+- SPACE of developer productivity (ACM Queue / CACM): https://queue.acm.org/detail.cfm?id=3454124
+- GitHub streaks and gamification study (arXiv): https://arxiv.org/abs/2006.02371
+- BAG 1 ABR 6/94: https://www.anwalt24.de/urteile/bag/1994-07-26/1-abr-6_94
+- BAG 1 ABR 45/11: https://www.bundesarbeitsgericht.de/?p=1148298
+
+Press, law-firm and secondary
+- Wells Fargo fine (NPR): https://www.npr.org/2016/09/08/493157959/wells-fargo-ordered-to-pay-185-million-fine-over-unauthorized-accounts
+- Microsoft ends stack ranking (Computerworld): https://www.computerworld.com/article/1390584/microsoft-abandons-employee-ranking-system.html
+- Annual review trend (SHRM): https://www.shrm.org/topics-tools/news/employee-relations/annual-performance-review-dead
+- Amazon warehouse games (Engadget): https://www.engadget.com/2019/05/22/amazon-warehouse-games/
+- Disneyland "electronic whip" (Consumerist): https://consumerist.com/2011/10/21/disneyland-hotel-workers-face-electronic-whip/
+- GitHub blog on the 2016 profile change: https://github.blog/2016-05-19-more-contributions-on-your-profile/
+- Google OKR grading summary (WhatMatters): https://www.whatmatters.com/okrs-explained/grading-okrs
+- CNIL v Amazon France Logistique: https://cnil.fr/en/employee-monitoring-cnil-fined-amazon-france-logistique-eu32-million
+- AI Act delay (Cloud Security Alliance note): https://labs.cloudsecurityalliance.org/research/csa-research-note-eu-ai-act-omnibus-vii-deadline-delay-20260/
+- AI Act omnibus finalised (Orrick): https://www.orrick.com/ja-JP/Insights/2026/07/EU-AI-Act-Update-Digital-Omnibus-Finalizes-8-Compliance-Changes
+
+Not checked this session: Cardador et al. 2017, Landers et al. 2017, Blanes i Vidal & Nossol 2011, Bandiera et al., vendor evidence, Bonusly and Kudos, GDPR Art 22 text, Annex III wording, India DPDP details.
