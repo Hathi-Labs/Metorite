@@ -72,10 +72,13 @@
 -- ── The rule (the rule of 471 and 472) ──────────────────────────────────────
 --
 -- The function checks only a write that sets the link: an INSERT, or an
--- UPDATE that changes the key or the org. A NULL key passes. An UPDATE that
--- keeps the link and the org passes with no lookup. A cascade runs such
--- UPDATEs: the delete of a recording runs `ON DELETE SET NULL` as an UPDATE
--- of its segments. Task 2324 proved that a refusal on each UPDATE breaks a
+-- UPDATE that names the key in its SET list (`UPDATE OF <key>`). An UPDATE
+-- that changes only the org never calls it, and for the app role the
+-- WITH CHECK of the org policy refuses that UPDATE. A NULL key passes. An
+-- UPDATE that keeps the link and the org passes with no lookup. A cascade
+-- runs UPDATEs that the function lets through: the delete of a recording
+-- runs `ON DELETE SET NULL` as an UPDATE of its segments, and the NULL key
+-- passes. Task 2324 proved that a refusal on each UPDATE breaks a
 -- delete, and the R8 file proves it here too (its mutation M2b). The column
 -- list skips the call for an UPDATE of another column, and the body skips a
 -- `SET <key> = <key>` of the same value. So a row that already links two
