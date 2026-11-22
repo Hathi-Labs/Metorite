@@ -25,6 +25,13 @@ untrusted frame (§3.5). Two paths are not covered: the repo `.mcp.json` server
 of a Copilot agent, and the gateway's Studio preview client
 (`connections/mcp_tools.py`). Fence: `test_mcp_result_untrusted_frame.py`.
 
+**Task 3896 is BUILT, 2026-11-22, with no flag.** On the same path, a
+server-side error of an MCP tool reaches the model as text, not as "Error:
+Function failed." (§3.5). The text starts with `Refused:` and names the tool.
+The server's redacted words sit in one `MCP ERROR` block of the frame. The
+gate logs one `mcp.call_error` line, and a transport fault keeps its old path.
+Fence: `test_mcp_tool_error_text.py`.
+
 **CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
 `McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
 days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
@@ -321,6 +328,24 @@ then call it". The chat needs that recipe.
   Metorite writes stays outside the frame. The frame changes no card and
   marks no session, so MCP-NC1 stays. Fences:
   `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
+- **The error of a tool is data too** (task 3896, 2026-11-22). MAF raises on
+  an `isError` answer and on a JSON-RPC error of the server. Before, the model
+  then read only "Error: Function failed.", and it could not fix its call. The
+  gate now gives text that starts with `Refused:` and names the server and the
+  tool. The server's words sit in one `MCP ERROR` block. A `Next:` line after
+  the END line tells the model to fix its arguments and try once more.
+- **What the error text removes.** The gate removes each link, key, token and
+  header value first, and then it cuts the words to 600 characters. It also
+  removes each value that the run holds for the server: the header values and
+  the key in the server URL. The `mcp.call_error` line holds the server, the
+  tool, the class, the JSON-RPC code and a reason of 120 characters. The
+  reason masks each argument value too. The error marks no session, as an
+  answer marks none.
+- **What keeps the old path.** A timeout, a closed or lost session, an HTTP
+  status and a fault of the connect still raise, so the model reads "Error:
+  Function failed.". The map of `failure_log.mcp_error_code` decides this. The connect
+  path of rule 9 (`_watch_status` and the two marks) does not change. Fence:
+  `test_mcp_tool_error_text.py`.
 - **What sits after the END line.** Of the lines after a server's answer,
   only the compute marker, in its exact shape, sits after the END line. With
   `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the frame. This is a
