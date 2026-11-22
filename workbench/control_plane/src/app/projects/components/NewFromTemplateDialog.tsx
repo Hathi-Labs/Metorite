@@ -9,14 +9,15 @@
  * it. A blank project asks for a name only. A refusal of the route shows in
  * place, with its next step, and the choices stay.
  *
- * Drawn from the house primitives: `Modal`, `Button`, `Input`, `Select`.
+ * Drawn from the house primitives: `Modal`, `Button`, `Input`, `SelectButton`.
  */
 
 import { useId, useMemo, useState } from "react";
 
 import Button from "@/components/ui/Button";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import SelectButton from "@/components/ui/SelectButton";
 
 import type { ProjectRow } from "../lib/api";
 import {
@@ -89,24 +90,22 @@ function PickerForm({
         }}
       >
         <div className="flex flex-col gap-1">
-          <label htmlFor={`${ids}-from`} className="font-medium text-foreground">
+          <span className="font-medium text-foreground">
             Start from
-          </label>
-          <Select
-            id={`${ids}-from`}
-            inputSize="md"
-            autoFocus
+          </span>
+          <SelectButton
+            label="Start from"
             value={choice}
+            options={[
+              { value: BLANK_CHOICE, label: `Blank ${noun}` },
+              ...(templates ?? []).map((t) => ({ value: t.id, label: templateOptionLabel(t) })),
+            ]}
+            onChange={setChoice}
+            defaultValue={BLANK_CHOICE}
             disabled={templates === null}
-            onChange={(e) => setChoice(e.target.value)}
-          >
-            <option value={BLANK_CHOICE}>Blank {noun}</option>
-            {(templates ?? []).map((t) => (
-              <option key={t.id} value={t.id}>
-                {templateOptionLabel(t)}
-              </option>
-            ))}
-          </Select>
+            widthClass="w-full"
+            layer="top"
+          />
           {templates === null ? (
             <p className="text-muted-foreground">Loading templates…</p>
           ) : templates.length === 0 ? (
