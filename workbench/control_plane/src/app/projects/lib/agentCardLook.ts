@@ -30,6 +30,14 @@
  */
 
 import {
+  NOT_REPORTED,
+  type Place,
+  hostKindIcon,
+  hostKindWord,
+  placeKind,
+  placeText,
+} from "./agentPlace";
+import {
   type AgentPillFacts,
   agentPillText,
   asAgentState,
@@ -86,4 +94,52 @@ export function agentCardLook(
       // "stopping" keeps the card as it is. The pill says "Stopping".
       return NO_AGENT_LOOK;
   }
+}
+
+/* ── The place line of the run panel (WS-MCP SW-106) ─────────────────────── */
+
+/** What the run panel and the card say about where the session runs. */
+export interface AgentPlaceLook {
+  /** The icon of the kind of machine. */
+  icon: string;
+  /** "Machine: VJ laptop (Computer) · Model: Sonnet 5.5". */
+  line: string;
+  /** The same facts in two parts, for a tip. */
+  machine: string;
+  model: string;
+  /** True when the session sent no machine, no kind and no model. */
+  none: boolean;
+}
+
+/** The facts of a run that carry its place. Each value is untrusted text. */
+export interface AgentPlaceFacts {
+  agent_host?: unknown;
+  agent_host_kind?: unknown;
+  agent_model?: unknown;
+}
+
+/**
+ * One line for the run panel: the machine with its kind, then the model. A
+ * value that the agent did not send reads "Not reported". The line never
+ * holds a network address. The run read gives no box proof, so the line makes
+ * no "checked" claim. The Map does (`host_source` of the map read).
+ */
+export function agentPlaceLine(facts: AgentPlaceFacts): AgentPlaceLook {
+  const place: Place = {
+    host: placeText(facts.agent_host),
+    kind: placeKind(facts.agent_host_kind),
+    source: null,
+    model: placeText(facts.agent_model),
+  };
+  const name = place.host ?? NOT_REPORTED;
+  const kind = place.kind ? ` (${hostKindWord(place.kind)})` : "";
+  const machine = `${name}${kind}`;
+  const model = place.model ?? NOT_REPORTED;
+  return {
+    icon: hostKindIcon(place.kind),
+    machine,
+    model,
+    line: `Machine: ${machine} \u00b7 Model: ${model}`,
+    none: !place.host && !place.kind && !place.model,
+  };
 }

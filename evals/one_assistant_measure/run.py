@@ -810,6 +810,13 @@ def _system_one_seam(mp: Any) -> None:
     mp.setattr(routed, "routing_is_on", routing_is_on)
 
 
+#: TS-ORD. The seconds that a scripted turn may take. The first turn of a process
+#: loads the orchestrator, the registry and the model client: 20 s on a quiet
+#: PC, and over 60 s on a PC that runs other work. There is no network in a
+#: scripted run, so a long limit costs nothing and a short one is a flake.
+SCRIPTED_TURN_TIMEOUT = 300.0
+
+
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
@@ -830,6 +837,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     out (:func:`cap_sends`), and the row says ``capped``.
     Returns one row for each turn.
     """
+    if router is None:
+        timeout = max(timeout, SCRIPTED_TURN_TIMEOUT)
     from acb_common import get_settings
 
     from tests.unit._native_maf_harness import load_agent_module
@@ -907,6 +916,27 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         if not live:
             harness.models = models if models is not None else (
                 scripted_models(sc, arm, True) if mirror_prod else scripted_models(sc, arm))
+            # TS-ORD: a scripted run reaches no database. The session load of a
+            # native run reads the chat rows, and a PC with a stale dev database
+            # on a port made each scripted turn stall until the turn timeout.
+            # The answer is the one of a database with no chat row: no session,
+            # the text history, no save. Fence: ``test_one_assistant_measure``.
+            from orchestrator import native_session_store as nss
+
+            harness._mp.setattr(
+                nss, "read_state", lambda *a, **k: nss.LoadState(chat_exists=False))
+            # The member's access read is the second database reach. With no
+            # database it fails closed (``is_active=False``), and CI runs that
+            # way. On a PC with a stale dev database it waited for the turn
+            # timeout instead. The pin answers what CI answers.
+            import acb_auth
+            from acb_auth import access as access_mod
+
+            async def _no_access(*a: Any, **k: Any) -> Any:
+                return access_mod.EffectiveAccess(is_active=False)
+
+            harness._mp.setattr(acb_auth, "resolve_access", _no_access)
+            harness._mp.setattr(access_mod, "resolve_access", _no_access)
         member = Member()
         member.on_discard = gateway.trash_draft
         history = [dict(h) for h in sc.history]

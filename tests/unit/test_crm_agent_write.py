@@ -61,6 +61,16 @@ from tests.unit._crm_agent_fakes import (
     writes,
 )
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _M = load_agent_module("crm_assistant_agent_write")
 
 _USER = "sales@fracktal.in"
@@ -849,7 +859,7 @@ async def test_the_write_itself_carries_the_acting_user(
     assert mutations, f"{tool} issued no write"
     for call in mutations:
         assert call["headers"]["X-User-Email"] == _USER
-        assert call["headers"]["Authorization"].startswith("Bearer ")
+        assert call["headers"]["Authorization"] == f"Bearer {_INTERNAL}"
 
 
 @pytest.mark.parametrize(

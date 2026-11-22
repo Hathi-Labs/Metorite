@@ -280,8 +280,9 @@ MODULE_PREFIX = "module:"
 async def module_field_defs(module: str, org: str | None = None) -> list[FieldDef]:
     """The field definitions of a mirrored module, or 404 ``unknown_module``.
 
-    The module check of ``modules.py`` runs first, so a name outside the
-    mirrored set never reaches a statement. The import is local because
+    The one resolver of ``modules.py`` (``resolve_module``) runs first. A
+    label gives its API name (CRM-Q34-12), and a name outside the mirrored
+    set never reaches a statement. The import is local because
     ``modules.py`` imports :class:`FieldDef` from here. With *org* on
     ``CRM_FILL_RANK_ORGS``, each definition carries ``fill`` and ``distinct``
     (CRM-Q34-6). *org* is the caller's organization, never request input.
@@ -289,7 +290,7 @@ async def module_field_defs(module: str, org: str | None = None) -> list[FieldDe
     from gateway.routes.crm import modules
 
     async with _tenant_session() as db:
-        modules._require_module(await modules.mirrored_modules(db), module)
+        module = modules.resolve_module(await modules.mirrored_modules(db), module)
         return list(await modules._field_defs(db, module, org))
 
 
@@ -440,7 +441,7 @@ async def search_fields(
         names = list(mirrored)
         if module:
             # The name must be in the mirrored set before any statement.
-            modules._require_module(mirrored, module)
+            module = modules.resolve_module(mirrored, module)
             names = [module]
         by_entity = {modules._mapping().module_entity(n): n for n in names}
         if not by_entity:
