@@ -107,6 +107,24 @@ class TestTheOrder:
         assert again.matched_by == "exact"
         assert again.word is None
 
+    def test_two_copies_of_one_record_keep_more_words_then_the_lower_rung(self):
+        """FIND-2b (the planner, 2026-11-17): of two copies, the one with more
+        words wins. On a tie of words, the lower rung wins. §3.4 and §3.5."""
+        words = ["aroh", "pricing", "plan"]
+        full_near = find.stamped(_hit("a", "Aroh pricing plan"), words, "near",
+                                 word="aroh", as_="arow")
+        part_exact = find.stamped(_hit("a", "Aroh"), words, "exact")
+        assert full_near.covers > part_exact.covers
+        assert find.rung_of(full_near.matched_by) > find.rung_of(part_exact.matched_by)
+        assert company._wins_a_tie(full_near, part_exact)
+        assert not company._wins_a_tie(part_exact, full_near)
+        same_exact = find.stamped(_hit("a", "Aroh"), words, "exact")
+        same_word = find.stamped(_hit("a", "Aroh"), words, "word", word="aroh")
+        assert company._wins_a_tie(same_exact, same_word)
+        assert not company._wins_a_tie(same_word, same_exact)
+        assert not company._wins_a_tie(same_exact, find.stamped(
+            _hit("a", "Aroh"), words, "exact"))
+
 
 class TestTheRoute:
     def test_flag_off_the_hit_keeps_the_keys_of_kr_zero(self, fracktal, recency, find_on):  # noqa: F811

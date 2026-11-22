@@ -455,12 +455,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-06 · WS-46 P6 review round 2
 
-### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
-- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
-  → no hit means open.
-- **Added:** 2026-10-06 · the EM-T11 session
-
 ### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
 - **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
@@ -549,12 +543,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Added:** 2026-10-03 · PR #584 fix round 1
-
-### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
-- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open.
-- **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
 - **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
@@ -682,7 +670,7 @@ line — never reclaim a number by deleting the other entry.
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
-  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -cx customer_console.dump`.
   A zero means no backup on the box holds the Console database, and this is
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
