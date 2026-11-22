@@ -1,19 +1,22 @@
 """Task 3846 — a pm_* key cannot name a row of another tenant (R8).
 
-Migration: the file that adds ``pm_same_org_ref()`` and its 19 attachments.
-This file finds it by its CONTENT, never by number (R1). It was 472 at build
-time.
+Migration: the file that adds ``pm_same_org_ref()`` and its 20 attachments.
+This file finds it by its CONTENT, never by number (R1). The lane booked 472
+at build time. SW-107 merged its own 472 first, so the file became 476 on
+2026-11-22.
 
 **The gap.** A foreign key check ignores RLS. 471 closed the gap for the 29
 attachments of ``pm_organization_from_parent()``. Nineteen more pm_* keys had
 no guard: ``pm_tasks.parent_task_id``, ``type_id``, ``status_id`` and others.
 A session bound to org A could set such a key to the id of a row of org B.
+SW-107 (472) then added a twentieth key, ``pm_agent_runs.dispatched_by_run_id``,
+and the file guards it too.
 
 **What this file proves, as a role that cannot bypass RLS, with two orgs.**
 
 * For EACH attachment of ``pm_same_org_ref``: an INSERT bound to org A that
   names the row of org B is refused with SQLSTATE 23503 and the message of
-  the 472 body. A bypass role then finds no such row. One probe names org A
+  the 476 body. A bypass role then finds no such row. One probe names org A
   explicitly, as the app writes it. One names no org, so the org comes from
   the 161 trigger or from the DEFAULT. That second probe pins the name order:
   the check runs after the 161 trigger fills the org.
@@ -22,7 +25,7 @@ A session bound to org A could set such a key to the id of a row of org B.
 * A NULL key works, for each key where NULL makes a valid row.
 * A superuser that names the row of org B is refused too. The guard compares
   the orgs, and does not rely on RLS to hide the row.
-* The file has 20 transactions: the function, then one for each attachment.
+* The file has 21 transactions: the function, then one for each attachment.
   So a deploy holds the lock of one table at a time, and cannot deadlock with
   a write that takes two of the tables.
 * An UPDATE that sets the key to the row of org B is refused (23503). An
@@ -30,8 +33,8 @@ A session bound to org A could set such a key to the id of a row of org B.
   ``pm_agent_policies`` are left out: their own guard refuses each UPDATE.
 * A row that already links two orgs: an UPDATE of another column works, and
   ``SET <key> = <key>`` works (the rule of 471). An UPDATE that changes the org
-  gets 23503 from the 472 body, not 42501 from RLS.
-* Eleven deletes over the 19 keys still work: each ``ON DELETE SET NULL`` and
+  gets 23503 from the 476 body, not 42501 from RLS.
+* Eleven deletes over the 20 keys still work: each ``ON DELETE SET NULL`` and
   ``CASCADE`` of a guarded key, and the delete of the org.
 * **The fences (R7).** ``test_the_probes_cover_every_attachment`` reads
   ``pg_trigger``: the set of attachments must EQUAL the set of probes.
@@ -172,6 +175,8 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
         "run_id": _RUN, "task_id": _T, "member_email": _ME, "reason": "agent_quiet",
         "seen_activity_at": _NOW}),
     ("pm_agent_runs", "connection_id"): ("agent_connection", _run(connection_id=_CONN)),
+    ("pm_agent_runs", "dispatched_by_run_id"): ("pm_agent_runs",
+                                                _run(dispatched_by_run_id=_RUN)),
     ("pm_agent_runs", "task_id"): ("pm_tasks", _run()),
     ("pm_notifications", "activity_id"): ("pm_activities", {
         "recipient": _ME, "kind": "comment", "task_id": _T, "actor": _ME,
@@ -200,6 +205,7 @@ NULLABLE = sorted([
     ("pm_agent_run_activities", "in_reply_to"),
     ("pm_agent_run_activities", "pm_activity_id"),
     ("pm_agent_runs", "connection_id"),
+    ("pm_agent_runs", "dispatched_by_run_id"),
     ("pm_notifications", "activity_id"),
     ("pm_projects", "archived_root_id"),
     ("pm_tasks", "merged_into_task_id"),
@@ -333,7 +339,7 @@ class TestTheMigration:
 
     def test_each_statement_runs_in_its_own_transaction(self) -> None:
         """No deadlock at deploy: the file holds the lock of one table at a
-        time. 20 blocks: the function, then one block for each attachment."""
+        time. 21 blocks: the function, then one block for each attachment."""
         blocks = _sql_blocks()
         assert len(blocks) == 1 + len(PROBES), len(blocks)
         assert "CREATE OR REPLACE FUNCTION pm_same_org_ref()" in blocks[0]
@@ -344,7 +350,7 @@ class TestTheMigration:
             assert block.startswith(
                 "SET LOCAL lock_timeout = '5s';\nCREATE OR REPLACE TRIGGER "), block
 
-    def test_the_database_runs_the_472_body(self, world) -> None:
+    def test_the_database_runs_the_476_body(self, world) -> None:
         promoted_, _eng, _a, _b = world
         with promoted_.admin_engine.connect() as c:
             src = c.execute(text(
@@ -594,7 +600,7 @@ class TestTheUpdateProbes:
 @pytest.fixture
 def straddling(world):
     """Two rows of org A that already name a row of org B: the shape the gap
-    left before 472. No write can make them now, so the admin writes them with
+    left before 476. No write can make them now, so the admin writes them with
     the triggers off (``session_replication_role = replica``). A task whose
     type is of org B, and a ref whose task is of org B."""
     promoted_, _eng, a, b = world
@@ -644,7 +650,7 @@ class TestTheStraddlingRow:
         assert _as_a(world, "UPDATE pm_tasks SET type_id = type_id WHERE id = :t",
                      {"t": tid}) == 1
 
-    def test_a_change_of_org_with_a_hidden_row_gets_the_472_refusal(
+    def test_a_change_of_org_with_a_hidden_row_gets_the_476_refusal(
             self, world, straddling) -> None:
         """Without the org clause the guard returns in silence, and RLS WITH
         CHECK refuses the row with 42501. The clause gives 23503 first."""
@@ -727,6 +733,9 @@ def _seed_cascade_tree(conn, org: str) -> dict[str, uuid.UUID]:
         one("INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url, "
             "created_by) VALUES (CAST(:org AS uuid), :t, 'url', 'other', :ref, "
             "'https://probe.test/c', :me) RETURNING id", t=t[tk], ref=f"ref-{tk}")
+    # SW-107: R2 names R1 as its dispatcher. A delete of R1 sets it to NULL.
+    one("UPDATE pm_agent_runs SET dispatched_by_run_id = :d WHERE id = :r RETURNING id",
+        d=t["R1"], r=t["R2"])
     t["RA1"] = one("INSERT INTO pm_agent_run_activities (organization_id, run_id, task_id, "
                    "type, actor) VALUES (CAST(:org AS uuid), :r, :t, 'thought', :me) "
                    "RETURNING id", r=t["R1"], t=t["T1"])
@@ -774,7 +783,8 @@ _DELETES: dict[str, tuple[str, tuple[str, ...]]] = {
     "activity": ("pm_activities", ("A1",)),
     # pm_agent_run_activities.in_reply_to.
     "run_activity": ("pm_agent_run_activities", ("RA1",)),
-    # pm_agent_run_activities.run_id and pm_agent_run_strands.run_id.
+    # pm_agent_run_activities.run_id, pm_agent_run_strands.run_id, and the
+    # SET NULL of pm_agent_runs.dispatched_by_run_id on R2.
     "run": ("pm_agent_runs", ("R1",)),
     # pm_agent_runs.connection_id.
     "connection": ("agent_connection", ("CONN",)),

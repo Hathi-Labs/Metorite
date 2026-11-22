@@ -53,6 +53,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 
 from acb_common import get_settings
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from tests.unit.test_agent_run_exclusive import (
     ORIGIN,
@@ -392,10 +393,12 @@ class TestTheDispatcherOnARealDatabase:
 
     async def test_the_foreign_key_alone_does_not_hold_the_organization(
             self, w, app_engine):  # noqa: F811
-        """Why the gateway is the guard (the migration's note on RLS).
-        Postgres checks a foreign key with no row security. So a raw write
-        in the tenant of org A can name a run of org B, which RLS hides from
-        it. Only the gateway's read in the caller's session stops that."""
+        """Postgres checks a foreign key with no row security, so the key
+        alone lets a raw write in the tenant of org A name a run of org B,
+        which RLS hides from it. The gateway's read in the caller's session
+        is the first guard. Task 3846 (migration 476, ``pm_same_org_ref``)
+        added the second: the database now refuses that raw write with
+        23503. A NULL still passes."""
         async with _session(w.p) as call:
             theirs = (await _claim(call, _in_session(w.other, _key()),
                                    _fresh(w, w.org_b, OTHER)))["agent_run_id"]
@@ -405,7 +408,15 @@ class TestTheDispatcherOnARealDatabase:
             seen = c.execute(text("SELECT count(*) FROM pm_agent_runs"
                                   " WHERE id = CAST(:i AS uuid)"), {"i": theirs}).scalar()
             assert seen == 0
-            c.execute(text("UPDATE pm_agent_runs SET dispatched_by_run_id = CAST(:d AS uuid)"
-                           " WHERE id = CAST(:i AS uuid)"), {"d": theirs, "i": mine})
+            sp = c.begin_nested()
+            with pytest.raises(DBAPIError) as caught:
+                c.execute(text("UPDATE pm_agent_runs SET dispatched_by_run_id = CAST(:d AS uuid)"
+                               " WHERE id = CAST(:i AS uuid)"), {"d": theirs, "i": mine})
+            sp.rollback()
             c.execute(text("UPDATE pm_agent_runs SET dispatched_by_run_id = NULL"
                            " WHERE id = CAST(:i AS uuid)"), {"i": mine})
+        orig = caught.value.orig
+        assert getattr(orig, "sqlstate", None) == "23503", orig
+        assert ("pm_agent_runs.dispatched_by_run_id names no pm_agent_runs row of this"
+                " organization") in str(orig), orig
+        assert _dispatcher(w, mine) is None
