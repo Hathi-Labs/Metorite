@@ -12,8 +12,8 @@
 --       insert a child row whose parent id is a meeting of org B. The child
 --       took org A from the column DEFAULT, and RLS accepted it. Each route
 --       loads the meeting under the bound tenant first, so this is defence
---       in depth (R5: never trust the request). 472 (task 3846) closes the
---       same gap for the pm_* keys. This file does not depend on 472, and
+--       in depth (R5: never trust the request). 476 (task 3846) closes the
+--       same gap for the pm_* keys. This file does not depend on 476, and
 --       it does not call `pm_same_org_ref()`.
 --
 -- ── The keys that this file guards (10) ─────────────────────────────────────
@@ -69,7 +69,7 @@
 -- changes only the org of a child is not checked. That is the trade-off of
 -- the list.
 --
--- ── The rule (the rule of 471 and 472) ──────────────────────────────────────
+-- ── The rule (the rule of 471 and 476) ──────────────────────────────────────
 --
 -- The function checks only a write that sets the link: an INSERT, or an
 -- UPDATE that names the key in its SET list (`UPDATE OF <key>`). An UPDATE
@@ -91,7 +91,7 @@
 -- The function compares the org of the named row with the org of the new row
 -- for each role. It does not rely on RLS to hide the row, so a superuser or a
 -- BYPASSRLS role gets the same refusal for a row of another org. It is NOT
--- `SECURITY DEFINER`: the plain function reads as the caller, as 471 and 472
+-- `SECURITY DEFINER`: the plain function reads as the caller, as 471 and 476
 -- do. The lookup names the schema (`public.%I`), so a search_path cannot
 -- redirect it.
 --
@@ -134,7 +134,8 @@
 -- policy change. No database connection site (R5).
 --
 -- The number is taken at build time (R1). The lane booked 473 for task 3845
--- on 2026-11-22, and 472 is booked by task 3846. Check it again at merge.
+-- on 2026-11-22. Task 3846 holds 476 (472 went to SW-107). Check it again at
+-- merge.
 --
 -- Depends on: 01_schema.sql, 95, 118, 120, 121 (the tables), and the
 --   generated phases for `organization_id`.
