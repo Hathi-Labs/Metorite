@@ -1,0 +1,13 @@
+# AF-3b
+
+Tier: STD
+
+Gate: AGENT-SAFE. After AF-3a and AF-2b. **Status: Built dark 2026-11-14 (STU-AF3b, task 3253).** **Files:** `lib/studio/railCounts.ts` (`countSourceFor`, `countLabel`, `pageObject`), `meToken.ts` (`resolveMe`), `useRailCounts.ts`, `railModel.ts` (`visibleRail`, `objectReadable`), `viewBlocks.ts` (`ownListArgs`), `StudioAppFrame.tsx` (`meta`), `package-preview/AppFrame.tsx`. **Rules as built:** A count is one `list` read with `limit: 1`, and it copies the filter of the first table or board of the page. It drops the sort. The label comes from `total`. `total_at_least` shows as 10,000+. An exact 10,000 shows 10,000. A read that loads, fails or is refused shows nothing. The hook reads at most 8 counts through `door.read`, two at a time, keyed with `sourceKey`. A write calls `invalidate(doorPrefix(door))`, so each count reads again. The `me` token of a person filter becomes the email of the session (`useSession`), in lower case. The page read and the count both call `resolveMe`. With no email the count is not read. The page read now also applies the `filter` and `sort` of a table or board view in `source.args`, so a count equals its rows. The list bar adds its filter, and its sort wins. The join holds 8 conditions at most, the view first (`MAX_FILTERS`). A `me` view does not read until the session email is known, and it shows a loading state. So the rail count equals the rows that its page shows. The hide rule: an owner reads every installed object. A viewer reads an object with no `access`, or with a grant that reads `all`. A row whose object is not installed drops out, and so does an emptied section. The rule reads the `access` of the manifest (C8a), and C8b will make the door answer it. **Tests:** `railCounts.test.ts`, `meToken.test.ts`, `useRailCounts.test.ts`, and new cases in `railModel.test.ts`, `viewBlocks.test.ts` and `realDoor.test.ts`. **Open (owner, task 3151):** the count source is the `list` total. The owner may still change it. The saved-view rows with a filter in the URL wait for AF-10b
+
+## What
+
+**Counts and view rows in the rail** (task 3253). Rung 4. A rail row may show a count (§5.5 rule 6). The client reads it through `list` with `limit: 1` and takes its `total`. The `me` token resolves in the browser. A row whose page the viewer cannot read stays hidden (rule 5), by the manifest `access`. A count that the read gives as "at least" (`total_at_least`, from 10,001 records) shows as "10,000+". An exact count of 10,000 shows as 10,000. A row opens its view with its filter in the URL
+
+## Done when
+
+A count equals the rows of its view under the row rules of the viewer (C8). Each count read keeps the 5 s guard. The rail model test holds rule 5

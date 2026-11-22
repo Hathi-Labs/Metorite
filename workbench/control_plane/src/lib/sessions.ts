@@ -45,10 +45,45 @@ export interface ChatSession {
    */
   hasUserMessage?: boolean;
   /**
+   * Task 3564: whether the chat holds the day's brief, from the server's list
+   * (`_IS_BRIEF_SQL` in `routes/chat.py`). Only the server knows it, so only
+   * the merge below sets it. No save sends it: `_syncSessionToDb` and
+   * `_patchSessionInDb` name their fields (fence: `sessionsIsBrief.test.ts`).
+   * Undefined for a chat the server has not listed yet.
+   *
+   * The mark belongs to the chat, not to the reader. A room, or a chat that
+   * the org sees, that holds another member's brief reads true for each
+   * viewer. So a fold of brief chats needs `isOwner` true as well.
+   */
+  isBrief?: boolean;
+  /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
   archivedAt?: string | null;
+  /**
+   * CO-13: the chat that this one continues, from the server's list. Null
+   * says it continues nothing. A null `id` says the member cannot read the
+   * source: the header then says "an earlier chat", with no title and no
+   * link. Only the merge below sets it, so a browser never invents it.
+   */
+  continuedFrom?: { id: string | null; title: string | null } | null;
+  /**
+   * WS-CO CO-11: when THIS member pinned the chat, or null. The server sends
+   * it only while `CHAT_PIN_ORGS` holds the org, and only the caller's own
+   * pin, so a colleague in the same room never reads it. An archived chat
+   * reads null.
+   */
+  pinnedAt?: string | null;
+  /**
+   * WS-CO CO-2b: the topic of the chat for THIS member, or null. The server
+   * sends it only while `CHAT_TOPICS_ORGS` holds the org, and only a topic
+   * that shows to the member: a company topic, or the member's own. A
+   * colleague in the same room never reads it.
+   */
+  topicId?: string | null;
+  /** CO-2b: the name of `topicId`, as the server sends it. */
+  topicName?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +260,10 @@ export function __newPageForTests(): void {
   boundScope = null;
   lastIdentity = null;
   lastMemberScope = null;
+  // CO-2b: a new page has no move of a topic out.
+  topicMoveTurn.clear();
+  topicConfirmed.clear();
+  topicMovesOut.clear();
 }
 
 /** The scope that is bound now, or null. */
@@ -475,13 +514,98 @@ export function isUnresolvedAgent(agentName: string | null | undefined): boolean
   return UNRESOLVED_AGENT_SENTINELS.has((agentName ?? "").trim().toLowerCase());
 }
 
-/** Write to localStorage without letting a QuotaExceededError crash the caller
- *  (the session list / message cache can fill the quota on heavy users). */
-function safeSetItem(key: string, value: string): void {
+/** True for the error that a full storage throws, in each browser's words. */
+export function isQuotaError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  const { name, code } = e as { name?: unknown; code?: unknown };
+  return (
+    name === "QuotaExceededError" ||
+    name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    code === 22 ||
+    code === 1014
+  );
+}
+
+/** The part of a key that marks a cached transcript: `cc-chat::<scope>::msgs::<id>`. */
+const MSGS_MARK = "::msgs::";
+/** One eviction frees at least this share of the cached transcripts. */
+const EVICT_SHARE = 0.25;
+
+/**
+ * Make room in a full storage (production bug, 2026-11-06). A heavy member
+ * kept up to 200 messages of EACH chat here, and nothing removed old ones.
+ * Then the write of a new chat failed, and the dock waited for ever.
+ *
+ * This drops the cached transcripts of the chats updated longest ago. The
+ * bound member's namespace goes first, and other namespaces only by the same
+ * rule. It stops when it has freed `need` characters and a quarter of the
+ * cache, so the next write does not hit the wall again. Postgres holds every
+ * message, and the cache is only for a fast first paint.
+ *
+ * ⚠️ It drops `::msgs::` keys and nothing else. The session list stays. The
+ * send queue (`::queue::`) stays, because it holds words the member has not
+ * sent (see `forgetSession`). `keep` is the key being written, and it stays.
+ * Returns how many caches it dropped. Fence: `sessionsQuota.test.ts`.
+ */
+export function freeChatCacheRoom(keep: string, need: number): number {
+  if (typeof window === "undefined") return 0;
+  let keys: string[];
+  try {
+    keys = keysWhere((k) => k.startsWith(NS_PREFIX) && k.includes(MSGS_MARK) && k !== keep);
+  } catch {
+    return 0;
+  }
+  if (keys.length === 0) return 0;
+  // When each chat was last updated, from the list of its own namespace.
+  const times = new Map<string, Map<string, number>>();
+  const rank = (k: string) => {
+    const at = k.indexOf(MSGS_MARK);
+    const scope = k.slice(NS_PREFIX.length, at);
+    let list = times.get(scope);
+    if (!list) {
+      list = new Map(readList(chatKey("sessions", undefined, scope)).map((s) => [s.id, Date.parse(s.updatedAt) || 0]));
+      times.set(scope, list);
+    }
+    return { key: k, own: scope === boundScope, at: list.get(k.slice(at + MSGS_MARK.length)) ?? 0 };
+  };
+  // The bound namespace first, and the oldest chat first inside each group.
+  const ranked = keys.map(rank).sort((a, b) => (a.own === b.own ? a.at - b.at : a.own ? -1 : 1));
+  const sizes = ranked.map(({ key }) => key.length + (localStorage.getItem(key)?.length ?? 0));
+  const ownTotal = ranked.reduce((sum, r, i) => (r.own ? sum + sizes[i] : sum), 0);
+  const target = Math.max(need, Math.ceil(ownTotal * EVICT_SHARE));
+  let freed = 0;
+  let dropped = 0;
+  for (let i = 0; i < ranked.length && freed < target; i++) {
+    const { key } = ranked[i];
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      continue;
+    }
+    freed += sizes[i];
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/**
+ * THE write of every chat cache. A full storage first frees the oldest
+ * transcripts (`freeChatCacheRoom`), and then the write runs once more. It
+ * never throws: Postgres stays the durable store. True when the value landed.
+ */
+function safeSetItem(key: string, value: string): boolean {
   try {
     localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    if (!isQuotaError(e)) return false;
+  }
+  if (freeChatCacheRoom(key, key.length + value.length) === 0) return false;
+  try {
+    localStorage.setItem(key, value);
+    return true;
   } catch {
-    /* quota exceeded or storage unavailable — Postgres remains the durable store */
+    return false;
   }
 }
 
@@ -737,6 +861,160 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return true;
 }
 
+/**
+ * The member pins a chat, or unpins it (CO-11, `chat_organization.md` §18).
+ * The pin is the member's own, on the server, so it shows on each device. Any
+ * member who can read the chat may pin it. The server refuses an archived
+ * chat (409), and a chat the member cannot read (404). Then the local mark
+ * goes back, so the list never shows what the server refused, and
+ * `onUndo` runs so the list draws again. Returns whether the mark changed here.
+ */
+export function setSessionPinned(id: string, pinned: boolean, onUndo?: () => void): boolean {
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || Boolean(s.pinnedAt) === pinned) return false;
+  if (pinned && s.archivedAt) return false;
+  const before = s.pinnedAt ?? null;
+  s.pinnedAt = pinned ? new Date().toISOString() : null;
+  writeList(sessions);
+  // Two literal requests, so the chat parity fence reads each verb.
+  let sent: Promise<Response>;
+  if (pinned) {
+    sent = fetch(`/api/chat/sessions/${encodeURIComponent(id)}/pin`, { method: "PUT" });
+  } else {
+    sent = fetch(`/api/chat/sessions/${encodeURIComponent(id)}/pin`, { method: "DELETE" });
+  }
+  void sent
+    .then(async (res) => {
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      if (!row) return;
+      if (res.ok) {
+        // The server's time of the pin, so each device orders Pinned alike.
+        const body = (await res.json().catch(() => null)) as { pinnedAt?: string | null } | null;
+        if (body && body.pinnedAt !== undefined && Boolean(row.pinnedAt) === pinned) {
+          row.pinnedAt = body.pinnedAt;
+          writeList(now);
+        }
+        return;
+      }
+      row.pinnedAt = before;
+      writeList(now);
+      onUndo?.();
+    })
+    .catch(() => {
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      if (!row) return;
+      row.pinnedAt = before;
+      writeList(now);
+      onUndo?.();
+    });
+  return true;
+}
+
+/** A topic as the chat names it: its id and its name (CO-2b). */
+export interface SessionTopic {
+  id: string;
+  name: string;
+}
+
+/** The newest move of each chat, so an undo never takes back a later move. */
+const topicMoveTurn = new Map<string, number>();
+
+/** The last topic of each chat that the server confirmed, while a move of it is out. */
+const topicConfirmed = new Map<string, { topicId: string | null; topicName: string | null }>();
+
+/** How many moves of each chat are out. */
+const topicMovesOut = new Map<string, number>();
+
+/**
+ * The member moves a chat into a topic, or to "No topic" with null (CO-2b,
+ * `chat_organization.md` §6). The topic is the member's own, on the server,
+ * so it shows on each device, and the automatic pass never moves it back.
+ * The list draws the move at once. The server answers with its own name of
+ * the topic, and the list takes it. A refusal (404 for a topic or a chat the
+ * member may not use, 409 for an archived chat, 503) or a lost connection
+ * puts the old topic back, and `onUndo` runs so the caller draws again and
+ * says why. Returns whether the mark changed here.
+ *
+ * ⚠️ The undo of a move restores only its own mark (verifier P3-8). A later
+ * move of the same chat wins: an earlier move that fails after it changes
+ * nothing, and `onUndo` does not run. An undo puts back the last topic that
+ * the server confirmed, never the mark of another move that is still out.
+ */
+export function setSessionTopic(id: string, topic: SessionTopic | null, onUndo?: () => void): boolean {
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || (s.topicId ?? null) === (topic?.id ?? null)) return false;
+  // The topic to put back is the last CONFIRMED one (final verifier P3): the
+  // row as the server list left it when no move of this chat is out, or the
+  // answer of a move that the server took. Never the mark of another move
+  // that is still out, so two failed moves in a row put back the first value.
+  if (!(topicMovesOut.get(id) ?? 0)) {
+    topicConfirmed.set(id, { topicId: s.topicId ?? null, topicName: s.topicName ?? null });
+  }
+  topicMovesOut.set(id, (topicMovesOut.get(id) ?? 0) + 1);
+  const mark = topic?.id ?? null;
+  const turn = (topicMoveTurn.get(id) ?? 0) + 1;
+  topicMoveTurn.set(id, turn);
+  s.topicId = mark;
+  s.topicName = topic?.name ?? null;
+  writeList(sessions);
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    const left = (topicMovesOut.get(id) ?? 1) - 1;
+    if (left > 0) {
+      topicMovesOut.set(id, left);
+    } else {
+      topicMovesOut.delete(id);
+      topicConfirmed.delete(id);
+    }
+  };
+  const undo = () => {
+    const before = topicConfirmed.get(id) ?? { topicId: null, topicName: null };
+    settle();
+    // A later move of this chat owns the row now.
+    if (topicMoveTurn.get(id) !== turn) return;
+    const now = getSessions();
+    const row = now.find((x) => x.id === id);
+    if (!row || (row.topicId ?? null) !== mark) return;
+    row.topicId = before.topicId;
+    row.topicName = before.topicName;
+    writeList(now);
+    onUndo?.();
+  };
+  void fetch(`/api/chat/sessions/${encodeURIComponent(id)}/topic`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic_id: topic?.id ?? null }),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        undo();
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as { topicId?: string | null; topicName?: string | null } | null;
+      // The server took this move: it is the confirmed topic now.
+      topicConfirmed.set(id, {
+        topicId: body?.topicId !== undefined ? body.topicId : mark,
+        topicName: body?.topicName !== undefined ? body.topicName : (topic?.name ?? null),
+      });
+      settle();
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      // The server's name, unless a later move already changed the row.
+      if (body && row && (row.topicId ?? null) === (body.topicId ?? null) && body.topicName !== undefined) {
+        row.topicName = body.topicName;
+        writeList(now);
+      }
+    })
+    .catch(undo);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Postgres API helpers (all async, all fire-and-forget safe)
 // ---------------------------------------------------------------------------
@@ -798,7 +1076,12 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       isOwner?: boolean;
       participantCount?: number;
       hasUserMessage?: boolean;
+      isBrief?: boolean;
       archivedAt?: string | null;
+      continuedFrom?: ChatSession["continuedFrom"];
+      pinnedAt?: string | null;
+      topicId?: string | null;
+      topicName?: string | null;
     }>;
 
     const local = readList(key);
@@ -817,10 +1100,26 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // CF-5: a member turn seen here stays true. The server's answer can
       // lag a save by one list, and the fact never goes back to false.
       if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
+      // Task 3564: the server alone knows the brief mark, so its answer wins.
+      if (r.isBrief !== undefined) s.isBrief = r.isBrief;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
+      // CO-13: the server's answer wins. A chat made here a moment ago holds
+      // no mark until this list says what it continues.
+      s.continuedFrom = r.continuedFrom ?? null;
+      // CO-11: a pin made on another device reaches this one. The server
+      // sends the key only with the switch on. Off, the local mark stays,
+      // and the list draws no pin.
+      if (r.pinnedAt !== undefined) s.pinnedAt = r.pinnedAt;
+      // CO-2b: a move made on another device reaches this one, and so does
+      // a topic that the server no longer shows. The server sends the keys
+      // only with the switch on. Off, the local mark stays and draws nothing.
+      if (r.topicId !== undefined) {
+        s.topicId = r.topicId;
+        s.topicName = r.topicName ?? null;
+      }
       if (r.title && shellChatOn()) s.title = r.title;
     }
 
@@ -851,7 +1150,12 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           isOwner: r.isOwner,
           participantCount: r.participantCount,
           hasUserMessage: r.hasUserMessage,
+          isBrief: r.isBrief,
           archivedAt: r.archivedAt ?? null,
+          continuedFrom: r.continuedFrom ?? null,
+          pinnedAt: r.pinnedAt ?? null,
+          topicId: r.topicId ?? null,
+          topicName: r.topicName ?? null,
         });
       }
     }
@@ -934,11 +1238,15 @@ export function getQueue(sessionId: string): string[] {
 export function saveQueue(sessionId: string, queue: string[]): void {
   const key = chatKey("queue", sessionId);
   if (typeof window === "undefined" || !key) return;
+  if (queue.length > 0) {
+    // A full storage frees old transcripts first, so unsent words still land.
+    safeSetItem(key, JSON.stringify(queue));
+    return;
+  }
   try {
-    if (queue.length === 0) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify(queue));
-  } catch (_e) {
-    // Storage quota exceeded — best-effort only.
+    localStorage.removeItem(key);
+  } catch {
+    /* storage off */
   }
 }
 
@@ -961,11 +1269,13 @@ export function getMessages(sessionId: string): PersistedMessage[] {
 export function cacheMessages(sessionId: string, messages: unknown[]): void {
   const key = chatKey("msgs", sessionId);
   if (typeof window === "undefined" || !key) return;
+  let value: string;
   try {
-    localStorage.setItem(key, JSON.stringify(messages));
-  } catch (_e) {
-    /* quota exceeded */
+    value = JSON.stringify(messages);
+  } catch {
+    return;
   }
+  safeSetItem(key, value);
 }
 
 /**

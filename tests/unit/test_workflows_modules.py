@@ -20,6 +20,18 @@ from gateway.routes.workflows.engine.modules import (
 VALID = "def run(inputs):\n    total = sum(inputs.get('values', []))\n    return {'total': total}\n"
 
 
+#: The org of each run here. ``MODULE_RUN_ORGS`` lists it (STU-Q15a), so the
+#: runner tests reach the child. ``test_module_runs_off.py`` fences the switch.
+ORG = "org-modules"
+
+
+@pytest.fixture(autouse=True)
+def _module_runs_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", ORG, raising=False)
+
+
 def _messages(code: str) -> str:
     return " | ".join(v.message for v in validate_module_code(code))
 
@@ -75,7 +87,7 @@ def test_syntax_error_reported_not_raised() -> None:
 
 
 def _run(code: str, inputs: dict[str, Any]) -> dict[str, Any]:
-    return asyncio.run(run_module_code(code, inputs))
+    return asyncio.run(run_module_code(code, inputs, organization_id=ORG))
 
 
 def test_runner_executes_transform() -> None:
@@ -101,7 +113,7 @@ def test_runner_revalidates_before_executing() -> None:
 def test_runner_kills_infinite_loop() -> None:
     code = "def run(inputs):\n    while True:\n        pass\n"
     with pytest.raises(ModuleExecutionError, match="limit"):
-        asyncio.run(run_module_code(code, {}, timeout=2.0))
+        asyncio.run(run_module_code(code, {}, organization_id=ORG, timeout=2.0))
 
 
 def test_harness_blocks_dynamic_import_at_runtime() -> None:

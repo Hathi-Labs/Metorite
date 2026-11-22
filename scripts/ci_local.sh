@@ -4,6 +4,10 @@
 #   bash scripts/ci_local.sh              # the commit at HEAD
 #   bash scripts/ci_local.sh --e2e        # also the browser suite, after the
 #                                         # unit phase (about 20 more minutes)
+#   bash scripts/ci_local.sh --full       # every test, as pr-check does on a
+#                                         # merge. The default is the CIV-2
+#                                         # selection: the tests the diff
+#                                         # against origin/main can affect.
 #   bash scripts/ci_local.sh --ref <ref>  # another commit
 #   bash scripts/ci_local.sh --home       # only the home server
 #   bash scripts/ci_local.sh --pc         # only this PC
@@ -13,8 +17,10 @@
 #         Tailscale (scripts/home_server/). The default lane.
 #   pc    the `metorite-ci` WSL2 distro on this PC.
 # With no lane named, the home server runs it. This PC takes the run when
-# the home server is busy with another run or does not answer. Each lane
-# runs one suite at a time: a suite needs about 2.5 GB per shard.
+# the home server has no room for another run or does not answer.
+# A lane takes SEVERAL runs at once (CIV-6). Each run has its own git
+# worktree, and reserves memory from a slot pool sized from the measured peak
+# per shard: scripts/ci_pc/slots.sh.
 # On the home server itself, the run goes to its local ci user.
 #
 # Why: GitHub builds every job from scratch (2-4 minutes of `uv sync`,
@@ -59,7 +65,8 @@ pc_ok() {
 }
 # ConnectTimeout bounds the wait when the box is off or Tailscale is down.
 home_ok() { w_home true >/dev/null 2>&1; }
-lock_free() { "$1" bash -c 'exec 9>~/.ci.lock; flock -n 9' >/dev/null 2>&1; }
+# Does the lane have room for one more run (the smallest: one shard) now?
+has_room() { "$1" bash -c "$(cat scripts/ci_pc/slots.sh); ci_slot_grant 1 1 >/dev/null" >/dev/null 2>&1; }
 pc_down() {
   echo "The $DISTRO distro on this PC does not answer, or it is not there." >&2
   echo "Check with: bash scripts/ci_pc/doctor.sh   (first time: bash scripts/ci_pc/setup.sh)" >&2
@@ -74,9 +81,9 @@ case "$lane" in
   auto)
     if home_ok; then
       lane=home
-      if ! lock_free w_home && pc_ok && lock_free w_pc; then
+      if ! has_room w_home && pc_ok && has_room w_pc; then
         lane=pc
-        echo "The home server runs another suite, so this PC takes this one."
+        echo "The home server has no room for another suite, so this PC takes this one."
       fi
     elif pc_ok; then
       lane=pc
@@ -93,10 +100,6 @@ case "$lane" in
   self) w() { w_self "$@"; } ;;
 esac
 echo "local CI lane: $lane"
-# One run at a time per lane. Say so, instead of a silent wait.
-if ! lock_free w; then
-  echo "Another local CI run holds the $lane lane. This run waits for it, at most 1 hour."
-fi
 
 sha="$(git rev-parse "$ref")"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || \
@@ -105,7 +108,9 @@ sha="$(git rev-parse "$ref")"
 # The distro's clone fetches from GitHub. A commit GitHub does not have yet
 # travels as a git bundle on stdin: the distro has no mount of C: on purpose.
 git fetch -q origin main
-w bash -lc 'cd ~/metorite && git fetch -q origin'
+# One git writer at a time in the lane's shared clone: runs now overlap.
+GITLOCK='exec 5>~/.ci-git.lock; flock -w 300 5; cd ~/metorite'
+w bash -lc "$GITLOCK && git fetch -q origin"
 if ! git merge-base --is-ancestor "$sha" origin/main; then
   # A bundle carries REFS, not bare commits, so name the commit for a moment.
   # The ref and the inbox file are per run: two sessions that start at once
@@ -118,20 +123,26 @@ if ! git merge-base --is-ancestor "$sha" origin/main; then
   git update-ref "$bref" "$sha"
   git bundle create -q "$tmp" "$bref" --not origin/main
   w bash -c "cat > ~/inbox-$tag.bundle" < "$tmp"
-  w bash -lc "cd ~/metorite && git fetch -q ~/inbox-$tag.bundle $bref; rc=\$?; rm -f ~/inbox-$tag.bundle; exit \$rc"
+  w bash -lc "$GITLOCK && git fetch -q ~/inbox-$tag.bundle $bref; rc=\$?; rm -f ~/inbox-$tag.bundle; exit \$rc"
 fi
 
-# Check out the commit, then run ITS copy of run_suite.sh. One run at a time.
+# The run happens on the lane (scripts/ci_pc/remote_run.sh): its own git
+# worktree of the commit, the CIV-2 selection (or --full), a memory slot, then
+# ITS copy of run_suite.sh. remote_run.sh and slots.sh travel in the command,
+# so the lane keeps no copy that could go stale.
 # Only when there ARE options: `printf ' %q'` with no arguments prints `''`,
 # and run_suite.sh refuses it, so every bare `ci_local.sh` failed at once
 # (reported by a peer session, 2026-10-20).
 args=""
 [ ${#pass[@]} -gt 0 ] && args="$(printf ' %q' "${pass[@]}")"
+# A few tuning variables reach the lane (a test of the slots, a re-measure).
+tune=""
+for v in CI_LANE_LOCK CI_SELECT_BASE CI_SHARD_GB CI_FIXED_GB CI_OTHER_GB; do
+  [ -n "${!v:-}" ] && tune+="export $v=$(printf %q "${!v}")"$'\n'
+done
 rc=0
-w bash -lc "set -e; exec 9>~/.ci.lock; flock -w 3600 9; cd ~/metorite
-  git -c advice.detachedHead=false checkout -q -f $sha
-  git clean -fdxq -e .venv -e node_modules -e .next
-  exec bash scripts/ci_pc/run_suite.sh$args" || rc=$?
+w bash -lc "$tune$(cat scripts/ci_pc/slots.sh scripts/ci_pc/remote_run.sh)
+ci_remote_run $sha$args" || rc=$?
 if [ "$lane" = home ]; then
   echo "The logs are on the home server. Read one with: ssh -p $CI_HOME_PORT $CI_HOME cat <a path above>"
 fi

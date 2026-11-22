@@ -73,22 +73,16 @@ export const CUSTOM_FIELD_PREFIX = "custom.";
 /** The set a view with no stored `shown_fields` means. */
 export const DEFAULT_SHOWN: readonly string[] = [
   "status",
-  // ⚠️ **`type` and `source` are deliberately NOT here**, and an earlier
-  // version of this slice put `type` in on the argument that §9.9.2 asks for
-  // "an Epic distinguishable from a Task at a glance". That argument was
-  // hollow: **nothing in the product writes `pm_tasks.type_id`.** The API
-  // accepts it and the admin routes manage the registry, but no drawer, form
-  // or cell sets one, and `board.ts`'s column-drop arm is unreachable because
-  // `grouping.ts` offers no `type` axis. So there are no Epics to
-  // distinguish.
+  // ⚠️ **`type` and `source` are deliberately NOT here.** The type is now
+  // set in the app (SP-6): the task panel has a Type control, and the board
+  // menu has "Make it an epic". The type still stays out of the DEFAULT set
+  // until the epic page work decides how a row shows an epic. Until then a
+  // project with no typed tasks would show a Type column reading "—" on
+  // every row, and a default CSV with an empty column in it.
   //
   // One vocabulary gates the chip and the TABLE COLUMN together, so "chip on
-  // by default" forced "column on by default" — a Type column reading "—" on
-  // every row, and a default CSV with an empty column in it. That is the
-  // "column of nothing" this slice set out to prevent.
-  //
-  // The chips stay built and cost nothing; they light up the day a type
-  // picker ships. A member who wants either column ticks it in Fields.
+  // by default" forces "column on by default". A member who wants either
+  // column ticks it in Fields.
   "assignees",
   "due_at",
   "importance",

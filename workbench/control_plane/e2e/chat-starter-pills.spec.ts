@@ -152,18 +152,31 @@ async function openHome(page: Page, width: number, height: number, opts: Install
 }
 
 async function openPanel(page: Page) {
-  const toggle = page.locator("[data-assistant-toggle]");
+  // The top-bar toggle is gone (GL-12, 30e72d332). The Ask bar's side-panel
+  // button opens the dock.
+  const toggle = page.getByRole("button", { name: "Open the chat beside the page" });
   await expect(toggle).toBeVisible({ timeout: 60_000 });
-  await toggle.click();
-  await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
+  // A press before the bar hydrates does nothing, so press again while the
+  // button is still there. It leaves the bar once the panel is asked for, so
+  // a press that worked is never repeated. The panel's chunk loads on demand.
+  await expect(async () => {
+    if (await toggle.isVisible()) await toggle.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
 
 async function openSheet(page: Page) {
   const ask = page.locator("[data-ask-tab]");
   await expect(ask).toBeVisible({ timeout: 60_000 });
-  await ask.click();
-  await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet");
+  // MOB-9: Ask opens AND closes the sheet, and a chat-first phone opens the
+  // sheet by itself on landing (CF-2). So tap only while it is not open, and
+  // try again: the landing open can arrive between the check and the tap, and
+  // a tap before the bar hydrates does nothing.
+  await expect(async () => {
+    if ((await ask.getAttribute("aria-pressed")) !== "true") await ask.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }

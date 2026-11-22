@@ -51,6 +51,7 @@ from gateway.routes.projects.core import (
     require_organization,
     resolve_visibility,
     router,
+    transient_as_409,
 )
 from gateway.routes.projects.importer import clickup
 from gateway.routes.projects.importer.bundle import ImportBundle
@@ -496,6 +497,7 @@ async def apply_import_run(
 
 
 @router.post("/import/runs/{run_id}/discard", dependencies=_GATES)
+@transient_as_409
 async def discard_import_run(
     run_id: str,
     user: UserContext = Depends(get_current_user),

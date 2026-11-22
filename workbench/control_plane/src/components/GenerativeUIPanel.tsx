@@ -102,6 +102,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // A closed card. The chat translator saves every custom event on the
   // message, so a reloaded thread carries this one too.
   "confirmation_resolved",
+  // A refused approve (task 3827): saved on the message like the one above.
+  "confirmation_not_done",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",
@@ -122,6 +124,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // An app update cut the run (incident 2026-10-09). The chat draws the
   // "interrupted" notice with Continue for it (`lib/chatRecovery.ts`).
   "run_interrupted",
+  // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
+  // the pill, and the fold must not show the event as data.
+  "chat_continue_offer",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

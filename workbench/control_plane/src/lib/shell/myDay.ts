@@ -27,11 +27,28 @@ import {
 
 // ── The header ──────────────────────────────────────────────────────────────
 
-/** "Good morning" before noon, "Good afternoon" before six, then evening. */
+/**
+ * The ONE table of greetings (PZ-39). Each row is the first hour of a band and
+ * its greeting. A band runs until the next row starts. The last band runs past
+ * midnight until 05:00. The late hours read "Hello", never "Good night",
+ * because "Good night" is a goodbye. The server holds the same table in
+ * `acb_common.today.GREETING_TABLE`.
+ * Fence: `tests/unit/test_greeting_table.py` fails when the two differ.
+ */
+export const GREETING_TABLE: ReadonlyArray<readonly [number, string]> = [
+  [5, "Good morning"],
+  [12, "Good afternoon"],
+  [17, "Good evening"],
+  [21, "Hello"],
+];
+
+/** The greeting for an hour (0 to 23), from `GREETING_TABLE`. */
 export function greeting(hour: number): string {
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  let found = GREETING_TABLE[GREETING_TABLE.length - 1][1];
+  for (const [from, word] of GREETING_TABLE) {
+    if (from <= hour) found = word;
+  }
+  return found;
 }
 
 /**
@@ -116,6 +133,7 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   reminder_due: "Reminder due",
   reminder_check: "Reminder still open",
   reminder_unconfirmed: "Reminder not confirmed",
+  provider_alert: "AI providers",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
@@ -253,8 +271,10 @@ export function appIcon(app: NeedsApp): string {
  * A source that can fail, named by its SOURCE id: the needs sources, and the
  * feed's `calendar` source. The server keys `sources` this way, so
  * `reminders` is not `calendar` (`NEEDS_SOURCE_APP` maps it to its app).
+ * `providers` is the AI vendor alert of the operator's admins (AO-2). It has
+ * no app of the client, so it has its own name below.
  */
-export type FailedSource = NeedsSource | "calendar";
+export type FailedSource = NeedsSource | "calendar" | "providers";
 
 /** What a source's silence can hide, in the member's words. Keyed by source. */
 const MISSING: Readonly<Record<FailedSource, string>> = {
@@ -264,6 +284,7 @@ const MISSING: Readonly<Record<FailedSource, string>> = {
   email: "replies",
   reminders: "reminders",
   calendar: "time blocks",
+  providers: "AI vendor alerts",
 };
 
 /** True when the key is a source this card knows how to word. */
@@ -271,9 +292,13 @@ export function isFailedSource(source: string): source is FailedSource {
   return Object.hasOwn(MISSING, source);
 }
 
-/** The app a source speaks for. A needs source goes through THE map. */
-function appOfSource(source: FailedSource): NeedsApp {
-  return source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source];
+/**
+ * The name of the app a source speaks for. A needs source goes through THE
+ * map. `providers` has no app of the client, so it names itself.
+ */
+function sourceName(source: FailedSource): string {
+  if (source === "providers") return "AI providers";
+  return APP_NAMES[source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source]];
 }
 
 /**
@@ -283,7 +308,7 @@ function appOfSource(source: FailedSource): NeedsApp {
 export function failedLines(sources: Partial<Record<FailedSource, SourceState>>): string[] {
   return (Object.keys(MISSING) as FailedSource[])
     .filter((source) => sources[source] === "failed")
-    .map((source) => `${APP_NAMES[appOfSource(source)]} did not answer, so its ${MISSING[source]} may be missing.`);
+    .map((source) => `${sourceName(source)} did not answer, so its ${MISSING[source]} may be missing.`);
 }
 
 // ── Next actions ────────────────────────────────────────────────────────────

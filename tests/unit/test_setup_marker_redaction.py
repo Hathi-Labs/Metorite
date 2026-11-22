@@ -296,6 +296,6 @@ async def test_the_run_end_extraction_reaches_mem0_and_graphiti_with_no_token(mo
     assert conv and TOKEN in json.dumps(conv), "the probe must carry the marker in"
     await mem0_client.add_memories_background("a@x.test", conv, agent_id="probe")
     await graphiti_client.add_episode(name="agent:probe:a", content=f"my token {MARKER}",
-                                      group_id="a@x.test")
+                                      organization_id="org-test-1")
     assert mem0_seen and TOKEN not in json.dumps(mem0_seen)
     assert graph_seen and TOKEN not in json.dumps(graph_seen, default=str)

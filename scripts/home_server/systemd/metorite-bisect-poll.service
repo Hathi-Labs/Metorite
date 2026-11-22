@@ -1,0 +1,20 @@
+# CIV-5: one poll of the batch runs of main. A user unit of `dev`.
+# The owner installs it. The agent that built it did not.
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/home_server/systemd/metorite-bisect-poll.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now metorite-bisect-poll.timer
+# Set WorkingDirectory to the checkout of the box that holds the repo.
+# Logs: journalctl --user -u metorite-bisect-poll.service
+# The BISECT_RESULT line in the log is for a lane session to post on a task.
+[Unit]
+Description=Metorite bisect poll: name the PR behind a red batch of main (CIV-5)
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+WorkingDirectory=%h/Metorite
+ExecStart=%h/Metorite/scripts/home_server/bisect_poll.sh
+# One bisect holds at most 12 probes of 30 minutes each.
+TimeoutStartSec=6h

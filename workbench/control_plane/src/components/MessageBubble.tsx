@@ -18,6 +18,8 @@ import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedStep
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import ProfileToolCards from "@/components/profile/ProfileToolCards";
+import StudioToolCards from "@/components/studio/StudioToolCards";
+import SkillOfferCard from "@/components/studio/SkillOfferCard";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
@@ -42,12 +44,18 @@ import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
+import { offerPrompt } from "@/lib/studio/skillOffer";
+import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
 import CardAnswerContent from "@/components/CardAnswerContent";
 import { STEER_WAITING, enterSends, isSteered, touchKeyboard } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
+import { PendingChips, SentChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { canSend as canSendEdit, composeMessage, editStart } from "@/lib/chatAttachments";
+import type { PendingFile } from "@/lib/chatAttachments";
+import { parseUploadNote, wordsOfMessage } from "@/lib/chatUpload";
 import Button from "@/components/ui/Button";
 
 /** The only part of a room participant a message bubble needs: a face. */
@@ -97,6 +105,21 @@ function PersonAvatar({
 }
 
 /**
+ * A member's words. A message that ends in the upload note draws its words,
+ * then chips (projects_ai_chat §30.4). A note that does not parse stays text.
+ */
+function UserWords({ content, sessionId }: { content: string; sessionId: string }) {
+  const note = parseUploadNote(content);
+  if (!note) return <p className="whitespace-pre-wrap break-words">{content}</p>;
+  return (
+    <>
+      {note.words && <p className="whitespace-pre-wrap break-words">{note.words}</p>}
+      <SentChips files={note.files} sessionId={sessionId} />
+    </>
+  );
+}
+
+/**
  * Name plate over an agent's turn, used only when the thread has more than one
  * voice in it. Lives in its own component so the avatar map is fetched for the
  * handful of labelled turns rather than once per message bubble in the thread.
@@ -134,6 +157,7 @@ function MessageBubble({
   sessionAgentName,
   entityPills = false,
   taskRefAgent,
+  skillOfferOf,
 }: {
   message: ChatMessage;
   sessionId: string;
@@ -168,6 +192,11 @@ function MessageBubble({
   /** The thread's agent, for the bare `#171` task links (owner report,
    *  2026-10-13). `taskRefsForTurn` decides, by the agent of each turn. */
   taskRefAgent?: string;
+  /** The skill offer of an assistant turn (STU-F6a): the member's message
+   *  just before it (`promptBefore`), and whether the chat is solo on
+   *  positive evidence (`provenSolo`). `AgentChat` passes it, and
+   *  `lib/studio/skillOffer.ts` decides. */
+  skillOfferOf?: { prompt: ChatMessage | null; solo: boolean };
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
@@ -220,7 +249,13 @@ function MessageBubble({
   // reason it refused. A refusal keeps the composer open with the text.
   const [editPending, setEditPending] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
-  const [editText, setEditText] = useState(message.content);
+  const [editText, setEditText] = useState(() => editStart(message.content).words);
+  const [editItems, setEditItems] = useState<PendingFile[]>([]);
+  const openEdit = () => {
+    const e = editStart(message.content, (p) => workspaceFileUrl(sessionId, p));
+    setEditText(e.words);
+    setEditItems(e.items);
+  };
   const editRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-grow the edit textarea + focus when entering edit mode
@@ -259,6 +294,8 @@ function MessageBubble({
   // names next. Ask the task lookup again, so a miss read before the write
   // does not stay text (owner report, 2026-10-19). Only this chat's answers
   // and the cards (`""`) are asked again, never another session's numbers.
+  // TOF-1d: the shell read says whether the org of the member has the offer.
+  const skillOfferShown = useSkillOfferOn();
   useRevalidateOnTools(
     dedupedToolEvents.filter((t) => t.status === "done").length,
     !!message.streaming,
@@ -428,7 +465,8 @@ function MessageBubble({
 
   const handleEditSubmit = async () => {
     if (editPending) return;
-    const trimmed = editText.trim();
+    // The words, then the note of the files that are kept (`composeMessage`).
+    const trimmed = composeMessage(editText, editItems).trim();
     // An unchanged text is a RESEND (owner, task 1653): it takes the same
     // supersede path as a changed one, so the old answer is replaced and the
     // model reads the note of the writes that already ran. Retry cannot do
@@ -449,10 +487,10 @@ function MessageBubble({
   const cancelEdit = () => {
     setEditing(false);
     setEditError(null);
-    setEditText(message.content);
+    openEdit();
   };
   const startEdit = onEditLast && !cardAnswer
-    ? () => { setEditText(message.content); setEditError(null); setEditing(true); }
+    ? () => { openEdit(); setEditError(null); setEditing(true); }
     : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -491,13 +529,13 @@ function MessageBubble({
             {cardAnswer ? (
               <CardAnswerContent answer={cardAnswer} />
             ) : (
-              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              <UserWords content={message.content} sessionId={sessionId} />
             )}
           </div>
           {message.content.trim() && (
             <div className="flex items-center gap-2 mt-1 pl-0.5">
               <MessageActionBar
-                content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
+                content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                 messageId={message.id}
                 role="user"
               />
@@ -548,10 +586,17 @@ function MessageBubble({
                 <ChatSendButton
                   type="button"
                   onClick={() => void handleEditSubmit()}
-                  disabled={!editText.trim()}
+                  disabled={!canSendEdit(editText, editItems)}
                   loading={editPending}
                   label="Send edited message"
                   title="Send edited message"
+                />
+              </div>
+              <div className={editItems.length > 0 ? "pb-2" : undefined}>
+                <PendingChips
+                  items={editItems}
+                  onRemove={(id) => { setEditItems((xs) => xs.filter((x) => x.id !== id)); editRef.current?.focus(); }}
+                  onRetry={() => {}}
                 />
               </div>
               {editError && (
@@ -575,7 +620,7 @@ function MessageBubble({
               {cardAnswer ? (
                 <CardAnswerContent answer={cardAnswer} />
               ) : (
-                <p className="min-w-0 whitespace-pre-wrap break-words">{message.content}</p>
+                <div className="min-w-0"><UserWords content={message.content} sessionId={sessionId} /></div>
               )}
             </div>
             <div className="mt-1 flex items-center justify-end gap-1.5 pr-0.5 text-[10px] text-muted-foreground">
@@ -606,13 +651,13 @@ function MessageBubble({
               {cardAnswer ? (
                 <CardAnswerContent answer={cardAnswer} />
               ) : (
-                <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                <UserWords content={message.content} sessionId={sessionId} />
               )}
             </div>
             <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity">
               {message.content.trim() && (
                 <MessageActionBar
-                  content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
+                  content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                   messageId={message.id}
                   role="user"
                   onEdit={startEdit}
@@ -719,7 +764,10 @@ function MessageBubble({
         streaming={flow ? message.streaming && !!head && lastTextIdx === 0 : message.streaming}
         toolEvents={dedupedToolEvents}
         progressLines={message.progressLines}
+        progressNotice={message.progressNotice?.text}
         isThinkingActive={message.isThinkingActive}
+        firstLine={message.firstLine}
+        phaseWord={message.phaseWord}
         reasoningBlocks={message.reasoningBlocks}
         segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}
         onChoice={onChoice}
@@ -809,6 +857,9 @@ function MessageBubble({
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
       <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
+      {/* The approval card of a Studio record change (STU-B2c-2c). Inert
+          unless the message holds an ask of a studio_record_* write tool. */}
+      <StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />
       {/* The receipts of the assistant profile writes, each with Undo (WS-63
           PZ-6a). Inert unless the message holds a profile_* tool call. */}
       <ProfileToolCards toolEvents={dedupedToolEvents} />
@@ -846,6 +897,23 @@ function MessageBubble({
           {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>
         </div>
+      )}
+      {/* Last, the skill offer of the turn (STU-F6a), dark behind
+          STUDIO_SKILL_OFFER_ORGS (the shell read serves it). It comes after the turn ends, so it sits
+          under the action bar and its arrival moves no part of the turn. It
+          reads only the typed words and the catalog, never a tool argument
+          or a tool result. The ONE mount of the card. */}
+      {skillOfferOf && skillOfferShown && (
+        <SkillOfferCard
+          turn={{
+            messageId: message.id,
+            streaming: !!message.streaming,
+            solo: skillOfferOf.solo,
+            ranByViewer: ranByViewer(message, viewerEmail),
+            prompt: offerPrompt(skillOfferOf.prompt, viewerEmail),
+            calls: dedupedToolEvents,
+          }}
+        />
       )}
     </div>
     </ArtifactOpenContext.Provider>
@@ -898,5 +966,9 @@ export default React.memo(MessageBubble, (a, b) =>
   a.sessionAgentName === b.sessionAgentName &&
   a.entityPills === b.entityPills &&
   a.taskRefAgent === b.taskRefAgent &&
+  // The skill offer (STU-F6a): AgentChat derives the object inline, so it
+  // is compared field-wise. The prompt is a store message, kept by identity.
+  a.skillOfferOf?.prompt === b.skillOfferOf?.prompt &&
+  a.skillOfferOf?.solo === b.skillOfferOf?.solo &&
   sameParticipants(a.participants, b.participants),
 );

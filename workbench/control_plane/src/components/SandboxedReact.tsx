@@ -18,6 +18,13 @@
  * than duplicating means a React artifact and an HTML artifact cannot drift
  * apart on styling or on isolation.
  *
+ * ── How it compiles (task 2432) ────────────────────────────────────────────
+ * Through `lib/artifactCompileClient`: one compile at a time from this tab,
+ * and a retry of a passing refusal ("busy") after its Retry-After. A card that
+ * the server could not build yet says so, with "Try again", and never says
+ * that the build failed. The member's rate limit shows its own sentence. A
+ * changed source waits for a pause in the typing (`scheduleCompile`).
+ *
  * ── Why the mount is deferred to `load` ────────────────────────────────────
  * SandboxedHtml appends its bridge script *after* the body content, because the
  * bridge fills [data-cc-icon] placeholders and so must run once they exist. Our
@@ -27,9 +34,12 @@
  * after every inline script in the document.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import SandboxedHtml from "@/components/SandboxedHtml";
+import Button from "@/components/ui/Button";
+import { cachedBundle, requestCompile } from "@/lib/artifactCompileClient";
+import { scheduleCompile } from "@/lib/compileDebounce";
 
 interface SandboxedReactProps {
   /** Agent-authored React source. Must default-export a component. */
@@ -48,12 +58,12 @@ interface SandboxedReactProps {
 type State =
   | { status: "compiling" }
   | { status: "ready"; js: string }
-  | { status: "error"; error: string };
-
-/** Compiled output, keyed by source, shared across mounts and re-renders. */
-const compileCache = new Map<string, string>();
-/** In-flight compiles, so N cards of the same artifact issue one request. */
-const inFlight = new Map<string, Promise<{ ok: true; js: string } | { ok: false; error: string }>>();
+  /** The source's fault: the build failed. */
+  | { status: "error"; error: string }
+  /** The server was busy through every retry: not built YET. */
+  | { status: "unavailable"; error: string }
+  /** The member's rate limit. */
+  | { status: "limited"; error: string };
 
 /** `</script>` inside the bundle would close our tag early — neutralise it. */
 function escapeForScript(js: string): string {
@@ -67,39 +77,6 @@ function mountMarkup(js: string): string {
   );
 }
 
-async function compile(code: string) {
-  const cached = compileCache.get(code);
-  if (cached) return { ok: true as const, js: cached };
-
-  const existing = inFlight.get(code);
-  if (existing) return existing;
-
-  const request = (async () => {
-    try {
-      const res = await fetch("/api/artifacts/compile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      });
-      const body = (await res.json()) as
-        | { ok: true; js: string }
-        | { ok: false; error: string };
-      if (body.ok) compileCache.set(code, body.js);
-      return body;
-    } catch (err) {
-      return {
-        ok: false as const,
-        error: err instanceof Error ? err.message : "Could not reach the compiler.",
-      };
-    } finally {
-      inFlight.delete(code);
-    }
-  })();
-
-  inFlight.set(code, request);
-  return request;
-}
-
 export default function SandboxedReact({
   code,
   height,
@@ -108,7 +85,7 @@ export default function SandboxedReact({
   chromeless = false,
 }: SandboxedReactProps): React.ReactElement {
   const initial = (source: string): State => {
-    const cached = compileCache.get(source);
+    const cached = cachedBundle(source);
     return cached ? { status: "ready", js: cached } : { status: "compiling" };
   };
 
@@ -122,24 +99,41 @@ export default function SandboxedReact({
     setState(initial(code));
   }
 
+  // "Try again" bumps this, which runs the effect once more for the same code.
+  const [attempt, setAttempt] = useState(0);
+
+  // Whether this frame has sent a compile yet. The first source compiles at
+  // once. A later one waits for a pause in the typing (task 2432): the route
+  // counts each compile against the member's rate limit.
+  const compiledOnce = useRef(false);
+
   useEffect(() => {
     // Cached sources were resolved during render; nothing async to do.
-    if (compileCache.has(code)) return;
+    if (cachedBundle(code) !== undefined) return;
     // `cancelled` also guards against a slow compile for older source landing
     // after a newer one: React runs this cleanup before re-running the effect.
+    // The same cleanup drops a compile that still waits for its pause.
     let cancelled = false;
-    void compile(code).then((result) => {
-      if (cancelled) return;
-      setState(
-        result.ok
-          ? { status: "ready", js: result.js }
-          : { status: "error", error: result.error },
-      );
+    const cancelPause = scheduleCompile(!compiledOnce.current, () => {
+      compiledOnce.current = true;
+      void requestCompile(code).then((outcome) => {
+        if (cancelled) return;
+        if (outcome.kind === "ok") setState({ status: "ready", js: outcome.js });
+        else if (outcome.kind === "error") setState({ status: "error", error: outcome.error });
+        else if (outcome.kind === "limited") setState({ status: "limited", error: outcome.error });
+        else setState({ status: "unavailable", error: outcome.error });
+      });
     });
     return () => {
       cancelled = true;
+      cancelPause();
     };
-  }, [code]);
+  }, [code, attempt]);
+
+  const tryAgain = () => {
+    setState({ status: "compiling" });
+    setAttempt((n) => n + 1);
+  };
 
   if (state.status === "compiling") {
     return (
@@ -151,6 +145,27 @@ export default function SandboxedReact({
         }
       >
         <span className="text-xs text-muted-foreground animate-pulse">Building…</span>
+      </div>
+    );
+  }
+
+  if (state.status === "unavailable" || state.status === "limited") {
+    // Not the source's fault, so not the destructive look of "failed to build".
+    return (
+      <div className="overflow-hidden rounded-lg border border-border/60 bg-card/40">
+        <div className="border-b border-border/50 bg-secondary/40 px-2.5 py-1 text-[9px] uppercase tracking-wide text-muted-foreground">
+          {state.status === "limited" ? "Artifact build limit reached" : "Artifact not built yet"}
+        </div>
+        <div className="flex items-center justify-between gap-3 p-3">
+          <p className="text-xs text-muted-foreground">{state.error}</p>
+          {/* No button when limited: a press only gets the 429 again, and each
+              one adds a unit to the limit. The sentence says when to return. */}
+          {state.status === "unavailable" && (
+            <Button variant="secondary" size="sm" onClick={tryAgain}>
+              Try again
+            </Button>
+          )}
+        </div>
       </div>
     );
   }

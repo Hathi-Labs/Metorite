@@ -25,6 +25,9 @@ real ``apply_status_transition``. Each item below is a test:
   the git diff against ``origin/main`` was the scope fence of the EA-13d/e PR.)
 * **D12** a person's later move through the chat (``chat:projects-assistant``)
   keeps the task.
+* **D13** a task of the project ``TOOL_FAILURE_PROJECT_ID`` does not move
+  while ``TOOL_FAILURE_TASKS`` is on (WS-TOF TOF-2e, ``tool_failure_log.md``
+  §7.5). D13-M1: drop step 1a. D13-M2: the skip ignores the flag.
 
 R7, the mutations. Each one turns a test here red (run 2026-10-18):
 
@@ -100,6 +103,11 @@ Fix round 5 (2026-10-18), each one red when run:
   a re-read of a closed row counts as a move -> ``test_r5_3_a_closed_reread_never_runs_the_rule_again``.
 * **R5-3b** a merge is final. R5-3b-M1 the guard ``NOT (state = 'merged' AND
   :state <> 'merged')`` dropped -> ``test_r5_3b_a_stale_closed_never_overwrites_a_merge``.
+
+SW-53 fix round 1 (2026-11-07), red when run:
+
+* **SW53-M4** ``installation_of`` ignores ``GITHUB_APP_ORGS`` ->
+  ``test_sw53_an_org_off_the_list_refreshes_nothing``.
 """
 
 from __future__ import annotations
@@ -412,6 +420,45 @@ async def test_d6_a_closed_held_or_archived_task_does_not_move(world) -> None:
     assert _category(w, tasks["triage"]) == "triage"
     assert _category(w, tasks["archived"]) == "in_progress"
     assert all(_moves(w, t) == [] for t in tasks.values())
+
+
+# ── D13: the project "Tool failures" (WS-TOF TOF-2e) ────────────────────────
+
+
+async def test_d13_a_task_of_the_tool_failures_project_does_not_move(
+        world, monkeypatch) -> None:
+    """``tool_failure_log.md`` §7.5: the failure sync job is the one closer of
+    the project ``TOOL_FAILURE_PROJECT_ID`` in the org ``TOOL_FAILURE_ORG_ID``,
+    while ``TOOL_FAILURE_TASKS`` is on. A merge moves no task there. A task of
+    another project still moves, and so does a task of the project while the
+    job is off. Mutation D13-M1: drop step 1a of ``_rule_for_task``. D13-M2:
+    the skip ignores the flag. Each turns this test red."""
+    from acb_common import get_settings
+
+    w = world
+    s = get_settings()
+    for name, value in (("tool_failure_tasks", True), ("tool_failure_org_id", w.p.org_a),
+                        ("tool_failure_project_id", w.project),
+                        ("tool_failure_run_as", "tool-failures@gh6-r8.test")):
+        monkeypatch.setattr(s, name, value)
+    failure_task = _task(w)
+    other_project, other_lanes = g.seed_project(w.p, w.p.org_a, EMAIL)
+    other_task = g.seed_task(w.p, w.p.org_a, EMAIL, project=other_project,
+                             lanes=other_lanes, category="in_progress")
+    for number, task in ((71, failure_task), (72, other_task)):
+        _run(w, task)
+        _ref(w, task, number)
+        await _close(w, number)
+    assert _category(w, failure_task) == "in_progress"
+    assert _moves(w, failure_task) == []
+    assert _category(w, other_task) == "done"
+    # The job is off: nothing else closes the task, so GH-6 keeps its rule.
+    monkeypatch.setattr(s, "tool_failure_tasks", False)
+    off_task = _task(w)
+    _run(w, off_task)
+    _ref(w, off_task, 73)
+    await _close(w, 73)
+    assert _category(w, off_task) == "done"
 
 
 # ── D7, D8, D9, D10 ─────────────────────────────────────────────────────────
@@ -973,6 +1020,48 @@ async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> Non
     await _lazy_read(w, task)
     assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
                     r=f"{REPO}#861") == "open", "TR-1 wrote past the one write path"
+
+
+async def test_sw53_an_org_off_the_list_refreshes_nothing(world, monkeypatch) -> None:
+    """SW-53 fix round 1 (P1). The org holds a live App row, and the master is
+    on. Off ``GITHUB_APP_ORGS``, the lazy read of ``GET /refs`` calls no
+    GitHub, writes no pull request state and moves no task. Back on the list,
+    the same read finds ``merged`` and moves the task (the control)."""
+    from acb_common import get_settings
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 871)
+    stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_sw53",
+                                             "expires_at": "2099-01-01T00:00:00Z"})
+        if request.url.path == f"/repos/{REPO}/pulls/871":
+            return httpx.Response(200, json={
+                "number": 871, "title": "PR 871", "state": "closed", "merged": True,
+                "merged_at": stamp, "updated_at": stamp, "draft": False,
+                "merged_by": {"login": "octo"}, "head": {"ref": "agent/y", "sha": "f" * 40}})
+        return httpx.Response(404, json={})
+
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+    state = "SELECT state FROM pm_task_refs WHERE ref = :r"
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_b)
+    await _lazy_read(w, task)
+    assert requests == [], "an org off the list calls no GitHub"
+    assert g.scalar(w.p, state, r=f"{REPO}#871") == "open"
+    assert _category(w, task) == "in_progress"
+    assert _moves(w, task) == []
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_a)
+    _stale(w, 871)
+    await _lazy_read(w, task)
+    assert requests, "the org on the list reads GitHub"
+    assert g.scalar(w.p, state, r=f"{REPO}#871") == "merged"
+    assert _category(w, task) == "done"
 
 
 # ── Fix round 5 ─────────────────────────────────────────────────────────────

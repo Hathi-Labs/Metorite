@@ -50,8 +50,10 @@ const EMPTY = { preset: null, answered: null, pins: null, known: null, cardOrder
  * Integrations is held by every member since D-EA-9 (2026-10-14), for its AI
  * agents view. No answer stars it (`answerStars`), so it shows only when the
  * member keeps every held app, or stars it.
+ * Appearance is an Admin app for every member since GL-11 (8f497e7b8,
+ * 2026-11-01), so it sits in `known` too, and no answer stars it.
  */
-const KNOWN = ["/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/integrations"];
+const KNOWN = ["/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/settings/appearance", "/integrations"];
 
 /** A stored Engineer layout: Personal Center, and the preset's apps. */
 const ENGINEER_STARS = ["/calendar", "/email", "/projects", "/chat"];
@@ -188,9 +190,10 @@ test("a first visit asks, an answer ticks the defaults, and Done saves the ticks
   // MEMBER holds Approvals, so every answer ticks it (the approver's door).
   await expect(tick(page, "Approvals")).toBeChecked();
   await expect(tick(page, "People")).not.toBeChecked();
-  // The settings pages are not apps, so they are not in the list.
+  // My Profile is a page, not an app, so it is not in the list. Appearance
+  // is an app since GL-11 (8f497e7b8), and no answer ticks it.
   await expect(tick(page, "My Profile")).toHaveCount(0);
-  await expect(tick(page, "Appearance")).toHaveCount(0);
+  await expect(tick(page, "Appearance")).not.toBeChecked();
   // It says where to change this later, and names the real controls.
   const later = appsStep(page).getByTestId("layout-apps-later");
   await expect(later).toContainText("All apps");
@@ -261,7 +264,7 @@ test("Skip for now is stored, a reload does not ask again, and every app shows",
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toHaveLength(1);
@@ -579,6 +582,29 @@ test.describe("phone", () => {
     await expect(launcher.getByTestId("launcher-hint")).toHaveText("Star the apps you want in your sidebar.");
   });
 
+  // Task 3587. The drawer keeps the node of the tap. A tap before the layout
+  // read answered kept the skeleton, or every held app, until the drawer
+  // closed. The read is held past the tap here, so each run takes that path.
+  // Mutation, seen to fail first: remove the `menuShape` effect in
+  // `AppShell.tsx`, and the drawer never shows the stars.
+  test("a tap before the layout read answers shows the stars when it answers", async ({ page }) => {
+    const store = await stub(
+      page,
+      { ...EMPTY, preset: "engineer", answered: "answered", pins: ["/email", "/chat"], known: KNOWN },
+      { holdGet: true },
+    );
+    await page.goto("/settings/appearance");
+    await page.getByRole("button", { name: "Menu" }).click();
+    const drawer = page.locator("aside:not([data-collapsed])");
+    await expect(drawer.getByRole("button", { name: "Desktop view" })).toBeVisible();
+    store.release();
+    await expect.poll(() => shape(page, drawer)).toEqual([
+      ["personal", ["My Email"]],
+      ["studio", ["Chat"]],
+    ]);
+    await expect(drawer.getByTestId("nav-skeleton")).toHaveCount(0);
+  });
+
   test("with the chat-first flag on, step 1's answer writes the preset's stars and there is no step 2 (CF-2)", async ({ page }) => {
     const store = await stub(page, EMPTY, { chatFirst: true });
     await page.goto("/settings/appearance");
@@ -881,7 +907,7 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   await expect(sidebar(page).getByText(/my apps/i)).toHaveCount(0);
 
@@ -890,14 +916,14 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
   const launcher = page.getByRole("dialog", { name: "All apps" });
   await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
   expect(store.puts.at(-1)).toMatchObject({
-    pins: ["/calendar", "/email", "/projects", "/people", "/approvals", "/integrations"],
+    pins: ["/calendar", "/email", "/projects", "/people", "/approvals", "/settings/appearance", "/integrations"],
     known: KNOWN,
   });
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([
     ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
-    ["admin", ["Approvals", "Integrations"]],
+    ["admin", ["Approvals", "Appearance", "Integrations"]],
   ]);
   // Show it again: back under AI Studio.
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
@@ -912,7 +938,7 @@ test("every category's apps can be hidden: Personal Center, AI Studio and Admin 
   await page.goto("/settings/appearance");
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   const launcher = page.getByRole("dialog", { name: "All apps" });
-  for (const name of ["Calendar", "My Email", "Chat", "Approvals", "Integrations"]) {
+  for (const name of ["Calendar", "My Email", "Chat", "Approvals", "Appearance", "Integrations"]) {
     await launcher.getByRole("button", { name: `Hide ${name} from sidebar` }).click();
   }
   await page.keyboard.press("Escape");

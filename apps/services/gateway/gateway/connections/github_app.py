@@ -121,6 +121,31 @@ def app_enabled() -> bool:
     return bool(getattr(get_settings(), "github_app_enabled", False))
 
 
+def github_app_org_allowed(organization_id: str | None) -> bool:
+    """True when the App is on for *organization_id* (SW-53, task 1886).
+
+    ``github_app_enabled`` is the master. Off, every org is off, as before.
+    On, ``GITHUB_APP_ORGS`` must hold the org, or ``*``. An EMPTY list turns
+    every org off while the master is on: it fails closed. The webhook
+    receiver, the connect flow and the reconcile poll each ask here, so one
+    flip moves all three together.
+
+    The org comes from ``github_installation_org`` (the webhook), the bound
+    tenant (the connect flow) or the ``organization`` table (the poll). It
+    never comes from a request body (R5). It reads ``get_settings()`` on each
+    call, so a flag reload applies a change with no restart.
+    Fence: ``tests/unit/test_github_webhook_r8.py``.
+    """
+    if not app_enabled():
+        return False
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "github_app_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
 def _setting(name: str) -> str:
     return str(getattr(get_settings(), name, "") or "").strip()
 
@@ -440,6 +465,7 @@ __all__ = [
     "client_id",
     "client_secret",
     "drop_installation",
+    "github_app_org_allowed",
     "install_url",
     "installation_call",
     "installation_facts",

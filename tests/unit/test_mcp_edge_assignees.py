@@ -34,7 +34,7 @@ Run::
 * A2. ``G/tasks.py``: ``_refuse_agent_assignees`` checks a member caller too. ``test_r10_a_members_put_is_not_narrowed``.
 * A3. ``G/tasks.py``: ``_write_assignees`` notifies ``wanted``, not ``added``. ``test_r2_one_bell_for_the_added_person_only``.
 * A4. ``G/tasks.py``: ``_agent_via_note`` returns None. ``test_r1_create_with_an_assignee_and_the_planning_fields`` and ``test_r2_one_bell_for_the_added_person_only``.
-* A5. ``G/tasks.py``: ``set_assignees`` drops the agent's ``_require_exact_version``. ``test_r4_a_stale_version_is_refused_for_set_assignees`` and ``test_r14_an_agent_put_keeps_strict_equality``.
+* A5. ``G/tasks.py``: ``set_assignees`` drops the agent's ``require_exact_version`` (in ``core`` since SP-8a). ``test_r4_a_stale_version_is_refused_for_set_assignees`` and ``test_r14_an_agent_put_keeps_strict_equality``.
 * A6. ``G/tasks.py``: ``move_task`` drops ``_check_version``. ``test_r5_a_stale_version_is_refused_for_the_move``.
 * A7. ``G/tasks.py``: ``move_task_in`` drops ``_refuse_agent_parent``. ``test_r6_a_move_to_another_project_is_refused``.
 * A8. ``G/tasks.py``: ``AGENT_MOVE_FIELDS`` gains ``project_id``. ``test_r6_a_move_to_another_project_is_refused``.
@@ -499,18 +499,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcpassign"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"

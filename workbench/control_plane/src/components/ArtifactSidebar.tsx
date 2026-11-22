@@ -11,6 +11,8 @@
  *   artifactUpdates  — new FileEntry objects pushed in from SSE (ST-AV-06); merged into tree
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useClampedMenu } from "@/lib/menuClamp";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,6 +24,20 @@ import { useLiveRefresh } from "@/lib/liveRefresh";
 /** Files in inputs/, outputs/, and agent-data/ are user/agent-generated
  *  and safe to delete from the Files Viewer.  Everything else (agent
  *  source, configs, skills) is hidden from the UI entirely. */
+/** The file menu's box. It stays above the phone's bar (MOB-9 fix round). */
+function ArtifactMenuBox({ x, y, children }: { x: number; y: number; children: React.ReactNode }) {
+  const { ref, pos, maxHeight } = useClampedMenu(x, y);
+  return (
+    <div
+      ref={ref}
+      className="fixed z-[81] min-w-[190px] overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-2xl"
+      style={{ left: pos.x, top: pos.y, ...(maxHeight ? { maxHeight, overflowY: "auto" as const } : {}) }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function isDeletable(entry: FileEntry): boolean {
   const p = entry.path;
   return (
@@ -150,6 +166,9 @@ function TreeNodeRow({
   // renders (rules-of-hooks): context-menu anchor + per-file history/promote state.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [history, setHistory] = useState<FileHistoryRow[] | null>(null);
+  // A bar tap closes the menu and the history window (MOB-9).
+  useCloseOnBarTap(() => setMenu(null), menu !== null);
+  useCloseOnBarTap(() => setHistory(null), history !== null);
   const [promoting, setPromoting] = useState(false);
   const paddingLeft = 8 + depth * 12;
 
@@ -283,10 +302,7 @@ function TreeNodeRow({
               setMenu(null);
             }}
           />
-          <div
-            className="fixed z-[81] min-w-[190px] overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-2xl"
-            style={{ left: menu.x, top: menu.y }}
-          >
+          <ArtifactMenuBox x={menu.x} y={menu.y}>
             {onOpenInSidePanel && (
               <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-popover-foreground hover:bg-secondary transition-colors"
@@ -332,7 +348,7 @@ function TreeNodeRow({
               <Icon name="Download" size={13} className="shrink-0 text-muted-foreground" />
               Download
             </a>
-          </div>
+          </ArtifactMenuBox>
         </>
       )}
 

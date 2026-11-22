@@ -13,6 +13,7 @@
  * (`failure-copy-explains`). Fence: `packageDelete.test.ts`.
  */
 import { invalidate } from "@/lib/dataCache";
+import { refreshManifest } from "@/lib/shell/manifestCache";
 import { busySentence } from "./realDoor";
 
 export interface PreviewObject {
@@ -30,6 +31,8 @@ export interface DeletePreview {
   versions: number;
   installs: number;
   otherMemberInstalls: number;
+  /** The sidebar entry of the owner: an active private install of the owner (`own_entries`). */
+  ownEntries: number;
   confirm: string;
 }
 
@@ -55,6 +58,7 @@ export function parsePreview(body: unknown): DeletePreview | null {
     versions: num(totals.versions),
     installs: num(totals.installs),
     otherMemberInstalls: num(totals.other_member_installs),
+    ownEntries: num(totals.own_entries),
     confirm: body.confirm,
   };
 }
@@ -68,13 +72,18 @@ export function previewCopy(p: DeletePreview): { heading: string; subject: strin
     `This deletes the app and all its data for good: ${plural(p.objects.length, "object")}, ${records}, ${plural(p.versions, "version")}.`,
     "You cannot undo this.",
   ];
-  let note: string | null = null;
-  if (p.installs > 0) {
-    const o = p.otherMemberInstalls;
-    note = o > 0
-      ? `${plural(p.installs, "install")} of this app go too. ${o === 1 ? "1 of them reaches another member, who loses" : `${o.toLocaleString("en-US")} of them reach other members, who lose`} the app.`
-      : `${plural(p.installs, "install")} of this app go too.`;
+  // The server counts the owner's sidebar entry itself (`own_entries`, an active private
+  // install of the owner), so a paused or archived install never reads as an entry
+  // (PKG-8a fix round 2). An answer with no count gives no sidebar sentence.
+  const others = p.otherMemberInstalls;
+  const parts: string[] = [];
+  if (p.ownEntries > 0) parts.push("Its entry in your sidebar goes too.");
+  if (others > 0) {
+    parts.push(others === 1
+      ? "1 install reaches another member, who loses the app."
+      : `${plural(others, "install")} reach other members, who lose the app.`);
   }
+  const note = parts.length > 0 ? parts.join(" ") : null;
   return { heading: "Delete this app?", subject: p.name, body: lines.join("\n"), note };
 }
 
@@ -110,11 +119,16 @@ export function changedText(removed: number): string {
   return `The app changed while you read this, so nothing more was deleted.${earlier} Check the new counts, then confirm again.`;
 }
 
-/** Drop every cached read of a package, and the list of packages, after a delete. */
+/**
+ * Drop every cached read of a package, and the list of packages, after a delete. The
+ * shell manifest goes too, because the delete removed the install of the app (PKG-8a),
+ * so its sidebar entry leaves at once.
+ */
 export function forgetPackage(id: string): void {
   invalidate(`studio:package-preview:pkg:${id}`);
   invalidate(`studio:${id}:live:`);
   invalidate("studio:package-preview:packages");
+  refreshManifest();
 }
 
 /** One answer of the DELETE route, as one outcome. */

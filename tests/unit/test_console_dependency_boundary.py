@@ -296,10 +296,17 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: Routing them is what closes that, and routing means reaching the one Console
 #: client this fence guards.
 #:
-#: ⚠️ **It calls ``chat_completion_on_console`` and nothing else.** That hop
-#: allocates no seat and names no person, which is the property this list's own
-#: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
-#: allocator this fence exists for — is not reachable from it.
+#: ⚠️ **It calls the chat hop and no other door.** That is
+#: ``chat_completion_on_console`` and, since task 3542, its streamed twin
+#: ``stream_completion_on_console``, the same hop that ``v1_compat`` streams
+#: through. It also reads ``router_is_wired`` and the two error classes of
+#: the hop (``ConsoleRouterUnavailable``, ``ConsoleRouterVerdict``). Neither
+#: hop allocates a seat or names a person, which is the property this list's
+#: own message already records for ``v1_compat``. ``resolve_for_signin``, the
+#: seat allocator this fence exists for, is not reachable from it.
+#:
+#: Advisory (R7). No ``_ALLOWED_NAMES`` set pins the names that ``routed.py``
+#: reads from ``console_resolve``, so no test fails when that list grows.
 _THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
 #: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
 #: and the argument for it, because the paragraph above is this list's own
@@ -402,6 +409,59 @@ _THE_EMBED_CALLER = "apps/services/gateway/gateway/kb_index/embed.py"
 #: the org from placement and membership. The entry is NARROWED by
 #: ``test_the_rename_mirror_touches_only_the_rename_client`` below.
 _THE_RENAME_CALLER = "apps/services/gateway/gateway/routes/admin/organization.py"
+#: ⚠️ **The THIRTEENTH entry — the chat's voice input, VOX-1, 2026-11-08 —
+#: and the argument, because this list's own rule is that a new entry states
+#: one.**
+#:
+#: ``POST /chat/transcribe`` sends one spoken clip to the Console's metered
+#: transcribe door (``customer_console.md`` §6A.10a) and answers the text. It
+#: calls ``transcribe_on_console`` and **allocates no seat**. The door serves
+#: a transcript and nothing else, and it never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The door had no tenant caller (§6A.10a clause
+#: 7), and ``projects_ai_chat.md`` §31 VOX-1 is that caller. A direct litellm
+#: call from the gateway would bill nothing (§31.3 item 5).
+#:
+#: 📌 It is a **session-email-only** route: the member is ``user.email`` from
+#: the authenticated context (R11), and it is proven only by the run context
+#: that the session bound. The entry is NARROWED by
+#: ``test_the_voice_route_touches_only_the_transcribe_client`` below.
+_THE_TRANSCRIBE_CALLER = "apps/services/gateway/gateway/routes/chat_transcribe.py"
+#: ⚠️ **The FOURTEENTH entry — the headless turn's meter, AUTO-8b-2d,
+#: 2026-11-13 — and the argument, because this list's own rule is that a new
+#: entry states one.**
+#:
+#: ``gateway/jobs/headless_turn.py`` reads the credits of the run of each
+#: round through ``run_spend_on_console`` (``proactive_agent.md`` §4.4). It
+#: is a READ of one sum, it **allocates no seat**, and it never touches
+#: ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The turn may make a model call only when a
+#: reader of its cost exists. The per-run spend lives in the Console's
+#: ``usage_event``, and ``console_resolve`` is the ONE Console client, so a
+#: second client in the job would be the defect this list exists to stop.
+#:
+#: 📌 It is not a route, so no request reaches it. The member is the payer of
+#: the goal, read from the goal row and bound VERIFIED by
+#: ``job_member_scope``, never a payload value (R11). The entry is NARROWED
+#: by ``test_the_headless_meter_touches_only_the_run_spend_client`` below.
+_THE_RUN_SPEND_CALLER = "apps/services/gateway/gateway/jobs/headless_turn.py"
+#: ⚠️ **The FIFTEENTH entry — the AI vendor alert, AO-2, 2026-11-18 — and the
+#: argument.**
+#:
+#: ``gateway/provider_alerts.py`` reads one alert word per vendor through
+#: ``provider_health_on_console`` (``customer_console.md`` §6A.17b). It is a
+#: READ with an empty body, it **allocates no seat**, and it never touches
+#: ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The Console judges each vendor, and the box
+#: owns the members, the bell and the push. Every arrow runs from the box to
+#: the Console, so the box asks, through the ONE Console client.
+#:
+#: 📌 It is not a route, so no request reaches it. The org comes from
+#: ``PROVIDER_ALERT_ORGS`` and the job worker, never from a payload (R5). The
+#: entry is NARROWED by ``test_the_vendor_alert_touches_only_its_read`` below.
+_THE_PROVIDER_ALERT_CALLER = "apps/services/gateway/gateway/provider_alerts.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -415,6 +475,19 @@ _ALLOWED_CALLERS = (
     _THE_BILLING_CALLER,
     _THE_EMBED_CALLER,
     _THE_RENAME_CALLER,
+    _THE_TRANSCRIBE_CALLER,
+    _THE_RUN_SPEND_CALLER,
+    _THE_PROVIDER_ALERT_CALLER,
+)
+
+#: The ONLY names ``jobs/headless_turn.py`` may read from ``console_resolve``:
+#: the run spend client and its outage type (AUTO-8b-2d).
+_RUN_SPEND_ALLOWED_NAMES = frozenset({"run_spend_on_console", "ConsoleBillingUnavailable"})
+
+#: The ONLY names ``provider_alerts.py`` may read from ``console_resolve``: the
+#: vendor alert read and its outage type (AO-2).
+_PROVIDER_ALERT_ALLOWED_NAMES = frozenset(
+    {"provider_health_on_console", "ConsoleProviderHealthUnavailable"}
 )
 
 #: The ONLY names ``routes/admin/organization.py`` may read from
@@ -427,6 +500,10 @@ _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailabl
 
 #: The ONLY name ``kb_index/embed.py`` may read from ``console_resolve``.
 _EMBED_ALLOWED_NAMES = frozenset({"embeddings_on_console"})
+
+#: The ONLY names ``routes/chat_transcribe.py`` may read from
+#: ``console_resolve``: the transcribe client and its outage type.
+_TRANSCRIBE_ALLOWED_NAMES = frozenset({"transcribe_on_console", "ConsoleRouterUnavailable"})
 
 #: The ONLY names ``routes/billing.py`` may read from ``console_resolve``: the
 #: billing READ client, the three CHECKOUT clients (H-152's second half), their
@@ -537,6 +614,53 @@ def test_the_embed_door_touches_only_the_embed_client() -> None:
     assert (used | imported) <= _EMBED_ALLOWED_NAMES, (
         f"kb_index/embed.py reads {sorted((used | imported) - _EMBED_ALLOWED_NAMES)} "
         "from console_resolve. It may read only the embeddings client."
+    )
+
+
+def test_the_voice_route_touches_only_the_transcribe_client() -> None:
+    """``routes/chat_transcribe.py`` is on the list for TWO names (VOX-1).
+
+    The list admits the FILE. This admits only the transcribe client and its
+    outage type, so a later edit cannot reach a seat write or the resolve.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_TRANSCRIBE_CALLER))
+    assert used or imported, "the voice route no longer reaches console_resolve"
+    assert (used | imported) <= _TRANSCRIBE_ALLOWED_NAMES, (
+        f"routes/chat_transcribe.py reads "
+        f"{sorted((used | imported) - _TRANSCRIBE_ALLOWED_NAMES)} from "
+        f"console_resolve, beyond {sorted(_TRANSCRIBE_ALLOWED_NAMES)}"
+    )
+
+
+def test_the_headless_meter_touches_only_the_run_spend_client() -> None:
+    """``jobs/headless_turn.py`` is on the list for TWO names (AUTO-8b-2d).
+
+    The list admits the FILE. This admits only the run spend read and its
+    outage type, so a later edit cannot reach a seat write or the resolve
+    from the job worker.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_RUN_SPEND_CALLER))
+    assert used or imported, "the headless meter no longer reaches console_resolve"
+    assert (used | imported) <= _RUN_SPEND_ALLOWED_NAMES, (
+        f"jobs/headless_turn.py reads "
+        f"{sorted((used | imported) - _RUN_SPEND_ALLOWED_NAMES)} from "
+        f"console_resolve, beyond {sorted(_RUN_SPEND_ALLOWED_NAMES)}"
+    )
+
+
+def test_the_vendor_alert_touches_only_its_read() -> None:
+    """``provider_alerts.py`` is on the list for TWO names (AO-2).
+
+    The list admits the FILE. This admits only the vendor alert read and its
+    outage type, so a later edit cannot reach a seat write or the resolve
+    from the job worker.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_PROVIDER_ALERT_CALLER))
+    assert used or imported, "the vendor alert no longer reaches console_resolve"
+    assert (used | imported) <= _PROVIDER_ALERT_ALLOWED_NAMES, (
+        f"provider_alerts.py reads "
+        f"{sorted((used | imported) - _PROVIDER_ALERT_ALLOWED_NAMES)} from "
+        f"console_resolve, beyond {sorted(_PROVIDER_ALERT_ALLOWED_NAMES)}"
     )
 
 

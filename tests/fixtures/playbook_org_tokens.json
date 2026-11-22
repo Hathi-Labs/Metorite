@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "HathiLabs rules that must never appear in the Metorite default playbook (D186.2, PB-1).",
+    "An entry is a token (a plain, case-sensitive string) or a regex. Fence: tests/unit/test_playbook_org_neutral.py.",
+    "The drift test checks that each entry still matches text in CLAUDE.md, work_plan.md or docs/style_ste.md.",
+    "Add an entry when a review finds a HathiLabs term in a default."
+  ],
+  "entries": [
+    {"id": "ste-name", "kind": "token", "value": "Simplified Technical English"},
+    {"id": "ste-standard", "kind": "token", "value": "ASD-STE100"},
+    {"id": "ste-short", "kind": "regex", "value": "\\bSTE\\b"},
+    {"id": "ste-lint", "kind": "token", "value": "ste-lint"},
+    {"id": "r-rules", "kind": "regex", "value": "\\bR[1-8]\\b"},
+    {"id": "d-numbers", "kind": "regex", "value": "\\bD\\d{2,3}(\\.\\d+)?\\b"},
+    {"id": "org-name", "kind": "token", "value": "HathiLabs"},
+    {"id": "gate-agent-safe", "kind": "token", "value": "AGENT-SAFE"},
+    {"id": "gate-owner", "kind": "token", "value": "OWNER-GATE"},
+    {"id": "grants-file", "kind": "token", "value": "OWNER_GRANTS"},
+    {"id": "guard-hook", "kind": "token", "value": "plan-guard"},
+    {"id": "release-time", "kind": "token", "value": "21:30 UTC"},
+    {"id": "premerge", "kind": "token", "value": "premerge"},
+    {"id": "next-ticket", "kind": "token", "value": "next-ticket"},
+    {"id": "work-plan", "kind": "token", "value": "work_plan"}
+  ]
+}

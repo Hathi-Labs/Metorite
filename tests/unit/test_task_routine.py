@@ -83,6 +83,18 @@ def test_the_loop_sets_done_only_after_the_merge_then_finishes_the_run():
     assert land.index("After the merge") < land.index("`finish_agent_run`")
 
 
+def test_a_hand_over_waits_for_the_bots_line_and_shows_the_wait():
+    """CIV-28c fix round 1: no box actor writes to Metorite, so the session waits for
+    the bot's DONE or BACK line. The run shows the wait, and DONE is the merge."""
+    board = _task_board()
+    land = board[board.index("7 Land"):board.index("A test run in the background")]
+    assert "`waiting: {on: ci}`" in land and "The bot's `DONE` line is the merge" in land
+    assert "keep the task in review, then `finish_agent_run`" not in land
+    routine = _claude_routine()
+    assert "the session waits for the bot's line" in routine
+    assert "its `DONE` line is the merge" in routine
+
+
 def test_the_loop_reads_the_answer_before_it_reports_awaiting_owner():
     board = _task_board()
     assert "Do not report `AWAITING-OWNER` before that read" in board
@@ -102,3 +114,45 @@ def test_an_answer_in_chat_is_recorded_on_the_task():
 def test_the_final_report_states_the_run():
     report = NEXT_TICKET[NEXT_TICKET.index("## Final report"):]
     assert "run state" in report
+
+
+def test_cleanup_rule_is_in_claude_md_and_next_ticket():
+    """CIV-16: both files every session loads carry the clean-up rule."""
+    claude = _flat(CLAUDE[CLAUDE.index("CLEAN UP AFTER YOURSELF"):])[:1400]
+    for phrase in (
+        "Give every wait a deadline",
+        "under `timeout`",
+        "worktree.sh remove",
+        "list your background jobs",
+        "Name the ones that stay",
+        "stop-children.mjs",
+    ):
+        assert phrase in claude, phrase
+    nt = _flat(NEXT_TICKET[NEXT_TICKET.index("## Clean up after yourself"):NEXT_TICKET.index("## Final report")])
+    for phrase in ("timeout", "worktree.sh remove", "list your background jobs", "Name the ones that stay"):
+        assert phrase in nt, phrase
+
+
+def test_stop_hook_is_wired_in_settings():
+    import json
+
+    cfg = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    cmds = [h["command"] for g in cfg["hooks"]["Stop"] for h in g["hooks"]]
+    assert any("stop-children.mjs" in c for c in cmds)
+
+
+def test_stop_hook_fence_runs_in_pr_check():
+    """CIV-16, R7: the hook test runs in pr-check, or its fence is a word only."""
+    import yaml
+
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8"))
+    runs = [s.get("run", "") for job in wf["jobs"].values() for s in job.get("steps", [])]
+    assert "node .claude/hooks/stop-children.test.mjs" in runs
+
+
+def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():
+    """CIV-14i: a session reads the description and every comment before it builds."""
+    step = _flat(NEXT_TICKET[NEXT_TICKET.index("**1 — Select.**"):NEXT_TICKET.index("**1b")])
+    assert "`get_task_context`" in step
+    assert "more than 20 comments" in step and "`get_task_timeline`" in step
+    assert "`get_task_context`" in _task_board()

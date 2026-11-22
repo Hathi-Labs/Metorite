@@ -442,6 +442,39 @@ def _notification_url(public: str, org: str) -> str:
     return f"{public}/email/webhook/microsoft?{query}"
 
 
+#: The Graph resource of a subscription to ALL mail of the mailbox. Mail that
+#: an Outlook rule files into a user folder never touches the Inbox resource,
+#: so only this one tells Metorite at once. Graph compares the string, so the
+#: one constant is the only place that spells it.
+ALL_MAIL_RESOURCE = "/me/messages"
+
+
+def _norm_resource(resource: object) -> str:
+    """A Graph resource in the form that the code compares: lower case, one
+    leading slash, no trailing slash."""
+    return "/" + str(resource or "").strip().strip("/").lower()
+
+
+def _all_mail_webhook_on(org: object) -> bool:
+    """True when ``OUTLOOK_ALL_MAIL_WEBHOOK_ORGS`` names *org* (WS-17, task 1966).
+
+    The value is a comma list of organization ids, or ``*``. Empty is off, the
+    default. It reads the settings at each call, so a SIGHUP applies a change
+    (``docs/flag_reload.md``). It uses the shared ``_parse_orgs`` and fails
+    closed.
+    """
+    try:
+        from acb_common.assistant_profile import _parse_orgs
+
+        orgs = _parse_orgs(
+            str(getattr(get_settings(), "outlook_all_mail_webhook_orgs", "") or ""),
+            star=True,
+        )
+        return bool(orgs) and ("*" in orgs or str(org or "").strip().lower() in orgs)
+    except Exception:
+        return False
+
+
 async def _ensure_subscription(account_id: str) -> None:
     """Create or renew the account's Graph push subscription (Microsoft only).
 
@@ -489,6 +522,7 @@ async def _ensure_subscription(account_id: str) -> None:
             client_state = row.webhook_client_state or secrets.token_urlsafe(24)
             data, sub_id = await _renew_or_replace(
                 provider, row.webhook_subscription_id, notify_url, client_state,
+                all_mail=_all_mail_webhook_on(org),
             )
             # Graph returns expirationDateTime as an ISO string; asyncpg needs a
             # real datetime for the TIMESTAMPTZ column.
@@ -517,6 +551,7 @@ async def _ensure_subscription(account_id: str) -> None:
 
 async def _renew_or_replace(
     provider: Any, sub_id: str | None, notify_url: str, client_state: str,
+    all_mail: bool = False,
 ) -> tuple[dict[str, Any], str | None]:
     """Renew ``sub_id`` with the signed URL, or replace it.
 
@@ -524,22 +559,53 @@ async def _renew_or_replace(
     PATCH fails for any reason, the old subscription is deleted (best effort)
     and a new one is created, so a refused URL update cannot leave an
     unsigned URL in place.
+
+    *all_mail* (``OUTLOOK_ALL_MAIL_WEBHOOK_ORGS``) makes a new subscription
+    watch ``ALL_MAIL_RESOURCE``. The PATCH answer holds the ``resource``, so a
+    renewed Inbox subscription is replaced with no extra Graph call. The code
+    never switches an all-mail subscription back when the flag goes off: the
+    old resource keeps working, and the next replace makes an Inbox one.
     """
     if sub_id:
+        renewed: dict[str, Any] | None = None
         try:
-            return (
-                await provider.renew_subscription(
-                    sub_id, notification_url=notify_url,
-                ),
-                sub_id,
+            renewed = await provider.renew_subscription(
+                sub_id, notification_url=notify_url,
             )
         except Exception:
-            # Best effort, as before EM-T4f: the delete now raises on a
-            # transport error, and a failed delete must not stop the create.
+            pass
+        if renewed is not None:
+            if not (all_mail and _norm_resource(renewed.get("resource"))
+                    != ALL_MAIL_RESOURCE):
+                return renewed, sub_id
+            # The switch path: the old subscription is healthy, so create the
+            # all-mail one FIRST. A failed create keeps the old one and its
+            # renewed expiry. Only a good create deletes the old one.
+            try:
+                new = await provider.create_subscription(
+                    notify_url, client_state, resource=ALL_MAIL_RESOURCE,
+                )
+            except Exception as exc:
+                _log.warning("email.subscription_switch_failed",
+                             sub=str(sub_id)[:12], error=type(exc).__name__)
+                return renewed, sub_id
             try:
                 await provider.delete_subscription(sub_id)
             except Exception as exc:
                 _log.warning("email.subscription_delete_failed",
                              sub=str(sub_id)[:12], error=type(exc).__name__)
-    data = await provider.create_subscription(notify_url, client_state)
+            return new, new.get("id")
+        # The PATCH failed: the old subscription is bad. Delete it (best
+        # effort, as before EM-T4f) and fall through to the create.
+        try:
+            await provider.delete_subscription(sub_id)
+        except Exception as exc:
+            _log.warning("email.subscription_delete_failed",
+                         sub=str(sub_id)[:12], error=type(exc).__name__)
+    if all_mail:
+        data = await provider.create_subscription(
+            notify_url, client_state, resource=ALL_MAIL_RESOURCE,
+        )
+    else:
+        data = await provider.create_subscription(notify_url, client_state)
     return data, data.get("id")

@@ -34,8 +34,11 @@
  *
  * NOTE ON ROUTING: `src/app/api/email/[...path]/route.ts` also matches this URL.
  * Next resolves static/dynamic segments ahead of a catch-all, so this file wins.
- * That matters: the catch-all fetches with the default `redirect: "follow"` and
- * would silently return the provider's login HTML through the proxy.
+ * That matters: the catch-all would pass the gateway's 302 on as its own
+ * answer, and it is not built to send the member on to the provider. Since
+ * H-280, `gatewayFetch` never follows a redirect by default (its rule 11).
+ * Before that, the catch-all followed it and returned the provider's login
+ * HTML through the proxy.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";

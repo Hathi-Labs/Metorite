@@ -74,6 +74,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { StatusRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import { StatusSetControl } from "./StatusSetControl";
+import { SPACE_DEFAULT_STATUSES } from "../lib/statusSetCopy";
 import { accentForStatus } from "../lib/accent";
 import {
   emptyCategories,
@@ -97,6 +98,11 @@ interface Props {
   onTasksTouched: () => void;
   /** Drawn as a section of Projects settings, not a dialog (WS-42). */
   inline?: boolean;
+  /**
+   * The pane only (PST-1): opens the Statuses editor of a project that keeps
+   * its own set, from the list under the scope line.
+   */
+  onOpenStatuses?: (project: { id: string; name: string }) => void;
 }
 
 export function StatusManager({
@@ -106,6 +112,7 @@ export function StatusManager({
   onChanged,
   onTasksTouched,
   inline = false,
+  onOpenStatuses,
 }: Props) {
   const [rows, setRows] = useState<StatusRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -338,7 +345,9 @@ export function StatusManager({
     <ManagerFrame
       inline={inline}
       onClose={onClose}
-      title="Statuses"
+      // The pane shows the space's own set, so its section carries the
+      // pane's name (PST-1). The dialog of any node stays "Statuses".
+      title={inline ? SPACE_DEFAULT_STATUSES : "Statuses"}
       // The scope is no longer a constant, so the header stops asserting
       // one. `StatusSetControl` names the owner, and it is the thing that
       // knows — a subtitle claiming "shared by everything under it" is
@@ -363,6 +372,8 @@ export function StatusManager({
       <StatusSetControl
         projectId={projectId}
         busy={busy}
+        inline={inline}
+        onOpenStatuses={onOpenStatuses}
         onError={setError}
         onSwitched={(said) => {
           setNotice(said);

@@ -295,10 +295,15 @@ async def _display_labels(db: Any, owner: str) -> tuple[dict[str, str], dict[str
 
     A default label depends on the other mailboxes of the member, so a route
     that returns one mailbox still reads them all (EM-T8b, §11.4).
+
+    The read names the bound tenant, as :func:`list_accounts` does (R5,
+    H-334c). So a role that bypasses RLS counts no mailbox of another
+    organization. Each caller reads inside ``_tenant_session``.
     """
     rows = (await db.execute(text(
         "SELECT id, email_address, label FROM email_accounts "
         "WHERE " + mailbox_predicate(uid="uid", level="read")
+        + f" AND organization_id = {_bound_org()}"
     ), {"uid": owner})).fetchall()
     triples = [(str(r.id), r.email_address, r.label) for r in rows]
     return display_labels(triples), default_labels(triples)

@@ -303,12 +303,20 @@ class TestSelfIsEachMailboxOfTheMember:
 
     def test_the_org_predicate_holds_where_rls_does_not_bind(self, family):
         """The owner role bypasses row level security, so only the
-        organization predicate of ``SELF_ADDRESSES_SQL`` keeps mailbox C out
-        here. It is the defence for a session that no tenant binds."""
+        organization predicates of ``SELF_ADDRESSES_SQL`` keep mailbox C out
+        here. Since H-334c the read names the bound tenant: a session that
+        no tenant binds reads an empty set, and it fails closed."""
         f = family
         with f.admin.connect() as c:
+            unbound = {r[0] for r in c.execute(text(SELF_ADDRESSES_SQL), {"aid": f.a})}
+        with f.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": str(f.org)})
             got = {r[0] for r in c.execute(text(SELF_ADDRESSES_SQL), {"aid": f.a})}
+            alien = {r[0] for r in c.execute(text(SELF_ADDRESSES_SQL), {"aid": f.c})}
+        assert unbound == set()
         assert got == {f.a_addr, f.b_addr}
+        assert alien == set()
 
     async def test_the_rule_match_payload_reads_another_mailbox_as_self(self, family):
         f = family

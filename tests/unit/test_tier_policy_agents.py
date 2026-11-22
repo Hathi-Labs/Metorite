@@ -128,7 +128,11 @@ def test_the_named_agents_are_the_registry_s() -> None:
     for name in NATIVE:
         assert runtimes.get(name) == "maf", name
     for name in COPILOT:
-        assert runtimes.get(name) == "github-copilot", name
+        # WS-43h: app-builder's label is "maf", and its factory picks the
+        # engine on each run. With app_builder:<org> off it still builds the
+        # Copilot agent, which the object test of the executor finds.
+        expected = "maf" if name == "app-builder" else "github-copilot"
+        assert runtimes.get(name) == expected, name
 
 
 # ── 1. Every native agent, S2 done-when 1 to 5, on the chat path ────────────

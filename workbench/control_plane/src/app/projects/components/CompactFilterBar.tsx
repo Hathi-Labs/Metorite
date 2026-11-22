@@ -67,6 +67,9 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     archivedCount,
     waitingOnMe = false,
     onWaitingOnMe,
+    epic = "",
+    epics = [],
+    onEpic,
     agentWork = false,
     onAgentWork,
     resultCount,
@@ -90,6 +93,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     filters,
     waitingOnMe,
     agentWork,
+    epic: epic ? { id: epic, label: epics.find((o) => o.value === epic)?.label ?? "Epic" } : undefined,
     me,
     labelOf: labelWith(personLabels),
   });
@@ -98,6 +102,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     onFilters({ ...EMPTY_FILTERS, q: filters.q });
     onWaitingOnMe?.(false);
     onAgentWork?.(false);
+    onEpic?.("");
   };
 
   return (
@@ -127,6 +132,9 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
           archivedCount={archivedCount}
           waitingOnMe={waitingOnMe}
           onWaitingOnMe={onWaitingOnMe}
+          epic={epic}
+          epics={epics}
+          onEpic={onEpic}
           agentWork={agentWork}
           onAgentWork={onAgentWork}
           resultCount={resultCount}
@@ -191,6 +199,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
                     onFilters({ ...filters, ...chip.clear.patch });
                   } else if (chip.clear.kind === "waitingOnMe") {
                     onWaitingOnMe?.(false);
+                  } else if (chip.clear.kind === "epic") {
+                    onEpic?.("");
                   } else {
                     onAgentWork?.(false);
                   }

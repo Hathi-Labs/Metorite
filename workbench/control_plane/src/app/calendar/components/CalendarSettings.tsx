@@ -11,6 +11,8 @@ import {
 } from "@/app/tasks/lib/api";
 import { DEFAULT_PLANNING_PROMPT, hourLabel } from "./shared";
 import { zoneOptions } from "../lib/zoneChoices";
+import type { ReturnNotice } from "../lib/calendarConnections";
+import { ConnectedCalendarsSection } from "./CalendarConnections";
 
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"]; // 0=Sun … 6=Sat
 
@@ -52,10 +54,18 @@ export function CalendarSettings({
   settings,
   onChange,
   onClose,
+  connectNotice = null,
+  onDismissConnectNotice = () => {},
+  guideOpen = false,
 }: {
   settings: TaskSettings;
   onChange: (patch: Partial<TaskSettings>) => void;
   onClose: () => void;
+  /** What the consent redirect said (CE-10c). Drawn in the Connected calendars section. */
+  connectNotice?: ReturnNotice | null;
+  onDismissConnectNotice?: () => void;
+  /** Open the How to connect guide expanded. */
+  guideOpen?: boolean;
 }) {
   const wins = settings.energyWindows ?? [];
   const [showDefault, setShowDefault] = useState(false);
@@ -97,7 +107,7 @@ export function CalendarSettings({
           padded so nothing hides behind the home indicator / menu bar);
           anchored popover on ≥sm. */}
       <div
-        className="fixed inset-x-0 bottom-0 z-[80] flex max-h-[88vh] flex-col rounded-t-2xl border border-border bg-card text-xs shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:z-30 sm:mt-2 sm:max-h-[80vh] sm:w-80 sm:rounded-lg sm:shadow-xl"
+        className="fixed inset-x-0 bottom-0 z-[80] flex max-h-[calc(88vh-var(--phone-nav-h))] flex-col rounded-t-2xl border border-border bg-card text-xs shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto! sm:right-0 sm:top-full sm:z-30 sm:mt-2 sm:max-h-[80vh] sm:w-80 sm:rounded-lg sm:shadow-xl"
       >
         {/* grab handle (mobile affordance) */}
         <div className="flex shrink-0 justify-center pt-2 sm:hidden">
@@ -114,7 +124,7 @@ export function CalendarSettings({
             safe-area bottom padding so the last control clears the menu bar. */}
         <div
           className="min-h-0 flex-1 overflow-y-auto px-3"
-          style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+          style={{ paddingBottom: "1rem" }}
         >
           {/* How the AI plans your day — the standing planning philosophy. */}
           <div className="mb-3 rounded-md border border-primary/20 bg-primary/[0.04] p-2">
@@ -155,6 +165,9 @@ export function CalendarSettings({
               </p>
             )}
           </div>
+
+          {/* Connected calendars (CE-10c): draws nothing until the gateway says it is on. */}
+          <ConnectedCalendarsSection notice={connectNotice} onDismissNotice={onDismissConnectNotice} guideOpen={guideOpen} />
 
           <p className={sectionCls}>When you work</p>
           <div className="mb-1 flex items-center justify-between gap-2">

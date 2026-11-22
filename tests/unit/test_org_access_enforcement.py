@@ -131,6 +131,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
         # The OAuth callback left this set in EM-T1a: it runs behind the
         # session now (email_app_master_plan.md §10.4.1, risk R-4).
         "/email/webhook/microsoft",
+        # WS-17 SG-1 (D-EM-68): a mail reader fetches a signature logo with
+        # no session. The 256-bit token is the capability, read under
+        # tenant_session(org) and RLS. It is in main.PUBLIC_ROUTES too.
+        "/email/signature-image/{org}/{token}.{ext}",
     },
     "gateway.routes.notes": {
         "/notes/meetings/{meeting_id}/live/segment",
@@ -203,6 +207,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # No exemption: the callback runs behind the member session through the
     # BFF. The webhook is a separate router in PUBLIC_ROUTES.
     "gateway.routes.github.connect": set(),
+    # API-2 — the connect flow of an API template (Zoho Books). Gated on
+    # `feature:integrations` after the `API_CONNECTIONS_ORGS` 404, and each
+    # route also needs `integrations:manage`. No exemption: the callback runs
+    # behind the member session through the CRM BFF callback.
+    "gateway.routes.integrations_api_connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },
@@ -321,6 +330,16 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "reads no input but `If-None-Match`, and the flag "
             "`PACKAGE_HOST_ORGS` answers 404 first."
         ),
+        "/shell/layout": (
+            "PKG-17a. The org default of the shell layout is a UI default and "
+            "grants nothing. `GET` is open to every signed-in member, who reads "
+            "only their own org's document (the tenant is the bound session "
+            "under FORCE RLS, never a request value). `PUT` needs "
+            "`admin:settings:manage`. Both answer 404 first for an org outside "
+            "`PACKAGE_HOST_ORGS` "
+            "(`test_shell_layout.py::test_flag_off_is_404_before_403`, "
+            "`test_a_non_admin_put_is_403`, `test_shell_layout_r8.py`)."
+        ),
         "/shell/search": (
             "NS-4a. Each provider in `PROVIDERS` checks "
             "`user.has_permission('feature:<app>')` before it calls the app's own "
@@ -371,6 +390,20 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "and no member from the request "
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
+        "/shell/waiting": (
+            "WS-AP AP-1a. `WAITING_ORGS` answers 404 first, and a signed agent "
+            "gets 404. Each provider in `waiting.PROVIDERS` checks the features "
+            "of its app's own route through `Provider.held_by` before it calls "
+            "that route's read. `held_write` also needs `ADMIN_PERMISSION`. "
+            "`app_request` has no feature, as its own routes have none: the "
+            "flag and agent access gate it, and it lists the member's own rows. "
+            "The route takes no member and no org from the request "
+            "(`test_waiting_seam_r8.py`)."
+        ),
+        "/shell/waiting/count": (
+            "WS-AP AP-1a. The same run of `waiting.PROVIDERS` and the same "
+            "gates as `/shell/waiting` (`test_waiting_seam_r8.py`)."
+        ),
     },
     "gateway.retrieval.company": {
         "/search/company": (
@@ -382,6 +415,16 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "source also applies the kill switch and the access rule. The route "
             "takes no member and no org from the request "
             "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
+        ),
+    },
+    "gateway.retrieval.names": {
+        "/search/names": (
+            "WS-FIND FIND-5. `FIND_ORGS` answers 404 first. The route asks only "
+            "a source that `Source.reaches` the member: `feature:<app>` and the "
+            "app's switch. The CRM source also applies the access rule, and a "
+            "refusal gives no row (`test_resolve_name_tool.py`). The route takes "
+            "no member and no org from the request "
+            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`)."
         ),
     },
 }

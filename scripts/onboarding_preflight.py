@@ -305,28 +305,25 @@ def _internal_token_remediation(env: Env, box: bool) -> str:
         "    By hand (no redeploy): you must write it to BOTH "
         f"{env_path} and {wb_path}, then restart the gateway and "
         "the workbench. Setting only the gateway .env is the lockout: the BFF "
-        "keeps sending its 'sk-local-dev-change-me' default "
-        "(workbench/control_plane/src/lib/gateway.ts:58-61), so every proxied "
+        "sends an empty Bearer "
+        "(workbench/control_plane/src/lib/gateway.ts), so every proxied "
         "browser call arrives with a bad Bearer and a real X-User-Email, and "
         "acb_auth/deps.py:356-361 resolves that to NO_ACCESS — for every "
         "signed-in member, not just new ones.\n"
-        "    Provisioning the token makes GATEWAY_REFUSE_LLM_KEY_IDENTITY "
-        "inert, which is the point: the flag exists for boxes that cannot be "
-        "provisioned yet."
+        "    There is no fallback to LITELLM_MASTER_KEY (WS-24b, 2026-11-06). "
+        "An unset token fails closed: internal calls get 401."
     )
 
 
 def check_internal_token(env: Env, box: bool) -> Check:
     """GATEWAY_INTERNAL_TOKEN is provisioned in BOTH files and is not the LLM key.
 
-    WHAT THIS PREVENTS, part one. ``acb_auth.deps._resolve_internal_token``
-    (:93-117) falls back to ``LITELLM_MASTER_KEY`` when
-    ``GATEWAY_INTERNAL_TOKEN`` is unset. That LLM key is handed to every agent's
-    BYOK client, so while the fallback is in effect any agent holding it can
-    present it as service identity and then either assert an arbitrary
-    ``X-User-Email`` (``deps.py`` branch 1a, :311-331) or act as the platform
-    itself with ``SERVICE_ACCESS`` (branch 1b, :339-344). With one user that is
-    a curiosity. With colleagues it is "any agent can read anyone's mail".
+    WHAT THIS PREVENTS, part one. Until WS-24b (2026-11-06)
+    ``acb_auth.deps._get_internal_token`` fell back to ``LITELLM_MASTER_KEY``
+    when ``GATEWAY_INTERNAL_TOKEN`` was unset. That fallback is gone: an unset
+    token now fails closed, and every internal call gets 401. The LLM key is
+    handed to every agent's BYOK client, so a token EQUAL to it still lets any
+    agent present it as service identity (``deps.py`` branches 1a and 1b).
 
     Two secrets set to the SAME string is the same defect wearing a fix's
     clothes, so equality is checked as well as presence.
@@ -338,7 +335,7 @@ def check_internal_token(env: Env, box: bool) -> Check:
     state that bricks the deployment:
 
         .env has the token, .env.local does not
-          -> the BFF sends "sk-local-dev-change-me" (lib/gateway.ts:58-61)
+          -> the BFF sends an empty Bearer (lib/gateway.ts)
           -> bearer_ok is false while X-User-Email is present and an internal
              token IS configured
           -> deps.py:356-361 returns NO_ACCESS for EVERY signed-in member.
@@ -376,8 +373,8 @@ def check_internal_token(env: Env, box: bool) -> Check:
     if not internal:
         c.status = FAIL
         c.detail = (
-            "GATEWAY_INTERNAL_TOKEN is unset, so service identity falls back "
-            "to LITELLM_MASTER_KEY (acb_auth/deps.py:108-117)."
+            "GATEWAY_INTERNAL_TOKEN is unset, so service identity is OFF and "
+            "every internal call gets 401 (acb_auth/deps.py, WS-24b)."
         )
         return c
 
@@ -396,8 +393,8 @@ def check_internal_token(env: Env, box: bool) -> Check:
         c.status = FAIL
         c.detail = (
             f"the gateway .env has the token but {env.wb_env_path} does not "
-            "exist, so the BFF falls back to 'sk-local-dev-change-me' "
-            "(lib/gateway.ts:58-61). LOCKOUT: every signed-in member resolves "
+            "exist, so the BFF sends an empty Bearer "
+            "(lib/gateway.ts). LOCKOUT: every signed-in member resolves "
             "to NO_ACCESS at deps.py:356-361."
         )
         return c
@@ -407,8 +404,8 @@ def check_internal_token(env: Env, box: bool) -> Check:
         c.status = FAIL
         c.detail = (
             f"the gateway .env has the token but {env.wb_env_path} does not "
-            "set GATEWAY_INTERNAL_TOKEN, so the BFF falls back to "
-            "'sk-local-dev-change-me' (lib/gateway.ts:58-61). LOCKOUT: every "
+            "set GATEWAY_INTERNAL_TOKEN, so the BFF sends an empty Bearer "
+            "(lib/gateway.ts). LOCKOUT: every "
             "signed-in member resolves to NO_ACCESS at deps.py:356-361."
         )
         return c
@@ -603,8 +600,7 @@ def check_caddy_strip(env: Env, box: bool) -> Check:
     WHAT THIS PREVENTS — and why it is the loudest check here. ``deps.py``'s
     own module docstring (:27-35) says it plainly: nothing in that module can
     tell a forwarded identity header from a forged one. The Bearer beside it is
-    the whole of the proof, and that Bearer falls back to a key every agent
-    holds (check 1). **The reverse proxy is the boundary.** Every access fix
+    the whole of the proof (check 1). **The reverse proxy is the boundary.** Every access fix
     the platform has shipped — the Notes owner filter, the room intersection,
     default-deny — sits behind an assumption that a stranger cannot simply set
     ``X-User-Email: someone@fracktal.in`` on a request to the public API host.

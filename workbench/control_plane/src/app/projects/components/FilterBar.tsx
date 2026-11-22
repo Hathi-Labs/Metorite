@@ -235,6 +235,14 @@ export interface Props {
   waitingOnMe?: boolean;
   onWaitingOnMe?: (next: boolean) => void;
   /**
+   * SP-2a — the Epic filter: the epic whose tasks the board shows, or "".
+   * Page state, not a saved-view key. Absent when the project holds no epic,
+   * and then the bar draws no control.
+   */
+  epic?: string;
+  epics?: readonly { value: string; label: string }[];
+  onEpic?: (next: string) => void;
+  /**
    * WS-55 EA-13e (EA3-43, EA3-49) — the "Agent work" filter: tasks that an
    * agent worked on, by the rule of `agent_worked.py`. Page state like
    * "Waiting on me", and it shows with it.
@@ -272,6 +280,9 @@ export function FilterBar({
   onExport,
   waitingOnMe = false,
   onWaitingOnMe,
+  epic = "",
+  epics = [],
+  onEpic,
   agentWork = false,
   onAgentWork,
 }: Props) {
@@ -476,6 +487,16 @@ export function FilterBar({
               : []),
           ]}
         />
+        {onEpic && epics.length ? (
+          <SelectButton
+            label="Epic"
+            widthClass="w-40"
+            className={epic ? OFF_DEFAULT : AT_DEFAULT}
+            value={epic}
+            onChange={onEpic}
+            options={[{ value: "", label: "Any epic" }, ...epics]}
+          />
+        ) : null}
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"

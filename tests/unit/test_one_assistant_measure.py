@@ -524,13 +524,18 @@ def test_the_tap_keeps_the_turn_kind_time_and_the_loads_of_a_pack() -> None:
 
 
 def test_the_card_reproduces_each_probe_of_the_router() -> None:
-    for probe in run.RATE_CARD["probes"]:
+    # TS-7a-cap: the card is keyed by the served model, and the probes of
+    # 2026-10-25 are deepseek-v4-pro calls.
+    from evals.one_assistant_measure import spend
+
+    card = spend.card_of("deepseek/deepseek-v4-pro", run.RATE_CARD)
+    for probe in run.RATE_CARD["models"]["deepseek-v4-pro"]["probes"]:
         usage = {"prompt_tokens": probe["prompt_tokens"],
                  "completion_tokens": probe["completion_tokens"],
                  "prompt_tokens_details": {"cached_tokens": probe["cached_tokens"]}}
-        usd, source = run.cost_of(usage)
+        usd, source = run.cost_of(usage, card)
         assert source == "card" and abs(usd - probe["cost"]) <= 0.01 * probe["cost"], (usd, probe)
-    assert run.cost_of({"cost": 0.25, "prompt_tokens": 9}) == (0.25, "vendor")
+    assert run.cost_of({"cost": 0.25, "prompt_tokens": 9}, card) == (0.25, "vendor")
 
 
 def test_a_live_run_with_real_specialists_refuses_a_send_that_is_not_the_router() -> None:

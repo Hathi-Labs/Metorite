@@ -279,3 +279,54 @@ def test_deleting_a_comment_does_not_destroy_other_peoples_replies():
 
 def test_a_row_cannot_be_its_own_parent():
     assert "parent_id <> id" in MIGRATION
+
+
+# ── WS-55 MCP-G9 fix round 4: the race guard of the agent path ───────────────
+
+
+def test_the_agent_race_guard_answers_each_transient_sqlstate_with_409():
+    """The agent's edit or delete of a comment locks the comment, then the
+    task. A task delete locks them in the other order, so the two can
+    deadlock. A transient SQLSTATE of a SIGNED agent answers 409 with the
+    detail that the edge maps. A person's request and any other error raise
+    as before. Mutation G12 of ``test_mcp_edge_comment_edit_r8.py``."""
+    from gateway.routes.projects.core import TRANSIENT_SQLSTATES
+
+    class DriverError(Exception):
+        def __init__(self, code: str) -> None:
+            super().__init__(code)
+            self.sqlstate = code
+
+    agent = SimpleNamespace(agent=object())
+    person = SimpleNamespace(agent=None)
+    assert {"40P01", "40001", "55P03"} <= TRANSIENT_SQLSTATES
+    for code in sorted(TRANSIENT_SQLSTATES):
+        async def race(*, user: Any, code: str = code) -> None:
+            raise DriverError(code)
+
+        guarded = activities._agent_comment_race_as_409(race)
+        with pytest.raises(HTTPException) as caught:
+            run(guarded(user=agent))
+        assert caught.value.status_code == 409, code
+        assert caught.value.detail == activities.AGENT_COMMENT_RACE
+        with pytest.raises(DriverError):
+            run(guarded(user=person))
+
+    async def other(*, user: Any) -> None:
+        raise DriverError("23505")
+
+    with pytest.raises(DriverError):
+        run(activities._agent_comment_race_as_409(other)(user=agent))
+
+
+def test_both_comment_routes_carry_the_agent_race_guard():
+    from gateway.routes.projects import router
+
+    guarded = {
+        (method, route.path)
+        for route in router.routes
+        for method in getattr(route, "methods", set())
+        if getattr(route.endpoint, "agent_comment_race_guard", False)
+    }
+    assert guarded == {("PATCH", "/projects/comments/{activity_id}"),
+                       ("DELETE", "/projects/comments/{activity_id}")}

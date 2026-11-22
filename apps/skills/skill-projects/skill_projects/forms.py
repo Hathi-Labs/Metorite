@@ -56,11 +56,11 @@ from skill_projects.reads import WEEKDAYS, _number, _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     _WRITE_FAILED,
-    CANCELLED,
     CASCADE_DEFAULTS,
     MAX_BATCH,
     AgentAssigneeRefused,
     _access_lines,
+    _act_ran,
     _confirm,
     _date_arg,
     _fields_block,
@@ -70,11 +70,12 @@ from skill_projects.writes import (
     _matches_by_name,
     _NewTask,
     _node,
+    _not_confirmed,
     _post_new_task,
     _prepare_new_task,
     _project_id,
     _resolve_assignee,
-    _root_of,
+    _space_of,
     _split,
     _statuses_of,
     _subtask_counts,
@@ -83,9 +84,11 @@ from skill_projects.writes import (
     _tree_scope,
     _unknown_addresses,
     _vocab,
+    _with_line,
     _yes_no,
     agent_assignee_refusal_as_text,
     mailbox_line,
+    shared_vocab_line,
     space_refusal,
     update_project,
     update_task,
@@ -1132,7 +1135,7 @@ async def propose_plan(
         detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}{n_nobody}",
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     return await _write_plan(label, parent_id, parent_label, about, final, owners, links, titles)
 
 
@@ -1781,7 +1784,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     # already refuses an id it did not offer. This checks again, so a door
     # that answers anything else writes nothing.
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     offered = {_row_id(p) for p in rows}
     if not ticked <= offered:
         return FORGED_ROWS
@@ -1902,6 +1905,10 @@ async def _write_batch(
             after = ("assignees", exc)
         if after is not None:
             out.unsaved.append(_unsaved(task, after[1]))
+    if out.made and len(out.made) == len(chosen) and not out.unsaved and not left:
+        # Task 3595: a FULL batch only. Each row of the card is ticked, and
+        # each one exists with its follow-ups. A partial is never named.
+        _act_ran()
     lanes = await _lane_names(pid)
     return _batch_receipt(node, chosen, left, out, lanes, names or {})
 
@@ -1964,7 +1971,8 @@ def _batch_receipt(
         made = len(out.made)
         lines.append(
             f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
-            "create them again. To retry a failed row, call create_tasks with that row alone."
+            "create them again. To retry a row that is not in this list, call create_tasks "
+            "with that row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.title)}, {_left_why(p)}." for p in left
@@ -2149,20 +2157,25 @@ class _VocabPlan:
 
     def __init__(
         self, spec: _VocabKind, path: str, node: dict[str, Any], where: str,
-        rows: list[_VocabRow],
+        rows: list[_VocabRow], reach: str = "",
     ) -> None:
         self.spec = spec
         self.path = path
         self.node = node
         self.where = where
         self.rows = rows
+        #: HRD-9a: "Changes the tags of «Space» for N projects", or "". The
+        #: card shows it, and the receipt does not change.
+        self.reach = reach
 
     def card(self) -> dict[str, Any]:
         n, spec = len(self.rows), self.spec
         body = {"project": data(self.node.get("name")), "scope": self.where}
         return {
             "title": f"Add {n} {spec.nouns(n)} to {data(self.node.get('name'))}?",
-            "detail": f"one batch in {self.where} · untick a {spec.noun} to leave it out",
+            "detail": _with_line(
+                f"one batch in {self.where} · untick a {spec.noun} to leave it out", self.reach,
+            ),
             "context": _fields_block(body),
             "rows": [_vocab_card_row(spec, p) for p in self.rows],
         }
@@ -2213,8 +2226,11 @@ async def _vocab_plan(spec: _VocabKind, project_id: str, raw: Any) -> _VocabPlan
             f"Row {long.index}: a name is at most {ROW_LABEL_MAX} characters on the card. "
             "Nothing was created."
         )
-    where = _tree_scope(await _root_of(pid, node), node)
-    plan = _VocabPlan(spec, paths[spec.kind], node, where, rows)
+    space = await _space_of(pid, node)
+    where = _tree_scope(space, node)
+    plan = _VocabPlan(
+        spec, paths[spec.kind], node, where, rows, shared_vocab_line(spec.kind, space),
+    )
     if not plan.fits():
         return (
             f"These {len(rows)} {spec.nouns(2)} do not fit on one confirmation card. "
@@ -2246,7 +2262,7 @@ async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
     """
     spec = plan.spec
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     if not ticked <= {_vocab_row_id(p) for p in plan.rows}:
         return FORGED_ROWS
     chosen = [p for p in plan.rows if _vocab_row_id(p) in ticked]
@@ -2264,6 +2280,8 @@ async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
             (refused if known else unknown).append(line)
             continue
         made.append((p, row if isinstance(row, dict) else {}))
+    if made and len(made) == len(chosen) and not left:
+        _act_ran()  # Task 3595: a FULL batch only, each row ticked and made.
     return _vocab_receipt(plan, chosen, left, made, refused, unknown)
 
 
@@ -2300,7 +2318,8 @@ def _vocab_receipt(
     if made:
         lines.append(
             f"The {len(made)} {spec.nouns(len(made))} listed above exist. Never create them "
-            f"again. To retry a failed row, call {spec.tool} with that row alone."
+            f"again. To retry a row that is not in this list, call {spec.tool} with that "
+            "row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.name)}, unticked on the card"

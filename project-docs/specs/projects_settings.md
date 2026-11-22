@@ -1,11 +1,13 @@
 # Projects settings — one place for every setting of the Projects app
 
-**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). Nothing of them is built.** Owner directive, 2026-09-29. Board row
+**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). PST-1 is built (2026-11-06), and PST-2 to PST-5 are not.** Owner directive, 2026-09-29. Board row
 **WS-42**. This spec records **D81**. §9 records **D185**. The first merge wins a D-number, so the author of the PR must re-check that D185 is still free at merge.
+
+**2026-11-07: the owner made the pane the one place to edit a space or a project (§10, D191).** PS-5 and PS-6 are not built. The author of the PR must re-check at merge that D191 is still free.
 
 Verified against code on 2026-09-29 at `main` `02658314`. The author checked §9 against code on 2026-11-06 at `main` `06cfc43f8`.
 
-**Status order (task 1792, 2026-11-05).** One rule orders every status lane: stage, then position, then name. The Statuses dialog shows up and down arrows on each row. The board has a Statuses control that opens the dialog. A new task never starts in a Done or Cancelled lane.
+**Status order (task 1792, 2026-11-05).** One rule orders every status lane: stage, then position, then name. The Statuses dialog shows up and down arrows on each row. The board has a Statuses control that opens the dialog. D191 takes that control away (PS-6, §10). A new task never starts in a Done or Cancelled lane.
 
 ## 0. One paragraph
 
@@ -46,11 +48,15 @@ design system.
 2. **Two scopes, always named.** A setting is either the organization's or
    one space's. The section list shows each group under its own heading.
    The space group names the space it edits.
+   **Widened by D191 (§10):** the second scope is "space or project". The
+   picker lists the tree, and each section names the owner of what it edits.
 3. **One body per setting.** Each existing manager draws its body inside a
    frame. The managers are statuses, fields, tags, lifecycle and the space's
    identity. The frame is a `Modal` from the row menu and an inline section in the pane. A second
    implementation of a manager is a defect.
 4. **The row menus stay.** They are shortcuts to the same bodies.
+   **Changed by D191 (§10):** the row menu keeps ONE settings item,
+   "Settings…". It opens the pane at that node.
 5. **The import moves into the pane.** The sidebar row goes. The empty tree
    had one link to it, and the owner removed it on 2026-09-30, because
    Settings already holds the import. Settings, Import & export is now the
@@ -79,6 +85,9 @@ status set stays in its row menu and that the space section only says where it
 lives. That is no longer true. §9 names the owner of the set on every screen,
 lists the projects that own their own set, and adds a chip on the board.
 
+**D191 (2026-11-07, §10) withdrew the chip.** The pane now edits a project's
+own set, and the board shows no status control.
+
 ## 4. The surface
 
 ### 4.1 Where it opens
@@ -88,6 +97,10 @@ lists the projects that own their own set, and adds a chip on the board.
 - The command palette: "Projects settings".
 - The header menu of a selected project: "All settings for this space", which
   opens the pane at the project's space.
+
+**Changed by D191 (§10.3):** the header menu reads "Project settings" or
+"Space settings" and opens the pane at the selected node. The row menu has one
+"Settings…" item. The board has no way in.
 
 ### 4.2 The layout
 
@@ -116,6 +129,9 @@ it alone, under a Back control that returns to the list.
   at the first space.
 - An organization with no spaces shows the Space heading with one line under
   it. The line says a space must exist first, and points to the import.
+
+**Widened by D191 (§10.2):** the picker lists spaces, projects and subprojects
+as paths, and starts at the selected node.
 
 ### 4.4 The sections
 
@@ -172,6 +188,8 @@ in a manager changes.
 | **PS-3** ✅ built 2026-09-29 | Shared vocabulary: the organization's own tags, fields and types, with rename (D-PM-33) | HANDOFF H-4 closes. The owner can then decide H-5. **Met:** `GET /projects/vocabulary` (`vocabulary.py`) lists only org-wide rows of the caller's tenant, with open-task counts for a member who holds `admin:settings:manage` and none for anybody else. `tests/live/live_ws42_vocabulary.py` proves the tenant fence, the counts and the member case on Postgres, and fails six ways when the tenant predicate is removed. A browser walk against a real gateway renamed a shared tag after the count dialog (4 tasks in 2 spaces), renamed a shared type, and found the new name locked in a space's Task types. **Not in this slice:** a create, because `PROJECTS_ORG_VOCABULARIES` is off (H-5), and a retire, because D-PM-33 refused merge and delete. PS-3b adds both after the H-205 ruling |
 | **PS-3b** ✅ LIVE 2026-10-01 (#557, serving `b047d559`, and `PROJECTS_ORG_VOCABULARIES=1` on production) | Retire and add shared entries. Owner rulings 2026-10-01: **H-205**: an admin may delete a shared tag, field or type, and merge a shared tag into another shared tag, after the count. **H-5**: creating shared entries goes live once removal ships, from an Add form in Shared vocabulary. **H-203**: a new task takes NO default type, so types stay optional | `GET /vocabulary/{kind}/{id}/impact` gives the count of tasks and spaces first, and each delete or merge asks with it. The create goes through each kind's one create route with `scope: "org"`, anchored on a space the admin can see. **A fix on the way:** `governed_tasks_scope` now leaves out a space that keeps its OWN tag or field of the same identity. Tags are text and field values are keyed, so an organization-wide rename, merge or delete used to rewrite that space's own data too. **Met:** `tests/live/live_ws42_retire.py` passes 17/17 on Postgres, and 8 checks fail with the exclusion removed. `live_ws27bj_rename.py` and `live_ws42_vocabulary.py` still pass. A browser walk against a real gateway added, deleted and merged shared tags through the count dialogs |
 | **PS-4** | Export | A spec section says what an export holds and in which format, before any build |
+| **PS-5** (task 2169, D191) | The picker lists any space, project or subproject, and each section edits the set that node uses (§10.2) | §10.4 |
+| **PS-6** (task 2170, D191) | One way into settings: no board control, one "Settings…" row item, and the header menu opens the pane at the node (§10.3) | §10.4 |
 
 ### 7.1 Status-set slices (§9, D185)
 
@@ -179,7 +197,7 @@ in a manager changes.
 
 Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice skips the audit when its Metorite task states the acceptance criteria. A slice that changes a screen needs the visual-review walk of §6. No slice adds a migration.
 
-**PST-1 (task 1798). Goes first.**
+**PST-1 (task 1798). Goes first.** ✅ built 2026-11-06, branch `mt-73383eb6-pst1`.
 
 - **Does:** the extended read of §9.4. The copy module of §9.5. The scope line on every Statuses screen (the dialog and the pane). The list of projects that own their own set, with links. The pane section gets the name "Space default statuses". The text "Client Projects's set" is fixed.
 - **Files:** `apps/services/gateway/gateway/routes/projects/admin.py` (`describe_status_set`, `_OVERRIDES_BELOW_SQL`). A count query beside `_STATUS_SCOPE_SQL` in `routes/projects/core.py`. In `workbench/control_plane/src/app/projects`: `lib/statusSetCopy.ts` (new), `components/StatusManager.tsx`, `components/StatusSetControl.tsx`, `components/ProjectsSettings.tsx:69` (the "Statuses" label), `lib/commands.ts:293` (the palette entry) and `lib/projectMenu.ts:343` (the row-menu label).
@@ -189,10 +207,11 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   2. The Space default statuses section of a space with 27 users shows "27 projects use these statuses." It lists the projects that own their own set. Each row links to that project's editor.
   3. The dialog of a subproject shows "Uses the statuses of {owner} (shared with {N})".
   4. A project named "Client Projects" never reads "Client Projects's set".
-  5. The section list, the heading, the palette entry and the row-menu label use "Space default statuses".
+  5. The section list, the heading and the palette entry use "Space default statuses" (§9.5). The row-menu label stays "Statuses". On every level, the row menu opens the set of the clicked node. That set is not always the space default. `projectsSettings.test.ts` pins the label.
   6. The read returns `hidden_overrides`. The screen shows "and {N} more that you cannot see" only when N is more than 0.
   7. `path` of an override never holds a name that the member cannot see.
 - **Fence (R7):** `tests/unit/test_projects_status_set_read_r8.py` on Postgres. It checks the counts for cases 1, 2 and 3. It checks a nested owner that the count must skip. It checks that tenant B cannot change the count of tenant A. It checks a hidden project that the list leaves out and the count includes, and `hidden_overrides` for it. It checks a visible override under a hidden parent: its `path` shows no hidden name. It fails when the `NOT p.owns_statuses` test leaves the recursive arm. Also `statusSetCopy.test.ts` and `projectsSettings.test.ts` (§6).
+- **Built (2026-11-06):** the read is `_status_set_reach()` in `admin.py` and `status_users()` in `core.py`. One query reads every override chain with its visibility. The palette entry opens the pane section of the space, not the dialog of the selected node. §9.5 does not give two lines, so the build chose them. With no visible row, the hidden line reads "You cannot see it" or "You cannot see them". Each row adds "Shared with {N} projects". `owner_name` still names an owner that the member cannot see. That is the old behaviour, and the §9.5 sentence needs the name. `reach` counts each board that an edit changes: `used_by`, with no folder, plus the owner when it shows lanes. A `path` starts at the first name that the member can see, and a later hidden run is one "…".
 
 **PST-2 (task 1799). After PST-1. Parallel with PST-4.**
 
@@ -207,19 +226,18 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
 
 **PST-3 (task 1800). After PST-2. Parallel with PST-4 and with the PST-5 server read.** It runs after PST-2 because its gate hides the buttons of PST-2, and it edits `StatusManager.tsx` too.
 
-- **Does:** the board chip of §9.5 replaces the Statuses button of task 1792. A click opens the editor. The permission gate of §9.6 hides the arrows and the two buttons of PST-2 from a member with `may_edit` false. The chip stays visible to that member.
-- **Files:** `components/TaskBoard.tsx` (the `onManageStatuses` control). `page.tsx` (passes the read, and the comment above `projectActions` gets one line that points to §9.3). `components/StatusOrderArrows.tsx`. `components/StatusManager.tsx` (passes `may_edit`). `components/StatusSetControl.tsx` (hides the PST-2 buttons).
+- **Cut by D191 (2026-11-07).** The board chip is withdrawn, and PS-6 takes the Statuses button away (§10). PST-3 keeps the permission gate only.
+- **Does:** the permission gate of §9.6 hides the arrows and the two buttons of PST-2 from a member with `may_edit` false. The editor opens read-only for that member.
+- **Files:** `components/StatusOrderArrows.tsx`. `components/StatusManager.tsx` (passes `may_edit`). `components/StatusSetControl.tsx` (hides the PST-2 buttons). Not `TaskBoard.tsx`.
 - **Done when:**
-  1. The board shows the chip and not the Statuses button.
-  2. The chip text matches §9.5 for each case.
-  3. A member without `projects:settings:write` sees no arrows, and the dialog opens read-only.
-  4. The chip does not show when the board does not group by status.
-- **Fence (R7):** `statusChip.test.ts` (text per case, absent when not grouped by status). `StatusManager.arrows.test.ts` gets a case: no arrows when `may_edit` is false. `tests/unit/test_projects_agent_grants.py` stays green. It holds the server side of the same predicate.
+  1. A member without `projects:settings:write` sees no arrows, and the editor opens read-only.
+  2. That member sees neither button of PST-2.
+- **Fence (R7):** `StatusManager.arrows.test.ts` gets a case: no arrows when `may_edit` is false. `tests/unit/test_projects_agent_grants.py` stays green. It holds the server side of the same predicate.
 
-**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2.**
+**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2.** ✅ built 2026-11-06, branch `mt-cb6479be-pst4`.
 
-- **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools behave as they do today: no refusal, no shared-set text on the card, and the raw `position` argument.
-- **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). The change in the TOOL is behind the same flag. With the flag on, the tool takes `slot` or `after` and no longer sends `position`. With the flag off, the tool keeps `position`.
+- **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools add no refusal and no shared-set text on the card, and they pass `position` through. `slot` and `after` work with the flag off too.
+- **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). A tool schema cannot be dark, so the tools take `slot` and `after` in every organization, flag on or off. The flag gates only the shared-set refusal, the shared-set card line and the refusal of a raw `position`. With the flag off, `position` still passes through as before, and a call with no place sends the old last-in-set position.
 - **Does (with the flag on):** `create_status`, `update_status` and `delete_status` read the §9.4 read first.
   1. When the project does not own its set, the tool refuses. It says that the set belongs to {owner} and that N projects share it. It offers `set_status_set` mode=own first.
   2. The member can ask on purpose to change the shared set. Then the card names the set and the count: "Changes the statuses of {owner} for {N} projects".
@@ -233,8 +251,9 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   4. The server refuses a slot outside the stage of the lane, and gives the allowed range.
   5. With the flag on, the tool does not send a raw position from the model any more.
   6. The Settings field `status_set_guard_orgs` exists, and its key is in the `for key in (...)` loop of `tests/unit/test_flag_reload.py` (about line 66).
-  7. With the flag off, all five behaviours above are absent and the tools act as before this slice.
+  7. With the flag off, behaviours 1, 2 and 5 are absent. The tools add no refusal, no card line, and they still pass `position` through. `slot` and `after` work in every organization.
 - **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after, and a case that the flag off keeps today's behaviour, including `position`). `tests/unit/test_flag_reload.py` gets `status_set_guard_orgs` in its `for key in (...)` loop. `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
+- **Built (2026-11-06):** the flag reader is `status_set_guard_allowed()` in `admin.py`. It sets `guard_on` on the status-set read. `stage_placement()` and `_renumber_stage()` place a lane by `slot` or `after`. They lock the set and renumber only the stage group of the lane, to 10, 20, 30. A slot outside the group gets a 422 with the range. The tools say the same range before any card. `status_edit_refusal()` in `writes.py` gets `guard_shared` and `change_shared`. The tools add the argument `change_whole_set`. Slot and after are open in all organizations, because a tool schema cannot be dark. The flag gates three things. These are the shared-set refusal, the shared-set card line and the refusal of a raw `position`. The refusal names the owner and N, and offers `set_status_set` mode=own. With the flag on, a call with no place goes last in its stage. The vocabulary read says that a shared set needs mode=own before a change. The card shows a slot as "3 of 4 in its stage" under the existing key Position, so no UI file changed. The rule text is flag-neutral. It sits in the `projects-structure` pack rules and in `agent-projects/instructions.md`. No migration.
 
 **PST-5 (task 1791, the delete flow). The server read can start after PST-1. The UI goes after PST-2.**
 
@@ -266,7 +285,7 @@ change is not done: nothing else tests layout.
 ## 9. Status sets: which set, who shares it
 
 Owner request: 2026-11-05, Metorite epic task 1796. Owner decisions: 2026-11-06, **D185**.
-Verified against code on 2026-11-06 at `main` `06cfc43f8`. **Nothing in this section is built yet.**
+Verified against code on 2026-11-06 at `main` `06cfc43f8`. **PST-1 is built (2026-11-06), and PST-2 to PST-5 are not.**
 Slices: PST-1 to PST-5 (§9.8). Gate label of every slice: **AGENT-SAFE**.
 
 ### 9.1 What the owner asked
@@ -304,13 +323,16 @@ returns if the project owns its statuses again.
    statuses names the owner of the set.
 2. **Settings, Statuses stays, and it is renamed "Space default statuses".** It shows the scope line.
    It lists each project that owns its own set, with a link.
-3. **The board gets a chip that names the set.** A click opens the editor. The chip replaces the
-   Statuses button that task 1792 added above the board.
+3. ~~**The board gets a chip that names the set.** A click opens the editor. The chip replaces the
+   Statuses button that task 1792 added above the board.~~ **Reversed by D191 (2026-11-07, §10).**
+   The board shows no status control.
 
-**This supersedes one older rule, for statuses only.** The owner rule of 2026-08-31 (the comment
+~~**This supersedes one older rule, for statuses only.** The owner rule of 2026-08-31 (the comment
 above `projectActions` in `page.tsx`) keeps management controls out of the view chrome. Decision 3
 puts the chip in the view chrome. The chip is a label that opens the editor. It is not a toolbar
-of management buttons. The rule of 2026-08-31 still binds for fields, tags and lifecycle.
+of management buttons. The rule of 2026-08-31 still binds for fields, tags and lifecycle.~~
+
+**D191 restores the rule of 2026-08-31 for statuses too.** No management control sits in the view chrome.
 
 ### 9.4 The read: one server read for every surface
 
@@ -318,7 +340,7 @@ of management buttons. The rule of 2026-08-31 still binds for fields, tags and l
 (`describe_status_set` in `routes/projects/admin.py`). It already returns `owns`, `owner_id`,
 `owner_name`, `inherit_from_id`, `inherit_from_name`, `overrides`, `can_inherit`,
 `has_dormant_set`, `may_edit` and `edit_refusal`. PST-1 extends this read. PST-1 adds no second
-route. The Settings pane, the board chip, the Statuses dialog and the chat tools all call it.
+route. The Settings pane, the Statuses dialog and the chat tools all call it.
 A second implementation of this read is a defect.
 
 **What PST-1 adds to the response:**
@@ -375,7 +397,10 @@ the project name, its path and a link that opens that project's Statuses editor.
 project and no hidden one, the list shows `No project keeps its own statuses.` The Statuses section label in the
 section list, the heading and the palette entry all use the new name.
 
-**Board chip.** The chip sits in the place of the Statuses button of task 1792. It shows only when
+**Board chip. WITHDRAWN by D191 (2026-11-07, §10).** Do not build it. The text below stays as the
+record of D185.3.
+
+The chip sits in the place of the Statuses button of task 1792. It shows only when
 the board groups by status. It reads:
 
 | Situation | Chip text |
@@ -408,8 +433,7 @@ The read of §9.4 returns the answer as `may_edit` and the server words as `edit
 
 The UI must follow the read. A member with `may_edit` false sees no up and down arrows. That
 member sees no "Give this project its own statuses" button and no "Go back" button. That member
-still sees the chip, the scope line and the lane list. A click on the chip opens the dialog in
-read-only form. The server stays the real gate. The UI gate only removes a control that would
+still sees the scope line and the lane list, and the editor opens in read-only form. The server stays the real gate. The UI gate only removes a control that would
 end in a 403 (the review of task 1792 found one).
 
 ### 9.7 Where do the tasks go: one flow
@@ -461,3 +485,62 @@ Order and parallel work:
   The server part of PST-5 (the delete plan) can start as soon as PST-1 merges.
 
 The full definition of each slice is in §7. The rows there are the contract.
+
+## 10. One place to edit a space or a project (D191)
+
+Owner, 2026-11-07, in chat, on a capture of the board's Statuses button. Metorite: decision task 2168. The owner accepted the recommendation ("go ahead with what you recommend would be best").
+
+```text
+"even on desktop, should the statuses editing be so accessible? we can probably have one central surface to edit all the settings, tags, etc for each project or subproject in one place to not crowd up the UI/UX."
+```
+
+### 10.1 The decision (D191)
+
+1. **The board shows no status control.** No button and no chip. This reverses D185.3. The owner rule of 2026-08-31 (no management controls in the view chrome) binds for statuses again.
+2. **The pane edits a space or a project.** The second scope of D81.2 becomes "space or project". The picker lists the tree. Each section edits the set that the picked node uses, and names its owner.
+3. **One settings item in the row menu.** D81.4 changes. "Settings…" replaces Space settings, Statuses, Custom fields, Tags and Lifecycle policy. It opens the pane at that node.
+
+**What stays.** D185.1 and D185.2 stay. The Statuses editor still names the owner of a set and who shares it (PST-1). The chat card still says it (PST-4). A board does not change a set, so it does not need the line. D81.1, D81.3 and D81.5 stay: one pane, one body per setting, and the import in the pane.
+
+**The cost.** An admin who wants a new lane while looking at the board takes two more clicks: the header menu, then Statuses. The job is rare. People read a board many times a day.
+
+### 10.2 The pane at a project (PS-5)
+
+The picker is a `SelectButton`, as today. It lists each space, project and subproject that the member can see, as a path ("Metorite › Projects/Tasks App"). The list comes from the tree that the page already holds. A folder is not in the list, because a folder holds no settings. The picker starts at the selected node, or at the first space.
+
+| Section | At a space | At a project or a subproject |
+|---|---|---|
+| General | `SpaceSettings`: name, icon and colour | The name only, through `patchProject`. A project draws no icon (`SpaceSettings.tsx`, line 9) |
+| Statuses | The space's default set (§9.5) | The set of the node: its own, or the set it inherits. The scope line of PST-1 and the two buttons of PST-2 show |
+| Custom fields, Tags, Task types | The space's set | The space's set, and the member may edit it. A line under the heading names the space: "These belong to {space}. Every project in it uses them." |
+| Lifecycle | The space's policy | The space's policy, with the same line |
+
+**Why a project edits the space's tags.** Fields, tags and types are root-scoped (D-PM-16), so a project has no set of its own. The owner report of 2026-09-20 asked for "a space and place where we are editing the tags" from a subproject. That is why the row menu offers Tags on every level today (`lib/projectMenu.ts`). The pane keeps that reach, and the line says whose set it is.
+
+A phone shows the section list first, then one section under a Back control, as today.
+
+### 10.3 The ways in (PS-6)
+
+| Way in | Today | After PS-6 |
+|---|---|---|
+| The Settings row in the Projects sidebar | Opens the pane | No change |
+| The command palette | "Projects settings" | No change |
+| The header menu of a selected node | "All settings for this space", at the space | "Project settings" or "Space settings", at the node |
+| The row menu | Five items: Space settings, Statuses, Custom fields, Tags, Lifecycle policy | One item: "Settings…", at the node |
+| The board | A Statuses button above the lanes (task 1792) | Nothing |
+| A row of "projects that keep their own statuses" (PST-1) | Opens the Statuses dialog | Opens the pane at that project |
+
+A dialog that no way in opens any more goes in the same slice. Each setting keeps its one body (D81.3).
+
+### 10.4 Slices
+
+| Slice | Task | Done when | Tier |
+|---|---|---|---|
+| **PS-5** | 2169 | The rows of §10.2 hold. `projectsSettings.test.ts` gets three cases: the picker lists a subproject, Statuses at a project opens that project's set, and Tags at a project names the space. The UI gate binds: 4 captures | STANDARD |
+| **PS-6** | 2170 | The rows of §10.3 hold. A source scan finds no `onManageStatuses` prop on `TaskBoard`. The `projectMenu` tests pin one "Settings…" item on each level. The UI gate binds: 4 captures, with the board at 1440 px and 390 px | STANDARD |
+
+**Order.** PS-5 goes after PST-2, because it draws the PST-2 buttons inline. PST-3 may run beside PS-5. Whichever lands second adapts `StatusManager.tsx`. PS-6 goes after PS-5, because each way in opens the pane at a project.
+
+**No route, no migration and no flag.** Both slices move controls that exist. Gate label: **AGENT-SAFE**.
+
+**Fence (R7).** `projectsSettings.test.ts` and the `projectMenu` tests, as above. Advisory until each slice builds them.
