@@ -490,7 +490,10 @@ async def _name_actors(db: Any, wire: list[dict]) -> None:
         try:
             from gateway.routes.people.core import names_of
 
-            names = await names_of(db, emails)
+            # A savepoint: a failed statement must not abort the caller's
+            # transaction (``tenant_session``, ``db.py`` docstring).
+            async with db.begin_nested():
+                names = await names_of(db, emails)
         except Exception as exc:  # noqa: BLE001 - a label never fails the list
             logging.getLogger(__name__).warning(
                 "notifications.actor_names_unavailable class=%s", type(exc).__name__)

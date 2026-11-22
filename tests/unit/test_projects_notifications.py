@@ -236,6 +236,17 @@ class FakeDB:
     async def close(self) -> None:
         return None
 
+    def begin_nested(self):
+        """A savepoint: the fake keeps no transaction, so it is a plain context."""
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _savepoint():
+            self.savepoints = getattr(self, "savepoints", 0) + 1
+            yield self
+
+        return _savepoint()
+
     def issued(self, fragment: str) -> bool:
         return any(fragment in s for s in self.statements)
 
@@ -798,3 +809,11 @@ def test_a_failed_name_read_leaves_the_names_out_and_the_list_whole(monkeypatch)
     bind(monkeypatch, db, pm_notify, pm_core)
     rows = run(pm_notify.list_notifications(user=ACTOR, page=page()))["rows"]
     assert len(rows) == 2 and all(r["actor_name"] is None for r in rows)
+
+
+def test_the_name_read_runs_inside_a_savepoint(monkeypatch):
+    """A failed read must not abort the transaction of the list (review of task 1574)."""
+    db = _NamedDB()
+    bind(monkeypatch, db, pm_notify, pm_core)
+    run(pm_notify.list_notifications(user=ACTOR, page=page()))
+    assert getattr(db, "savepoints", 0) == 1
