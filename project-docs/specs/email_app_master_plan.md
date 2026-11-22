@@ -23282,7 +23282,7 @@ change with no restart.
 - A route dependency calls `templates_on` before FastAPI validates the query and the body. So
   with the flag off, each request gets 404, a body that breaks the model too. FastAPI parses
   a body with a JSON content type before any dependency runs (fix round 1). So a body that
-  does not parse gets 422, and a body too deep for the parser gets 400. No dark request opens
+  does not parse gets 422, and a body too deep for the parser can get 400 (the limit depends on the runtime). No dark request opens
   a session. The handler calls `templates_on` again.
 - `signature.py` holds the one read (`stored_settings`, through `SETTINGS_SQL`) and the one
   write (`save_settings`). `signature_settings.py` holds the routes and no SQL.
@@ -23327,7 +23327,7 @@ change with no restart.
 - The model refuses that value, for a direct call too. But the 422 of the model echoes the
   value, and FastAPI encodes the echo with recursion, so 1000 levels still answered 500. So
   the PUT dependency `_shallow_fields` refuses it first, with a sentence and no echo. A body
-  of about 5000 levels gets 400 from the JSON parser. No case writes the row.
+  of about 5000 levels gets 400 from the JSON parser where the parser refuses it, and 422 where it does not. No case writes the row.
 - Only `signature.py` writes `email_signature_settings`. A source scan of string literals holds
   this rule:
   `test_email_signature_writer.py::test_no_code_outside_signature_py_writes_the_settings_table`.

@@ -14,7 +14,7 @@ Both routes are dark. While ``signature.templates_on`` is false, each answers
 404 before FastAPI validates the query and the body (:func:`_dark_route`).
 FastAPI parses a body with a JSON content type before any dependency runs.
 So a body that does not parse gets 422, and a body too deep for the parser
-gets 400. Nothing reads or writes the table in any of these cases.
+can get 400 (the parser limit depends on the runtime). Nothing reads or writes the table in any of these cases.
 
 Both read the mailbox with ``resolve_account_filter`` and call
 ``_assert_account_owner`` inside ``_tenant_session()``. The GET needs
@@ -158,7 +158,7 @@ async def _dark_route(_user: UserContext = Depends(get_current_user)) -> None:
     """The route dependency of :func:`_dark`. FastAPI runs it before it
     validates the query and the body, so a dark route answers 404. FastAPI
     parses a body with a JSON content type first. So a body that does not
-    parse gets 422, and a body too deep for the parser gets 400. No session
+    parse gets 422, and a body too deep for the parser can get 400. No session
     opens in any of these cases. The session member is resolved first, and
     that binds the tenant."""
     _dark()

@@ -222,12 +222,13 @@ def test_with_the_flag_off_a_deep_body_is_a_404(
     monkeypatch: pytest.MonkeyPatch, wired: SimpleNamespace,
 ) -> None:
     """The flag dependency runs before the depth dependency. A body too deep
-    for the JSON parser gets the parser's 400 first, because FastAPI parses
-    the body before any dependency runs."""
+    for the JSON parser can get the parser's 400 first, because FastAPI parses
+    the body before any dependency runs. Where the parser takes 5000 levels
+    (the CI runner), the flag dependency answers 404."""
     _flag(monkeypatch, "")
     client = _client()
     assert _put_raw(client, _deep_body(1000)).status_code == 404
-    assert _put_raw(client, _deep_body(5000)).status_code == 400
+    assert _put_raw(client, _deep_body(5000)).status_code in (400, 404)
     assert wired.sessions.opened == 0 and wired.db.sql == []
 
 
@@ -541,12 +542,14 @@ def test_a_deep_fields_value_is_a_422_and_the_row_stays_readable(
     assert got.json()["fields"] == _FIELDS
 
 
-def test_a_body_past_the_limit_of_the_json_parser_is_a_400_that_writes_nothing(
+def test_a_body_past_the_limit_of_the_json_parser_is_a_4xx_that_writes_nothing(
     wired: SimpleNamespace,
 ) -> None:
     client = _client(raise_server_exceptions=False)
     answer = _put_raw(client, _deep_body(5000))
-    assert answer.status_code == 400, answer.text[:300]
+    # The parser limit depends on the runtime: 400 where the parser refuses the
+    # body, and 422 from the depth dependency where it takes the body.
+    assert answer.status_code in (400, 422), answer.text[:300]
     # Under another content type, FastAPI does not parse the body, and the
     # depth dependency meets the parser's RecursionError. It still is a 4xx.
     for depth in (1000, 5000):
