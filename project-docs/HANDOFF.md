@@ -544,12 +544,6 @@ line — never reclaim a number by deleting the other entry.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Added:** 2026-10-03 · PR #584 fix round 1
 
-### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
-- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open.
-- **Added:** 2026-10-03 · the WS-43 spec session
-
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
 - **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "IsolationTierUnavailable|ISOLATION_TIER_ENFORCE" apps packages`.
@@ -676,7 +670,7 @@ line — never reclaim a number by deleting the other entry.
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
-  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -cx customer_console.dump`.
   A zero means no backup on the box holds the Console database, and this is
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
