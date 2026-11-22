@@ -5770,6 +5770,9 @@ async def _inject_mcp_servers(
     servers = [srv for srv in stored if _keep_mcp_server(srv, agent_name)]
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
+        attached: Any = []
+        reasons: dict[str, str] = {}
+        tools: Any = getattr(agent, "mcp_tools", None)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
             failures: dict[str, str] = {}
@@ -5785,7 +5788,13 @@ async def _inject_mcp_servers(
             _note_mcp_labels(servers, attached, reserved)
             tools = getattr(agent, "mcp_tools", None)
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
-            _note_mcp_briefs(servers, attached, tools, reasons)
+        # Task 3866: a row in needs_reconnect is not read for a run, so it is
+        # named from a metadata read. Its tools never attach.
+        parked = await _reconnect_rows(str(org), agent_name, is_authorized)
+        for srv in parked:
+            reasons.setdefault(str(srv.name), "reconnect")
+        if maf_servers or parked:
+            _note_mcp_briefs([*servers, *parked], attached, tools, reasons)
             await _count_left_out(str(org), reasons)
         return
 
@@ -5850,6 +5859,33 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
         await _count_left_out(str(org), {n: "mail" for n, _ in notes})
     except Exception as exc:
         _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _reconnect_rows(org: str, agent_name: str, is_authorized: Any) -> list[Any]:
+    """Task 3866, CSY-5: the servers of *org* in ``needs_reconnect`` that this
+    run may name, as metadata only. The same scope and grant checks as
+    :func:`_note_mail_skipped`. Only an org with ``CONNECTED_SYSTEMS_ORGS``
+    on. Never attached. A fault gives none and never blocks the run."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return []
+        from gateway.connections import mcp as mcp_registry
+
+        out = []
+        for srv in await mcp_registry.needs_reconnect_meta(org):
+            if not _keep_mcp_server(srv, agent_name):
+                continue
+            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+                continue
+            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+                continue
+            out.append(srv)
+        return out
+    except Exception as exc:  # the class only
+        _log.warning("mcp.reconnect_notes_unavailable", error=type(exc).__name__)
+        return []
 
 
 async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
@@ -6009,7 +6045,7 @@ def _mark_needs_signin_for(org: str) -> Any:
     async def _mark(server: Any) -> None:
         from gateway.connections import mcp as mcp_registry
 
-        await mcp_registry.mark_needs_signin(org, str(server.name))
+        await mcp_registry.mark_needs_signin(org, str(server.name), str(server.url))
 
     return _mark
 

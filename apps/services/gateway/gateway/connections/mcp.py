@@ -728,25 +728,36 @@ async def mark_unauthorized(
     return outcome
 
 
-async def mark_needs_signin(org: str, name: str) -> str:
+async def mark_needs_signin(org: str, name: str, url: str) -> str:
     """A 401 or 403 with an OAuth challenge on the connect of a row with no
     sign-in (task 3866, §3.6.7).
 
     The row was added by URL, so it holds no OAuth tokens and shows
-    ``connected``. Under the row lock, a row that is not OAuth and is still
-    ``connected`` gets ``needs_reconnect`` with :data:`NEEDS_SIGNIN`, through
-    the same store helper as :func:`mark_unauthorized`. Any other row stays
-    (:data:`MARK_UNCHANGED`). *org* is the run binding.
+    ``connected``. Under the row lock, a row that is not OAuth, is still
+    ``connected``, still holds *url* (the URL that the run connected) and
+    holds no header gets ``needs_reconnect`` with :data:`NEEDS_SIGNIN`,
+    through the same store helper as :func:`mark_unauthorized`. Any other row
+    stays (:data:`MARK_UNCHANGED`). With ``MCP_OAUTH_ENABLED`` off the console
+    has no Connect, so nothing is marked. *org* is the run binding.
     """
-    if not NAME_RE.match(name or ""):
+    from gateway.connections import mcp_oauth
+
+    if not NAME_RE.match(name or "") or not url or not mcp_oauth.oauth_enabled():
         return MARK_UNCHANGED
     org = _org(org)
+    provider = provider_for(name)
     async with tenant_session(org) as db:
-        locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        locked = await store.lock_row(db, org, provider, OWNING_APP)
         if locked is None:
             return MARK_UNCHANGED
         conn, _credential = locked
-        if _is_oauth(conn) or conn.status != store.STATUS_CONNECTED:
+        if (_is_oauth(conn) or conn.status != store.STATUS_CONNECTED
+                or str((conn.provider_meta or {}).get("url") or "") != url):
+            return MARK_UNCHANGED
+        # A header row is a key connection. A blob that does not open counts
+        # as a header row too (``None``).
+        sealed = (await store.load_headers_by_prefix(db, org, PREFIX, OWNING_APP)).get(provider, {})
+        if sealed is None or sealed:
             return MARK_UNCHANGED
         await store.mark_needs_reconnect(db, org, conn.id, NEEDS_SIGNIN)
     _log.warning("mcp.needs_signin", name=name, code=NEEDS_SIGNIN)
@@ -880,6 +891,19 @@ async def enabled_meta(org: str) -> list[StoredServer]:
         conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
     return [_server(conn, {}, with_headers=False) for conn in conns
             if conn.status == store.STATUS_CONNECTED]
+
+
+async def needs_reconnect_meta(org: str) -> list[StoredServer]:
+    """The MCP servers of *org* in ``needs_reconnect``, as metadata only.
+
+    The chat names them (CSY-5, reason ``reconnect``) and never attaches
+    their tools. Like :func:`enabled_meta`: no header blob, no token, and the
+    same ``tenant_session(org)``. ``headers`` is empty on every row."""
+    org = _org(org)
+    async with tenant_session(org) as db:
+        conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
+    return [_server(conn, {}, with_headers=False) for conn in conns
+            if conn.status == store.STATUS_NEEDS_RECONNECT]
 
 
 async def list_servers(org: str) -> list[StoredServer]:

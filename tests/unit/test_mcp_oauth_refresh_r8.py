@@ -389,13 +389,15 @@ async def test_a_url_row_with_an_oauth_challenge_needs_signin_and_connect_repair
     world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(
         401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{f.PRM_URL}"'},
         json={"error": "unauthorized"})
+    # The same server name, in another org, with the same URL.
+    await _url_row(world, ns.org_b, name)
     agent = await _inject(ns.org_a)
     assert name not in {t.name for t in agent.mcp_tools}
     row = _registry(ns, ns.org_a)[name]
     assert row["status"] == "needs_reconnect"
     assert json.loads(row["whole"])["last_error"] == "needs_signin"
-    # Another org holds no such row, and its run marks nothing of ours.
-    assert name not in _registry(ns, ns.org_b)
+    # The run of org A marks nothing of org B.
+    assert _registry(ns, ns.org_b)[name]["status"] == "connected"
 
     # IN-8c: Connect on the row that was added by URL.
     world.fixed.pop((f.MCP_HOST, "/mcp"), None)
@@ -410,6 +412,77 @@ async def test_a_url_row_with_an_oauth_challenge_needs_signin_and_connect_repair
     assert after["provider_meta"].get("auth") == "oauth"
     assert json.loads(after["whole"])["last_error"] is None
     assert (await _stored(ns.org_a, name)).access_token == TOKEN_A
+
+
+async def test_a_403_with_a_challenge_needs_signin_too(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    set_flag(monkeypatch, "*")
+    name = _name("s403")
+    await _url_row(world, ns.org_a, name)
+    _mcp_answers_401(monkeypatch, world)
+    world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(
+        403, headers={"WWW-Authenticate": f'Bearer resource_metadata="{f.PRM_URL}"'})
+    await _inject(ns.org_a)
+    assert _registry(ns, ns.org_a)[name]["status"] == "needs_reconnect"
+
+
+async def test_the_chat_names_a_parked_row_on_turn_two_and_attaches_no_tool(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """Task 3866 (review P1): turn 1 marks the row. Turn 2 reads no
+    needs_reconnect row for a run, yet the chat still says to reconnect it."""
+    from acb_skills import server_brief
+    from orchestrator import _maf_mcp
+
+    set_flag(monkeypatch, "*")
+    monkeypatch.setattr(_maf_mcp, "connected_systems_org_allowed", lambda org: True)
+    name = _name("two")
+    await _url_row(world, ns.org_a, name)
+    _mcp_answers_401(monkeypatch, world)
+    world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(
+        401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{f.PRM_URL}"'})
+    await _inject(ns.org_a)
+    assert _registry(ns, ns.org_a)[name]["status"] == "needs_reconnect"
+    sent_before = len([r for r in world.requests if r.url.path == "/mcp"])
+    agent = await _inject(ns.org_a)
+    assert not getattr(agent, "mcp_tools", None), "a parked row attached a tool"
+    assert len([r for r in world.requests if r.url.path == "/mcp"]) == sent_before
+    block = server_brief.attached_block()
+    assert f"({name})" in block and server_brief.REASON_TEXT["reconnect"] in block
+    # Another org shows nothing for it.
+    await _inject(ns.org_b)
+    assert f"({name})" not in server_brief.attached_block()
+
+
+async def test_mark_needs_signin_refuses_when_the_flag_is_off(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    from gateway.connections import mcp
+    from gateway.connections import mcp_oauth
+
+    name = _name("off")
+    await _url_row(world, ns.org_a, name)
+    monkeypatch.setattr(mcp_oauth, "oauth_enabled", lambda: False)
+    assert await mcp.mark_needs_signin(ns.org_a, name, f.MCP_URL) == mcp.MARK_UNCHANGED
+    assert _registry(ns, ns.org_a)[name]["status"] == "connected"
+
+
+async def test_mark_needs_signin_refuses_a_row_that_changed_during_the_connect(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    from gateway.connections import mcp
+
+    changed, keyed = _name("url"), _name("key")
+    await _url_row(world, ns.org_a, changed)
+    await _url_row(world, ns.org_a, keyed)
+    # The URL changed after the run read the row.
+    assert await mcp.mark_needs_signin(
+        ns.org_a, changed, "https://old.example.com/mcp") == mcp.MARK_UNCHANGED
+    # A header arrived after the run read the row.
+    await mcp.save(ns.org_a, name=keyed, url=f.MCP_URL, headers={"X-Api-Key": "k"},
+                   connected_by="r8-seed", label="Keyed", agent_scope=("*",))
+    assert await mcp.mark_needs_signin(ns.org_a, keyed, f.MCP_URL) == mcp.MARK_UNCHANGED
+    for n in (changed, keyed):
+        assert _registry(ns, ns.org_a)[n]["status"] == "connected"
+    # The row that still matches is marked.
+    assert await mcp.mark_needs_signin(ns.org_a, changed, f.MCP_URL) == mcp.MARK_NEEDS_RECONNECT
 
 
 async def test_a_url_row_with_a_401_and_no_challenge_stays_connected(

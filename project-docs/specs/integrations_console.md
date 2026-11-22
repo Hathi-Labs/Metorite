@@ -597,7 +597,7 @@ Every discovery, registration, token and revoke request goes through
   header. When its connect gets a 401 or 403 with a `WWW-Authenticate` header
   that names `resource_metadata`, the row becomes `needs_reconnect` with
   `last_error = needs_signin`. The console then offers Connect. A 401 with no
-  challenge keeps the old path, because the server may only refuse a key.
+  challenge keeps the old path, because the server may only refuse a key. The mark needs `MCP_OAUTH_ENABLED` on, the same URL, and no header on the row. A later run still names the row in the chat (reason `reconnect`) and attaches none of its tools.
 - ⚠️ The review of #1011 corrected the item above on 2026-10-14. It said
   that the next run refreshes. That was false. A token answer with no
   `expires_in` is stored for ten years. So the next run saw a live token and
