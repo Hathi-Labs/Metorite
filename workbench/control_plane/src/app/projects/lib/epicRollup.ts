@@ -40,10 +40,9 @@ export function rollupParts(rollup: EpicRollup): string[] {
   const { slices, estimate_mins: est, waits, hidden } = rollup;
   const parts: string[] = [];
   if (slices.total === 0) {
-    parts.push("No slices yet");
+    parts.push("No tasks yet");
   } else {
-    const noun = slices.total === 1 ? "slice" : "slices";
-    let progress = `${slices.done} of ${slices.total} ${noun} done`;
+    let progress = `${slices.done} of ${slices.total} done`;
     if (est.total > 0) progress += ` · ${minutes(est.done)} of ${minutes(est.total)}`;
     parts.push(progress);
   }

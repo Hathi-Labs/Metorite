@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useTheme } from "next-themes";
+import { useMemberMode } from "@/lib/theme/syncAppearance";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
@@ -139,7 +139,8 @@ function AssistantLinkRow() {
 // ── Personal ────────────────────────────────────────────────────────────────
 
 function PersonalSettings() {
-  const { theme: mode, setTheme: setMode } = useTheme();
+  // A click is a member change: the server copy follows it (PKG-20).
+  const { mode, setMode } = useMemberMode();
   const density = useAppearanceStore(effectiveDensity);
   const accent = useAppearanceStore((s) => s.accent);
   const allowUserOverride = useAppearanceStore((s) => s.allowUserOverride);

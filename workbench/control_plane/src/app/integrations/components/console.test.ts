@@ -139,7 +139,7 @@ describe("the MCP form", () => {
 describe("the rail", () => {
   it("has Connections, API keys, Plugins and Skills, and no Email", () => {
     const html = renderToStaticMarkup(createElement(IntegrationsRail, { view: "connections", onSelect: noop }));
-    for (const label of ["Connections", "API keys", "Plugins", "Skills"]) expect(html).toContain(label);
+    for (const label of ["Connections", "API keys", "Plugins", "Built-in skills"]) expect(html).toContain(label);
     expect(html).not.toContain("Email");
     expect(html).toContain('aria-current="page"');
   });

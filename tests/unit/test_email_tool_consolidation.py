@@ -323,7 +323,7 @@ async def test_digest_send_is_gated_and_fails_closed(calls, monkeypatch) -> None
         return False
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", no)
     out = await agents.digest("acc", send=True)
-    assert "Cancelled" in out
+    assert out.startswith(("Declined:", "Not shown:"))  # HRD-7: the one table
     assert not any(c[0] == "/email/digest/send" for c in calls["post"])
 
 
@@ -348,7 +348,7 @@ async def test_sync_purge_is_gated_and_fails_closed(calls, monkeypatch) -> None:
         return False
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", no)
     out = await agents.sync_account("acc", purge=True)
-    assert "Cancelled" in out
+    assert out.startswith(("Declined:", "Not shown:"))  # HRD-7: the one table
     assert not any("resync" in c[0] for c in calls["post"])
 
 

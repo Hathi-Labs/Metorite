@@ -8,7 +8,13 @@ Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
 tools in a Studio turn. The tools are in ``acb_skills.studio_tools`` and this
 module keeps no copy. They call the Studio routes over HTTP as the member,
 and take no org or member argument. The builder tools keep no draft. The
-package tools (STU-G1c) save a draft and publish it.
+package tools (STU-G1c) save a draft and publish it. The workflow tool
+(STB-6a) lists or reads the workflows of the organization and writes nothing.
+The two workflow writes (STB-6b) publish, roll back, pause and turn on a
+workflow. They form the second pack of this owner, ``studio-workflows``.
+The share of a skill with the organization (WS-STU J2d) is one tool, in the
+third small pack of this owner, ``studio-share``. The repair of a skill and
+its undo (WS-TOF TOF-3a F12c) are two tools, in the pack ``studio-repair``.
 
 It never runs as an agent. The name "studio-builder" is in no agent list: not
 the registry, the picker, a specialist tool or the registry block. Only the
@@ -28,8 +34,12 @@ from acb_common import get_settings
 from acb_skills.studio_tools import (
     STUDIO_PACKAGE_TOOLS,
     STUDIO_RECORD_TOOLS,
+    STUDIO_REPAIR_TOOLS,
+    STUDIO_SHARE_TOOLS,
     STUDIO_SKILL_TOOLS,
     STUDIO_TOOLS,
+    STUDIO_WORKFLOW_TOOLS,
+    STUDIO_WORKFLOW_WRITE_TOOLS,
 )
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
@@ -39,7 +49,9 @@ INSTRUCTIONS = (
     else "You hold the AI Studio builder tools. You are not a second assistant."
 )
 
-_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS]
+_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
+          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_SHARE_TOOLS,
+          *STUDIO_REPAIR_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
@@ -90,10 +102,12 @@ def build_agents() -> list[Any]:
             name="studio-builder",
             description=(
                 "Owns the studio tool pack: draft, patch, validate and outline an "
-                "AI Studio app manifest, list the actions an app may use, save and "
-                "publish the app, save, publish, pause and list the skills of a member, "
+                "AI Studio app manifest, list the actions an app may use, save, "
+                "publish and delete the app, save, publish, pause and list the skills of a member, "
                 "and read the records of a package. Three write tools add, change and "
-                "delete a record, and each asks the member first."
+                "delete a record, and each asks the member first. One read tool lists "
+                "the workflows of the organization or reads one. Two write tools "
+                "publish, roll back, pause and turn on a workflow."
             ),
             tools=_agent_tools(),
         )

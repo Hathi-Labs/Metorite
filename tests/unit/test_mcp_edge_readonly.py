@@ -100,6 +100,11 @@ def open_edge(armed, monkeypatch):  # noqa: F811 — a fixture
     monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
     monkeypatch.setattr(settings, "agent_runs_enabled", True)
     monkeypatch.setattr(settings, "agent_door_apps", DOOR_APP)
+    # WS-MCP SW-23: `report_check` shows only while the Check flag is on.
+    monkeypatch.setattr(settings, "agent_task_checks_enabled", True)
+    # CIV-14b fix round 1: `upload_task_image` shows only for an organization
+    # of `mcp_image_upload_orgs`.
+    monkeypatch.setattr(settings, "mcp_image_upload_orgs", "*")
     armed.store.tokens[FULL] = _lookup(scope=" ".join(FULL_SCOPES), scopes=FULL_SCOPES)
     armed.store.tokens[READ] = _lookup(scope=" ".join(READ_SCOPES), scopes=READ_SCOPES)
     return armed
@@ -141,7 +146,10 @@ class TestTheWalk:
     @pytest.mark.parametrize("name", WRITE_TOOLS)
     async def test_each_write_tool_is_refused_on_the_readonly_path(self, open_edge, name):
         tool = tools.TOOLS[name]
-        assert tools.offered(tool), "the walk needs each write tool offered"
+        # CIV-14b fix round 1: `upload_task_image` is offered for each org of
+        # its flag, so the walk asks for the org of the token.
+        assert tools.offered(tool, _lookup().organization_id), (
+            "the walk needs each write tool offered")
         r = await _post(READONLY, _call(name, _arguments(name)))
         assert r.status_code == 403, r.text
         challenge = r.headers["www-authenticate"]

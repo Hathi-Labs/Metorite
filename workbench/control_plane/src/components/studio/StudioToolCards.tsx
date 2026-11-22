@@ -27,6 +27,11 @@
  * `ProjectToolCards` and `EmailToolCards`. Fences:
  * `lib/studio/studioCardState.test.ts`, `StudioToolCards.test.ts` and
  * `lib/chatCardConformance.test.ts`.
+ *
+ * STU-F5a: after the approval cards, this file also draws ONE live records
+ * card for each read of `studio_record_list` (`StudioRecordsCard.tsx`). Its
+ * rules live in `lib/studio/recordsCard.ts`, and its door is read-only for
+ * every member.
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -35,12 +40,16 @@ import { APP_REQUESTS_KEY, decideRequest, readRequest, requestKey } from "@/app/
 import AppRequestCard from "@/components/AppRequestCard";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import { StudioConnectCard } from "@/components/studio/StudioConnectCard";
+import { StudioRecordsCard } from "@/components/studio/StudioRecordsCard";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { REQUEST_TITLE, type AppRequestDecision } from "@/lib/appRequest";
 import { invalidate } from "@/lib/dataCache";
 import { openAssistant, useAskOutcome } from "@/lib/shell/assistant";
+import { connectCalls } from "@/lib/studio/connectCard";
+import { recordsCalls } from "@/lib/studio/recordsCard";
 import {
   TELL_LABEL,
   askedRequestIds,
@@ -144,18 +153,28 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
 }
 
 /**
- * The approval cards of one turn: one for each request that a record write
- * tool asked for. Null when the turn asked for none, so it is inert for every
+ * The Studio cards of one turn: one approval card for each request that a
+ * record write tool asked for, then one records card for each read of the
+ * records (STU-F5a), then one Connect card for each saved package (STU-I8d,
+ * `StudioConnectCard.tsx`). Null when the turn has none of them, so it is inert for every
  * other tool.
  */
 export default function StudioToolCards({ toolEvents, sessionId }: { toolEvents?: ToolEvent[]; sessionId?: string }) {
   const ids = askedRequestIds(toolEvents);
-  if (ids.length === 0) return null;
+  const reads = recordsCalls(toolEvents);
+  const connects = connectCalls(toolEvents);
+  if (ids.length === 0 && reads.length === 0 && connects.length === 0) return null;
   // Each card holds its own space, so a request with no card leaves none.
   return (
     <>
       {ids.map((id) => (
         <StudioRequestCard key={id} requestId={id} sessionId={sessionId} />
+      ))}
+      {reads.map((call) => (
+        <StudioRecordsCard key={call.key} call={call} />
+      ))}
+      {connects.map((call) => (
+        <StudioConnectCard key={call.packageId} call={call} />
       ))}
     </>
   );

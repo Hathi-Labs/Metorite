@@ -180,6 +180,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # VIEWER, not EDITOR: it writes nothing, mints nothing and consumes no
     # seat. It is a read of the caller's own roster.
     ("POST", "/registry/orgs"): _R(VIEWER),
+    # The vendor alert READ of a box (AO-2). Deployment-key only: the handler
+    # 400s an operator, who reads GET /providers/health. It needs a row for the
+    # reason the row above gives. VIEWER: it writes nothing.
+    ("POST", "/registry/providers/health"): _R(VIEWER),
     ("POST", "/registry/seats/release"): _R(EDITOR),
     ("POST", "/registry/members"): _R(EDITOR),
     # The member-REMOVE door (owner request, 2026-10-15). EDITOR, the rank of
@@ -254,6 +258,15 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # vendor call, so ADMIN with no window, exactly as the decide try.
     ("POST", "/catalog/transcribe/try"): _R(ADMIN),
     ("POST", "/catalog/vision/try"): _R(ADMIN),
+    # MS-1 (task 2481, §6A.18). The registry and the health list are reads
+    # of what we sell and why a job cannot work. No secret: `connected` and
+    # the key LABEL only. VIEWER, as `GET /catalog/models`.
+    ("GET", "/catalog/providers"): _R(VIEWER),
+    ("GET", "/catalog/health"): _R(VIEWER),
+    # A fix declares a model and writes a tier chain, so it is a bind. The
+    # bind's gate: admin AND a window ("Fix all" needs elevation, owner call
+    # 5 of §6A.18).
+    ("POST", "/catalog/health/fix"): _R(ADMIN, elevated=True),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).
     # The model-keyed route is RETIRED (D67) and answers 410 — the row stays

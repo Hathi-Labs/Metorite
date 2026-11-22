@@ -180,6 +180,15 @@ class TestTheRollupOnARealDatabase:
         # The direct children of today are untouched: two of them.
         assert len(body["subtasks"]) == 2
 
+    async def test_two_of_five_leaf_tasks_closed_reads_two_of_five(self, live):
+        """SP-2a — the board line "2 of 5 done" comes from exactly these numbers."""
+        _setup(live)
+        epic = _epic(live, "sp2a two of five")
+        for n in range(5):
+            _mk(live, f"sp2a leaf {n}", parent=epic, done=n < 2)
+        roll = (await _get(live, epic))["rollup"]
+        assert roll["slices"] == {"done": 2, "total": 5}
+
     async def test_a_task_that_is_not_an_epic_has_no_rollup(self, live):
         _setup(live)
         plain = _mk(live, "sp9 plain")
