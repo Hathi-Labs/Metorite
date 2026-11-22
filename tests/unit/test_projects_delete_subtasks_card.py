@@ -30,7 +30,10 @@ SUB_A, SUB_A1, SUB_B = tw.SUB_A, tw.SUB_A1, tw.SUB_B
 def _delete_gateway(call: dict) -> Any:
     """The fake gateway, with a delete that reports what the core would."""
     if call["method"] == "DELETE" and call["path"].startswith("/projects/tasks/"):
-        sent = call["params"].get("delete_subtask_ids") or []
+        params = call["params"] or {}
+        sent = params.get("delete_subtask_ids") or []
+        if params.get("delete_all_subtasks"):
+            sent = [SUB_A, SUB_B, SUB_A1]
         return {
             "deleted": LIVE,
             "cascaded": {
