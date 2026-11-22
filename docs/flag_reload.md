@@ -343,6 +343,18 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`CRM_MIRROR_AGE_ORGS` turns on the age line of the CRM read tools
+(`crm_platform.md` §18.11.2, CRM-Q30c). For each listed org, a read of one
+module or core entity adds one line when its Zoho mirror is held, not
+available in Zoho, or last read 2 hours ago or more. `*` lists every org, and
+the default is empty. Empty keeps each answer byte for byte, and the tools
+send no request for the age.
+
+Its one reader is `gateway.routes.crm.flags.mirror_age_allowed`.
+`GET /crm/sync/mirror-age` asks it, and the tools ask it through
+`crm_tools.mirror_age_on`. A reload applies a change. A name in the list
+spends nothing, so the flip is `enforcement-flip`.
+
 `CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
 (`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
 module list and on a module total. It finds each word in the record name, a

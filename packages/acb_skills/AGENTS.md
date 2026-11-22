@@ -211,6 +211,7 @@ not write a second copy of that seam. A bare test file name is under
 5l. crm_tools.py -- the 14 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10). `crm_change_history` reads the Change history of the CRM set-up (`crm_conversational.md` §8). The chat reaches it through the `crm-records` pack, not the orchestrator's base. Fences: `test_crm_change_history.py` and `test_tool_packs_choice.py`.
    - Each tool reads a `/crm` route as the run's member, and refuses with no member. It opens no database session and takes no SQL.
    - Each path segment goes through a validator. `CLOSE_SHARE` equals `gateway.crm_sync.terms.CLOSE_SHARE`. No word of one org goes in this code.
+   - `_short_note` is the ONE note of the read tools. It holds the short-read lines (CRM-Q30b) and, for the keys of the call, the age lines of the mirror (CRM-Q30c, `_age_line`). `mirror_age_on` asks `gateway.routes.crm.flags.mirror_age_allowed` with the org of the run before the GET of `/crm/sync/mirror-age`, so an org off `CRM_MIRROR_AGE_ORGS` sends no request. Do not read the setting here. Fence: `test_crm_mirror_age_note.py`.
    - Fences: `test_crm_agent.py`, `test_crm_answer_consistency.py`, `test_crm_answer_consistency_r8.py`.
 5l-1. answer_check.py -- the number check of a chat answer that read a CRM tool (spec `crm_platform.md` §18.11.2).
    - The sources are the run's tool results, its CRM call arguments and `member_message`, never the packed prompt.

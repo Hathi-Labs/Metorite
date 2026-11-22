@@ -4,6 +4,7 @@
 
 > **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
+> **Built 2026-11-22, CRM-Q30c (task 3868), not merged:** the read tools say how old the Zoho mirror of a module is. `GET /crm/sync/mirror-age` gives the age of each module, and the note of the read tools adds one line when the module of the call is held, not available in Zoho, or read 2 hours ago or more. It is dark behind `CRM_MIRROR_AGE_ORGS`, empty by default. No migration. See §18.11.2.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
@@ -1435,6 +1436,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 to 7 merged as #1133. Fix round 8 built 2026-10-20 on `crm-check-explain`, PR open, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
+| **CRM-Q30c** | 🔨 built 2026-11-22 (task 3868), not merged, dark behind `CRM_MIRROR_AGE_ORGS`. The read tools say how old the Zoho mirror of a module is: held, not available in Zoho, or read 2 hours ago or more. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
 | **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Ten slices (Q32-1 to Q32-9b). Q32-1 to Q32-6 merged as #1130, dark (2026-10-18). Q32-8, Q32-9a and Q32-9b are specified 2026-10-18, not built. §18.14 | P0 |
 | **CRM-Q33** | 🔨 built 2026-10-18 on `crm-q33-answer-first`, not merged, dark behind `CRM_ANSWER_FIRST_ORGS`. Answer first, clarify over time: the figure on the best assumption with a note, one question after it, business rules (migration 283), a WhatsApp answer by number, and the evidence of GST. §18.15 | P0 |
@@ -3895,6 +3897,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 | CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
+| CRM-Q30c | The read tools say how old the Zoho mirror of a module is (task 3868) | AGENT-SAFE. Dark behind `CRM_MIRROR_AGE_ORGS` | S | CRM-Q30b |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -5468,6 +5471,86 @@ bars. The mutation that takes the line out of the tools fails Q31 only.
 **Not changed.** The Sync health card keeps its own copy of the rule of
 the two counts (`syncHealth.ts`). A later slice can make the card read
 `zoho_count` and `readable` from this route.
+
+**CRM-Q30c · The read tools say how old the mirror is (task 3868,
+2026-11-22).**
+
+**Why.** Task 3729 found that the CRM chat answered billing questions from
+the Zoho mirror, and did not know how old the mirror of the module was. A
+member could not tell a held or stale module from a fresh one.
+
+**The facts (code check of 2026-11-22).**
+
+- The sync reads each core entity on each run, every 10 minutes. A generic
+  module reads its changes at most once an hour (`MODULE_READ_EVERY`). A
+  module that hides `Modified_Time` reads only at its full re-read, once in
+  24 hours.
+- The end of each read writes `checked_at`, the start of its run, into the
+  changed cursor (`engine._changed_pass`). A page that is not the last page
+  writes a state with no `checked_at`. So a read in progress has no stamp.
+- `_mark_unavailable` writes `checked_at` too, as the time of the refused
+  ask. That stamp is not a read.
+- The sync holds a large first import (`crm_sync/holds.py`,
+  `crm_settings.sync_holds`). It skips a held generic module before any
+  write, so that module has no cursor row.
+
+Done when:
+
+1. One function in `routes/crm/sync.py`, `mirror_ages(db, org)`, gives each
+   core entity that is not an activity and each generic module: the count
+   key, the Zoho API name, `checked_at`, `held` and `unavailable`. It reads
+   the cursors through `runs.read_cursors` and the holds through
+   `holds.read`, and it writes no SQL of its own. `_cursor_key` is the one
+   key rule, and `_short_by_keys` uses it too.
+2. `checked_at` is None for an unavailable module and for a module with no
+   finished read on record. A held key with no cursor row is in the list.
+3. `GET /crm/sync/mirror-age` serves that list to each member that the CRM
+   access rule admits. It holds times and marks only. An org off
+   `CRM_MIRROR_AGE_ORGS` gets an empty list, and no session opens. A Native
+   org gets an empty list. The tenant comes from the session.
+4. `_short_note` adds the age line of each key of the call, after the
+   short-read lines. A call with no key (`crm_list_modules`) adds none.
+   `mirror_age_on` asks `flags.mirror_age_allowed` with the org of the run
+   first, so a dark org sends no request.
+5. The lines: "Invoices were last read from Zoho 3 hours ago.", "Invoices
+   are held, so they may be old.", "Invoices are not available in Zoho now,
+   so they may be old." and "Invoices have no finished read from Zoho on
+   record, so they may be old or partial." Unavailable wins over held, and
+   held wins over the age. Under 2 hours the module is fresh and adds
+   nothing. Hours count up to 48 hours, then days.
+6. A failed read adds no line. No tool argument and no docstring changes, so
+   the pinned contract of `test_tool_schema_diet.py` does not change.
+7. Unit tests cover the flag, the route states and the line of each state,
+   with a mutation for each.
+
+Files: `routes/crm/sync.py`, `routes/crm/flags.py`,
+`packages/acb_skills/acb_skills/crm_tools.py`,
+`packages/acb_common/acb_common/settings.py`, the CRM manifest,
+`docs/flag_reload.md`, `tests/unit/test_crm_mirror_age.py`,
+`tests/unit/test_crm_mirror_age_note.py`, `tests/unit/test_flag_reload.py`
+and this section. Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q30b. No
+migration. The flag is `CRM_MIRROR_AGE_ORGS`, empty by default, and a name
+in it spends nothing, so its flip is `enforcement-flip`.
+
+Verify with:
+
+- `uv run pytest tests/unit/test_crm_mirror_age.py tests/unit/test_crm_mirror_age_note.py tests/unit/test_crm_short_read_note.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_crm_ui_actions.py -q`
+- `uv run pytest tests/unit/test_flag_reload.py -q`
+
+**Built as (2026-11-22, task 3868, not merged).** Dark, no migration.
+
+- The route needs `require_crm_mirror`, and it asks `mirror_age_allowed`
+  before the session opens.
+- A read in progress after the first import also has no stamp, so it gets
+  the line of no finished read. The line says "old or partial", which is
+  true for a first import and for a read in progress.
+- No R8 test covers the route yet. The unit test proves the shape that the
+  route builds from the rows of the two readers.
+
+**Not changed.** The tools that read one record (`crm_get_record`,
+`crm_get_module_record`) call no `_short_note`, so they add no age line. An
+overlaid slot answers from its module, but the key of the note is the slot.
+So a held module that plays a slot adds no line.
 
 #### 18.11.3 Verification
 
