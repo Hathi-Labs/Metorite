@@ -100,6 +100,19 @@ describe("findTaskRefs", () => {
   it("does not link a number that cannot be a task number", () => {
     expect(refs("#0 and #012 and #1.5")).toEqual([]);
   });
+
+  it("finds the number after the word task, and keeps the word out of it (task 1595)", () => {
+    expect(refs("See task 3596, Task #12 and (task 7)")).toEqual(["3596", "#12", "7"]);
+    expect(findTaskRefs("task 35")).toEqual([{ start: 5, end: 7, number: 35 }]);
+    expect(splitTaskRefs("(task 7)")).toEqual([
+      { kind: "text", text: "(task " },
+      { kind: "ref", ref: "7", number: 7 },
+      { kind: "text", text: ")" },
+    ]);
+    // Only the number right after the word: `of 3` is a count.
+    expect(refs("task 2 of 3")).toEqual(["2"]);
+    expect(refs("tasks 3, multitask 5, subtask 6, task12, task-12, task 10:30")).toEqual([]);
+  });
 });
 
 // ── In real Markdown ─────────────────────────────────────────────────────────
@@ -140,6 +153,10 @@ function linked(content: string): string[] {
 describe("bare references in Markdown", () => {
   it("links a bare #171 in a paragraph", () => {
     expect(linked("Both #171 and #87 are open.")).toEqual(["#171", "#87"]);
+  });
+
+  it("links the number after the word task, but not in code (task 1595)", () => {
+    expect(linked("Both task 171 and (task 87) are open, not `task 12`.")).toEqual(["#171", "#87"]);
   });
 
   it("does not link inline code", () => {
@@ -318,6 +335,20 @@ describe("TaskRefText", () => {
     expect(out.match(/href="\/projects\?task=/g)).toHaveLength(2);
     expect(out).toContain("Twelve");
     expect(out).toContain("«x» and #9999, `");
+  });
+
+  it("keeps `task 9999` as written when no task has the number (task 1595)", async () => {
+    const r = createTaskRefResolver(async () => [
+      { id: "00000000-0000-4000-8000-000000000012", task_number: 12, title: "Twelve" },
+    ]);
+    r.request("", 12);
+    r.request("", 9999);
+    await r.flush();
+    const out = renderToStaticMarkup(createElement(TaskRefText, { text: "Fix task 12, not task 9999", resolver: r }));
+    expect(out.match(/href="\/projects\?task=/g)).toHaveLength(1);
+    expect(out).toContain("Fix task <");
+    expect(out).toContain(", not task 9999");
+    expect(out).not.toContain("#9999");
   });
 });
 

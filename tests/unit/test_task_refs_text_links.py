@@ -88,7 +88,11 @@ def test_the_python_finder_agrees_with_the_case_file(case: dict[str, Any]) -> No
     found = text_links.find_task_refs(case["text"])
     assert [m.number for m in found] == case["numbers"]
     for m in found:
-        assert case["text"][m.start:m.end] == f"#{m.number}"
+        # `#12`, or the `12` of `task 12` (rule 8, task 1595).
+        span = case["text"][m.start:m.end]
+        assert span in (f"#{m.number}", f"{m.number}"), span
+        if not span.startswith("#"):
+            assert case["text"][:m.start].rstrip(" \t ").lower().endswith("task")
 
 
 @pytest.mark.parametrize("case", _shared()["markdown_cases"], ids=lambda c: c["name"])

@@ -6,9 +6,10 @@ When a member or an agent saves a task's title, its description or a comment,
 the route that saved it calls :func:`link_from_text`. It finds two things in
 the text:
 
-* **Each ``#N``.** For each number that names ONE task the caller can see,
-  other than this task, it adds a ``relates_to`` link through
-  ``relations.insert_task_link``, the insert of ``POST /tasks/{id}/links``.
+* **Each ``#N``, and each ``task N``** (task 1595). For each number that
+  names ONE task the caller can see, other than this task, it adds a
+  ``relates_to`` link through ``relations.insert_task_link``, the insert of
+  ``POST /tasks/{id}/links``.
 * **Each GitHub or document URL.** It adds a reference with ``via = 'text'``
   through ``refs.insert_ref``, the insert of ``POST /tasks/{id}/refs``.
 
@@ -110,8 +111,14 @@ Saved = tuple[str | None, bool, str | None]
 _JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 _SPACE_RE = re.compile(f"[{_JS_SPACE}]")
 
-#: Rules 1 to 4. `\w` is the Python spelling of `[\p{L}\p{N}_]`.
-_CANDIDATE = re.compile(r"(?<![\w/\\#&=?@])#([1-9][0-9]{0,8})(?!\w|[.,][0-9])")
+#: Rules 1 to 4 and 8. `\w` is the Python spelling of `[\p{L}\p{N}_]`.
+#: Group 1 is the number after `#`. Group 2 is the number after the word
+#: `task` (rule 8, task 1595): `[Tt][Aa][Ss][Kk]` and not IGNORECASE, and a
+#: same-line gap of `[ \t ]`, so both languages read the same text.
+_CANDIDATE = re.compile(
+    r"(?<![\w/\\#&=?@])(?:#([1-9][0-9]{0,8})(?!\w|[.,][0-9])"
+    r"|[Tt][Aa][Ss][Kk][ \t ]+([1-9][0-9]{0,8})(?!\w|[.,:/-][0-9]))"
+)
 #: Rule 5: the hex run that starts at `#`.
 _HEX_RUN = re.compile(r"#[0-9a-fA-F]+")
 #: Rule 7: the word before the `#`. `[^\W\d_]` is a letter.
@@ -132,7 +139,8 @@ _OTHER_KINDS = frozenset({
 
 @dataclass(frozen=True)
 class TaskRefMatch:
-    """One reference: ``text[start:end]`` is ``#171``, ``number`` is 171."""
+    """One reference: ``text[start:end]`` is ``#171``, or ``171`` in
+    ``task 171``, and ``number`` is 171."""
 
     start: int
     end: int
@@ -175,18 +183,17 @@ def _is_other_kind(value: str, start: int, end: int) -> bool:
 
 def find_task_refs(value: str) -> list[TaskRefMatch]:
     """Every task reference in one run of plain text, in order. Pure."""
-    if "#" not in value:
-        return []
     out: list[TaskRefMatch] = []
     for m in _CANDIDATE.finditer(value):
-        start = m.start()
+        # `task 171` is the number alone: the word stays words (rule 8).
+        start = m.start() if m.group(1) is not None else m.start(2)
         if _is_colour_at(value[start:]):
             continue
         if _is_inside_url(value, start):
             continue
         if _is_other_kind(value, start, m.end()):
             continue
-        out.append(TaskRefMatch(start, m.end(), int(m.group(1))))
+        out.append(TaskRefMatch(start, m.end(), int(m.group(1) or m.group(2))))
     return out
 
 

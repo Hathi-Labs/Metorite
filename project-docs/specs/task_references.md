@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. TR-5b, the word form `task 3596` (task 1595), is built on branch `pc-chat-1595`, with no flag and no migration. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -129,6 +129,18 @@ The owner asked for five things on 2026-10-13:
   - **One copy of each insert.** `refs.insert_ref` and `relations.insert_task_link` serve the routes and the text path. Each writes the `link` activity its route writes.
   - Fences: `test_task_refs_text_links.py` (R8 on a private database) and `taskRefs.test.ts`, both over `tests/fixtures/task_ref_cases.json`.
 
+### TR-5b — the word form `task 3596` (task 1595, built 2026-11-22)
+
+The owner chose the narrow slice on 2026-11-22 (answer 209e4bcb). A chat answer often writes "task 3596" and not "#3596", and that number stayed text.
+
+- **The rule.** The word `task`, in any case, then spaces, tabs or no-break spaces on the same line, then a number that obeys rule 1. Examples: `task 3596`, `Task 12` and `(task 3596)`. `taskRefs.ts` rule 8 holds the rule, and `text_links.py` holds the same rule.
+- **The pill covers the number only.** The word `task` stays words before the pill. `task #12` uses the old `#` rule, so nothing new finds it.
+- **No reference:** `tasks 3`, `multitask 5`, `subtask 6`, `task12`, `task-12`, `task: 12`, a line break after `task`, and a `:`, `/` or `-` with a digit after the number (`task 10:30`, `task 3/4`, `task 5-7`). The old guards still apply from the number.
+- **Only the number right after `task` counts.** `task 2 of 3` names 2. The parser cannot tell a count (`do the task 3 times`) from a task number. So a count goes to the lookup, and it links only when exactly one visible task has that number.
+- **The lookup does not change.** The link needs exactly one visible task with the number. Otherwise the words stay as written. A chat turn that streams draws text. An orchestrator turn that asked no task agent links `task N` only when the task's title follows the number.
+- **The server saves more.** The gateway runs the same rule on a saved title, description or comment. So a newly typed `task 12` adds a `relates_to` link, as a newly typed `#12` does. Text that held `task 12` before this change adds nothing on a save of the same words, because rule 4 reads the old value with the new rule.
+- **Fences:** the new rows of `tests/fixtures/task_ref_cases.json`, `taskRefs.test.ts`, `chatTaskPills.test.ts` and `test_task_refs_text_links.py`.
+
 ## 7. Verification commands
 
 ```
@@ -158,3 +170,4 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 - 2026-10-13 — TR-5 built on branch `task-pills`. §4 names the merged exports. §6 TR-5 records the root rule, the caps and the write paths.
 - 2026-10-13 — TR-5 review round 1. A root resolves a number alone, with no fallback. Only a number that is new in the edit links. The two Markdown layers share one case file. One save links at most 25 tasks. The My Tasks title and the organize steps join.
 - 2026-10-18 — §2, §3 and §8 point to `github_integration.md`, which now plans the GitHub App, the webhook and the merge rule.
+- 2026-11-22 — TR-5b built (task 1595). The word form `task 3596` links in the chat, on the card and in the saved links. The status header and §6 TR-5b say so.

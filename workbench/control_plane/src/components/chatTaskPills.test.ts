@@ -217,6 +217,62 @@ describe("cause 1: the main chat's answer links its task numbers", () => {
   });
 });
 
+describe("task 1595: the word task names a task too", () => {
+  it("links #A, task B and (task C) in one reply: three pills that open the task", () => {
+    const html = mainChat("Done: #234 is first, then task 235, and the last one (task 236) waits.");
+    expect(hrefs(html)).toEqual([idOf(234), idOf(235), idOf(236)]);
+    // The word stays words before the pill, and the bracket closes on it.
+    expect(html).toContain("then task <a ");
+    expect(html).toMatch(/\(task <a [^>]*>.*?<\/a>\) waits\./);
+    mainChat("Then task 235.");
+    const link = activations.find((a) => a.href === `/projects?task=${idOf(235)}`);
+    expect(link).toBeDefined();
+    link!.go();
+    expect(push).toHaveBeenCalledWith(`/projects?task=${idOf(235)}`);
+  });
+
+  it("keeps the words as written when no single task has the number", () => {
+    const html = mainChat("Also task 9999 and (task 9998) are not tasks.");
+    expect(hrefs(html)).toEqual([]);
+    expect(html).toContain("Also task 9999 and (task 9998) are not tasks.");
+    expect(html).not.toContain("#999");
+  });
+
+  it("an orchestrator turn that asked no task agent: task N links only when its title follows", () => {
+    const plain = mainChat("Ticket closed: task 235 is done.", "orchestrator", []);
+    expect(hrefs(plain)).toEqual([]);
+    expect(plain).toContain("Ticket closed: task 235 is done.");
+    expect(plain).not.toContain("#235");
+    const titled = mainChat(`Start with task 235 ${TITLES[235]}, then the rest.`, "orchestrator", []);
+    expect(hrefs(titled)).toEqual([idOf(235)]);
+    // The title is said once, in the words after the pill.
+    expect(titled.match(new RegExp(TITLES[235], "g"))).toHaveLength(1);
+  });
+
+  it("stays the words as written while the answer streams", () => {
+    const html = renderToStaticMarkup(
+      createElement(MessageBubble, {
+        message: { ...turn("Made task 235 and (task 236)", "orchestrator", ASKED_PROJECTS), streaming: true } as ChatMessage,
+        sessionId: SESSION,
+        taskRefAgent: "orchestrator",
+      }),
+    );
+    expect(hrefs(html)).toEqual([]);
+    expect(html).toContain("Made task 235 and (task 236)");
+  });
+
+  it("does not link a plural, a longer word, a glued word or a time", () => {
+    const words = "See tasks 235, multitask 236, subtask 237, task-238, task239 and task 10:30.";
+    const html = mainChat(words);
+    expect(hrefs(html)).toEqual([]);
+    expect(html).toContain(words);
+  });
+
+  it("not another agent's answer", () => {
+    expect(hrefs(mainChat("Ticket task 235 is closed.", "email-assistant"))).toEqual([]);
+  });
+});
+
 describe("cause 2: a card's task names open the task", () => {
   // `link_tasks` in `skill_projects/writes.py`, as `_fields_block` prints it.
   const card = () =>

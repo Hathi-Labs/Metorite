@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * A `#171` in a chat answer, drawn as the task pill when it is a task.
+ * A `#171` in a chat answer, drawn as the task pill when it is a task. The
+ * `171` of `task 171` is one too (task 1595): `task ` stays words before it.
  *
  * Owner report, 2026-10-13: a `#172 «one surface»` drew a pill that opens the
  * task, and a bare `#171` in the same paragraph stayed text. The parser, the
@@ -62,7 +63,8 @@ export default function ChatTaskRef({
   resolver = taskRefResolver,
   mustEcho = false,
 }: {
-  /** The reference as the answer wrote it: `#171`. */
+  /** The reference as the answer wrote it: `#171`, or the `171` of
+   *  `task 171` (`taskRefs.ts` rule 8). */
   refText: string;
   /** The words right after it in the same text run. */
   after?: string;
@@ -77,11 +79,13 @@ export default function ChatTaskRef({
    *  orchestrator turn that asked no task agent (`taskRefModeForTurn`). */
   mustEcho?: boolean;
 }) {
-  const number = Number(refText.slice(1));
+  // `task 171` hands over `171` with no `#`. The index keys a task by `#171`,
+  // and a reference that names no single task stays the words as written.
+  const number = Number(refText.replace(/^#/, ""));
   const echoed = (title: string) => echoesTitle(after, title);
   const label = (task: Pick<TaskRef, "title">) => (echoed(task.title) ? "" : task.title);
   const accept = mustEcho ? (task: Pick<TaskRef, "title">) => echoed(task.title) : undefined;
-  const local = indexTasksByNumber(index, refText);
+  const local = indexTasksByNumber(index, `#${number}`);
   if (local.length === 1 && live) {
     const t = local[0];
     const task: TaskRef = { id: t.id, number, title: t.title, status: t.status, category: t.category };
@@ -100,6 +104,7 @@ export default function ChatTaskRef({
       echoed={echoed}
       accept={accept}
       resolver={resolver}
+      fallback={refText}
     />
   );
 }

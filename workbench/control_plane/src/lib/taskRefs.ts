@@ -39,7 +39,7 @@ import { statusAccent } from "@/lib/statusAccent";
 //
 // It finds CANDIDATES. A candidate links only when the lookup finds exactly
 // one visible task with that number, so these guards keep the lookup small
-// and the obvious non-references out. Six rules:
+// and the obvious non-references out. Eight rules:
 //
 // 1. A reference is `#` and a number that does not start with 0, 1 to 9
 //    digits. `#0` and `#012` are not task numbers.
@@ -58,19 +58,39 @@ import { statusAccent } from "@/lib/statusAccent";
 // 7. Another kind of number is not a reference. `PR #120`, `Order #45`,
 //    `Sprint #3` and `Invoice #4521` name another thing (`OTHER_KINDS`), and
 //    a rank (`#1 priority`, `#2 spot`) is no task (`RANKS`). Review round 1.
+// 8. The word `task` and a number is a reference too (task 1595, owner
+//    choice 2026-11-22): `task 3596`, `Task 12` and `(task 3596)`. The
+//    reference is the number alone, so `task ` stays words before the pill.
+//    `task #12` needs no rule of its own: rule 1 finds its `#12`.
+//    - `task` in any case, with no letter, digit, `_` or rule-2 character
+//      before it. So `multitask 5`, `subtask 5` and `_task 5` are no reference.
+//    - Then spaces, tabs or no-break spaces on the SAME line, then the number
+//      of rule 1. So `tasks 3`, `task12`, `task-12`, `task: 12` and a
+//      `task` at the end of a line are no reference.
+//    - Rules 4, 6 and 7 hold from the number. A `:`, `/` or `-` and a digit
+//      after it is a time, a fraction or a range, so `task 10:30`,
+//      `task 3/4` and `task 5-7` are no reference.
+//    - Only the number right after `task` counts: `task 2 of 3` names 2. A
+//      number that counts something (`do the task 3 times`) cannot be told
+//      apart, so it reaches the lookup, which links it only to one task.
+//    - The spelling is `[Tt][Aa][Ss][Kk]`, not the `i` flag, and the gap is
+//      `[ \t ]`, not `\s`, so the gateway's copy reads the same text.
 //
 // Code, inline code and a heading's own `#` marker are the CALLER's to skip:
 // a Markdown caller hands this function text nodes only (`remarkEntityPills`).
 
-/** One reference: `text.slice(start, end)` is `#171`, and `number` is 171. */
+/** One reference: `text.slice(start, end)` is `#171`, or `171` in
+ *  `task 171` (rule 8), and `number` is 171. */
 export interface TaskRefMatch {
   start: number;
   end: number;
   number: number;
 }
 
-/** Rules 1 to 4. The lookbehind is rules 2 and 3, the lookahead rule 4. */
-const CANDIDATE = /(?<![\p{L}\p{N}_/\\#&=?@])#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])/gu;
+/** Rules 1 to 4 and 8. The lookbehind is rules 2 and 3, each lookahead rule
+ *  4. Group 1 is the number after `#`, group 2 the number after `task`. */
+const CANDIDATE =
+  /(?<![\p{L}\p{N}_/\\#&=?@])(?:#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])|[Tt][Aa][Ss][Kk][ \t ]+([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,:/-][0-9]))/gu;
 
 /** Rule 5: the hex run that starts at `#`. */
 const HEX_RUN = /^#[0-9a-fA-F]+/;
@@ -115,14 +135,15 @@ function isOtherKind(text: string, start: number, end: number): boolean {
 
 /** Every task reference in one run of plain text, in order. Pure. */
 export function findTaskRefs(text: string): TaskRefMatch[] {
-  if (!text.includes("#")) return [];
   const out: TaskRefMatch[] = [];
   for (const m of text.matchAll(CANDIDATE)) {
-    const start = m.index ?? 0;
+    // The number ends the match, because each lookahead reads no character.
+    const end = (m.index ?? 0) + m[0].length;
+    const start = m[1] !== undefined ? (m.index ?? 0) : end - m[2].length;
     if (isColourAt(text.slice(start))) continue;
     if (isInsideUrl(text, start)) continue;
-    if (isOtherKind(text, start, start + m[0].length)) continue;
-    out.push({ start, end: start + m[0].length, number: Number(m[1]) });
+    if (isOtherKind(text, start, end)) continue;
+    out.push({ start, end, number: Number(m[1] ?? m[2]) });
   }
   return out;
 }
@@ -640,24 +661,29 @@ export function TaskRefText({
     ...splitTaskRefs(text).map((part, k) =>
       part.kind === "text"
         ? createElement(Fragment, { key: k }, part.text)
-        : createElement(RefPart, { key: k, number: part.number, resolver, className: refClassName }),
+        : createElement(RefPart, {
+          key: k, number: part.number, written: part.ref, resolver, className: refClassName,
+        }),
     ),
   );
 }
 
 /** One reference of `TaskRefText`. The class wraps a pill only: a number
- *  that names no single task stays text in the words' own size. */
+ *  that names no single task stays text in the words' own size, as written
+ *  (`#12`, or the `12` of `task 12`). */
 function RefPart({
   number,
+  written,
   resolver,
   className,
 }: {
   number: number;
+  written: string;
   resolver: TaskRefResolver;
   className?: string;
 }) {
   const task = taskOf(useTaskRef("", number, true, resolver));
-  if (!task) return createElement(Fragment, null, `#${number}`);
+  if (!task) return createElement(Fragment, null, written);
   const pill = createElement(TaskPill, { task });
   return className ? createElement("span", { className }, pill) : pill;
 }

@@ -17,8 +17,8 @@
  * - A pill never shows the guillemets. A stray mark left in the text is
  *   dropped too.
  * - With `{ taskRefs: true }`, a bare `#171` becomes a `taskRef` node
- *   (owner report, 2026-10-13). `taskRefs.ts` holds the rules of what counts
- *   as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
+ *   (owner report, 2026-10-13), and so does the `171` of `task 171` (task
+ *   1595). `taskRefs.ts` holds the rules of what counts as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
  *   text when no visible task has that number.
  * - With `{ names: false, taskRefs: true }`, ONLY the bare `#171`s change
  *   (WS-57 TR-5). The task card's description and comments use it: a «mark»
@@ -57,7 +57,8 @@ export interface MdNode {
 export const PILL_ATTR = "data-entity-pill";
 export const PILL_TEXT_ATTR = "data-entity-text";
 export const PILL_NUMBER_ATTR = "data-entity-number";
-/** The attribute of a bare task reference (`#171`). It carries the `#n`. */
+/** The attribute of a bare task reference. It carries the reference as
+ *  written: `#171`, or the `171` of `task 171` (`taskRefs.ts` rule 8). */
 export const TASK_REF_ATTR = "data-task-ref";
 /** The words right after a bare reference, so the pill can see that the
  *  answer already wrote the title there (review round 1). */
