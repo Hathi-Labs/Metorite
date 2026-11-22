@@ -97,9 +97,10 @@ def _token_works() -> bool:
 
 
 def _signing_key_works() -> bool:
-    # The rule of the edge and of branch 0: 32 bytes or more, not public,
-    # not equal to the internal token or the LLM key.
+    # The rule of the edge and of branch 0: 32 bytes or more, and not equal
+    # to the internal token or the LLM key. Each public default is shorter.
     return signing_key() is not None
+
 
 #: The secrets that each service needs. Keep this list small: each entry can
 #: stop a unit under ``enforce``.
