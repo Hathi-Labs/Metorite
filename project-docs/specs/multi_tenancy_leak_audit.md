@@ -715,6 +715,16 @@ Stated plainly, so nobody reads silence as clearance.
 5. **Meeting bot, Note Taker and `live_session`.** Not examined. `meeting*`, `notes_glossary`,
    `transcript_segment` and `live_session` are all unscoped; whether any of them has a global
    read surface is unknown.
+
+   **Update 2026-11-22 (task 3844).** Each notes table now has `organization_id` and FORCE RLS
+   (`test_notes_tenant_isolation_r8.py`). Two unique keys were still over all orgs:
+   `copilot_config_pkey` on `owner_email` and `notes_glossary_user_term_idx` on
+   `(user_id, lower(term))`. RLS hides the row of another org, but a unique index does not. So
+   the unique error told a second org that another org held the key.
+
+   Migration `475_notes_keys_per_org.sql` adds the per-org keys (expand, R6). A later release
+   drops the two old keys (contract). Until then the oracle stays open, and the xfail of each
+   table stays strict.
 6. **The frontend.** `workbench/control_plane` was out of scope; if any org identity is derived
    client-side it would compound S1-1's wrong `/auth/me` answer.
 
@@ -747,7 +757,7 @@ like infrastructure but are not (below).
 | `provider_keys` | does the platform supply LLM keys and bill usage, or does each tenant BYOK? Today: shared, silently (S1-2) |
 | `model_config` | is the enabled-model catalogue a platform choice or a tenant choice? |
 | `mcp_servers`, `plugins` | is the tool registry curated by the platform, or self-serve per tenant? Today: self-serve *and* shared, which is the worst pair (S3-10) |
-| `copilot_config` | not examined; grouped by shape |
+| `copilot_config` | Superseded: the table has `organization_id` and FORCE RLS. Task 3844 makes its key per org (§4 item 5) |
 | `access_request` | a knock from an address with no org yet — genuinely has no tenant at knock time, but *some* tenant's admin must see it. Needs a routing rule (domain? invite token?), not a column |
 
 Being in this set must mean "we chose this", with the reason in the file. It must not mean
