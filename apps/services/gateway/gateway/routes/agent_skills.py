@@ -34,6 +34,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
+from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -41,11 +42,9 @@ from sqlalchemy import text
 # member's request, where `get_current_user` bound the tenant from the identity,
 # so the ambient `tenant_session()` is the right seam. The block is ONE
 # transaction and COMMITS ON EXIT: a `commit()` inside it ends the transaction and
-# drops the bind (`SET LOCAL`), and the next read then returns no row under RLS.
-# So each handler reads its answer INSIDE the block. Fence:
-# `tests/unit/test_agent_skills_per_org_r8.py`.
-from gateway.db import tenant_session as _tenant_session  # noqa: E402
-
+# drops the bind (`SET LOCAL`), and the next read then fails (the unset setting
+# reads as an empty string, which is not a uuid). So each handler reads its answer
+# INSIDE the block. Fence: `tests/unit/test_agent_skills_per_org_r8.py`.
 _log = get_logger("gateway.agent_skills")
 
 router = APIRouter(prefix="/agent", tags=["agents"])

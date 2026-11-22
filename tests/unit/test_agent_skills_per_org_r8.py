@@ -2,9 +2,10 @@
 
 ``gateway.routes.agent_skills`` opened its session with ``get_db()``: no tenant
 bound. ``agent_skill_setting`` is a tenant table (FORCE row-level security after
-the generated phase 4). An unbound session reads no row and writes a row with no
-tenant, so a toggle either vanished or landed under no organization. The route
+the generated phase 4). An unbound session reads no row, and its insert is
+refused by the policy, so no toggle could be saved. The route
 now opens ``tenant_session()``, the tenant that ``get_current_user`` bound.
+The per-tenant key follow-up is task 3861.
 
 This suite runs the REAL route functions as the NON-privileged role of the
 phase-4 rehearsal (``acb_app_h3rls``: no superuser, no BYPASSRLS), on a catalog
@@ -12,10 +13,11 @@ with two organizations. A hermetic fake would agree with any SQL it is handed.
 
 Mutations this suite catches (R7):
 
-* ``_tenant_session`` back to the unbound ``get_db()``: the first test reads
-  nothing and the second finds a row with no organization;
+* ``_tenant_session`` back to the unbound ``get_db()``: Postgres refuses every
+  insert (the row-level security policy), so all five tests fail;
 * an explicit ``db.commit()`` back in ``set_agent_skills``: the answer is read
-  after the commit has dropped the bind, so ``settings`` comes back empty.
+  after the commit has dropped the bind, so the read raises (an empty string is
+  not a uuid) and the first test fails.
 
 ⚠️ **Known gap, pinned on purpose.** The primary key of ``agent_skill_setting``
 is ``(agent_name, instance, family)`` with no organization. So org B cannot save
