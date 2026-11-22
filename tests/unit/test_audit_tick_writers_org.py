@@ -1171,15 +1171,26 @@ def marker_violations(src: str, path: str) -> list[str]:
     with the key ``"system"``. A model call passes ``system=`` as its prompt
     in many other files, so these rules stay narrow.
 
-    Limits, by design. A name built at run time (``"sys" + "tem"``), an
-    event class reached by ``type(e)`` in a file that names neither token,
-    and an edit of ``AuditEvent.__init__.__defaults__`` are not seen. The
-    refusal in ``record`` and the R8 suites are the next layers.
+    Limits, by design. The fence catches an honest marker write and the
+    shapes of its self-tests. It does not prove the code against a hostile
+    author. Review catches these known shapes, and the refusal in
+    ``record`` and the R8 suites are the next layers:
 
-    Each rule needs ``AuditEvent``, or ``system`` as an attribute, a string
-    or a keyword, in the text of the source. ``_MAY_MARK`` finds those
-    texts, so a file with none of them is skipped before the parse. That
-    keeps the tree scan fast, and it skips no shape that a rule can see.
+    * a name built at run time (``"sys" + "tem"``), an event class reached
+      by ``type(e)`` in a file that names neither token, and an edit of
+      ``AuditEvent.__init__.__defaults__``;
+    * a spelling that the parser joins or decodes but the text prefilter
+      does not see: ``"sys" "tem"`` (two string parts), ``"\\x73ystem"``
+      (an escape), the word spelled in full-width letters (NFKC), and a comment
+      between ``system`` and ``=``;
+    * a setter through an alias (``f = setattr``), through
+      ``getattr(e, "__setattr__")``, and ``replace(e, **{"system": ...})``
+      in a file that names no audit token.
+
+    ``_MAY_MARK`` is a text prefilter. It skips a file whose text holds
+    neither ``AuditEvent`` nor ``system`` as an attribute, a string or a
+    keyword. That keeps the tree scan fast. It is not exact: the spellings
+    in the second list pass it.
     """
     if "AuditEvent" not in src and not _MAY_MARK.search(src):
         return []
