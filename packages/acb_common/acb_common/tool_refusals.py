@@ -68,6 +68,7 @@ __all__ = [
     "response_body",
     "route_template",
     "safe_detail",
+    "scrub_text",
     "strip_kind_prefix",
 ]
 
@@ -274,7 +275,18 @@ def safe_detail(
     named = tuple(dict.fromkeys(fields))
     if any(marker in text.lower() for marker in _LEAK_MARKERS):
         return "", named
-    text = _URL.sub("<link removed>", text)
+    return scrub_text(text, member, limit=limit), named
+
+
+def scrub_text(text: str, member: str = "", *, limit: int = DETAIL_MAX) -> str:
+    """*text* with each URL, DSN, bearer, key, JWT and absolute path removed,
+    and each email address except *member*'s own. The text is then one line,
+    cut to *limit* characters.
+
+    The cut comes last, so it never leaves half of a key. :func:`safe_detail`
+    uses it for the gateway's words. ``orchestrator._maf_mcp`` uses it for the
+    error text of an outside MCP server (task 3896)."""
+    text = _URL.sub("<link removed>", str(text or ""))
     for _rx in _SECRETS:
         text = _rx.sub("<secret removed>", text)
     own = member.strip().lower()
@@ -286,7 +298,7 @@ def safe_detail(
     text = " ".join(text.split())
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
-    return text, named
+    return text
 
 
 #: A path segment that is an id, not a word of the route: it holds a digit,

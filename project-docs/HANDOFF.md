@@ -470,19 +470,6 @@ line — never reclaim a number by deleting the other entry.
   A hit means part 1 is open.
 - **Added:** 2026-10-06 · the NS-11 session.
 
-### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
-- **Metorite:** #618. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these four checks. Each one stays open until its step closes.
-  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
-     No hit means step 1 is open.
-  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
-     No import of the store in `claim_skill` means step 2 is open.
-  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
-     No hit means step 3 is open.
-  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
-     Step 4 is open while no hit lies inside `get_workspace_tree`.
-- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
-
 ### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
 - **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
