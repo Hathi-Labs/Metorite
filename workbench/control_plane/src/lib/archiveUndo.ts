@@ -12,6 +12,7 @@
  * BROWSER calls the existing unarchive route under the member's own session
  * and RLS, with the version as `If-Match`. A 412 means somebody changed the
  * row since. Then Undo says so once, restores nothing, and the entry is dead.
+ * A 409 wrote nothing either, and the member may click Undo again.
  * The event carries no token, and the model names no part of it.
  *
  * Pure: the network is `ArchiveIo`, so these rules are tests and not clicks.
@@ -74,9 +75,11 @@ const statusOf = (err: unknown): number | null => {
 
 /**
  * Run the unarchive once. "done" restored the row. "stale" is a 412: the row
- * changed since, and nothing was restored. "refused" is any other 4xx (the
- * row is gone, or the member cannot see it now), and Undo stops. "failed" is
- * a network fault or a 5xx, and the member may try again.
+ * changed since, and nothing was restored. "failed" is a 409, a 5xx or a
+ * network fault, and the member may try again. A 409 is a lock that another
+ * write held (`core.transient_as_409`): the route wrote nothing. "refused" is
+ * any other 4xx (the row is gone, or the member cannot see it now), and Undo
+ * stops.
  */
 export async function runArchiveUndo(io: ArchiveIo, undo: ArchiveUndo): Promise<ArchiveUndoState> {
   try {
@@ -85,6 +88,7 @@ export async function runArchiveUndo(io: ArchiveIo, undo: ArchiveUndo): Promise<
   } catch (err) {
     if (isStale(err)) return "stale";
     const status = statusOf(err);
+    if (status === 409) return "failed";
     if (status !== null && status >= 400 && status < 500) return "refused";
     return "failed";
   }

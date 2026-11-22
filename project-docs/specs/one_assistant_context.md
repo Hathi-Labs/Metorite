@@ -3215,7 +3215,9 @@ answer is 404, and the verification commands of §9.6 pass.
 - An open chat can still file subtasks. That receipt offers no Undo, because the route restores one task.
 - The browser calls `POST /api/projects/tasks/{id}/unarchive` or `.../nodes/{id}/unarchive` with `If-Match`. The task rule is `precondition_holds`. The node rule is strict equality on `updated_at`.
 - `archive_node` and `unarchive_node` stamp `updated_at = now()` on the root row. The descendants keep their stamp. The archive answers the new root stamp, and the tool sends that stamp as the Undo token. A restore and a new archive by others then give 412.
-- The task half needed no change. Migration 304 moves `fields_at` when `archived_at` changes.
+- The task half needed no change to its version. Migration 304 moves `fields_at` when `archived_at` changes.
+- The archive route of a task answers `was_archived` (review fix, 2026-11-22). It is true when another member archived the task first, and the route then writes nothing. The tool offers Undo only when `was_archived` is false. So member A's Undo cannot clear member B's archive. A reply with no `was_archived` offers no Undo, as a project reply with no stamp.
+- A 409 from the unarchive route (`core.transient_as_409`) wrote nothing. The receipt keeps its Undo button, and the member can try again.
 - Fences: `tests/unit/test_held_card_writes.py` §12 and §13, `tests/unit/test_archive_undo_r8.py` (R8), and `src/lib/archiveUndo.test.ts`.
 
 **WT-4 done when:**

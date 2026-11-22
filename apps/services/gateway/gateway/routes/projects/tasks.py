@@ -2420,6 +2420,10 @@ async def archive_task(
     The work is :func:`archive_task_in`, the one core that the archive
     approval of WS-55 EA-6g calls too.
 
+    The reply carries ``was_archived`` (WT-6a). True means the task was on
+    the shelf before this call, so this call wrote nothing, and the reply's
+    ``updated_at`` is the version of the earlier archive.
+
     H-409 item 1: the archive ends the task's open agent run in the same
     transaction. A run that an agent write holds at that moment refuses the
     lock, and ``transient_as_409`` answers 409 with nothing written.
@@ -2431,6 +2435,10 @@ async def archive_task(
             db, vis, task, user, include_subtasks=include_subtasks, end_runs=True,
         )
         result = outcome.row
+        # WT-6a: true when the task was archived before this call, which then
+        # wrote nothing. Its `updated_at` is the version of THAT archive, so
+        # the chat tool offers no Undo for it (`guarded.archive_task`).
+        result["was_archived"] = outcome.was_archived
         cascade = outcome.cascade
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)

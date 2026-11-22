@@ -16,6 +16,8 @@ This file proves the route half on a real database (R8):
   archived.
 * Another organization gets 404, and the row stays archived (R5).
 * An absent header still restores (D-PM-20), so each app call is unchanged.
+* An archive of a task that another member archived first writes nothing. Its
+  reply says ``was_archived``, and the tool then offers no Undo.
 * A project's archive and its restore both move the root row's
   ``updated_at``. So the Undo token of an old archive answers 412 after
   another member restores it and a third archives it again. That later
@@ -41,6 +43,12 @@ Mutations (each must turn a named test red):
 * U5. Drop both stamps. That is the state before the fix, and the Undo then
   clears the later archive (200).
   ``test_a_stale_undo_cannot_clear_a_later_archive``.
+* U6. ``tasks.archive_task``: drop ``was_archived`` from the reply. The tool
+  then offers no Undo for any archive.
+  ``test_an_archive_that_found_it_archived_says_so_and_offers_no_undo``.
+* U7. ``guarded.archive_task``: offer Undo when the reply says
+  ``was_archived``. The Undo of member A then clears the archive of member B.
+  ``test_an_archive_that_found_it_archived_says_so_and_offers_no_undo``.
 """
 
 from __future__ import annotations
@@ -202,6 +210,68 @@ class TestArchiveUndoOnARealDatabase:
         assert node.status_code == 404, node.text
         assert _archived(w.p, "pm_tasks", w.task)
         assert _archived(w.p, "pm_projects", w.project)
+
+    async def test_an_archive_that_found_it_archived_says_so_and_offers_no_undo(
+        self, world, monkeypatch,
+    ):
+        """The race. Member A's card reads the task open. Member B archives it
+        before A's write. The route writes nothing for A, and its ``updated_at``
+        is the version of B's archive. So A's receipt must offer no Undo, or
+        that Undo clears B's archive. Mutations U6 and U7 turn this red."""
+        pytest.importorskip("skill_projects", reason="skill-projects not installed")
+        w = world
+        async with _session(w.p) as call:
+            seen_open = await _as(call, w.me, "GET", f"/projects/tasks/{w.task}")
+            assert seen_open.status_code == 200, seen_open.text
+            assert seen_open.json()["archived_at"] is None
+            by_other = await _as(call, w.other, "POST", f"/projects/tasks/{w.task}/archive")
+            assert by_other.status_code == 200, by_other.text
+            by_me = await _as(call, w.me, "POST", f"/projects/tasks/{w.task}/archive")
+            assert by_me.status_code == 200, by_me.text
+        assert by_other.json()["was_archived"] is False
+        assert by_me.json()["was_archived"] is True
+        assert by_me.json()["updated_at"] == by_other.json()["updated_at"]
+        assert _archived(w.p, "pm_tasks", w.task)
+
+        # The tool's half, with the real replies of the route: the read before
+        # B's archive, then each archive reply in turn.
+        from acb_common import get_settings
+        from skill_projects import guarded
+
+        from tests.unit._projects_agent_fakes import approve, fake_gateway
+
+        reply: dict[str, Any] = {}
+
+        def responder(c: dict[str, Any]) -> Any:
+            if c["path"].endswith(f"/tasks/{w.task}") and c["method"] == "GET":
+                return seen_open.json()
+            if c["path"].endswith(f"/tasks/{w.task}/archive"):
+                return reply
+            return {"rows": [], "total": 0}
+
+        monkeypatch.setattr(get_settings(), "held_class_c_orgs", "*")
+        calls = fake_gateway(monkeypatch, responder)
+        approve(monkeypatch)
+        offered: list[tuple[str, str, Any]] = []
+
+        async def spy(kind: str, row_id: str, version: Any) -> bool:
+            offered.append((kind, row_id, version))
+            return True
+
+        monkeypatch.setattr("acb_skills.ask_tools.publish_card_undo", spy)
+        # Non-vacuity: B's own reply wrote the archive, so B's receipt offers
+        # Undo with B's version. The flag and the spy are live.
+        reply.update(by_other.json())
+        assert (await guarded.archive_task(w.task)).startswith("Archived")
+        assert offered == [("task", w.task, by_other.json()["updated_at"])]
+        # A's reply wrote nothing, so A's receipt offers no Undo.
+        offered.clear()
+        reply.clear()
+        reply.update(by_me.json())
+        answer = await guarded.archive_task(w.task)
+        assert answer.startswith("Archived"), answer
+        assert len([c for c in calls if c["method"] == "POST"]) == 2, "non-vacuity: it archived"
+        assert offered == []
 
     async def test_an_absent_header_still_restores(self, world):
         """D-PM-20: each app call sends no header and works as before."""

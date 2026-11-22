@@ -81,6 +81,12 @@ describe("runArchiveUndo", () => {
     expect(await runArchiveUndo(failing(503), undo)).toBe("failed");
     expect(await runArchiveUndo(failing(), undo)).toBe("failed");
   });
+
+  it("a 409 may retry, because the route wrote nothing", async () => {
+    // `core.transient_as_409`: a lock that an agent write holds rolls the
+    // transaction back. Mutation: read a 409 as any other 4xx -> red.
+    expect(await runArchiveUndo(failing(409), undo)).toBe("failed");
+  });
 });
 
 describe("archiveUndoEntry", () => {
@@ -122,6 +128,18 @@ describe("archiveUndoEntry", () => {
     await entry.undo();
     expect(spy).toHaveBeenCalledTimes(2);
   });
+
+  it("after a 409 the entry stays live, and the button stays", async () => {
+    // Mutation: spend the entry on a 409 -> one write for two clicks -> red.
+    const io = failing(409);
+    const spy = vi.spyOn(io, "unarchive");
+    const states: ArchiveUndoState[] = [];
+    const entry = archiveUndoEntry(io, undo, "x", (s) => states.push(s));
+    await entry.undo();
+    await entry.undo();
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(states).toEqual(["busy", "failed", "busy", "failed"]);
+  });
 });
 
 describe("browserArchiveIo", () => {
@@ -140,6 +158,12 @@ describe("browserArchiveIo", () => {
     const fetchFn = vi.fn(async () => new Response("{}", { status: 412 }));
     const io = browserArchiveIo(fetchFn as unknown as typeof fetch);
     expect(await runArchiveUndo(io, undo)).toBe("stale");
+  });
+
+  it("a 409 from the proxy reads failed, so the member may try again", async () => {
+    const fetchFn = vi.fn(async () => new Response("{}", { status: 409 }));
+    const io = browserArchiveIo(fetchFn as unknown as typeof fetch);
+    expect(await runArchiveUndo(io, undo)).toBe("failed");
   });
 });
 

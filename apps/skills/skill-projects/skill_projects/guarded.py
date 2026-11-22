@@ -1006,7 +1006,16 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     # filed subtasks too offers no Undo, because the receipt could not put
     # each of them back under its own version. Only an open chat can file
     # them: a held chat refuses include_subtasks above.
-    if isinstance(row, dict) and not row.get("subtask_ids"):
+    # ``was_archived`` true: another member archived the task after the read
+    # above, and this call wrote nothing. Its ``updated_at`` is THAT archive's
+    # version, so an Undo would clear the other member's archive. A reply with
+    # no ``was_archived`` (an older gateway) offers none either, as
+    # ``archive_project`` reads a reply with no stamp.
+    if (
+        isinstance(row, dict)
+        and row.get("was_archived") is False
+        and not row.get("subtask_ids")
+    ):
         await _offer_undo("task", tid, row.get("updated_at"))
     return "\n".join(
         ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]

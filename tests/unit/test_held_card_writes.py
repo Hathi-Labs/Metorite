@@ -1270,7 +1270,7 @@ def _archive_gateway(monkeypatch, *, subtasks: bool = False,
         if path.endswith(f"/tasks/{TID}/relations") and children:
             return {"subtasks": [{"id": CHILD, "category": "todo"}]}
         if path.endswith(f"/tasks/{TID}/archive"):
-            row = {"id": TID, "archived_at": STAMP, "updated_at": STAMP}
+            row = {"id": TID, "archived_at": STAMP, "updated_at": STAMP, "was_archived": False}
             if subtasks:
                 row |= {"subtasks_archived": 1, "subtask_ids": [CHILD]}
             return row
@@ -1431,6 +1431,60 @@ async def test_an_open_chat_archive_that_filed_subtasks_offers_no_undo(monkeypat
     answer = await guarded.archive_task(TID, include_subtasks="yes")
     assert answer.startswith("Archived"), answer
     assert [c for c in calls if c["method"] == "POST"], "non-vacuity: it archived"
+    assert seen == []
+
+
+def _raced_archive_gateway(monkeypatch, reply: dict[str, Any]) -> list[dict[str, Any]]:
+    """The GET reads the task open. Between that read and the POST, another
+    member archives it, so the archive route writes nothing and answers *reply*."""
+
+    def responder(call: dict[str, Any]) -> Any:
+        if call["path"].endswith(f"/tasks/{TID}") and call["method"] == "GET":
+            return {"id": TID, "title": "Fix it", "task_number": 7, "project_id": PID,
+                    "status_id": "s1", "archived_at": None}
+        if call["path"].endswith(f"/tasks/{TID}/archive"):
+            return reply
+        return {"rows": [], "total": 0}
+
+    return fake_gateway(monkeypatch, responder)
+
+
+async def test_an_archive_that_found_the_task_archived_offers_no_undo(monkeypatch) -> None:
+    """Member B archived the task after the card read it. The route wrote
+    nothing, and its ``updated_at`` is the version of B's archive. An Undo with
+    that version would clear B's archive. Mutation: offer Undo when the reply
+    says ``was_archived`` -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    calls = _raced_archive_gateway(monkeypatch, {
+        "id": TID, "archived_at": ARCHIVED_STAMP, "updated_at": ARCHIVED_STAMP,
+        "was_archived": True,
+    })
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    answer = await guarded.archive_task(TID)
+    assert answer.startswith("Archived"), answer
+    assert [c for c in calls if c["method"] == "POST"], "non-vacuity: the route answered"
+    assert seen == []
+
+
+async def test_an_archive_reply_with_no_was_archived_offers_no_undo(monkeypatch) -> None:
+    """An older gateway does not say whether THIS call wrote the archive. With
+    no proof, no line offers an Undo that could clear another member's archive.
+    The project half reads a missing stamp the same way. Mutation: offer Undo
+    unless the reply says ``was_archived`` is true -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    calls = _raced_archive_gateway(
+        monkeypatch, {"id": TID, "archived_at": STAMP, "updated_at": STAMP},
+    )
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    answer = await guarded.archive_task(TID)
+    assert answer.startswith("Archived"), answer
+    assert [c for c in calls if c["method"] == "POST"], "non-vacuity: the route answered"
     assert seen == []
 
 
