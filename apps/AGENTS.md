@@ -6,6 +6,8 @@ History of this file is in git (git log -p).
 Three distinct kinds of unit, grouped by lifecycle into subfolders. The split
 is load-bearing. **Services** are deployed processes. **Agents** and **skills**
 are *loaded by* a service at runtime and are never deployed on their own.
+A fourth kind, **connectors**, runs on the customer's machine. Metorite never
+deploys it (`connectors/` below).
 
 A bare test file name below is under `tests/unit/`, and a bare spec name is
 under `project-docs/specs/`.
@@ -159,6 +161,13 @@ which holds SKILL.md and subprocess-script skills for the DOE-v2 registry agents
 - skill-projects/ -- the Projects tool family for `projects-assistant` over the gateway `/projects` API. `manifest.py` is the route allowlist and the coverage record (see `agent-projects/` above)
   - A zero of `find_tasks` ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). `reads._with_zero_pointer` imports it as the other optional imports here. Fence: `test_find_tools.py`.
 
+## `connectors/` — programs on the customer's machine
+A customer installs a connector, and it reads a local system for the chat
+(spec `integrations_console.md` §3.8). It is not a uv workspace member, and it
+imports nothing from `services/` or `packages/`. Local contract:
+`apps/connectors/AGENTS.md`.
+- tally_bridge/ -- the Tally bridge (TLY-1, task 3656, brief `docs/tally_bridge_brief.md`). An MCP server that reads TallyPrime on 127.0.0.1:9000. Three modules: `reader`, `tools`, `transport`. Fence: `test_tally_bridge_fences.py`.
+
 ## Conventions
 - Each service, agent and skill has its own pyproject.toml and is a uv workspace member (`apps/services/*`, `apps/agents/*`, `apps/skills/*` — see root `pyproject.toml`)
 - Moving a dir between groups means updating its `local_path` (registry and gateway `_AGENT_REGISTRY`). Python imports are by package name and do not change.
@@ -168,6 +177,7 @@ which holds SKILL.md and subprocess-script skills for the DOE-v2 registry agents
 - The `/copilot/chat` endpoint in main.py stays for backward compatibility, but the workbench frontend no longer routes to it
 
 ## Child DOX Index
+- apps/connectors/AGENTS.md
 - apps/services/agent_edge/AGENTS.md
 - apps/services/gateway/AGENTS.md
 - apps/services/orchestrator/AGENTS.md

@@ -1428,8 +1428,8 @@ function InviteDialog({
               <Icon name="UserPlus" size={15} /> Invite a member
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Sign-in is Microsoft SSO — this provisions their access, it does
-              not send an email.
+              They get an email with a button that opens the sign-in page. They
+              sign in with the same address you enter here.
             </p>
           </div>
           <button

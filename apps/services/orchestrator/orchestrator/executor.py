@@ -10351,26 +10351,34 @@ async def run_agent_stream(
 
             run_task = asyncio.create_task(_run_task())
 
-            # Drain the queue until the task finishes.
-            while True:
-                try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=0.1)
-                    if ev is None:
-                        break
-                    if _relayable(ev):
-                        yield _sse(ev)
-                        for _ml in _mark.after(ev):
-                            yield _ml
-                except asyncio.TimeoutError:
-                    if run_task.done():
-                        # Drain any remaining events
-                        while not queue.empty():
-                            ev = queue.get_nowait()
-                            if _relayable(ev):
-                                yield _sse(ev)
-                                for _ml in _mark.after(ev):
-                                    yield _ml
-                        break
+            # Drain the queue until the task finishes. Task 851: when the
+            # reader goes away (the generator closes, or the request is
+            # cancelled), the Tier-2 run stops with it. Before, it kept
+            # calling the model and its tools for a reader that was gone.
+            try:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        if ev is None:
+                            break
+                        if _relayable(ev):
+                            yield _sse(ev)
+                            for _ml in _mark.after(ev):
+                                yield _ml
+                    except asyncio.TimeoutError:
+                        if run_task.done():
+                            # Drain any remaining events
+                            while not queue.empty():
+                                ev = queue.get_nowait()
+                                if _relayable(ev):
+                                    yield _sse(ev)
+                                    for _ml in _mark.after(ev):
+                                        yield _ml
+                            break
+            except BaseException:
+                if not run_task.done():
+                    run_task.cancel()
+                raise
 
             _active_run_queue.reset(_t2_token)  # restore after drain
 
