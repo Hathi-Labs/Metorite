@@ -43,6 +43,7 @@ from gateway.routes.tasks.core import (
     router,
 )
 from gateway.routes.tasks.item_source import item_source
+from gateway.routes.tasks.settings import _BOUND_ORG
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -381,12 +382,17 @@ async def _find_pm_account_for_person(
     so a DELEGATED capture can be STAGED there — a teammate can't see a private
     LOCAL task. Matches by provider_user_id first, then email, then name.
     Returns (account_id, normalized-member) or None when no account has them.
+
+    ⚠️ Only the accounts of the BOUND org (H-312b, migration 481). Under the
+    owner role RLS does not apply, so the member filter alone could stage a
+    task on an account of the member's other org.
     """
     pid = str(person.get("provider_user_id") or "").strip()
     pemail = str(person.get("email") or "").strip().lower()
     pname = str(person.get("name") or "").strip().lower()
     rows = (await db.execute(text(
-        "SELECT id, schema_cache FROM task_accounts WHERE user_id = :uid"),
+        "SELECT id, schema_cache FROM task_accounts "
+        f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
         {"uid": uid})).fetchall()
     for r in rows:
         cache = _parse_jsonb(r.schema_cache) or {}

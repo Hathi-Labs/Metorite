@@ -173,6 +173,10 @@ EXPECTED_SCOPED = {
     "pm_project_updates",
     # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
     "pm_templates", "pm_template_applies",
+    # H-312b (2026-11-22, task 1646): migration 481 puts `organization_id` on
+    # the numbered ladder for three member tables of the task routes, so each
+    # statement there can name the bound org.
+    "calendar_day_state", "calendar_rollover_log", "task_accounts",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
@@ -232,7 +236,10 @@ BASELINE_UNSCOPED = {
     "email_rule_patterns", "email_rules", "email_senders", "email_sync_log",
     "email_thread_status", "email_voice_profiles",
 # gtd_*
-    "attachments", "calendar_day_state",
+    "attachments",
+    # ⚠️ `calendar_day_state`, `calendar_rollover_log` and `task_accounts`
+    # LEFT this list on 2026-11-22. Migration 481 (H-312b) put
+    # `organization_id` on the numbered ladder for the three tables.
     # ⚠️ `people` LEFT this list on 2026-09-21. Migration 209 put
     # `organization_id` on the NUMBERED ladder for that one table, because
     # H-125 needed a per-tenant unique index and could not wait for the
@@ -244,7 +251,7 @@ BASELINE_UNSCOPED = {
     # ⚠️ `user_settings` LEFT this list on 2026-10-10. Migration 239 (H-256)
     # put `organization_id` on the numbered ladder and keyed the table on
     # `(organization_id, user_id)`.
-    "my_tasks_reviews", "calendar_rollover_log",
+    "my_tasks_reviews",
 # live_*
     "live_session",
 # meeting_*
@@ -268,7 +275,7 @@ BASELINE_UNSCOPED = {
 # summary_*
     "summary_run",
 # task_*
-    "task", "task_accounts",
+    "task",
 # transcript_*
     "transcript_segment",
 # user_*
@@ -487,6 +494,9 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
+    # 89 since 2026-11-22: `calendar_day_state`, `calendar_rollover_log` and
+    # `task_accounts` left with migration 481 (H-312b, the task routes name
+    # the bound org).
     # 92 since 2026-11-07: `agent_avatars` left with migration 354 (H-201d,
     # the per-tenant key of an avatar override).
     # 93 since 2026-11-01: `apps` left with migrations 324 (WS-PKG PKG-4) and
@@ -498,4 +508,4 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     # one settings row for each organization of a member).
     # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
     # and the default look, keyed per organization).
-    assert len(BASELINE_UNSCOPED) == 92
+    assert len(BASELINE_UNSCOPED) == 89

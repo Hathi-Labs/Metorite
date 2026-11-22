@@ -47,6 +47,7 @@ from gateway.routes.tasks.core import (
     router,
 )
 from gateway.routes.tasks.priority import important_from_importance
+from gateway.routes.tasks.settings import _BOUND_ORG
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -78,6 +79,12 @@ async def sync_calendars(user: UserContext = Depends(get_current_user)):
 # ── Per-day Focus-OS state: the ★ One Thing + tomorrow-seeds (mig 92) ─────────
 # Persisted so server-side AI (the planner, the chat agent, the day summary)
 # can see the user's committed top priority — previously localStorage-only.
+#
+# ⚠️ H-312b (migration 481): each statement on `calendar_day_state` names the
+# member AND the bound organization (`_BOUND_ORG`). Under the owner role RLS
+# does not apply, so the member filter alone reached the row of another org.
+# The key is still `(user_id, day)`. So in a second org, a save of a day that
+# the first org holds changes nothing, and the read answers the empty day.
 
 
 class DayStateModel(BaseModel):
@@ -109,7 +116,8 @@ async def _one_thing_for(db: Any, uid: str, day: date) -> str | None:
     try:
         row = (await db.execute(
             text("SELECT one_thing_id FROM calendar_day_state "
-                 "WHERE user_id = :uid AND day = :day"),
+                 f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+                 "AND day = :day"),
             {"uid": uid, "day": day})).first()
         return str(row.one_thing_id) if row and row.one_thing_id else None
     except Exception:
@@ -129,7 +137,8 @@ async def get_day_state(
     async with _tenant_session() as db:
         row = (await db.execute(
             text("SELECT one_thing_id, seed_ids FROM calendar_day_state "
-                 "WHERE user_id = :uid AND day = :day"),
+                 f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+                 "AND day = :day"),
             {"uid": uid, "day": d})).first()
         seeds: list[str] = []
         one: str | None = None
@@ -156,22 +165,29 @@ async def put_day_state(
     uid = _uid(user)
     provided = patch.__pydantic_fields_set__
     async with _tenant_session() as db:
-        # Ensure a row exists, then update only the provided columns.
+        # Ensure a row exists, then update only the provided columns. The row
+        # of another org on this day keeps the key, so the INSERT does nothing
+        # there, and the UPDATEs below match no row (H-312b).
         await db.execute(
-            text("INSERT INTO calendar_day_state (user_id, day) VALUES (:uid, :day) "
+            text("INSERT INTO calendar_day_state (organization_id, user_id, day) "
+                 f"VALUES ({_BOUND_ORG}, :uid, :day) "
                  "ON CONFLICT (user_id, day) DO NOTHING"),
             {"uid": uid, "day": d})
         if "one_thing_id" in provided:
             ot = (patch.one_thing_id or "").strip() or None
             await db.execute(
                 text("UPDATE calendar_day_state SET one_thing_id = :ot, "
-                     "updated_at = now() WHERE user_id = :uid AND day = :day"),
+                     "updated_at = now() "
+                     f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+                     "AND day = :day"),
                 {"ot": ot, "uid": uid, "day": d})
         if "seed_ids" in provided:
             seeds = json.dumps([str(x) for x in (patch.seed_ids or []) if x])
             await db.execute(
                 text("UPDATE calendar_day_state SET seed_ids = CAST(:s AS jsonb), "
-                     "updated_at = now() WHERE user_id = :uid AND day = :day"),
+                     "updated_at = now() "
+                     f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+                     "AND day = :day"),
                 {"s": seeds, "uid": uid, "day": d})
     # Echo the stored row — get_day_state opens its own session, so it must run
     # AFTER the block above committed (H2 restructure).
@@ -604,8 +620,6 @@ async def _planning_prefs(db: Any, uid: str) -> dict[str, Any]:
     missing row / pre-migration DB returns the humane defaults."""
     out = {"planning_prompt": "", "max_focus_run_mins": 90, "break_mins": 10,
            "lunch_start_hour": None, "lunch_end_hour": None}
-    from gateway.routes.tasks.settings import _BOUND_ORG
-
     try:
         row = (await db.execute(text(
             "SELECT planning_prompt, max_focus_run_mins, break_mins, "
@@ -645,8 +659,6 @@ def _theme_energy(theme: str | None) -> str:
 
 async def _day_templates(db: Any, uid: str) -> list[dict]:
     """The user's recurring windows (migration 94). Never raises."""
-    from gateway.routes.tasks.settings import _BOUND_ORG
-
     try:
         row = (await db.execute(text(
             "SELECT day_templates FROM user_settings "
@@ -1235,8 +1247,6 @@ _SETTINGS_COLS = (
 
 
 async def _load_settings_row(db: Any, uid: str) -> Any:
-    from gateway.routes.tasks.settings import _BOUND_ORG
-
     return (await db.execute(
         text(f"SELECT {_SETTINGS_COLS} FROM user_settings "
              f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
@@ -1333,11 +1343,16 @@ async def _store_pending_plan(
 ) -> None:
     payload = json.dumps(
         {"kind": kind, "at": now.isoformat(), "plan": plan.model_dump()})
+    # ⚠️ The WHERE of the DO UPDATE keeps the write off the row of another org
+    # that holds this day on the old key (H-312b). Postgres reads it before
+    # the RLS check of the conflict, so under RLS the save skips, not fails.
     await db.execute(
-        text("INSERT INTO calendar_day_state (user_id, day, pending_plan) "
-             "VALUES (:uid, :day, CAST(:p AS jsonb)) "
+        text("INSERT INTO calendar_day_state "
+             "(organization_id, user_id, day, pending_plan) "
+             f"VALUES ({_BOUND_ORG}, :uid, :day, CAST(:p AS jsonb)) "
              "ON CONFLICT (user_id, day) DO UPDATE SET "
-             "pending_plan = CAST(:p AS jsonb), updated_at = now()"),
+             "pending_plan = CAST(:p AS jsonb), updated_at = now() "
+             f"WHERE calendar_day_state.organization_id = {_BOUND_ORG}"),
         {"uid": uid, "day": local_day, "p": payload})
 
 
@@ -1348,7 +1363,8 @@ async def _take_pending_plan(
     but only if it's fresh (< TTL). None ⇒ nothing to apply (propose first)."""
     row = (await db.execute(
         text("SELECT pending_plan FROM calendar_day_state "
-             "WHERE user_id = :uid AND day = :day"),
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+             "AND day = :day"),
         {"uid": uid, "day": local_day})).first()
     raw = getattr(row, "pending_plan", None) if row else None
     if not raw:
@@ -1361,7 +1377,8 @@ async def _take_pending_plan(
         return None
     await db.execute(
         text("UPDATE calendar_day_state SET pending_plan = NULL, updated_at = now() "
-             "WHERE user_id = :uid AND day = :day"),
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+             "AND day = :day"),
         {"uid": uid, "day": local_day})
     try:
         return DayPlan(**data["plan"])
@@ -1522,8 +1539,9 @@ async def rollover_log(
     uid = _uid(user)
     async with _tenant_session() as db:
         rows = (await db.execute(
-            text("""SELECT item_id, title, rolled_from, rolled_to, created_at
-                    FROM calendar_rollover_log WHERE user_id = :uid
+            text(f"""SELECT item_id, title, rolled_from, rolled_to, created_at
+                    FROM calendar_rollover_log
+                    WHERE user_id = :uid AND organization_id = {_BOUND_ORG}
                     ORDER BY created_at DESC LIMIT :lim"""),
             {"uid": uid, "lim": max(1, min(limit, 100))},
         )).fetchall()
@@ -1608,10 +1626,13 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
         overdue = [src.to_item(r) for r in over_rows]
         await src.apply_blocks(db, uid, [], [str(m.id) for m in overdue])
         for m in overdue:
+            # The org is named, not left to the column default (H-312b).
+            # `tenant_session(org_id)` binds it, so `_BOUND_ORG` is `org_id`.
             await db.execute(
-                text("""INSERT INTO calendar_rollover_log
-                          (user_id, item_id, title, rolled_from, rolled_to)
-                        VALUES (:uid, :id, :title, :frm, NULL)"""),
+                text(f"""INSERT INTO calendar_rollover_log
+                          (organization_id, user_id, item_id, title,
+                           rolled_from, rolled_to)
+                        VALUES ({_BOUND_ORG}, :uid, :id, :title, :frm, NULL)"""),
                 {"uid": uid, "id": m.id, "title": m.title,
                  "frm": _parse_iso(m.scheduled_start)})
         # The row of THIS organization only (H-256, migration 239): one
