@@ -51,7 +51,8 @@ NAME = "upsert_from_source"
 #: The second door of the mirror write path (CRM-Z4), and the third (CRM-Q2,
 #: the stages of a mirrored pipeline), and the fourth (CRM-Q5, the contacts of
 #: a mirrored deal), and the fifth and sixth (CRM-Q6a, the generic record
-#: store, which has no native writer). Same fence.
+#: store, which has no native writer). Same fence. Task 3870 adds the seen
+#: stamp of that store, which only the delete walk of the sync writes.
 #: CRM-X0 adds the start over, which has ONE allowed caller.
 RESET_NAME = "reset_crm_from_admin"
 #: CRM-C3 adds the merge of two stage rows. Only the sync may name it.
@@ -64,6 +65,7 @@ NAMES = (
     NAME, "delete_from_source", "set_pipeline_stages_from_source",
     "set_deal_contacts_from_source",
     "upsert_module_records_from_source", "delete_module_records_from_source",
+    "mark_module_records_seen_from_source",
     RESET_NAME, MERGE_NAME, RULE_NAME, RESTAMP_NAME,
 )
 
@@ -228,6 +230,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     assert "async def set_pipeline_stages_from_source" in definer_text
     assert "async def upsert_module_records_from_source" in definer_text
     assert "async def delete_module_records_from_source" in definer_text
+    assert "async def mark_module_records_seen_from_source" in definer_text
     assert "async def reset_crm_from_admin" in definer_text
     assert "async def merge_status_from_source" in definer_text
     assert "async def apply_field_rule_from_source" in definer_text
@@ -263,6 +266,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
         "from gateway.routes.crm.core import upsert_module_records_from_source\n",
         "from gateway.routes.crm import core\n\nasync def go(db):\n"
         "    await core.delete_module_records_from_source(db, 'zoho', 'Products', [])\n",
+        "from gateway.routes.crm.core import mark_module_records_seen_from_source\n",
     ],
 )
 def test_the_fence_catches_every_spelling(tmp_path: Path, source: str) -> None:

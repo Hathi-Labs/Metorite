@@ -108,6 +108,10 @@ gateway reads them.
   drift check. :func:`module_reread_allowed` is the one check. A full read
   spends Zoho API credits inside the budget of the sync run, so its flip is
   gate ``enforcement-flip``. Fence: ``tests/unit/test_crm_module_reread.py``.
+  ⚠️ Task 3870: the same flag turns on the delete walk of that weekly read.
+  A mirror row that two complete weekly reads missed is DELETED, with the
+  guards of the core walk. It deletes mirror rows only, never a Zoho record.
+  Fence: ``tests/unit/test_crm_module_delete_walk.py``.
 * ``SEMANTIC_MODEL_ORGS`` — the organization ids whose CRM plan takes the
   semantic kinds ``measure``, ``join`` and ``query`` (WS-SEM SEM-7, task
   3737, ``semantic_model.md`` §3.4). The grammar is the one of ``CRM_ORGS``.

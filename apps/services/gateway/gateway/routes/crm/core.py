@@ -3081,24 +3081,70 @@ async def upsert_module_records_from_source(
 
 async def delete_module_records_from_source(
     db: Any, ext_source: str, module: str, ext_ids: Sequence[str],
+    *, org: str | None = None,
 ) -> int:
     """Delete the generic records that a provider deleted. Returns how many went.
 
     The sixth door of the mirror write path (WS-53 CRM-Q6a), with the same
     fence as :func:`delete_from_source`. It matches the module, ``ext_source``
     and ``ext_id``, and the tenant policy binds the organization.
+
+    *org* (task 3870): the delete walk of a generic module names the org in
+    the statement too, beside the policy. The deleted list passes none, and
+    its statement is as before.
     """
     _module_key(ext_source, module)
     ids = sorted({str(i) for i in ext_ids if i})
     if not ids:
         return 0
-    result = await db.execute(
-        text(
-            "DELETE FROM crm_module_records WHERE ext_source = :ext_source "
-            "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[]))"
-        ),
-        {"ext_source": ext_source, "module": module, "ext_ids": ids},
+    params: dict[str, Any] = {"ext_source": ext_source, "module": module, "ext_ids": ids}
+    sql = (
+        "DELETE FROM crm_module_records WHERE ext_source = :ext_source "
+        "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[]))"
     )
+    if org is not None:
+        sql += " AND organization_id = CAST(:org AS uuid)"
+        params["org"] = org
+    result = await db.execute(text(sql), params)
+    return int(result.rowcount or 0)
+
+
+#: Task 3870: the seen stamp of the generic records that one page of a
+#: complete full read listed. It sets ``ext_seen_at`` and nothing else, so
+#: ``updated_at`` and the content stay as they are. A row that has the stamp
+#: already is not written again.
+MARK_MODULE_SEEN_SQL = (
+    "UPDATE crm_module_records SET ext_seen_at = :seen "
+    "WHERE organization_id = CAST(:org AS uuid) AND ext_source = :ext_source "
+    "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[])) "
+    "AND (ext_seen_at IS NULL OR ext_seen_at < :seen)"
+)
+
+
+async def mark_module_records_seen_from_source(
+    db: Any, ext_source: str, module: str, ext_ids: Sequence[str], seen_at: datetime,
+    *, org: str,
+) -> int:
+    """Stamp the generic records that a full read of the provider listed
+    (WS-53 task 3870, ``crm_platform.md`` §18.7). Returns how many rows moved.
+
+    The third door of the generic record store, with the same fence as
+    :func:`delete_module_records_from_source`. Only the delete walk of
+    ``gateway/crm_sync/engine.py`` calls it, in the transaction of the page.
+    *seen_at* is the start of that read. The statement names the org, and the
+    tenant policy binds it too. It is an UPDATE, so an id with no row here
+    makes no row.
+    """
+    _module_key(ext_source, module)
+    if not org:
+        raise ValueError("module records: 'org' is required")
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(text(MARK_MODULE_SEEN_SQL), {
+        "seen": seen_at, "org": org, "ext_source": ext_source, "module": module,
+        "ext_ids": ids,
+    })
     return int(result.rowcount or 0)
 
 

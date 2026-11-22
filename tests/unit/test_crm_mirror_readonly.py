@@ -529,6 +529,10 @@ _RAW_ALLOW = {
     # from a route fails here.
     "core.py::upsert_module_records_from_source",
     "core.py::delete_module_records_from_source",
+    # Task 3870: the seen stamp of the same store. It sets `ext_seen_at` only,
+    # names the org, and only the delete walk of `crm_sync/` calls it. The
+    # same name fence keeps routes, agents and skills out.
+    "core.py::mark_module_records_seen_from_source",
     # CRM-C3: the merge of two stage rows after a Zoho rename. The seventh
     # door. Only files under `crm_sync/` may name it, by the same name fence.
     "core.py::merge_status_from_source",

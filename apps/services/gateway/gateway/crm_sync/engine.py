@@ -20,6 +20,8 @@ only in the constants below, and builds the adapter through the registry.
   Local rows whose id is missing from that list are deleted. It runs at most
   once in 24 hours for each such entity. It also runs when the last good run
   is older than 50 days, because the provider keeps a delete for 60 days only.
+  A generic module has no reconcile. Its weekly full read is its walk, with
+  the same delete rule (task 3870, :class:`_SeenWalk`).
 
 **Where a run touches the database.** One ``tenant_session(org)`` for each
 step and each page, never one long transaction, and never a session open
@@ -108,6 +110,7 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
     delete_module_records_from_source,
+    mark_module_records_seen_from_source,
     merge_status_from_source,
     restamp_deal_stage_from_source,
     savepoint,
@@ -293,6 +296,20 @@ REREAD_FAILURES_KEY = "reread_failures"
 #: (:data:`LABEL_REREAD_KEY`) only for a mark that is not here yet, so a value
 #: that a full read cannot repair queues no second read.
 LABEL_DRIFT_KEY = "label_drift"
+#: Task 3870: the cursor-state keys of the delete walk of a generic module
+#: (:class:`_SeenWalk`). ``seen_prev`` is the start of the last complete walk
+#: whose delete check passed. A row with an older seen stamp was missed by
+#: that walk and by the walk that ends now: two strikes. ``seen_start`` and
+#: ``seen_count`` keep the walk in progress over several runs: its start,
+#: which is the stamp of each row that it lists, and the records it read.
+#: Only a complete walk writes ``seen_prev``, so the first walk can only strike.
+SEEN_PREV_KEY = "seen_prev"
+SEEN_START_KEY = "seen_start"
+SEEN_COUNT_KEY = "seen_count"
+#: Task 3870: two walks closer than this are one strike. A read for the label
+#: list can follow a weekly read by minutes, and two misses that close are not
+#: two looks at the module. The core walk runs at most once in this time too.
+MODULE_WALK_GAP = timedelta(hours=24)
 #: The most missing values that one drift check reads for one module.
 LABEL_DRIFT_CAP = 50
 #: The LOCAL ``statement_timeout`` of one drift check, in milliseconds.
@@ -2002,7 +2019,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
 
     A walk deletes only a row that the PREVIOUS complete walk and this one both
     missed (two strikes), and only when the walk looks whole
-    (:func:`_drop_stale`).
+    (:func:`_drop_stale`). The reconcile never walks a generic module. Its
+    weekly read is its walk (task 3870, :class:`_SeenWalk`), with the same rule.
     """
     module = changed_module(entity)
     row = _row(ctx, module)
@@ -2037,8 +2055,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     if _unavailable_now(ctx, entity):
         return
-    # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
-    # its deletes come from the deleted list only (CRM-Q6a).
+    # The reconcile never walks a generic module (CRM-Q6a). Its weekly read
+    # is its delete walk (task 3870, ``seen`` below).
     walking = entity in ctx.reconcile and not generic and not parent_only
     rereading = generic and (_module_reread(ctx, entity, row) or _final_reread(ctx, row))
     weekly = _is_weekly(saved, generic, rereading)
@@ -2170,6 +2188,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     tally_drops = full and entity in ACTIVITY_TYPES
     read_drops = _drops_of(saved.get(READ_DROPS_KEY)) if (resumed and tally_drops) else {}
     table = MODULE_TABLE if generic else _table(entity)
+    seen = _seen_walk(ctx, row, saved, weekly, resumed)
     try:
         while True:
             if generic and _budget_low(ctx, MODULES_RESERVE):
@@ -2215,6 +2234,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             async with ctx.page() as db:
                 drops_before = dict(ctx.counts.get(ACTIVITY_DROPS_KEY) or {})
                 landed, bad = await _apply_records(ctx, db, entity, page.records)
+                await _mark_seen(ctx, db, entity, page.records, seen)
                 if tally_drops:
                     _add_page_drops(
                         read_drops, drops_before, ctx.counts.get(ACTIVITY_DROPS_KEY) or {},
@@ -2244,6 +2264,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                         prev_walk_start=_iso(prev_walk),
                         **progress_marks,
                         **extra,
+                        **seen.progress(),
                         **_recover_state(ctx, entity),
                         # CRM-Q24: the short read of the last full read stays
                         # until the next one ends, and the drops so far ride.
@@ -2267,6 +2288,9 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             next_prev = walk_start
                     elif stamping:
                         next_prev = walk_start
+                    seen_prev = await _end_seen_walk(
+                        ctx, db, entity, seen, hidden or final_hidden, set(failed_map),
+                    )
                     mark = None if final_hidden else _later(row.last_pulled_at, newest)
                     # CRM-Q24 item 5: the short read, after the walk's deletes.
                     short = (
@@ -2286,6 +2310,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "failed": failed_map,
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
+                            **_SeenWalk(None, 0, seen_prev).progress(),
                             **marks,
                             # The end of a read, for each entity: the hourly
                             # cadence of a generic module (CRM-Q6a), and the
@@ -2692,16 +2717,15 @@ async def _drop_stale(
     else :data:`DELETE_KEPT_FLAG` (CRM-Z10b round 6). It returns False for a refusal,
     and the caller then keeps its old previous-walk time. A record that failed
     to write is never deleted.
+
+    Task 3870: the delete walk of a generic module uses this same rule, with
+    ``table`` :data:`MODULE_TABLE`. :func:`_walk_scope` then reads the rows of
+    that one module, and :func:`_delete_stale` deletes through the door of the
+    deleted list. A module key keeps no ``refused`` count, so the flag is the
+    mark of a refusal there.
     """
-    kind_clause = " AND type = :type" if table == "crm_activities" else ""
-    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE}
-    if kind_clause:
-        params["type"] = ACTIVITY_TYPES[entity]
-    base = (
-        f"FROM {table} WHERE organization_id = CAST(:org AS uuid) "
-        f"AND ext_source = :src{kind_clause}"
-    )
-    local = (await db.execute(text(f"SELECT count(*) AS n {base}"), params)).first().n
+    base, params = _walk_scope(ctx, entity, table)
+    local = int((await db.execute(text(f"SELECT count(*) AS n {base}"), params)).scalar() or 0)
     stale: list[str] = []
     if prev_walk is not None:
         stale = [
@@ -2725,16 +2749,165 @@ async def _drop_stale(
         # CRM-Z10b round 6: the causes count apart. A walk that read fewer
         # records than Zoho holds is not a complete read, and the switch
         # waits for it. A refusal after a complete read only kept rows.
-        ctx.flag(entity, WALK_SHORT_FLAG if _walk_short(local, walked, known) else DELETE_KEPT_FLAG)
+        # Task 3870: the walk of a generic module rides a read whose last page
+        # landed, and its ``short_by`` already says when Zoho holds more. So
+        # its refusal only kept rows, and the switch does not wait for it.
+        short = table != MODULE_TABLE and _walk_short(local, walked, known)
+        ctx.flag(entity, WALK_SHORT_FLAG if short else DELETE_KEPT_FLAG)
         _log.warning(
             "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
             "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
         )
         return False
     if stale:
-        removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
+        removed = await _delete_stale(ctx, db, entity, table, sorted(stale))
         ctx.bump(entity, "deleted", removed)
     return True
+
+
+def _walk_scope(ctx: _Ctx, entity: str, table: str) -> tuple[str, dict[str, Any]]:
+    """The ``FROM`` clause and the parameters of the rows of one walk.
+
+    Each names the org and the source. An activity entity adds its type, and a
+    generic module adds its API name (task 3870), so a walk never counts or
+    deletes a row of another type or module. ``table`` comes from the
+    mapping or is :data:`MODULE_TABLE`, never from input.
+    """
+    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE}
+    clause = ""
+    if table == "crm_activities":
+        clause, params["type"] = " AND type = :type", ACTIVITY_TYPES[entity]
+    elif table == MODULE_TABLE:
+        clause, params["module"] = " AND module = :module", _module(entity) or ""
+    base = (
+        f"FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+        f"AND ext_source = :src{clause}"
+    )
+    return base, params
+
+
+async def _delete_stale(
+    ctx: _Ctx, db: Any, entity: str, table: str, ext_ids: list[str],
+) -> int:
+    """Delete the rows that a walk found stale, through the door of the table.
+
+    A generic module (task 3870) uses the door of its deleted list,
+    ``delete_module_records_from_source``, so its activities go by the same
+    cascade as after a delete that Zoho listed. That statement names the org
+    too. A core table uses ``delete_from_source``, as before.
+    """
+    api_name = _module(entity)
+    if table == MODULE_TABLE and api_name is not None:
+        return await delete_module_records_from_source(
+            db, EXT_SOURCE, api_name, ext_ids, org=ctx.org,
+        )
+    return await delete_from_source(db, table, EXT_SOURCE, ext_ids)
+
+
+@dataclass
+class _SeenWalk:
+    """The delete walk of a generic module (task 3870, ``crm_platform.md``
+    §18.7). It rides the weekly full read of task 3869, so it costs no read
+    and no credit of its own.
+
+    Each page of the read stamps the rows that it lists with :attr:`start`
+    (:func:`_mark_seen`). The last page runs :func:`_drop_stale` with
+    :attr:`prev`, the start of the last complete walk. A row that the two
+    walks both missed is deleted, never a row that one walk missed.
+    """
+
+    #: The start of the walk, or None when this read is no walk.
+    start: datetime | None
+    #: The records that the walk listed so far, over each run of the read.
+    count: int
+    #: :data:`SEEN_PREV_KEY` of the cursor: the start of the last complete
+    #: walk whose delete check passed.
+    prev: datetime | None
+
+    def progress(self) -> dict[str, Any]:
+        """The keys of the walk in a cursor state. A read that is no walk
+        keeps only ``seen_prev``, so the strikes stay as they are."""
+        state: dict[str, Any] = {}
+        if self.prev is not None:
+            state[SEEN_PREV_KEY] = _iso(self.prev)
+        if self.start is not None:
+            state[SEEN_START_KEY] = _iso(self.start)
+            state[SEEN_COUNT_KEY] = self.count
+        return state
+
+
+def _seen_walk(
+    ctx: _Ctx, row: CursorRow, saved: dict[str, Any], weekly: bool, resumed: bool,
+) -> _SeenWalk:
+    """The walk of this read of a generic module (task 3870).
+
+    Only a weekly read (:func:`_is_weekly`) is a walk: the flag
+    ``CRM_MODULE_REREAD_ORGS`` holds the org, the key is not held, the
+    module is not read by offset, and its first import is done. Any other
+    read (a read of changes, a first import, the 24 h read by offset) marks
+    nothing and deletes nothing. A walk that goes on takes its start and its
+    count from the cursor. A weekly read from before task 3870 has no start
+    there, because it stamped none of its pages, so it is no walk.
+    """
+    prev = _parse(saved.get(SEEN_PREV_KEY))
+    if not weekly or row.initial_done_at is None or saved.get("offset_paged"):
+        return _SeenWalk(None, 0, prev)
+    if not resumed:
+        return _SeenWalk(ctx.started, 0, prev)
+    start = _parse(saved.get(SEEN_START_KEY))
+    count = (_whole(saved.get(SEEN_COUNT_KEY)) or 0) if start is not None else 0
+    return _SeenWalk(start, count, prev)
+
+
+async def _mark_seen(
+    ctx: _Ctx, db: Any, entity: str, records: tuple[SourceRecord, ...], seen: _SeenWalk,
+) -> None:
+    """Stamp the rows that one page of a walk listed, in the transaction of
+    the page (task 3870). Each listed record counts, also one whose write
+    failed: Zoho holds it. A read that is no walk writes nothing."""
+    if seen.start is None or not records:
+        return
+    seen.count += len(records)
+    await mark_module_records_seen_from_source(
+        db, EXT_SOURCE, _module(entity) or "", [r.ext_id for r in records], seen.start,
+        org=ctx.org,
+    )
+
+
+async def _end_seen_walk(
+    ctx: _Ctx, db: Any, entity: str, seen: _SeenWalk, hidden: bool, failed_ids: set[str],
+) -> datetime | None:
+    """The last page of a read of a generic module landed (task 3870).
+    Returns the ``seen_prev`` that its cursor keeps.
+
+    A read that is no walk keeps the strikes as they are. A walk deletes
+    nothing when a record came with no ``Modified_Time`` (offset paging can
+    skip a row), when its gate closed during the run, or when it started less
+    than :data:`MODULE_WALK_GAP` after the last complete walk. The final sync
+    of the switch (CRM-Z10b) deletes nothing either: no read of Zoho follows
+    the switch, so a wrong delete there could never heal. Else
+    :func:`_drop_stale` decides, with the count of :func:`_module_estimate`,
+    so the walk spends no credit. A refusal keeps the old ``seen_prev``. One
+    log line names the module and the counts, never a record.
+    """
+    if seen.start is None:
+        return seen.prev
+    if hidden or ctx.final or not _weekly_allowed(ctx, entity):
+        return seen.prev
+    if seen.prev is not None and seen.start - seen.prev < MODULE_WALK_GAP:
+        return seen.prev
+    before = _whole((ctx.counts.get(entity) or {}).get("deleted")) or 0
+    known = _provider_count(ctx, entity, None)
+    if not await _drop_stale(
+        ctx, db, entity, MODULE_TABLE, seen.prev, seen.count, known, failed_ids,
+    ):
+        return seen.prev
+    dropped = (_whole((ctx.counts.get(entity) or {}).get("deleted")) or 0) - before
+    _log.info(
+        "crm.sync.module_walk_done entity=%s walked=%s known=%s dropped=%s",
+        entity, seen.count, known, dropped,
+    )
+    return seen.start
 
 
 def _walk_short(local: int, walked: int, known: int | None) -> bool:

@@ -367,6 +367,10 @@ rule of the engine and the drift check ask it on each run. A reload applies a
 change. A full read spends Zoho API credits inside the budget of the sync run,
 so the flip is `enforcement-flip`.
 
+⚠️ Since task 3870 the same flag turns on the delete walk of that weekly read.
+The sync deletes a mirror row that two complete weekly reads missed, with the
+guards of the core walk. It deletes mirror rows only, never a Zoho record.
+
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
 the default is `off`. The flag is global, but the check acts only for an org

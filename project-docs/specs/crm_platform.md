@@ -5,6 +5,7 @@
 > **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
 > **Built 2026-11-22, task 3869 (not merged):** the mirror reads each generic module in full once in 7 days, and discovery queues one full read of a module whose stored pick-list values left the current options (§18.7, CRM-Q6a). It is dark behind `CRM_MODULE_REREAD_ORGS`, empty by default. No migration.
+> **Built 2026-11-22, task 3870 (not merged, stacked on 3869):** the weekly read of a generic module is also its delete walk (§18.7, CRM-Q6a). A row that two complete weekly reads missed goes, by the rule and the guards of the core walk. Migration 477 adds `crm_module_records.ext_seen_at`. The same flag gates it. ⚠️ Its R8 file has not run yet.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
@@ -1630,8 +1631,9 @@ each of these on a real database:
 - The sync reads each module after the CRM-Q5 steps, with the cursor
   `zoho:module:<ApiName>` and the deleted list. The deleted list of a module
   starts before its first read.
-- The reconcile never walks a generic module, because the table has no
-  `ext_seen_at`. Its deletes come from the deleted list only.
+- The reconcile never walks a generic module. Until task 3870 its deletes
+  came from the deleted list only. Since task 3870, the weekly full read is
+  also its delete walk (below), behind the same flag.
 - A module that hides `Modified_Time` is read again in full once in each
   `RECONCILE_EVERY`. The door skips an unchanged record, so that read writes
   nothing.
@@ -1689,6 +1691,65 @@ each of these on a real database:
   `tests/unit/test_crm_label_drift_r8.py` (R8, `_LABEL_DRIFT_SQL` on
   Postgres). ⚠️ The R8 file has not run yet: it waits for a box with a
   database.
+- **The delete walk of a generic module (task 3870, built 2026-11-22, same
+  flag).** Zoho lists a delete for 60 days only, and a refused read of the
+  deleted list only logs. So a record that Zoho deleted could stay in the
+  mirror for ever. The chat then said "Draft" for an invoice that Zoho no
+  longer held (task 3729, cause 1). Now the weekly full read is also a walk
+  (`engine._SeenWalk`). It spends no read and no credit of its own.
+  - Migration 477 adds `crm_module_records.ext_seen_at`, nullable, with no
+    default and no backfill. NULL means that no complete read listed the
+    record yet.
+  - Each page of a weekly read stamps the records that it lists with the
+    start of the read, in the transaction of the page
+    (`core.mark_module_records_seen_from_source`). The stamp writes no other
+    column, so `updated_at` stays. The cursor keeps the start and the count
+    of a read that runs over several runs (`seen_start`, `seen_count`).
+  - Only the last page of a complete weekly read decides a delete, with
+    `_drop_stale`, the one rule of the core walk. A row goes when its stamp
+    is older than `seen_prev`, the start of the last complete walk whose
+    check passed. So a row goes after two complete reads in a row missed it,
+    never after one. A row that a read lists again loses its strike. A row
+    with no stamp counts by its `created_at`, as in the core walk. Only a
+    complete walk writes `seen_prev`, so the first walk can only strike.
+  - The guards of the core walk refuse each delete of a walk in four cases.
+    The module count of the run is unknown. The read listed nothing while
+    rows exist. The read listed fewer records than the count. The delete is
+    more than 20 % of more than 10 rows. That last guard refuses each
+    delete that the guard of the task refuses (more than 20 % and more than
+    25 rows), and more. The count is the one that `_module_estimate` keeps,
+    up to 24 hours old, so the walk spends no credit. A refusal deletes
+    nothing, keeps `seen_prev`, sets `delete_kept` in the counts of the run
+    and logs one line of counts. A module key keeps no `refused` count, and
+    its refusal never sets `walk_short`, so the switch does not wait for it.
+  - A read that stops deletes nothing. It stops at the reserve, on an error
+    or on a tie that is too wide. The next run goes on with the same walk.
+    A read that meets a record with no `Modified_Time` deletes nothing. A
+    read of changes, a first import and the 24 h read of an offset-paged
+    module stamp nothing and delete nothing. So does a weekly read in
+    progress from before task 3870. A held module and an org off the flag
+    get no walk. The final sync of the switch (CRM-Z10b) stamps rows but
+    deletes nothing, because no read of Zoho follows it to repair a wrong
+    delete. A
+    weekly read that fails 3 times ends with no delete, and
+    the strikes start again. They start again too when a read marks the
+    module unavailable, as in the core walk. Two walks less than 24 hours
+    apart (`MODULE_WALK_GAP`) are one strike. So a label read minutes after
+    a weekly read cannot be strike two.
+  - The delete goes through `core.delete_module_records_from_source`, the
+    door of the deleted list. So the activities of a record go by the same
+    cascade (migration 275). The walk names the org in each statement, also
+    in the delete, beside the policy. A log line names the module and the
+    counts, never a record.
+  - Known limits. An offset-paged module still takes its deletes from the
+    deleted list only. When Zoho counts records that the user who connected
+    cannot see, each walk reads fewer than the count and refuses. When a
+    delete in Zoho comes after the count of the day, that walk refuses too,
+    and the delete waits a week.
+  - Fences: `tests/unit/test_crm_module_delete_walk.py` (hermetic, and a
+    static check of migration 477) and
+    `tests/unit/test_crm_module_delete_walk_r8.py` (R8). ⚠️ The R8 file has
+    not run yet: it waits for a box with a database.
 - After its first import, a module reads its changed list at most once an hour
   (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
   import it reads on each run, within the reserve.

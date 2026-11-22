@@ -6815,6 +6815,8 @@ and one thing that cannot be written until a second person exists.
 > once in 7 days. It spends Zoho API credits of the org, inside the budget and
 > the reserve of the sync run, and no money. So it is the grant
 > `enforcement-flip`. The flag reloads with no restart (`docs/flag_reload.md`).
+> ⚠️ Since task 3870 the same flag also deletes a mirror row that two complete
+> weekly reads missed (`crm_platform.md` §18.7). It deletes no Zoho record.
 >
 > **WS-53 — the CRM weekly digest.** *(Registered 2026-10-17 with CRM-Q28.)* To
 > build CRM-Q28 is AGENT-SAFE, and it ships dark. A name in `CRM_DIGEST_ORGS`
