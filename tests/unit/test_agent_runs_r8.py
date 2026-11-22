@@ -2019,3 +2019,61 @@ class TestLinkedEvents:
                 assert _lines(w, rid) == ["CI failed on PR 21."]
         finally:
             _drop_ref(w.p, ref)
+
+
+@_DB_GATE
+class TestChildRunsBesideTheRunRoutes:
+    """WS-MCP SW-39 (``agent_coordination.md`` §3.11.9). A child run has no
+    task, so the run routes and the sweep never meet one. The rest of SW-39
+    is ``test_agent_child_runs_r8.py``."""
+
+    async def _parent_and_child(self, w: Any, call: Any) -> tuple[str, str]:
+        rid = (await _start(w, call, idempotency_key=_key()))["id"]
+        made = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/children",
+                          {"agent_label": "implementer"})
+        assert made.status_code == 201, made.text
+        return rid, made.json()["run"]["id"]
+
+    async def test_the_run_wire_says_run_and_names_no_parent(self, w):
+        async with _session(w.p) as call:
+            run = await _start(w, call, idempotency_key=_key())
+            listed = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}/agent-runs")).json()
+        assert (run["kind"], run["parent_run_id"]) == ("run", None)
+        assert [(r["kind"], r["parent_run_id"]) for r in listed["rows"]] == [("run", None)]
+
+    async def test_a_child_id_is_no_run_on_the_run_routes(self, w):
+        """A child takes no activity, no finish, no release and no read of its
+        own (§3.12.7 rule 8: a person steers the parent). Each route loads a
+        task run, so a child id is 404, as an unknown id is."""
+        async with _session(w.p) as call:
+            rid, child = await self._parent_and_child(w, call)
+            answers = [
+                await _act(call, w.agent_a, child, type="thought", body="hi"),
+                await _act(call, w.a, child, type="prompt", body="stop"),
+                await call(w.agent_a, "POST", f"/projects/agent-runs/{child}/finish", {}),
+                await call(w.agent_a, "POST", f"/projects/agent-runs/{child}/release", {}),
+                await call(w.a, "GET", f"/projects/agent-runs/{child}"),
+            ]
+        assert [a.status_code for a in answers] == [404] * 5, [a.text for a in answers]
+        [row] = _rows(w.p, "SELECT status FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=child)
+        assert row.status == "in_progress"
+        assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities"
+                           " WHERE run_id = CAST(:i AS uuid)", i=child) == 0
+
+    async def test_the_sweep_never_reads_a_quiet_child(self, w):
+        """The stranded read of the sweep names the task subject. A child
+        that is as quiet as its parent is never stranded, so it gets no
+        nudge and no recovery record."""
+        from gateway import agent_run_sweep
+
+        async with _session(w.p) as call:
+            rid, child = await self._parent_and_child(w, call)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                " last_agent_activity_at = now() - interval '3 hours'"
+                " WHERE id IN (CAST(:r AS uuid), CAST(:c AS uuid))"), {"r": rid, "c": child})
+        stranded = {str(r.id) for r in _rows(
+            w.p, agent_run_sweep._stranded_sql(), n=50, window=600)}
+        assert rid in stranded and child not in stranded
