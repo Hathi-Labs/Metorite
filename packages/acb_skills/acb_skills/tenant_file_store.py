@@ -37,11 +37,12 @@ Tool path              Host path                                    Kept
 * **A skill folder belongs to the member who made it**
   (``agent_paths.claim_skill``). The store refuses to read, list, write or
   delete a skill folder that another member made, so no member's skill text
-  or code reaches another member's run. In a tenant dir (``o:<org>``, the
-  broker's binding) it also refuses to read or list a skill folder with
-  files and no marker (``SKILL_UNCLAIMED``, H-245 step 1), because no member
-  may take it. A personal dir keeps no marker on the skills that the Files
-  routes save, so there the rule does not bind (H-245 review, P1).
+  or code reaches another member's run. In a shared dir of the broker's
+  binding, a tenant dir (``o:<org>``) or a team dir (``t:<team>``), it
+  also refuses to read or list a skill folder with files and no marker
+  (``SKILL_UNCLAIMED``, H-245 step 1), because no member may take it.
+  A personal dir keeps no marker on the skills that the Files routes save,
+  so there the rule does not bind (H-245 review, P1).
 * **Every open goes through** :mod:`acb_skills.safe_open`, so a link at any
   depth fails the call, also one that appears during it.
 * **Every call holds the dir lock** (``guard.hold()``, the broker's
