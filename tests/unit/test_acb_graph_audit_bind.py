@@ -628,6 +628,48 @@ def _rows_in_any_org(admin_engine, eid: uuid.UUID) -> int:
 
 
 @_DB_GATE
+def test_a_refused_push_on_a_sub_run_lands_under_the_parent_org(
+    graph_on_promoted, monkeypatch,
+):
+    """Review P1 of slice 3, on the real table. A delegated sub-run calls
+    ``_settle_agent_push`` with no ``thread_id``. The refused push row must
+    land under the org of the parent run, and in no other org. RED when the
+    row takes its org only from ``_RUN_ORG.get(thread_id)``: ``record``
+    then refuses it, and no row lands."""
+    import asyncio
+
+    import acb_skills.permission_policy as pp
+    import orchestrator.executor as executor
+
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+    p = graph_on_promoted
+    run_id = f"run-sub-{uuid.uuid4()}"
+    monkeypatch.setattr(pp, "take_agent_push_request", lambda _r: True)
+
+    async def _gate() -> tuple[bool, str]:
+        return False, "not a reviewer"
+
+    monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
+    monkeypatch.setitem(executor._RUN_ORG, "t-parent-r8", p.org_a)
+
+    async def _sub_run() -> None:
+        token = executor._stream_relay_thread_id.set("t-parent-r8")
+        try:
+            await executor._settle_agent_push("agent-x", None, run_id, since_sha=None)
+        finally:
+            executor._stream_relay_thread_id.reset(token)
+        await audit.drain()
+
+    asyncio.run(_sub_run())
+    with p.admin_engine.connect() as c:
+        orgs = [r[0] for r in c.execute(text(
+            "SELECT organization_id::text FROM audit_event "
+            "WHERE action = 'agent_push_request_refused' AND payload->>'run_id' = :r"),
+            {"r": run_id})]
+    assert orgs == [p.org_a], f"the sub-run's refused push landed as {orgs}"
+
+
+@_DB_GATE
 class TestRecordRefusesUnmarkedUnderRls:
     def test_an_unmarked_tenantless_record_leaves_no_row(
         self, graph_on_promoted, monkeypatch,
