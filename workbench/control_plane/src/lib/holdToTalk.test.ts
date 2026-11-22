@@ -73,6 +73,11 @@ describe("the popover and the wiring", () => {
     expect(button).toContain("onKeyUp");
     expect(button).toContain("e.repeat");
   });
+  it("Escape discards a mouse hold, where the button has no focus, and the ring clears the timer", () => {
+    expect(button).toContain('document.addEventListener("keydown"');
+    expect(button).toContain('document.removeEventListener("keydown"');
+    expect(button).toContain("ml-2.5 flex shrink-0 items-center gap-1.5 text-[11px]");
+  });
   it("name and title say Hold to talk, and the Stop and X buttons are gone", () => {
     expect(button).toContain("HOLD_TEXT");
     expect(button).not.toContain('aria-label="Discard recording"');

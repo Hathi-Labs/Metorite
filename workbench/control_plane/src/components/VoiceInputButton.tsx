@@ -115,6 +115,20 @@ export default function VoiceInputButton({
     };
   }, [popover]);
 
+  // A mouse press does not focus the button, so Escape reaches the page and
+  // not the button. While a press is held, a page-level Escape discards it.
+  const holding = recording || phase === "asking";
+  useEffect(() => {
+    if (!holding) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      held.current = null;
+      cancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [holding, cancel]);
+
   const begin = useCallback(
     (pointerId: number | null) => {
       if (held.current) return;
@@ -255,7 +269,7 @@ export default function VoiceInputButton({
       </span>
       {recording && (
         <>
-          <span className="flex shrink-0 items-center gap-1.5 text-[11px]" data-chat-voice-meter="">
+          <span className="ml-2.5 flex shrink-0 items-center gap-1.5 text-[11px]" data-chat-voice-meter="">
             <span
               className={`font-mono tabular-nums ${left !== null ? "font-semibold text-warning" : "text-foreground"}`}
               aria-label={left !== null ? `Recording, ${clock}, ${left} seconds left` : `Recording, ${clock}`}
