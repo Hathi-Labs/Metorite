@@ -2,6 +2,7 @@
 
     python -m tally_bridge new-token   # print a new read token and its hash, once
     python -m tally_bridge serve       # address mode on BIND_HOST:BIND_PORT
+    python -m tally_bridge record-requests <folder> --company "<name>" --ledger "<name>"
 
 On a dev box the settings and the token hash come from the environment
 (``TALLY_BRIDGE_*``). Step 4 of the build order adds the Windows stores and
@@ -22,8 +23,14 @@ from tally_bridge.settings import EnvSettingsStore
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tally_bridge")
-    parser.add_argument("command", choices=["serve", "new-token", "version"])
+    parser.add_argument("command", choices=["serve", "new-token", "version", "record-requests"])
+    parser.add_argument("folder", nargs="?", help="record-requests: where to write the requests")
+    parser.add_argument("--company", help="record-requests: the exact Tally company name")
+    parser.add_argument("--ledger", help="record-requests: a busy ledger with a known Dr balance")
     args = parser.parse_args(argv)
+
+    if args.command == "record-requests":
+        return _record(args)
 
     if args.command == "version":
         print(__version__)
@@ -36,6 +43,19 @@ def main(argv: list[str] | None = None) -> int:
         print(token_sha256(token))
         return 0
     return _serve()
+
+
+def _record(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from tally_bridge.reader.recording import write_requests
+
+    if not (args.folder and args.company and args.ledger):
+        print("record-requests needs a folder, --company and --ledger.", file=sys.stderr)
+        return 2
+    for path in write_requests(Path(args.folder), args.company, args.ledger):
+        print(path)
+    return 0
 
 
 def _serve() -> int:
