@@ -12,11 +12,18 @@ session, which has the Metorite MCP) reads the text and posts it with
 ``add_comment``. ``scripts/delivery_metrics.py`` and
 ``scripts/stuck_runs_sweep.py`` work the same way.
 
-    python scripts/chat_cant_sweep.py --org <organization uuid> [--days 7]
-        [--examples 10] [--counts-only] [--json] [--now ISO]
+    python scripts/chat_cant_sweep.py --org <organization uuid>
+        --board-org <organization uuid> [--days 7] [--examples 10]
+        [--counts-only] [--json] [--now ISO]
 
-One organization per run. The comment goes to the board of that organization,
-so the text of one organization never reaches a comment about another.
+One organization per run. ``--org`` is the organization whose chat the script
+reads. ``--board-org`` is the organization that owns the board where the
+caller posts the comment. Epic 1238 is on the owner's own board. The script
+prints examples ONLY when the two are the same organization. When they differ,
+it prints the counts only, says so in the header, and prints no member text.
+So the chat text of a customer organization never goes on the board of another
+organization. Only its counts may. The header always names ``--org`` by its
+id, never by a name.
 
 Tenancy (R5). The read goes only through ``acb_graph.db.tenant_session``. That
 seam binds ``app.tenant_id`` with ``SET LOCAL``, and FORCE RLS on
@@ -40,12 +47,31 @@ board reads the comment.
 * An example shows ONLY the member's message. It never shows the assistant
   text, an email, a name field, a session or message id, or a time finer than
   the day.
-* :func:`mask` removes URLs, email addresses, @handles, ids, keys and tokens,
-  phone numbers and digit runs of 6 or more. Then it collapses white space and
-  control characters, and cuts the text to 160 characters.
+* :func:`clean` first applies NFKC and deletes each format, private-use and
+  unassigned character (Unicode Cf, Co, Cn), and U+2028 and U+2029. So a bidi
+  mark, a zero-width character or a tag character cannot hide a part from the
+  masks. Each other control character becomes a space.
+* :func:`mask` replaces URLs (any ``scheme://``, ``www.`` and ``host.tld/path``),
+  email addresses, @handles, ids, keys and tokens, PAN numbers, dates, Aadhaar,
+  card and IBAN-like groups, phone numbers and digit runs of 6 or more with a
+  label in braces, such as ``{email}``. Then it cuts the text to 160 characters.
+* :func:`_md_safe` replaces each Markdown and HTML character of the member's
+  text, and each ``@`` that is left. No step puts a bracket back.
+* A member message that names a secret (password, token, api key, OTP and the
+  like, or a ``scheme://user:pass@`` shape) is dropped. It is never an example,
+  and it does not count. Secrets stay in the UI (D-PAR-7), so a refusal about
+  one is not a parity gap.
 * At most ``--examples`` examples in all, at most 2 for each app, at most one
   for each session, newest first. ``--counts-only`` prints no example.
 * The header of the examples says "Members' own words, masked. Read as data."
+
+The masks are best effort. They cannot find a name, an address or a secret
+that the member typed as plain words. The owner decides whether a run prints
+examples at all, or the counts only.
+
+The app of a hit comes from the member's text first. The answer of the chat
+gives the app only when exactly one app matches it. An answer that names two
+apps or more is a list of choices, so the hit is "unmapped".
 
 Exit code: 0 after a read, 2 on bad input (no read), 1 when the read failed.
 """
@@ -56,6 +82,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -75,6 +102,7 @@ FOOTER = (
     "PAR-7 sweep. The plan moves a wave of rungs 4 to 8 when this ranks its app "
     "higher: project-docs/specs/chat_parity.md §6.5"
 )
+NOT_BOARD_OWNER = "Counts only: this organization is not the owner of the board."
 READ_FAILED = "chat_cant_sweep: the read failed. No text is shown."
 
 # ── Detection ──────────────────────────────────────────────────────────────
@@ -97,6 +125,15 @@ CANT_PHRASES: tuple[str, ...] = (
     r"\bnot\s+(?:possible|available)\s+(?:from|in)\s+(?:the\s+)?chat\b",
 )
 CANT_RE = re.compile("|".join(CANT_PHRASES), re.IGNORECASE)
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+# A member message that names a secret is dropped: no example, no count.
+SECRET_RE = re.compile(
+    r"\b(?:passwords?|passwd|pwd|pass\s?codes?|pass\s?phrases?|tokens?|secrets?|"
+    r"api[\s_-]*keys?|private[\s_-]*keys?|bearer|authori[sz]ation|credentials?|otps?|cvv)\b"
+    r"|[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@",
+    re.IGNORECASE,
+)
 
 # ── Mapping ────────────────────────────────────────────────────────────────
 # An app key of ``chat_parity.APPS`` -> the words that name it. The first row
@@ -136,62 +173,94 @@ _APP_RES = tuple(
 )
 
 # ── Masking ────────────────────────────────────────────────────────────────
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200b-\u200f\ufeff]")
+_DROP_LINES = {"\u2028", "\u2029"}
 _SPACE = re.compile(r"\s+")
+_TLDS = "com|net|org|io|in|co|dev|app|ai|edu|gov|info|biz|me|us|uk|de|fr|xyz|tech|cloud|so|sh|ly|to"
 _MASKS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?:https?://|ftp://|www\.)\S+", re.IGNORECASE), "[url]"),
-    (re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)+"), "[email]"),
+    # Any scheme, so a DSN with its password goes whole.
+    (re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE), "{url}"),
+    (re.compile(r"\bwww\.\S+", re.IGNORECASE), "{url}"),
+    (re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)+"), "{email}"),
     (
-        re.compile(
-            r"(?<![\w/])[\w-]+\.(?:com|net|org|io|in|co|dev|app|ai)(?:/\S*)?\b", re.IGNORECASE
-        ),
-        "[url]",
+        re.compile(rf"(?<![\w@.])(?://)?(?:[\w-]+\.)+(?:{_TLDS})\b(?:/\S*)?", re.IGNORECASE),
+        "{url}",
     ),
     (
         re.compile(r"\b(?:sk-|sk_|ghp_|gho_|ghs_|github_pat_|xox[a-z]?-|eyJ|AKIA|AIza)[\w\-./+=]*"),
-        "[secret]",
+        "{secret}",
     ),
     (
         re.compile(
             r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
         ),
-        "[id]",
+        "{id}",
     ),
-    (re.compile(r"\b[0-9a-fA-F]{16,}\b"), "[secret]"),
+    (re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b"), "{id}"),  # an Indian PAN
+    (re.compile(r"\b[A-Z]{2}\d{2}(?:[ -]?[A-Z0-9]{4}){2,7}(?:[ -]?[A-Z0-9]{1,3})?\b"), "{number}"),
+    (re.compile(r"\b[0-9a-fA-F]{16,}\b"), "{secret}"),
     (
         re.compile(
             r"(?=[A-Za-z0-9+/_=-]*\d)(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_-]{20,}={0,2}"
         ),
-        "[secret]",
+        "{secret}",
     ),
-    (re.compile(r"\+?\d[\d ().-]{6,}\d"), "[phone]"),
-    (re.compile(r"\d{6,}"), "[number]"),
-    (re.compile(r"@\w+"), "[handle]"),
+    (re.compile(r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b"), "{date}"),
+    (re.compile(r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b"), "{date}"),
+    # Aadhaar (4-4-4) and a card (4-4-4-4), with spaces or dashes.
+    (re.compile(r"\b\d{4}(?:[ -]\d{4}){2,3}\b"), "{number}"),
+    (re.compile(r"\+?\d[\d ().-]{6,}\d"), "{phone}"),
+    (re.compile(r"\d{6,}"), "{number}"),
+    (re.compile(r"@\w+"), "{handle}"),
 )
+
+
+def clean(text: str | None) -> str:
+    """NFKC, then delete each Cf, Co and Cn character and U+2028 and U+2029.
+
+    Each other control character becomes a space, and white space collapses.
+    """
+    out = unicodedata.normalize("NFKC", text or "")
+    kept = []
+    for ch in out:
+        cat = unicodedata.category(ch)
+        if cat in ("Cf", "Co", "Cn") or ch in _DROP_LINES:
+            continue
+        kept.append(" " if cat == "Cc" else ch)
+    return _SPACE.sub(" ", "".join(kept)).strip()
 
 
 def is_cant(text: str | None) -> bool:
     """True when an assistant text says that the chat cannot act."""
     if not text:
         return False
-    return bool(CANT_RE.search(text.replace("\u2019", "'")))
+    return bool(CANT_RE.search(clean(text).replace("\u2019", "'")))
 
 
 def map_app(user_text: str | None, assistant_text: str | None = None) -> str:
-    """The app key of a pair: the member's text first, then the answer."""
-    for text in (user_text, assistant_text):
-        if not text:
-            continue
-        for key, pattern in _APP_RES:
-            if pattern.search(text):
-                return key
-    return UNMAPPED
+    """The app key of a pair.
+
+    The member's text first: the first row of :data:`APP_KEYWORDS` that matches
+    wins. Then the answer, but only when exactly ONE app matches it. An answer
+    that names more apps ("open Email, Calendar or Tasks") is a list of choices,
+    and the hit is unmapped.
+    """
+    user = clean(user_text)
+    for key, pattern in _APP_RES:
+        if pattern.search(user):
+            return key
+    answer = clean(assistant_text)
+    found = {key for key, pattern in _APP_RES if pattern.search(answer)}
+    return found.pop() if len(found) == 1 else UNMAPPED
+
+
+def names_a_secret(text: str | None) -> bool:
+    """True when the member's text names a secret (D-PAR-7: secrets stay in the UI)."""
+    return bool(SECRET_RE.search(clean(text)))
 
 
 def mask(text: str | None, cut: int = CUT) -> str:
     """The member's text with each private part removed, one line, cut."""
-    out = _CONTROL.sub(" ", text or "")
-    out = _SPACE.sub(" ", out).strip()
+    out = clean(text)
     for pattern, label in _MASKS:
         out = pattern.sub(label, out)
     if len(out) > cut:
@@ -204,7 +273,7 @@ def find_hits(rows: list[dict]) -> list[dict]:
 
     A row is a dict with ``session_id``, ``role``, ``content``,
     ``timestamp_ms`` and ``member_typed``. The order of the input does not
-    matter. A hit holds the app, the session (for the one-per-session rule
+    matter. A member message that names a secret gives no hit. A hit holds the app, the session (for the one-per-session rule
     only, never output), the time, the member's text and the mark.
     """
     order = {"user": 0, "assistant": 1}
@@ -222,6 +291,9 @@ def find_hits(rows: list[dict]) -> list[dict]:
         prior = last_user.get(sid)
         if prior is None or not is_cant(row.get("content")):
             continue
+        last_user[sid] = None  # one hit for each member message
+        if names_a_secret(prior.get("content")):
+            continue  # D-PAR-7: a secret stays in the UI, so this is no gap
         hits.append(
             {
                 "app": map_app(prior.get("content"), row.get("content")),
@@ -231,7 +303,6 @@ def find_hits(rows: list[dict]) -> list[dict]:
                 "member_typed": prior.get("member_typed"),
             }
         )
-        last_user[sid] = None  # one hit for each member message
     return hits
 
 
@@ -277,7 +348,7 @@ def pick_examples(
             break
         if hit["member_typed"] is False or hit["session_id"] in seen or per[hit["app"]] >= per_app:
             continue
-        text = mask(hit["user_text"])
+        text = _md_safe(mask(hit["user_text"]))
         if not text:
             continue
         seen.add(hit["session_id"])
@@ -298,12 +369,24 @@ def build_report(
     since: datetime,
     until: datetime,
     *,
+    org: str,
+    board_org: str,
     examples: int = DEFAULT_EXAMPLES,
     counts_only: bool = False,
     capped: bool = False,
 ) -> dict:
-    """The counts and the masked examples. It holds no id and no assistant text."""
+    """The counts and the masked examples. It holds no message id and no assistant text.
+
+    Examples go in ONLY when ``org`` owns the board (``org == board_org``) and
+    the run is not counts-only. Else the report holds counts only.
+    """
+    other_board = org != board_org
+    no_text = counts_only or other_board
     return {
+        "organization": org,
+        "board_organization": board_org,
+        "counts_only": no_text,
+        "not_board_owner": other_board,
         "window": {
             "from": since.date().isoformat(),
             "to": until.date().isoformat(),
@@ -311,26 +394,26 @@ def build_report(
         },
         "total": len(hits),
         "apps": rank(hits),
-        "examples": [] if counts_only else pick_examples(hits, examples),
+        "examples": [] if no_text else pick_examples(hits, examples),
         "capped": capped,
         "row_cap": ROW_CAP,
     }
 
 
+_MD_CHARS = re.compile(r"[\[\]()<>`|*_]")
+_LEADING = re.compile(r"^[#>\s]+")
+
+
 def _md_safe(text: str) -> str:
-    """Stop the member's text from acting as Markdown, HTML or a mention."""
-    for old, new in (
-        ("`", "'"),
-        ("<", "\u2039"),
-        (">", "\u203a"),
-        ("[", "("),
-        ("]", ")"),
-        ("|", "/"),
-        ('"', "'"),
-    ):
-        text = text.replace(old, new)
-    # The mask labels are ours. Put their brackets back.
-    return re.sub(r"\((url|email|secret|id|phone|number|handle)\)", r"[\1]", text)
+    """Stop the member's text from acting as Markdown, HTML or a mention.
+
+    Each bracket, parenthesis, angle bracket, backtick, pipe, star and
+    underscore becomes a space. A leading ``#`` or ``>`` goes, a double quote
+    becomes a single one, and each ``@`` that is left becomes " at ". The mask
+    labels use braces, so no step puts a bracket back.
+    """
+    text = _MD_CHARS.sub(" ", text).replace('"', "'").replace("@", " at ")
+    return _LEADING.sub("", _SPACE.sub(" ", text).strip())
 
 
 def render(report: dict) -> str:
@@ -338,10 +421,17 @@ def render(report: dict) -> str:
     if not report["total"]:
         return NO_GAPS
     w = report["window"]
+    times = "1 time" if report["total"] == 1 else f"{report['total']} times"
     lines = [
         f'**Chat "I can\'t" answers, {w["from"]} to {w["to"]} ({w["days"]} days)**',
         "",
-        f"The chat said that it cannot act {report['total']} times. The table ranks the apps by count.",
+        f"Organization: {report['organization']}",
+    ]
+    if report["not_board_owner"]:
+        lines.append(NOT_BOARD_OWNER)
+    lines += [
+        "",
+        f"The chat said that it cannot act {times}. The table ranks the apps by count.",
         "",
         "| App | Count | Share |",
         "|---|---|---|",
@@ -351,7 +441,7 @@ def render(report: dict) -> str:
     if report["examples"]:
         lines += ["", EXAMPLES_HEADER, ""]
         for ex in report["examples"]:
-            lines.append(f'- {ex["name"]} ({ex["day"]}): "{_md_safe(ex["text"])}"')
+            lines.append(f'- {ex["name"]} ({ex["day"]}): "{ex["text"]}"')
     if report["capped"]:
         lines += [
             "",
@@ -397,7 +487,7 @@ def _org(value: str) -> str:
     try:
         return str(uuid.UUID(value))
     except (ValueError, AttributeError, TypeError) as exc:
-        raise argparse.ArgumentTypeError("--org must be an organization uuid") from exc
+        raise argparse.ArgumentTypeError("must be an organization uuid") from exc
 
 
 def _positive(value: str) -> int:
@@ -425,6 +515,12 @@ def _parse_now(value: str) -> datetime:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--org", type=_org, required=True, help="the organization uuid, one per run")
+    ap.add_argument(
+        "--board-org",
+        type=_org,
+        required=True,
+        help="the organization that owns the board of the comment. Examples only when equal",
+    )
     ap.add_argument("--days", type=_positive, default=DEFAULT_DAYS)
     ap.add_argument("--examples", type=_not_negative, default=DEFAULT_EXAMPLES)
     ap.add_argument("--counts-only", action="store_true", help="print no example")
@@ -445,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
         find_hits(rows),
         since,
         until,
+        org=args.org,
+        board_org=args.board_org,
         examples=args.examples,
         counts_only=args.counts_only,
         capped=capped,

@@ -11,6 +11,9 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS, FORCE RLS on
    and its count never reach the text or the JSON. The reverse holds too;
 2. a run for an organization with no row reads nothing and prints the
    no-gap line;
+2b. a run of org A for the board of org B prints the counts and NO member
+   text of org A. With the same organization on both sides, the examples
+   come back;
 3. the bind is the fence. The SQL filter of org A, run in a session bound to
    org B, reads no row.
 
@@ -136,8 +139,9 @@ def graph_as_app(seeded, app_engine, monkeypatch):  # noqa: F811
         eng.dispose()
 
 
-def _run(capsys, org: str, *extra: str) -> tuple[int, str]:
-    code = sweep.main(["--org", org, "--now", NOW_ARG, *extra])
+def _run(capsys, org: str, *extra: str, board: str | None = None) -> tuple[int, str]:
+    """A run whose board belongs to ``org`` itself, unless ``board`` names another."""
+    code = sweep.main(["--org", org, "--board-org", board or org, "--now", NOW_ARG, *extra])
     out = capsys.readouterr()
     assert out.err == ""
     return code, out.out
@@ -178,6 +182,25 @@ def test_counts_only_shows_no_member_text(graph_as_app, capsys):
     assert MARK_A not in out and sweep.EXAMPLES_HEADER not in out
 
 
+def test_another_board_gets_the_counts_and_no_member_text(graph_as_app, capsys):
+    """P0. Org A's chat, for a comment on org B's board: counts only."""
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    code, out = _run(capsys, a, board=b)
+    assert code == 0
+    assert f"Organization: {a}" in out and sweep.NOT_BOARD_OWNER in out
+    assert "| Email | 2 | 100% |" in out
+    assert MARK_A not in out and MARK_B not in out and sweep.EXAMPLES_HEADER not in out
+
+    code, raw = _run(capsys, a, "--json", board=b)
+    data = json.loads(raw)
+    assert data["examples"] == [] and data["counts_only"] is True and data["total"] == 2
+    assert MARK_A not in raw and MARK_B not in raw
+
+    # The same org owns the board: the examples come back.
+    code, out = _run(capsys, a)
+    assert MARK_A in out and sweep.EXAMPLES_HEADER in out and sweep.NOT_BOARD_OWNER not in out
+
+
 def test_an_org_with_no_rows_reads_nothing(graph_as_app, capsys):
     code, out = _run(capsys, str(uuid.uuid4()))
     assert (code, out) == (0, "No gaps found this week.\n")
@@ -185,7 +208,16 @@ def test_an_org_with_no_rows_reads_nothing(graph_as_app, capsys):
 
 def test_the_window_holds_the_read(graph_as_app, capsys):
     """A run whose window ends before the seed reads no row."""
-    code = sweep.main(["--org", graph_as_app.org_a, "--now", "2026-11-01T00:00:00Z"])
+    code = sweep.main(
+        [
+            "--org",
+            graph_as_app.org_a,
+            "--board-org",
+            graph_as_app.org_a,
+            "--now",
+            "2026-11-01T00:00:00Z",
+        ]
+    )
     assert (code, capsys.readouterr().out) == (0, "No gaps found this week.\n")
 
 

@@ -24,6 +24,15 @@ SINCE = NOW - timedelta(days=7)
 ORG = "11111111-2222-3333-4444-555555555555"
 
 
+OTHER = "99999999-8888-7777-6666-555555555555"
+
+
+def _report(hits, **kw):
+    kw.setdefault("org", ORG)
+    kw.setdefault("board_org", ORG)
+    return sweep.build_report(hits, SINCE, NOW, **kw)
+
+
 def _ms(hours_ago: float) -> int:
     return int((NOW - timedelta(hours=hours_ago)).timestamp() * 1000)
 
@@ -164,20 +173,20 @@ def test_the_map(user, answer, app):
 @pytest.mark.parametrize(
     ("raw", "gone", "label"),
     [
-        ("write to asha.k+x@example.co.in now", "asha", "[email]"),
-        ("call +91 98765 43210 today", "98765", "[phone]"),
-        ("call (080) 4123-4567", "4123", "[phone]"),
-        ("open https://evil.example/x?y=1 please", "evil", "[url]"),
-        ("see www.example.org/page", "example", "[url]"),
-        ("my key is sk-live_ABCdef123456", "ABCdef", "[secret]"),
-        ("token ghp_0123456789abcdefABCDEF", "0123456789", "[secret]"),
-        ("slack xoxb-1234-abcd", "1234", "[secret]"),
-        ("jwt eyJhbGciOiJIUzI1NiJ9.e30.x", "hbGci", "[secret]"),
-        ("hash deadbeefdeadbeefdeadbeef", "deadbeef", "[secret]"),
-        ("blob QWxhZGRpbjpvcGVuIHNlc2FtZQ9z", "QWxhZG", "[secret]"),
-        ("invoice 4500123 is due", "4500123", "[number]"),
-        ("id 123e4567-e89b-12d3-a456-426614174000", "426614174000", "[id]"),
-        ("ask @raj about it", "raj", "[handle]"),
+        ("write to asha.k+x@example.co.in now", "asha", "{email}"),
+        ("call +91 98765 43210 today", "98765", "{phone}"),
+        ("call (080) 4123-4567", "4123", "{phone}"),
+        ("open https://evil.example/x?y=1 please", "evil", "{url}"),
+        ("see www.example.org/page", "example", "{url}"),
+        ("my key is sk-live_ABCdef123456", "ABCdef", "{secret}"),
+        ("token ghp_0123456789abcdefABCDEF", "0123456789", "{secret}"),
+        ("slack xoxb-1234-abcd", "1234", "{secret}"),
+        ("jwt eyJhbGciOiJIUzI1NiJ9.e30.x", "hbGci", "{secret}"),
+        ("hash deadbeefdeadbeefdeadbeef", "deadbeef", "{secret}"),
+        ("blob QWxhZGRpbjpvcGVuIHNlc2FtZQ9z", "QWxhZG", "{secret}"),
+        ("invoice 4500123 is due", "4500123", "{number}"),
+        ("id 123e4567-e89b-12d3-a456-426614174000", "426614174000", "{id}"),
+        ("ask @raj about it", "raj", "{handle}"),
     ],
 )
 def test_mask_removes_private_parts(raw, gone, label):
@@ -191,14 +200,6 @@ def test_mask_collapses_space_and_control_characters_and_cuts_to_160():
     assert out.startswith("a b c d")
     assert len(out) <= sweep.CUT and out.endswith("\u2026")
     assert sweep.mask("short") == "short"
-
-
-def test_the_markdown_cannot_carry_a_link_html_or_a_table_break():
-    hits = sweep.find_hits(_pair("s1", 'email `x` <b>[click](y)</b> | "q"', 1))
-    text = sweep.render(sweep.build_report(hits, SINCE, NOW))
-    line = next(ln for ln in text.splitlines() if ln.startswith("- Email"))
-    for bad in ("`", "<b>", "](", "| ", '"q"'):
-        assert bad not in line.split(": ", 1)[1].strip('"'), line
 
 
 # ── Limits ─────────────────────────────────────────────────────────────────
@@ -250,7 +251,7 @@ def test_rank_orders_by_count_and_the_share_adds_up():
 
 
 def test_render_is_one_comment_with_a_table_the_examples_and_the_footer():
-    text = sweep.render(sweep.build_report(_three_apps(), SINCE, NOW))
+    text = sweep.render(_report(_three_apps()))
     assert text.startswith('**Chat "I can\'t" answers, 2026-11-15 to 2026-11-22 (7 days)**')
     assert "| Email | 3 | 60% |" in text and "| Knowledge | 1 | 20% |" in text
     assert sweep.EXAMPLES_HEADER in text
@@ -259,7 +260,7 @@ def test_render_is_one_comment_with_a_table_the_examples_and_the_footer():
 
 
 def test_counts_only_prints_no_example():
-    report = sweep.build_report(_three_apps(), SINCE, NOW, counts_only=True)
+    report = _report(_three_apps(), counts_only=True)
     text = sweep.render(report)
     assert report["examples"] == []
     assert sweep.EXAMPLES_HEADER not in text and "email attachment" not in text
@@ -267,12 +268,12 @@ def test_counts_only_prints_no_example():
 
 
 def test_the_capped_read_says_so():
-    text = sweep.render(sweep.build_report(_three_apps(), SINCE, NOW, capped=True))
+    text = sweep.render(_report(_three_apps(), capped=True))
     assert f"The read stopped at {sweep.ROW_CAP} messages." in text
 
 
 def test_no_hit_prints_exactly_the_empty_line():
-    assert sweep.render(sweep.build_report([], SINCE, NOW)) == "No gaps found this week."
+    assert sweep.render(_report([])) == "No gaps found this week."
 
 
 # ── The command line ───────────────────────────────────────────────────────
@@ -295,9 +296,13 @@ def _fake_read(rows, capped=False):
         ["--org", ""],
         ["--org", "acme"],
         ["--org", "1; DROP TABLE x"],
-        ["--org", ORG, "--days", "0"],
-        ["--org", ORG, "--examples", "-1"],
-        ["--org", ORG, "--now", "yesterday"],
+        ["--org", ORG],
+        ["--org", ORG, "--board-org", ""],
+        ["--org", ORG, "--board-org", "owner-board"],
+        ["--board-org", ORG],
+        ["--org", ORG, "--board-org", ORG, "--days", "0"],
+        ["--org", ORG, "--board-org", ORG, "--examples", "-1"],
+        ["--org", ORG, "--board-org", ORG, "--now", "yesterday"],
     ],
 )
 def test_bad_input_exits_2_with_no_read(argv, monkeypatch):
@@ -314,7 +319,9 @@ def test_a_read_passes_the_window_and_prints_the_comment(monkeypatch, capsys):
         rows += _pair(f"m{i}", f"email attachment {i}", i + 1)
     read, calls = _fake_read(rows)
     monkeypatch.setattr(sweep, "read_rows", read)
-    assert sweep.main(["--org", ORG.upper(), "--now", "2026-11-22T12:00:00Z"]) == 0
+    assert (
+        sweep.main(["--org", ORG.upper(), "--board-org", ORG, "--now", "2026-11-22T12:00:00Z"]) == 0
+    )
     assert calls == [(ORG, int(SINCE.timestamp() * 1000), int(NOW.timestamp() * 1000))]
     assert "| Email | 3 | 100% |" in capsys.readouterr().out
 
@@ -322,11 +329,14 @@ def test_a_read_passes_the_window_and_prints_the_comment(monkeypatch, capsys):
 def test_json_holds_counts_and_masked_examples_only(monkeypatch, capsys):
     read, _ = _fake_read(_pair("s9", "mail it to a@b.com", 1))
     monkeypatch.setattr(sweep, "read_rows", read)
-    assert sweep.main(["--org", ORG, "--now", "2026-11-22T12:00:00Z", "--json"]) == 0
+    assert (
+        sweep.main(["--org", ORG, "--board-org", ORG, "--now", "2026-11-22T12:00:00Z", "--json"])
+        == 0
+    )
     data = json.loads(capsys.readouterr().out)
     assert data["total"] == 1 and data["apps"][0]["app"] == "email"
     assert data["examples"] == [
-        {"app": "email", "name": "Email", "day": "2026-11-22", "text": "mail it to [email]"}
+        {"app": "email", "name": "Email", "day": "2026-11-22", "text": "mail it to {email}"}
     ]
     assert "s9" not in json.dumps(data)
 
@@ -336,7 +346,7 @@ def test_a_failed_read_exits_1_with_a_fixed_line(monkeypatch, capsys):
         raise RuntimeError("postgresql://acb:hunter2@db/x row text: secret words")
 
     monkeypatch.setattr(sweep, "read_rows", boom)
-    assert sweep.main(["--org", ORG]) == 1
+    assert sweep.main(["--org", ORG, "--board-org", ORG]) == 1
     out = capsys.readouterr()
     assert out.out == ""
     assert out.err.strip() == f"{sweep.READ_FAILED} (RuntimeError)"
@@ -345,5 +355,156 @@ def test_a_failed_read_exits_1_with_a_fixed_line(monkeypatch, capsys):
 def test_no_hit_run_prints_the_empty_line(monkeypatch, capsys):
     read, _ = _fake_read([_row("s1", "user", "hi", 1), _row("s1", "assistant", "Hello.", 0.9)])
     monkeypatch.setattr(sweep, "read_rows", read)
-    assert sweep.main(["--org", ORG]) == 0
+    assert sweep.main(["--org", ORG, "--board-org", ORG]) == 0
     assert capsys.readouterr().out == "No gaps found this week.\n"
+
+
+# ── Fix round: the board, Markdown, secrets, Unicode, the answer map ───────
+
+
+def test_another_board_gets_counts_only_and_no_member_text():
+    """P0. Epic 1238 is on the owner's board. A customer's words never go there."""
+    report = _report(_three_apps(), board_org=OTHER)
+    text = sweep.render(report)
+    assert report["examples"] == [] and report["counts_only"] is True
+    assert sweep.NOT_BOARD_OWNER in text and f"Organization: {ORG}" in text
+    assert sweep.EXAMPLES_HEADER not in text
+    assert "email attachment" not in text and "knowledge page" not in text
+    assert "| Email | 3 | 60% |" in text
+
+
+def test_the_owner_board_gets_the_examples_and_the_org_id():
+    text = sweep.render(_report(_three_apps()))
+    assert f"Organization: {ORG}" in text and sweep.NOT_BOARD_OWNER not in text
+    assert sweep.EXAMPLES_HEADER in text and "email attachment 0" in text
+
+
+def test_main_with_another_board_prints_no_member_text(monkeypatch, capsys):
+    read, _ = _fake_read(_pair("s1", "attach the uniquewords file to the email", 1))
+    monkeypatch.setattr(sweep, "read_rows", read)
+    assert sweep.main(["--org", ORG, "--board-org", OTHER]) == 0
+    out = capsys.readouterr().out
+    assert "uniquewords" not in out and sweep.NOT_BOARD_OWNER in out
+    assert sweep.main(["--org", ORG, "--board-org", OTHER, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["examples"] == [] and data["counts_only"] is True
+    assert "uniquewords" not in json.dumps(data)
+
+
+def _example_text(ask: str) -> str:
+    """The printed example line of one member message, after the prefix."""
+    hits = sweep.find_hits(_pair("s1", ask, 1))
+    ex = sweep.pick_examples(hits)
+    assert len(ex) == 1, ask
+    line = next(ln for ln in sweep.render(_report(hits)).splitlines() if ln.startswith("- "))
+    assert line.endswith(f'"{ex[0]["text"]}"')
+    return ex[0]["text"]
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        "[url](//evil.com/phish) create a task",
+        "[click](javascript:alert(1)) a task",
+        "[number](/settings/members) a task",
+        "![x](http://a/b.png) a task",
+        "<script>alert(1)</script> a task",
+        "**bold** __under__ a task",
+        "# heading a task",
+        "> quote a task",
+        "a | b task",
+        "`code` task",
+    ],
+)
+def test_no_markdown_construct_survives(ask):
+    out = _example_text(ask)
+    for ch in "[]()<>`|*_":
+        assert ch not in out, (ask, out)
+    assert not out.startswith(("#", ">")), out
+    assert "evil.com" not in out and "javascript:alert(" not in out
+
+
+def test_an_at_sign_never_sits_next_to_an_address():
+    out = _example_text("tell @name and x@y.com about the task")
+    assert "@" not in out and "{handle}" in out and "{email}" in out
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        "reset my password in the task",
+        "what is the PASSWD",
+        "my pwd is hunter2",
+        "the passcode for the door",
+        "set the api  key for zoho",
+        "add the API_KEY",
+        "paste my private key",
+        "use the bearer header",
+        "the authorization header",
+        "store the credentials",
+        "send the OTP",
+        "card cvv 123",
+        "a token for slack",
+        "keep this secret",
+        "connect postgresql://admin:pw@db.host/x",
+        "[secret](javascript:alert(1)) a task",
+    ],
+)
+def test_a_message_that_names_a_secret_is_dropped_from_examples_and_counts(ask):
+    hits = sweep.find_hits(_pair("s1", ask, 1, answer="I can't set that. Open Settings."))
+    assert hits == []
+    assert sweep.render(_report(hits)) == sweep.NO_GAPS
+
+
+def test_the_password_refusal_never_lands_in_settings():
+    rows = _pair("s1", "change my password", 2, answer="I can't change a password. Open Settings.")
+    rows += _pair("s2", "change my theme", 1)
+    assert [h["app"] for h in sweep.find_hits(rows)] == ["settings"]
+
+
+def test_a_boilerplate_list_in_the_answer_is_unmapped():
+    answer = "I can't do that. Open Email, Calendar or Tasks."
+    assert sweep.map_app("do the thing for me", answer) == sweep.UNMAPPED
+    assert sweep.map_app("do the thing for me", "I can't. Open the Email page.") == "email"
+    assert sweep.map_app("make a task", answer) == "tasks"
+
+
+@pytest.mark.parametrize(
+    ("raw", "gone", "label"),
+    [
+        ("pan ABCDE1234F here", "ABCDE1234F", "{id}"),
+        ("aadhaar 1234 5678 9012 here", "5678", "{number}"),
+        ("aadhaar 1234-5678-9012 here", "5678", "{number}"),
+        ("card 4111 1111 1111 1111 here", "1111", "{number}"),
+        ("card 4111-1111-1111-1111 here", "1111", "{number}"),
+        ("born 14/03/1988 here", "1988", "{date}"),
+        ("born 1988-03-14 here", "1988", "{date}"),
+        ("iban GB82 WEST 1234 5698 7654 32 here", "WEST", "{number}"),
+        ("dsn postgresql://admin:hunter2@db.host/x here", "hunter2", "{url}"),
+        ("open drive.google.com/x/y here", "google", "{url}"),
+        ("open //evil.com/phish here", "evil", "{url}"),
+        ("see docs.acme.cloud here", "acme", "{url}"),
+    ],
+)
+def test_more_shapes_are_masked(raw, gone, label):
+    out = sweep.mask(raw)
+    assert gone not in out and label in out, out
+    assert out.endswith(" here"), out
+
+
+def test_a_domain_with_a_path_goes_whole():
+    assert sweep.mask("drive.google.com/x") == "{url}"
+
+
+def test_bidi_zero_width_fullwidth_and_tag_characters_cannot_hide_a_part():
+    assert sweep.mask("a\u200b@b.com") == "{email}"
+    assert sweep.mask("john\uff20x.com") == "{email}"
+    bidi = sweep.mask("\u202emoc.x@nhoj\u202c and \u2066x\u2069 and \u2060y")
+    assert not any(ch in bidi for ch in "\u202e\u202c\u2066\u2069\u2060"), repr(bidi)
+    tags = sweep.mask("plain \U000e0041\U000e0042\U000e007f text \ufeff\u2028\u2029end")
+    assert tags == "plain text end", repr(tags)
+
+
+def test_one_hit_says_one_time():
+    text = sweep.render(_report(sweep.find_hits(_pair("s1", "an email", 1))))
+    assert "cannot act 1 time." in text and "1 times" not in text
