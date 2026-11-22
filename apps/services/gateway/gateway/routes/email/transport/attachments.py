@@ -564,9 +564,10 @@ def _is_database_fault(exc: BaseException) -> bool:
 #: uvicorn with no ``--workers``, ``deploy/hostinger/acb-gateway.service``),
 #: and the parse pool of ``attachment_tools`` is one for each process too. A
 #: second process would need a lock in Redis.
-#: ⚠️ Only the loop thread changes it and ``_WAITERS`` (task 3888). The parse
+#: ⚠️ The loop thread changes it and ``_WAITERS`` (task 3888). The parse
 #: worker thread calls ``_ReadHold.release`` (H-253), and the release then
-#: runs on the loop. Fence: tests/unit/test_email_attachment_text.py
+#: runs on the loop. Only a release after the loop closed drops a key from
+#: another thread. Fence: tests/unit/test_email_attachment_text.py
 #: (``TestTheReleaseFromTheWorkerThread``).
 _READING: set[tuple[str, str]] = set()
 

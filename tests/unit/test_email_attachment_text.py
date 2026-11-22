@@ -918,6 +918,22 @@ class _LogSpy:
     debug = info = warning = error = _record
 
 
+class _ThreadSet(set):
+    """A set that records the thread of each change."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.threads: set[int] = set()
+
+    def add(self, item: Any) -> None:
+        self.threads.add(threading.get_ident())
+        super().add(item)
+
+    def discard(self, item: Any) -> None:
+        self.threads.add(threading.get_ident())
+        super().discard(item)
+
+
 class TestTheReleaseFromTheWorkerThread:
     """Task 3888. ``parse_bounded`` calls ``hold.release`` on the parse worker
     thread (H-253). A waiter of the loop must wake at once, and the release
@@ -944,10 +960,12 @@ class TestTheReleaseFromTheWorkerThread:
 
     @pytest.mark.parametrize("debug", [False, True], ids=["debug-off", "debug-on"])
     def test_a_release_on_a_worker_thread_wakes_the_waiter_at_once(
-        self, debug: bool,
+        self, debug: bool, monkeypatch,
     ) -> None:
         stamps: dict[str, float] = {}
         workers: list[threading.Thread] = []
+        reading = _ThreadSet()
+        monkeypatch.setattr(m, "_READING", reading)
 
         async def _scenario() -> bool:
             holder, second = m._ReadHold(self._USER), m._ReadHold(self._USER)
@@ -985,6 +1003,10 @@ class TestTheReleaseFromTheWorkerThread:
         gap = stamps["woke"] - stamps["released"]
         assert gap < 1.0, f"the waiter woke {gap:.2f} s after the release"
         assert not m._READING and not m._WAITERS
+        # The loop ran on this thread, so no other thread changed the set.
+        assert reading.threads == {threading.get_ident()}, (
+            "a thread other than the loop changed _READING"
+        )
 
     def test_a_second_release_from_a_thread_keeps_a_new_hold(self) -> None:
         async def _scenario() -> None:
