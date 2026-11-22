@@ -42,7 +42,6 @@ from gateway.routes.projects.core import (
     governed_tasks_scope,
     hue_values,
     is_org_wide,
-    load_readable_project,
     load_visible_project,
     org_wide_exists,
     refuse_org_wide_rescope,
@@ -294,12 +293,8 @@ async def apply_task_tags(
     return names
 
 
-async def _root_for(
-    db: Any, vis: Any, project_id: str, *, read: bool = False,
-) -> str:
-    # ``read`` is for a GET only (Task 3865). See ``core.load_readable_project``.
-    loader = load_readable_project if read else load_visible_project
-    await loader(db, vis, project_id)
+async def _root_for(db: Any, vis: Any, project_id: str) -> str:
+    await load_visible_project(db, vis, project_id)
     return await root_project_id(db, project_id)
 
 
@@ -332,7 +327,7 @@ async def list_tags(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        root = await _root_for(db, vis, project_id, read=True)
+        root = await _root_for(db, vis, project_id)
         rows = (await db.execute(
             text(
                 # ⚠️ The count is scoped to `:root`, NOT to `g.project_id`. For a

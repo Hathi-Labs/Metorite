@@ -1,19 +1,18 @@
-"""Task 3865 - a member who opens a task by assignment reads its project's lanes.
+"""Task 3865 - an assignee sets a status by name, with no wider project reads.
 
 Production, 18 Nov 2026: the chat set a task to "In progress". It read the task
 (200), then ``GET /projects/nodes/<id>/statuses`` answered 404 "Project not
-found". ``update_task`` and ``vocabulary`` both pass the task's own
-``project_id``. ``load_visible_task`` lets a task in through its assignee arm
-when the project is not granted. ``load_visible_project`` has no such arm.
+found". ``update_task`` passes the task's own ``project_id``. The assignee arm
+of ``load_visible_task`` lets the task in, and ``load_visible_project`` has no
+such arm. Widening the project routes leaks (tag counts over sealed trees, the
+names of ancestors), so they stay exactly as they were. The chat resolves the
+status name through ``GET /projects/my/tasks/{id}/lanes`` instead: lanes only,
+behind the task.
 
-The fix is ``core.load_readable_project``: the project, or the project of a task
-the caller can open. Only the READ routes use it. R5 holds: a member who can open
-no task and no node of the project still gets the 404.
-
-R7 fence. Mutation M1: make ``load_readable_project`` return the project with no
-task check, and ``test_a_stranger_still_gets_the_404`` goes red. Mutation M2:
-use it in ``create_status``, and ``test_the_write_routes_keep_the_strict_check``
-goes red.
+R7 fence. Mutation M1: put a task arm in ``load_visible_project`` and
+``test_the_project_routes_stay_closed_to_an_assignee`` goes red. Mutation M2:
+drop the 404 fall-back in ``writes._lanes_of_task`` and
+``test_an_assignee_resolves_a_status_name_through_the_task`` goes red.
 
 The R8 half needs ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass::
 
@@ -53,58 +52,84 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     assert "tests/unit/test_projects_status_read_assignee_r8.py" in r8_lists.must_run()
 
 
-def test_the_write_routes_keep_the_strict_check() -> None:
-    from gateway.routes.projects import admin
+def test_the_project_routes_have_no_task_arm() -> None:
+    """The project routes keep the project check and nothing wider."""
+    from gateway.routes.projects import admin, core
 
-    for fn in (admin.create_status, admin.create_type):
-        src = inspect.getsource(fn)
-        assert "load_readable_project" not in src
-        assert "read=True" not in src
+    assert not hasattr(core, "load_readable_project")
     for fn in (admin.list_statuses, admin.describe_status_set, admin.list_types):
-        src = inspect.getsource(fn)
-        assert "load_readable_project" in src or "read=True" in src, fn.__name__
+        assert "task_visibility_clause" not in inspect.getsource(fn)
+    assert "_status_owner_for" in inspect.getsource(admin.list_statuses)
 
 
-def test_the_readable_project_checks_the_task_clause() -> None:
-    from gateway.routes.projects import core
-
-    src = inspect.getsource(core.load_readable_project)
-    assert "task_visibility_clause(vis)" in src
-    assert "organization_id = CAST(:vis_org AS uuid)" in src
+class _Refusal404(Exception):
+    pass
 
 
-async def test_a_visible_project_needs_no_second_query() -> None:
-    from gateway.routes.projects import core
+async def test_an_assignee_resolves_a_status_name_through_the_task(monkeypatch) -> None:
+    from skill_projects import writes
 
     calls: list[str] = []
 
-    class _Db:
-        async def execute(self, stmt, params=None):
-            calls.append(str(stmt))
-            return SimpleNamespace(fetchone=lambda: SimpleNamespace(id="p"))
+    async def _get(path, *a, **k):
+        calls.append(path)
+        if "/nodes/" in path:
+            raise writes.GatewayRefusal("not found", status=404)
+        return {"rows": [{"id": "s1", "name": "In progress", "category": "in_progress"},
+                         {"id": "s2", "name": "Done", "category": "done"}]}
 
-    vis = SimpleNamespace(
-        project_clause=lambda col="id": "TRUE", params={}, agent=None,
-    )
-    row = await core.load_readable_project(_Db(), vis, str(uuid.uuid4()))
-    assert row.id == "p" and len(calls) == 1
+    monkeypatch.setattr(writes, "get", _get)
+    pid, tid = str(uuid.uuid4()), str(uuid.uuid4())
+    row = await writes._resolve_status(pid, "in progress", tid)
+    assert row["id"] == "s1"
+    assert calls[-1] == f"/projects/my/tasks/{tid}/lanes"
 
 
-async def test_a_hidden_project_with_no_task_keeps_the_original_404() -> None:
-    from fastapi import HTTPException
-    from gateway.routes.projects import core
+async def test_a_stranger_still_gets_the_refusal(monkeypatch) -> None:
+    from skill_projects import writes
 
-    class _Db:
-        async def execute(self, stmt, params=None):
-            return SimpleNamespace(fetchone=lambda: None)
+    async def _get(path, *a, **k):
+        raise writes.GatewayRefusal("not found", status=404)
 
-    vis = core.Visibility(
-        unrestricted=False, email="a@x.test", groups=(),
-        organization_id=str(uuid.uuid4()),
-    )
-    with pytest.raises(HTTPException) as err:
-        await core.load_readable_project(_Db(), vis, str(uuid.uuid4()))
-    assert err.value.status_code == 404 and err.value.detail == "Project not found"
+    monkeypatch.setattr(writes, "get", _get)
+    with pytest.raises(writes.GatewayRefusal) as err:
+        await writes._resolve_status(str(uuid.uuid4()), "Done", str(uuid.uuid4()))
+    assert err.value.status == 404
+    # With no task named, the project read is the only read.
+    with pytest.raises(writes.GatewayRefusal):
+        await writes._resolve_status(str(uuid.uuid4()), "Done")
+
+
+async def test_a_non_404_does_not_fall_back(monkeypatch) -> None:
+    from skill_projects import writes
+
+    calls: list[str] = []
+
+    async def _get(path, *a, **k):
+        calls.append(path)
+        raise writes.GatewayRefusal("boom", status=500)
+
+    monkeypatch.setattr(writes, "get", _get)
+    with pytest.raises(writes.GatewayRefusal):
+        await writes._resolve_status(str(uuid.uuid4()), "Done", str(uuid.uuid4()))
+    assert len(calls) == 1
+
+
+async def test_vocabulary_lists_the_task_lanes_for_an_assignee(monkeypatch) -> None:
+    from skill_projects import reads
+
+    async def _get(path, *a, **k):
+        if "/nodes/" in path:
+            raise reads.GatewayRefusal("not found", status=404)
+        return {"rows": [{"id": "s1", "name": "In progress", "category": "in_progress"}]}
+
+    monkeypatch.setattr(reads, "get", _get)
+    pid, tid = str(uuid.uuid4()), str(uuid.uuid4())
+    out = await reads.vocabulary(pid, tid)
+    assert "In progress" in out and "not its project" in out
+    assert "Tags (" not in out and "Types (" not in out
+    with pytest.raises(reads.GatewayRefusal):
+        await reads.vocabulary(pid)  # no task: the refusal stands
 
 
 def _task(c, org, project, status, number, *, assignee):
@@ -134,7 +159,7 @@ def world(promoted):  # noqa: F811
         ns.lane = str(c.execute(text(
             "INSERT INTO pm_task_statuses (project_id, name, color, position,"
             " category, organization_id) VALUES (CAST(:p AS uuid), 'In progress',"
-            " 'gray', 10, 'active', CAST(:o AS uuid)) RETURNING id"),
+            " 'gray', 10, 'in_progress', CAST(:o AS uuid)) RETURNING id"),
             {"p": ns.space, "o": a}).scalar_one())
         ns.visible_task = _task(c, a, ns.space, ns.lane, 9101, assignee=MEMBER)
         _task(c, a, ns.space, ns.lane, 9102, assignee=None)
@@ -150,25 +175,41 @@ async def _get(call, user, path: str):
 
 
 @_DB_GATE
-async def test_an_assignee_reads_the_lanes_of_the_task_project(world) -> None:
+async def test_the_project_routes_stay_closed_to_an_assignee(world) -> None:
     w = world
     async with _session(w.p) as call:
-        res = await _get(call, w.member_u, f"/projects/nodes/{w.space}/statuses")
         task = await _get(call, w.member_u, f"/projects/tasks/{w.visible_task}")
-        sset = await _get(call, w.member_u, f"/projects/nodes/{w.space}/status-set")
-        types = await _get(call, w.member_u, f"/projects/nodes/{w.space}/types")
+        paths = ("statuses", "status-set", "types", "tags", "fields")
+        got = {
+            name: (await _get(call, w.member_u, f"/projects/nodes/{w.space}/{name}")).status_code
+            for name in paths
+        }
     assert task.status_code == 200, task.text
-    assert res.status_code == 200, res.text
-    assert "In progress" in [r["name"] for r in res.json()["rows"]]
-    # Only the tasks this member can open are counted: one of the two.
-    assert sum(res.json()["counts"].values()) == 1
-    assert sset.status_code == 200 and types.status_code == 200
+    assert got == dict.fromkeys(paths, 404), got
+
+
+@_DB_GATE
+async def test_an_assignee_reads_the_task_lanes_and_sets_a_status(world) -> None:
+    w = world
+    async with _session(w.p) as call:
+        lanes = await _get(call, w.member_u, f"/projects/my/tasks/{w.visible_task}/lanes")
+        assert lanes.status_code == 200, lanes.text
+        rows = lanes.json()["rows"]
+        assert [r["name"] for r in rows] == ["In progress"]
+        assert set(lanes.json()) == {"rows", "total"}  # no counts, no project name
+        key = str(id(w.member_u))
+        call.users[key] = w.member_u
+        patched = await call.client.patch(
+            f"/projects/tasks/{w.visible_task}", json={"status_id": rows[0]["id"]},
+            headers={"x-test-as": key},
+        )
+        assert patched.status_code == 200, patched.text
 
 
 @_DB_GATE
 async def test_a_stranger_still_gets_the_404(world) -> None:
     w = world
     async with _session(w.p) as call:
-        res = await _get(call, w.stranger_u, f"/projects/nodes/{w.space}/statuses")
-        other = await _get(call, w.member_u, f"/projects/nodes/{w.other}/statuses")
-    assert res.status_code == 404 and other.status_code == 404
+        lanes = await _get(call, w.stranger_u, f"/projects/my/tasks/{w.visible_task}/lanes")
+        project = await _get(call, w.stranger_u, f"/projects/nodes/{w.space}/statuses")
+    assert lanes.status_code == 404 and project.status_code == 404

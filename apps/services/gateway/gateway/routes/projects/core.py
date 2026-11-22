@@ -1789,41 +1789,6 @@ async def load_visible_project(
     return row
 
 
-async def load_readable_project(db: Any, vis: Visibility, project_id: str) -> Any:
-    """One project the caller may READ the vocabulary of, or 404.
-
-    The project itself when :func:`load_visible_project` finds it. Otherwise
-    the project of a task the caller can open. Task 3865: a task that is
-    assigned to the caller stays visible when its project is not granted
-    (:func:`task_visibility_clause`, arm two). The chat sets a status by
-    name, so it reads that project's statuses, and the read answered 404
-    for the very member who had just opened the task.
-
-    The extra way in is a task the caller can open, never the project: a
-    member who can open no task and no node of it still gets the same 404
-    (R5). READ routes only. Every write keeps :func:`load_visible_project`.
-    """
-    try:
-        return await load_visible_project(db, vis, project_id)
-    except HTTPException as refusal:
-        if refusal.status_code != 404:
-            raise
-        row = (await db.execute(
-            text(
-                "SELECT p.* FROM pm_projects p "
-                " WHERE p.id = CAST(:project_id AS uuid) "
-                "   AND p.organization_id = CAST(:vis_org AS uuid) "
-                "   AND EXISTS (SELECT 1 FROM pm_tasks t "
-                "                WHERE t.project_id = p.id AND "
-                f"{task_visibility_clause(vis)})"
-            ),
-            {"project_id": project_id, **vis.params},
-        )).fetchone()
-        if row is None:
-            raise refusal from None
-        return row
-
-
 async def visible_project_paths(
     db: Any, vis: Visibility, project_ids: Iterable[Any],
 ) -> dict[str, list[dict[str, str]]]:

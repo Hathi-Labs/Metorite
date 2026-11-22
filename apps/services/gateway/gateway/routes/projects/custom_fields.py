@@ -32,7 +32,6 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     clean_payload,
-    load_readable_project,
     load_visible_project,
     org_wide_exists,
     governed_tasks_scope,
@@ -356,12 +355,8 @@ async def load_definitions(db: Any, root: str) -> list[dict[str, Any]]:
     return [_definition_row(r) for r in shadowed(rows, lambda r: r.field_key)]
 
 
-async def _root_for(
-    db: Any, vis: Any, project_id: str, *, read: bool = False,
-) -> str:
-    # ``read`` is for a GET only (Task 3865). See ``core.load_readable_project``.
-    loader = load_readable_project if read else load_visible_project
-    await loader(db, vis, project_id)
+async def _root_for(db: Any, vis: Any, project_id: str) -> str:
+    await load_visible_project(db, vis, project_id)
     return await root_project_id(db, project_id)
 
 
@@ -393,7 +388,7 @@ async def list_fields(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        root = await _root_for(db, vis, project_id, read=True)
+        root = await _root_for(db, vis, project_id)
         rows = await load_definitions(db, root)
         return {"rows": rows, "total": len(rows)}
 

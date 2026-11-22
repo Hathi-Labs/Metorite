@@ -574,10 +574,12 @@ _WAITERS: dict[tuple[str, str], list[asyncio.Future[None]]] = {}
 #: The seconds that a read waits for an earlier read of the same member before
 #: it answers busy (Task 3865). The model asks for the files of one mail at
 #: once, and the parse pool has two slots, so the hold serves one read at a
-#: time. A wait of this length leaves room inside the 60 s that
+#: time. On the OCR path this wait comes after a first fetch of up to
+#: :data:`FETCH_TIMEOUT_S` (30 s), so 20 s keeps the two inside the 60 s that
 #: ``read_email_attachment`` allows for the whole call. Fence:
-#: tests/unit/test_email_attachment_text.py (``TestTheHoldWaits``).
-HOLD_WAIT_S = 30.0
+#: tests/unit/test_email_attachment_text.py (``TestTheTextRoute``, the tests
+#: whose names say "waits", "wait past the limit" and "cached").
+HOLD_WAIT_S = 20.0
 
 
 class _ReadHold:
@@ -617,8 +619,10 @@ class _ReadHold:
                 return False
             waiter: asyncio.Future[None] = loop.create_future()
             _WAITERS.setdefault(self._key, []).append(waiter)
+            woken = False
             try:
                 await asyncio.wait_for(waiter, left)
+                woken = True
             except TimeoutError:
                 return False
             finally:
@@ -628,9 +632,9 @@ class _ReadHold:
                         queue.remove(waiter)
                     if not queue:
                         _WAITERS.pop(self._key, None)
-                if waiter.cancelled() and not self._held:
-                    # A cancelled or timed-out waiter that was woken passes
-                    # the turn on, so the queue does not stall.
+                if not woken and waiter.done() and not waiter.cancelled() and not self._held:
+                    # Woken, then cancelled before it could take: pass the
+                    # turn on, so the queue does not stall.
                     self._wake_next()
             if self.take():
                 return True
@@ -874,6 +878,8 @@ async def attachment_text(  # noqa: C901 - one branch over the limit: the hold w
     hold = _ReadHold(user)
     #: The fetch that this request started, if any (fix round 4).
     owned: list[_FetchJob] = []
+    #: Set when ``_answer_first`` found the hold taken by another read.
+    hold_busy: list[bool] = []
 
     async def _answer_first(row: Any) -> AttachmentTextModel | None:
         """An answer with no fetch: a refused type, the cache, or busy."""
@@ -884,6 +890,10 @@ async def attachment_text(  # noqa: C901 - one branch over the limit: the hold w
         if cached is not None:
             return cached
         if not hold.take():
+            # Task 3865: busy only AFTER the refusal and the cache, so a cached
+            # file never waits. The route waits for the hold below, with no
+            # session open, and runs the fetch again.
+            hold_busy.append(True)
             return AttachmentTextModel(**_base(row), kind="unreadable", reason=_BUSY_REASON)
         return None
 
@@ -906,30 +916,35 @@ async def attachment_text(  # noqa: C901 - one branch over the limit: the hold w
                 BACKGROUND_FETCH_LIMIT_S,
             )
 
-    # Task 3865: a second read of this member waits for the first, up to
-    # HOLD_WAIT_S, and then answers busy. The wait is BEFORE the database
-    # session opens, so a waiting read holds no connection. The OCR deadline
-    # above started at the top of the request, so the wait shortens it.
-    busy = await _wait_for_hold(hold, use_ocr, org_id, user, aid)
-    if busy is not None:
-        return busy
-    try:
+    async def _fetch_once() -> Any:
         if use_ocr:
             # P2-2: the route waits FETCH_TIMEOUT_S, and the fetch may go on
             # and end in the bytes cache. A retry of the same read joins the
             # running fetch (fix round 4).
             key = (str(org_id or ""), (user.email or "").strip().lower(), aid)
-            got = await _ocr_fetch(key, _fetch_alone, hold, aid, owned)
-        else:
-            # ⚠️ The session opens OUTSIDE the try (review round 1), so
-            # `TenantUnbound` and a refused connect reach main.py's handlers.
-            async with _tenant_session() as db:
-                got = await _fetch_for_text(
-                    _fetch_owned_attachment(
-                        db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
-                    ),
-                    aid, None,
-                )
+            return await _ocr_fetch(key, _fetch_alone, hold, aid, owned)
+        # ⚠️ The session opens OUTSIDE the try (review round 1), so
+        # `TenantUnbound` and a refused connect reach main.py's handlers.
+        async with _tenant_session() as db:
+            return await _fetch_for_text(
+                _fetch_owned_attachment(
+                    db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
+                ),
+                aid, None,
+            )
+
+    try:
+        got = await _fetch_once()
+        if hold_busy and got.stopped is not None:
+            # Task 3865: another read of this member holds the hold. The
+            # session is closed now, so the wait holds no connection. A read
+            # that ends meanwhile can fill the cache, and the second pass
+            # then answers from it. The OCR deadline started at the top, so
+            # the wait shortens it.
+            hold_busy.clear()
+            owned.clear()
+            if await hold.take_waiting():
+                got = await _fetch_once()
         if got.stopped:
             return _text_part(got.stopped, offset)
         row = got.row
@@ -962,29 +977,6 @@ async def attachment_text(  # noqa: C901 - one branch over the limit: the hold w
             owned[0].detached = True
         else:
             hold.release()
-
-
-async def _wait_for_hold(
-    hold: _ReadHold, use_ocr: bool, org_id: Any, user: UserContext, aid: str,
-) -> AttachmentTextModel | None:
-    """Task 3865: wait for an earlier read of this member, or the busy answer.
-
-    The wait is BEFORE the database session opens, so a waiting read holds no
-    connection. The OCR deadline started at the top of the request, so the wait
-    shortens it. A retry that joins a running fetch skips the wait. It joins
-    the fetch, and takes its own hold after the fetch (``_ocr_fetch``).
-    """
-    joins = use_ocr and (
-        str(org_id or ""), (user.email or "").strip().lower(), aid,
-    ) in _RUNNING_FETCHES
-    if joins or await hold.take_waiting():
-        return None
-    # No session opened, so the answer names no file. That also keeps the
-    # name of a file of another member out of it.
-    return AttachmentTextModel(
-        filename="attachment", mime_type="application/octet-stream",
-        kind="unreadable", reason=_BUSY_REASON,
-    )
 
 
 async def _ocr_fetch(

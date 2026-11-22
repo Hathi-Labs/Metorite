@@ -601,6 +601,41 @@ class TestTheTextRoute:
         assert h.provider_calls == 1
         assert list(h.text_redis.store) == [f"cc:{ORG_A}:email-att-text:{ATT_ID}"]
 
+    async def test_a_cached_read_answers_while_another_read_holds_the_hold(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865 review P2: the cache answers before the hold, so a cached
+        file never waits behind a slow read of the same member."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        first = await _text()  # fills the cache
+        assert first.text == "words"
+        m._READING.add((ORG_A, OWNER))  # another read holds the member's hold
+        try:
+            got = await asyncio.wait_for(_text(), 2)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert got.text == "words" and got.kind == first.kind
+        assert not m._WAITERS
+        assert h.provider_calls == 1
+
+    async def test_a_woken_then_cancelled_waiter_passes_the_turn_on(self) -> None:
+        """Task 3865 review P3: the reviewer's lost wake-up. A waiter is woken
+        by ``release``, and then its task is cancelled before it takes the
+        hold. The next waiter must get the free hold."""
+        user = SimpleNamespace(organization_id=ORG_A, email=OWNER)
+        holder, first, second = (m._ReadHold(user) for _ in range(3))
+        assert holder.take()
+        t1 = asyncio.create_task(first.take_waiting(5))
+        await asyncio.sleep(0)
+        t2 = asyncio.create_task(second.take_waiting(5))
+        await asyncio.sleep(0)
+        holder.release()  # wakes t1's future
+        t1.cancel()  # t1 is cancelled before it runs again
+        await asyncio.gather(t1, return_exceptions=True)
+        assert await asyncio.wait_for(t2, 2) is True
+        second.release()
+        assert not m._READING and not m._WAITERS
+
     async def test_a_second_read_of_one_member_waits_and_succeeds(
         self, monkeypatch,
     ) -> None:
