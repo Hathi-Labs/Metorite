@@ -843,6 +843,12 @@ than defaulting; a test proves the refusal.
 > mechanism proof (an unbound `get_session()` INSERT into the phase-4 `audit_event`
 > is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
 > 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
+>
+> **Update 2026-11-22 (task 2221 slice 3, dark behind `ACB_GRAPH_TENANT_BIND`):**
+> the operator-org fallback above now takes only an event that carries `system=True`.
+> With the bind on, `acb_audit.record` refuses an event that has no org and no marker.
+> Only the log line `audit.refused_unmarked_tenantless` keeps its action and actor.
+> This replaces each "operator-org audit fallback" claim in this section and in slice 6a.
 
 > ✅ **acb_graph slice 6a — run-based org SOURCES threaded SHIPPED 2026-08-23
 > (WS-29, DARK — only populates `_RUN_ORG` / binds the tenant for more runs; the
@@ -877,7 +883,7 @@ than defaulting; a test proves the refusal.
 >   chat_session / pending_commit writes. When the caller passes `None`
 >   (the workflow cron scheduler / schedule sweep until slice 6c, or the
 >   self-mutation sandbox) the run stays byte-identical to pre-slice behaviour
->   (operator-org audit fallback / flag-ON write skip) and LOGS
+>   (flag-ON write skip, and since task 2221 slice 3 a refused audit row) and LOGS
 >   `executor.run_missing_org` so the gap stays visible.
 > After this slice the broadened missing-org warning no longer fires for
 > `/copilot/chat`, sub-agent runs, or org-supplied batch runs (they carry org);

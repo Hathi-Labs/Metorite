@@ -2787,8 +2787,10 @@ def _resolve_sub_agent_org() -> str | None:
     why this, like ``_current_run_org``, takes no argument).
 
     Returns ``None`` when no parent tenant is resolvable (a truly untenanted
-    background run); the sub-run then behaves like any org-less batch run
-    (operator-org audit fallback / flag-ON write skip).
+    background run); the sub-run then behaves like any org-less batch run.
+    With the flag ON, its writes skip, and ``acb_audit.record`` refuses each
+    unmarked tenant-less audit row (task 2221 slice 3). Only the refusal log
+    line keeps the action and the actor.
     """
     return _current_run_org()
 
@@ -5288,10 +5290,16 @@ async def _settle_agent_push(
             agent=agent_name, run_id=run_id, reason=why,
         )
         with contextlib.suppress(Exception):
+            # Task 2221 slice 3: a delegated sub-run passes no thread_id, so
+            # the org falls back to the run on this frame, as the gate does.
+            # With the bind on, a row with no org is refused, never kept.
             record(AuditEvent(
                 actor=f"agent:{agent_name}", action="agent_push_request_refused",
                 target=f"agent:{agent_name}", payload={"run_id": run_id, "reason": why},
-                organization_id=_RUN_ORG.get(thread_id),
+                organization_id=(
+                    (_RUN_ORG.get(thread_id) if thread_id else None)
+                    or _current_run_org()
+                ),
             ))
         return (
             "Metorite did not push: only an admin of the first-party organization "
@@ -5720,7 +5728,11 @@ async def _detect_agent_commits(
                                 "commit_sha": commit_sha[:12],
                                 "reason": _push_gate[1],
                             },
-                            organization_id=_RUN_ORG.get(thread_id),
+                            # Task 2221 slice 3: the same org as the gate.
+                            organization_id=(
+                                (_RUN_ORG.get(thread_id) if thread_id else None)
+                                or _current_run_org()
+                            ),
                         )
                     )
 
@@ -5755,9 +5767,14 @@ async def _detect_agent_commits(
                 },
                 # WS-29 acb_graph slice 5: stamp the run's tenant ONTO the event
                 # on THIS frame (never a ContextVar inside _persist's worker
-                # thread). None ⇒ tenant-less run → _persist binds the operator
-                # org so the audit row is retained. _RUN_ORG.get(None) is None.
-                organization_id=_RUN_ORG.get(thread_id),
+                # thread). With no thread entry, the org of the run on this
+                # frame. Task 2221 slice 3: with the bind on, a row with no org
+                # at all is refused, and only the refusal log line keeps its
+                # action and actor. It never goes under the operator org.
+                organization_id=(
+                    (_RUN_ORG.get(thread_id) if thread_id else None)
+                    or _current_run_org()
+                ),
             )
         )
 
@@ -6325,7 +6342,9 @@ async def run_agent(
                        sub-agent inherits its parent's tenant (see
                        ``_run_sub_agent_streaming``); the workflow / schedule
                        callers resolve their own org in slice 6c and pass
-                       ``None`` until then (operator-org fallback / skip).
+                       ``None`` until then. With the flag ON, the writes
+                       skip and ``acb_audit.record`` refuses an unmarked
+                       tenant-less audit row (task 2221 slice 3).
         solo_room:     True when the run boundary knows this run is the
                        member's own, not a shared room (WS-63 PZ-2,
                        :data:`_RUN_SOLO_ROOM`). ``None`` keeps the parent's.
@@ -6405,7 +6424,9 @@ async def _run_agent_inner(
     slice 3-5 ``acb_graph`` writes carry the tenant for org-carrying batch runs
     (sub-agent dispatch today; workflow / schedule callers pass their own org in
     slice 6c). When ``organization_id`` is ``None`` the run stays byte-identical
-    to pre-slice behaviour (operator-org audit fallback / flag-ON write skip).
+    to pre-slice behaviour (flag-ON write skip). With the flag ON,
+    ``acb_audit.record`` refuses an unmarked tenant-less audit row, and only the
+    refusal log line keeps its action and actor (task 2221 slice 3).
     """
     _disable_agent_telemetry_once()
     settings = get_settings()
@@ -6517,8 +6538,10 @@ async def _run_agent_inner(
     # When the caller passes ``None`` (the workflow cron scheduler / schedule
     # sweep until slice 6c, or the self-mutation sandbox) this stays on the
     # pre-slice behaviour: no bind, so with the flag ON the ``chat_session`` /
-    # ``pending_commit`` writes fail closed (skip) and the ``audit_event`` write
-    # falls back to the operator org (slice 5). LOG the gap for every source so it
+    # ``pending_commit`` writes fail closed (skip). ``acb_audit.record`` refuses
+    # an unmarked tenant-less ``audit_event`` row (task 2221 slice 3), and only
+    # the refusal log line keeps its action and actor. It never goes under the
+    # operator org. LOG the gap for every source so it
     # is VISIBLE (WS-29 slice 3, P1) — same signal the stream path emits.
     _batch_source = ""
     if isinstance(event_payload, dict):

@@ -132,9 +132,10 @@ def _persist(event: AuditEvent) -> None:
       bind stamps the column through its phase-1 DEFAULT — the ORM INSERT names
       no ``organization_id`` (the §1.3 "no INSERT had to learn about
       organization_id" property the chat_session/pending_commit paths also rely
-      on). Only if BOTH the event org AND the operator-org lookup are unavailable
-      (near-impossible — the ``default`` org is seeded) is the write SKIPPED and
-      logged, fail-closed: no audit row is ever silently lost to an RLS refusal.
+      on). The write is SKIPPED and logged (``audit.persist_skipped_no_org``)
+      when the event has no org and either has no marker or the operator-org
+      lookup fails. So a tenant-less row is lost, never filed under the wrong
+      tenant, and only the log line keeps its action and actor.
     """
     try:
         # Local import avoids a hard dep from acb_audit -> acb_graph at import time
@@ -176,9 +177,10 @@ def refuse_tenantless(event: AuditEvent) -> bool:
     """``True`` when a TENANT event has no org and must not be recorded (task 2189).
 
     Some events always belong to one tenant: a broker action, a model call, a
-    meeting dispatch. Their payload names that tenant's work. :func:`_persist`
-    files an event with no org under the OPERATOR org (Option-A). For a
-    tenant event that is a cross-tenant leak, so the writer calls this first::
+    meeting dispatch. Their payload names that tenant's work. Before task
+    2221 slice 3, :func:`_persist` filed an event with no org under the
+    OPERATOR org (Option-A). For a tenant event that is a cross-tenant leak,
+    so the writer calls this first::
 
         if refuse_tenantless(event):
             return

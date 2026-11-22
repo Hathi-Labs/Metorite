@@ -625,6 +625,151 @@ def test_a_pushed_commit_from_before_the_run_keeps_its_record(monkeypatch, repo)
     assert by_sha[base]["status"] == "approved"
 
 
+# ── 5b. The security rows of a delegated sub-run keep the parent org ──────
+# Task 2221 slice 3, review P1. A delegated sub-run calls
+# ``_settle_agent_push`` with no ``thread_id``, and the gate reads the parent
+# org through ``_current_run_org``. With ``ACB_GRAPH_TENANT_BIND`` on,
+# ``acb_audit.record`` refuses an event with no org and no marker. So a row
+# that took its org only from ``_RUN_ORG.get(thread_id)`` was lost. These
+# tests drive the real ``record`` with the bind on, and a spy stands in for
+# ``_persist`` only.
+
+#: The org of the parent run that delegated to the sub-run.
+PARENT_ORG = "dddddddd-0000-4000-8000-000000000004"
+#: The thread of the parent run. The sub-run passes no thread of its own.
+PARENT_THREAD = "t-parent-2221"
+_SECURITY_ROWS = (
+    "agent_push_request_refused", "agent_push_without_reviewer",
+    "agent_self_commit_detected",
+)
+
+
+def _persist_spy(monkeypatch) -> list[Any]:
+    """The bind on, the real ``record``, and a spy on ``_persist``."""
+    import acb_audit.log as audit_log
+    import orchestrator.executor as executor
+
+    assert executor.record is audit_log.record, "the executor must use the real record"
+    persisted: list[Any] = []
+    monkeypatch.setattr(audit_log, "_persist", persisted.append)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+    return persisted
+
+
+async def _as_sub_run(coro_fn, *, parent_bound: bool) -> Any:
+    """Run *coro_fn* as a sub-run: the parent thread on this frame, no thread_id."""
+    import acb_audit
+    import orchestrator.executor as executor
+
+    token = executor._stream_relay_thread_id.set(PARENT_THREAD if parent_bound else None)
+    try:
+        out = await coro_fn()
+    finally:
+        executor._stream_relay_thread_id.reset(token)
+    await acb_audit.drain()
+    return out
+
+
+def _settle_on_sub_run(monkeypatch, *, parent_bound: bool) -> tuple[Any, list[Any]]:
+    import acb_skills.permission_policy as pp
+    import orchestrator.executor as executor
+
+    persisted = _persist_spy(monkeypatch)
+    monkeypatch.setattr(pp, "take_agent_push_request", lambda _run_id: True)
+
+    async def _gate() -> tuple[bool, str]:
+        return False, "not a reviewer"
+
+    monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
+    if parent_bound:
+        monkeypatch.setitem(executor._RUN_ORG, PARENT_THREAD, PARENT_ORG)
+    text = asyncio.run(_as_sub_run(
+        # The call shape of ``_run_sub_agent_streaming``: no thread_id.
+        lambda: executor._settle_agent_push("agent-x", None, "run-sub", since_sha=None),
+        parent_bound=parent_bound,
+    ))
+    return text, persisted
+
+
+def test_a_refused_push_on_a_sub_run_records_under_the_parent_org(monkeypatch) -> None:
+    """RED when the row takes its org only from ``_RUN_ORG.get(thread_id)``."""
+    text, persisted = _settle_on_sub_run(monkeypatch, parent_bound=True)
+    assert text and text.startswith("Metorite did not push")
+    rows = [e for e in persisted if e.action == "agent_push_request_refused"]
+    assert [e.organization_id for e in rows] == [PARENT_ORG], (
+        "the refused push of a sub-run was lost or filed under another org"
+    )
+    assert rows[0].system is False, "a security row never takes the system marker"
+
+
+def test_a_refused_push_with_no_org_anywhere_is_refused_not_marked(monkeypatch) -> None:
+    """No parent org: ``record`` refuses the row. It never goes to the operator org."""
+    text, persisted = _settle_on_sub_run(monkeypatch, parent_bound=False)
+    assert text and text.startswith("Metorite did not push")
+    assert [e for e in persisted if e.action in _SECURITY_ROWS] == []
+
+
+def test_the_sub_run_call_passes_no_thread_id() -> None:
+    """The reason for the fallback: the sub-run push step names no thread."""
+    import orchestrator.executor as executor
+
+    src = inspect.getsource(executor._run_sub_agent_streaming)
+    i = src.index("await _settle_agent_push(")
+    call = src[i:src.index(")", src.index("since_sha=", i))]
+    assert "thread_id" not in call, call
+
+
+def _detect_on_sub_run(monkeypatch, repo_dir: str, since: str) -> list[Any]:
+    """``_detect_agent_commits`` with no thread_id and a refused push gate."""
+    import orchestrator.executor as executor
+    import orchestrator.mutation as mutation
+
+    persisted = _persist_spy(monkeypatch)
+
+    async def _on_remote(_d: str, _sha: str) -> bool:
+        return True
+
+    async def _register(**_kw: Any) -> None:
+        return None
+
+    async def _diff(_d: str, _sha: str) -> str:
+        return "diff"
+
+    async def _gate() -> tuple[bool, str]:
+        return False, "not a reviewer"
+
+    monkeypatch.setattr(executor, "_host_git_ok", lambda p: bool(p))
+    monkeypatch.setattr(executor, "_commit_on_remote", _on_remote)
+    monkeypatch.setattr(executor, "_graph_session_opener", lambda tid: None)
+    monkeypatch.setattr(executor, "_agent_push_allowed", _gate)
+    monkeypatch.setattr(mutation, "_register_pending_commit", _register)
+    monkeypatch.setattr(mutation, "_git_diff", _diff)
+    monkeypatch.setitem(executor._RUN_ORG, PARENT_THREAD, PARENT_ORG)
+    asyncio.run(_as_sub_run(
+        lambda: executor._detect_agent_commits(
+            "agent-x", repo_dir, "run-sub", since_sha=since,
+        ),
+        parent_bound=True,
+    ))
+    return persisted
+
+
+@pytest.mark.parametrize("action", [
+    "agent_push_without_reviewer", "agent_self_commit_detected",
+])
+def test_a_commit_scan_with_no_thread_records_under_the_run_org(
+    monkeypatch, repo, action: str,
+) -> None:
+    """RED when either row takes its org only from ``_RUN_ORG.get(thread_id)``."""
+    _r, base, _head, repo_dir = repo
+    persisted = _detect_on_sub_run(monkeypatch, repo_dir, base)
+    rows = [e for e in persisted if e.action == action]
+    assert [e.organization_id for e in rows] == [PARENT_ORG], (
+        f"the {action} row was lost or filed under another org"
+    )
+    assert rows[0].system is False
+
+
 # ── 6. The addendum matches the control ────────────────────────────────────
 
 def test_the_addendum_no_longer_promises_an_approval() -> None:

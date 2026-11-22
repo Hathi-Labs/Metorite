@@ -767,8 +767,10 @@ belonging in `NEVER_SCOPED` even though they look like it:
 > (owner answer A). With the bind on, `acb_audit.record` refuses an event that has no org and no
 > marker. It logs the refusal and does not raise.
 >
-> Only a marked event goes under the operator org. Two rows carry the marker: `scheduler_started` and the Zoho `run_ok`. Slices 1 and 2
-> stamp or guard each known writer. Fences: `test_acb_graph_audit_bind.py` (R8),
+> Only a marked event goes under the operator org. Two rows carry the marker: `scheduler_started` and the Zoho `run_ok`.
+> Slices 1 and 2 stamp or guard each known writer. Some stamps can still be empty. An executor batch run
+> with no org stamps none on its rows. With the bind on, `record` refuses such a row, and only the
+> refusal log line keeps its action and actor. Fences: `test_acb_graph_audit_bind.py` (R8),
 > `test_audit_tick_writers_org.py`.
 
 And the three CRM homonyms (§2) must move **out** of `EXPECTED_SCOPED` and **into**

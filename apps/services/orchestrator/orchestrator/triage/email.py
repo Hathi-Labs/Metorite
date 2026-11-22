@@ -304,16 +304,18 @@ async def classify(
 
     ``organization_id`` is the tenant that owns the mailbox. It is required by
     keyword: the caller passes the tenant its run or job is bound to, never a
-    value from request input. The audit row carries the sender and the subject,
-    so a tenant-less event would fall back to the operator org in
-    ``acb_audit.log._persist`` (Option-A) and leak the mail metadata there
-    (task 2173). So ``audit=True`` with no tenant raises before any work.
+    value from request input. The audit row carries the sender and the subject.
+    Task 2173 found that a tenant-less event then went under the operator org
+    and leaked the mail metadata there. Task 2221 slice 3 closed that path:
+    with ``ACB_GRAPH_TENANT_BIND`` on, ``acb_audit.record`` refuses an unmarked
+    tenant-less event, so the row is lost. So ``audit=True`` with no tenant
+    raises before any work.
     Fence: ``tests/unit/test_triage_audit_org_r8.py``.
     """
     if audit and not organization_id:
         raise ValueError(
             "classify(audit=True) needs the organization_id of the mailbox; "
-            "a tenant-less email_triage event would be filed under the operator org"
+            "a tenant-less email_triage event would be refused and lost"
         )
     decision = classify_by_rules(msg)
     if (
