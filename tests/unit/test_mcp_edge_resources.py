@@ -255,7 +255,8 @@ class TestThePlaybookResources:
     async def test_the_list_holds_one_row_for_each_topic(self, pb):
         from acb_playbook import load_all
         rows = (await _method("resources/list"))["result"]["resources"]
-        assert [r["uri"] for r in rows] == [f"metorite://playbook/{t.slug}" for t in load_all()]
+        assert [r["uri"] for r in rows] == (
+            [f"metorite://playbook/{t.slug}" for t in load_all()] + ["metorite://playbook/kit-version"])
         assert all(r["mimeType"] == "application/json" and r["title"] and r["description"]
                    for r in rows)
 
@@ -278,6 +279,16 @@ class TestThePlaybookResources:
         assert data["body"] == {"untrusted_text": load_topic("brief-contract").body}
         assert set(data["title"]) == {"untrusted_text"} and set(data["summary"]) == {"untrusted_text"}
         assert data["version"] >= 1
+
+    async def test_the_kit_version_resource_reads(self, pb):
+        """KIT-5. Mutation: ``_read_playbook`` serves a fixed number."""
+        from acb_playbook import CLIENTS, kit_version
+        content = (await _read("metorite://playbook/kit-version"))["result"]["contents"][0]
+        assert json.loads(content["text"]) == {
+            "slug": "kit-version", "kit_version": kit_version(), "kits": {c: kit_version() for c in CLIENTS}}
+
+    async def test_the_kit_version_resource_is_dark_with_the_playbook(self, on):
+        assert (await _read("metorite://playbook/kit-version"))["error"]["code"] == -32002
 
     async def test_a_nested_slug_reads(self, pb):
         content = (await _read("metorite://playbook/patterns/one-agent-first"))["result"]["contents"]

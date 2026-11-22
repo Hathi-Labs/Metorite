@@ -194,6 +194,8 @@ const PAGES: Array<[string, string]> = [
   ["a member", "/settings/members/priya%40acme.example"],
   // SW-31b. The page draws its bar in each state, the dark 404 too.
   ["Agents", "/settings/agents"],
+  // PKG-17c-2. The Home layout page draws its bar in each state.
+  ["Home layout", "/settings/layout"],
 ];
 
 /**

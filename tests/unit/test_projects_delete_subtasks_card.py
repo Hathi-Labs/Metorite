@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import skill_projects
-from skill_projects import writes as W
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 from tests.unit import test_projects_agent_writes as tw
 from tests.unit._projects_agent_fakes import (
@@ -98,7 +98,7 @@ async def test_clearing_the_task_row_cancels_and_writes_nothing(monkeypatch) -> 
     answer_rows(monkeypatch, frozenset({SUB_A}))
     calls = fake_gateway(monkeypatch, _delete_gateway)
     out = await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

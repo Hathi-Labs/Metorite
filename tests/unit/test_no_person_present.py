@@ -20,7 +20,7 @@ model nor a tool argument can clear the mark.
   SDK reader thread. ``carry_run_context`` is verified here, and not by reading.
 * ``no-person-refusal``: each seam refuses a marked run by name, and writes
   nothing. A person still reaches each seam.
-* ``no-person-setter``: only the two listed modules name the setter.
+* ``no-person-setter``: only the three listed modules name the setter.
 * ``no-person-http``: no tool names a route that approves or answers. The mark
   does not cross HTTP, so that tool would pass as the member.
 
@@ -901,6 +901,16 @@ _SETTERS: dict[str, int] = {
     "packages/acb_common/acb_common/no_person.py": 0,
     "apps/services/gateway/gateway/jobs/worker.py": 1,
     "apps/services/gateway/gateway/routes/workflows/service.py": 1,
+    # WS-STU B6a: `run_as_read` is the run boundary of a run with no viewer.
+    # Nobody watches it, so the whole run is marked. No tool reaches it.
+    "apps/services/gateway/gateway/routes/studio/invoke.py": 1,
+    # MCP-NC1 review (task 3603): `POST /agent/run/async` answers 202 and runs
+    # in the background. Nobody watches that run, so its whole run is marked,
+    # and an MCP write there is refused, never run with no card.
+    "apps/services/gateway/gateway/routes/agent.py": 1,
+    # TOF-3b F4b: `run_suite` runs each skill test as a dry run. Nobody
+    # watches it, so the whole run is marked and it can ask no card.
+    "apps/services/gateway/gateway/studio/skill_tests.py": 1,
 }
 #: Who may read the mark: the seams of the refusals. No tool reads it.
 _READERS = frozenset({
@@ -913,11 +923,17 @@ _READERS = frozenset({
     # WS-ALN ALN-2a: the one tool that names a route that answers. See
     # `_NAMED_TOOL_EXEMPTIONS`.
     "apps/skills/skill-projects/skill_projects/guarded.py",
+    # WS-55 EA-18d: `answer_agent_question` refuses a marked run before any call.
+    "apps/skills/skill-projects/skill_projects/question_answers.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
     # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
     # before it opens a card or spends a request. Nobody sees that card.
     "apps/services/gateway/gateway/routes/studio/invoke.py",
+    # MCP-NC1 (task 3603): the MCP gate runs a member's tool with no card only
+    # when a person watches. A marked run counts as a run with no member, so
+    # the gate refuses a write there (`_maf_mcp._person_present`).
+    "apps/services/orchestrator/orchestrator/_maf_mcp.py",
 })
 
 
@@ -1037,6 +1053,10 @@ _NAMED_TOOL_EXEMPTIONS: dict[str, frozenset[str]] = {
     "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({
         "/decisions/{}/answer", "/agent-runs/{}/answer/withdraw",
         "/agent-runs/{}/answer/replace"}),
+    # WS-55 EA-18d: one `prompt` on the activities route, after a card and after the
+    # no-person refusal. `may_answer_run` decides on the server.
+    "apps/skills/skill-projects/skill_projects/question_answers.py": frozenset(
+        {"/agent-runs/{}/activities"}),
 }
 
 
@@ -1146,9 +1166,10 @@ def test_no_injected_tool_can_approve() -> None:
     # `answer_decision` (WS-ALN ALN-2a) refuses a marked run before it reads or
     # raises a card. `test_decisions_tool.py` holds that. SW-43c: the tool of the
     # member's own answer to an agent refuses a marked run the same way, and
-    # `test_agent_answer_tools.py` holds that.
+    # `test_agent_answer_tools.py` holds that. WS-55 EA-18d: so does `answer_agent_question`.
     assert {n for n in names if pattern.search(n)} == {
-        "crm_answer_question", "answer_decision", "change_agent_answer"}
+        "crm_answer_question", "answer_decision", "change_agent_answer",
+        "answer_agent_question"}
 
 
 def test_a_new_module_keeps_the_import_graph_low() -> None:

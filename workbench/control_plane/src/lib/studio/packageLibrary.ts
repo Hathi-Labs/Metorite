@@ -8,7 +8,7 @@
  * and counts the pills. It draws nothing. Fence: `packageLibrary.test.ts`.
  */
 import { previewHref } from "./packagePreview";
-import type { PackageSummary } from "./realDoor";
+import type { OrgPackage, PackageSummary } from "./realDoor";
 
 export interface PackageCard {
   kind: "package";
@@ -89,11 +89,12 @@ export function libraryCounts(
   };
 }
 
-export type LibraryFilter = "all" | "mine" | "team" | "drafts" | "templates";
+export type LibraryFilter = "all" | "mine" | "team" | "drafts" | "templates" | "members";
 
 /** Does a package show under this pill? The counts and the grid use the same rule. */
 export function packageShows(filter: LibraryFilter, p: Pick<PackageSummary, "live_version">): boolean {
   if (filter === "all" || filter === "mine") return true;
+  // "members" is the admin view. It draws its own grid, so no member package shows beside it.
   if (filter === "drafts") return p.live_version == null;
   return false;
 }
@@ -132,3 +133,68 @@ export function noListLine(label: string | null | undefined): string {
 /** The words when the package list did not load. */
 export const PACKAGES_FAILED_LINE =
   "Your Studio apps did not load. Refresh the list to try again.";
+
+// --- the admin view, "All members" (STU-J4) ---------------------------------
+
+/** The words for a package that has no audit row. Each says what is empty. */
+export const NO_RUNS_LINE = "No runs yet";
+export const NO_ERRORS_LINE = "No errors";
+export const USE_NOT_TRACKED_LINE = "Not tracked yet";
+/** The label of the count. A "run" here is one action call through the door, not a workflow run. */
+export const ACTION_CALLS_LABEL = "Action calls";
+
+export interface OrgCard {
+  id: string;
+  name: string;
+  /** The owner's address. The admin view names the owner of each package. */
+  owner: string;
+  mine: boolean;
+  state: "live" | "draft";
+  /** "v3", or "No live version" for a draft. */
+  version: string;
+  calls: string;
+  /** Null when the package has no error. Then `errorLine` says so. */
+  error: { action: string; outcome: "failed" | "refused"; when: string } | null;
+  errorLine: string;
+  use: string;
+  changedAt: string | null;
+}
+
+/** "1,204 action calls", "1 action call", or the empty state. The cap shows as "10,000+". */
+export function callsWords(count: number, capped: boolean): string {
+  if (count <= 0) return NO_RUNS_LINE;
+  const n = count.toLocaleString("en-US") + (capped ? "+" : "");
+  return `${n} action ${count === 1 && !capped ? "call" : "calls"}`;
+}
+
+/** Only the action, the outcome and the time. The gateway sends no reason text, and this shows none. */
+export function orgCard(p: OrgPackage, now: number = Date.now()): OrgCard {
+  const e = p.last_error;
+  const outcome = e?.outcome === "failed" || e?.outcome === "refused" ? e.outcome : null;
+  const error: OrgCard["error"] = e && outcome
+    ? { action: e.action?.trim() || "an action", outcome, when: changedWords(e.at, now) }
+    : null;
+  return {
+    id: p.id,
+    name: p.name.trim() || "Untitled app",
+    owner: p.owner_email,
+    mine: p.mine,
+    state: p.live_version != null ? "live" : "draft",
+    version: p.live_version != null ? `v${p.live_version}` : "No live version",
+    calls: callsWords(p.action_calls, p.action_calls_capped),
+    error,
+    errorLine: error ? `${error.outcome === "failed" ? "Failed" : "Refused"}: ${error.action}, ${error.when}` : NO_ERRORS_LINE,
+    use: USE_NOT_TRACKED_LINE,
+    changedAt: p.updated_at,
+  };
+}
+
+/** The pill of the admin view shows only when the gateway said `admin: true`. */
+export function membersPill(admin: boolean, count: number): { id: "members"; label: string; count: number } | null {
+  return admin ? { id: "members", label: "All members", count } : null;
+}
+
+/** The filter that the grid and the pills both use. "members" falls back to "all" when its pill is gone. */
+export function effectiveFilter(chosen: LibraryFilter, hasMembersPill: boolean): LibraryFilter {
+  return chosen === "members" && !hasMembersPill ? "all" : chosen;
+}

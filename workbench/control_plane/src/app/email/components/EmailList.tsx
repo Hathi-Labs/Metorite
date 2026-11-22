@@ -9,6 +9,7 @@ import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
 import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
+import { UnreadBar, UnreadLabel, ReadToggle, readTone, rowButtonClass } from "./UnreadMark";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
@@ -520,11 +521,12 @@ export function EmailList({
           <>
             {emails.map((email) => {
               const isSel = selected.has(email.id);
+              const tone = readTone(email.isRead, selectedId === email.id);
               return (
               <div
                 key={email.id}
                 data-email-row={email.id}
-                className={`group flex items-stretch border-b border-border ${
+                className={`group relative flex items-stretch border-b border-border ${
                   isSel ? "bg-primary/5" : ""
                 }`}
               >
@@ -551,23 +553,13 @@ export function EmailList({
                 onTouchMove={cancelLongPress}
                 onTouchEnd={cancelLongPress}
                 onTouchCancel={cancelLongPress}
-                className={`flex-1 min-w-0 text-left pr-3 pl-1 py-3 transition-colors flex flex-col gap-1 select-none ${
-                  selectedId === email.id
-                    ? "bg-primary/10 border-l-2 border-l-primary"
-                    : "hover:bg-secondary/50"
-                }`}
+                className={rowButtonClass(selectedId === email.id)}
               >
+                <UnreadLabel isRead={email.isRead} />
                 {/* Sender + indicators + time */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    {!email.isRead && (
-                      <div className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0 mt-0.5" />
-                    )}
-                    <span
-                      className={`text-xs truncate ${
-                        email.isRead ? "text-foreground/70" : "text-foreground font-medium"
-                      }`}
-                    >
+                    <span className={`text-xs truncate ${tone.sender}`}>
                       {email.from.name}
                     </span>
                     {(() => {
@@ -597,7 +589,7 @@ export function EmailList({
                     {email.isStarred && (
                       <AppIcon name="Star" size={10} className="text-warning fill-warning" />
                     )}
-                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    <span className={`text-[10px] whitespace-nowrap ${tone.time}`}>
                       {timeLabel(email.receivedAt)}
                     </span>
                   </div>
@@ -605,9 +597,7 @@ export function EmailList({
 
                 {/* Subject */}
                 <div
-                  className={`text-xs truncate ${
-                    email.isRead ? "text-foreground/60" : "text-foreground"
-                  }`}
+                  className={`text-xs truncate ${tone.subject}`}
                 >
                   {email.subject}
                 </div>
@@ -681,6 +671,8 @@ export function EmailList({
                   </div>
                 )}
               </button>
+              <UnreadBar isRead={email.isRead} />
+              <ReadToggle email={email} update={updateEmail} />
               </div>
               );
             })}

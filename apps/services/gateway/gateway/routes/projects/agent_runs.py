@@ -92,6 +92,12 @@ The rules, each one stated in the spec:
   is not ``awaiting`` stay open to each member who sees the task. The list of
   ``agent_questions.py`` reads the same text, so it never offers a button that
   this route refuses.
+* **Images on a question** (WS-55 CIV-14b, spec §12.9). An agent activity
+  takes ``attachment_ids``: at most four images of the run's OWN task, read
+  after the replay check (:func:`_task_images`). Another task's file is 422.
+  ``content.attachments`` keeps each id, name, type and size, so the card
+  draws the images from the cookie serve route. Dark behind
+  ``mcp_image_upload_orgs`` (``agent_oauth.image_upload_allowed``).
 """
 
 from __future__ import annotations
@@ -100,25 +106,38 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
+from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
+from gateway.routes.projects.attachments import served_url
 from gateway.routes.projects.core import (
+    LANE_STAGE_REVIEW,
+    LANE_STAGE_TODO,
+    STARTED_CATEGORY,
     TaskModel,
     _tenant_session,
     actor,
+    apply_status_transition,
+    board_lanes,
     emit,
     from_jsonb,
+    lane_like,
     load_visible_task,
+    lock_task,
+    pick_lane,
     record_activity,
+    require_row,
     resolve_visibility,
     router,
     row_to_dict,
@@ -144,6 +163,8 @@ from gateway.routes.projects.filters import (
     live_answer_sql,
     open_recovery_sql,
     open_strand_sql,
+    run_idle_s_sql,
+    run_life_at_sql,
     strand_fits_sql,
     task_closed_sql,
     waiting_of,
@@ -193,6 +214,25 @@ EPHEMERAL_TYPES: frozenset[str] = frozenset({"thought", "action"})
 EPHEMERAL_CAP = 20
 #: The longest ``body`` of an activity, in characters.
 MAX_BODY = 20_000
+#: SW-7b (``agent_coordination.md`` §3.7 item 2). The longest
+#: ``agent_label`` after the clean, in characters.
+AGENT_LABEL_MAX = 40
+#: SW-7b. The longest ``agent_label`` that a body may send before the clean.
+#: A longer value is 422, so no big text reaches the clean.
+AGENT_LABEL_INPUT_MAX = 200
+#: SW-104 (``agent_coordination.md`` §3.12.3). The longest ``host`` and
+#: ``model`` after the clean, in characters. The CHECKs of the migration hold
+#: the same number. A body may send at most :data:`AGENT_LABEL_INPUT_MAX`.
+AGENT_PLACE_MAX = 60
+#: SW-104. A ``host`` or a ``model`` of a body holds no C0 or C1 control
+#: character, else 422 at the schema. The edge has the same pattern.
+AGENT_PLACE_PATTERN = r"^[^\x00-\x1f\x7f-\x9f]+$"
+#: SW-104 (§3.12.7 rule 5). The kind of the machine of an agent session.
+HostKind = Literal["computer", "server", "cloud"]
+#: The kinds, in the order of the spec. The CHECK of the migration holds them.
+AGENT_HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
+#: SW-104 (SW-50). The kind that a box token sets.
+BOX_HOST_KIND = "server"
 #: ``wait_s`` of the long poll, at most.
 MAX_WAIT_S = 20
 #: The long poll reads again after this many seconds.
@@ -274,7 +314,11 @@ class OptionIn(BaseModel):
 class StartIn(BaseModel):
     """``POST /projects/tasks/{id}/agent-runs``.
 
-    An agent sends ``external_link`` and ``idempotency_key`` only. A member
+    An agent sends ``external_link``, ``idempotency_key``, ``agent_label``,
+    ``host``, ``model`` and ``host_kind`` only. SW-7b: ``agent_label`` is the
+    display name of the agent's own session, and a member's body that names
+    it is 422. SW-104: ``host``, ``model`` and ``host_kind`` name the machine
+    and the model of the session, by the same rule. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -286,6 +330,12 @@ class StartIn(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     connection_id: str | None = None
     body: str | None = Field(default=None, max_length=MAX_BODY)
+    agent_label: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX)
+    host: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                             pattern=AGENT_PLACE_PATTERN)
+    model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                              pattern=AGENT_PLACE_PATTERN)
+    host_kind: HostKind | None = None
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -293,6 +343,15 @@ MAX_WAITING_NOTE = 200
 #: The code of the 422 for a wait that passes the cap of
 #: ``filters.agent_run_waiting_cap_min`` (D140.8, SW-4 item 2).
 WAITING_TOO_LONG = "waiting_too_long"
+
+#: CIV-14b (spec §12.9 item 2). The codes of a 422 of ``attachment_ids``: an
+#: id that is not a file of the run's task, and a file that is not a png,
+#: jpeg, gif or webp image. The edge maps each code to a fixed text.
+ATTACHMENT_NOT_ON_TASK = "attachment_not_on_task"
+ATTACHMENT_NOT_IMAGE = "attachment_not_image"
+#: CIV-14b fix round 1. The code of a 422 of ``attachment_ids`` on a type
+#: outside ``agent_oauth.IMAGE_ACTIVITY_TYPES``.
+ATTACHMENTS_NOT_ON_TYPE = "attachments_not_on_type"
 
 
 class WaitingIn(BaseModel):
@@ -314,7 +373,9 @@ class ActivityIn(BaseModel):
     ``selected`` answers it, on a ``prompt``. ``signal`` is the member's
     ``continue`` (the default) or ``stop``. The server sets ``select`` and
     ``in_reply_to`` itself (EA12-7). Task 1045a: ``waiting`` goes on an
-    agent ``thought``, ``action`` or ``response`` only.
+    agent ``thought``, ``action`` or ``response`` only. CIV-14b:
+    ``attachment_ids`` goes on an agent activity only, at most
+    ``agent_oauth.ACTIVITY_IMAGES_MAX`` images of the run's task.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -329,6 +390,8 @@ class ActivityIn(BaseModel):
     parameters: dict[str, str] | None = None
     signal: Literal["continue", "stop"] | None = None
     waiting: WaitingIn | None = None
+    attachment_ids: list[uuid.UUID] | None = Field(
+        default=None, min_length=1, max_length=agent_oauth.ACTIVITY_IMAGES_MAX)
 
 
 #: SW-24. The most characters of one text of a handoff note.
@@ -654,6 +717,119 @@ def _clean_body(value: str | None) -> str | None:
     return cleaned or None
 
 
+def clean_agent_label(value: str | None) -> str | None:
+    """SW-7b (``agent_coordination.md`` §3.7 item 2). The display label of an
+    agent session, cleaned by the rules of :func:`_clean_body`: no NUL and no
+    space at either end. It also drops each control and format character,
+    keeps one space for each run of white space, and keeps at most
+    :data:`AGENT_LABEL_MAX` characters. ``None`` when nothing is left.
+
+    Display data only. No authorization check, no visibility rule, no run
+    slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    return _clean_name(value, AGENT_LABEL_MAX)
+
+
+def _clean_name(value: str | None, cap: int) -> str | None:
+    """The one clean of a name that an agent sends (SW-7b, SW-104)."""
+    cleaned = _clean_body(value)
+    if cleaned is None:
+        return None
+    kept = "".join(
+        " " if ch.isspace() else ch for ch in cleaned
+        if ch.isspace() or not unicodedata.category(ch).startswith("C"))
+    return _clean_body(" ".join(kept.split())[:cap])
+
+
+def clean_agent_place(value: str | None) -> str | None:
+    """SW-104 (``agent_coordination.md`` §3.12.3). The clean of ``host`` and
+    ``model``: the rules of :func:`clean_agent_label`, with the cap
+    :data:`AGENT_PLACE_MAX`. ``None`` when nothing is left.
+
+    Display data only. No authorization check, no visibility rule, no run
+    slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    return _clean_name(value, AGENT_PLACE_MAX)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPlace:
+    """SW-104. The machine, the kind of machine and the model of an agent
+    session, each cleaned, or ``None`` when the agent sent none."""
+
+    host: str | None = None
+    model: str | None = None
+    host_kind: str | None = None
+
+    def empty(self) -> bool:
+        return self.host is None and self.model is None and self.host_kind is None
+
+
+def agent_place_of(user: UserContext, host: str | None, model: str | None,
+                   host_kind: str | None) -> AgentPlace:
+    """SW-104. The cleaned ``host``, ``model`` and ``host_kind`` of the body
+    of a claim or a start.
+
+    Only a signed agent names its own machine and model, as only it names its
+    session (:func:`agent_label_of`). So a person's body that names one is
+    422. The values come only from that body, never from a header. A box
+    token's connection name wins later (:func:`_box_place`).
+    """
+    if host is None and model is None and host_kind is None:
+        return AgentPlace()
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an agent sends host, model and host_kind, the place of its session.",
+        )
+    return AgentPlace(host=clean_agent_place(host), model=clean_agent_place(model),
+                      host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None)
+
+
+#: SW-104 (SW-50). The name and the credential of the caller's own
+#: connection. RLS keeps the read in the bound tenant.
+_BOX_NAME_SQL = (
+    "SELECT client_name, credential FROM agent_connection"
+    " WHERE id = CAST(:cid AS uuid)"
+)
+
+
+async def _box_place(db: Any, user: UserContext, place: AgentPlace) -> AgentPlace:
+    """SW-104. For a box token, the connection name wins over ``host``, and
+    ``host_kind`` is ``server`` (``agent_coordination.md`` §3.12.3, §3.12.7
+    rule 5). Any other caller keeps *place*. The model stays the agent's own.
+
+    The stamp ``mcp:box:`` of branch 0 marks a box caller, and the row's
+    ``credential`` confirms it. Display data only: the result chooses no run.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None or not str(getattr(agent, "actor_via", "")).startswith(
+            agent_oauth.BOX_STAMP_PREFIX):
+        return place
+    row = (await db.execute(text(_BOX_NAME_SQL),
+                            {"cid": str(agent.connection_id)})).fetchone()
+    if row is None or row.credential != agent_oauth.BOX_CREDENTIAL:
+        return place
+    return AgentPlace(host=clean_agent_place(row.client_name) or place.host,
+                      model=place.model, host_kind=BOX_HOST_KIND)
+
+
+def agent_label_of(user: UserContext, value: str | None) -> str | None:
+    """SW-7b. The cleaned ``agent_label`` of the body of a claim or a start.
+
+    Only a signed agent names its own session. So a person's body that names
+    a label is 422. The label comes only from that body, never from a header,
+    the token row or the connection.
+    """
+    if value is None:
+        return None
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422, detail="Only an agent sends agent_label, the name of its session.",
+        )
+    return clean_agent_label(value)
+
+
 def _handoff_of(note: HandoffIn | None) -> dict[str, str] | None:
     """The cleaned handoff note, or ``None`` when it holds no text (SW-24).
 
@@ -688,6 +864,22 @@ def _jsonb(value: Any) -> str | None:
     return None if value is None else json.dumps(value, ensure_ascii=False)
 
 
+def with_image_urls(content: Any) -> Any:
+    """*content* of an activity with the ``url`` of each image (CIV-14b).
+
+    The row keeps the id, the name, the type and the size of each image, and
+    no url. The url is the cookie serve route (``attachments.served_url``),
+    built at each read, so the path of the BFF never sits in the database.
+    Any other content comes back as it is."""
+    images = content.get("attachments") if isinstance(content, dict) else None
+    if not isinstance(images, list):
+        return content
+    return {**content, "attachments": [
+        {**item, "url": served_url(item.get("attachment_id"), str(item.get("name") or "image"))}
+        for item in images if isinstance(item, dict)
+    ]}
+
+
 def _activity_out(row: Any) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -695,7 +887,7 @@ def _activity_out(row: Any) -> dict[str, Any]:
         "task_id": str(row.task_id),
         "seq": int(row.seq),
         "type": row.type,
-        "content": from_jsonb(row.content) or {},
+        "content": with_image_urls(from_jsonb(row.content) or {}),
         "content_metadata": from_jsonb(row.content_metadata),
         "ephemeral": bool(row.ephemeral),
         "signal": row.signal,
@@ -735,7 +927,8 @@ _NEEDS_AGENT_REASON_SQL = (
 _NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
 
 #: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
-#: last activity, for the lease) and the display name of its member. SW-10a:
+#: life clock, ``filters.run_idle_s_sql``, for the lease) and the display
+#: name of its member. SW-10a:
 #: and ``needs_agent``, the reason it waits for an agent.
 #:
 #: H-409 item 3 (task 748): the join to the org of the bound session
@@ -745,7 +938,7 @@ _NEEDS_AGENT_SQL = f"({_NEEDS_AGENT_REASON_SQL} IS NOT NULL)"
 _RUN_SELECT = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     f" {_NEEDS_AGENT_REASON_SQL} AS needs_agent, "
-    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {run_idle_s_sql('r')} AS idle_s, "
     f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
@@ -880,6 +1073,15 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # map `CLIENT_LABELS`, never from the self-declared client name.
             "client_name": agent_oauth.client_label(row.client_via),
             "client_host": agent_oauth.client_host(row.client_via),
+            # SW-7b: the label that the agent gave its session, for "Claude
+            # Code (backend-worker-3)". Display data only: no gate reads it,
+            # and the edge sends it on as untrusted text.
+            "agent_label": getattr(row, "agent_label", None),
+            # SW-104: the machine, its kind and the model of the session, as
+            # the agent or its box token reported them. Display data only.
+            "agent_host": getattr(row, "agent_host", None),
+            "agent_model": getattr(row, "agent_model", None),
+            "agent_host_kind": getattr(row, "agent_host_kind", None),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -1011,6 +1213,15 @@ def _validate_fields(payload: ActivityIn) -> None:
         raise HTTPException(status_code=422, detail="Only a prompt carries selected.")
     if (payload.action is not None or payload.parameters is not None) and kind != "action":
         raise HTTPException(status_code=422, detail="Only an action carries action and parameters.")
+    if payload.attachment_ids is not None and kind not in agent_oauth.IMAGE_ACTIVITY_TYPES:
+        # CIV-14b: the card draws images on a question and on the line of the
+        # newest thought or action only. A response or an error becomes a
+        # comment, which draws no image, so it would store images that no one
+        # sees. A person attaches in the Files tab, so a prompt takes none.
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENTS_NOT_ON_TYPE,
+            "message": "Only a thought, an action or an elicitation carries attachment_ids.",
+        })
     if payload.waiting is not None:
         _validate_waiting(payload)
 
@@ -1235,6 +1446,60 @@ def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
         )
 
 
+#: CIV-14b. The files of ONE task among the given ids. The join row is the
+#: rule of the serve route: a file is readable by each person who can see a
+#: task that it hangs off. FORCE RLS binds the tenant of both tables.
+_TASK_IMAGES_SQL = (
+    "SELECT a.id, a.name, a.mime, a.size_bytes"
+    "  FROM pm_task_attachments ta"
+    "  JOIN attachments a ON a.id = ta.attachment_id"
+    " WHERE ta.task_id = CAST(:tid AS uuid)"
+    "   AND ta.attachment_id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+async def _image_content(db: Any, task_id: str, ids: list[str] | None) -> dict[str, Any]:
+    """The ``content`` keys of the images of an activity: ``{}`` with no
+    ids, else ``{"attachments": [...]}`` from :func:`_task_images`."""
+    if not ids:
+        return {}
+    return {"attachments": await _task_images(db, task_id, ids)}
+
+
+async def _task_images(db: Any, task_id: str, ids: list[str]) -> list[dict[str, Any]]:
+    """The image rows of *ids* on the task, in the order of *ids*, once each.
+
+    CIV-14b (spec §12.9 item 2). An id that is not a file of THIS task is a
+    422 with :data:`ATTACHMENT_NOT_ON_TASK`: the serve route would serve a
+    file of any task that the reader can see, so the check is here. A file
+    whose stored type is not a png, jpeg, gif or webp image is a 422 with
+    :data:`ATTACHMENT_NOT_IMAGE`. Each row holds the id, the name, the type
+    and the size, and no address.
+    """
+    wanted = list(dict.fromkeys(i.lower() for i in ids))
+    rows = (await db.execute(
+        text(_TASK_IMAGES_SQL), {"tid": task_id, "ids": wanted},
+    )).fetchall()
+    found = {str(r.id).lower(): r for r in rows}
+    if any(i not in found for i in wanted):
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENT_NOT_ON_TASK,
+            "message": "Each attachment_id must be a file of the task of this run.",
+        })
+    out: list[dict[str, Any]] = []
+    for i in wanted:
+        row = found[i]
+        mime = str(row.mime or "").split(";")[0].strip().lower()
+        if mime not in RASTER_MIMES:
+            raise HTTPException(status_code=422, detail={
+                "error": ATTACHMENT_NOT_IMAGE,
+                "message": "Each attachment_id must be a PNG, JPEG, GIF or WebP image.",
+            })
+        out.append({"attachment_id": i, "name": str(row.name or ""), "mime": mime,
+                    "size": int(row.size_bytes or 0)})
+    return out
+
+
 async def _write_activity(
     db: Any,
     run: Any,
@@ -1258,6 +1523,7 @@ async def _write_activity(
     metadata: dict[str, Any] | None = None,
     withdraws: str | None = None,
     waiting: WaitingIn | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -1291,6 +1557,12 @@ async def _write_activity(
     ``content.waiting``, so the note stays with its line, and
     :func:`_move_run` sets ``waiting_on`` and ``waiting_until``. An activity
     with no *waiting* clears both, whoever writes it.
+
+    CIV-14b (spec §12.9 item 2). *attachment_ids* are images of the run's
+    task, read AFTER the replay check, so a retry returns its first row.
+    :func:`_task_images` refuses an id of another task or a file that is not
+    an image, and ``content.attachments`` keeps the id, the name, the type and
+    the size of each. The card draws each one from the cookie serve route.
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -1304,6 +1576,8 @@ async def _write_activity(
     me = _member(user)
     if is_agent and run.member_email != me:
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+    # CIV-14b: before any write, so a refused id moves no status.
+    images = await _image_content(db, task_id, attachment_ids)
 
     new_status = transition(run.status, event or _event_of(kind, signal))
     reopened_end: str | None = None
@@ -1313,6 +1587,9 @@ async def _write_activity(
         ended = getattr(run, "ended_at", None)
         reopened_end = ended.isoformat() if isinstance(ended, datetime) else None
         await _clear_for_reopen(db, run, user)
+        # SW-7b. The ended run kept the label of the session that ran it. The
+        # reopen hands the run to the next session, so the old name goes.
+        await _clear_run_label(db, str(run.id))
 
     content: dict[str, Any] = {"body": body}
     # MCP-G15: only `record_outside_decision` passes these, on a response.
@@ -1339,6 +1616,7 @@ async def _write_activity(
         )
     if extra:
         content.update(extra)
+    content.update(images)
     if waiting is not None:
         content["waiting"] = {
             "on": waiting.on, "until_minutes": waiting.until_minutes,
@@ -1726,7 +2004,7 @@ def _handoff_out(row: Any) -> dict[str, Any] | None:
 #: (``filters.BOUND_ORG_SQL``), as defence in depth beside FORCE RLS.
 _HOLDER_SQL = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
-    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {run_idle_s_sql('r')} AS idle_s, "
     f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
@@ -1833,7 +2111,8 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     """Move a run whose lease ended to ``abandoned``, and write the line
     "Taken over by <member>/<client>". False when the run moved in the
     meantime: a heartbeat changes ``last_activity_at``, so the guard misses
-    and the caller reads the holder again.
+    and the caller reads the holder again. Task 1045b: a linked event renews
+    the lease too, so the guard holds ``last_signal_at`` as well.
 
     AP-BUG-3. This is the one move out of ``awaiting`` that does not go
     through :func:`_move_run`, so it closes the question bells itself."""
@@ -1843,10 +2122,13 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
         text(
             "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
             " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
-            "   AND last_activity_at = :seen RETURNING id"
+            "   AND last_activity_at = :seen"
+            "   AND last_signal_at IS NOT DISTINCT FROM CAST(:signal AS timestamptz)"
+            " RETURNING id"
         ),
         {"to": to, "ts": ts, "rid": str(holder.id),
-         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
+         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at,
+         "signal": getattr(holder, "last_signal_at", None)},
     )).fetchone()
     if moved is None:
         return False
@@ -1954,9 +2236,12 @@ _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key, session_key) "
+    " idempotency_key, session_key, agent_label, agent_host, agent_model, "
+    " agent_host_kind) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
-    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text)) "
+    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text), "
+    "        CAST(:label AS text), CAST(:host AS text), CAST(:model AS text), "
+    "        CAST(:kind AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -1975,6 +2260,78 @@ async def _set_run_link(db: Any, run_id: str, link: str | None) -> None:
     if link is None:
         return
     await db.execute(text(_SET_LINK_SQL), {"rid": run_id, "link": link})
+
+
+#: SW-7b. The newest label of the run's own agent session wins.
+_SET_LABEL_SQL = (
+    "UPDATE pm_agent_runs SET agent_label = CAST(:label AS text) "
+    " WHERE id = CAST(:rid AS uuid) AND agent_label IS DISTINCT FROM CAST(:label AS text)"
+)
+
+
+async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
+    """SW-7b. Set the label of an open run that the caller already owns, as
+    :func:`_set_run_link` sets the link. A call with no label keeps the old
+    one. A Resume and a reopen clear the label (:func:`_clear_run_label`), so
+    a label never outlives its session on an open run. The run came from the
+    gate, so the label never chooses the run."""
+    if label is None:
+        return
+    await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
+
+
+#: SW-104. The newest place of the run's own agent session wins, value by
+#: value. A value that the call did not send keeps the old one.
+_SET_PLACE_SQL = (
+    "UPDATE pm_agent_runs SET"
+    " agent_host = COALESCE(CAST(:host AS text), agent_host),"
+    " agent_model = COALESCE(CAST(:model AS text), agent_model),"
+    " agent_host_kind = COALESCE(CAST(:kind AS text), agent_host_kind)"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_host IS DISTINCT FROM COALESCE(CAST(:host AS text), agent_host)"
+    "        OR agent_model IS DISTINCT FROM COALESCE(CAST(:model AS text), agent_model)"
+    "        OR agent_host_kind IS DISTINCT FROM"
+    "           COALESCE(CAST(:kind AS text), agent_host_kind))"
+)
+
+
+def _place_binds(place: AgentPlace | None) -> dict[str, str | None]:
+    """The binds ``host``, ``model`` and ``kind`` of *place* (SW-104)."""
+    place = place or AgentPlace()
+    return {"host": place.host, "model": place.model, "kind": place.host_kind}
+
+
+async def _set_run_place(db: Any, run_id: str, place: AgentPlace | None) -> None:
+    """SW-104. Set the machine, its kind and the model of an open run that the
+    caller already owns, as :func:`_set_run_label` sets the label. A value
+    that the call did not send keeps the old one. A Resume and a reopen clear
+    them with the label (:func:`_clear_run_label`). The run came from the
+    gate, so the place never chooses the run."""
+    if place is None or place.empty():
+        return
+    await db.execute(text(_SET_PLACE_SQL), {"rid": run_id, **_place_binds(place)})
+
+
+#: SW-7b. The clear of the label when the run passes to the next session.
+#: SW-104: the machine, its kind and the model of that session go with it.
+_CLEAR_LABEL_SQL = (
+    "UPDATE pm_agent_runs SET agent_label = NULL, agent_host = NULL,"
+    " agent_model = NULL, agent_host_kind = NULL"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_label IS NOT NULL OR agent_host IS NOT NULL"
+    "        OR agent_model IS NOT NULL OR agent_host_kind IS NOT NULL)"
+)
+
+
+async def _clear_run_label(db: Any, run_id: str) -> None:
+    """SW-7b. Clear the label of a run that passes to the next session of
+    its connection: a Resume (it clears the key) and a reopen. A label never
+    outlives its session on an open run, so a call with no label can always
+    keep the old one (:func:`_set_run_label`). It is a separate statement,
+    so no run-slot rule names the label (the fence of §3.7). SW-104: the
+    machine, its kind and the model go in the same statement, by the same
+    rule."""
+    await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
@@ -2064,6 +2421,10 @@ async def start_agent_run(
     me = _member(user)
     link = _check_link(payload.external_link)
     body = _clean_body(payload.body)
+    # SW-7b: an agent's own label, display data only. A person's is 422.
+    label = agent_label_of(user, payload.agent_label)
+    # SW-104: and its machine, its kind and its model. A person's is 422.
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
     if via is not None and (payload.connection_id is not None or payload.body is not None):
         raise HTTPException(
             status_code=422, detail="An agent sends no connection_id and no body to start a run.",
@@ -2079,6 +2440,8 @@ async def start_agent_run(
         await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
+            # SW-104 (SW-50): a box token's connection name wins over `host`.
+            place = await _box_place(db, user, place)
         else:
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
@@ -2131,7 +2494,8 @@ async def start_agent_run(
                 "by": via if via is not None else me,
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
-                "key": payload.idempotency_key, "sk": own_session,
+                "key": payload.idempotency_key, "sk": own_session, "label": label,
+                **_place_binds(place),
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -2148,6 +2512,10 @@ async def start_agent_run(
         if existing is not None and via is not None:
             # CIV-14a: an agent's start on its open run sets the link.
             await _set_run_link(db, str(existing.id), link)
+            # SW-7b: and the label of its session.
+            await _set_run_label(db, str(existing.id), label)
+            # SW-104: and its machine, its kind and its model.
+            await _set_run_place(db, str(existing.id), place)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2359,7 +2727,15 @@ async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[
         )).fetchall())
         if own:
             rows = await _stamp_returned(db, run_id, rows, locked)
-        return (await _runs_out(db, [run]))[0], [_activity_out(r) for r in rows]
+        out_run = (await _runs_out(db, [run]))[0]
+        # EA-18b. With the flag on, a person's read says if they may answer the
+        # open question, from the ONE rule of the write route. The run panel
+        # shows a read-only card from it. With the flag off the key is absent.
+        if _agent_via(user) is None and agent_questions_allowed(
+            getattr(user, "organization_id", None),
+        ):
+            out_run["can_answer"] = await may_answer_run(db, run, user)
+        return out_run, [_activity_out(r) for r in rows]
 
 
 @router.get("/agent-runs/{run_id}", dependencies=_ENABLED)
@@ -2399,6 +2775,13 @@ async def post_agent_activity(
     _require_write_scope(user)
     agent = _agent_via(user) is not None
     _validate(payload, agent=agent)
+    if payload.attachment_ids is not None and not agent_oauth.image_upload_allowed(
+            getattr(user, "organization_id", None)):
+        # CIV-14b: dark until `mcp_image_upload_orgs` names the org.
+        raise HTTPException(status_code=422, detail={
+            "error": agent_oauth.IMAGE_UPLOAD_OFF,
+            "message": "Images on an activity are off for this organization.",
+        })
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2410,6 +2793,8 @@ async def post_agent_activity(
             allow_multiple=bool(payload.allow_multiple), selected=payload.selected,
             action=payload.action, parameters=payload.parameters, signal=payload.signal,
             waiting=payload.waiting,
+            attachment_ids=([str(a) for a in payload.attachment_ids]
+                            if payload.attachment_ids is not None else None),
         )
         if not written.created:
             response.status_code = 200
@@ -2722,12 +3107,141 @@ async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
     return bool(held)
 
 
+# ── The lane of a released task (task 3648) ─────────────────────────────────
+
+#: The references of a task that show started work.
+_REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:tid AS uuid)"
+
+MOVES_SINCE_MAX = 50
+
+#: Every status move of a task since a run began, oldest first, with who wrote
+#: it. The first one is the claim's own move. Later ones are the agent's or a
+#: person's.
+_MOVES_SINCE_SQL = (
+    "SELECT created_by, created_at, meta FROM pm_activities"
+    " WHERE task_id = CAST(:tid AS uuid) AND type = 'status_change'"
+    " AND created_at >= :since ORDER BY created_at, id LIMIT " + str(MOVES_SINCE_MAX + 1)
+)
+
+
+#: A pull request in these states is open. A pull request with no state read
+#: (no GitHub token) counts as open: the agent attached it for review.
+_OPEN_PR_STATES = frozenset({None, "open", "draft"})
+
+#: Why the release left or moved the task: the closed list of the ``reason``
+#: of ``task_status`` in the answer of the tool.
+RELEASE_REASONS = (
+    "already_released", "not_started_lane", "archived",
+    "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
+    "no_status_before_claim", "no_task",
+)
+
+
+def _lane_report(lane: Any, *, moved: bool, reason: str) -> dict[str, Any]:
+    return {"name": getattr(lane, "name", None), "category": getattr(lane, "category", None),
+            "moved": moved, "reason": reason}
+
+
+async def _settle_task_lane(
+    db: Any, run: Any, user: UserContext, handoff: dict[str, str] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Move the task of a released run to the right lane, in the release's own
+    transaction. Returns the report for the tool and the status move, if any.
+
+    The owner's stages: Backlog is a task nobody started. To Do is a task
+    planned soon AND a started task that is paused or given back. In progress
+    is work that moves now: a live run, or an open pull request that waits.
+
+    **A release undoes what the claim of this agent did (owner default,
+    2026-11-17).** It acts only when the last status move of the task is the
+    claim's own move into a started lane: the same member, through the same
+    client (``meta.via``), and written no earlier than this run. A task that
+    was already in progress before the claim is the live work of a person:
+    the release leaves the status alone, whatever refs it holds. For a task
+    that the claim moved, in this order:
+
+    1. An open pull request: it stays in progress, in a review lane if the
+       board has one.
+    2. Started work (a handoff ``done``, or a branch, a commit or a pull
+       request on the task): the To Do lane (:func:`pick_lane`). A board with
+       no To Do lane keeps the task where it is. **It never goes to Backlog.**
+    3. Nothing started: the lane that the claim left (:func:`lane_like`).
+
+    A task that is archived, or not in a started lane, stays.
+    (``pm_agent_runs_one_open_per_task`` allows ONE open run for each task, so
+    no other live run holds the task when this one is released.)
+    """
+    tid = str(run.task_id) if run.task_id is not None else None
+    if tid is None:
+        return {"name": None, "category": None, "moved": False, "reason": "no_task"}, None
+    task = await lock_task(db, tid)
+    status = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+    if getattr(task, "archived_at", None) is not None:
+        return _lane_report(status, moved=False, reason="archived"), None
+    if status.category != STARTED_CATEGORY:
+        return _lane_report(status, moved=False, reason="not_started_lane"), None
+    moves = (await db.execute(
+        text(_MOVES_SINCE_SQL), {"tid": tid, "since": run.created_at},
+    )).fetchall()
+    # The move of THIS claim is the first status move since the run began. It
+    # counts only when it was made by the member of the RUN (not by whoever
+    # presses Release: an admin or an assignee may close the run), through the
+    # same client (`meta.via`, which a person's move in the app never
+    # carries), and into a started lane. Each later move must be the agent's
+    # own too. A move that a person made by hand, even the same member's, is
+    # never reversed (verifier F4), and a task that was in progress before the
+    # claim has no such move: it is a person's live work, and the release
+    # leaves it alone (owner default, F5). The lane that the claim LEFT is the
+    # `from` of the first move, also when the agent moved the task again.
+    owner = str(run.member_email or "").strip().lower()
+    metas = [from_jsonb(m.meta) for m in moves]
+    # A claim moves a task only OUT of backlog or todo into a started lane
+    # (`claim_task`). So the first move must leave a lane that is not started:
+    # the agent's own move from one started lane to another (In progress to In
+    # review, as the routine asks) is never the claim (verifier N2).
+    mine = bool(moves) and len(moves) <= MOVES_SINCE_MAX and all(
+        str(m.created_by or "").strip().lower() == owner
+        and isinstance(meta, dict) and meta.get("via") == run.client_via
+        for m, meta in zip(moves, metas, strict=True)
+    ) and metas[0].get("to_category") == STARTED_CATEGORY \
+        and metas[0].get("from_category") not in (None, STARTED_CATEGORY)
+    meta = metas[0] if mine else None
+    if not mine:
+        return _lane_report(status, moved=False, reason="no_status_before_claim"), None
+    refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
+    lanes = await board_lanes(db, str(task.project_id))
+
+    if any(r.kind == "pull_request" and r.state in _OPEN_PR_STATES for r in refs):
+        target = pick_lane(lanes, LANE_STAGE_REVIEW)
+        reason = "open_pull_request"
+    elif (handoff and handoff.get("done")) or any(
+        r.kind in ("branch", "commit", "pull_request") for r in refs
+    ):
+        target = pick_lane(lanes, LANE_STAGE_TODO)
+        reason = "started_work" if target is not None else "no_todo_lane"
+    else:
+        target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
+        reason = "nothing_started" if target is not None else "no_status_before_claim"
+
+    if target is None or str(target.id) == str(status.id):
+        return _lane_report(status, moved=False, reason=reason), None
+    moved = await apply_status_transition(db, task, str(target.id), created_by=actor(user))
+    return _lane_report(target, moved=True, reason=reason), {
+        "task_id": tid, "from": moved["from"].name, "to": moved["to"].name,
+        "to_category": moved["to"].category,
+    }
+
+
 @router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
 async def release_agent_run(
     run_id: str, payload: ReleaseIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Give a task up without finishing it: the run moves to ``released``.
-    The task keeps its status, and every assignee stays.
+    Every assignee stays. The task goes to the right lane (task 3648,
+    :func:`_settle_task_lane`): an open pull request keeps it in progress,
+    started work puts it in To Do, and a task that nobody started goes back
+    to the lane it had. It never goes to Backlog. The answer names the lane
+    in ``task_status``.
 
     * An agent releases its OWN run only: the same member and the same
       client stamp.
@@ -2745,6 +3259,8 @@ async def release_agent_run(
     handoff = _handoff_of(payload.handoff)
     cleared: list[str] = []
     written: _Written | None = None
+    lane: dict[str, Any] | None = None
+    move: dict[str, Any] | None = None
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2772,13 +3288,30 @@ async def release_agent_run(
                 db, run, actor_email=me, via=via,
                 body=f"Released by {await _member_name(db, me)}/{client}",
             )
+            # Task 3648: the task goes to the right lane in the same
+            # transaction, so a released task is never left In progress with
+            # nobody on it.
+            lane, move = await _settle_task_lane(db, run, user, handoff)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        if lane is None:
+            # A second release of a released run: no write, the lane as it is.
+            held = None
+            if run.task_id is not None:
+                task = await require_row(db, "pm_tasks", str(run.task_id), "Task")
+                held = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+            lane = (_lane_report(held, moved=False, reason="already_released")
+                    if held is not None
+                    else {"name": None, "category": None, "moved": False,
+                          "reason": "no_task"})
     # AP-BUG-3: a release of an awaiting run closes its question, and a
     # release emits no `pm.*` event, so each cleared member's My Day moves here.
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     await _bump_cleared(user, cleared)
-    return {"run": out_run, "released": True}
+    if move is not None:
+        await emit("pm.task.updated", {"task_id": move["task_id"]})
+        await emit("pm.task.status_changed", move)
+    return {"run": out_run, "released": True, "task_status": lane}
 
 
 # ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
@@ -2892,6 +3425,8 @@ async def resume_agent_run(
             # A person's prompt keeps the key (`_move_run`), so Resume clears
             # it here, once, in the same transaction.
             await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
+            # SW-7b. The label names the quiet session, so it goes too.
+            await _clear_run_label(db, run_id)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
@@ -3088,7 +3623,7 @@ _ARCHIVE_APPLIED_SQL = (
     "   AND (SELECT a.content->>'archived' FROM pm_agent_run_activities a"
     "         WHERE a.run_id = r.id AND a.type = 'prompt'"
     "         ORDER BY a.seq DESC LIMIT 1) = 'true'"
-    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+    f" ORDER BY {run_life_at_sql('r')}, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
 )
 
 
@@ -3132,7 +3667,7 @@ def _closed_task_runs_sql() -> str:
         " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
         f"   AND {holder_free_sql('r')}"
         f"   AND {task_closed_sql('r')}"
-        " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+        f" ORDER BY {run_life_at_sql('r')}, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
     )
 
 
@@ -3560,7 +4095,9 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
-                          via: str, link: str | None = None) -> tuple[str | None, bool]:
+                          via: str, link: str | None = None,
+                          label: str | None = None,
+                          place: AgentPlace | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -3576,13 +4113,15 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
+        await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": link, "ts": ts, "agent_ts": ts, "key": None,
-        "sk": _agent_session(user),
+        "sk": _agent_session(user), "label": label, **_place_binds(place),
     })).fetchone()
     if made is not None:
         return str(made.id), True
@@ -3593,6 +4132,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
+        await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -3608,7 +4149,9 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
 
 
 async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
-                             link: str | None = None) -> str | None:
+                             link: str | None = None,
+                             label: str | None = None,
+                             place: AgentPlace | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -3620,7 +4163,10 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     * With an open run of this task, member and stamp (EA12-6), it writes
       nothing and returns that run. CIV-14a: a *link* (already checked by
       ``check_run_link``) is the one exception. It sets the link of the run
-      or of the new run, and the newest link wins. Else it
+      or of the new run, and the newest link wins. SW-7b: a *label*
+      (already cleaned by ``agent_label_of``) acts in the same way, and so
+      does a SW-104 *place* (``agent_place_of``). A box token's connection
+      name wins over its host (:func:`_box_place`). Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -3638,8 +4184,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
+    place = await _box_place(db, user, place or AgentPlace())
     run_id, made = await _agent_open_run(db, user, task_id, _member(user),
-                                         _agent_via(user) or "", link)
+                                         _agent_via(user) or "", link, label, place)
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
         await _stamp_answer_read(db, await _load_run(db, run_id), user)
@@ -3979,6 +4526,90 @@ def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
         raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
 
 
+# ── Task 1045b: linked events count as life (agent_coordination.md) ─────────
+
+#: The words of the one line that a linked event writes on each run. The
+#: webhook picks a key, and only the pull request number goes in. So the
+#: line holds fixed words and a number, and never text from the payload.
+LINKED_EVENT_LINES: dict[str, str] = {
+    "push": "New commits on PR {pr}.",
+    "ci_started": "CI started on PR {pr}.",
+    "ci_passed": "CI passed on PR {pr}.",
+    "ci_failed": "CI failed on PR {pr}.",
+    "ci_ended": "CI ended on PR {pr}.",
+}
+
+#: The match of a linked event on ``pm_task_refs``: the pull request by its
+#: reference (a push), or by its head commit (a check event).
+_LINKED_MATCH: dict[str, str] = {
+    "ref": "f.ref = :key",
+    "head_sha": "f.head_sha = :key",
+}
+
+
+def _signal_sql(match: str) -> str:
+    """Move ``last_signal_at`` of each ``in_progress`` run of a task that a
+    GitHub pull request reference links, and return each run once with the
+    number of that pull request. ``last_activity_at`` and
+    ``last_agent_activity_at`` stay, so the answered rule does not change
+    (1045b item 4). The org arm is defence in depth beside FORCE RLS."""
+    return (
+        "UPDATE pm_agent_runs r SET last_signal_at = clock_timestamp()"
+        "  FROM (SELECT DISTINCT ON (lr.id) lr.id, f.ref"
+        "          FROM pm_task_refs f"
+        "          JOIN pm_agent_runs lr ON lr.task_id = f.task_id"
+        "           AND lr.organization_id = f.organization_id"
+        "         WHERE f.organization_id = CAST(:org AS uuid)"
+        "           AND f.provider = 'github' AND f.kind = 'pull_request'"
+        f"          AND {_LINKED_MATCH[match]}"
+        "           AND lr.status = 'in_progress' AND lr.task_id IS NOT NULL"
+        "         ORDER BY lr.id, f.ref) hit"
+        " WHERE r.id = hit.id AND r.status = 'in_progress'"
+        " RETURNING r.id, r.task_id, r.member_email, hit.ref"
+    )
+
+
+_NEWEST_BODY_SQL = (
+    "SELECT a.content->>'body' AS body, (a.content->>'system') = 'true' AS system"
+    "  FROM pm_agent_run_activities a WHERE a.run_id = CAST(:rid AS uuid)"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+def _pr_number(ref: Any) -> int | None:
+    """The number of the pull request reference ``owner/repo#<n>``, or None."""
+    tail = str(ref or "").rpartition("#")[2]
+    return int(tail) if tail.isdigit() and len(tail) <= 9 else None
+
+
+async def signal_linked_runs(db: Any, org: str, *, match: str, key: str,
+                             event: str) -> int:
+    """Task 1045b. A linked event counts as life for each ``in_progress``
+    run of a task that references the pull request. *match* is ``ref`` (a
+    push, ``owner/repo#<n>``) or ``head_sha`` (a check event). *event* is a
+    key of :data:`LINKED_EVENT_LINES`.
+
+    Each run gets ``last_signal_at`` set to now, which renews the lease and
+    the stale band (``filters.run_life_at_sql``). Each run also gets ONE
+    system line through :func:`_system_activity`, unless its newest
+    activity is the same system line, so a burst of check events writes one
+    line. Returns the number of runs. Runs in the caller's bound tenant
+    session (R5)."""
+    words = LINKED_EVENT_LINES[event]
+    hits = (await db.execute(text(_signal_sql(match)),
+                             {"org": org, "key": key})).fetchall()
+    for hit in hits:
+        number = _pr_number(hit.ref)
+        if number is None:
+            continue
+        body = words.format(pr=number)
+        newest = (await db.execute(text(_NEWEST_BODY_SQL), {"rid": str(hit.id)})).first()
+        if newest is not None and newest.system and newest.body == body:
+            continue
+        await _system_activity(db, hit, actor_email=hit.member_email, via=None, body=body)
+    return len(hits)
+
+
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
@@ -3990,6 +4621,7 @@ __all__ = [
     "CLOSED_TASK_BODIES",
     "DECIDED_ELSEWHERE",
     "EPHEMERAL_CAP",
+    "LINKED_EVENT_LINES",
     "MAX_WAIT_S",
     "OUTSIDE_CODES",
     "OUTSIDE_NOT_AWAITING",
@@ -4021,6 +4653,7 @@ __all__ = [
     "outside_comment",
     "record_outside_decision",
     "reopen_run_of_reopened_task",
+    "signal_linked_runs",
     "transition",
     "typed_question",
     "write_strand_line",

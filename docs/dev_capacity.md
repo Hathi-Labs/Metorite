@@ -28,6 +28,7 @@ it before you trust it.
 | **Self-hosted runner** | A GitHub Actions runner on our machine, label `metorite-box` | A Linux machine with user `ghrunner` | `docs/home_box.md` §6.3 |
 | **Release timer** | Dispatches `deploy.yml` at 05:30, 13:30 and 21:30 UTC | Exactly ONE always-on machine | `docs/home_box.md` §6.2 |
 | **Coordination** | The Metorite board through the MCP, and the merge queue file | Every session needs the MCP signed in | CLAUDE.md §4, `docs/home_box.md` §3.8 |
+| **A second fleet** | A contributor's own sessions and lanes, beside the owner's | The contributor's own machine | `docs/contributor_playbook.md` |
 
 Never run a lane, a CI run or a runner on the production VPS. It serves
 customers, and a test run there can take its memory.
@@ -116,8 +117,9 @@ or an account changes.
 
 - A session starts sub-agents with the Agent tool. Several sub-agents start
   at once when one message holds several Agent calls.
-- **Model per role** (CLAUDE.md §4): Sonnet does the work. Opus does the
-  adversarial review, HIGH-tier slices and hard problems. Haiku does lookups.
+- **Model per role** (CLAUDE.md §4, D218): Haiku does lookups. Sonnet does
+  LOW slices and verifies LOW and STANDARD. Opus does HIGH, shared-seam and
+  review work. Fable plans a feature once. Set the effort on each dispatch.
   Each file in `.claude/agents/` names its model, and
   `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` in `.claude/settings.json` is the
   default. The fence is `tests/unit/test_agent_model_routing.py`.

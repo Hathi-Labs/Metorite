@@ -458,6 +458,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/vocabulary", "", "X", reason=_SETTINGS_LIST),
         Route("GET", "/projects/vocabulary/{kind}/{row_id}/impact", "", "X",
               reason=_SETTINGS_IMPACT),
+        Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A",
+              off_door=LATER),
         # ── assignees.py ──
         Route("GET", "/projects/people/names", "people_for", "A", off_door=LATER),
         Route("GET", "/projects/assignees", "people_for", "A", off_door=LATER),
@@ -497,8 +499,10 @@ PROJECTS_DOOR = App(
         Route("PATCH", "/projects/reports/{report_id}/schedule", "set_report_schedule", "C",
               off_door=REACHES_PERSON),
         # ── attachments.py ──
+        # CIV-14b: the MCP tool `upload_task_image` sends this pair, so the
+        # typed tool covers it (`agent_oauth.MCP_WRITE_ROUTES`).
         Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C",
-              off_door=LATER),
+              off_door=TYPED),
         Route("GET", "/projects/tasks/{task_id}/attachments", "task_detail", "A",
               off_door=TYPED),
         Route("GET", "/projects/attachments/{attachment_id}/{filename}", "", "X",
@@ -531,10 +535,10 @@ PROJECTS_DOOR = App(
               off_door=TYPED),
         Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B",
               off_door=LATER),
-        Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer",
-              "B", off_door=LATER),
-        Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "replace_agent_answer",
-              "B", off_door=LATER),
+        Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "change_agent_answer",
+              "C", off_door=LATER),
+        Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "change_agent_answer",
+              "C", off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
               "record_outside_decision", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B",
@@ -546,6 +550,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
               off_door=LATER),
         Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=LATER),
+        Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A",
+              off_door=LATER),
         Route("GET", "/projects/needs-attention", "needs_attention", "A", off_door=LATER),
         Route("GET", "/projects/agent-questions", "agent_questions", "A", off_door=LATER),
         # ── watchers.py ──

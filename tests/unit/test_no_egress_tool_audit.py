@@ -113,7 +113,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "change_agent_answer",
     }),
     "whatsapp-assistant": frozenset({
-        "web_search", "fetch_page", "code_task", "run_script", "run_workflow",
+        # D129 (task 808): an open run no longer holds code_task or run_script.
+        "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
     }),
     "task-manager": frozenset({
@@ -213,6 +214,37 @@ def test_a_no_egress_run_withholds_exactly_the_pinned_tools(_hermetic, name: str
     )
     assert not held_run - open_run, "a held run holds no tool of its own"
     assert not {n for n in held_run if eg.is_egress_tool(n)} - eg.DELEGATION_TOOLS
+
+
+async def test_a_held_run_keeps_find_tools() -> None:
+    """WS-67 TS-2a PR 3. ``find_tools`` reads the pack index and adds tools
+    of the guarded build, so it sends nothing out. Its ``__tool_risk__`` is
+    read-only with ``open_world=False``, as ``load_skill_tools`` has. So a
+    held run (H-236) and a held chat (D169) keep it, and the request filter
+    of a held run leaves it in. Mutation: ``open_world=True`` on the tool ->
+    red."""
+    import types
+
+    from acb_skills import tool_packs as tp
+
+    item = tp.find_tool(("studio",))
+    assert item.func.__tool_risk__["open_world"] is False
+    assert item.func.__tool_risk__["read_only"] is True
+    assert not eg.is_egress_tool(item)
+    assert not eg.is_held_chat_off(item)
+    assert not eg.is_held_chat_off(item, owner="orchestrator")
+
+    async def web_search(query: str = "") -> str:
+        return ""
+
+    context = types.SimpleNamespace(options={"tools": [item, web_search]})
+
+    async def call_next() -> None:
+        return None
+
+    await eg.WithholdEgressTools(chat_hold=True, owner="orchestrator").process(
+        context, call_next)
+    assert [ti._tool_name(t) for t in context.options["tools"]] == [tp.FIND_TOOL]
 
 
 def test_the_in_space_email_tools_stay_and_the_sends_go(_hermetic) -> None:

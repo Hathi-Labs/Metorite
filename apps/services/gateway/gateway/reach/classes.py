@@ -44,6 +44,7 @@ REACH_CLASS: dict[str, str] = {
     "unblocked": "brief",
     "colleague_out": "brief",
     "agent_asks": "interrupt",
+    "agent_questions": "interrupt",
     # §4.2 names no class for these three. Each one is a thing to know, not a
     # thing to act on now, so each one goes in the brief and interrupts nobody.
     "waiting_quiet": "brief",
@@ -85,6 +86,10 @@ REACH_CLASS: dict[str, str] = {
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).
     "notify_me": "interrupt",
+    # AO-2 (customer_console.md §6A.17b): the AI vendor alert. `gateway.
+    # provider_alerts` sends its own push through the one sender, once an
+    # hour at most, so the Reach loop never sends it a second time.
+    "provider_alert": "none",
 }
 
 #: The kinds that never go on WhatsApp: no brief, no template parameter, no
