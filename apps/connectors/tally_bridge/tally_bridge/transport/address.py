@@ -4,6 +4,7 @@
 |-------------|------------|-----------------------------------------------|
 | ``/mcp``    | read token | the read tools, stateless, JSON answers       |
 | ``/health`` | none       | ``{"ok": true, "tally": "up"}`` or ``"down"`` |
+| ``/setup``  | setup key  | the setup page, from 127.0.0.1 only (``setup/``) |
 | any other   | -          | 404. ``/mcp-write`` is rung 3, so it is 404   |
 
 Metorite refuses every 3xx answer (brief section 3). So the router never
@@ -29,7 +30,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from tally_bridge.reader import TallyReader
 from tally_bridge.secret_store import SecretStore, token_matches
-from tally_bridge.settings import Settings
+from tally_bridge.settings import LiveSettings, Settings, SettingsError, SettingsStore
+from tally_bridge.setup import build_setup_routes
 from tally_bridge.tools import build_read_server
 
 log = logging.getLogger("tally_bridge.transport")
@@ -37,8 +39,20 @@ log = logging.getLogger("tally_bridge.transport")
 MCP_PATH = "/mcp"
 
 
-def build_address_app(settings: Settings, secrets: SecretStore, reader: TallyReader) -> ASGIApp:
-    mcp = build_read_server(reader, settings)
+def build_address_app(
+    settings: Settings | LiveSettings,
+    secrets: SecretStore,
+    reader: TallyReader,
+    store: SettingsStore | None = None,
+) -> ASGIApp:
+    """The app of address mode: ``/mcp``, ``/health`` and the setup page.
+
+    The tools and the setup page share one LiveSettings, so an allow-list that
+    the setup page saves holds from the next tool call.
+    """
+    live = settings if isinstance(settings, LiveSettings) else LiveSettings(settings)
+    settings = live.current
+    mcp = build_read_server(reader, live)  # type: ignore[arg-type]
     mcp.settings.streamable_http_path = MCP_PATH
     mcp.settings.stateless_http = True
     mcp.settings.json_response = True
@@ -52,13 +66,29 @@ def build_address_app(settings: Settings, secrets: SecretStore, reader: TallyRea
 
     async def health(_: Request) -> JSONResponse:
         try:
-            up = await asyncio.wait_for(reader.is_up(), settings.tally_timeout_s)
+            up = await asyncio.wait_for(reader.is_up(), live.current.tally_timeout_s)
         except TimeoutError:
             up = False
         return JSONResponse({"ok": True, "tally": "up" if up else "down"})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
+    app.router.routes.extend(
+        build_setup_routes(live, store or _NoSaveStore(settings), secrets, reader)
+    )
     return BearerGuard(app, secrets)
+
+
+class _NoSaveStore:
+    """For an app built with no settings store: it loads and never saves."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def load(self) -> Settings:
+        return self._settings
+
+    def save(self, settings: Settings) -> None:
+        raise SettingsError("This bridge has no settings store.")
 
 
 def _allowed_hosts(settings: Settings) -> list[str]:

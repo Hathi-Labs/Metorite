@@ -81,6 +81,16 @@ def test_the_reader_imports_neither_the_tools_nor_the_transport():
     assert not bad, bad
 
 
+def test_the_reader_and_the_tools_do_not_import_the_setup_page():
+    bad = {
+        m
+        for module in ("reader", "tools")
+        for m in _module_imports(module)
+        if m.startswith("tally_bridge.setup")
+    }
+    assert not bad, bad
+
+
 def test_the_tools_do_not_import_the_transport():
     bad = {m for m in _module_imports("tools") if m.startswith("tally_bridge.transport")}
     assert not bad, bad

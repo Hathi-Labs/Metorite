@@ -223,5 +223,10 @@ def test_a_hung_reader_stops_at_the_deadline():
 def test_the_tools_list_stays_small():
     server = build_read_server(FakeReader(), ONE)
     tools = asyncio.run(server.list_tools())
-    size = len(json.dumps([t.model_dump(exclude_none=True) for t in tools]))
+    # The compact JSON, as on the wire.
+    size = len(
+        json.dumps(
+            [t.model_dump(exclude_none=True, by_alias=True) for t in tools], separators=(",", ":")
+        )
+    )
     assert size < 5000, size  # brief rule 8: about 6 KB for all 9 tools

@@ -34,6 +34,13 @@ _MAX_VALUE = 100
 
 log = logging.getLogger(CALL_LOG)
 
+# The time of the newest tool call, for step 4 of the setup screen.
+_last_call: datetime | None = None
+
+
+def last_call_at() -> datetime | None:
+    return _last_call
+
 
 def _value(v: Any) -> Any:
     """A logged input: a short scalar, never a whole object."""
@@ -50,8 +57,11 @@ def record(
     duration_ms: float,
     row_count: int | None,
 ) -> None:
+    global _last_call
+    now = datetime.now(UTC)
+    _last_call = now
     line = {
-        "time": datetime.now(UTC).isoformat(timespec="seconds"),
+        "time": now.isoformat(timespec="seconds"),
         "tool": tool,
         "inputs": {str(k): _value(v) for k, v in (inputs or {}).items()},
         "row_count": row_count,

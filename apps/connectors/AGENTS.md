@@ -21,6 +21,8 @@ Build brief of the first one: `docs/tally_bridge_brief.md`.
    transport. The tools do not import the transport. A later connector, such
    as one for Busy, reuses the transport and writes a new reader and new tools.
    Fence: `tests/unit/test_tally_bridge_fences.py`.
+   The setup page (`setup/`) is a fourth module. The reader and the tools
+   never import it.
 4. **No name, domain, ledger or address of ours** in the program or its
    defaults (brief test 17). Fence: `tests/unit/test_tally_bridge_fences.py`.
 5. **Put SYNTHETIC in the file name of a fixture that we wrote by hand.** A
