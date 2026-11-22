@@ -1110,9 +1110,12 @@ export function TaskBoard({
           <p
             data-agent-holder
             className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            // The live line above already names the session. The tooltip keeps
+            // the session label too, and the visible text keeps the part that
+            // truncation must not cut: who holds the task, and since when.
             title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
           >
-            {holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
+            {holderLine(task.held_by, personLabels)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
