@@ -115,6 +115,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
     "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
     "SHARED_TOKEN",
+    # LD-8b: the member a local dev_up.sh --data prod stack signs in as. It is read
+    # only when auth is off (gateway.ts), and no chat setup may write it.
+    "DEV_SIGNED_IN_EMAIL",
     # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
     # the directory of the Microsoft app, a per-deployment decision
     # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
