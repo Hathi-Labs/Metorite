@@ -870,6 +870,8 @@ export interface SearchEmailsParams {
 export interface SearchEmailsResult extends ListEmailsResponse {
   /** True when the server actually applied semantic re-ranking. */
   hybrid: boolean;
+  /** True when no mail held every word, so the server searched for ANY word. */
+  broadened: boolean;
 }
 
 /** Ranked search over the user's email — the query surface behind the search bar.
@@ -911,6 +913,7 @@ export async function searchEmails(
     page: number;
     page_size: number;
     hybrid?: boolean;
+    broadened?: boolean;
   }>(`/email/search?${sp.toString()}`);
 
   return {
@@ -919,6 +922,7 @@ export async function searchEmails(
     page: raw.page ?? 1,
     pageSize: raw.page_size ?? 50,
     hybrid: Boolean(raw.hybrid),
+    broadened: Boolean(raw.broadened),
   };
 }
 

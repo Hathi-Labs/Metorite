@@ -2983,6 +2983,9 @@ _RUN_SCHEMA = _object({
     "agent_host": _UNTRUSTED_OR_NULL,
     "agent_model": _UNTRUSTED_OR_NULL,
     "agent_host_kind": {"type": ["string", "null"], "enum": [*HOST_KINDS, None]},
+    # SW-107. The run that dispatched this one. The column is a uuid that the
+    # gateway checked, so it leaves as an id (S), never as text.
+    "dispatched_by_run_id": _NULLABLE_STRING,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
@@ -3143,7 +3146,8 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     The link is (S). The question and the line hold free text, so (U).
     SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
     SW-104: ``agent_host`` and ``agent_model`` are (U) for the same reason.
-    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`.
+    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`. SW-107:
+    ``dispatched_by_run_id`` leaves only in the shape of an id.
     """
     label = row.get("agent_label")
     host, model = row.get("agent_host"), row.get("agent_model")
@@ -3166,6 +3170,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "agent_host": untrusted(host) if isinstance(host, str) else None,
         "agent_model": untrusted(model) if isinstance(model, str) else None,
         "agent_host_kind": kind if kind in HOST_KINDS else None,
+        "dispatched_by_run_id": _id(row.get("dispatched_by_run_id")),
         "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
@@ -4233,12 +4238,13 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 PROTOCOL_KEY = "protocol"
 #: SW-43c raised the version to 2: the second line names the thought before an
 #: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
-#: stays free for the park of SW-60.
-PROTOCOL_VERSION = 2
+#: stays free for the park of SW-60. SW-105 raised it to 3: the first line asks
+#: for the label, the machine, its kind and the model on each claim.
+PROTOCOL_VERSION = 3
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
-    "Claim the slice, not the epic.",
+    "Claim the slice, not the epic. On each claim send agent_label, host, host_kind and model.",
     "Post a thought with post_agent_activity each minute. Before you act on an answer,"
     " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
@@ -5457,12 +5463,16 @@ PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
 #: ``claim_task`` sends back as ``expected_version``. SW-104: the machine, its
-#: kind and the model of the row's run, as on the run wire, or null.
+#: kind and the model of the row's run, as on the run wire, or null. SW-107:
+#: the run that dispatched the row's run, an id or null.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
     "run_id", "held_by", "yours", "external_link",
-    "agent_host", "agent_model", "agent_host_kind",
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id",
 )
+#: SW-104 and SW-107. The keys of the run wire that a ``my_work`` row copies.
+_WORK_RUN_KEYS: tuple[str, ...] = (
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id")
 
 _MY_WORK_INPUT: dict[str, Any] = {
     "type": "object",
@@ -5485,6 +5495,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "agent_host": _RUN_SCHEMA["properties"]["agent_host"],
     "agent_model": _RUN_SCHEMA["properties"]["agent_model"],
     "agent_host_kind": _RUN_SCHEMA["properties"]["agent_host_kind"],
+    "dispatched_by_run_id": _RUN_SCHEMA["properties"]["dispatched_by_run_id"],
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
     "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
@@ -5662,10 +5673,11 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
     null and the row still names the run. ``external_link`` is the link of
     the run, shaped as on the run wire, or null (CIV-14a). SW-104: the
     machine, its kind and the model of *run*, shaped by :func:`agent_run`,
-    or null for a row with no run."""
+    or null for a row with no run. SW-107: and its dispatcher, by the same
+    rule."""
     shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
     wire = agent_run(run) if run is not None else {}
-    place = {key: wire.get(key) for key in ("agent_host", "agent_model", "agent_host_kind")}
+    place = {key: wire.get(key) for key in _WORK_RUN_KEYS}
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
@@ -7830,6 +7842,42 @@ _HOST_KIND_INPUT: dict[str, Any] = {
         " server for a VPS or a box, cloud for a hosted agent sandbox. It is"
         " display data only.")}
 
+#: SW-107 (``agent_coordination.md`` §3.12.3). The optional run id of the
+#: session that dispatched this one, on a claim and a start.
+_DISPATCHED_BY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": (
+        "The run id of the session that handed you this task, when one did."
+        " Use the run id from its hand-off. It is display data only. A run"
+        " that your organization does not have, your own run, or a loop of"
+        " dispatchers is dropped, and the result has warning. A new value"
+        " replaces the old one.")}
+
+#: SW-107. The fixed text of each dropped ``dispatched_by``, by the code of
+#: the gateway (``agent_runs.DISPATCH_DROPS``). The edge never shows the
+#: gateway's text. A pin test compares the two.
+DISPATCH_TEXTS: Mapping[str, str] = {
+    "unknown": "Metorite kept no dispatcher: your organization has no run with that id.",
+    "self": "Metorite kept no dispatcher: a run cannot dispatch itself.",
+    "loop": "Metorite kept no dispatcher: that run would make a loop of dispatchers.",
+    "no_run": "Metorite kept no dispatcher, because the claim opened no run.",
+}
+
+
+def _dispatch_body(args: Mapping[str, Any]) -> dict[str, str]:
+    """SW-107. The ``dispatched_by`` of *args*, for the body of a claim or a
+    start. Never a header."""
+    value = _id(args.get("dispatched_by"))
+    return {"dispatched_by": value} if value is not None else {}
+
+
+def _dispatch_warning(written: Mapping[str, Any]) -> str | None:
+    """SW-107. The fixed text for the gateway's code of a dropped
+    ``dispatched_by``, or ``None``."""
+    code = written.get("dispatched_by_dropped")
+    return DISPATCH_TEXTS.get(code) if isinstance(code, str) else None
+
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7856,6 +7904,7 @@ _CLAIM_INPUT: dict[str, Any] = {
         "host": _HOST_INPUT,
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7894,6 +7943,7 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
     body only, and its pattern refuses every control character. SW-104:
     ``host``, ``model`` and ``host_kind`` go in the body by the same rule.
+    SW-107: so does ``dispatched_by``. A dropped one adds a fixed warning.
     """
     body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
@@ -7903,6 +7953,7 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if label is not None:
         body["agent_label"] = label
     body.update(_place_body(args))
+    body.update(_dispatch_body(args))
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
@@ -7928,11 +7979,20 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # fixed on the gateway, and the ids leave only in the shape of an id.
     ids = [i for i in (_id(v) for v in
                        (written.get("open_subtasks") or [])[:5]) if i]
-    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
-            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
-            r" the epic\.", written["warning"]):
-        result["warning"] = written["warning"]
+    said = written.get("warning")
+    subtasks = re.match(
+        r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
+        r" the epic\.(?= |$)", said) if isinstance(said, str) else None
+    warnings: list[str] = []
+    if ids and subtasks is not None:
+        warnings.append(subtasks.group(0))
         result["open_subtasks"] = ids
+    # SW-107: the fixed text of a dropped dispatcher, after that warning.
+    dropped = _dispatch_warning(written)
+    if dropped is not None:
+        warnings.append(dropped)
+    if warnings:
+        result["warning"] = " ".join(warnings)
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     protocol = _protocol(ctx)
@@ -7981,7 +8041,8 @@ CLAIM_TASK = Tool(
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
             "external_link": "external_link", "agent_label": "agent_label",
-            "host": "host", "model": "model", "host_kind": "host_kind"},
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -9212,6 +9273,241 @@ LIST_TEMPLATES = Tool(
 )
 
 
+# ── get_agent_map (WS-MCP SW-113) ───────────────────────────────────────────
+#
+# Spec: ``agent_coordination.md`` §3.12.7 rule 12 and row SW-113. The tool
+# gives the map read of SW-102 to an agent: ``GET /projects/agents/overview``
+# with ``shape=map``, under the member's session. The gateway decides the
+# reach, the scope of ``project_id``, the fold and the flags. The edge adds
+# no second query.
+#
+# The gateway answers its ONE 404 body for each miss: ``AGENTS_VIEW_ORGS`` or
+# ``AGENT_MAP_ORGS`` off for the org, a project that the member cannot see,
+# and a bad value. The edge cannot tell them apart, so the tool gives ONE
+# text for each of them (:data:`TEXT_MAP_NOT_FOUND`), as the dark read does.
+# With the runs flag off, the gateway answers an empty map, and so does the
+# tool.
+
+AGENT_MAP_ROUTE = "/projects/agents/overview"
+
+#: The most runs and session nodes that one answer lists. A copy of
+#: ``agent_summary.MAP_RUNS_MAX`` and ``MAP_SESSIONS_MAX`` of the gateway,
+#: which the edge may not import. ``test_agent_map_r8.py`` pins them equal.
+AGENT_MAP_RUNS_MAX = 300
+AGENT_MAP_SESSIONS_MAX = 300
+
+#: The top keys of a map answer, in the order of ``agent_summary.MAP_KEYS``.
+AGENT_MAP_KEYS: tuple[str, ...] = (
+    "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
+    "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
+    "quiet_last_at", "host", "host_kind", "host_source", "model",
+)
+AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
+    "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
+    "last_at",
+)
+
+#: The keys of one line of who dispatched whom: the node id of the
+#: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
+#: SW-107. Any other key of a line never leaves the edge.
+AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
+#: The id of a session node: the first 24 hex characters of a sha256
+#: (``agent_summary._NODE_SQL``). It holds no session key.
+_NODE_ID_RE = re.compile(r"[0-9a-f]{24}")
+
+#: The text of every 404 of the map. It names no cause, as the gateway's
+#: one 404 body names none.
+TEXT_MAP_NOT_FOUND = (
+    "No agent map. The project does not exist or this member cannot see it,"
+    " or the agent map is off for this organization.")
+
+_AGENT_MAP_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "Only the runs on the tasks of this project and"
+                                      " its sub-projects. An id from list_projects."
+                                      " Leave it out for every project that you can see."},
+        "show_quiet": {"type": "boolean",
+                       "description": "True to list the quiet runs too. A run is quiet"
+                                      " after 2 hours with no event. Its session still"
+                                      " counts it."},
+    },
+    "additionalProperties": False,
+}
+
+_MAP_PERSON_SCHEMA = _object({"person": _UNTRUSTED_OR_NULL, "sessions": {"type": "integer"}})
+_MAP_SESSION_SCHEMA = _object({
+    "id": _NULLABLE_STRING, "person": _UNTRUSTED_OR_NULL, "name": _UNTRUSTED_OR_NULL,
+    "client": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "last_at": _NULLABLE_STRING,
+    "run_count": {"type": "integer"}, "quiet_count": {"type": "integer"},
+    "quiet_last_at": _NULLABLE_STRING,
+    # SW-106: the machine, its kind, its source and the model. The machine and
+    # the model are text that an agent wrote: untrusted. The kind and the
+    # source are two fixed words, or null.
+    "host": _UNTRUSTED_OR_NULL, "host_kind": _NULLABLE_STRING,
+    "host_source": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
+})
+_MAP_RUN_SCHEMA = _object({
+    "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING, "task_id": _NULLABLE_STRING,
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_OR_NULL,
+    "state": _NULLABLE_STRING, "quiet": {"type": "boolean"}, "age": _NULLABLE_INTEGER,
+    "last_at": _NULLABLE_STRING,
+})
+_MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
+_AGENT_MAP_OUTPUT: dict[str, Any] = _object({
+    "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
+    "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
+    "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
+    # SW-107 fills the lines of who dispatched whom: two node ids each.
+    "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
+    "count": {"type": "integer"},
+    "truncated": {"type": "boolean"},
+    "viewer": _NULLABLE_STRING,
+})
+
+
+def _map_time(value: Any) -> str | None:
+    """A time of the map, plain only in the ISO shape."""
+    return value if isinstance(value, str) and _ISO_TIME_RE.fullmatch(value) else None
+
+
+def _map_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+#: The fixed words of the kind of machine and of its source (SW-104, SW-106).
+#: A copy of ``AGENT_HOST_KINDS`` of the gateway, which the edge may not import.
+_MAP_HOST_KINDS = frozenset({"computer", "server", "cloud"})
+_MAP_HOST_SOURCES = frozenset({"checked", "reported"})
+
+
+def _map_word(value: Any, allowed: frozenset[str]) -> str | None:
+    """One of the fixed *allowed* words, else ``None``."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _map_node(value: Any) -> str | None:
+    return value if isinstance(value, str) and _NODE_ID_RE.fullmatch(value) else None
+
+
+def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One session node (§3.12.2), with the pinned keys only. The person, the
+    name of the session, the client, the machine and the model are untrusted
+    text (§3.12.4 rule 3). The kind of machine and its source are fixed words.
+    A key that the gateway adds later does not leave until a slice maps it
+    here."""
+    return {
+        "id": _map_node(row.get("id")),
+        "person": untrusted(row.get("person")),
+        "name": untrusted(row.get("name")),
+        "client": untrusted(row.get("client")),
+        "state": _key(row.get("state")),
+        "last_at": _map_time(row.get("last_at")),
+        "run_count": _map_count(row.get("run_count")),
+        "quiet_count": _map_count(row.get("quiet_count")),
+        "quiet_last_at": _map_time(row.get("quiet_last_at")),
+        "host": untrusted(row.get("host")),
+        "host_kind": _map_word(row.get("host_kind"), _MAP_HOST_KINDS),
+        "host_source": _map_word(row.get("host_source"), _MAP_HOST_SOURCES),
+        "model": untrusted(row.get("model")),
+    }
+
+
+def map_run(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One listed run of the map, with the pinned keys only. The task title is
+    untrusted text."""
+    return {
+        "run_id": _id(row.get("run_id")),
+        "session_id": _map_node(row.get("session_id")),
+        "task_id": _id(row.get("task_id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title")),
+        "state": _key(row.get("state")),
+        "quiet": _bool(row.get("quiet")),
+        "age": _int_or_none(row.get("age")),
+        "last_at": _map_time(row.get("last_at")),
+    }
+
+
+def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One line of who dispatched whom (SW-107): ``from`` and ``to`` only,
+    each a node id in its shape or null. Any other key, such as a session
+    key or a machine, does not leave."""
+    return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
+
+
+def agent_map(body: Any) -> dict[str, Any]:
+    """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
+    each value in its shape or as untrusted text. At most
+    :data:`AGENT_MAP_RUNS_MAX` runs and :data:`AGENT_MAP_SESSIONS_MAX`
+    sessions. ``truncated`` is true when the gateway cut, or when the edge
+    cut."""
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+
+    def rows(name: str) -> list[dict[str, Any]]:
+        found = body.get(name)
+        return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+    people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
+    lines = rows("lines")
+    viewer = body.get("viewer")
+    cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
+           or len(lines) > AGENT_MAP_RUNS_MAX)
+    return {
+        "people": [{"person": untrusted(p.get("person")),
+                    "sessions": _map_count(p.get("sessions"))} for p in people],
+        "sessions": [map_session(s) for s in sessions[:AGENT_MAP_SESSIONS_MAX]],
+        "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
+        # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
+        "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        "count": _map_count(body.get("count")),
+        "truncated": body.get("truncated") is True or cut,
+        # The viewer level of ``agents_view.md`` §4. The gateway sets it from
+        # fixed words, so it leaves plain only in the key shape (AD-10).
+        "viewer": _key(viewer),
+    }
+
+
+async def _get_agent_map(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    query: list[tuple[str, str]] = [("shape", "map")]
+    if args.get("project_id") is not None:
+        query.append(("project_id", str(args["project_id"]).lower()))
+    if args.get("show_quiet") is True:
+        query.append(("show_quiet", "true"))
+    return agent_map(await _get(ctx, AGENT_MAP_ROUTE, TEXT_MAP_NOT_FOUND, query=query))
+
+
+GET_AGENT_MAP = Tool(
+    name="get_agent_map",
+    title="Read the agent map",
+    description=(
+        "Read the agent map: the people, their agent sessions, and the open"
+        " agent runs on the tasks that this member can see. Call it before you"
+        " dispatch an agent, to see which sessions already work on which tasks."
+        " A session groups the runs of one agent session, with its name, its"
+        " client, its state and its counts. Each run names its session, its"
+        " task and its state. With project_id, the map holds only the runs of"
+        " that project and its sub-projects. A run with no event for 2 hours is"
+        " quiet: its session counts it, and show_quiet true lists it. The map"
+        " lists at most 300 runs, and truncated is true when it cut some. count"
+        " counts every open run that you can see. The map changes nothing."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_AGENT_MAP_INPUT,
+    output_schema=_AGENT_MAP_OUTPUT,
+    route=AGENT_MAP_ROUTE,
+    params={"project_id": "project_id", "show_quiet": "show_quiet"},
+    not_found=TEXT_MAP_NOT_FOUND,
+    run=_get_agent_map,
+    routes=(AGENT_MAP_ROUTE,),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -9284,6 +9580,17 @@ async def _start(ctx: Context, task_id: str, key: str,
     SW-7b: *label* is the display name of this session, in the body only.
     SW-104: *place* holds ``host``, ``model`` and ``host_kind``, by the same
     rule."""
+    created, run, _ = await _start_answer(ctx, task_id, key, link, label, place)
+    return created, run
+
+
+async def _start_answer(ctx: Context, task_id: str, key: str,
+                        link: str | None = None,
+                        label: str | None = None,
+                        place: Mapping[str, str] | None = None,
+                        ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+    """:func:`_start`, and the whole answer of the gateway. SW-107: *place*
+    may also hold ``dispatched_by``, and the answer then may name a drop."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
@@ -9294,7 +9601,7 @@ async def _start(ctx: Context, task_id: str, key: str,
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
         texts={409: TEXT_KEY_USED})
-    return status == 201, _run_body(body)
+    return status == 201, _run_body(body), body
 
 
 async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], *,
@@ -9333,19 +9640,29 @@ _START_INPUT: dict[str, Any] = {
         "host": _HOST_INPUT,
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
 }
-_START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}})
+_START_OUTPUT: dict[str, Any] = _optional(
+    _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}}),
+    # SW-107: set only when the gateway dropped `dispatched_by`.
+    "warning", {"type": "string"})
 
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")),
-                                _str_or_none(args.get("agent_label")),
-                                _place_body(args))
-    return {"run": agent_run(run), "created": created}
+    created, run, answer = await _start_answer(
+        ctx, str(args["task_id"]), str(args["idempotency_key"]),
+        _str_or_none(args.get("external_link")),
+        _str_or_none(args.get("agent_label")),
+        {**_place_body(args), **_dispatch_body(args)})
+    result: dict[str, Any] = {"run": agent_run(run), "created": created}
+    # SW-107: a fixed text for a dropped dispatcher. The start still worked.
+    dropped = _dispatch_warning(answer)
+    if dropped is not None:
+        result["warning"] = dropped
+    return result
 
 
 START_AGENT_RUN = Tool(
@@ -9371,7 +9688,8 @@ START_AGENT_RUN = Tool(
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
             "idempotency_key": "idempotency_key", "agent_label": "agent_label",
-            "host": "host", "model": "model", "host_kind": "host_kind"},
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",
@@ -11421,6 +11739,9 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     LIST_TEMPLATES,
+    # WS-MCP SW-113: the agent map of SW-102. A read, so it shows with the
+    # writes flag off. The gateway reads AGENT_MAP_ORGS, and the edge does not.
+    GET_AGENT_MAP,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
@@ -11581,6 +11902,13 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
+    "AGENT_MAP_KEYS",
+    "AGENT_MAP_LINE_KEYS",
+    "AGENT_MAP_ROUTE",
+    "AGENT_MAP_RUNS_MAX",
+    "AGENT_MAP_RUN_KEYS",
+    "AGENT_MAP_SESSIONS_MAX",
+    "AGENT_MAP_SESSION_KEYS",
     "AGENT_MOVE_REFUSED",
     "AGENT_SPACE_PINNED",
     "ANCESTOR_DESCRIPTION_CHARS",
@@ -11684,6 +12012,7 @@ __all__ = [
     "EPIC_RISK_TIERS",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
+    "GET_AGENT_MAP",
     "GET_AGENT_RUN",
     "GET_ATTACHMENT",
     "GET_ATTACHMENT_KEYS",
@@ -11873,6 +12202,7 @@ __all__ = [
     "TEXT_LINK_NOT_FOUND",
     "TEXT_LINK_SELF",
     "TEXT_LINK_TOO_LONG",
+    "TEXT_MAP_NOT_FOUND",
     "TEXT_MAX_BYTES",
     "TEXT_MOVE_ALONE",
     "TEXT_MOVE_CHANGED",
@@ -11987,6 +12317,7 @@ __all__ = [
     "Tip",
     "Tool",
     "ToolError",
+    "agent_map",
     "agent_run",
     "call",
     "call_timeout",
@@ -12009,6 +12340,9 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_line",
+    "map_run",
+    "map_session",
     "offered",
     "plain_shape",
     "preview_id",
