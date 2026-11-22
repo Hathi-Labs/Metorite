@@ -99,7 +99,7 @@ class _SetupApi:
 
     def _refused_api(self, request: Request, *, post: bool) -> Response | None:
         key = request.headers.get(KEY_HEADER, "")
-        if (no := self._guard.check(request, key=key, page=False)) is not None:
+        if (no := self._guard.check(request, key=key, write=post)) is not None:
             return no
         if post and not request.headers.get("content-type", "").startswith("application/json"):
             return refused(415)
@@ -121,7 +121,7 @@ class _SetupApi:
 
     async def page(self, request: Request) -> Response:
         key = request.query_params.get("k", "")
-        if (no := self._guard.check(request, key=key, page=True)) is not None:
+        if (no := self._guard.check(request, key=key, write=False)) is not None:
             return no
         # The key goes into the asset links, so that each request carries it.
         # html.escape keeps it inside its attribute.
@@ -131,7 +131,7 @@ class _SetupApi:
     def asset(self, name: str, media: str):
         async def serve(request: Request) -> Response:
             key = request.query_params.get("k", "")
-            if (no := self._guard.check(request, key=key, page=True)) is not None:
+            if (no := self._guard.check(request, key=key, write=False)) is not None:
                 return no
             return Response(_asset(name), media_type=media, headers=SECURITY_HEADERS)
 

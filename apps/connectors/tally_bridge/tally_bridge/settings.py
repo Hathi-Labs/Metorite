@@ -176,10 +176,10 @@ class FileSettingsStore:
         settings.validate()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(settings_to_mapping(settings), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(settings_to_mapping(settings), fh, indent=2, ensure_ascii=False)
         os.replace(tmp, self._path)
 
 

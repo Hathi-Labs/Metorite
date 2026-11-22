@@ -125,11 +125,18 @@ def test_the_page_refuses(tmp_path, path, headers):
     [
         {"key": ""},
         {"key": "x" + KEY},
-        {"origin": None},
         {"origin": "http://evil.example"},
         {"origin": "null"},
         {"Host": "box.example.ts.net"},
         {"Forwarded": "for=203.0.113.9"},
+        {"Via": "1.1 proxy"},
+        {"X-Forwarded-Port": "443"},
+        {"X-Original-Forwarded-For": "203.0.113.9"},
+        {"True-Client-IP": "203.0.113.9"},
+        {"CF-Visitor": '{"scheme":"https"}'},
+        {"Tailscale-Headers-Info": "x"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Sec-Fetch-Site": "same-site"},
     ],
 )
 def test_every_api_call_needs_the_key_the_origin_and_the_host(tmp_path, kw):
@@ -138,6 +145,16 @@ def test_every_api_call_needs_the_key_the_origin_and_the_host(tmp_path, kw):
         assert api(c, "GET", "/setup/api/state", **kw).status_code == 403
         assert api(c, "POST", "/setup/api/token", {}, **kw).status_code == 403
         assert api(c, "POST", "/setup/api/companies", {"companies": []}, **kw).status_code == 403
+
+
+def test_a_write_needs_the_origin_and_a_read_does_not(tmp_path):
+    """A browser sends no Origin on a same-origin GET, and always one on a POST."""
+    c, *_ = make(tmp_path)
+    with c:
+        read = api(c, "GET", "/setup/api/state", origin=None, **{"Sec-Fetch-Site": "same-origin"})
+        write = api(c, "POST", "/setup/api/token", {}, origin=None)
+    assert read.status_code == 200
+    assert write.status_code == 403
 
 
 def test_no_stored_setup_key_closes_setup(tmp_path):
@@ -283,6 +300,17 @@ def test_step_3_shows_the_tunnel_address(tmp_path):
 
 
 # --- The stores ------------------------------------------------------------------------
+
+
+def test_a_stale_temp_file_does_not_keep_its_mode(tmp_path):
+    path = tmp_path / "secrets.json"
+    stale = tmp_path / "secrets.json.tmp"
+    stale.write_text("old")
+    stale.chmod(0o644)
+    DevFileSecretStore(path).set_read_token_sha256(token_sha256("t"))
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not stale.exists()
 
 
 def test_the_settings_file_round_trips(tmp_path):
