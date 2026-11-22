@@ -424,7 +424,10 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "app's switch. The CRM source also applies the access rule, and a "
             "refusal gives no row (`test_resolve_name_tool.py`). The route takes "
             "no member and no org from the request "
-            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`)."
+            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`). FIND-6b: "
+            "a member row comes through People, so it needs `feature:people`. The "
+            "saved names are the session member's own, read only with the "
+            "assistant profile on for the org (`sources.aliases_reach`)."
         ),
     },
 }
