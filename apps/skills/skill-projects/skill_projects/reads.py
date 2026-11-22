@@ -1726,7 +1726,15 @@ async def get_plan(root_task_id: str) -> str:
         out.append(f"Critical path ({len(path)} slices, in order):")
         out.extend(_plan_rows(labels, path, slack))
     finish = plan.get("finish")
-    if finish:
+    if finish and finish.get("unknown"):
+        # Task 2473: no open slice has an estimate, so there is nothing to add up.
+        out.append(
+            f"{finish.get('words') or 'The finish is unknown.'} Give each slice an"
+            " estimate, then ask again."
+        )
+    elif finish:
+        if finish.get("guessed"):
+            out.append(f"Note: {finish.get('words') or 'Some slices have no estimate.'}")
         out.append(
             f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
             f" {finish.get('mins')} minutes of work and review wait). One date from the"
