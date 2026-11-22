@@ -275,7 +275,7 @@ class TestProjectSequencesOnARealDatabase:
         w = world
         async with _session(w.p) as call:
             got = await call(w.a, "POST", _reserve(w.ta.project, name), {"task_id": w.ta.task})
-        assert got.status_code in (404, 422)
+        assert got.status_code == 422, got.text
 
     async def test_a_task_of_another_project_is_refused(self, world):
         w = world
@@ -390,3 +390,40 @@ class TestTheSameOrgGuard:
             with w.p.admin_engine.begin() as c:
                 c.execute(text("UPDATE pm_projects SET archived_at = NULL"
                                " WHERE id = CAST(:p AS uuid)"), {"p": w.ta.project})
+
+
+@_DB_GATE
+class TestTheRunKey:
+    def test_a_reservation_cannot_name_a_run_of_another_org(self, world):
+        """Verifier 2, P3: a database probe, not only the SQL text."""
+        from sqlalchemy.exc import DBAPIError
+
+        w = world
+        with w.p.admin_engine.begin() as c:
+            seq = str(c.execute(text(
+                "INSERT INTO pm_project_sequences (organization_id, project_id, name)"
+                " VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'runprobe') RETURNING id"),
+                {"o": w.p.org_a, "p": w.ta.project}).scalar())
+        run_b = _seed_run(w.p, w.p.org_b, w.tb.task, "seq-runprobe@r8.test")
+        with pytest.raises(DBAPIError) as exc:
+            _app_write(w, w.p.org_a,
+                       "INSERT INTO pm_sequence_reservations (sequence_id, value, task_id, run_id)"
+                       " VALUES (CAST(:s AS uuid), 1, CAST(:t AS uuid), CAST(:r AS uuid))",
+                       s=seq, t=w.ta.task, r=run_b)
+        assert getattr(exc.value.orig, "sqlstate", None) == "23503"
+
+    async def test_a_task_delete_with_a_run_keeps_the_burned_number(self, world):
+        w = world
+        doomed = _seed(w.p, w.p.org_a, w.a_email)
+        run = _seed_run(w.p, w.p.org_a, doomed.task, "seq-run2@r8.test")
+        async with _session(w.p) as call:
+            got = await call(w.a, "POST", _reserve(doomed.project),
+                             {"task_id": doomed.task, "run_id": run})
+        assert got.status_code == 201, got.text
+        rid = got.json()["reservation_id"]
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": doomed.task})
+            row = c.execute(text(
+                "SELECT task_id, run_id, value FROM pm_sequence_reservations"
+                " WHERE id = CAST(:i AS uuid)"), {"i": rid}).one()
+        assert row.task_id is None and row.run_id is None and row.value == 1

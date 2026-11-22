@@ -52,6 +52,7 @@ from gateway.routes.projects.core import (
 )
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 #: The name rule. The migration's CHECK holds the same pattern. Use it with
 #: ``fullmatch``: ``$`` in Python also matches before a final newline, and the
@@ -137,10 +138,21 @@ async def reserve_number(
             text(_RUN_OF_TASK_SQL), {"run": run_id, "task": task_id},
         )).fetchone() is None:
             raise HTTPException(status_code=422, detail="The run is not a run of this task.")
-        row = (await db.execute(
-            text(RESERVE_SQL),
-            {"pid": pid, "name": name, "task": task_id, "run": run_id},
-        )).fetchone()
+        try:
+            row = (await db.execute(
+                text(RESERVE_SQL),
+                {"pid": pid, "name": name, "task": task_id, "run": run_id},
+            )).fetchone()
+        except IntegrityError as exc:
+            # A race: the task or the run went between the checks above and
+            # this statement. The same-org guard then refuses with the SQLSTATE
+            # of a foreign key. Answer 404, never a 500. Any other integrity
+            # error is a defect, so it still raises.
+            if getattr(exc.orig, "sqlstate", None) != "23503":
+                raise
+            raise HTTPException(
+                status_code=404, detail="The task or the run is gone. Try again.",
+            ) from exc
     return {
         "project_id": pid,
         "sequence": name,
