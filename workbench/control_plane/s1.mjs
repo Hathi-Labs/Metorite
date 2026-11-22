@@ -1,0 +1,12 @@
+import { open, newChat, send, both, forwardApprove } from "./live.mjs";
+const { browser, page } = await open();
+await forwardApprove(page);
+const box = await newChat(page);
+await page.getByRole("button", { name: "New chat", exact: true }).first().click();
+await page.waitForTimeout(1500);
+await send(page, box, "Please look through the knowledge spaces and read the onboarding and the hours pages.");
+await page.waitForTimeout(45000);
+await page.screenshot({ path: "../../.demo/shots/skill-explore.png" });
+console.log("OFFER:", await page.locator("[data-skill-offer]").count());
+console.log("BODY:", (await page.locator("body").innerText()).split("\n").filter(Boolean).slice(-25).join(" | ").slice(0, 1500));
+await browser.close();

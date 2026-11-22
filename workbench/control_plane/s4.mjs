@@ -1,0 +1,13 @@
+import { open, newChat, send, both, forwardApprove } from "./live.mjs";
+const OUT = "../../.demo/shots/skill";
+const { browser, page } = await open();
+await forwardApprove(page);
+const box = await newChat(page);
+await page.getByRole("button", { name: "New chat", exact: true }).first().click();
+await page.waitForTimeout(1500);
+await page.screenshot({ path: OUT + "-3-new-chat-dark.png" });
+await send(page, box, "Can you tell me what a new designer does in week one, and the studio hours?");
+await page.waitForTimeout(35000);
+await both(page, OUT + "-x-other-words");
+console.log("BODY:", (await page.locator("body").innerText()).split("\n").filter(Boolean).slice(-14).join(" | ").slice(0, 900));
+await browser.close();

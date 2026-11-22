@@ -1,0 +1,10 @@
+import { open, newChat, send, forwardApprove } from "./live.mjs";
+const { browser, page } = await open();
+await forwardApprove(page);
+const box = await newChat(page);
+await page.getByRole("button", { name: "New chat", exact: true }).first().click();
+await page.waitForTimeout(1500);
+await send(page, box, "Please draft an email to the vendor about the bar stools.");
+await page.waitForTimeout(30000);
+await page.screenshot({ path: "../../.demo/shots/p2x.png" });
+await browser.close();

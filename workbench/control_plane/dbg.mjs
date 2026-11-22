@@ -1,0 +1,10 @@
+import { chromium } from "@playwright/test";
+const b = await chromium.launch(); const p = await (await b.newContext({viewport:{width:1440,height:900}})).newPage();
+await p.goto("http://localhost:3423/chat"); await p.waitForTimeout(8000);
+const skip = p.getByText("Skip for now"); if (await skip.isVisible()) await skip.click();
+await p.waitForTimeout(1500);
+const tb = await p.getByRole("textbox").evaluateAll(els => els.map(e => e.getAttribute("aria-label")||e.placeholder||e.tagName));
+console.log(tb);
+const btn = await p.getByRole("button").evaluateAll(els => els.map(e => e.getAttribute("aria-label")||e.textContent.trim().slice(0,30)).filter(Boolean));
+console.log(btn.join(" | "));
+await p.screenshot({path:"../../.demo/shots/dbg.png"}); await b.close();

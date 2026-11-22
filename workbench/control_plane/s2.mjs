@@ -1,0 +1,17 @@
+import { open, newChat, send, both, forwardApprove, BASE } from "./live.mjs";
+const OUT = "../../.demo/shots/skill";
+const { browser, page } = await open();
+await forwardApprove(page);
+const box = await newChat(page);
+await page.getByRole("button", { name: "New chat", exact: true }).first().click();
+await page.waitForTimeout(1500);
+await send(page, box, "Please look through the knowledge spaces and read the onboarding and the hours pages.");
+await page.locator("[data-skill-offer]").waitFor({ timeout: 60000 });
+await page.waitForTimeout(800);
+await both(page, OUT + "-1-offer");
+await page.getByRole("button", { name: "Save", exact: true }).click();
+await page.waitForTimeout(3000);
+await both(page, OUT + "-2-after-save");
+console.log("CARD:", (await page.locator("[data-skill-offer]").innerText()).replace(/\n+/g, " | ").slice(0, 600));
+const r = await fetch(BASE + "/api/studio/skills"); console.log("SKILLS", r.status, (await r.text()).slice(0, 900));
+await browser.close();
