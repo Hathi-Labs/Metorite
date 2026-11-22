@@ -9,7 +9,10 @@ shard writes a JUnit report. The ``Unit tests`` job reads all of them here.
   ``TENANT_LADDER_DATABASE_URL`` was unset (the R8 gate is disarmed),
 * a ``--must-run`` file has no test in any report (no shard ran it), or
 * a ``--never-skip`` file skipped a test (a database gate leaked into a fence
-  that needs none).
+  that needs none), or
+* a test skipped on ``pytest.importorskip`` of a WORKSPACE package that
+  ``uv sync`` should have installed (task 1309). A fence that skips because its
+  package is missing reads green and guards nothing.
 
 This replaces a step that ran about 40 R8 files a second time only to grep
 their skip reasons. The reports already hold those reasons.
@@ -117,6 +120,39 @@ def _process_fences() -> set[str]:
         return set()
 
 
+_NO_MODULE = re.compile(r"No module named '([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_.]+)?'")
+
+
+def workspace_modules(root: Path | None = None) -> set[str]:
+    """The top-level import names of the uv workspace members (task 1309).
+
+    A member is a directory under ``packages/``, ``apps/services/`` or
+    ``apps/skills/`` with a ``pyproject.toml``. Its import names are its
+    child directories that hold an ``__init__.py``."""
+    base = root or Path(__file__).resolve().parents[1]
+    names: set[str] = set()
+    for group in ("packages", "apps/services", "apps/skills"):
+        for member in sorted((base / group).glob("*/pyproject.toml")):
+            for child in member.parent.iterdir():
+                if child.is_dir() and (child / "__init__.py").is_file() and child.name != "tests":
+                    names.add(child.name)
+    return names
+
+
+def uninstalled_workspace_module(reason: str, modules: set[str]) -> str | None:
+    """The workspace package that a skip reason says is not importable, or None.
+
+    ``importorskip`` writes ``could not import 'x': No module named 'x'``. A
+    third-party gap such as ``agent_framework`` is not a workspace package, so
+    it stays a legitimate skip."""
+    if "could not import" not in reason:
+        return None
+    found = _NO_MODULE.search(reason)
+    if found and found.group(1) in modules:
+        return found.group(1)
+    return None
+
+
 def check(
     junit_dir: Path,
     must_run: list[str],
@@ -141,6 +177,7 @@ def check(
         must_run = [p for p in must_run if p in chosen]
     cases = _cases(junit_dir)
     problems: list[str] = list(missing)
+    ws_modules = workspace_modules(tree_root)
     # CIV-33a (Opus review of PR 2192). With one `tests/unit` argument and the
     # only-selected plugin, a broken path match collects nothing in EVERY shard.
     # Each shard then exits 5, which a selection run reads as "drew no test".
@@ -172,6 +209,12 @@ def check(
             problems.append(f"R8 gate disarmed: {path}::{case.get('name')} skipped: {reason}")
         if path in never_skip:
             problems.append(f"a no-database fence skipped: {path}::{case.get('name')}: {reason}")
+        missing_pkg = uninstalled_workspace_module(reason, ws_modules)
+        if missing_pkg:
+            problems.append(
+                f"a workspace package is not installed: {path}::{case.get('name')} skipped "
+                f"on importorskip of {missing_pkg!r}: {reason}"
+            )
     for path in must_run:
         if path not in ran:
             problems.append(f"no shard ran {path}")

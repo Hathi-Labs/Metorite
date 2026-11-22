@@ -1449,3 +1449,39 @@ def test_a_selection_with_no_case_at_all_fails(tmp_path: Path) -> None:
         "no shard reported" in p
         for p in guard.check(junit, [], [], only_selected=["tests/unit/test_x.py"])
     )
+
+
+# ── task 1309: a skip on a workspace package that uv sync installs ──────────
+
+
+def test_the_workspace_modules_are_read_from_the_tree() -> None:
+    names = guard.workspace_modules()
+    assert {"gateway", "skill_projects", "acb_common", "orchestrator"} <= names
+
+
+def test_a_skip_on_a_missing_workspace_package_fails() -> None:
+    mods = {"gateway", "skill_projects"}
+    reason = "Skipped: could not import 'gateway.routes.crm': No module named 'gateway'"
+    assert guard.uninstalled_workspace_module(reason, mods) == "gateway"
+    sub = "could not import 'skill_projects': No module named 'skill_projects.x'"
+    assert guard.uninstalled_workspace_module(sub, mods) == "skill_projects"
+
+
+def test_a_skip_on_a_third_party_package_stays_legal() -> None:
+    mods = {"gateway"}
+    reason = "could not import 'agent_framework': No module named 'agent_framework'"
+    assert guard.uninstalled_workspace_module(reason, mods) is None
+    assert guard.uninstalled_workspace_module("TENANT_LADDER_DATABASE_URL unset", mods) is None
+
+
+def test_check_names_the_file_of_a_skip_on_a_workspace_package(tmp_path: Path) -> None:
+    body = (
+        "import pytest\n"
+        'pytest.importorskip("gateway.zz_no_such_module")\n\n\n'
+        "def test_x():\n    pass\n"
+    )
+    junit = _report(tmp_path, body, "test_pkg.py")
+    problems = guard.check(junit, [], [])
+    assert any(
+        "a workspace package is not installed" in p and "test_pkg.py" in p for p in problems
+    ), problems
