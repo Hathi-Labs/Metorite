@@ -2112,7 +2112,7 @@ They keep their own gates.
 - **Done when.** The HathiLabs orchestrator and two of its lanes show their lines on the map.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
-- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided, so the row builds before the map shows the lines (SW-109).
+- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
 
 #### SW-109 · The map draws who dispatched whom
 
