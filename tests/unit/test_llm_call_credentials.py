@@ -554,6 +554,16 @@ class TestEveryDirectSiteCarriesItsOwnKey:
             "the site fell back to the env, and None means it sent no key."
         )
 
+    @pytest.mark.parametrize("name", sorted(_BOUND_SITES))
+    async def test_no_tenant_and_two_orgs_sends_the_platform_key(
+        self, name, rec, byok_on, platform,
+    ) -> None:
+        """The bot live token and the meeting-bot ingest reach these sites
+        with no bound tenant. They never get a tenant key on a pooled box."""
+        site, _, _ = _BOUND_SITES[name]
+        got = await _run(rec, site, None)
+        assert got == [_PLATFORM], f"{name} sent {got} with no tenant"
+
     async def test_the_assemblyai_provider_resolves_the_bound_org_key(
         self, store, byok_on,
     ) -> None:
@@ -788,6 +798,79 @@ class TestTheModelsPageReadsTheCallersStore:
         store.org_count = 2
         assert await self._as(_ORG_A, st._caller_keyed_providers) == frozenset()
         assert store.executed == 0
+
+    @pytest.fixture()
+    def one_tier(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One DeepSeek tier, and no write outside the test."""
+        import acb_llm.client as client
+        from gateway.routes import settings as st
+
+        cfg = {"model_list": [
+            {"model_name": "tier-fast", "litellm_params": {"model": _MODEL}},
+        ]}
+        monkeypatch.setattr(st, "_load_config", lambda: cfg)
+        monkeypatch.setattr(st, "_save_tier_override", lambda *_a, **_k: None)
+        monkeypatch.setattr(st, "_restart_litellm_bg", lambda: None)
+        monkeypatch.setattr(st, "_router_serving", lambda: False)
+        monkeypatch.setattr(client, "_TIER_MODEL", dict(client._TIER_MODEL))
+
+    async def test_the_llm_page_route_reads_only_the_callers_rows(
+        self, store, byok_on, no_settings_keys, one_tier,
+    ) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        user = _User()
+        got = {}
+        for org in (_ORG_A, _ORG_B):
+            cfg = await self._as(org, lambda: st.get_llm_config(_user=user))  # type: ignore[arg-type]
+            tier = next(t for t in cfg.tiers if t.tier_name == "tier-fast")
+            row = next(p for p in cfg.providers if p.id == "deepseek")
+            got[org] = (tier.provider_configured, row.configured)
+        assert got == {_ORG_A: (True, True), _ORG_B: (False, False)}, (
+            "GET /settings/llm read another organization's saved key"
+        )
+
+    async def test_the_tier_route_reads_only_the_callers_rows(
+        self, store, byok_on, no_settings_keys, one_tier,
+    ) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        req = st.TierUpdateRequest(tier_name="tier-fast", model=_MODEL)
+        user = _User()
+        got = [
+            (await self._as(org, lambda: st.update_tier(req, _user=user))).provider_configured  # type: ignore[arg-type]
+            for org in (_ORG_A, _ORG_B)
+        ]
+        assert got == [True, False]
+
+    async def test_the_refresh_route_sends_only_the_callers_key(
+        self, store, byok_on, no_settings_keys, monkeypatch,
+    ) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        sent: list[tuple[str, str | None]] = []
+
+        async def fake_fetch(provider: str, api_key: str | None = None, **_k: Any) -> list[Any]:
+            sent.append((provider, api_key))
+            return []
+
+        monkeypatch.setattr(st, "_fetch_live_models", fake_fetch)
+        monkeypatch.setattr(st, "_load_models_cache", lambda: {})
+        monkeypatch.setattr(st, "_save_models_cache", lambda _c: None)
+        req = st.RefreshRequest(providers=["deepseek"])
+        user = _User()
+        for org in (_ORG_A, _ORG_B):
+            await self._as(org, lambda: st.refresh_provider_models(req, _user=user))  # type: ignore[arg-type]
+        assert [k for p, k in sent if p == "deepseek"] == [_KEY_A], (
+            "the refresh sent another organization's key, or none for org A. "
+            f"Sent: {sent}"
+        )
 
 
 # ── The fences ──────────────────────────────────────────────────────────────

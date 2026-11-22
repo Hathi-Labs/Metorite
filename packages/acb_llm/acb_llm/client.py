@@ -847,7 +847,8 @@ async def complete(
     # per-call `timeout=` still wins here.
     ceiling = _request_timeout_secs()
     extra.setdefault("timeout", ceiling)
-    # D58.2: the key of THIS call's organization, never a process global.
+    # D58.2: the key of THIS call, never a process global. The platform key
+    # with BYOK off, the bound organization's stored key with BYOK on.
     creds = await call_credentials(model, extra)
 
     last_exc: Exception | None = None
@@ -968,7 +969,8 @@ async def complete_with_tools(
     # matters more than bounding the plain-text path, not less.
     ceiling = _request_timeout_secs()
     extra.setdefault("timeout", ceiling)
-    # D58.2: the key of THIS call's organization, never a process global.
+    # D58.2: the key of THIS call, never a process global. The platform key
+    # with BYOK off, the bound organization's stored key with BYOK on.
     creds = await call_credentials(model, extra)
 
     last_exc: Exception | None = None

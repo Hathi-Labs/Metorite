@@ -407,7 +407,8 @@ async def _complete_with_fallback(
         )
         call_extra = params_for_model(extra, resolved)
         # D58.2: each attempt's model may name another provider, so each one
-        # takes the key of the bound organization for THAT provider.
+        # takes its key for THAT provider: the platform key with BYOK off, the
+        # bound organization's stored key with BYOK on.
         creds = await call_credentials(resolved, call_extra)
         try:
             resp = await acompletion(
@@ -775,8 +776,9 @@ async def _stream_text(
     first_s = STREAM_FIRST_CHUNK_S if first_chunk_s is None else first_chunk_s
     gap_s = STREAM_IDLE_S if idle_s is None else idle_s
     whole_s = STREAM_TOTAL_S if total_s is None else total_s
-    # D58.2: the key of the bound organization, per call. Resolved before
-    # the clock starts, so a slow store read does not eat the first-chunk bound.
+    # D58.2: the key per call (the platform key with BYOK off, the bound
+    # organization's stored key with BYOK on). Resolved before the clock
+    # starts, so a slow store read does not eat the first-chunk bound.
     creds = await call_credentials(resolved, extra)
     loop = asyncio.get_running_loop()
     started = loop.time()

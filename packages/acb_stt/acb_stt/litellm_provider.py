@@ -2,8 +2,9 @@
 
 Routes transcription through the SAME plumbing chat uses (acb_llm): the model is
 resolved from the tier config (``tier-stt`` by default → e.g.
-``groq/whisper-large-v3-turbo``, editable in Settings → Models), the key of the
-bound organization comes per call from ``call_credentials`` (D58.2), provider routing is
+``groq/whisper-large-v3-turbo``, editable in Settings → Models), the key comes
+per call from ``call_credentials`` (D58.2: the platform key with BYOK off, the bound
+organization's stored key with BYOK on), provider routing is
 litellm's job (``litellm.atranscription``), and usage is emitted for
 observability via ``_emit_usage``. No bespoke HTTP client, no separate key
 resolution — STT is a configured model like every other model on the platform.
@@ -214,7 +215,8 @@ class LiteLLMSTT(SttProvider):
         buf.name = audio.filename  # litellm/OpenAI infer the format from the name
 
         extra = self._provider_params(model, opts)
-        # D58.2: the key of the bound organization, per call (task 625).
+        # D58.2 (task 625): the key per call. The platform key with BYOK off,
+        # the bound organization's stored key with BYOK on.
         extra.update(await call_credentials(model, extra))
         litellm.drop_params = True  # ignore params a given provider doesn't take
 
