@@ -13,6 +13,7 @@
   "python": {
     "safety": [
       "tests/unit/test_agent_config_runtime.py",
+      "tests/unit/test_agent_deps_first_party.py",
       "tests/unit/test_agent_edge_deploy.py",
       "tests/unit/test_answer_claims.py",
       "tests/unit/test_api_call_egress.py",

@@ -185,7 +185,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             _log.warning("gateway.clone_scrub_failed", error=str(exc)[:200])
         try:
-            from acb_skills.loader import _install_agent_deps, load_agent
+            from acb_skills.loader import load_agent, warm_install_agent_deps
 
             from gateway.routes.agent import _AGENT_REGISTRY, _load_dynamic_agents
             from gateway.routes.workspace import _agent_workspace_dir
@@ -226,9 +226,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     # Already cloned — ensure its declared deps are installed
                     # into agent-site (WS-49 BH-7; idempotent, a no-op when
                     # unchanged), so its tools work before the next run.
+                    # Task 3850: through the first-party gate. A refusal
+                    # logs the agent and skips it, and never stops startup.
                     try:
                         await _asyncio.to_thread(
-                            _install_agent_deps, _ws, settings
+                            warm_install_agent_deps, name, _ws, settings,
+                            repo_name=repo_name, local_path=local_path,
                         )
                     except Exception:
                         pass

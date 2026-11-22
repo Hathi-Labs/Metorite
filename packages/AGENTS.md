@@ -13,6 +13,7 @@ Agent loading, skill management and tool injection. The child doc is
 - `integrations.build_integrations(..., is_authorized=)` filters the services that the ACTING MEMBER may not use. An agent declares a want, not an entitlement.
 - `memory_tools` gates org-scoped memory writes on `memory:write_org` through a run-scoped predicate ContextVar.
 - Both stay unfiltered when no member is attached, so background runs do not change.
+- `loader._gated_install_agent_deps` is the ONE gate of the host install, and the only caller of `_install_agent_deps` (task 3850). `first_party_source` is the one test of a first-party repo. Fence: `test_agent_deps_first_party.py`.
 
 ### acb_llm/
 LiteLLM integration, the unified credential store (LLM and integration keys) and model routing.

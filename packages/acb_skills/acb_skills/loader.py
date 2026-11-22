@@ -61,6 +61,28 @@ class AgentLoadError(Exception):
     """Raised when an agent or skill repo cannot be cloned or imported."""
 
 
+class AgentDepsRefused(AgentLoadError):
+    """An agent that is not first party declares deps, so it does not load.
+
+    Task 3850, D85 and D129: only a first-party source installs its declared
+    deps on the host (:func:`_gated_install_agent_deps`). A wheel can run code
+    when it is imported, so a host install for any other repo waits for the
+    sandbox (SBX). It is an ``AgentLoadError``, so every caller answers it as
+    an agent that does not load. The executor catches it before its
+    self-mutation clause, so a refusal never opens a repair.
+    """
+
+
+#: The text that a member reads when :class:`AgentDepsRefused` stops a load.
+#: It says what happened and the next step (DESIGN_SYSTEM §9). It names no
+#: package, so it is never an instruction to install one.
+AGENT_DEPS_REFUSED_TEXT = (
+    "The agent {agent} needs extra software. Metorite installs extra software "
+    "only for its own agents. Other agents get it in the sandbox, which is "
+    "not on yet. Ask your admin."
+)
+
+
 # ---------------------------------------------------------------------------
 # The Copilot SDK runtime is leaving (D84, D92, WS-43n)
 # ``project-docs/specs/maf_coding_engine.md`` §15.5 is the design.
@@ -1315,7 +1337,13 @@ def _ensure_repo(
         _sync_new_skills(clone_dir, settings)
         # Install the repo's declared deps into agent-site (WS-49 BH-7). Agents
         # are imported in-process, and agent-site is on the gateway's sys.path.
-        _install_agent_deps(clone_dir, settings)
+        # Task 3850: only a first-party repo installs. Another repo that
+        # declares deps raises AgentDepsRefused. The repo is THIS repo, so a
+        # skill repo is judged by its own owner, not by its agent's.
+        _gated_install_agent_deps(
+            clone_dir, settings, agent_name=local_name,
+            repo_name=f"{org}/{repo_name}", local_path=None,
+        )
         return clone_dir
 
 
@@ -1417,8 +1445,196 @@ def read_dep_status(agent_dir: Path) -> dict[str, Any] | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# The first-party gate of the host install (task 3850, D85, D129)
+# ---------------------------------------------------------------------------
+
+#: The two files that declare an agent's deps. ``_install_agent_deps`` reads
+#: these two and no other file.
+_DEP_FILES: tuple[str, ...] = ("requirements.txt", "pyproject.toml")
+
+
+def _pyproject_agent_deps(pyproject: Path) -> list[str]:
+    """The ``[project].dependencies`` of *pyproject* that are not platform deps.
+
+    The ONE parse of the pyproject deps. ``_install_agent_deps`` installs
+    them, and :func:`_declares_agent_deps` asks whether there are any.
+    """
+    if not pyproject.is_file():
+        return []
+    try:
+        import tomllib  # noqa: PLC0415
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+        raw = (data.get("project") or {}).get("dependencies") or []
+        return [d for d in raw if isinstance(d, str) and not _is_platform_dep(d)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _declares_agent_deps(agent_dir: Path) -> bool:
+    """True when *agent_dir* declares a dep that ``_install_agent_deps`` installs.
+
+    The same test as the installer's own "nothing declared" return: a
+    ``requirements.txt`` file, or a pyproject dep that is not a platform dep.
+    """
+    return (agent_dir / "requirements.txt").is_file() or bool(
+        _pyproject_agent_deps(agent_dir / "pyproject.toml")
+    )
+
+
+def _platform_agents_root() -> Path | None:
+    """The ``apps/agents`` tree of the platform checkout that runs this code.
+
+    The first ancestor of this file that holds ``apps/agents``. On the box
+    that is ``/opt/acb/app/apps/agents``. Only a deploy writes there.
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "apps" / "agents"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def first_party_source(
+    agent_name: str, *, repo_name: str | None, local_path: str | None, settings: Any,
+) -> bool:
+    """True when the registry source of an agent or skill is first party.
+
+    THE one test of a first-party repo for the host install (task 3850). It
+    reads the source that the server holds (the registry's ``repo_name`` and
+    ``local_path``), with the precedence of :func:`load_agent`. It never reads
+    a file of the clone, and never the agent name alone.
+
+    * ``local_path``: first party only when the resolved path is a directory
+      inside :func:`_platform_agents_root`, the code that the deploy ships.
+    * Else the GitHub repo (``"owner/repo"``, a bare name, or the default
+      ``agent-<name>``): first party only when its owner is
+      ``settings.github_org``, the org whose repos only the platform's own
+      people write. The owner and the repo must be valid GitHub names, so a
+      ``..`` segment cannot point the clone at another owner.
+    """
+    if local_path:
+        root = _platform_agents_root()
+        if root is None:
+            return False
+        try:
+            source = Path(local_path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return source != root and source.is_relative_to(root)
+    platform_org = str(getattr(settings, "github_org", "FracktalWorks") or "")
+    slug = repo_name or f"agent-{agent_name}"
+    owner, repo = slug.split("/", 1) if "/" in slug else (platform_org, slug)
+    try:
+        git_auth.GitHubRemote(owner, repo.removesuffix(".git"))
+    except ValueError:
+        return False
+    return bool(platform_org) and owner.casefold() == platform_org.casefold()
+
+
+def _dep_files_untouched(agent_dir: Path, *, source_dir: Path | None) -> bool:
+    """True when the dep files of the working copy are the source's own.
+
+    A run can write a file into its agent's working copy. So a first-party
+    source does not make a planted ``requirements.txt`` first party.
+
+    * A ``local_path`` copy (*source_dir* given): each dep file is present in
+      both dirs with the same bytes, or absent from both. The sync leaves a
+      file that only the copy holds, so a planted file fails here.
+    * A clone: git reports no change, no new file and no ignored file for the
+      dep files. A failed git call is a change.
+    """
+    if source_dir is not None:
+        for name in _DEP_FILES:
+            ours, theirs = agent_dir / name, source_dir / name
+            if ours.is_file() != theirs.is_file():
+                return False
+            try:
+                if ours.is_file() and ours.read_bytes() != theirs.read_bytes():
+                    return False
+            except OSError:
+                return False
+        return True
+    try:
+        result = _run_git(
+            ["status", "--porcelain", "--ignored", "--", *_DEP_FILES],
+            cwd=agent_dir, timeout=15,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return result.returncode == 0 and not (result.stdout or "").strip()
+
+
+def _gated_install_agent_deps(
+    agent_dir: Path,
+    settings: Any,
+    *,
+    agent_name: str,
+    repo_name: str | None,
+    local_path: str | None,
+) -> None:
+    """THE gate of the host install. The ONLY caller of ``_install_agent_deps``.
+
+    Task 3850 (owner choice (a), 2026-11-22), D85 and D129:
+
+    * A repo that declares no dep loads as before. Nothing installs.
+    * A first-party source (:func:`first_party_source`) whose dep files are
+      its own (:func:`_dep_files_untouched`) installs as before.
+    * Any other repo that declares a dep raises :class:`AgentDepsRefused`.
+      It installs nothing, and the log line names the agent, never a package.
+
+    Fence: ``tests/unit/test_agent_deps_first_party.py``.
+    """
+    agent_site.ensure_on_sys_path()
+    if not _declares_agent_deps(agent_dir):
+        return
+    first_party = first_party_source(
+        agent_name, repo_name=repo_name, local_path=local_path, settings=settings,
+    )
+    source_dir = Path(local_path) if local_path else None
+    if first_party and _dep_files_untouched(agent_dir, source_dir=source_dir):
+        _install_agent_deps(agent_dir, settings)
+        return
+    _log.warning(
+        "loader.agent_deps_refused",
+        agent=agent_name,
+        source="local" if local_path else "github",
+        reason="dep_files_changed" if first_party else "not_first_party",
+    )
+    raise AgentDepsRefused(AGENT_DEPS_REFUSED_TEXT.format(agent=agent_name))
+
+
+def warm_install_agent_deps(
+    agent_name: str,
+    agent_dir: Path,
+    settings: Any,
+    *,
+    repo_name: str | None,
+    local_path: str | None,
+) -> bool:
+    """Gateway startup: install the deps of a clone that is already on disk.
+
+    It goes through :func:`_gated_install_agent_deps`. A refusal never stops
+    the gateway: it logs one line that names the agent, and it skips that
+    agent. True when the gate passed, False when it refused.
+    """
+    try:
+        _gated_install_agent_deps(
+            agent_dir, settings, agent_name=agent_name,
+            repo_name=repo_name, local_path=local_path,
+        )
+    except AgentDepsRefused:
+        _log.warning("loader.agent_deps_skipped_at_startup", agent=agent_name)
+        return False
+    return True
+
+
 def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     """Install an agent's (or skill's) declared dependencies into agent-site.
+
+    ⚠️ Call :func:`_gated_install_agent_deps`, never this. Only the gate may
+    call it, so only a first-party repo installs on the host (task 3850).
+    Fence: ``tests/unit/test_agent_deps_first_party.py``.
 
     Agents are imported into the gateway interpreter and run in-process, so a
     third-party package that an agent or its skills import must be importable
@@ -1470,18 +1686,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         if req.is_file():
             sources.append(req.read_text(encoding="utf-8", errors="replace"))
         if pyproject.is_file():
-            try:
-                import tomllib  # noqa: PLC0415
-                data = tomllib.loads(
-                    pyproject.read_text(encoding="utf-8", errors="replace")
-                )
-                raw = (data.get("project") or {}).get("dependencies") or []
-                pyproject_deps = [
-                    d for d in raw
-                    if isinstance(d, str) and not _is_platform_dep(d)
-                ]
-            except Exception:  # noqa: BLE001
-                pyproject_deps = []
+            pyproject_deps = _pyproject_agent_deps(pyproject)
             sources.append("\n".join(pyproject_deps))
 
         if not req.is_file() and not pyproject_deps:
@@ -1954,7 +2159,11 @@ def load_agent(
         # clean, git-tracked directory to mount.
         agent_dir = cache_root / agent_name
         _ensure_local_git_repo(source_dir, agent_dir, settings)
-        _install_agent_deps(agent_dir, settings)
+        # Task 3850: only a source inside the platform's apps/agents installs.
+        _gated_install_agent_deps(
+            agent_dir, settings, agent_name=agent_name,
+            repo_name=None, local_path=local_path,
+        )
 
         config_path = agent_dir / "config.json"
         config: dict[str, Any] = {}

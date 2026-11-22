@@ -50,6 +50,7 @@ from acb_skills.ask_tools import clip_words as _clip_words
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
 from acb_skills.loader import (
+    AgentDepsRefused,
     AgentLoadError,
     AgentRuntimeUnsupported,
     is_copilot_agent,
@@ -7045,6 +7046,15 @@ async def _run_agent_inner(
         _log.warning(
             "executor.runtime_unsupported", agent=agent_name, run_id=run_id,
         )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentDepsRefused as exc:
+        # Task 3850: a repo that is not first party declares deps. Before the
+        # AgentLoadError clause, because that one starts a self-mutation, and
+        # a repair must not edit the deps of a refused repo. The loader
+        # already logged the agent.
         raise AgentRunError(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc

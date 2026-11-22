@@ -8,7 +8,9 @@ PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
 and a guard always refuses its Copilot CLI shell. D129 extends the block to
-personal agents (task 808, built 2026-11-21). WS-43d (Projects track
+personal agents (task 808, built 2026-11-21). Task 3850 closes the last
+host install (built 2026-11-22, §7.9): only a first-party repo installs its
+declared deps. A tenant repo that declares deps does not load. WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
@@ -1208,6 +1210,12 @@ owner kept delegation (§16.3).
   when a tool import fails (`executor.py`, `executor.tool_dep_selfheal`). The
   model does not choose that package. Its error text no longer tells an
   agent without the tool to call it.
+- The loader installs the declared deps of a first-party repo only (task 3850,
+  owner choice (a), 2026-11-22). `loader.first_party_source` is the one test:
+  a `local_path` inside the platform `apps/agents`, or a GitHub repo of
+  `github_org`. A tenant repo that declares deps raises `AgentDepsRefused`,
+  and startup logs and skips it. Fence:
+  `tests/unit/test_agent_deps_first_party.py`.
 - The risk block of the addendum names every annotated tool, so it still
   names `code_task` and `run_script`. That list classifies risk, and it does
   not describe the coding skill.
