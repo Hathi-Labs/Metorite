@@ -173,7 +173,7 @@ EXPECTED_SCOPED = {
     "pm_project_updates",
     # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
     "pm_templates", "pm_template_applies",
-    # Task 3844 (2026-11-22): migration 475 puts `organization_id` on the
+    # Task 3844 (2026-11-22): migration 480 puts `organization_id` on the
     # numbered ladder for `copilot_config` and `notes_glossary`, because the
     # per-org unique keys need it, as 354 did for `agent_avatars`.
     "copilot_config", "notes_glossary",
@@ -212,7 +212,7 @@ BASELINE_UNSCOPED = {
     "chat_message", "chat_session", "chat_session_agent",
     "chat_session_participant",
 # copilot_*
-    # ⚠️ `copilot_config` LEFT this list on 2026-11-22. Migration 475 (task
+    # ⚠️ `copilot_config` LEFT this list on 2026-11-22. Migration 480 (task
     # 3844) put `organization_id` on the numbered ladder for the per-org key.
     "copilot_event",
 # crm_*
@@ -258,7 +258,7 @@ BASELINE_UNSCOPED = {
 # message_*
     "message",
 # notes_*
-    # ⚠️ `notes_glossary` LEFT this list on 2026-11-22. Migration 475 (task
+    # ⚠️ `notes_glossary` LEFT this list on 2026-11-22. Migration 480 (task
     # 3844) put `organization_id` on the numbered ladder for the per-org key.
 # org_*
     "org_group_member", "org_role_permission",
@@ -495,7 +495,7 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
     # 90 since 2026-11-22: `copilot_config` and `notes_glossary` left with
-    # migration 475 (task 3844, the per-org keys of the notes settings and the
+    # migration 480 (task 3844, the per-org keys of the notes settings and the
     # glossary).
     # 92 since 2026-11-07: `agent_avatars` left with migration 354 (H-201d,
     # the per-tenant key of an avatar override).
