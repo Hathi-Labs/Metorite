@@ -526,18 +526,6 @@ line — never reclaim a number by deleting the other entry.
   document of an assigned task's run a home (rule 8). So this id now holds
   the count.
 
-### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
-- **Metorite:** #689. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these three searches.
-  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
-     A hit means step 1 is open.
-  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
-     A hit means step 2 is open.
-  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
-     No hit means step 3 is open, unless the run doors insert the row
-     before the run (the second form of Do 3).
-- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
