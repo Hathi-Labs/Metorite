@@ -58,7 +58,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, isHeldByAgent, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -1106,13 +1106,13 @@ export function TaskBoard({
           </p>
         ) : null}
         {/* SW-5: who holds the task, and since when. */}
-        {task.held_by && task.held_by.stale !== true ? (
+        {task.held_by && isHeldByAgent(task) ? (
           <p
             data-agent-holder
             className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
-            title={holderLine(task.held_by, personLabels)}
+            title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
           >
-            {holderLine(task.held_by, personLabels)}
+            {holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />

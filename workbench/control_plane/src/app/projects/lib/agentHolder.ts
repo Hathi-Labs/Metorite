@@ -9,7 +9,7 @@
  * Fence: `agentHolder.test.ts`.
  */
 
-import { clientName } from "./agentRuns";
+import { clientName, withAgentLabel } from "./agentRuns";
 
 /** The `held_by` of a task row. Every field but `member` may be absent. */
 export interface TaskHeldBy {
@@ -48,17 +48,20 @@ export function sinceText(
 /**
  * "Worked by <client> for <member> since <time>". *labels* maps an address to
  * a display name, as the pill does. The gateway's own `member_name` comes
- * next, then the address. A hold with no start time drops "since".
+ * next, then the address. A hold with no start time drops "since". *agentLabel*
+ * is the `agent_label` of the task row (SW-7b). It goes beside the client:
+ * "Worked by Claude Code (backend-worker-3) for ...".
  */
 export function holderLine(
   held: TaskHeldBy,
   labels?: ReadonlyMap<string, string>,
   nowMs: number = Date.now(),
   timeZone?: string,
+  agentLabel?: string | null,
 ): string {
   const who =
     labels?.get(held.member.trim().toLowerCase()) || held.member_name?.trim() || held.member;
   const client = held.client_name?.trim() || clientName(held.client_via);
   const since = sinceText(held.since, nowMs, timeZone);
-  return `Worked by ${client} for ${who}${since ? ` since ${since}` : ""}`;
+  return `Worked by ${withAgentLabel(client, agentLabel)} for ${who}${since ? ` since ${since}` : ""}`;
 }

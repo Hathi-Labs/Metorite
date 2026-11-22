@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { holderLine, sinceText } from "./agentHolder";
 import { type TaskHeldBy } from "./agentHolder";
-import { HOLD_FILTERS, isHeldByAgent, matchesAgentFocus } from "./agentRuns";
+import { HOLD_FILTERS, isHeldByAgent, matchesAgentFocus, withAgentLabel } from "./agentRuns";
 import { agentReadParams } from "./paging";
 
 const NOW = Date.parse("2026-11-11T12:00:00Z");
@@ -42,6 +42,24 @@ describe("holderLine", () => {
     expect(holderLine({ ...held, client_name: null, since: null }, undefined, NOW, "UTC")).toBe(
       "Worked by Claude Code for Priya Rao",
     );
+  });
+  it("puts the session label beside the client", () => {
+    expect(holderLine(held, undefined, NOW, "UTC", "backend-worker-3")).toBe(
+      "Worked by Claude Code (backend-worker-3) for Priya Rao since 09:14",
+    );
+  });
+  it("draws no brackets for an empty label", () => {
+    expect(holderLine(held, undefined, NOW, "UTC", "  ")).toBe(
+      "Worked by Claude Code for Priya Rao since 09:14",
+    );
+    expect(holderLine(held, undefined, NOW, "UTC", null)).not.toContain("(");
+  });
+  it("cuts a long label as the run panel does", () => {
+    const line = holderLine(held, undefined, NOW, "UTC", "x".repeat(200));
+    expect(line).toBe(
+      `Worked by ${withAgentLabel("Claude Code", "x".repeat(200))} for Priya Rao since 09:14`,
+    );
+    expect(line.length).toBeLessThan(200);
   });
 });
 
