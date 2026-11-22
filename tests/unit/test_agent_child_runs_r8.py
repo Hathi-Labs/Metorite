@@ -1,7 +1,7 @@
-"""WS-MCP SW-39 — child runs: one sub-agent under an open run (R8).
+"""WS-MCP SW-39 and SW-114 — child runs: one sub-agent under an open run (R8).
 
 Spec: ``project-docs/specs/agent_coordination.md`` §3.11.9, §3.12.7 rule 11
-and the slice SW-39.
+and the slices SW-39 and SW-114.
 
 Migration ``agent_run_child`` adds ``kind`` (``run`` or ``child``) and
 ``parent_run_id`` to ``pm_agent_runs``, with ``ON DELETE CASCADE``. A child
@@ -9,6 +9,12 @@ has no task and no app, so every read of task runs and of app runs leaves it
 out. The lease index ``pm_agent_runs_one_open_per_task`` leaves it out too.
 ``POST /projects/agent-runs/{run_id}/children`` is the one writer, and
 ``GET /projects/agent-runs/{run_id}/children`` is the one read.
+
+SW-114 adds the rest of the writer, for the edge tool ``report_subagent``:
+``agent_id`` is the key of a child (``agent_runs.child_key``), so a replayed
+start writes nothing. ``event: stop`` ends the open child, and a stop of an
+unknown or ended child changes nothing. A run holds at most 20 open
+children, and the 21st start is 429. An own run of another connection is 403.
 
 This file runs on a REAL Postgres, through the real ``/projects`` router,
 under the non-privileged role of the phase-4 rehearsal (R8). The structural
@@ -44,6 +50,15 @@ the migration.
   ``test_a_viewer_who_cannot_see_the_parent_sees_no_child``.
 * C9. ``G`` ``start_child_run``: skip the person check.
   ``test_a_person_body_is_refused``.
+* C10. ``G`` ``start_child_run``: skip the read of ``_CHILD_BY_KEY_SQL``.
+  ``test_a_replayed_start_writes_nothing`` (the insert finds the key and
+  answers 409).
+* C11. ``G`` ``start_child_run``: skip the cap.
+  ``test_the_21st_open_child_is_429_and_a_stop_frees_a_slot``.
+* C12. ``G`` ``_STOP_CHILD_SQL``: drop ``idempotency_key = :key``.
+  ``test_a_stop_ends_one_child_and_a_second_stop_is_quiet``.
+* C13. ``G`` ``_parent_for_child``: give 404 for another connection.
+  ``test_a_run_of_another_member_or_connection_is_refused``.
 """
 
 from __future__ import annotations
@@ -84,6 +99,8 @@ LANE = "sw39-lane@child.test"       # a member of org A who sees only a granted 
 OTHER = "sw39-other@child.test"     # a member of org B
 
 _REFUSED = "No open run of yours holds a task with that id."
+_OTHER_CONNECTION = "That run belongs to another connection of yours."
+_CAP = "This run already has 20 open sub-agents. Stop one before you start another."
 _OPEN = ("created", "in_progress", "awaiting", "stopping")
 
 
@@ -138,10 +155,19 @@ async def _claim(call: Any, user: Any, task: str) -> str:
     return str(run_id)
 
 
+_agent_ids = iter(range(1, 1_000_000))
+
+
 async def _child(call: Any, user: Any, parent: str, label: str = "implementer",
                  **extra: Any) -> Any:
+    """One start, with a new ``agent_id`` unless *extra* names one."""
+    body = {"agent_id": f"sub-{next(_agent_ids)}", "agent_label": label, **extra}
+    return await call(user, "POST", f"/projects/agent-runs/{parent}/children", body)
+
+
+async def _stop(call: Any, user: Any, parent: str, agent_id: str) -> Any:
     return await call(user, "POST", f"/projects/agent-runs/{parent}/children",
-                      {"agent_label": label, **extra})
+                      {"agent_id": agent_id, "event": "stop"})
 
 
 def _child_rows(w: Any, parent: str) -> list[Any]:
@@ -249,9 +275,10 @@ class TestTheChildRunOnARealDatabase:
         session = _in_session(w.alice, _key())
         async with _session(w.p) as call:
             parent = await _claim(call, session, task)
-            made = await _child(call, session, parent, "verifier",
+            made = await _child(call, session, parent, "verifier", agent_id="sub-a1",
                                 model="claude-sonnet-5.5", host="box-1", host_kind="server")
         assert made.status_code == 201, made.text
+        assert (made.json()["created"], made.json()["ended"]) == (True, False)
         run = made.json()["run"]
         assert (run["kind"], run["parent_run_id"], run["status"]) == (
             "child", parent, "in_progress")
@@ -260,8 +287,8 @@ class TestTheChildRunOnARealDatabase:
         assert run["started_at"] and run["ended_at"] is None
         [row] = _child_rows(w, parent)
         assert str(row.id) == run["id"]
-        assert (row.task_id, row.app, row.session_key, row.idempotency_key) == (
-            None, None, None, None)
+        assert (row.task_id, row.app, row.session_key) == (None, None, None)
+        assert row.idempotency_key == f"child:{parent}:sub-a1"
         assert (str(row.organization_id), row.member_email, str(row.connection_id)) == (
             w.org, ALICE, w.conn_alice)
         assert row.client_via == R8_VIA
@@ -329,14 +356,24 @@ class TestTheChildRunOnARealDatabase:
         assert _child_rows(w, child) == []
 
     async def test_a_run_of_another_member_or_connection_is_refused(self, w):
+        """SW-114: an own run of another connection of the same member is 403,
+        for a start and for a stop. A run of another member stays the one 404,
+        so the 403 tells a member only about the member's own run."""
         session = _in_session(w.alice, _key())
         async with _session(w.p) as call:
             parent = await _claim(call, session, _fresh(w))
-            by_bob = await _child(call, _in_session(w.bob, _key()), parent)
-            by_other_connection = await _child(call, _in_session(w.alice_2, _key()), parent)
-        for answer in (by_bob, by_other_connection):
+            assert (await _child(call, session, parent, agent_id="mine")).status_code == 201
+            bob = _in_session(w.bob, _key())
+            alice_2 = _in_session(w.alice_2, _key())
+            by_bob = [await _child(call, bob, parent), await _stop(call, bob, parent, "mine")]
+            by_other_connection = [await _child(call, alice_2, parent),
+                                   await _stop(call, alice_2, parent, "mine")]
+        for answer in by_bob:
             assert answer.status_code == 404 and answer.json() == {"detail": _REFUSED}
-        assert _child_rows(w, parent) == []
+        for answer in by_other_connection:
+            assert answer.status_code == 403, answer.text
+            assert answer.json() == {"detail": _OTHER_CONNECTION}
+        assert [r.status for r in _child_rows(w, parent)] == ["in_progress"]
 
     async def test_a_parent_that_lost_its_task_to_a_takeover_is_refused(self, w):
         """A run whose lease ended and that another member took over is
@@ -486,13 +523,20 @@ class TestTheChildRunOnARealDatabase:
         async with _session(w.p) as call:
             parent = await _claim(call, session, _fresh(w))
             person = await _child(call, w.alice_person, parent)
+            person_stop = await _stop(call, w.alice_person, parent, "sub-x")
             no_label = await call(session, "POST", f"/projects/agent-runs/{parent}/children", {})
+            only_id = await call(session, "POST", f"/projects/agent-runs/{parent}/children",
+                                 {"agent_id": "sub-y"})
             blank = await _child(call, session, parent, "​\x07")
             extra = await _child(call, session, parent, task_id=str(uuid.uuid4()))
-        assert person.status_code == 422, person.text
-        assert person.json() == {
-            "detail": "Only an agent starts a child run, for one of its sub-agents."}
-        for answer in (no_label, blank, extra):
+            bad_ids = [await _child(call, session, parent, agent_id=bad)
+                       for bad in ("", "a b", "a/b", "x" * 65)]
+            bad_event = await _child(call, session, parent, event="pause")
+        for answer in (person, person_stop):
+            assert answer.status_code == 422, answer.text
+            assert answer.json() == {
+                "detail": "Only an agent starts a child run, for one of its sub-agents."}
+        for answer in (no_label, only_id, blank, extra, *bad_ids, bad_event):
             assert answer.status_code == 422, answer.text
         assert _child_rows(w, parent) == []
 
@@ -540,6 +584,146 @@ class TestTheChildRunOnARealDatabase:
         [row] = _rows(w.p, "SELECT count(*) AS n FROM pg_constraint"
                            " WHERE conname = 'pm_agent_runs_one_subject'")
         assert row.n == 1
+        assert _child_rows(w, parent) == []
+
+
+@_DB_GATE
+class TestTheSubagentReports:
+    """SW-114 (``agent_coordination.md`` §3.12.7 rule 11). The start and the
+    stop that the edge tool ``report_subagent`` sends."""
+
+    async def test_a_replayed_start_writes_nothing(self, w):
+        """The first and second "Done when" of SW-114. A start writes one
+        child. The same ``agent_id`` again writes none and answers the same
+        child, 200, also after a stop. Another ``agent_id`` is another child."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            first = await _child(call, session, parent, "verifier", agent_id="sub-r1")
+            again = await _child(call, session, parent, "renamed", agent_id="sub-r1",
+                                 model="other-model")
+            other = await _child(call, session, parent, "verifier", agent_id="sub-r2")
+            stopped = await _stop(call, session, parent, "sub-r1")
+            after_stop = await _child(call, session, parent, "verifier", agent_id="sub-r1")
+        assert first.status_code == 201, first.text
+        assert again.status_code == 200, again.text
+        assert again.json()["run"] == first.json()["run"]
+        assert (again.json()["created"], again.json()["ended"]) == (False, False)
+        assert again.json()["run"]["agent_label"] == "verifier"
+        assert other.status_code == 201 and other.json()["run"]["id"] != first.json()["run"]["id"]
+        assert stopped.status_code == 200, stopped.text
+        assert after_stop.status_code == 200, after_stop.text
+        assert after_stop.json()["run"]["id"] == first.json()["run"]["id"]
+        assert after_stop.json()["run"]["status"] == "completed"
+        assert after_stop.json()["created"] is False
+        rows = _child_rows(w, parent)
+        assert len(rows) == 2
+        assert sorted(r.idempotency_key for r in rows) == [
+            f"child:{parent}:sub-r1", f"child:{parent}:sub-r2"]
+
+    async def test_a_stop_ends_one_child_and_a_second_stop_is_quiet(self, w):
+        """The third "Done when" of SW-114. A stop ends the open child of its
+        ``agent_id``: the status ``completed`` and ``ended_at``. A second stop
+        and a stop of an unknown id change nothing and answer 200. A stop
+        never ends the parent or another child."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            one = (await _child(call, session, parent, agent_id="sub-s1")).json()["run"]["id"]
+            two = (await _child(call, session, parent, agent_id="sub-s2")).json()["run"]["id"]
+            stop = await _stop(call, session, parent, "sub-s1")
+            ended_at = _rows(w.p, "SELECT ended_at FROM pm_agent_runs"
+                                  " WHERE id = CAST(:i AS uuid)", i=one)[0].ended_at
+            second = await _stop(call, session, parent, "sub-s1")
+            unknown = await _stop(call, session, parent, "sub-none")
+        assert stop.status_code == 200, stop.text
+        assert (stop.json()["created"], stop.json()["ended"]) == (False, True)
+        assert stop.json()["run"]["id"] == one
+        assert stop.json()["run"]["status"] == "completed"
+        assert stop.json()["run"]["ended_at"]
+        assert second.status_code == 200, second.text
+        assert (second.json()["ended"], second.json()["run"]["id"]) == (False, one)
+        assert unknown.status_code == 200, unknown.text
+        assert unknown.json() == {"run": None, "created": False, "ended": False}
+        assert _status(w, one) == "completed" and _status(w, two) == "in_progress"
+        assert _rows(w.p, "SELECT ended_at FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                     i=one)[0].ended_at == ended_at
+        assert _status(w, parent) == "in_progress"
+
+    async def test_the_21st_open_child_is_429_and_a_stop_frees_a_slot(self, w):
+        """The fifth "Done when" of SW-114. 20 open children fit. The 21st
+        start is 429 with the fixed text, and it writes nothing. A replay of
+        an open child still answers 200. A stop frees a slot."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            for n in range(20):
+                made = await _child(call, session, parent, agent_id=f"cap-{n}")
+                assert made.status_code == 201, (n, made.text)
+            over = await _child(call, session, parent, agent_id="cap-20")
+            replay = await _child(call, session, parent, agent_id="cap-3")
+            assert (await _stop(call, session, parent, "cap-0")).status_code == 200
+            freed = await _child(call, session, parent, agent_id="cap-20")
+            over_again = await _child(call, session, parent, agent_id="cap-21")
+        assert over.status_code == 429, over.text
+        assert over.json() == {"detail": _CAP}
+        assert replay.status_code == 200, replay.text
+        assert freed.status_code == 201, freed.text
+        assert over_again.status_code == 429 and over_again.json() == {"detail": _CAP}
+        rows = _child_rows(w, parent)
+        assert len(rows) == 21
+        assert sum(1 for r in rows if r.status in _OPEN) == 20
+
+    async def test_another_org_and_an_unknown_id_get_the_same_fixed_404(self, w):
+        """A start and a stop under a run of org B, an unknown id and a word
+        all read the same, so the answer names no other organization."""
+        async with _session(w.p) as call:
+            theirs_session = _in_session(w.other, _key())
+            theirs = await _claim(call, theirs_session, _fresh(w, w.org_b, OTHER))
+            assert (await _child(call, theirs_session, theirs,
+                                 agent_id="theirs")).status_code == 201
+            session = _in_session(w.alice, _key())
+            answers = []
+            for target in (theirs, str(uuid.uuid4()), "not-a-run"):
+                answers.append(await _child(call, session, target))
+                answers.append(await _stop(call, session, target, "theirs"))
+        for answer in answers:
+            assert answer.status_code == 404, answer.text
+            assert answer.json() == {"detail": _REFUSED}
+        assert [r.status for r in _child_rows(w, theirs)] == ["in_progress"]
+
+    async def test_a_closed_parent_takes_no_start_and_a_stop_is_quiet(self, w):
+        """A start under a closed parent is the 404. Its children ended with
+        it, so a stop finds no open child and changes nothing."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            assert (await _child(call, session, parent, agent_id="sub-c1")).status_code == 201
+            fin = await call(session, "POST", f"/projects/agent-runs/{parent}/finish", {})
+            assert fin.status_code == 200, fin.text
+            start = await _child(call, session, parent, agent_id="sub-c2")
+            stop = await _stop(call, session, parent, "sub-c1")
+        assert start.status_code == 404 and start.json() == {"detail": _REFUSED}
+        assert stop.status_code == 200, stop.text
+        assert stop.json()["ended"] is False
+        assert stop.json()["run"]["status"] == "completed"
+        assert [r.status for r in _child_rows(w, parent)] == ["completed"]
+
+    async def test_a_key_that_another_run_holds_is_409(self, w):
+        """The unique key of migration 267 is on organization, member and
+        key. When another run of the member holds the key of a child, the
+        start writes nothing and answers 409, never a 500."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            other = await _claim(call, _in_session(w.alice, _key()), _fresh(w))
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET idempotency_key = :k"
+                               " WHERE id = CAST(:i AS uuid)"),
+                          {"k": f"child:{parent}:sub-k1", "i": other})
+            answer = await _child(call, session, parent, agent_id="sub-k1")
+        assert answer.status_code == 409, answer.text
+        assert answer.json() == {"detail": "That agent_id is the key of another run of yours."}
         assert _child_rows(w, parent) == []
 
 
