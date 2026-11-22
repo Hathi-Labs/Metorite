@@ -264,7 +264,8 @@ def test_run_chat_checks_the_cap_before_each_send_inside_a_turn() -> None:
     ``run_chat`` -> the turn makes both calls -> red."""
     sc = scenario("five_turns")
     free = run.run_chat(sc, "pack")
-    assert len(free[0]["model_calls"]) >= 2 and free[0]["capped"] is None
+    assert len(free[0]["model_calls"]) >= 2 and free[0]["capped"] is None, (
+        free[0]["error"], free[0]["answer"], free[0]["capped"])
     seen: list[float] = []
     over = [False]
 
