@@ -29,8 +29,10 @@ the migration.
   ``test_a_parent_on_a_task_that_the_caller_no_longer_sees_is_refused``.
 * C3. ``G`` ``_parent_for_child``: skip the status test.
   ``test_a_closed_parent_is_refused``.
-* C4. ``G`` ``_parent_for_child``: skip the member test.
-  ``test_a_run_of_another_member_or_connection_is_refused``.
+* C4. ``G`` ``_parent_for_child``: skip the connection test.
+  ``test_a_run_of_another_member_or_connection_is_refused``. The member test
+  beside it is a second wall: a connection is of one member, so no test
+  reaches it alone.
 * C5. ``G`` ``_move_run``: drop the call of ``_end_children``.
   ``test_a_parent_that_ends_ends_its_open_children``.
 * C6. ``G`` ``_take_over``: drop the call of ``_end_children``.
