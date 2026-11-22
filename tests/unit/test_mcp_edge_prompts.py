@@ -735,6 +735,8 @@ class TestTheChecks:
                                                  "external_link",
                                                  # SW-105: inputs of claim_task.
                                                  "agent_label", "host_kind",
+                                                 # SW-108: an input of claim_task.
+                                                 "dispatched_by",
                                                  # Task 1045a: an input of
                                                  # post_agent_activity.
                                                  "until_minutes",
@@ -873,6 +875,29 @@ class TestTheProtocol:
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)
         assert "my_work" not in text and "409" not in text
+
+
+class TestTheDispatchRule:
+    """SW-108. The work_on_task steps tell a lane to pass the run id of its
+    dispatcher, and tell an orchestrator to hold a run and name it. With the
+    runs flag off, the step is absent, because a run id needs a run."""
+
+    async def test_the_prompt_gives_the_dispatch_step_with_the_runs_flag(
+            self, armed, monkeypatch):
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert prompts.DISPATCH_RULE in flat
+        for needle in ("dispatched_by on claim_task", "header of your notes",
+                       "Hold an open run on a coordination task of your own",
+                       "Put that run id in each hand-off", "waiting line with on agent"):
+            assert needle in flat, needle
+        _runs_off(monkeypatch)
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert "dispatched_by" not in flat
+
+    def test_dispatched_by_is_an_input_of_claim_task_and_the_rule_holds_no_org_term(self):
+        assert "dispatched_by" in tools.CLAIM_TASK.input_schema["properties"]
+        for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+            assert term not in prompts.DISPATCH_RULE, term
 
 
 class TestTheWaitingRule:

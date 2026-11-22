@@ -1983,9 +1983,14 @@ _GET_PLAN_OUTPUT: dict[str, Any] = {
         "finish": {
             "type": ["object", "null"],
             "properties": {
-                "mins": {"type": "integer"},
-                "working_days": {"type": "integer"},
+                "mins": {"type": ["integer", "null"]},
+                "working_days": {"type": ["integer", "null"]},
                 "date": {"type": ["string", "null"]},
+                # Task 2473: slices with no estimate. `unknown` is true when
+                # none has one: no length, no date.
+                "unknown": {"type": "boolean"},
+                "guessed": {"type": "integer"},
+                "words": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -2083,8 +2088,18 @@ def _plan_finish(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     when = value.get("date")
-    return {"mins": _int(value.get("mins")), "working_days": _int(value.get("working_days")),
-            "date": when if isinstance(when, str) else None}
+    if value.get("unknown") is True:
+        # Task 2473: no slice has an estimate, so the finish is unknown.
+        return {"mins": None, "working_days": None, "date": None, "unknown": True,
+                "guessed": _int(value.get("guessed")),
+                "words": (_str_or_none(value.get("words")) or "")}
+    out: dict[str, Any] = {"mins": _int(value.get("mins")),
+                           "working_days": _int(value.get("working_days")),
+                           "date": when if isinstance(when, str) else None}
+    if _int(value.get("guessed")):
+        out["guessed"] = _int(value.get("guessed"))
+        out["words"] = (_str_or_none(value.get("words")) or "")
+    return out
 
 
 async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
