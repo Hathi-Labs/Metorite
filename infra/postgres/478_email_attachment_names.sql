@@ -1,5 +1,5 @@
 -- ============================================================================
--- 469_email_attachment_names.sql — LOOP-19 (task 3572): attachment file names
+-- 478_email_attachment_names.sql — LOOP-19 (task 3572): attachment file names
 -- on the message, so a search can find "the NDA I sent to Mahesh".
 --
 -- ⚠️ The number was booked with ~/lanes/reserve_migration.sh (R1) and is
