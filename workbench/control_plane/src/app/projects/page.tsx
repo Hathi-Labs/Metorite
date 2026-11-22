@@ -62,7 +62,8 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
-import { AgentsAtWorkView, useAgentsAtWork } from "./components/AgentsAtWork";
+import { AgentsAtWorkView, useAgentMap, useAgentsAtWork } from "./components/AgentsAtWork";
+import { AgentsCanvas } from "./components/AgentsCanvas";
 import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
 import { NeedsAttentionList } from "./components/NeedsAttentionList";
 import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
@@ -195,6 +196,10 @@ import {
   type CommandActions,
   type CommandContext,
   SEQUENCE_TIMEOUT_MS,
+  DARK_GATED_MODES,
+  type SettledRead,
+  agentsOffered,
+  resolveMode,
   VIEW_MODES,
   type ViewMode,
   availableCommands,
@@ -1159,7 +1164,32 @@ function ProjectsWorkspace() {
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
   // both, and survives a resize.
   const [chosenMode, setChosenMode] = useState<ViewMode | null>(null);
-  const mode: ViewMode = chosenMode ?? (isMobile ? "list" : "board");
+  // SW-112 — the Agents canvas. The map read of the selected project says if it
+  // is on offer: a 404, 401 or 403 is dark, and dark means absent. It re-reads
+  // each 30 s only while the canvas is on screen.
+  const [mapQuiet, setMapQuiet] = useState(false);
+  const [mapRetry, setMapRetry] = useState(0);
+  const agentMapRead = useAgentMap(
+    Boolean(selected) && !isMyTasksApp(app),
+    chosenMode === "agents",
+    mapQuiet,
+    selected?.id,
+    mapRetry,
+  );
+  // The last read that settled, for this organization. A load after a ready
+  // read keeps the tab and the canvas, so a switch of project does not flash them.
+  const settledRead = useRef<SettledRead>(null);
+  const agentsOn = agentsOffered(agentMapRead.kind, settledRead.current);
+  if (agentMapRead.kind !== "loading") settledRead.current = agentMapRead.kind;
+  // A chosen `agents` that is dark (or still unread) resolves to the default
+  // canvas. It never draws a blank pane.
+  const defaultMode: ViewMode = isMobile ? "list" : "board";
+  const mode: ViewMode = resolveMode(chosenMode ?? defaultMode, agentMapRead.kind, defaultMode, settledRead.current);
+  const hiddenModes: readonly ViewMode[] = useMemo(() => (agentsOn ? [] : DARK_GATED_MODES), [agentsOn]);
+  const modeOptions = useMemo(
+    () => MODE_OPTIONS.filter((entry) => !hiddenModes.includes(entry.id)),
+    [hiddenModes],
+  );
   /**
    * The Overview canvas (owner ask 2026-08-31): the SAME dashboard a space
    * shows, offered beside a project's task views. It reads `summary`, which
@@ -1168,6 +1198,8 @@ function ProjectsWorkspace() {
    * hide — none of them acts on a roll-up.
    */
   const overview = mode === "overview";
+  // The Agents canvas shows no task chrome, as the Overview shows none.
+  const agentsCanvas = mode === "agents";
   /**
    * ⚠️ `loading` means NOTHING TO SHOW — it is not "a request is running".
    *
@@ -2176,7 +2208,7 @@ function ProjectsWorkspace() {
           />
         ) : (
           <ModeSwitch
-            modes={MODE_OPTIONS}
+            modes={modeOptions}
             mode={shownMode}
             layout="sheet"
             onPick={(next) => {
@@ -3419,6 +3451,8 @@ function ProjectsWorkspace() {
       if (typeof plan === "string") return plan;
       const row = flatten(visibleRoots).find((e) => e.node.id === plan.projectId);
       if (!row) return "not visible";
+      // A dark map has no Agents canvas to show. Refuse, as for any view that is not there.
+      if (plan.mode === "agents" && !agentsOn) return "not available";
       setApp(null);
       setSelected(row.node as ProjectRow);
       if (plan.mode) {
@@ -3575,6 +3609,7 @@ function ProjectsWorkspace() {
   const commandCtx: CommandContext = {
     mode: isMyTasksApp(app) ? myTasks.mode : mode,
     modes: isMyTasksApp(app) ? MY_TASKS_MODES.map((entry) => entry.id) : undefined,
+    agentsOn,
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
@@ -5122,13 +5157,13 @@ function ProjectsWorkspace() {
         </div>
       ) : null}
 
-      {selected && chromeKind({ overview, phone: isMobile, compact: compactChrome }) !== "none" ? (
+      {selected && chromeKind({ overview: overview || agentsCanvas, phone: isMobile, compact: compactChrome }) !== "none" ? (
         <FilterChrome
           compact={compactChrome}
           // MOB-1: a phone's Overview keeps the View button, the way back.
-          viewOnly={overview}
+          viewOnly={overview || agentsCanvas}
           phone={isMobile}
-          modes={MODE_OPTIONS}
+          modes={modeOptions}
           onMode={(next) => setChosenMode(next)}
           resultCount={taskTotal}
           loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
@@ -5192,7 +5227,7 @@ function ProjectsWorkspace() {
 
       {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
           in the active-filter row of the tool bar above. */}
-      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
+      {selected && !overview && !agentsCanvas && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
@@ -5203,7 +5238,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && picked.size > 0 ? (
+      {selected && !overview && !agentsCanvas && picked.size > 0 ? (
         <BulkBar
           personLabels={personLabels}
           count={picked.size}
@@ -5237,6 +5272,7 @@ function ProjectsWorkspace() {
 
       {selected &&
       !overview &&
+      !agentsCanvas &&
       nodeKind(selected) !== "folder" &&
       (mode === "timeline" || prefillAssignee) ? (
         // Capture-first, but WHERE work lands (owner ask 2026-08-31,
@@ -5285,7 +5321,7 @@ function ProjectsWorkspace() {
 
       {/* WS-27u — the front door. Renders nothing when the queue is empty;
           a ruling reloads the board because an accept just added a card. */}
-      {selected && !overview ? (
+      {selected && !overview && !agentsCanvas ? (
         <TriageRail
           projectId={selected.id}
           statuses={statuses}
@@ -5316,6 +5352,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
+      {/* The Agents canvas fills the pane, so its host is a flex column with a definite height. Other canvases stay block. */}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={canvasKey} layout={canvasLabel}>
           {!selected ? (
@@ -5323,6 +5360,14 @@ function ProjectsWorkspace() {
               "empty",
               "Nothing here yet. Projects appear once a space is granted to you."
             )
+          ) : mode === "agents" ? (
+            <AgentsCanvas
+              read={agentMapRead}
+              showQuiet={mapQuiet}
+              onShowQuiet={setMapQuiet}
+              onOpenTask={(id) => void openTaskById(id)}
+              onRetry={() => setMapRetry((n) => n + 1)}
+            />
           ) : mode === "overview" ? (
             summary ? (
               <NodeDashboard
@@ -6231,19 +6276,20 @@ function ProjectsWorkspace() {
                       // lens, it opens on the canvas it was saved from.
                       setAttentionFor(null);
                       setAgentsOpen(false);
-                      if (mode === "overview" || attentionLens || agentsLens) {
+                      if (mode === "overview" || mode === "agents" || attentionLens || agentsLens) {
                         setChosenMode(view.view_type === "board" ? "board" : "list");
                       }
                       applyView(view);
                     }}
                     onAddView={(name) => void saveView(name)}
                     onDeleteView={(view) => void deleteView(view)}
+                    hiddenModes={hiddenModes}
                     canAddView={Boolean(selected) && !viewsUntouched}
                     addViewHint="Filter, regroup or change the fields first. An untouched view is the board."
                   />
                 ) : (
                   <ModeSwitch
-                    modes={MODE_OPTIONS}
+                    modes={modeOptions}
                     mode={shownMode}
                     layout="toolbar"
                     onPick={pickMode}
