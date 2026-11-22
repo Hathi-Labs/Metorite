@@ -117,7 +117,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 | **Lease** | The execution slot of a task: its one open run. It holds while the run's newest activity is newer than two hours | the index `pm_agent_runs_one_open_per_task` (migration 289), `filters.lease_held_sql` | Yes (EA-14a) |
 | **Delegate** | The one agent that a task is handed to, beside its assignees | `pm_tasks`, new columns | No. SW-29a |
 | **Guidance** | The org's written rules for agents, at the org, a space or a project | a new tenant table | No. SW-31 |
-| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan` (migration 480) | Built, 2026-11-11 (SW-32), not merged |
+| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan` (migration 481) | Built, 2026-11-11 (SW-32), not merged |
 | **Wait record** | A named owner and action for a task that waits on a person or a system | `pm_tasks`, new columns | No. SW-9 |
 | **Strand** | The fingerprint of a run with no live path, and later its recovery record | `pm_agent_run_strands` (migration 305) | Built, dark (SW-10a) |
 | **Handoff note** | Four short texts when an agent stops: done, left, evidence, next | a `response` activity with `content.handoff` | No. SW-24 |
@@ -1252,7 +1252,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
 - **Status.** BUILT, 2026-11-11, task 1049, branch `mt-f4ce39a1-run-plan`. It is not merged yet.
 - **As built (SW-32).**
-  - **The column.** Migration `480_agent_run_plan.sql` adds `pm_agent_runs.plan JSONB NULL` and the CHECK `pm_agent_runs_plan_shape` (an array of at most 30). No default, no backfill. The ledger number was 423 on 2026-11-12. On 2026-11-22 main held 475 and open pull requests held 475 to 479, so the file is 480. `premerge.sh` checks it again.
+  - **The column.** Migration `481_agent_run_plan.sql` adds `pm_agent_runs.plan JSONB NULL` and the CHECK `pm_agent_runs_plan_shape` (an array of at most 30). No default, no backfill. The ledger number was 423 on 2026-11-12. On 2026-11-22 main held 475 and open pull requests held 476 to 480, so the file is 481. `premerge.sh` checks it again.
   - **The route.** `PUT /projects/agent-runs/{run_id}/plan` with `{steps}` (`agent_runs.set_run_plan`). The pair is in `MCP_WRITE_ROUTES`. Only an agent calls it, and `_write_activity` refuses a run of another member (403) and a run that ended (409). Over 30 steps, a step over 200 characters, an empty step and an unknown status are 422. An empty list clears the plan. The route sits behind the runs flag (`agent_runs_enabled`), and the slice adds no flag of its own.
   - **The activity.** Each call writes one `action` activity, `set_run_plan`, with the counts `steps`, `completed` and `in_progress` as strings. The step text stays out of every activity and every comment. The cap of 20 ephemeral rows trims the old plan lines, as it trims any thought.
   - **The tool.** `set_run_plan(run_id, steps)` in `agent_edge/tools.py`. The run that each run tool returns now holds `plan`, with each step text as untrusted text.

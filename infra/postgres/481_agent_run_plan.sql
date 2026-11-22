@@ -1,11 +1,11 @@
 -- ============================================================================
--- 480_agent_run_plan.sql - the plan of an agent run (WS-MCP task 1049, SW-32,
+-- 481_agent_run_plan.sql - the plan of an agent run (WS-MCP task 1049, SW-32,
 -- agent_coordination.md, D140.7)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md, slice SW-32 · Metorite task
 -- 1049 · R1 · R5 · R6 · R8.
 -- R1: on 2026-11-22 origin/main held 475 as its highest file, and open
--- pull requests held 475 to 479. So this file is 480 (it was 423 on
+-- pull requests held 476 to 480. So this file is 481 (it was 423 on
 -- 2026-11-12). Check the number again at merge.
 --
 -- What: one nullable column on `pm_agent_runs`.
