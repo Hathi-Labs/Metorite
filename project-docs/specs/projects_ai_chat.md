@@ -5691,6 +5691,13 @@ A pause hook in `chat.prepare_new_session` holds door A in the purge. The
 test starts door B only then. So the order is fixed, and the test does not
 depend on timing.
 
+A second agent did these checks again on the PC on 2026-11-22, after
+the merge of main. Each mutation of the table gave the same count. On the
+product files of main `66766ecf9`, the hermetic fence of step 2 fails on its
+assert. The fences of steps 1 and 3 fail there on a name that main does not
+have. So for steps 1 and 3, the mutations and the R8 tests give the red that
+counts. The R8 race test is the only fence of the lock on Postgres.
+
 **Residuals, named.**
 
 1. **`agent-data/` of a shared agent is one folder for the whole
