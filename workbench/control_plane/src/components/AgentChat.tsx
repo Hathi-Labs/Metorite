@@ -39,6 +39,7 @@ import {
   readyFiles,
 } from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
+import DecisionChips from "@/components/chat/DecisionChips";
 import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
@@ -3059,6 +3060,9 @@ export default function AgentChat({
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
           {aboveComposer}
+          {/* HRD-12b: the decisions this chat keeps, each with an Undo. The server
+              says nothing while CHAT_CONSTRAINTS is off, so nothing draws. */}
+          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={focusQuietly} />
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}

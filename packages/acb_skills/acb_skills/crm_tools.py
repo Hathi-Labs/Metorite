@@ -96,6 +96,7 @@ from uuid import UUID
 
 import httpx
 from acb_common.paging import Page, page_line, paged, prefix_page
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -156,6 +157,10 @@ REPORT_KINDS: tuple[str, ...] = ("pipeline", "funnel", "win-loss", "owners")
 
 #: The gateway's own module-name rule (``core._MODULE_NAME``).
 _MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+#: What a module tool takes: an API name, or the label that people use
+#: ("Sales Orders"). The gateway resolves it (CRM-Q34-12). No slash, dot or
+#: colon, so a name cannot walk a path. httpx encodes a space in the path.
+_MODULE_TEXT = re.compile(r"^[A-Za-z][A-Za-z0-9_ \-]{0,99}$")
 
 #: The entity word of a mirrored module in the aggregate and the field list.
 MODULE_PREFIX = "module:"
@@ -257,15 +262,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The internal bearer. The order is the one of ``agent-crm``."""
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """The bearer and the acting member. With no member, refuse.
 
@@ -282,7 +278,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(CRM_SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -876,7 +872,7 @@ def _module_name(module: str) -> str:
     name = str(module or "").strip()
     if name.lower().startswith(MODULE_PREFIX):
         name = name[len(MODULE_PREFIX):].strip()
-    if not _MODULE_NAME.match(name):
+    if not _MODULE_TEXT.match(name):
         raise GatewayRefusal(
             f"Invalid module name {module!r}. Use an api_name that "
             "crm_list_modules returned, for example 'Products'."
@@ -4181,6 +4177,7 @@ async def crm_list_module_records(
     data = await _get(f"/crm/modules/{mod}/records", {
         "q": q, "page": number, "page_size": size,
     }) or {}
+    mod = str(data.get("module") or mod)  # CRM-Q34-12: the API name
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     found = find_line(data)
@@ -4229,6 +4226,8 @@ async def _module_record_answer(mod: str, record: str, page: int | None) -> str:
     beside the label (CRM-Q34-6): the chat filters and totals by the key.
     *mod* and *record* passed their validators."""
     data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
+    summary = data.get("module")
+    mod = str(summary.get("api_name") or mod) if isinstance(summary, dict) else mod
     row = data.get("record") or {}
     defs = data.get("field_defs") or []
     lines = [f"{mod}: {row.get('name') or '(unnamed)'} (id={row.get('id')})"]

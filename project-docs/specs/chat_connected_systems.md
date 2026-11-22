@@ -19,6 +19,12 @@ answer. The brief shows them after the admin's text, under "The server says
 escape, so the line is 4,847 bytes at most. The `mcp.instructions` line logs
 the length only. Fences: `test_mcp_server_instructions.py`, `test_server_brief.py`.
 
+**Task 1444 is BUILT, 2026-11-21, with no flag.** On the native MAF path, the
+gate puts each answer of an MCP tool of `RunScopedMCPTool` inside the one
+untrusted frame (§3.5). Two paths are not covered: the repo `.mcp.json` server
+of a Copilot agent, and the gateway's Studio preview client
+(`connections/mcp_tools.py`). Fence: `test_mcp_result_untrusted_frame.py`.
+
 **CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
 `McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
 days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
@@ -308,6 +314,20 @@ then call it". The chat needs that recipe.
 - `attach_mcp_tools` logs their length, never the text.
 - The CA-1 upgrade of MAF (task 1029) changes the connect. CSY-6 and CA-1 run
   in order, not at once. The audit of the later one reads the earlier one.
+- **Each answer of a tool is data too** (task 1444, owner decision of
+  2026-11-21). On the native MAF path, the gate puts each answer of an MCP
+  tool of `RunScopedMCPTool` in ONE frame of `acb_skills.untrusted`, with
+  its note. The index of the list loader gets the same frame. A refusal that
+  Metorite writes stays outside the frame. The frame changes no card and
+  marks no session, so MCP-NC1 stays. Fences:
+  `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
+- **What sits after the END line.** Of the lines after a server's answer,
+  only the compute marker, in its exact shape, sits after the END line. With
+  `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the frame. This is a
+  known limit, and task 3849 follows it up.
+- **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
+  server and the gateway's Studio preview client (`connections/mcp_tools.py`)
+  get no frame.
 
 ### 3.6 A turn that cannot reach a server says why
 
