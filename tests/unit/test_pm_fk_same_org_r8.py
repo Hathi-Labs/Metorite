@@ -64,6 +64,10 @@ fixture hashes the ladder files, so the next run builds a new template.
 * M3. ``trg_pm_tasks_same_org_type_id`` gets a name that sorts before
   ``trg_pm_tasks_org_from_*``. The guard sees a NULL org and lets the row by.
   The probe ``no_org_named[pm_tasks.type_id]`` goes red (1).
+* M4. Remove the attachment ``trg_pm_agent_runs_same_org_dispatched_by_run_id``
+  (SW-107's key). The block count, the attachment fence, the guard fence, the
+  two cross-org INSERT probes and the UPDATE probe of
+  ``pm_agent_runs.dispatched_by_run_id`` go red (6). Run 2026-11-22.
 """
 
 from __future__ import annotations
