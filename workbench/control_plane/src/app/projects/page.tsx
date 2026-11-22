@@ -160,6 +160,7 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import SidePanelEditor from "@/components/SidePanelEditor";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import {
   getState as getSidePanelState,
   subscribe as subscribeSidePanel,
@@ -6257,8 +6258,11 @@ function ProjectsWorkspace() {
 
         {/* Peek and side DOCK — a third column beside the canvas, narrow or
             wide. Full does not: it is mounted over the board below, because a
-            docked column cannot be wider than the space left over. */}
-        {isOverlayMode(panelMode) ? null : taskPanel}
+            docked column cannot be wider than the space left over. The docked
+            panel opens and closes with the one side-panel motion (task 7).
+            A switch to full drops the frame at once, so no second panel stays
+            on screen while it closes. */}
+        {isOverlayMode(panelMode) ? null : <SidePanelMotion docked>{taskPanel}</SidePanelMotion>}
 
         {/* WS-27bm — the AI chat DOCKED beside the canvas (`lib/chatDock.ts`).
             It shares the right-hand column with the docked task panel: while
