@@ -41,7 +41,7 @@ from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel, StrictBool, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -1343,11 +1343,10 @@ async def discover_api(
     The returned definition can be reviewed, then saved via
     POST /integrations/custom and credentials entered via
     POST /integrations/configure.
+
+    The model call goes through the Console (``acb_llm.client.complete``),
+    never to a vendor directly (task 2449 A6, D90 clause 3).
     """
-    import json as _json  # noqa: PLC0415
-
-    import litellm as _litellm  # noqa: PLC0415
-
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query cannot be empty")
 
@@ -1415,65 +1414,96 @@ Each item in the array must have EXACTLY these fields:
 - Return ONLY the JSON array, no markdown fences, no extra text"""
     )
 
-    # 3. Call LLM — try models in order of preference
-    _models = [
-        "deepseek/deepseek-chat",
-        "openai/gpt-4o-mini",
-        "gpt-4o-mini",
-        "anthropic/claude-haiku-20240307",
-    ]
-    last_err: Exception | None = None
-    for model in _models:
-        try:
-            resp = await _litellm.acompletion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=2400,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            # Strip markdown code fences if present
-            if "```" in content:
-                content = "\n".join(
-                    ln for ln in content.splitlines()
-                    if not ln.strip().startswith("```")
-                ).strip()
-            parsed = _json.loads(content)
-            # Accept both array and single-object responses
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-            if not isinstance(parsed, list) or not parsed:
-                raise ValueError("Expected a non-empty JSON array")
-            # Validate each item
-            results: list[dict[str, Any]] = []
-            for item in parsed:
-                if item.get("service_id") and item.get("label") and item.get("env_vars"):
-                    results.append(item)
-            if not results:
-                raise ValueError("No valid API definitions in response")
-            _log.info(
-                "integrations.discover",
-                query=query,
-                count=len(results),
-                service_ids=[r.get("service_id") for r in results],
-                model=model,
-                actor=user.email,
-            )
-            return {
-                "ok": True,
-                "results": results,
-                "query": query,
-                "web_enhanced": bool(web_context),
-                "model": model,
-            }
-        except (_json.JSONDecodeError, ValueError):
-            continue
-        except Exception as exc:
-            last_err = exc
-            continue
+    # 3. Call the model through the Console (task 2449 A6).
+    #
+    # 🔴 This was a direct `litellm.acompletion` loop over four hard-coded
+    # models. The tenant plane holds no provider key (owner rule, 2026-11-08),
+    # so all four failed, and the member read the vendor's raw 401: "x-api-key
+    # header is required". `complete` sends the TIER to the Console, which
+    # owns the keys, the failover across models and the bill.
+    from acb_llm.client import LLMTier, complete
+    from acb_llm.run_errors import classify_run_error, run_ref
 
-    err_detail = str(last_err) if last_err else "No LLM model available"
-    raise HTTPException(status_code=500, detail=f"Discovery failed: {err_detail}")
+    try:
+        content = await complete(
+            tier=LLMTier.TIER_2,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2400,
+            job="structured",
+        )
+    except Exception as exc:
+        # ⚠️ The vendor text goes to the log, never to the member. `ref` lets
+        # an operator find this line from what the member reads out.
+        ref = run_ref()
+        _log.warning(
+            "integrations.discover_failed",
+            ref=ref,
+            code=classify_run_error(exc),
+            error=str(exc)[:500],
+            query=query,
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not reach the AI model just now. "
+                f"Try again in a minute. Reference: {ref}."
+            ),
+        ) from exc
+
+    results = _discovered_definitions(content)
+    if not results:
+        _log.warning(
+            "integrations.discover_unreadable",
+            query=query,
+            answer_head=(content or "")[:200],
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not make an API list for that name. "
+                "Try again, or type the product name, such as \"Salesforce CRM\"."
+            ),
+        )
+    _log.info(
+        "integrations.discover",
+        query=query,
+        count=len(results),
+        service_ids=[r.get("service_id") for r in results],
+        actor=user.email,
+    )
+    return {
+        "ok": True,
+        "results": results,
+        "query": query,
+        "web_enhanced": bool(web_context),
+    }
+
+
+def _discovered_definitions(content: str) -> list[dict[str, Any]]:
+    """The model's answer as a list of API definitions. Empty when unreadable.
+
+    The model may wrap the JSON in a markdown fence, and it may answer one
+    object in place of an array. An item without ``service_id``, ``label``
+    and ``env_vars`` is dropped.
+    """
+    body = "\n".join(
+        ln for ln in (content or "").splitlines() if not ln.strip().startswith("```")
+    ).strip()
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return []
+    return [
+        item for item in parsed
+        if isinstance(item, dict)
+        and item.get("service_id") and item.get("label") and item.get("env_vars")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1945,30 +1975,45 @@ class McpServerRequest(BaseModel):
     agent_scope: list[str] = ["*"]
     enabled: bool = True
     #: H-300: every tool of the server needs the member's card, whatever its
-    #: hints say. A new server is set to always confirm unless the admin
-    #: says no.
+    #: hints say. MCP-NC1 (task 3603): a new server is off unless the admin
+    #: turns it on, so a member's run calls each tool with no card. A body
+    #: with no key keeps the switch of a row that exists (``None``), so a
+    #: re-register never turns a stored ``true`` off.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
-    always_confirm: StrictBool = True
+    always_confirm: StrictBool | None = None
     #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
     #: the server waits for the card. Off for a new server. A register is a
     #: full register, so a body with no key turns it off. Strict too.
     read_only_key: StrictBool = False
 
 
-class McpSwitchesRequest(BaseModel):
-    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2).
+#: CSY-7: the longest description that the PATCH stores. The chat reads at
+#: most 400 characters of it (``chat_connected_systems.md`` §3.2).
+MCP_DESCRIPTION_MAX = 400
 
-    Either switch, or both. A body with neither is 422, and so is a value
-    that is not a JSON boolean. A body with only ``always_confirm`` is the
-    H-300 body, and it behaves as it did."""
+
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2, CSY-7).
+
+    Either switch, the description, or any of them. A body with none is 422,
+    and so is a switch that is not a JSON boolean. A body with only
+    ``always_confirm`` is the H-300 body, and it behaves as it did. The
+    description is trimmed and holds 400 characters at most (the chat reads
+    it, ``chat_connected_systems.md`` §3.2). An empty one clears it."""
 
     always_confirm: StrictBool | None = None
     read_only_key: StrictBool | None = None
+    description: StrictStr | None = Field(default=None, max_length=MCP_DESCRIPTION_MAX)
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @model_validator(mode="after")
-    def _one_switch_at_least(self) -> McpSwitchesRequest:
-        if self.always_confirm is None and self.read_only_key is None:
-            raise ValueError("Send always_confirm, read_only_key, or both.")
+    def _one_field_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None and self.description is None:
+            raise ValueError("Send always_confirm, read_only_key, description, or any of them.")
         return self
 
 
@@ -2058,6 +2103,40 @@ async def list_mcp_servers(
         _log.warning("mcp.list_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP servers could not be read.") from exc
 
+@router.get(
+    "/mcp/{name}/use", summary="The chat use of one MCP server in the last 7 days",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def read_mcp_use(
+    name: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """CSY-8 (task 3408, spec ``chat_connected_systems.md`` §3.7): the use panel's counts.
+
+    The chat calls of each of the last 7 days (today and the 6 before, zero-filled),
+    the turns that left the server out by reason, and the last call. The org comes
+    from the session, and the server must be a server of that org, or it is 404
+    (never a count of another org). A Redis fault answers zeros with
+    ``available: false``. It returns names and counts only.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    try:
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        found = any(s.name == name for s in await mcp_registry.list_servers(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.use_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be read.") from exc
+    if not found:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    from acb_common import mcp_use  # noqa: PLC0415
+    from acb_skills import server_brief  # noqa: PLC0415
+
+    return await mcp_use.read_use(org, name, server_brief.REASONS)
+
+
 #: D85: an MCP server over stdio starts a process on the host.
 _MCP_STDIO_REFUSED = (
     "Metorite does not run MCP servers over stdio. Use an http-sse server."
@@ -2146,14 +2225,17 @@ async def register_mcp_server(
     # does. The insert sets both stamps to one now(). An update keeps
     # ``created_at``. No header and no url go into the payload.
     # MCP-C2: the event records both switches, because a re-POST with no
-    # ``read_only_key`` turns that switch off too.
+    # ``read_only_key`` turns that switch off too. MCP-NC1 (F7): a body with
+    # no ``always_confirm`` keeps the stored switch, so the event records the
+    # switch as saved, never the body's ``None``.
     stamp = getattr(saved, "created_at", None)
     created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    always_saved = bool(getattr(saved, "always_confirm", req.always_confirm))
     audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
-                      always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+                      always_confirm=always_saved, read_only_key=req.read_only_key,
                       outcome="created" if created else "updated")
     _log.info("mcp.registered", name=req.name, actor=user.email,
-              always_confirm=req.always_confirm, read_only_key=req.read_only_key)
+              always_confirm=always_saved, read_only_key=req.read_only_key)
     return {"ok": True, "name": req.name}
 
 
@@ -2193,6 +2275,7 @@ async def set_mcp_switches(
     try:
         server = await mcp_registry.set_switches(
             org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+            description=req.description,
         )
     except mcp_registry.McpSwitchRefused as exc:
         _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
@@ -2218,6 +2301,14 @@ async def set_mcp_switches(
         _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
                   read_only_key=server.read_only_key)
         out["read_only_key"] = server.read_only_key
+    if req.description is not None:
+        # The audit event holds the length, never the text.
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.description",
+                          description_length=len(server.description))
+        _log.info("mcp.description_set", name=server.name, actor=user.email,
+                  description_length=len(server.description))
+        out["description"] = server.description
     return out
 
 

@@ -125,6 +125,36 @@ DRIVE_SCOPE_NAMES = ("DRIVE_READONLY", "ALLOWED_SCOPES")
 DRIVE_SCOPE_URLS = 3
 
 
+#: WS-CAL CE-10a (D215): the calendar uses the one Google client too, under its
+#: own purpose. Its two calendar scopes and its allow list live in
+#: ``calendar_sync/google.py`` and nowhere else. The mail scopes stay the two.
+CALENDAR_SCOPE_FILE = (REPO / "apps" / "services" / "gateway" / "gateway" / "calendar_sync"
+                       / "google.py")
+CALENDAR_SCOPE_NAMES = ("SCOPE_READ", "SCOPE_APP", "ALLOWED_SCOPES")
+#: calendar.readonly, calendar.app.created and the two userinfo URL forms.
+CALENDAR_SCOPE_URLS = 4
+
+
+def _scope_lines_in(path: Path, names: tuple[str, ...]) -> set[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lines: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id in names for t in targets):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    assert lines, f"the scope lists moved out of {path.name}"
+    return lines
+
+
+def _calendar_scope_lines() -> set[int]:
+    return _scope_lines_in(CALENDAR_SCOPE_FILE, CALENDAR_SCOPE_NAMES)
+
+
 def _drive_scope_lines() -> set[int]:
     """The lines of the two Drive scope assignments of the one Google client."""
     tree = ast.parse(DRIVE_SCOPE_FILE.read_text(encoding="utf-8"))
@@ -181,12 +211,14 @@ def test_gmail_scopes_are_exactly_the_two() -> None:
 def test_the_tree_names_only_the_two_gmail_scopes() -> None:
     scope_file, scope_range = _scope_lines()
     drive_file, drive_lines = DRIVE_SCOPE_FILE.resolve(), _drive_scope_lines()
+    cal_file, cal_lines = CALENDAR_SCOPE_FILE.resolve(), _calendar_scope_lines()
     hits = _scope_hits()
     stray = [
         f"{path.relative_to(REPO)}:{number}: {line}"
         for path, number, line in hits
         if not (path == scope_file and number in scope_range)
         and not (path == drive_file and number in drive_lines)
+        and not (path == cal_file and number in cal_lines)
     ]
     assert stray == [], (
         "a Google scope string outside GMAIL_SCOPES and the Drive scope lists. "
@@ -199,6 +231,8 @@ def test_the_tree_names_only_the_two_gmail_scopes() -> None:
     drive_hits = [h for h in hits if h[0] == drive_file]
     assert len(gmail_hits) == len(D_EM_31_SCOPES), hits
     assert len(drive_hits) == DRIVE_SCOPE_URLS, drive_hits
+    cal_hits = [h for h in hits if h[0] == cal_file]
+    assert len(cal_hits) == CALENDAR_SCOPE_URLS, cal_hits
 
 
 # ── The retired OAuth route ─────────────────────────────────────────────────

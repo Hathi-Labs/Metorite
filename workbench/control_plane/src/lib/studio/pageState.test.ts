@@ -115,3 +115,40 @@ describe("filterInputValue", () => {
     expect(filterInputValue({ base: "abc", text: "abcd" }, "")).toBe("");
   });
 });
+
+describe("the page key (STU-AF1)", () => {
+  it("round-trips the page id with a tab and a pick", () => {
+    const state = { selected: "t-9", filters: {}, tab: "board", page: "visit" };
+    expect(encodePageState(state)).toContain("page=visit");
+    expect(decodePageState(encodePageState(state))).toEqual(state);
+  });
+
+  it("keeps no page key when none is set", () => {
+    expect(encodePageState({ selected: null, filters: {}, tab: null })).toBe("");
+    expect(decodePageState("tab=a").page).toBeUndefined();
+  });
+
+  it("keeps an unknown page id, because the page model falls back to the first page", () => {
+    expect(decodePageState("page=nope-1").page).toBe("nope-1");
+  });
+
+  it("drops a hostile page id, and never throws", () => {
+    for (const bad of ["BAD ID", "../x", "<script>", "a".repeat(80), "__proto__x y"]) {
+      expect(decodePageState(new URLSearchParams({ page: bad })).page).toBeUndefined();
+    }
+  });
+});
+
+/** STU-D23a: `floor` is a key of the viewer and no part of the page state. */
+describe("the floor view key (STU-D23a)", () => {
+  it("is ignored on decode, and the state is the one without it", () => {
+    const query = "pkg=p1&page=visit&rec=r1&ro=visit&tab=board";
+    expect(decodePageState(`${query}&floor=1`)).toEqual(decodePageState(query));
+  });
+
+  it("is never a filter, and never written back by encode", () => {
+    const s = decodePageState("floor=1&f.status=open");
+    expect(Object.keys(s.filters)).toEqual(["status"]);
+    expect(encodePageState(s)).not.toContain("floor");
+  });
+});

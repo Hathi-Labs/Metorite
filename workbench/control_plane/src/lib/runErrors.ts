@@ -42,6 +42,7 @@ export type RunErrorCode =
   | "run_restarted_steered"
   | "answer_in_other_account"
   | "too_many_runs"
+  | "ai_unavailable"
   | "unknown";
 
 export interface RunErrorWords {
@@ -131,9 +132,10 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     action: "Continue",
   },
   // The chat sends the answer when it draws this notice, so the words say
-  // what HAS happened (owner report, 2026-10-13).
+  // what HAS happened (owner report, 2026-10-13). RESUME-3a (§4.12.4 item 5):
+  // only a card that cannot resume comes here now, and nothing restarted.
   run_restarted: {
-    title: "The assistant restarted",
+    title: "The chat had stopped waiting",
     body: "Your answer went to it as a new message.",
     retry: false,
     tone: "notice",
@@ -141,7 +143,7 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
   // The resend met a live run, so it steered that run (#920, review of
   // #942). The server folded it into the reply that runs now.
   run_restarted_steered: {
-    title: "The assistant restarted",
+    title: "The chat had stopped waiting",
     body: "Your answer went into the current reply.",
     retry: false,
     tone: "notice",
@@ -169,6 +171,20 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: true,
     tone: "notice",
     action: "Open activity",
+  },
+  // AO-3 (incident 2026-11-17): the AI could not answer at all. The server
+  // names it when the Router answers 502 or 503 (every model refused, or it
+  // was down). Nothing of the member's is lost, so it draws as a notice, with
+  // the resting elephant (`AiRestingCardView`) and one "Try again". The words
+  // name no vendor, no tier and no credits: the member cannot act on those.
+  ai_unavailable: {
+    title: "The AI is taking a breather",
+    body:
+      "It cannot answer right now. This is on our side, not yours. " +
+      "Your message is saved, so try again in a few minutes.",
+    retry: true,
+    tone: "notice",
+    action: "Try again",
   },
   unknown: {
     title: "Something went wrong",
@@ -284,9 +300,11 @@ export function isRunErrorCode(v: unknown): v is RunErrorCode {
  * reached the executor (the gateway refused the request, or the route could
  * not reach it). `runErrors.test.ts` pins the same table.
  *
- * Two statuses differ on purpose, because here they come from the GATEWAY,
+ * Three statuses differ on purpose, because here they come from the GATEWAY,
  * not from the model. A 401 is the member's session (`signed_out`). A 404 is
- * a missing session or route, not a model that refused (`unknown`).
+ * a missing session or route, not a model that refused (`unknown`). A 502 or
+ * a 503 is the app itself, which is updating (`connection`). On the server
+ * the same statuses come from the AI Router (`ai_unavailable`, AO-3).
  */
 export function codeForStatus(status: number): RunErrorCode {
   if (status === 402) return "credits";

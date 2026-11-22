@@ -74,7 +74,8 @@ def _code_lines(text: str) -> list[str]:
 
 def test_the_smoke_job_runs_after_the_deploy_on_both_paths(jobs: dict) -> None:
     job = jobs["chat-smoke"]
-    assert set(job["needs"]) == {"deploy", "pull-delivery"}
+    # CIV-30: `release-commit` gives the commit of the smoke script.
+    assert set(job["needs"]) == {"deploy", "pull-delivery", "release-commit"}
     # The WHOLE expression, with the whitespace folded. A substring check let
     # `${{ always() }} # needs.deploy.result == 'success'` through.
     cond = " ".join(job["if"].split())

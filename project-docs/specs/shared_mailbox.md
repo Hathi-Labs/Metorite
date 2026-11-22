@@ -137,6 +137,9 @@ The text of each question stays below, as the record of the choice.
 - **A change to D-EM-17 for private mailboxes.** A private mailbox stays private. This spec
   adds a second kind of mailbox. It does not change the first kind.
 
+**Used by CH-TEAM.** An org may name a shared mailbox as Mira's address (CH-TEAM-5).
+`whatsapp_assistant_channel.md` §19 owns that use, and this spec adds nothing for it.
+
 ---
 
 ## 3. Measured state (2026-10-23)

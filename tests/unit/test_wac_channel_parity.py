@@ -238,14 +238,14 @@ async def test_the_prompts_differ_only_by_the_web_delivery_blocks(
     """Each web-only block belongs to a withheld tool: the UI directive to
     ``emit_generative_ui``, the output discipline block to ``write_artifact``
     and the design kits, the attachment rule to ``read_attachment``."""
-    from acb_skills.addendum import ATTACHMENT_FAILURE_RULE
+    from acb_skills.addendum import ATTACHMENT_FAILURE_RULE, FILES_ON_TASK_RULE
 
     _, web = await _assemble("web")
     _, wa = await _assemble("whatsapp")
     stripped = web
     for block in (ti._ui_first_directive(compact=False),
                   ti._build_output_discipline_block(compact=False, design_system=True),
-                  ATTACHMENT_FAILURE_RULE):
+                  ATTACHMENT_FAILURE_RULE + " " + FILES_ON_TASK_RULE):
         assert block in stripped
         stripped = stripped.replace("\n\n" + block, "", 1)
     assert stripped == wa

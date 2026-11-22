@@ -17,6 +17,7 @@ business decision made once by a human (§3.5).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -35,10 +36,12 @@ __all__ = [
     "LEDGER_REASON_USAGE",
     "MIN_CHARGE_ENV",
     "NO_MIN_CHARGE_TASKS",
+    "RUN_CEILING_INVALID",
     "HoldEstimate",
     "OverdraftPolicy",
     "RateCard",
     "RunCeiling",
+    "RunCeilingInvalid",
     "SpendDecision",
     "TierRate",
     "TokenUsage",
@@ -50,8 +53,10 @@ __all__ = [
     "estimate_hold",
     "floor_charge",
     "min_charge",
+    "parse_run_ceiling",
     "quantize_credits",
     "rate_call",
+    "run_ceiling_for",
 ]
 
 # ── The ledger vocabulary (SC-4g (v)) ───────────────────────────────────────
@@ -674,6 +679,70 @@ def decide_run_ceiling(
             reason="run_ceiling_exceeded",
         )
     return SpendDecision(allowed=True)
+
+
+# ── AUTO-8b-2b: the ceiling of one turn (`X-CC-Run-Ceiling`) ────────────────
+#
+# Spec: ``project-docs/specs/proactive_agent.md`` §4.4 and the §9 row
+# AUTO-8b-2b (task 3081). A headless turn sends the credits that its goal has
+# left. The header can only LOWER :class:`RunCeiling`, never raise it.
+#
+# 🔴 The Console is the ONE place that parses and clamps the value. The
+# gateway forwards the raw string, and the turn only formats it.
+
+#: The refusal word of a value that does not parse. The auth arms answer it
+#: with HTTP 400 before any read, so it writes no meter row and needs no
+#: migration (``main._REFUSAL_REASONS`` stays closed).
+RUN_CEILING_INVALID = "run_ceiling_invalid"
+
+#: The ONE grammar of the header: ASCII digits, at most 12 before the point,
+#: and at most 4 after it (the scale of ``usage_event.billed_credits``).
+#: ⚠️ ``[0-9]``, never ``\d``. ``\d`` takes the digits of every script, and
+#: ``Decimal`` reads them. So a FULLWIDTH DIGIT FIVE would pass as five.
+#: It has no sign, no exponent, no ``NaN``, no ``Infinity`` and no space.
+_RUN_CEILING_RE = re.compile(r"[0-9]{1,12}(?:\.[0-9]{1,4})?")
+
+
+class RunCeilingInvalid(ValueError):
+    """The value of ``X-CC-Run-Ceiling`` is not a ceiling."""
+
+
+def parse_run_ceiling(raw: str | None) -> Decimal | None:
+    """The credits that ``X-CC-Run-Ceiling`` names, or ``None`` with no header.
+
+    The rule: a finite decimal of 0 or more, with at most 4 places. Every
+    other value raises :class:`RunCeilingInvalid`, the empty string too.
+
+    🔴 **A bad value never falls back to the default.** A caller that sent a
+    ceiling wants a lower one. Serving it at 500 credits would spend the
+    money that it asked us to keep.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not _RUN_CEILING_RE.fullmatch(raw):
+        raise RunCeilingInvalid(
+            "X-CC-Run-Ceiling must be a decimal of 0 or more with at most 4 places"
+        )
+    return Decimal(raw)
+
+
+def run_ceiling_for(
+    requested: Decimal | None, *, base: RunCeiling | None = None
+) -> RunCeiling:
+    """The ceiling of one run: the LOWER of *requested* and *base*.
+
+    ``None`` gives *base*, the fixed tripwire of 500 credits. So a call with
+    no header behaves as before. A value of 900 gives 500.
+
+    🔴 **min, never the header.** R7: the mutation that returns *requested*
+    in place of the min turns
+    ``test_customer_console_credits.py::TestTheTurnCeiling`` red, and
+    ``test_customer_console_router.py::TestTheTurnCeilingHeader`` (R8).
+    """
+    base = base or RunCeiling()
+    if requested is None:
+        return base
+    return RunCeiling(max_credits=min(requested, base.max_credits))
 
 
 def decide_member_cap(

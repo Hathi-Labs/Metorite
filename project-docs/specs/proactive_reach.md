@@ -117,6 +117,8 @@ and the scale plan for all of them.
 - **No message to anyone but the member.** Reach never writes to a customer,
   a colleague or a group. An outward message to another person stays an
   Action Broker act with its own approval.
+  A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
+  §19), and this spec adds nothing for it.
 - **No marketing template.** Every template is in the utility category.
 - **No SMS and no email channel in v1.** The member already has their own
   email digest (`email/digest.py`).
@@ -185,6 +187,8 @@ fails when a kind that a provider can give has no reach class.
 
 A reach class is the most a kind may ever do outside the app. Code sets it,
 and `decide` can lower it, never raise it.
+The learner of LOOP-5 can also lower it, one step for one member, and never
+raises it (`proactive_loop.md` §7.3).
 
 | Class | Meaning | Examples |
 |---|---|---|
@@ -264,6 +268,11 @@ test is free.
 5. The ledger holds no delivery of this `signal_id` with this fingerprint.
 
 On a normal day this gate drops about nine cards in ten.
+
+**The gate in code today.** `plan.interrupt_candidates` lets only `interrupt`
+and `urgent` through rule 1. LOOP-5 adds its step down before that test
+(`proactive_loop.md` §7.3). Only the kind mute of rule 4 exists. It reaches
+Reach through the learned feed of LOOP-4a (`proactive_loop.md` §7.2).
 
 ### 5.2 One typed question, in a pass that already runs
 
@@ -596,6 +605,8 @@ The feedback goes into the corrections list of `my_day_prefs`
 (`my_day_feed.md` §10.5). The judge reads them in its state. Three
 `not_here` on one kind in 30 days lower that kind to `brief` for this member
 by rule, with no model.
+RE-6 adds that count to the lowered set of LOOP-5, so one step serves both
+(`proactive_loop.md` §7.3, L6 and L9).
 
 **What the member sees.** Settings → Notifications lists each learned rule in
 words, for example "Mail from newsletters: brief only". The member can remove

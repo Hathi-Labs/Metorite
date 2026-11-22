@@ -9,7 +9,7 @@
  */
 import { stableJson } from "./dataDoor";
 import { appBrief } from "./packageLibrary";
-import { StudioOff, type ObjectRow } from "./realDoor";
+import { StudioOff, packageAccess, type ObjectRow } from "./realDoor";
 
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
 
@@ -40,7 +40,14 @@ export function buildHref(pkg: string, object?: string): string {
   return `/studio/build?${q.toString()}`;
 }
 
-/** Read the draft manifest and the object rows of one package. A 404 is the "not on" state. */
+/**
+ * Read the draft manifest and the object rows of one package. A 404 is the "not on" state.
+ *
+ * J2a: the route answers a viewer too (a member who reads an app that another member owns,
+ * through an install), with `access: viewer` and the INSTALLED version, not the draft. A viewer
+ * has no draft to edit, so the IDE gets the same refusal as before J2a: "not on". Each value
+ * other than the owner's reads as a viewer (`packageAccess`).
+ */
 export async function getPackageDraft(id: string, fetchImpl: typeof fetch = fetch): Promise<PackageDraft> {
   if (!PACKAGE_ID.test(id)) throw new StudioOff();
   const res = await fetchImpl(`/api/studio/packages/${id}`);
@@ -48,6 +55,7 @@ export async function getPackageDraft(id: string, fetchImpl: typeof fetch = fetc
   if (!res.ok) throw new Error(DRAFT_READ_FAILED);
   const body: unknown = await res.json().catch(() => ({}));
   const pkg = isObject(body) && isObject(body.package) ? body.package : {};
+  if (packageAccess(pkg) !== "owner") throw new StudioOff();
   const objects = isObject(body) && Array.isArray(body.objects) ? (body.objects.filter(isObject) as unknown as ObjectRow[]) : [];
   return {
     id,
