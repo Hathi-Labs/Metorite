@@ -23277,10 +23277,10 @@ change with no restart.
 **SG-3a as built (2026-11-09).** These points narrow or correct 23.3.10:
 
 - A route dependency calls `templates_on` before FastAPI validates the query and the body. So
-  with the flag off, each request gets 404, a body that breaks the model too. One case gets
-  422: a body with a JSON content type that does not parse. FastAPI parses it before any
-  dependency runs (fix round 1). Neither case opens a session. The handler calls
-  `templates_on` again.
+  with the flag off, each request gets 404, a body that breaks the model too. FastAPI parses
+  a body with a JSON content type before any dependency runs (fix round 1). So a body that
+  does not parse gets 422, and a body too deep for the parser gets 400. No dark request opens
+  a session. The handler calls `templates_on` again.
 - `signature.py` holds the one read (`stored_settings`, through `SETTINGS_SQL`) and the one
   write (`save_settings`). `signature_settings.py` holds the routes and no SQL.
 - The PUT needs `account_id`, `mode` and `reply_mode`. `layout` starts as `null`, and `fields`

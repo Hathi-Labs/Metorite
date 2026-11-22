@@ -7,9 +7,10 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §23.3.10, §23.4 and
 This file pins, with no database:
 
 * **Dark.** With ``EMAIL_SIGNATURE_TEMPLATES_ORGS`` off, both routes answer
-  404, a body that breaks the model too. One case answers 422: a body with a
-  JSON content type that does not parse, because FastAPI parses it before the
-  dependency runs. No dark request opens a session.
+  404, a body that breaks the model too. FastAPI parses a body with a JSON
+  content type before the dependency runs. So a body that does not parse
+  gets 422, and a body too deep for the parser gets 400. No dark request
+  opens a session.
 * **The owner check.** Both routes read the mailbox through
   ``resolve_account_filter(required=True)`` and call
   ``_assert_account_owner`` in the session. The GET needs ``send``, and the
@@ -220,10 +221,13 @@ def test_with_the_flag_off_a_body_that_is_not_json_is_a_422_that_opens_nothing(
 def test_with_the_flag_off_a_deep_body_is_a_404(
     monkeypatch: pytest.MonkeyPatch, wired: SimpleNamespace,
 ) -> None:
-    """The flag dependency runs before the depth dependency."""
+    """The flag dependency runs before the depth dependency. A body too deep
+    for the JSON parser gets the parser's 400 first, because FastAPI parses
+    the body before any dependency runs."""
     _flag(monkeypatch, "")
-    answer = _put_raw(_client(), _deep_body(1000))
-    assert answer.status_code == 404
+    client = _client()
+    assert _put_raw(client, _deep_body(1000)).status_code == 404
+    assert _put_raw(client, _deep_body(5000)).status_code == 400
     assert wired.sessions.opened == 0 and wired.db.sql == []
 
 
