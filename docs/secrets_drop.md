@@ -267,7 +267,7 @@ and a release cannot roll back. So follow these steps for each unit.
 
 1. Let one release run in shadow.
 2. Read the lines of the unit on the box: `sudo journalctl -u acb-gateway -o cat | grep secrets.` Do the same for `acb-agent-edge`.
-   The console log writes `unusable=0`. Under `LOG_FORMAT=json` the line holds `"unusable": 0`.
+   The console log writes `unusable=0`, and it can put colour codes in the line. Add `| sed 's/\x1b\[[0-9;]*m//g'` to remove them. Under `LOG_FORMAT=json` the line holds `"unusable": 0`.
 3. Set each named secret in the env file of the unit. Then restart the unit and read its line again.
 4. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
 5. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
