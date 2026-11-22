@@ -25,16 +25,19 @@ Copied from ``apps/agents/agent-crm/agents.py``, which proved the shape.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 from uuid import UUID
 
 import httpx
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     DETAIL_MAX,
     GatewayRefusal,
     data,
     response_body,
     safe_detail,
+    strip_kind_prefix,
 )
 
 from skill_projects.manifest import allowed, route_for
@@ -42,6 +45,7 @@ from skill_projects.manifest import allowed, route_for
 __all__ = [
     "DETAIL_MAX",
     "GatewayRefusal",
+    "PreconditionFailed",
     "data",
     "delete",
     "get",
@@ -51,6 +55,7 @@ __all__ = [
     "post_file",
     "put",
     "request",
+    "resolve_task_refs",
     "safe_detail",
     "uuid_of",
 ]
@@ -81,17 +86,6 @@ def current_user_email() -> str:
     except Exception:
         return ""
 
-
-def internal_token() -> str:
-    try:
-        from acb_common import get_settings
-
-        settings = get_settings()
-        return (getattr(settings, "gateway_internal_token", "") or "").strip()
-    except Exception:
-        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
-
-
 def headers() -> dict[str, str]:
     """Internal bearer plus the acting member. The member is not optional."""
     user = current_user_email()
@@ -102,7 +96,7 @@ def headers() -> dict[str, str]:
             fixable=False,
         )
     return {
-        "Authorization": f"Bearer {internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         # D-PM-36 — the activity row records that the assistant prepared the
@@ -111,21 +105,156 @@ def headers() -> dict[str, str]:
     }
 
 
+#: The read tool that gives each kind of id (HRD-2). A refusal names it, so the
+#: model reads the id and does not guess one. The first word that matches wins.
+_READ_TOOL_FOR: tuple[tuple[str, str], ...] = (
+    ("comment", "task_detail"),
+    ("activity", "task_detail"),
+    ("attachment", "task_detail"),
+    ("link", "task_detail"),
+    ("ref_id", "task_detail"),
+    ("reply_to", "task_detail"),
+    ("task", "find_tasks"),
+    ("report", "report_list"),
+    ("cycle", "list_cycles"),
+    ("reminder", "list_reminders"),
+    ("decision", "my_decisions"),
+    ("update", "list_project_updates"),
+    ("before", "list_project_updates"),
+    ("template", "list_templates"),
+    ("view", "project_views"),
+    ("page", "project_authorities"),
+    ("pin", "project_authorities"),
+    ("grant", "project_access"),
+    ("area", "my_areas"),
+    ("notification", "notifications"),
+    ("run", "agent_questions"),
+    ("answer", "waiting_agent_requests"),
+    ("tag", "vocabulary"),
+    ("type", "vocabulary"),
+    ("field", "vocabulary"),
+    ("status", "vocabulary"),
+    ("subject", "task_detail"),
+)
+
+
+def read_tool_for(what: str) -> str:
+    """The read tool that prints the id named *what*."""
+    word = str(what or "").lower()
+    for part, tool in _READ_TOOL_FOR:
+        if part in word:
+            return tool
+    return "projects_tree"
+
+
 def uuid_of(value: Any, what: str = "id") -> str:
-    """The canonical UUID string for ``value``, or a refusal the member can read."""
-    raw = str(value or "").strip()
+    """The canonical UUID string for ``value``, or a refusal the member can read.
+
+    A ``task:`` prefix on a task id is cut (``search_company`` prints it). A
+    task number is not resolved here, because this gate is synchronous. The
+    tool wrapper resolves it first, see :func:`resolve_task_refs`.
+    """
+    raw = strip_kind_prefix(
+        value, *(("task",) if "task" in str(what).lower() else ()), read_tool=read_tool_for(what)
+    )
     try:
         return str(UUID(raw))
     except (ValueError, AttributeError, TypeError) as exc:
+        tool = read_tool_for(what)
+        number = " A task number needs find_tasks." if raw.lstrip("#").isdigit() else ""
         raise GatewayRefusal(
-            f"{what} must be a UUID from an earlier tool result (full_id: …). Got {raw[:60]!r}."
+            f"{what} must be a UUID from an earlier tool result (full_id: …). "
+            f"Got {raw[:60]!r}. {tool} gives it.{number}"
         ) from exc
+
+
+_TASK_NUMBER = re.compile(r"^\s*#?\s*(\d{1,18})\s*$")
+
+
+async def _task_uuid_of_number(number: int) -> str:
+    """The id of task *number* in the member's org, through the search route.
+
+    The route is the one ``find_tasks`` uses. It answers only tasks that the
+    member may see, so a number outside their visibility is "not found" and
+    never an id. No new database read exists here.
+
+    A task number is unique in ONE root project, not in the org
+    (``UNIQUE (root_project_id, task_number)``, migration 146). Two visible
+    tasks with the number are a refusal that names each, and never a guess.
+    Both refusals carry no status, so the model reads this text as it is.
+    """
+    payload = await get("/projects/search", {"q": f"#{number}", "limit": 5})
+    hits = [
+        row for row in (payload or {}).get("rows") or []
+        if str(row.get("task_number")) == str(number) and row.get("id")
+    ]
+    if len(hits) == 1:
+        return str(hits[0]["id"])
+    if hits:
+        where = ", ".join(
+            f"full_id {row['id']} in {data(row.get('project_name') or '?')}" for row in hits
+        )
+        raise GatewayRefusal(
+            f"More than one task you can see has the number #{number}: {where}. "
+            "Give the full_id of the task you mean. find_tasks shows each one."
+        )
+    raise GatewayRefusal(
+        f"No open task #{number} is visible to you. find_tasks searches by words or by number."
+    )
+
+
+async def resolve_task_refs(value: Any) -> Any:
+    """*value* with each task number (``244`` or ``#244``) swapped for its id.
+
+    *value* is one task id, or a list of ids split by commas or lines. Text
+    that is not a bare number comes back untouched, for :func:`uuid_of`.
+    """
+    if not isinstance(value, str):
+        return value
+    parts = re.split(r"([,\n]+)", value)
+    out: list[str] = []
+    changed = False
+    for part in parts:
+        match = _TASK_NUMBER.match(part)
+        if match:
+            out.append(await _task_uuid_of_number(int(match.group(1))))
+            changed = True
+        else:
+            out.append(part)
+    return "".join(out) if changed else value
 
 
 def _template(method: str, path: str) -> str:
     """The manifest template of ``method path``, or ``""``."""
     route = route_for(method, path)
     return route.path if route is not None else ""
+
+
+class PreconditionFailed(GatewayRefusal):
+    """A 412 of ``core.require_precondition``: the row changed since the read
+    that gave the ``If-Match`` token (HRD-10a).
+
+    ``current`` is the route's ``detail.current``, the row as it is now, or
+    ``{}``. Its values can hold words of other people, so a caller fences
+    each value that it shows. It is a :class:`GatewayRefusal`, so each caller
+    that catches a refusal or reads ``status == 412`` keeps its path."""
+
+    def __init__(self, message: str, *, current: dict[str, Any], **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.current = current
+
+
+def _changed_since(status: int, body: Any) -> dict[str, Any] | None:
+    """The row of a precondition 412 (``detail.error`` is
+    ``precondition_failed``), ``{}`` when it has no row, or None for each
+    other response."""
+    if status != 412 or not isinstance(body, dict):
+        return None
+    raw = body.get("detail")
+    if not isinstance(raw, dict) or raw.get("error") != "precondition_failed":
+        return None
+    current = raw.get("current")
+    return dict(current) if isinstance(current, dict) else {}
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
@@ -139,6 +268,16 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         hint = "Not permitted."
     else:
         hint = f"Failed ({resp.status_code})."
+    current = _changed_since(resp.status_code, body)
+    if current is not None:
+        raise PreconditionFailed(
+            f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""),
+            current=current,
+            status=resp.status_code,
+            detail=detail,
+            fields=fields,
+            route=_template(method, path),
+        )
     raise GatewayRefusal(
         f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""),
         status=resp.status_code,

@@ -169,6 +169,10 @@ because it sits in the section that LOOP-0 extends.
    `number_sense.py`. The module exists, with the concentration check
    (task 3129). NUM-1 must extend it and not write a second one.
 
+LOOP-1 (task 3441) fixed items 2 to 4 on 2026-11-16: task 602 holds the
+evidence, `chat_run_continuity.md` §8 and `number_sense.md` state the fact of
+`main`.
+
 ---
 
 ## 3. Scope and non-goals
@@ -715,6 +719,7 @@ An app or a connector declares each kind once, in its manifest point.
 | `group` | The old-path group of `my_day_feed.md` §4.3 |
 | `why` | The template ids of the why line |
 | `source` | The provider id, or the job kind, or the connection |
+| `entity_types` | The entity types the kind may name. The declaration check refuses `person` (ALN-Q5) |
 | `fixtures` | One positive and one negative fixture |
 
 ### 6.3 `nudges` and `insights`
@@ -812,11 +817,88 @@ mute makes it `none`.
 - **The mute stays a choice.** At the same count, the menu offers "Stop
   showing <kind>" (`my_day_feed.md` §6.6). The lower class needs no tap.
 - **The class comes back** when the member acts on a card of the kind. A
-  member can also undo it from "Why am I seeing this".
+  member can also undo it from "Why am I seeing this". LOOP-5 builds neither
+  (L9).
 - **A rare kind keeps its prior.** A member who saw a kind fewer than 5 times
   gets the prior of §7.4. So silence on a rare kind never reads as "no value".
-- **Where.** The gate of `proactive_reach.md` §5.1 reads the lowered class.
-  LOOP-5 builds it.
+  This floor binds the affinity and the exploration only. The class has no
+  floor (L1).
+- **Where.** With `BRIEF_EXCEPTIONS` off, the gate of `proactive_reach.md`
+  §5.1 reads the lowered class. With it on, `exceptions.admit` decides and
+  reads no class, so L4 applies the step after it. LOOP-5 builds it.
+
+**The pins of LOOP-5 (2026-11-16, from the audit of task 3445).**
+
+LOOP-4a owns the mutes, the affinity, the count read and the day value. LOOP-5
+owns only the step down at the interrupt gate. It adds no mute test in reach
+and no second read of the counts.
+
+- **L1, the threshold.** The learner lowers a kind for a member when
+  `feed_decide._habits` gives the kind a `not_useful` count of 3 or more. The
+  count is by `not_useful_at`, on the main kind, inside 30 days (§7.2 P2).
+  One constant, `LOWER_AFTER = 3`, holds the count until LOOP-7 adds the
+  `lower_after` field of §6.2. The class has no floor of 5 shown cards. Three
+  "Not useful" are three acts of the member, not silence. In this slice, the
+  class comes back when the next day value finds a count under 3.
+- **L2, one step down.** The step moves the class of a lowered kind one place
+  down in `classes.RANK`. So `interrupt` becomes `brief`, and `brief` becomes
+  `none`. The step applies to each kind of the card before `reach_class`
+  takes the strongest of the main and the folded kinds. So a folded mention
+  that is not lowered still interrupts.
+- **L3, what never moves.** The learner never lowers `notify_me` or the three
+  reminder kinds of `classes.NOT_ON_WHATSAPP`. So `push_channel.py`, which
+  reads `REACH_CLASS` for the reminders, does not change. A needs kind
+  (`feed_decide.NEEDS_KINDS`) goes no lower than `brief`. **PROPOSED for the
+  owner:** `needs_reply`, `approval`, a `notification` that assigns or
+  mentions, `agent_asks`, `agent_questions` and `decision` may drop to
+  `brief`. The step only removes a message, and the card stays in the feed
+  and in the brief. This default holds until the owner answers.
+- **L4, both branches.** The step binds both branches of
+  `plan.interrupt_candidates`. With rules off, a card interrupts only when
+  its lowered class is `interrupt` or `urgent`. With `BRIEF_EXCEPTIONS` on, a
+  card that `exceptions.admit` lets in still waits for the brief when the
+  step takes it out of `interrupt` and `urgent`. An explicit request passes,
+  because L3 never lowers `notify_me`. A `block_soon` kind on a card with
+  `facts.notify_me` keeps its class in both branches, because the member
+  asked for that alert with `block_notify`. The member's own setting wins
+  over the learner.
+- **L5, the pair does not move.** `pair`, `reach_print` and `line` read
+  `reach_kind`, and `reach_kind` takes no lowered set. So the pair of a card
+  stays the same when the set changes, and one reason interrupts once.
+- **L6, one read, kept for the day.** The set comes from the same `_habits`
+  result as the affinity. `_learn` reads `_habits` only when it computes the
+  day value (P6). So `_learn` keeps the set beside the day value, under
+  `tenant_redis.key("my_day", "lowered", <member>, <feed day>)`, with the TTL
+  of P6. A read that finds the affinity and no set computes both again.
+  `Learned.lowered` and `Applied.lowered` carry the set to
+  `loop.Snapshot.lowered`, whose default is `frozenset()`. The set goes on no
+  card, so the feed answer keeps its bytes and the read cache does not
+  change.
+- **L7, a fault fails open.** A learned fault gives the empty set, so each
+  kind keeps the class of the table, as with the flag off. Fail open is the
+  choice, because a held interrupt can hide real work, and an extra one stays
+  inside the budget of `proactive_reach.md` §6. A failed prefs read drops the
+  mutes in the same way (P5).
+- **L8, the brief does not change.** `plan.brief_items` and
+  `brief/gather.py` read the group of a card, not its class. So a step from
+  `brief` to `none` has no effect in this slice, and a lowered card stays in
+  the brief.
+- **L9, not in this slice.** LOOP-5 does not bring the class back after an act
+  (bullet 2). A later slice, LOOP-5b, does that, and it has no row yet.
+  LOOP-5 builds no undo from "Why am I seeing this", which waits for LOOP-4b.
+  It builds no exploration (§7.5), no `not_here` button (RE-6), no list in
+  Settings → Notifications (RE-7) and no change to the brief (L8). LOOP-5
+  writes no log row for a lowered card, because the CHECK
+  `reach_signal_log_outcome_known` (migrations 266 and 271) takes no new
+  outcome without a migration. RE-6 later adds its `not_here` count to the
+  same set (`proactive_reach.md` §10.3).
+- **L10, the flag.** `MY_DAY_LEARN_ORGS` gates LOOP-5, and LOOP-5 adds no
+  flag. With the flag off, `state.learned` gives no set, so reach plans as
+  before. The entry of the flag in `work_plan.md` §6 already gives LOOP-5 the
+  rest of the effect on reach. The flip is the `enforcement-flip` act, after
+  the owner approves the preview (D218). If the flag is on for an org in
+  production when LOOP-5 merges, LOOP-5 is not dark, and its merge waits for
+  the owner's approval.
 
 ### 7.4 The cold start
 
@@ -977,7 +1059,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-3** (task 3443) | 1 | `CORE_EVENTS_ORGS` for HathiLabs. It gives a week of event evidence before rung 4 adds emit sites | `ai_studio.md` E12 | LOOP-Q4 | One person edit logs one `people.person.updated` event. The reload line is in the task | LOW · AGENT-SAFE under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
 | **LOOP-4b** | 2 | "Why am I seeing this": the card field, the clauses, the menu item and the panel | `my_day_feed.md` MD-9 | LOOP-4a | NOT DISPATCHABLE. The spec must name the field, the template of each clause, when each clause shows, the client files and a done-when | STANDARD · waits for a spec edit |
-| **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3) | `proactive_reach.md` §4.2, §5.1 | LOOP-4a | A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower. Another member keeps the class. No path raises a class | STANDARD · AGENT-SAFE |
+| **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |
 | **MM-2**, **PZ-15**, **MM-5** | 3 | Habits (2879), proposals with Undo (309), a habit to a kept habit (2882) | `personalization.md` §12, §19 | MM-1 | Their own rows | Their own tiers · AGENT-SAFE |
 | **MM-6** | 3 | The page "How I work" (2883) | `personalization.md` §19.9 | MM-2, PZ-15 | Its own row | STANDARD · owner preview |
@@ -1058,6 +1140,15 @@ Run these for LOOP-5:
 
 ```bash
 uv run pytest tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_reach_plan.py -q
+```
+
+LOOP-5 also runs these, with the dev database up (R8). A run that reports a
+skipped test fails, as `proactive_reach.md` §18 says.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 1200 uv run pytest tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_exceptions.py tests/unit/test_reach_r8.py tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_my_day_cache.py -q
+timeout 600 uv run pytest tests/unit/test_flag_reload.py tests/unit/test_flag_doc_sorted.py tests/unit/test_tenant_redis.py -q
 ```
 
 Each later slice names its own test files in its row.

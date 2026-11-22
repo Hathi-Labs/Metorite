@@ -89,9 +89,10 @@ def run_ceiling_text(credits: Decimal) -> str:
 def run_ceiling_scope(credits: Decimal) -> Iterator[str]:
     """Send ``X-CC-Run-Ceiling: <credits>`` on each model call in this block.
 
-    The headless turn (AUTO-8b-2b) is the one caller. It binds the credits
-    that its goal has left, at the start of each round. A chat call binds
-    nothing, so it sends no header.
+    The headless turn (AUTO-8b-2b) binds the credits that its goal has left,
+    at the start of each round. A skill test (TOF-3b F4b,
+    ``gateway.studio.skill_tests.run_suite``) binds the credits that its cap
+    has left, for each test. A chat call binds nothing, so it sends no header.
 
     🔴 The header can only LOWER the Router's ceiling of the run, never raise
     it. The Console holds that rule (``customer_console.credits.run_ceiling_for``).

@@ -1648,6 +1648,23 @@ main[data-askbar-clear]::after {
   }
 }
 
+/* AO-3: the resting elephant of the "AI is taking a breather" card
+   (`components/AiRestingArt.tsx`). It takes ONE slow breath when the card
+   appears, then stands still. It never loops: a failed act is Attention in
+   DESIGN_SYSTEM.md §4b, and Attention never loops. It moves `transform`
+   only, from its feet. Under reduced motion it does not move. */
+@keyframes ai-rest-breathe {
+  0%, 100% { transform: scale(1, 1); }
+  50%      { transform: scale(1.015, 1.035); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ai-rest-breathe {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: ai-rest-breathe 1.2s ease-in-out 1;
+  }
+}
+
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the
    library renders unstyled: tables + the column-resize affordance, selected
@@ -3055,6 +3072,27 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+/*
+ * A chat row on a touch device (task 3566). The hover strip is hidden there
+ * and the row has its own "More actions" button, so the age and the run dot
+ * stay in place. Without this, a tap that leaves a sticky `:hover` on the row
+ * would blank the age and the dot, and no strip would take their place. The
+ * touch test is the one shared variant `pointer-coarse`, never a second
+ * media query. Fence: `lib/shell/sessionPickerStrip.test.ts`.
+ */
+@variant pointer-coarse {
+  .group[data-session-row][data-has-actions]:hover .rail-row-meta,
+  .group[data-session-row][data-has-actions]:has(:focus-visible) .rail-row-meta {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
   }
 }
 
