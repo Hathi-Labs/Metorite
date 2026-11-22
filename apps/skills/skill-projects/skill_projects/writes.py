@@ -442,9 +442,38 @@ async def _named(
         return row
 
 
-async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
-    """The one status row a spoken name means, or a refusal that lists them."""
-    return await _named(await _statuses_of(project_id), status, "status", "statuses")
+async def _lanes_of_task(project_id: str, task_id: str) -> list[dict[str, Any]]:
+    """The lanes a task can be in. The project read first, and the task's own
+    lanes read when the project is not visible (Task 3865).
+
+    A member who holds a task by assignment alone cannot see its project, so
+    ``/nodes/{id}/statuses`` answers 404. ``/my/tasks/{id}/lanes`` is behind
+    the task, and it returns the lanes with no counts and no names of the
+    project. Only a 404 falls back, and a refusal of the task read raises the
+    first refusal, so the member sees one answer.
+    """
+    try:
+        return await _statuses_of(project_id)
+    except GatewayRefusal as first:
+        if first.status != 404 or not str(task_id or "").strip():
+            raise
+        tid = uuid_of(str(task_id), "task_id")
+        try:
+            return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+        except GatewayRefusal:
+            raise first from None
+
+
+async def _resolve_status(
+    project_id: str, status: str, task_id: str = "",
+) -> dict[str, Any]:
+    """The one status row a spoken name means, or a refusal that lists them.
+
+    *task_id* names the task being changed. It lets an assignee who cannot see
+    the project resolve the name through the task's own lanes.
+    """
+    rows = await _lanes_of_task(project_id, task_id) if task_id else await _statuses_of(project_id)
+    return await _named(rows, status, "status", "statuses")
 
 
 #: H-236: the refusal of an agent assignee in a run that may not send. Such a
@@ -576,22 +605,80 @@ async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     )
 
 
-async def _unknown_addresses(who: list[str]) -> list[str]:
-    """The addresses among ``who`` that the people directory does not know.
+async def _names_known(addresses: list[str]) -> set[str]:
+    """The lower-case addresses of *addresses* that the people directory names.
+    One exact lookup (`/people/names`), not the picker: the picker matches by
+    substring and only among active people (S6 review)."""
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    return {str(k).lower() for k in (payload.get("names") or {})}
+
+
+async def _cannot_open(addresses: list[str]) -> list[str]:
+    """The addresses of *addresses* (known to the directory) whose person cannot
+    open a task given to them: not active, or no login (task 3636). One read of
+    ``/people/reach``, none for an empty list. A failed read raises, so no card
+    shows with a warning missing."""
+    if not addresses:
+        return []
+    reach = (await get("/projects/people/reach", {"emails": ",".join(addresses)})) or {}
+    listed = {str(a).lower() for a in reach.get("not_reachable") or []}
+    return [a for a in addresses if a.lower() in listed]
+
+
+async def _address_check(who: list[str]) -> tuple[list[str], list[str]]:
+    """The addresses among ``who`` that the people directory does not know
+    (strangers), and the known ones whose person cannot open a task given to
+    them (task 3636).
 
     An assignee is a bare string the route accepts whatever it is (D-PM-4),
     so an address passes through ``_resolve_assignee`` unchecked. The card
     names the ones the picker cannot find, so a typo is seen before it is
     signed (H-162). Agents are not addresses and are skipped.
+    ``/people/names`` answers the strangers, and ``/people/reach`` (only when
+    someone is known) answers the rest.
     """
     addresses = [a for a in who if "@" in a]
     if not addresses:
+        return [], []
+    known = await _names_known(addresses)
+    strangers = [a for a in addresses if a.lower() not in known]
+    return strangers, await _cannot_open([a for a in addresses if a.lower() in known])
+
+
+async def _unknown_addresses(who: list[str]) -> list[str]:
+    """The addresses among ``who`` that the people directory does not know
+    (H-162). The names read only: a card that asks for the strangers alone
+    does not pay for the reach read."""
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
         return []
-    # One exact lookup (`/people/names`), not the picker: the picker matches
-    # by substring and only among active people (S6 review).
-    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
-    known = {str(k).lower() for k in (payload.get("names") or {})}
+    known = await _names_known(addresses)
     return [a for a in addresses if a.lower() not in known]
+
+
+#: The card's key for a known person who cannot open the task, and the client
+#: label of it (``cardFields.ts``). One key and no reason: see
+#: ``people.core.not_reachable``.
+CANNOT_OPEN_KEY = "cannot open the task"
+
+
+def _reach_rows(cannot: list[str]) -> dict[str, str]:
+    """The card row for the known people who cannot open the task: one comma
+    list, each address once. Empty when nobody is listed."""
+    return {CANNOT_OPEN_KEY: data(", ".join(dict.fromkeys(cannot)))} if cannot else {}
+
+
+async def _assignee_rows(who: list[str]) -> dict[str, str]:
+    """All the warning rows of a card for the people in ``who``: the
+    strangers (``not in the directory``) and the known people who cannot open
+    the task (``cannot open the task``). Empty when every address is a person
+    who can. One names read, and one reach read when someone is known."""
+    strangers, cannot = await _address_check(who)
+    rows: dict[str, str] = {}
+    if strangers:
+        rows["not in the directory"] = data(", ".join(dict.fromkeys(strangers)))
+    rows.update(_reach_rows(cannot))
+    return rows
 
 
 def _split(csv: str) -> list[str]:
@@ -1915,9 +2002,7 @@ async def _assignee_card_lines(who: list[str]) -> dict[str, Any]:
     if not who:
         return {}
     lines = {"assignees": ", ".join(who)}
-    strangers = await _unknown_addresses(who)
-    if strangers:
-        lines["not in the directory"] = ", ".join(strangers)
+    lines.update(await _assignee_rows(who))
     return lines
 
 
@@ -2331,7 +2416,9 @@ async def _plan_task_edit(
         before["description"] = (task.get("description") or "")[:200]
     lane: dict[str, Any] | None = None
     if status.strip():
-        lane = await _resolve_status(str(task.get("project_id")), status)
+        lane = await _resolve_status(
+            str(task.get("project_id")), status, str(task.get("id") or ""),
+        )
         payload["status_id"] = str(lane.get("id"))
     if due.strip():
         payload["due_at"] = due.strip()

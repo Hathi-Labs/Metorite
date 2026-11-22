@@ -169,6 +169,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # moves what the chat can do and spends model tokens, so only the owner
     # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
     "TOOL_SEARCH_ORGS",
+    # Task 3559: the folder where the touch-target e2e spec writes its report
+    # (workbench/control_plane/e2e/touch-targets.spec.ts). A test-only read of
+    # the test runner. No integration may write it.
+    "TOUCH_OUT",
     # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
@@ -240,6 +244,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the admin's text about each server to the context, so only the operator
     # writes it.
     "CONNECTED_SYSTEMS_ORGS",
+    # CSY-4: the orgs where a turn that names a connected server evicts a
+    # sticky mail pack. It moves the precedence of a mail rule, so only the
+    # owner writes it.
+    "MCP_MAIL_PRECEDENCE_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
