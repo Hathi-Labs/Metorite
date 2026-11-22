@@ -4,7 +4,9 @@
 
 **Task:** PPL-0, Metorite task 3867 (project Organisation). **Id prefix:** PPL-n, and PPL-Qn for the owner questions (unused on `main` at 2026-11-22, R2).
 
-**Verified against code on 2026-11-22** at `origin/main` `29c32d611`. Every path in §3 was read on that commit.
+**Verified against code on 2026-11-22** at `origin/main` `29c32d611`. Each code path in §3 exists on that commit, checked with `git ls-files` and grep. The rules that §3 cites come from their owning specs.
+
+**Epic:** WS-PPL, task 3872. The tier A slices are tasks 3873 to 3879, and the rung 1 and rung 2 demos are tasks 3880 and 3881.
 
 **Research record:** `project-docs/research/people_intelligence_2026-11.md`. Part 1 covers HR products and the law. Part 2 covers workplace games and fair scores.
 
@@ -68,9 +70,9 @@ marketing, and software development are all very different kinds of roles
 
 | Phase | What people get | Rungs | Owner answers | Why this order |
 |---|---|---|---|---|
-| **1. Everyone works to the goals** | Goals at week, month and quarter, with measures. The share of work under each goal, and the work under none | 1, 2 | PPL-Q1 to PPL-Q4 | Scores and reviews measure against goals, so goals come first |
+| **1. Everyone works to the goals** | Goals for the month, quarter and year with measures, and weekly goals through the Cycle. The share of work under each goal, and the work under none | 1, 2 | PPL-Q1 to PPL-Q4 | Scores and reviews measure against goals, so goals come first |
 | **2. Know your people** | Skills from evidence, "who knows X", my work page, personal GitHub by choice | 3, 5 | PPL-Q7 | Most of it reverses no decision |
-| **3. Scores that people improve** | My scorecard with next steps and team boards. Then a pilot of role boards, seasons and badges with one team | 4, 6 | PPL-Q12 to PPL-Q14 | It motivates people, and the pilot measures whether it works for us |
+| **3. Scores that people improve** | My scorecard with next steps and team boards. Then a pilot of role boards, seasons and badges with one team | 4, 6 | PPL-Q12 to PPL-Q16 | It motivates people, and the pilot measures whether it works for us |
 | **4. Fair reviews** | Reviews from cited evidence, and the team view that keeps the strong people of a weak team | 7, 8 | PPL-Q5, PPL-Q8 | It uses the evidence and the measures of phases 1 to 3 |
 | **5. Decisions and agents** | Decision records, outside agents that propose, and hiring gaps | 9, 10, 11 | PPL-Q9 to PPL-Q11 | The highest legal weight, so it waits for a legal review |
 
@@ -127,7 +129,8 @@ Most HR tools ask people to type this in. Metorite can read it.
 | Teams | A team is an `org_group` (D204.8), with `org_group_member.role = 'lead'` | `projects_reports.md` §7.1 rule 4 | Team goals, team boards and team views read it |
 | Code work | The Metorite GitHub App and the task references | `infra/postgres/282_github_app.sql`, `255_pm_task_refs.sql`, `github_integration.md` | Tier B reads pull requests of company repositories |
 | Deal work | CRM change history | `routes/crm/change_log.py`, `crm_conversational.md` §4 | Tier B reads who moved a deal |
-| Targets and games in the CRM | Zoho parity means "targets and KPIs" (Zoho Motivator) | `crm_platform.md` (the Gamescope note) | Tier S is the one place for targets and games. The CRM builds no second one |
+| Targets, wins and streaks in the CRM | CRM-I2 plans a monthly ₹ target for each rep in a new `crm_targets` table (UX-Q2 answered). CRM-X6 and CRM-X7 plan a win moment and a private streak (UX-Q1 answered). F11 says Zoho parity means targets and KPIs, not badges. None of it is built | `crm_platform.md` F11, CRM-I2, CRM-X6, CRM-X7, UX-Q1, UX-Q2 | One store of targets for every role (PPL-Q15). Tier S adds no streak, and PPL-Q16 asks about CRM-X7 |
+| Company memory | The Knowledge fact layer never holds a performance rating | `knowledge_curation.md` §10.4 | No review, rating or score enters the fact layer, the retrieval index or Mira's memory (§5.3) |
 | Mail | The one mailbox seam | `routes/email/mailbox_access.py:103` (`mailbox_predicate`) | Tier B reads only mail that a record or a task links. See §5.9 |
 | Waits and approvals | "Needs you" | `routes/shell/waiting.py`, `waiting_on_me.md` | A review to write and a decision to sign are kinds of the seam |
 | Cards in My Day | The feed registry | `routes/shell/feed.py`, `my_day_feed.md` | A number to enter, a skill to confirm and a next step are card kinds |
@@ -158,9 +161,11 @@ A measure has these fields:
 
 ### 4.2 A period and a parent
 
-**Each Goal has a period:** week, month, quarter or year. A goal of a week starts on Monday. The other periods start on the first day of the calendar period. An org setting can move the quarter start (for example, April for an Indian financial year).
+**Each Goal has a period:** month, quarter or year. A period starts on the first day of the calendar period. An org setting can move the quarter start (for example, April for an Indian financial year).
 
-**A Goal may support one parent Goal.** A company goal for the quarter has team goals for the month under it. A team goal may have project goals for the week under it. The tree is at most 3 levels deep. A goal of a shorter period may support a goal of a longer period, never the reverse.
+**A week is the job of the Cycle.** `project_management_app.md` §13.3 gives a Cycle a time box and a cycle goal. So a weekly goal is the cycle goal of a weekly Cycle, and the Cycle names the Goal that it serves. Tier A adds no week period, because a second weekly record would be a parallel seam. D199.4 hides the Cycle unless a project picks a style that uses it, so PPL-Q2 asks the owner.
+
+**A Goal may support one parent Goal.** A company goal for the year can have company goals for the quarter under it. A quarter goal can have team goals for the month under it. The tree is at most 3 levels deep. A goal of a shorter period may support a goal of a longer period, never the reverse. This amends "a Goal sits at the top" (`project_management_app.md` §13.3, D195, D199).
 
 **A Goal may belong to a team.** Its owner is a member, and it may name one `org_group` as its team. D199.2 refused team goals, so PPL-Q3 asks the owner.
 
@@ -193,15 +198,15 @@ Rules:
 
 ### 4.5 A member sees their own alignment
 
-My Day and My Profile show one line for the member: "This month, 14 of your 20 done tasks served a company goal." It also lists the member's own unlinked tasks with a suggested epic.
+My Day and My Profile list the member's own tasks under no goal, each with a suggested epic. One tap links a task.
 
-**Only the member sees this line in tier A.** A lead sees the team total and never the line of one person. A per-person line for a lead is tier B (§5.7).
+**Tier A shows no number about a person.** `project_alignment.md` §1.2 says that no view counts people, and that binds a view of oneself too. So the list shows tasks, not a share. A share of a person's own work is tier S (§5a.3), and a lead's view of it is tier B (§5.7). A lead sees the team total only.
 
 ### 4.6 The data shape
 
 R1: the builder takes the next free migration number at build time. R5: each new table is tenant-scoped under FORCE row level security. R6: each column is nullable, with a default.
 
-- **The Goal task** gains `goal_period` (`week`, `month`, `quarter`, `year`), `goal_period_start` (a date), `goal_parent_id` (a Goal task id) and `goal_team_id` (an `org_group` id). WM-5 decides whether these are columns of `pm_tasks` or a side table. This spec follows WM-5.
+- **The Goal task** gains `goal_period` (`month`, `quarter`, `year`), `goal_period_start` (a date), `goal_parent_id` (a Goal task id) and `goal_team_id` (an `org_group` id). WM-5 decides whether these are columns of `pm_tasks` or a side table. This spec follows WM-5. A weekly Cycle gains the Goal that it serves, on the Cycle record of SP-5.
 - **`pm_goal_measures`** (new): `id`, `organization_id`, `goal_task_id`, `name`, `unit`, `direction`, `start_value`, `target`, `source_kind`, `source_ref`, `owner_email`, `created_at`. A measure takes the visibility of its goal task. It has no grant of its own. Tier S adds `subject_email` for a measure of one person (§5a.2).
 - **`pm_goal_measure_points`** (new): `measure_id`, `organization_id`, `at`, `value`, `run_id` (sourced) or `entered_by` (manual). `entered_by` is a record of the act. No query groups by it (ALN-Q5).
 - **Alignment** is a read, not a table. It has no cache in v1.
@@ -212,17 +217,17 @@ Rung 1 needs no owner decision beyond WM-5. Rung 2 needs PPL-Q1 to PPL-Q4.
 
 | Row | Rung | Scope | Done when | Risk | Gate | Depends on |
 |---|---|---|---|---|---|---|
-| **PPL-A1** | 1 | The alignment read (§4.4): share of done work by goal, work under no goal, goals with no work. Server only, behind `GOAL_ALIGN_ORGS` (default empty) | A space with 2 goals, 3 linked epics and 4 unlinked tasks gives the right shares and lists. A hidden task counts and is never named. `tests/unit/test_goal_alignment_r8.py` (new) passes | STANDARD | AGENT-SAFE | WM-5 |
-| **PPL-A2** | 1 | The Alignment panel in the Roadmap view: one bar per goal, the "work under no goal" list, and the one-tap link from the suggester. Chat twin `goal_alignment` | A member links an unlinked task in one tap, and the bar moves. Captures in light mode, compact density and at 390 px. Chat parity row passes | STANDARD | AGENT-SAFE | PPL-A1, RM-1 |
-| **PPL-A3** | 1 | The member's own line (§4.5) in My Day and My Profile | A member sees their own share and unlinked tasks. A second member never sees it. `tests/unit/test_goal_alignment_r8.py` covers the self rule | STANDARD | AGENT-SAFE | PPL-A1 |
-| **PPL-A4** | 2 | Period, parent and team on a Goal (§4.2). The migration and the Goal form | A quarter goal takes two month goals. A fourth level is refused. A week goal cannot parent a quarter goal. R8 test passes | HIGH (migration) | AGENT-SAFE after PPL-Q2, PPL-Q3 | WM-5 |
-| **PPL-A5** | 2 | Measures with a manual source (§4.1, §4.3 rule 3), the two tables, the card for a number, and the chat twin `set_measure` | A goal with 2 measures shows progress against target. The card saves a number in one tap. R8 test passes | HIGH (migration) | AGENT-SAFE after PPL-Q1, PPL-Q4 | PPL-A4 |
-| **PPL-A6** | 2 | Sourced measures: Projects and CRM, refreshed on the workflow engine, each value through the number check | A CRM measure moves when a deal is won, within one refresh. A value that fails the number check is not saved, and the goal says why | HIGH (new job) | AGENT-SAFE after PPL-Q1 | PPL-A5, SEM-1a |
-| **PPL-A7** | 2 | The goal tree view: company to team to project goals, each with its measures and its alignment bar | The owner sees a quarter goal, its month goals and their measures on one page at 390 px and at desktop width | STANDARD | AGENT-SAFE | PPL-A4, PPL-A5 |
+| **PPL-A1** (task 3873) | 1 | The alignment read (§4.4): share of done work by goal, work under no goal, goals with no work. Server only, behind `GOAL_ALIGN_ORGS` (default empty) | A space with 2 goals, 3 linked epics and 4 unlinked tasks gives the right shares and lists. A hidden task counts and is never named. `tests/unit/test_goal_alignment_r8.py` (new) passes | STANDARD | AGENT-SAFE | WM-5 |
+| **PPL-A2** (task 3874) | 1 | The Alignment panel in the Roadmap view: one bar per goal, the "work under no goal" list, and the one-tap link from the suggester. Chat twin `goal_alignment` | A member links an unlinked task in one tap, and the bar moves. Captures in light mode, compact density and at 390 px. Chat parity row passes | STANDARD | AGENT-SAFE | PPL-A1, RM-1 |
+| **PPL-A3** (task 3875) | 1 | The member's own tasks under no goal (§4.5) in My Day and My Profile, with no count | A member sees their own unlinked tasks and links one in one tap. A second member never sees the list. No number about the person shows. `tests/unit/test_goal_alignment_r8.py` covers the self rule | STANDARD | AGENT-SAFE | PPL-A1 |
+| **PPL-A4** (task 3876) | 2 | Period, parent and team on a Goal (§4.2). The migration and the Goal form | A quarter goal takes two month goals. A fourth level is refused. A month goal cannot parent a quarter goal. A weekly Cycle links to a month Goal. R8 test passes | HIGH (migration) | AGENT-SAFE after PPL-Q2, PPL-Q3 | WM-5 |
+| **PPL-A5** (task 3877) | 2 | Measures with a manual source (§4.1, §4.3 rule 3), the two tables, the card for a number, and the chat twin `set_measure` | A goal with 2 measures shows progress against target. The card saves a number in one tap. R8 test passes | HIGH (migration) | AGENT-SAFE after PPL-Q1, PPL-Q4 | PPL-A4 |
+| **PPL-A6** (task 3878) | 2 | Sourced measures: Projects and CRM, refreshed on the workflow engine, each value through the number check | A CRM measure moves when a deal is won, within one refresh. A value that fails the number check is not saved, and the goal says why | HIGH (new job) | AGENT-SAFE after PPL-Q1 | PPL-A5, SEM-1a |
+| **PPL-A7** (task 3879) | 2 | The goal tree view: company to team to project goals, each with its measures and its alignment bar | The owner sees a quarter goal, its month goals and their measures on one page at 390 px and at desktop width | STANDARD | AGENT-SAFE | PPL-A4, PPL-A5 |
 
-**Demo of rung 1.** The owner opens Roadmap. Each goal shows its share of the last 30 days of done work. A list shows 12 tasks under no goal. The owner links 3 of them in 3 taps.
+**Demo of rung 1 (task 3880).** The owner opens Roadmap. Each goal shows its share of the last 30 days of done work. A list shows 12 tasks under no goal. The owner links 3 of them in 3 taps.
 
-**Demo of rung 2.** The owner sets "₹40 lakh new revenue this quarter" with a CRM measure, and two team goals for November under it. A won deal moves the bar the same hour.
+**Demo of rung 2 (task 3881).** The owner sets "₹40 lakh new revenue this quarter" with a CRM measure, and two team goals for November under it. A won deal moves the bar the same hour.
 
 ---
 
@@ -283,6 +288,8 @@ An evidence item is a pointer: `{person, kind, ref, role, at, goal_task_id?}`. A
 
 **A review draft is private until release.** The subject sees the evidence at all times, and sees a review when the cycle releases it.
 
+**No score or rating enters company memory.** `knowledge_curation.md` §10.4 already keeps a performance rating out of the fact layer. Tier B and tier S data also stays out of the retrieval index and Mira's memory. A chat tool reads it live through the People seam, as the caller.
+
 ### 5.4 Skills from evidence (fits today)
 
 Metorite reads a person's evidence and proposes skills. Each proposed skill names its evidence items and a confidence (low, medium, high). The subject gets one card: "Add 'firmware' to your skills? From 6 tasks and 2 pull requests." One tap accepts, and the subject can edit or refuse it.
@@ -293,7 +300,7 @@ Metorite reads a person's evidence and proposes skills. Each proposed skill name
 
 ### 5.5 Find a person for a team (fits today)
 
-**"Who knows X?"** The founder asks in the chat or in the People app. Metorite answers with the people whose confirmed skills or evidence match, each with the 3 strongest evidence items. The list sorts by how well the evidence matches the need. That is an assignment question, which `people_center_app.md` §1 already owns. D-PC-14 allows it: "ranking TASKS by risk is the product".
+**"Who knows X?"** The founder asks in the chat or in the People app. Metorite answers with the people whose confirmed skills or evidence match, each with the 3 strongest evidence items. The list sorts by how well the evidence matches the need. That is the assignment suggester of `people_center_app.md` §6.6: candidates, plural, ranked, each with its match reason, load and confidence. D-PC-10 (§6.5) binds the answer: a sentence shown to a person holds only what that person may see. So each evidence item resolves as the caller.
 
 It answers UC-5 and most of UC-8. "Team B lacks X" becomes "find people with X outside team B".
 
@@ -393,6 +400,7 @@ Tier B gets slice rows when the owner answers PPL-Q5. Until then each rung is a 
 3. Each volume measure has a quality pair. A drop in quality cuts the score more than volume adds.
 4. The score is the weighted attainment, from 0 to 100. The page shows each weight.
 5. The score is plain arithmetic, and no model sets it. AI explains the score and suggests a next step. AI never sets or changes a score.
+6. A target is **committed** or **stretch**. A committed target aims at 100%. For a stretch target, 60 to 70% is a good result, as in Google's OKR grading. The page shows the kind of each measure.
 
 **Why attainment makes roles fair.** A sales rep at 90% of quota and an engineer at 90% of the work they committed each stand at 90% of their own plan. So the fairness moves into the targets, and the lead and the person set those together.
 
@@ -400,7 +408,7 @@ Tier B gets slice rows when the owner answers PPL-Q5. Until then each rung is a 
 
 | Role family | Outcome measures | Quality pair | Source |
 |---|---|---|---|
-| Sales | Revenue won against target, pipeline added | Revenue kept after 90 days, discount inside policy | CRM |
+| Sales | Revenue won against target, pipeline added | Revenue kept after 90 days, discount inside policy | CRM, with the one target store of PPL-Q15 |
 | Marketing | Qualified leads sourced, pipeline influenced | Lead-to-deal rate | CRM |
 | Engineering | Committed work delivered in the cycle: the tasks and epics done, of those committed | Changes reverted or reopened, reviews given to others | Projects, GitHub App |
 | Support | Tickets resolved inside the target time | Tickets reopened, customer rating | Projects (the ticket type) |
@@ -427,7 +435,7 @@ A next step is a suggestion. The person may make it a task with one tap.
 | **Team board** | Teams | Every member | Team goal attainment. It is fair across roles, because each team has its own targets |
 | **Role board** | People of one role family who opted in | The people on that board | At least 8 people opted in, and an admin may raise the floor. It shows the top 3 and "your band": top third, middle or rest. It never shows a full list or the names at the bottom |
 | **Recognition** | Anybody | Every member | Badges for effort and quality: "closed every review", "helped 3 people on their tasks", "kept the docs current". No rank and no streak |
-| **Lead view** | The members of the lead's teams | The lead | The attainment of each measure, as in §5.7. Never the score total, the band or the board place |
+| **Lead view** | The members of the lead's teams | The lead | The attainment of each committed measure, as in §5.7. Never a stretch measure, the score total, the band or the board place |
 
 **A season is a month or a quarter**, as the org sets. Each season starts at zero. Old seasons stay in the person's own history only.
 
@@ -436,7 +444,7 @@ A next step is a suggestion. The person may make it a task with one tap.
 ### 5a.5 Opt-in, and leaving
 
 1. An org turns tier S on with `PEOPLE_GAME_ORGS`. The switch starts empty, so it is off.
-2. In an org that turned it on, each person gets a private scorecard.
+2. In an org that turned it on, each person gets a private scorecard. Targets are part of the work, so the scorecard is on for each person. The person may hide the score number and keep the list of targets.
 3. Each person chooses to join a role board, and may leave at any time.
 4. A person who leaves goes off the board at once. Nobody sees who left.
 5. Where a works council exists (Germany), the admin confirms a works agreement before the switch turns on.
@@ -450,7 +458,9 @@ A next step is a suggestion. The person may make it a task with one tap.
 - The fence `tests/unit/test_score_wall.py` makes this fail in CI (§9).
 - The opt-in page says the rule in plain words, so people trust it.
 
-PPL-Q12 (c) lets the owner remove the wall. This spec recommends against it.
+**What the wall does not hide.** A review may read the attainment of a committed target, because that is a fact about the work, as quota attainment is in sales today. A lead who sees each attainment and the weights can work out the total by hand. So the wall keeps a machine-made total, band or rank out of a decision. It does not hide the facts under it.
+
+Stretch targets stay out of reviews, as Google keeps its OKRs out. PPL-Q12 (b) gives the strict form, where no personal target enters a review. PPL-Q12 (d) removes the wall, and this spec recommends against it.
 
 ### 5a.7 A pilot first
 
@@ -477,7 +487,7 @@ R1, R5 and R6 bind as in §4.6.
 
 | Rung | What it gives | Owner answer needed | Demo |
 |---|---|---|---|
-| 4 | My scorecard with next steps (§5a.2, §5a.3) and the team board | PPL-Q12, PPL-Q13 | A member sees their score, its 2 gaps and a next step. Every member sees the team board |
+| 4 | My scorecard with next steps (§5a.2, §5a.3) and the team board | PPL-Q12, PPL-Q13, PPL-Q15 | A member sees their score, its 2 gaps and a next step. Every member sees the team board |
 | 6 | Role boards, seasons and badges, as a pilot with one team (§5a.4, §5a.7) | PPL-Q12, PPL-Q14 | The pilot team plays one season. The owner reads the four pilot numbers |
 
 ---
@@ -591,10 +601,10 @@ Each goal may name the skills it needs. Metorite compares them with the confirme
 
 | Rung | Tier | Slices | Owner answers | Demo |
 |---|---|---|---|---|
-| 1 | A | PPL-A1 to PPL-A3 | None (needs WM-5) | §4.7 |
-| 2 | A | PPL-A4 to PPL-A7 | PPL-Q1 to PPL-Q4 | §4.7 |
+| 1 | A | PPL-A1 to PPL-A3 (tasks 3873 to 3875) | None (needs WM-5) | §4.7, task 3880 |
+| 2 | A | PPL-A4 to PPL-A7 (tasks 3876 to 3879) | PPL-Q1 to PPL-Q4 | §4.7, task 3881 |
 | 3 | B | Rows after PPL-Q5 | None | §5.10 |
-| 4 | S | Rows after PPL-Q12 | PPL-Q12, PPL-Q13 | §5a.9 |
+| 4 | S | Rows after PPL-Q12 | PPL-Q12, PPL-Q13, PPL-Q15 | §5a.9 |
 | 5 | B | Rows after PPL-Q5 | PPL-Q7 | §5.10 |
 | 6 | S | Rows after PPL-Q12 | PPL-Q12, PPL-Q14 | §5a.9 |
 | 7 | B | Rows after PPL-Q5 | PPL-Q5, PPL-Q8 | §5.10 |
@@ -603,9 +613,9 @@ Each goal may name the skills it needs. Metorite compares them with the confirme
 | 10 | C | Rows after PPL-Q9 | PPL-Q9 | §6.4 |
 | 11 | C | Rows after PPL-Q11 | PPL-Q11 | §6.4 |
 
-**When the tasks come.** Tier A gets its tasks when the owner accepts tier A.
+**Tasks.** Epic 3872 holds the tier A slices (tasks 3873 to 3879) and the demos of rungs 1 and 2 (tasks 3880 and 3881), in Backlog.
 
-That is one task for each tier A row and one demo task for each rung. The other rungs get rows and tasks when the owner answers their questions. So no task waits on an open reversal.
+Tiers B, S and C get rows and tasks when the owner answers their questions. So no task waits on an open reversal.
 
 ---
 
@@ -614,7 +624,7 @@ That is one task for each tier A row and one demo task for each rung. The other 
 | Id | Question | Options | Recommendation | Why |
 |---|---|---|---|---|
 | **PPL-Q1** | May a Goal hold numbers with a target? (amends D199.2 and §13.6a) | (a) Yes, 1 to 5 "measures". (b) Yes, and a member sees the words "Objective" and "Key result". (c) No | **(a)** | It meets the ask and keeps three words for a member. "Measure" also covers a KPI |
-| **PPL-Q2** | May a Goal have a period and support a parent Goal? | (a) Yes, week, month, quarter, year, 3 levels. (b) Period only. (c) No | **(a)** | A company goal of a quarter needs team goals of a month under it |
+| **PPL-Q2** | May a Goal have a period and support a parent Goal? (amends "a Goal sits at the top", §13.3, D199) | (a) Yes: month, quarter and year, 3 levels, and a weekly goal is the cycle goal of a weekly Cycle linked to a Goal. (b) As (a), and a Goal also takes a week period. (c) No | **(a)** | A company goal of a quarter needs team goals of a month under it. The Cycle already holds a weekly goal, so (a) adds no second weekly record |
 | **PPL-Q3** | May a Goal belong to a team? (amends D199.2) | (a) Yes, one `org_group`. (b) No, a member owns each goal | **(a)** | A team is a group (D204.8). It adds no new word |
 | **PPL-Q4** | How does a manual measure get its number? | (a) One My Day card per period, one field. (b) A weekly check-in form. (c) Only by hand | **(a)** | It keeps D199.2's "no check-in record", and a number still arrives |
 | **PPL-Q5** | The score line for reviews and decisions (§5.1) | B-1, B-2, B-3 | **B-2** | Facts about work and human ratings meet UC-6 to UC-8. A machine score adds legal weight and invites gaming |
@@ -624,9 +634,11 @@ That is one task for each tier A row and one demo task for each rung. The other 
 | **PPL-Q9** | Outside agents on the terms of §6.2? | (a) Yes, scope off by default. (b) Read only, no proposals. (c) No | **(a)** | It meets UC-11, and a person still decides each case |
 | **PPL-Q10** | Which staff regions at launch? | (a) India first. EU, California and New York staff wait for a legal review. (b) All regions | **(a)** | The first customers are Indian, and EU high-risk rules start 2 Dec 2027 |
 | **PPL-Q11** | Does Metorite pay for a legal review before tier B, S or C reaches a customer? | (a) Yes, before rung 4. (b) Later | **(a)** | The research is secondary sources only. This is a money call, so the owner decides |
-| **PPL-Q12** | Scores and boards (§5a) | (a) My scorecard, team boards and opt-in role boards (top 3 and "your band"), with seasons, behind the wall. (b) My scorecard and team boards only, with no board of people. (c) Full role leaderboards that everybody sees, and the score feeds reviews | **(a), as a pilot** | It gives the game the owner asked for, in the form the evidence supports. (b) is the lowest risk. (c) is the form that failed at Wells Fargo and Microsoft |
+| **PPL-Q12** | Scores and boards (§5a). Each option amends D192.5 for tier S only | (a) My scorecard, team boards and opt-in role boards (top 3 and "your band"), with seasons. The wall keeps the total, band, board place and badges out of decisions. Committed targets are review facts, and stretch targets are not. (b) As (a), with the strict wall: no personal target enters a review. (c) My scorecard and team boards only, with no board of people. (d) Full role leaderboards that everybody sees, and the score feeds reviews | **(a), as a pilot** | It gives the game the owner asked for, and keeps quota-style facts in reviews. It narrows the ask: there is no full public list of people. (b) follows Google most closely. (d) is the form that failed at Wells Fargo and Microsoft |
 | **PPL-Q13** | May a measure belong to one person, as a personal target? | (a) Yes, inside a scorecard that the person and the lead agree. (b) No, measures belong to goals only | **(a)** | A fair score needs a target of one's own. The agreement keeps it fair |
 | **PPL-Q14** | Which team plays the pilot season? | The owner names a team | **A sales team** | Sales already works to targets, and its measures come from the CRM |
+| **PPL-Q15** | One store of targets for every role? (CRM-I2 plans `crm_targets`, not built) | (a) Yes: a person's target is a `pm_goal_measures` row with `subject_email`, and CRM-I2 uses it. (b) CRM-I2 builds `crm_targets`, and tier S reads it for sales | **(a)**, or (b) if CRM-I2 is built first | One seam for one thing (`building_blocks.md` §6.1) |
+| **PPL-Q16** | CRM-X7 plans a private streak of days with a logged call (UX-Q1). Keep it? | (a) Keep it, as UX-Q1 decided. (b) Drop the streak and keep the win moment | **(b)** | GitHub removed streaks in 2016 because they rewarded empty days. `crm_platform.md` F11 found no CRM with a streak. UX-Q1 is the owner's answer, so the owner decides |
 
 ---
 
