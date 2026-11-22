@@ -228,6 +228,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
     "packages/acb_skills/acb_skills/org_facts_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
+    # PAR-5 (task 3108): the tools of the settings pack.
+    "packages/acb_skills/acb_skills/settings_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
 
@@ -394,6 +396,38 @@ COVERED: dict[str, str | tuple[str, str]] = {
         "POST /auth/me/assistant-profile/interview",
     ),
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
+    # PAR-5 (task 3108): the settings pack. Each tool sends the route as the
+    # member. A change to the member's own setting acts at once with an undo,
+    # and a change to an organization default or to the logo shows one card.
+    # The logo PUT sends the stored images back with a new dark-mode style
+    # only: a new image is an upload in Settings. The shell PUT stars or
+    # unstars one app. Fence: tests/unit/test_settings_tools.py.
+    "GET /api/auth/me/agent-access": "settings_read",
+    "GET /api/auth/me/appearance": "settings_read",
+    "GET /api/auth/me/assistant-profile": ("profile_read", "GET /auth/me/assistant-profile"),
+    "GET /api/auth/me/assistant-profile/address": (
+        "profile_read", "GET /auth/me/assistant-profile/address"),
+    "GET /api/auth/me/assistant-profile/block": (
+        "profile_read", "GET /auth/me/assistant-profile/block"),
+    "GET /api/auth/me/assistant-profile/export": (
+        "profile_read", "GET /auth/me/assistant-profile/export"),
+    "GET /api/auth/me/assistant-profile/summaries": (
+        "profile_read", "GET /auth/me/assistant-profile/summaries"),
+    "GET /api/auth/me/shell": "settings_read",
+    "GET /api/auth/me/zone": "settings_read",
+    "GET /api/settings/appearance": ("settings_read", "GET /settings/appearance"),
+    "GET /api/settings/branding": ("settings_read", "GET /settings/branding"),
+    "GET /api/settings/number-system": ("settings_read", "GET /settings/number-system"),
+    "PUT /api/auth/me/appearance": "settings_set_appearance",
+    "PUT /api/auth/me/shell": "settings_star_app",
+    "PUT /api/auth/me/zone": "settings_set_time_zone",
+    "PUT /api/settings/appearance": ("settings_set_org_appearance", "PUT /settings/appearance"),
+    "PUT /api/settings/branding": ("settings_set_logo_style", "PUT /settings/branding"),
+    "DELETE /api/settings/branding": ("settings_remove_logo", "DELETE /settings/branding"),
+    "PUT /api/settings/number-system": (
+        "settings_set_number_system", "PUT /settings/number-system"),
+    "PUT /api/settings/number-system/me": (
+        "settings_set_number_system", "PUT /settings/number-system/me"),
     # ── AI Studio (STU-F2d) ──
     "GET /api/studio/actions": "studio_list_actions",
     # STU-D2b: the READ side of a package page. The door POST of a package page is a list,
@@ -1055,9 +1089,14 @@ DEBT: dict[str, str] = {
     "PUT /api/shell/layout": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
-    # saves a new version. The chat tool is SW-31c (task 1531).
+    # saves a new version. The chat tool is SW-31c (task 1531), so PAR-5
+    # (task 3108) leaves both rows here.
     "GET /api/agent-guidance/history": "P-8",
     "POST /api/agent-guidance": "P-8",
+    # PAR-5 (task 3108) leaves Forget everything, the interview reset and the
+    # summary deletes here. personalization.md records each as a Settings act:
+    # the gateway answers a chat write (X-Profile-Via) with 422. A chat tool for
+    # them needs the owner's decision first.
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
@@ -1065,29 +1104,12 @@ DEBT: dict[str, str] = {
     # the interview reset above.
     "DELETE /api/auth/me/assistant-profile/summaries": "P-8",
     "DELETE /api/auth/me/assistant-profile/summaries/{}": "P-8",
-    "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
-    "GET /api/auth/me/agent-access": "P-8",
-    "GET /api/auth/me/appearance": "P-8",
-    "GET /api/auth/me/assistant-profile": "P-8",
-    "GET /api/auth/me/assistant-profile/address": "P-8",
-    "GET /api/auth/me/assistant-profile/block": "P-8",
-    "GET /api/auth/me/assistant-profile/export": "P-8",
-    "GET /api/auth/me/assistant-profile/summaries": "P-8",
-    "GET /api/auth/me/shell": "P-8",
-    "GET /api/auth/me/zone": "P-8",
-    "GET /api/settings/appearance": "P-8",
-    "GET /api/settings/branding": "P-8",
     "GET /api/settings/llm": "P-8",
-    "GET /api/settings/number-system": "P-8",
+    # PAR-5 (task 3108) leaves the write of the agent switch here.
+    # external_agent_access.md EA-6h: only the member sets it, in Metorite, and
+    # never an agent. A chat tool for it needs the owner's decision first.
     "PUT /api/auth/me/agent-access": "P-8",
-    "PUT /api/auth/me/appearance": "P-8",
-    "PUT /api/auth/me/shell": "P-8",
-    "PUT /api/auth/me/zone": "P-8",
-    "PUT /api/settings/appearance": "P-8",
-    "PUT /api/settings/branding": "P-8",
-    "PUT /api/settings/number-system": "P-8",
-    "PUT /api/settings/number-system/me": "P-8",
     # ── Admin, members and billing ──
     "DELETE /api/admin/groups/{}": "P-8",
     "DELETE /api/admin/groups/{}/members/{}": "P-8",
@@ -1186,7 +1208,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
-    "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
+    "settings": 10,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. PAR-5 paid 20 rows with the settings pack (30 to 10). Paid by task 3108.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
     "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.

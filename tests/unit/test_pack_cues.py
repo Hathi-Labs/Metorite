@@ -75,6 +75,10 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-5 (task 3108): the member's settings, of the pack-only owner settings-keeper.
+    "settings": (
+        "Load to read or change your look, time zone, starred apps, number system, profile "
+        "or logo."),
 }
 
 

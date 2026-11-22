@@ -617,12 +617,12 @@ def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
         cp.DEBT_CEILING, cp.P0_CEILING, _ceiling_comments(), cp.WAVES) == []
 
 
-def test_eight_ceilings_went_up_since_p0() -> None:
-    """The count that the owner met on 2026-11-13. A ceiling may go down, and one that
-    goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
+def test_seven_ceilings_are_above_p0() -> None:
+    """The owner met eight on 2026-11-13. PAR-5 (task 3108) took settings from 30 to 10,
+    below its baseline of 21. A ceiling may go down, and one that goes up here must
+    name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
-    assert up == ["calendar", "chat", "email", "integrations", "knowledge", "settings",
-                  "shell", "studio"]
+    assert up == ["calendar", "chat", "email", "integrations", "knowledge", "shell", "studio"]
 
 
 def test_a_raise_with_no_task_in_its_comment_is_found() -> None:

@@ -105,7 +105,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share",
+        "studio-share", "settings",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -498,7 +498,8 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     ``total_injected_tokens``."""
     modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR),
                PROJECTS: load_agent_module(PROJECTS_DIR),
-               "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+               "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+               "settings-keeper": load_agent_module("apps/agents/agent-settings-keeper")}
     owner = {tool_name(fn): fn for slug in sf.pack_slugs()
              for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
     assert len(owner) >= 58 + 8 + 120, "non-vacuity: the owners build their tools"
@@ -732,8 +733,10 @@ def test_the_studio_owner_is_in_no_registry_list() -> None:
     assert STUDIO not in {a["name"] for a in routes._AGENT_REGISTRY}
     assert STUDIO not in routes._KNOWN_AGENTS
     assert STUDIO not in {a["name"] for a in routes._INTERNAL_AGENTS}
-    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO]
+    # PAR-5 (task 3108): the owner of the settings pack is the second entry.
+    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO, "settings-keeper"]
     assert routes._PACK_OWNER_AGENTS[0]["local_path"] == STUDIO_DIR
+    assert routes._PACK_OWNER_AGENTS[1]["local_path"] == "apps/agents/agent-settings-keeper"
     assert {a["name"] for a in routes._PACK_OWNER_AGENTS} == tp.PACK_ONLY_OWNERS
     # And not in the deploy registry that the gateway reads at start.
     catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))
@@ -868,7 +871,9 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     assert more.words == core.words
     # WS-STU J2d: the dark share pack is last, so the cap drops it first.
     # TOF-3a F12c: the dark repair pack is just before it.
-    assert list(tp.PACKS)[-5:] == list(STUDIO_PACKS)
+    # PAR-5 (task 3108): the dark settings pack comes after the Studio packs.
+    assert list(tp.PACKS)[-6:-1] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-1] == "settings"
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
 

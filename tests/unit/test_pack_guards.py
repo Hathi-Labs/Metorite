@@ -1434,7 +1434,8 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
 def _pack_owners() -> dict[str, Any]:
     return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
-            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+            "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+            "settings-keeper": load_agent_module("apps/agents/agent-settings-keeper")}
 
 
 def test_each_pack_tool_that_draws_is_a_display_tool() -> None:

@@ -29,6 +29,7 @@ members = [
     "agent-email-assistant",
     "agent-orchestrator",
     "agent-projects",
+    "agent-settings-keeper",
     "agent-studio-builder",
     "agent-task-manager",
     "agent-whatsapp-assistant",
@@ -489,6 +490,25 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.19.0" },
     { name = "agent-framework-openai", specifier = ">=1.14.4" },
     { name = "skill-projects", editable = "apps/skills/skill-projects" },
+]
+
+[[package]]
+name = "agent-settings-keeper"
+version = "0.1.0"
+source = { editable = "apps/agents/agent-settings-keeper" }
+dependencies = [
+    { name = "acb-common" },
+    { name = "acb-skills" },
+    { name = "agent-framework-core" },
+    { name = "agent-framework-openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-skills", editable = "packages/acb_skills" },
+    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-openai", specifier = ">=1.14.4" },
 ]
 
 [[package]]
