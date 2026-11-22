@@ -67,10 +67,10 @@ def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env):
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
-    with structlog.testing.capture_logs() as logs:
-        with pytest.raises(Exception) as caught:
-            with TestClient(create_app()):
-                pass
+    app = create_app()
+    with (structlog.testing.capture_logs() as logs, pytest.raises(Exception) as caught,
+          TestClient(app)):
+        pass
     assert "agent_edge_signing_key" in str(caught.value)
     assert _events(logs, "secrets.unusable")
 
@@ -82,9 +82,8 @@ def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env):
 
     edge_env.setenv("SECRET_STARTUP_CHECK", "shadow")
     get_settings.cache_clear()
-    with structlog.testing.capture_logs() as logs:
-        with TestClient(create_app()):
-            pass
+    with structlog.testing.capture_logs() as logs, TestClient(create_app()):
+        pass
     named = [e["setting"] for e in _events(logs, "secrets.unusable")]
     assert named == ["agent_edge_signing_key"]
 
@@ -302,13 +301,6 @@ def test_no_value_reaches_the_log_or_the_error():
 #: A `Settings` field whose name says it may hold a secret.
 SECRET_NAME = re.compile(r"(^|_)(key|secret|token|password|passwd|salt|pem)(_|$)")
 
-#: Names that match SECRET_NAME and hold no secret. Their values may be public.
-_NOT_SECRET = {
-    "vapid_public_key", "object_store_access_key_id", "zoho_token_expiry",
-    "github_app_private_key_path", "langfuse_public_key",
-}
-
-
 def _secret_like_fields() -> set[str]:
     from acb_common.settings import Settings
 
@@ -347,18 +339,19 @@ def test_each_need_names_real_services_and_switches():
 def test_every_shipped_placeholder_is_on_the_public_list():
     """A default in `Settings` or `.env.example` is public, so it proves nothing."""
     from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
-    from acb_auth.secret_check import OPTIONAL, REQUIRED
+    from acb_auth.secret_check import NOT_A_SECRET, OPTIONAL, REQUIRED
     from acb_common.settings import Settings
 
+    _NOT_SECRET = {n for n, why in OPTIONAL.items() if why.startswith(NOT_A_SECRET)}
     classified = {need.setting for need in REQUIRED} | set(OPTIONAL)
     missing = []
     for name in sorted(classified):
         default = Settings.model_fields[name].default
         if name == "database_url":
             default = urlsplit(default).password or ""
-        if isinstance(default, str) and default.strip() and name not in _NOT_SECRET:
-            if default.strip() not in PUBLIC_DEFAULT_SECRETS:
-                missing.append(name)
+        if (isinstance(default, str) and default.strip() and name not in _NOT_SECRET
+                and default.strip() not in PUBLIC_DEFAULT_SECRETS):
+            missing.append(name)
     line = re.compile(r"^([A-Z0-9_]+)=(.*)$")
     for raw in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
         m = line.match(raw.strip())

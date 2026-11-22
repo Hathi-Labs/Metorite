@@ -234,7 +234,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 |---|---|---|---|---|
 | WS-0 | Documentation remediation (the old §5) | ✅ done | none | now in WS-DOC |
 | WS-1 | Action Broker truth and completion (BO-1) | 🟢 open | none, the BO checklist is in git | now in WS-TO (WS-1e) |
-| WS-2 | Secrets (BO-8): rotate, purge, fail closed | 🟢 open | none, the BO checklist is in git | now in WS-TS (WS-2d) |
+| WS-2 | Secrets (BO-8): rotate, purge, fail closed | 🟢 open | `docs/secrets_drop.md` §6 (the startup check) | now in WS-TS (WS-2d) · task 574 built 2026-11-22: the startup check runs in shadow, and `SECRET_STARTUP_CHECK=enforce` waits for the owner |
 | WS-3 | Isolation ladder (BO-7, HH-6, T0 to T2) | 🟢 open | `specs/permissions_sandbox_b6.md` §P5 | now in WS-TO (WS-3a, WS-3b) |
 | WS-4 | Event-bus consumer and durable queue (BO-20) | 🟢 open | none, the BO checklist is in git | now in WS-BRIEF (BR-1a) |
 | WS-5 | CI gates real (BO-17, BO-18) | 🟢 open | none, the BO checklist is in git | now in WS-PL (WS-5a) |

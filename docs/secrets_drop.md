@@ -1,7 +1,8 @@
 # The secrets drop
 
 **Status:** BUILT 2026-10-08, for the dev phase. The owner asked for it on
-2026-10-08. Fix round 1 landed the same day.
+2026-10-08. Fix round 1 landed the same day. §6, the startup check of the
+secrets (task 574, WS-2d), is BUILT 2026-11-22 and runs in shadow.
 **Script:** `scripts/secrets.sh`. **Manifest:** `deploy/secrets/manifest.json`.
 **Fence:** `tests/unit/test_secrets_drop.py`.
 
@@ -235,3 +236,94 @@ file on the box other than the target and its backups.
 
 **The follow-up.** Keep the values in the OS keychain, or in files that `age`
 encrypts. Then the drop folder holds no plain text.
+
+## 6. What a service needs at start
+
+**Status:** BUILT 2026-11-22 (task 574, WS-2d, BO-8). It ships dark, in
+shadow. **Code:** `packages/acb_auth/acb_auth/secret_check.py`. **Flag:**
+`SECRET_STARTUP_CHECK`. **Fence:** `tests/unit/test_secret_startup_check.py`.
+
+A box that never set a secret runs on the default of `Settings`. That default
+is empty or public, so the secret proves nothing. Each service now checks the
+secrets that it needs when it starts. `check_startup_secrets` is the one check.
+
+- `ACB_ENV=dev` checks nothing. A laptop runs on the public defaults.
+- `SECRET_STARTUP_CHECK=shadow` is the default. The service logs one `secrets.unusable` warning for each bad secret, and then it starts.
+- `SECRET_STARTUP_CHECK=enforce` makes the service refuse to start. The error names each setting.
+- Any other value reads as `shadow`. A bug of the check never stops a unit in shadow. In enforce, it stops the unit.
+- Each start logs one `secrets.startup_check` line with `mode` and `unusable`. So a box with no warning shows that the check ran.
+- A line and an error name the setting only. They never hold a value.
+
+A secret is unusable when it is empty, or when it is on
+`PUBLIC_DEFAULT_SECRETS` in `acb_auth/member_proof.py`. That is the one list
+of public values. Each non-empty default of `Settings` and each placeholder
+of `.env.example` must be on it, and the fence fails if one is not. For
+`DATABASE_URL`, the check reads the password only.
+
+### The flip to enforce
+
+The flip is the grant `enforcement-flip`. A refusal at start stops the unit,
+and a release cannot roll back. So follow these steps for each unit.
+
+1. Let one release run in shadow.
+2. Read the lines of the unit on the box: `sudo journalctl -u acb-gateway -o cat | grep secrets.` Do the same for `acb-agent-edge`.
+3. Push each named secret with `scripts/secrets.sh`. Then restart the unit and read its line again.
+4. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
+5. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+
+Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
+`acb-agent-edge` reads `/opt/acb/app/apps/services/agent_edge/.env`.
+
+### The services
+
+| Service | Unit | The check |
+|---|---|---|
+| Gateway | `acb-gateway` | `lifespan` in `gateway/main.py`, outside every `try`, before the first await |
+| Agent edge | `acb-agent-edge` | `_lifespan` in `agent_edge/app.py` |
+| Orchestrator | none | It runs in the gateway process, so the gateway check covers it |
+| Customer Console | `acb-customer-console` | Not wired. It imports no `acb_*` package by design (CP-9 §9.4) |
+| Web worker | its own container | Its own start refuses an empty `WEB_WORKER_TOKEN` |
+
+### The required secrets
+
+| Setting | Default today | Service | Does a reader refuse the default? |
+|---|---|---|---|
+| `gateway_session_secret` | `change-me-dev-only`, public | gateway | Partly. `member_proof._usable` signs nothing. The OAuth state of `routes/oauth.py` still signs under it |
+| `gateway_internal_token` | empty | gateway | Yes. `require_internal_auth` answers 401 outside dev |
+| `acb_master_key` | empty | gateway | At first use. `acb_llm.key_store` raises |
+| `litellm_master_key` | `sk-local`, public | gateway | No. `/v1` accepts the bearer `sk-local` on a box that never set the key |
+| `database_url` | password `acb_dev_change_me`, public | gateway, agent edge | No. The default points at `localhost` |
+| `agent_edge_signing_key` | empty | gateway, agent edge, when `AGENT_ACCESS_ENABLED` is on | Yes. Branch 0 refuses each request with no usable key |
+
+### The optional secrets
+
+Each other secret-like setting of `Settings` is optional. `OPTIONAL` in
+`secret_check.py` gives the reason for each. All of them default to empty.
+
+| Settings | Why no service needs it at start |
+|---|---|
+| `gemini_api_key`, `openai_api_key`, `anthropic_api_key`, `openrouter_api_key`, `deepseek_api_key`, `groq_api_key`, `mistral_api_key`, `together_api_key` | Old bootstrap keys. The key store holds the provider keys |
+| `zoho_client_secret`, `zoho_refresh_token`, `zoho_access_token`, `apollo_api_key`, `google_maps_api_key`, `instantly_api_key`, `smtp_password`, `serpapi_api_key`, `apify_api_token`, `anymailfinder_api_key`, `github_token`, `github_read_token`, `whatsapp_assistant_access_token` | Integration credentials. Empty means that the integration is not set up |
+| `zoho_webhook_secret`, `gmail_pubsub_token` | The webhook answers 401 when the value is empty |
+| `github_app_webhook_secret` | The GitHub webhook answers 503 when the value is empty |
+| `gmail_oauth_client_secret`, `msft_oauth_client_secret` | Empty reads as "not configured" |
+| `crm_zoho_client_secret` | The CRM connect answers 503 when the value is empty |
+| `github_app_client_secret` | Empty means that the GitHub App is not set up |
+| `mutation_pr_token` | It falls back to `github_token`, and an owner gate holds the push |
+| `object_store_secret_access_key`, `object_store_auth_password` | A call fails at use. No start check |
+| `vapid_private_key` | Empty sends no web push |
+| `customer_console_deployment_key`, `customer_console_org_key` | Each box sets one of the two only |
+| `web_worker_token` | The web worker refuses to start when the value is empty |
+| `neo4j_password` | Graphiti does not connect when the value is empty |
+| `agent_edge_signing_key_previous` | It is set only during a key rotation |
+| `studio_direct_key` | `acb_auth.direct_proof` makes no write direct with no usable key |
+| `vapid_public_key`, `object_store_access_key_id`, `zoho_token_expiry`, `github_app_private_key_path`, `secret_startup_check` | Not secrets. The name matches, and the value is public |
+
+### Secrets that the check does not see
+
+These names are read with `os.getenv`, outside `Settings`, so the check does
+not see them. Nobody traced their defaults yet.
+
+- Gateway and the workers: `MEETING_BOT_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `WHATSAPP_BRIDGE_SECRET`, `AGENT_WEBHOOK_SECRET`, `GATEWAY_OPERATOR_TOKEN`, `GATEWAY_API_KEY`, `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, `AUTH_MICROSOFT_ENTRA_ID_SECRET`, `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY`, `RECALL_API_KEY`, `PIXELLAB_API_KEY`, `MEET_GOOGLE_PASSWORD`.
+- Customer Console: `CUSTOMER_CONSOLE_OPERATOR_TOKEN`, `CUSTOMER_CONSOLE_INTERNAL_TOKEN`, `CUSTOMER_CONSOLE_ENCRYPTION_KEY`.
+- The workbench (Next.js) reads its own, such as `AUTH_SECRET`.

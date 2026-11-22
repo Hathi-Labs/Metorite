@@ -655,6 +655,15 @@ reader is `gateway.routes.workflows.core.author_gate_on`, and each request
 asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`SECRET_STARTUP_CHECK` sets what a service does at start when a secret that
+it needs is empty or public (task 574, `docs/secrets_drop.md` §6). `shadow`
+is the default, and `enforce` refuses the start. It is not a `*_ORGS` or
+`*_MODES` key, and a service reads it at start only. The gateway and the
+agent edge read it, and each unit reads its own env file. Set the value in
+that file, then restart the unit. A flip to `enforce` is the grant
+`enforcement-flip`, and only after the shadow line of the unit reads
+`unusable=0`.
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

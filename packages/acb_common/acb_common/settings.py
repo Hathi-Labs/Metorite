@@ -136,6 +136,19 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
     tenant_session_abort_mode: str = "log"
 
+    # Task 574 (WS-2d, BO-8): what a service does at start when a secret that
+    # it needs is empty or public (`docs/secrets_drop.md` §6). `shadow` (the
+    # default) logs `secrets.unusable` with the setting NAME and starts.
+    # `enforce` refuses to start. Any other value reads as `shadow`, and
+    # `ACB_ENV=dev` checks nothing. The one reader is
+    # `secret_startup_check_mode` below, and the one check is
+    # `acb_auth.secret_check.check_startup_secrets`. It is read at start only,
+    # so a change needs a restart of each unit (`docs/flag_reload.md`). A flip
+    # to `enforce` on a box is the grant `enforcement-flip`, and only after
+    # that unit's shadow line reads `unusable=0`.
+    # Fence: tests/unit/test_secret_startup_check.py.
+    secret_startup_check: str = "shadow"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -3258,6 +3271,25 @@ def tenant_session_abort_mode() -> str:
         return "log"
     mode = raw.strip().lower()
     return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
+
+
+#: The modes of ``SECRET_STARTUP_CHECK`` (task 574).
+SECRET_STARTUP_CHECK_MODES: tuple[str, ...] = ("shadow", "enforce")
+
+
+def secret_startup_check_mode(settings: Settings | None = None) -> str:
+    """The ONE reader of ``SECRET_STARTUP_CHECK``: ``shadow`` or ``enforce``.
+
+    Any other value, and a settings load that fails, read as ``shadow``, so a
+    typo never takes a unit down. ``acb_auth.secret_check`` reads it at start.
+    """
+    try:
+        source = settings if settings is not None else get_settings()
+        raw = str(getattr(source, "secret_startup_check", "shadow") or "shadow")
+    except Exception:  # a broken settings load never turns the refusal on
+        return "shadow"
+    mode = raw.strip().lower()
+    return mode if mode in SECRET_STARTUP_CHECK_MODES else "shadow"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).
