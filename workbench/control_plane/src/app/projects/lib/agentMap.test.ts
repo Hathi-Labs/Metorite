@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   type AgentMap,
+  DEPTH_STEP,
+  MAX_DISPATCH_DEPTH,
   NODE_H,
   agentMapOutline,
+  dispatchGraph,
   groupByMachine,
   layoutAgentMap,
   parseAgentMap,
   quietLine,
+  sessionStateChip,
+  sessionStateWord,
 } from "./agentMap";
 
 const NOW = Date.parse("2026-11-21T12:00:00Z");
@@ -371,5 +376,290 @@ describe("layoutAgentMap: group by machine", () => {
     const plain = layoutAgentMap(map, NOW);
     expect(plain.nodes.some((n) => n.kind === "machine")).toBe(false);
     expect(layoutAgentMap(map, NOW, { groupByMachine: false })).toEqual(plain);
+  });
+});
+
+/* ── SW-109: who dispatched whom ─────────────────────────────────────────── */
+
+const ANA = "ana@example.com";
+const BO = "bo@example.com";
+const lane = (id: string, person = ANA, over: Record<string, unknown> = {}) =>
+  session({ id, name: `Lane ${id}`, person, ...over });
+const link = (from: string, to: string) => ({ from, to });
+const nodeOf = (map: AgentMap, id: string, options = {}) =>
+  layoutAgentMap(map, NOW, options).nodes.find((n) => n.id === `s:${id}`)!;
+const lineEdges = (map: AgentMap, options = {}) =>
+  layoutAgentMap(map, NOW, options)
+    .edges.filter((e) => e.kind === "line")
+    .map((e) => e.id)
+    .sort();
+const positions = (map: AgentMap, options = {}) =>
+  layoutAgentMap(map, NOW, options)
+    .nodes.map((n) => [n.id, n.x, n.y])
+    .sort();
+/** A chain a0 > a1 > ... with the people spread over `people`. */
+const chain = (n: number, people = 2) => {
+  const sessions = Array.from({ length: n }, (_, i) => lane(`a${i}`, `p${i % people}@example.com`));
+  const lines = Array.from({ length: n - 1 }, (_, i) => link(`a${i}`, `a${i + 1}`));
+  return { sessions, lines };
+};
+
+describe("dispatchGraph", () => {
+  it("gives each session the longest chain of dispatchers above it", () => {
+    const map = parse(
+      [lane("a"), lane("b"), lane("c"), lane("d"), lane("e")],
+      [],
+      [link("a", "b"), link("b", "c"), link("a", "c"), link("a", "d")],
+    );
+    const { depth } = dispatchGraph(map);
+    expect(depth.get("a")).toBe(0);
+    expect(depth.get("b")).toBe(1);
+    expect(depth.get("c")).toBe(2);
+    expect(depth.get("d")).toBe(1);
+    expect(depth.has("e")).toBe(false);
+  });
+  it("drops an unknown id, a line to itself and a copy of a line", () => {
+    const map = parse([lane("a"), lane("b")], [], [
+      link("a", "ghost"),
+      link("ghost", "b"),
+      link("a", "a"),
+      link("a", "b"),
+      link("a", "b"),
+    ]);
+    expect(dispatchGraph(map).lines).toEqual([link("a", "b")]);
+    expect(lineEdges(map)).toEqual(["s:a~s:b"]);
+  });
+  it("drops the line that closes a loop, chosen by sorted id", () => {
+    const two = dispatchGraph(parse([lane("a"), lane("b")], [], [link("b", "a"), link("a", "b")]));
+    expect(two.lines).toEqual([link("a", "b")]);
+    const three = dispatchGraph(
+      parse([lane("a"), lane("b"), lane("c")], [], [link("c", "a"), link("b", "c"), link("a", "b")]),
+    );
+    expect(three.lines).toEqual([link("a", "b"), link("b", "c")]);
+    expect(three.depth.get("c")).toBe(2);
+    expect(dispatchGraph(parse([lane("a")], [], [link("a", "a")])).lines).toEqual([]);
+  });
+  it("stops the depth at the cap", () => {
+    const { sessions, lines } = chain(9);
+    const { depth } = dispatchGraph(parse(sessions, [], lines));
+    expect(Math.max(...depth.values())).toBe(MAX_DISPATCH_DEPTH);
+    expect(depth.get("a8")).toBe(MAX_DISPATCH_DEPTH);
+    expect(depth.get("a3")).toBe(3);
+  });
+  it("gives the same result for the lines in any order", () => {
+    const { sessions, lines } = chain(6);
+    const loop = [...lines, link("a5", "a1"), link("a2", "a0")];
+    const forward = dispatchGraph(parse(sessions, [], loop));
+    const reversed = dispatchGraph(parse([...sessions].reverse(), [], [...loop].reverse()));
+    expect(reversed.lines).toEqual(forward.lines);
+    expect([...reversed.depth].sort()).toEqual([...forward.depth].sort());
+  });
+});
+
+describe("layoutAgentMap: dispatch lines", () => {
+  const crossing = parse(
+    [
+      lane("orch", ANA, { name: "Orchestrator" }),
+      lane("l1", BO),
+      lane("l2", ANA),
+      lane("solo", BO),
+    ],
+    [run({ run_id: "r1", session_id: "l1" }), run({ run_id: "r2", session_id: "orch" })],
+    [link("orch", "l1"), link("orch", "l2")],
+  );
+  it("puts the orchestrator to the left of a lane of another person, in the block of that person", () => {
+    const orch = nodeOf(crossing, "orch");
+    const l1 = nodeOf(crossing, "l1");
+    expect(orch.x + orch.w).toBeLessThan(l1.x);
+    expect(l1.x).toBe(orch.x + DEPTH_STEP);
+    // The lane stays in the block of Bo: it sits with Bo's other session, far from Ana's.
+    const bo = layoutAgentMap(crossing, NOW).nodes.find((n) => n.id === `p:${BO}`)!;
+    const solo = nodeOf(crossing, "solo");
+    expect(l1.y).toBeGreaterThanOrEqual(bo.y);
+    expect(Math.abs(l1.y - solo.y)).toBeLessThan(2 * (NODE_H.session + 24));
+    expect(lineEdges(crossing)).toEqual(["s:orch~s:l1", "s:orch~s:l2"]);
+  });
+  it("keeps a lane with no dispatcher a root with a person edge, and gives a dispatched lane none", () => {
+    const { edges } = layoutAgentMap(crossing, NOW);
+    const into = (id: string) => edges.filter((e) => e.to === `s:${id}` && e.kind === "tree").map((e) => e.from);
+    expect(into("orch")).toEqual([`p:${ANA}`]);
+    expect(into("solo")).toEqual([`p:${BO}`]);
+    expect(into("l1")).toEqual([]);
+    expect(into("l2")).toEqual([]);
+    expect(nodeOf(crossing, "solo").x).toBe(nodeOf(crossing, "orch").x);
+  });
+  it("puts the tasks of each session one step right of that session, and keeps person left of all", () => {
+    const { nodes } = layoutAgentMap(crossing, NOW);
+    for (const task of nodes.filter((n) => n.kind === "task")) {
+      const owner = nodes.find((n) => n.id === `s:${task.sessionId}`)!;
+      expect(task.x).toBe(owner.x + DEPTH_STEP);
+      expect(task.x).toBeGreaterThanOrEqual(owner.x + owner.w);
+      expect(task.y).toBeGreaterThanOrEqual(owner.y - NODE_H.session);
+    }
+    // The orchestrator is at depth 0, so its task sits in the column of its lanes, and clear of them.
+    expect(nodes.find((n) => n.id === "t:r2")!.x).toBe(nodeOf(crossing, "l1").x);
+    expectNoOverlap(crossing);
+    expect(Math.max(...nodes.filter((n) => n.kind === "person").map((n) => n.x + n.w))).toBeLessThan(
+      Math.min(...nodes.filter((n) => n.kind === "session").map((n) => n.x)),
+    );
+  });
+  it("keeps the old columns when there are no lines", () => {
+    const plain = parse([session()], [run()]);
+    const { nodes } = layoutAgentMap(plain, NOW);
+    expect(nodes.find((n) => n.kind === "session")!.x).toBe(300);
+    expect(nodes.find((n) => n.kind === "task")!.x).toBe(640);
+  });
+  it("puts each session of a chain one column right of its dispatcher, up to the cap", () => {
+    const { sessions, lines } = chain(8);
+    const map = parse(sessions, [], lines);
+    const xs = sessions.map((s) => nodeOf(map, s.id).x);
+    expect(xs.slice(0, 5)).toEqual([0, 1, 2, 3, 4].map((d) => 300 + DEPTH_STEP * d));
+    expect(xs.slice(5)).toEqual([4, 4, 4].map((d) => 300 + DEPTH_STEP * d));
+    expectNoOverlap(map);
+  });
+  it("gives a finite layout with no overlap for a loop in the data", () => {
+    const sessions = [lane("a"), lane("b", BO), lane("c")];
+    const loops = [
+      [link("a", "b"), link("b", "a")],
+      [link("a", "a")],
+      [link("a", "b"), link("b", "c"), link("c", "a")],
+    ];
+    for (const lines of loops) {
+      const map = parse(sessions, [run({ session_id: "a" })], lines);
+      expectNoOverlap(map);
+      expect(layoutAgentMap(map, NOW)).toEqual(layoutAgentMap(map, NOW));
+      expect(lineEdges(map).length).toBeLessThan(lines.length + (lines.length === 1 ? 1 : 0));
+      const roots = layoutAgentMap(map, NOW).edges.filter((e) => e.from.startsWith("p:"));
+      expect(roots.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+  it("gives the same positions for the same input in any input order", () => {
+    const { sessions, lines } = chain(7, 3);
+    const runs = sessions.map((s, i) => run({ run_id: `r${i}`, session_id: s.id }));
+    const loop = [...lines, link("a6", "a2")];
+    const forward = parse(sessions, runs, loop);
+    const reversed = parse([...sessions].reverse(), [...runs].reverse(), [...loop].reverse());
+    expect(positions(reversed)).toEqual(positions(forward));
+    expect(lineEdges(reversed)).toEqual(lineEdges(forward));
+  });
+  it("never overlaps two nodes in a generated set of 50 sessions with chains", () => {
+    const sessions = Array.from({ length: 50 }, (_, i) =>
+      lane(`s${String(i).padStart(2, "0")}`, `p${i % 6}@example.com`, {
+        state: (["working", "quiet", "waiting", "waiting_on_person"] as const)[i % 4],
+        quiet_count: i % 3,
+      }),
+    );
+    const lines = [
+      ...Array.from({ length: 49 }, (_, i) => link(`s${String(i).padStart(2, "0")}`, `s${String(i + 1).padStart(2, "0")}`)),
+      ...Array.from({ length: 10 }, (_, i) => link("s00", `s${String(i * 5 + 2).padStart(2, "0")}`)),
+      link("s49", "s03"),
+    ];
+    const runs = Array.from({ length: 120 }, (_, i) =>
+      run({ run_id: `r${i}`, session_id: `s${String(i % 50).padStart(2, "0")}` }),
+    );
+    const map = parse(sessions, runs, lines);
+    expectNoOverlap(map);
+    expect(Math.max(...layoutAgentMap(map, NOW).nodes.map((n) => n.x))).toBeLessThanOrEqual(
+      300 + DEPTH_STEP * (MAX_DISPATCH_DEPTH + 1),
+    );
+  });
+  it("leaves the grouped layout as it was: no depth columns, lines still dashed edges", () => {
+    const { sessions, lines } = chain(4);
+    const withLines = parse(sessions, [run({ session_id: "a0" })], lines);
+    const without = parse(sessions, [run({ session_id: "a0" })], []);
+    expect(positions(withLines, BY_MACHINE)).toEqual(positions(without, BY_MACHINE));
+    expect(new Set(layoutAgentMap(withLines, NOW, BY_MACHINE).nodes.filter((n) => n.kind === "session").map((n) => n.x))).toEqual(
+      new Set([280]),
+    );
+    expect(lineEdges(withLines, BY_MACHINE)).toHaveLength(3);
+    expectNoOverlap(withLines, BY_MACHINE);
+  });
+});
+
+describe("a quiet orchestrator", () => {
+  const map = parse(
+    [
+      lane("orch", ANA, { state: "quiet", last_at: "2026-11-21T09:00:00Z" }),
+      lane("l1", ANA, { state: "working" }),
+      lane("l2", ANA, { state: "quiet" }),
+    ],
+    [],
+    [link("orch", "l1"), link("orch", "l2")],
+  );
+  it("reads Waiting with its last event time, and a quiet lane still reads Quiet", () => {
+    expect(sessionStateWord("quiet", true)).toBe("Waiting");
+    expect(sessionStateWord("quiet", false)).toBe("Quiet");
+    expect(sessionStateWord("working", true)).toBe("Working");
+    expect(sessionStateChip("quiet", true)).not.toBe(sessionStateChip("quiet", false));
+    const orch = nodeOf(map, "orch");
+    expect(orch.quietWait).toBe(true);
+    expect(orch.detail).toBe("Claude Code \u00b7 3h ago");
+    const l2 = nodeOf(map, "l2");
+    expect(l2.quietWait).toBe(false);
+    expect(l2.detail).toBe("Claude Code");
+  });
+  it("reads Quiet when every lane that it dispatched is quiet", () => {
+    const quiet = parse(
+      [lane("orch", ANA, { state: "quiet" }), lane("l1", ANA, { state: "quiet" }), lane("l2", ANA, { state: "quiet" })],
+      [],
+      [link("orch", "l1"), link("orch", "l2")],
+    );
+    expect(dispatchGraph(quiet).waiting.size).toBe(0);
+    expect(nodeOf(quiet, "orch").quietWait).toBe(false);
+    expect(agentMapOutline(quiet, NOW)[0].sessions.every((s) => s.word === "Quiet")).toBe(true);
+    // One lane that works is enough.
+    const one = parse(
+      [lane("orch", ANA, { state: "quiet" }), lane("l1", ANA, { state: "quiet" }), lane("l2", ANA, { state: "waiting" })],
+      [],
+      [link("orch", "l1"), link("orch", "l2")],
+    );
+    expect([...dispatchGraph(one).waiting]).toEqual(["orch"]);
+  });
+  it("sorts a quiet orchestrator that reads Waiting before a working session", () => {
+    const sorted = parse(
+      [
+        lane("w", ANA, { name: "A working", state: "working" }),
+        lane("orch", ANA, { name: "Z orchestrator", state: "quiet" }),
+        lane("l1", BO, { state: "working" }),
+      ],
+      [],
+      [link("orch", "l1")],
+    );
+    const ids = layoutAgentMap(sorted, NOW)
+      .nodes.filter((n) => n.kind === "session" && n.id.startsWith("s:") && ["s:w", "s:orch"].includes(n.id))
+      .sort((a, b) => a.y - b.y)
+      .map((n) => n.ref);
+    expect(ids).toEqual(["orch", "w"]);
+    const outline = agentMapOutline(sorted, NOW).find((p) => p.person === ANA)!;
+    expect(outline.sessions.map((s) => s.id)).toEqual(["orch", "w"]);
+  });
+  it("reads the same in the outline, and never says lost or dead", () => {
+    const outline = agentMapOutline(map, NOW)[0].sessions;
+    const orch = outline.find((s) => s.id === "orch")!;
+    const l1 = outline.find((s) => s.id === "l1")!;
+    expect(orch.word).toBe("Waiting");
+    expect(orch.lastEvent).toBe("3h ago");
+    expect(l1.word).toBe("Working");
+    expect(l1.lastEvent).toBeNull();
+    expect(JSON.stringify(outline).toLowerCase()).not.toMatch(/lost|dead/);
+  });
+  it("reads Quiet when its only line was dropped as a loop of the data", () => {
+    const solo = parse([lane("a", ANA, { state: "quiet" })], [], [link("a", "a")]);
+    expect(nodeOf(solo, "a").quietWait).toBe(false);
+  });
+});
+
+describe("agentMapOutline: dispatched by", () => {
+  it("names the dispatcher under a lane that sits under its own person", () => {
+    const map = parse(
+      [lane("orch", ANA, { name: "<b>Boss</b>" }), lane("l1", BO)],
+      [],
+      [link("orch", "l1"), link("ghost", "l1")],
+    );
+    const outline = agentMapOutline(map, NOW);
+    const bo = outline.find((p) => p.person === BO)!;
+    expect(bo.sessions.map((s) => s.id)).toEqual(["l1"]);
+    expect(bo.sessions[0].dispatchedBy).toEqual(["<b>Boss</b>"]);
+    expect(outline.find((p) => p.person === ANA)!.sessions[0].dispatchedBy).toEqual([]);
   });
 });

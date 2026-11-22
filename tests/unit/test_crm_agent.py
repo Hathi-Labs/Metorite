@@ -1192,11 +1192,12 @@ async def test_a_bad_module_entity_never_reaches_the_gateway(bad, monkeypatch) -
 
 
 async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) -> None:
-    """A record tool builds ``/crm/{slug}``, so a module entity stays refused."""
+    """A record tool builds ``/crm/{slug}`` for a core type. Task 3864: a
+    module entity goes to the module route, never to ``/crm/{slug}``."""
     calls = _fake_gateway(monkeypatch, _responder)
-    out = await _T.crm_list_records("module:Products")
-    assert out.startswith("Refused:") and "Unknown CRM record type" in out
-    assert calls == []
+    await _T.crm_list_records("module:Products")
+    assert any(c["path"].startswith("/crm/modules/Products/records") for c in calls)
+    assert not any(c["path"].startswith("/crm/module:") for c in calls)
 
 
 def _old_filters_line(params: dict, data: dict | None) -> str:
