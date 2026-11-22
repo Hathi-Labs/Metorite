@@ -945,6 +945,6 @@ case "${CMD:-up}" in
   --logs|logs)      cmd_logs "${LOGS_WHICH:-gateway}" ;;
   --print-env)      cmd_print_env ;;
   --refresh-flags)  cmd_refresh_flags ;;
-  -h|--help|help)   sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help)   sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) fail "unknown option '$CMD'. Try --help." ;;
 esac
