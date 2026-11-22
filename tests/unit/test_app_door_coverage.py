@@ -442,13 +442,44 @@ def test_the_door_flag_defaults_off():
 
 
 def test_the_shared_rule_of_availability(monkeypatch):
+    """MCP-P1b-2 (§19.4). A write that waits for the member needs the writes
+    flag and the runs flag of §12.1, and an op that can send mail stays off
+    until MCP-P2b (AD-19). A proposal needs the writes flag. A read is
+    available. Mutation: drop the runs check of ``door_available``, and the
+    write reads available with the runs flag off."""
     from acb_common import get_settings
 
+    settings = get_settings()
     write = base.DoorOp(am.KNOWLEDGE, base.Route("POST", "/x", "t", "B", op="w", title="t"))
-    assert agent_oauth.door_available(write) == (False, agent_oauth.APPROVAL_REQUIRED_CODE)
+    sends = base.DoorOp(am.KNOWLEDGE, base.Route("POST", "/y", "t", "C", op="s", title="t",
+                                                 sends=True))
+    monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
+    monkeypatch.setattr(settings, "agent_runs_enabled", False)
+    assert agent_oauth.door_available(write) == (False, agent_oauth.REQUESTS_OFF_CODE)
+    monkeypatch.setattr(settings, "agent_runs_enabled", True)
+    assert agent_oauth.door_available(write) == (True, None)
+    assert agent_oauth.door_available(sends) == (False, agent_oauth.SENDS_OFF_CODE)
     propose = am.door_ops(am.KNOWLEDGE)["propose"]
-    monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+    monkeypatch.setattr(settings, "agent_access_writes_enabled", False)
     assert agent_oauth.door_available(propose) == (False, agent_oauth.DOOR_WRITES_OFF_CODE)
-    monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", True)
+    assert agent_oauth.door_available(write) == (False, agent_oauth.DOOR_WRITES_OFF_CODE)
+    monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
     assert agent_oauth.door_available(propose) == (True, None)
     assert agent_oauth.door_available(am.door_ops(am.KNOWLEDGE)["get_page"]) == (True, None)
+
+
+def test_the_ask_takes_the_write_scope_of_a_served_door_app(monkeypatch):
+    """MCP-P1b-2 (AD-4). Branch 0 checks the ask of ``app_write`` against any
+    ``<app>:write`` of an app that the door serves, and the route checks the
+    app of its path. A read scope, ``projects:write`` alone, or the write
+    scope of an app that the door does not serve gives no scope."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agent_door_apps", "knowledge")
+    assert agent_oauth.request_write_scope(("knowledge:write",)) == "knowledge:write"
+    assert agent_oauth.request_write_scope(("projects:read", "knowledge:write")) == (
+        "knowledge:write")
+    for scopes in ((), ("knowledge:read",), ("projects:write",), ("crm:write",)):
+        assert agent_oauth.request_write_scope(scopes) is None, scopes
+    monkeypatch.setattr(get_settings(), "agent_door_apps", "")
+    assert agent_oauth.request_write_scope(("knowledge:write",)) is None

@@ -29,13 +29,13 @@ from skill_projects.priority import (
 )
 from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
-    CANCELLED,
     MAX_BATCH,
     _access_lines,
     _confirm,
     _fields_block,
     _held_chat,
     _node,
+    _not_confirmed,
     _priority_card,
     _resolve_assignee,
     _resolve_status,
@@ -316,7 +316,7 @@ async def create_area(name: str) -> str:
         detail=data(clean),
         context=_fields_block({"area": data(clean), "visible to": "you only"}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await post("/projects/my/areas", {"name": clean})) or {}
     return f"Made the area {data(row.get('name') or clean)}.\n  area_id: {row.get('id')}"
 
@@ -639,7 +639,7 @@ async def _change_view(
         detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
         context=_fields_block(card, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await patch(f"/projects/views/{vid}", body)
     return f"Saved view {data(label or row.get('name'))}.\n  view_id: {vid}"
 
@@ -696,7 +696,7 @@ async def save_view(
         detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**shown, "project": data(node.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/views", payload)
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
@@ -788,7 +788,7 @@ async def capture_intake(
             }
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post("/projects/intake", payload)) or {}
     task = result.get("task") or {}
     return "\n".join(
@@ -846,7 +846,7 @@ async def triage_intake(
         "snooze": "Snooze this task?",
     }
     if not await _confirm(title=titles[verb], detail=card["task"], context=_fields_block(card)):
-        return CANCELLED
+        return _not_confirmed()
     # One literal path per verb: a path segment is an id from `uuid_of` or a
     # literal, never a value (the writes' path fence).
     paths = {
@@ -884,7 +884,7 @@ async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> st
         detail=what,
         context=_fields_block({"marks read": what, "scope": "your own notifications only"}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post("/projects/notifications/read", body)) or {}
     marked = int(result.get("marked") or 0)
     if not marked:
@@ -1009,7 +1009,7 @@ async def post_project_update(project_id: str, health: str, body: str) -> str:
             {"project": data(node.get("name")), "health": label, "body": text_body}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await post(f"/projects/nodes/{pid}/updates", {"health": wanted, "body": text_body})) or {}
     return (
         f"Posted the update on {data(node.get('name'))}: {label}"

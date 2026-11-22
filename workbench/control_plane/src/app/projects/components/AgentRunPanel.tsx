@@ -15,6 +15,9 @@
  * - A reply box writes a free `prompt`.
  * - Stop writes a `prompt` with the signal `stop`, after a confirm.
  *
+ * CIV-14b: the line of the newest thought or action draws the images that the
+ * agent put on it (`AgentImageStrip`), and a click opens one at full size.
+ *
  * The panel reads the run again every 5 seconds while the run is open and
  * the panel is mounted. It asks only for the activities after the newest
  * `seq` it holds.
@@ -41,20 +44,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import ElicitationCard from "@/components/ElicitationCard";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
+import { hasCapability } from "@/lib/access";
+import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
-  ARCHIVE_CARD_TITLE,
-  ARCHIVE_EXPIRED_HINT,
-  ARCHIVE_EXPIRED_TEXT,
-  ARCHIVE_HINT,
+  cardQuestion,
   type AgentActivity,
   type AgentRun,
   type AgentStartResult,
@@ -65,17 +66,13 @@ import {
   confirmLabels,
   replacePayload,
   answerTo,
-  answeredLine,
   archiveApprovalPayload,
-  archiveCardQuestion,
-  archiveDecisionOf,
   archiveExpired,
   archiveRequestOf,
-  archiveWaitingText,
   canReleaseRun,
-  cardQuestion,
   clientName,
   heldByLine,
+  RELEASE_ADMIN_PERMISSION,
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
@@ -86,7 +83,9 @@ import {
   lastSeq,
   latestElicitation,
   mergeActivities,
+  activityImages,
   newestEphemeral,
+  newestEphemeralActivity,
   panelState,
   replyPayload,
   runToShow,
@@ -96,15 +95,20 @@ import {
   withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
+import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
+import { AgentImageStrip } from "./AgentImageStrip";
 import { AgentPill } from "./AgentPill";
+import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
 import { AskAgentDialog } from "./AskAgentDialog";
+import { HandoffCard } from "./HandoffCard";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
 
-/** The line beside the card's Submit. The chat's own line names "the assistant". */
-export const AGENT_SUBMIT_HINT = "The agent reads your answer at its next step.";
+/** The line beside the card's Submit now lives with the card (EA-18b). */
+export { AGENT_SUBMIT_HINT };
 
 /** The statuses that take a member's Stop (§12.1, the status machine). */
 const STOPPABLE = new Set(["created", "in_progress", "awaiting"]);
@@ -160,6 +164,10 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
+  /** Failed sends of the question card's own answer. A bump gives the card a new exit gate. */
+  const [retryToken, setRetryToken] = useState(0);
+  /** SW-24. The newest handoff note of a task that has no open run. */
+  const [idleNote, setIdleNote] = useState<AgentActivity | null>(null);
 
   // The newest values, for the poll's closure.
   const runRef = useRef<AgentRun | null>(null);
@@ -195,6 +203,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     setPendingAnswer(null);
     setOtherOpenMine(false);
     setAsking(false);
+    setIdleNote(null);
     void (async () => {
       try {
         const runs = await agentRunsApi.list(task.id);
@@ -206,7 +215,15 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         setEnabled(true);
         const shown = runToShow(runs);
         setOtherOpenMine(hasOpenRunOf(runs.filter((r) => r.id !== shown?.id), meRef.current));
-        if (!shown) return;
+        if (!shown) {
+          // SW-24. No open run: the newest finished run may hold a note.
+          const last = runs[0];
+          if (last && !isOpenRun(last)) {
+            const past = await agentRunsApi.get(last.id);
+            if (live) setIdleNote(newestHandoff(past.activities));
+          }
+          return;
+        }
         runRef.current = shown;
         setRun(shown);
         const detail = await agentRunsApi.get(shown.id);
@@ -244,11 +261,14 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       agent_state: state,
       agent_client_via: run?.client_via ?? null,
       agent_member_email: run?.member_email ?? null,
+      // SW-7b: the card line names the session too.
+      agent_label: run?.agent_label ?? null,
     };
     if (
       (task.agent_state ?? null) === next.agent_state &&
       (task.agent_client_via ?? null) === next.agent_client_via &&
-      (task.agent_member_email ?? null) === next.agent_member_email
+      (task.agent_member_email ?? null) === next.agent_member_email &&
+      (task.agent_label ?? null) === next.agent_label
     ) {
       return;
     }
@@ -256,7 +276,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // Only a change of the run's facts reports. The task object changes on
     // every merge, and listing it would report again for each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, state, run?.client_via, run?.member_email]);
+  }, [enabled, state, run?.client_via, run?.member_email, run?.agent_label]);
 
   // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
   // must not move the Add row and the tab bar. Until the read answers, keep
@@ -310,13 +330,24 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     </Button>
   ) : null;
 
+  // SW-24. The newest handoff note, above the run card and the comments.
+  const noteActivity = run ? newestHandoff(activities) : idleNote;
+  const noteCard = noteActivity ? (
+    <HandoffCard activity={noteActivity} labels={personLabels} />
+  ) : null;
+
   if (!run) {
-    if (!canAsk) return null;
+    if (!canAsk && !noteCard) return null;
     return (
-      <div className="mb-3 flex items-center" data-ask-agent-row="">
-        {askButton}
-        {askDialog}
-      </div>
+      <>
+        {noteCard}
+        {canAsk ? (
+          <div className="mb-3 flex items-center" data-ask-agent-row="">
+            {askButton}
+            {askDialog}
+          </div>
+        ) : null}
+      </>
     );
   }
 
@@ -325,6 +356,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const shownRunId = run.id;
   const host = httpsHost(run.external_link);
   const ephemeral = newestEphemeral(activities);
+  // CIV-14b: the images that the agent put on the line that shows.
+  const lineImages = activityImages(newestEphemeralActivity(activities));
   const elicitation = latestElicitation(activities, run);
   const answer =
     elicitation &&
@@ -338,11 +371,12 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
   // EA-14a: one AI for each task. The card says who holds the task, and the
-  // run's member, an assignee or an admin may release it.
+  // run's member, an assignee or an admin may release it. H-409 item 2: the
+  // admin is a holder of the gateway's release permission, not `is_admin`.
   const holding = isOpenRun(run);
   const canRelease = canReleaseRun(run, {
     me,
-    isAdmin: access.is_admin,
+    isAdmin: hasCapability(access, RELEASE_ADMIN_PERMISSION),
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
@@ -423,6 +457,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       "answered",
       "Could not send the answer.",
     );
+    if (!ok) setRetryToken((n) => n + 1);
     if (ok) {
       setSent({
         id: `local:${body.idempotency_key}`,
@@ -433,13 +468,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         in_reply_to: elicitation.id,
       });
     }
-  }
-
-  /** EA-6g: the run's member approves or declines the archive request. */
-  async function submitArchive(answers: ElicitationAnswers) {
-    if (!elicitation) return;
-    const decision = archiveDecisionOf(elicitation, answers);
-    if (decision) await sendDecision(decision);
   }
 
   async function sendDecision(decision: "approve" | "decline") {
@@ -454,7 +482,10 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       "answered",
       "Could not send the decision.",
     );
-    if (!ok) return;
+    if (!ok) {
+      setRetryToken((n) => n + 1);
+      return;
+    }
     setSent({
       id: `local:${body.idempotency_key}`,
       seq: Number.MAX_SAFE_INTEGER,
@@ -512,6 +543,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   return (
+    <>
+    {noteCard}
     <section
       aria-label={`Agent run of ${client}`}
       data-agent-run-panel={run.status}
@@ -598,7 +631,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
               title={ephemeral}
               data-agent-ephemeral=""
             >
-              {ephemeral}
+              <MarkdownBody content={ephemeral} inline />
             </p>
           ) : null}
           {host ? (
@@ -615,15 +648,28 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           ) : null}
         </div>
       ) : null}
+      {ephemeral && run.status !== "failed" && lineImages.length > 0 ? (
+        <div data-agent-ephemeral-images="">
+          <AgentImageStrip images={lineImages} agentLabel={client} />
+        </div>
+      ) : null}
 
-      {cardOpen && elicitation && !archiveRequest ? (
-        <ElicitationCard
-          key={`answer-${cardNonce}`}
-          id={`agent-run:${elicitation.id}`}
-          questions={[cardQuestion(elicitation)]}
-          onSubmit={(answers) => askBeforeSending(answers, false)}
-          disabled={busy}
-          hint={AGENT_SUBMIT_HINT}
+      {elicitation ? (
+        // EA-18b: the answer part is ONE component, shared with the Questions list.
+        <AgentQuestionCard
+          key={`${elicitation.id}:${cardNonce}`}
+          retryToken={retryToken}
+          elicitation={elicitation}
+          run={run}
+          clientLabel={client}
+          answer={answer}
+          open={cardOpen}
+          canAnswer={run.can_answer !== false}
+          archiveMine={archiveMine}
+          busy={busy}
+          personLabels={personLabels}
+          onAnswer={(answers) => askBeforeSending(answers, false)}
+          onDecision={(decision) => void sendDecision(decision)}
         />
       ) : null}
 
@@ -660,71 +706,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
             </Button>
           </div>
         </div>
-      ) : null}
-
-      {archiveRequest && elicitation ? (
-        archiveStale ? (
-          <div data-archive-request="expired" className="space-y-1.5 text-xs">
-            <p className="flex items-start gap-1.5 text-muted-foreground">
-              <Icon name="Clock" size={12} className="mt-0.5 shrink-0" aria-hidden />
-              <span className="min-w-0 break-words">{ARCHIVE_EXPIRED_TEXT}</span>
-            </p>
-            {archiveMine ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon="X"
-                  disabled={busy}
-                  data-archive-decline=""
-                  onClick={() => void sendDecision("decline")}
-                >
-                  Decline
-                </Button>
-                <span className="text-[10px] text-muted-foreground">{ARCHIVE_EXPIRED_HINT}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : archiveMine ? (
-          <div data-archive-request="mine">
-            <ElicitationCard
-              id={`agent-run:${elicitation.id}`}
-              questions={[archiveCardQuestion(elicitation)]}
-              onSubmit={(answers) => void submitArchive(answers)}
-              disabled={busy}
-              hint={ARCHIVE_HINT}
-              title={ARCHIVE_CARD_TITLE}
-            />
-          </div>
-        ) : (
-          // Every other member reads the request and who must answer it.
-          <div
-            data-archive-request="waiting"
-            className="space-y-1 rounded-md border border-border p-2 text-xs"
-          >
-            <p className="flex items-start gap-1.5 text-foreground">
-              <Icon name="Archive" size={12} className="mt-0.5 shrink-0" aria-hidden />
-              <span className="min-w-0 whitespace-pre-wrap break-words">
-                {elicitation.content.body?.trim() || `${client} asks to archive this task.`}
-              </span>
-            </p>
-            <p className="text-muted-foreground" data-archive-waiting="">
-              {archiveWaitingText(run, personLabels)}
-            </p>
-          </div>
-        )
-      ) : null}
-
-      {elicitation && answer ? (
-        <p
-          data-agent-answered=""
-          className="flex items-start gap-1.5 text-xs text-muted-foreground"
-        >
-          <Icon name="CircleCheck" size={12} className="mt-0.5 shrink-0" aria-hidden />
-          <span className="min-w-0 break-words">
-            {answeredLine(answer, elicitation, personLabels)}
-          </span>
-        </p>
       ) : null}
 
       {withdrawShown(run, answer, archiveMine, canReply) ? (
@@ -825,5 +806,6 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         onCancel={() => setConfirmStop(false)}
       />
     </section>
+    </>
   );
 }

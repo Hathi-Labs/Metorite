@@ -1003,6 +1003,17 @@ AGENT_RUN_QUESTION_LEASE_FACTOR = 3
 #: The environment variable that overrides the lease, in seconds.
 AGENT_RUN_LEASE_ENV = "AGENT_RUN_LEASE_SECONDS"
 
+#: H-409 item 3 (task 748). The org of the bound tenant session, in SQL. The
+#: seam (``acb_common.db.tenant_session``) sets ``app.tenant_id`` in each
+#: transaction, so this is the session's org and never request input (R5).
+#: An unbound session reads NULL, and a compare with NULL matches no row, so
+#: the predicate fails closed. It is defence in depth beside FORCE RLS: the
+#: holder reads of a run (``agent_runs._HOLDER_SQL`` and ``_RUN_SELECT``) and
+#: the pill (:func:`agent_state_sql`) name the org themselves. The reads over
+#: a task alias (:func:`unheld_clause`, :func:`holder_sql`) derive it from
+#: the task row instead.
+BOUND_ORG_SQL = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
 
 def agent_run_lease_s() -> int:
     """The lease in seconds. The default is two hours. A value that is not a
@@ -1047,6 +1058,28 @@ def lease_expired(status: str, idle_s: float) -> bool:
     return idle_s > agent_run_hold_s(status)
 
 
+def run_life_at_sql(alias: str) -> str:
+    """The life clock of the run *alias*, in SQL (task 1045b): the newer of
+    ``last_activity_at`` and ``last_signal_at``. A linked event (a push to a
+    linked pull request or a check event) moves ``last_signal_at`` only.
+
+    ONE text for every reader of the run clock: the stale band
+    (:data:`AGENT_RUN_STATE_SQL`), the lease (:func:`lease_held_sql`), the
+    idle seconds of each run read, and the strand fit
+    (:func:`strand_fits_sql`). The answered rule
+    (:data:`AGENT_RUN_ANSWER_WAITS_SQL`) does NOT read it, so a linked event
+    never makes a run read ``answered``. ``GREATEST`` skips a NULL, so a run
+    with no linked event reads ``last_activity_at``."""
+    return f"GREATEST({alias}.last_activity_at, {alias}.last_signal_at)"
+
+
+def run_idle_s_sql(alias: str) -> str:
+    """The seconds since the life clock of the run *alias*
+    (:func:`run_life_at_sql`), for the lease rule in Python
+    (:func:`lease_expired`). ONE text for each read that carries ``idle_s``."""
+    return f"EXTRACT(EPOCH FROM (clock_timestamp() - {run_life_at_sql(alias)}))"
+
+
 def connection_gone_sql(alias: str) -> str:
     """SW-13c. True in SQL when the agent connection of the run *alias* is
     revoked or expired (``agent_connection``, migration 248). Such a run can
@@ -1077,8 +1110,9 @@ def lease_held_sql(alias: str) -> str:
     activity is newer than the lease, or three leases while it waits on a
     question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
     ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
-    The idle time is ``last_activity_at``, so ANY activity renews it, a
-    member's answer too.
+    The idle time is the life clock (:func:`run_life_at_sql`), so ANY
+    activity renews it, a member's answer too. Task 1045b: so does a linked
+    event.
 
     The lease is read when the text is built, never at import, so the
     environment override works in a running process.
@@ -1086,7 +1120,7 @@ def lease_held_sql(alias: str) -> str:
     lease = agent_run_lease_s()
     hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
     return (
-        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f"{run_life_at_sql(alias)} >= now() - (CASE WHEN {alias}.status = 'awaiting'"
         f" THEN {hold} ELSE {lease} END) * interval '1 second'"
     )
 
@@ -1104,6 +1138,9 @@ def holder_free_sql(alias: str) -> str:
 #: activity of the run is a member's prompt, and no agent activity followed
 #: it. ONE text: the derived state, the ``needs_agent`` filter
 #: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+#: ⚠️ Task 1045b: it reads ``last_activity_at`` and never
+#: :func:`run_life_at_sql`. A linked event moves ``last_signal_at`` only, so
+#: it never makes a run read ``answered``.
 AGENT_RUN_ANSWER_WAITS_SQL = (
     "(r.last_agent_activity_at IS NULL"
     " OR r.last_activity_at > r.last_agent_activity_at)"
@@ -1128,13 +1165,16 @@ AGENT_RUN_ANSWER_WAITS_SQL = (
 #:   activity clears it (``agent_runs._move_run``), so the rule holds only
 #:   while the waiting line is the newest activity. A wait whose time passed
 #:   reads ``stale`` at once, before the stale band ends.
+#: * Task 1045b: the stale band reads the life clock
+#:   (:func:`run_life_at_sql`), so a linked event refreshes a quiet run to
+#:   ``working``. The answered arm still reads ``last_activity_at`` only.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
     "   WHEN r.waiting_until > now() THEN 'waiting'"
-    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    f"   WHEN {run_life_at_sql('r')} < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
     "     OR r.waiting_until IS NOT NULL"
     "     THEN 'stale'"
     f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
@@ -1200,11 +1240,15 @@ def strand_fits_sql(strand: str, run: str) -> str:
     (SW-10a): the strand is not cleared, the run is still ``in_progress``,
     and no activity came on the run since the first miss. ONE text for
     ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
-    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    wire (``agent_runs._OPEN_STRANDS_SQL``).
+
+    Task 1045b: ``seen_activity_at`` holds the life clock of the run at the
+    first miss (:func:`run_life_at_sql`), so a linked event ends the fit
+    too."""
     return (
         f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
         f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
-        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+        f" AND {strand}.seen_activity_at = {run_life_at_sql(run)})"
     )
 
 
@@ -1259,11 +1303,16 @@ def unheld_clause() -> str:
     a run whose connection is revoked or expired (:func:`holder_free`). The
     lease is read when the clause is built, never at import, so the
     environment override works in a running process.
+
+    H-409 item 3: the run must be of the task's own org
+    (``h.organization_id = t.organization_id``), as defence in depth beside
+    FORCE RLS.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
         " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
@@ -1273,15 +1322,17 @@ def unheld_clause() -> str:
 def holder_sql() -> str:
     """The member who holds the task now, or null for a free task. The same
     open-run, lease and connection rules as :func:`unheld_clause`, so
-    ``holder`` is null exactly where ``unheld`` is true."""
+    ``holder`` is null exactly where ``unheld`` is true. The org arm is the
+    one of :func:`unheld_clause` (H-409 item 3)."""
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "(SELECT lower(h.member_email) FROM pm_agent_runs h"
         " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')}"
-        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+        f" ORDER BY {run_life_at_sql('h')} DESC LIMIT 1)"
     )
 
 
@@ -1315,24 +1366,31 @@ def agent_state_sql(task_filter: str) -> str:
     A task with no open run shows a `failed` run that is the newest run of its
     task (EA12-12: the pill stays until a newer run exists). One query for the
     page, as `_ASSIGNEES_SQL` does.
+
+    H-409 item 3: ``held_by`` comes from this text, so it names the org of
+    the bound session (:data:`BOUND_ORG_SQL`), and the newer-run test stays
+    in the org of the run. Defence in depth beside FORCE RLS.
     """
     return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
+       r.agent_label,
        r.waiting_on, r.waiting_until,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
-       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       {run_idle_s_sql('r')} AS idle_s,
        {connection_gone_sql('r')} AS connection_gone,
        (SELECT u.display_name FROM app_user u
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
  WHERE {task_filter}
    AND r.task_id IS NOT NULL
+   AND r.organization_id = {BOUND_ORG_SQL}
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
                              WHERE n.task_id = r.task_id
+                               AND n.organization_id = r.organization_id
                                AND (n.created_at, n.id) > (r.created_at, r.id))))
  ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
           CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
@@ -1443,7 +1501,8 @@ def waiting_of(state: Any, on: Any, until: Any) -> dict[str, Any] | None:
 
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
-    ``agent_member_email`` and ``agent_note``, mutating and returning the list.
+    ``agent_member_email``, ``agent_note`` and ``agent_label`` (SW-7b, the
+    display name of the agent's session), mutating and returning the list.
 
     ``queued``, ``working``, ``waiting``, ``awaiting``, ``answered``,
     ``stopping``, ``stale`` or ``failed``. ``None`` for a task with no open
@@ -1461,7 +1520,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, agent_waiting=None, held_by=None)
+                   agent_note=None, agent_label=None, agent_waiting=None, held_by=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1473,6 +1532,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                 row.update(agent_state=hit.state, agent_client_via=hit.client_via,
                            agent_member_email=hit.member_email,
                            agent_note=note[:AGENT_NOTE_MAX] or None,
+                           agent_label=getattr(hit, "agent_label", None),
                            agent_waiting=waiting_of(
                                hit.state, getattr(hit, "waiting_on", None),
                                getattr(hit, "waiting_until", None)))

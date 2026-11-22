@@ -43,6 +43,8 @@ export interface Address {
 export interface Style {
   length?: Length;
   language?: string;
+  /** The member ordered this answer language (personalization.md 5.3). */
+  language_fixed?: boolean;
   notes?: string[];
 }
 // ── The interview (PZ-26, PZ-27, `personalization.md` §14.3 and §14.4) ────
@@ -359,7 +361,10 @@ export function mergeAddress(current: Address, edit: { [K in keyof Address]?: Ad
 
 /** The new `style` value, built the same way. */
 export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K] | null | "" }): Style {
-  return compact({ ...current, ...edit } as Style);
+  const next = compact({ ...current, ...edit } as Style);
+  // No language, no mark: an emptied language leaves no orphan `language_fixed`.
+  if (!next.language) delete next.language_fixed;
+  return next;
 }
 
 /**
