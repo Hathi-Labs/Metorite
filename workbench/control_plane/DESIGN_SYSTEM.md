@@ -413,7 +413,7 @@ stop with `data-side-docked`, and its host passes no `docked`.
 | A task panel or a record card over the page, or on a phone | None. It is a card or a sheet, not a side panel |
 | `TaskFocusModal`, and the docked detail of `/tasks` | Not changed. `/tasks` is a preview pane, and its detail reads its task from the store |
 | `Modal` at `placement="end"`: a connection, the activity panel and the bell | Not changed. A dialog takes the Grow motion of §4b |
-| `ArtifactSidebar` and `SidePanelEditor` | Not changed. Each one folds a column, and it does not open at the right of a page |
+| `ArtifactSidebar` and `SidePanelEditor` | Not changed. Each one is a column of a chat surface, not a panel of a page. The files column of the assistant's full view still shows and goes at once |
 | The agent drawer of Observability | Not changed. It is a preview pane |
 
 **Fence.** `src/components/ui/SidePanelMotion.test.ts` holds the presence
