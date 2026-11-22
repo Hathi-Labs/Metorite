@@ -5636,7 +5636,7 @@ mutation of one layer alone stays green. The table shows those too.
 
 **Fix round 4 (HANDOFF H-242, task 689, 2026-11-22).** The round 3 review
 of PR #616 found three edges of the new-chat step. Seven R8 tests failed
-on main at `9d0ea8444`, on the box. The box went offline before the run
+on the box at `9d0ea8444`: the tests alone, on main `66766ecf9`. The box went offline before the run
 after the fix, so pr-check must show them green. The hermetic fences pass.
 
 1. **A room of `None` no longer skips the step** (residual 8). A run door
@@ -5670,6 +5670,7 @@ after the fix, so pr-check must show them green. The hermetic fences pass.
    and `purge_files` take that session as `db=`. The transaction stays in
    one worker thread, inside one `with` block, so a cancelled request never
    leaves the lock held. A wait for the lock of more than 10 s answers 503.
+   Advisory: no test fences the 10 s wait.
 
 Each mutation below turned the hermetic fences of
 `tests/unit/test_h227_thread_scope.py` red on the PC, on 2026-11-22. The
