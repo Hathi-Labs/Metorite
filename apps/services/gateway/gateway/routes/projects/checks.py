@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_task_project_open,
     emit,
     load_default_status,
     load_visible_task,
@@ -297,6 +298,8 @@ async def report_check(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
+        # ARC-2b: a Check result writes the task, so an archived project refuses it.
+        await assert_task_project_open(db, before)
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
         expected = getattr(before, "check_text", None)
         if expected is None:
