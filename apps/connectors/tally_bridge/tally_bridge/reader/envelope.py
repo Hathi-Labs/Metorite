@@ -126,6 +126,43 @@ def report(
     return _bytes(env)
 
 
+# A Tally GUID: hex groups joined by dashes, such as
+# "a1b2c3d4-0000-1111-2222-333344445555-0000001a". Only this shape may go into
+# the header, so no input text ever reaches the request kind or the TDL.
+GUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4,12}){3,6}")
+
+
+def is_guid(text: str) -> bool:
+    """The whole text is a GUID. fullmatch, so a trailing newline fails too."""
+    return GUID.fullmatch(text) is not None
+
+
+def voucher(guid: str, *, company: str) -> bytes:
+    """One voucher by its GUID, as an object export."""
+    if not is_guid(guid):
+        raise ValueError("Not a Tally voucher GUID.")
+    env, desc = _envelope("Object", "Voucher")
+    env.find("HEADER/ID").set("TYPE", "GUID")
+    env.find("HEADER/ID").text = guid
+    ET.SubElement(env.find("HEADER"), "SUBTYPE").text = "Voucher"
+    _statics(desc, company)
+    fetch = ET.SubElement(desc, "FETCHLIST")
+    for field in VOUCHER_FETCH:
+        ET.SubElement(fetch, "FETCH").text = field
+    return _bytes(env)
+
+
+VOUCHER_FETCH = (
+    "Date",
+    "VoucherTypeName",
+    "VoucherNumber",
+    "PartyLedgerName",
+    "Narration",
+    "AllLedgerEntries",
+    "AllInventoryEntries",
+)
+
+
 def collection(name: str, *, company: str | None) -> bytes:
     """A collection export with its inline TDL definition."""
     spec = COLLECTIONS.get(name)
