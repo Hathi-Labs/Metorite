@@ -185,6 +185,31 @@ def allowed_email_domain() -> str:
     return os.getenv("ALLOWED_EMAIL_DOMAIN", "fracktal.in").lower().lstrip("@")
 
 
+#: Task 3865. The mismatch line fired on EVERY request of an off-domain member
+#: (54,959 lines in three days). It logs once per (address, domain) per process
+#: per :data:`_MISMATCH_LOG_WINDOW_S`. The log only labels, so the behaviour is
+#: the same. Fence: tests/unit/test_auth_domain_mismatch_log.py.
+_MISMATCH_LOG_WINDOW_S = 3600.0
+_MISMATCH_LOG_MAX_KEYS = 4096
+_mismatch_logged: dict[tuple[str, str], float] = {}
+
+
+def _mismatch_due(asserted: str, domain: str) -> bool:
+    """True when this (address, domain) has not logged in the window."""
+    import time  # noqa: PLC0415
+
+    now = time.monotonic()
+    key = (asserted.lower(), domain)
+    last = _mismatch_logged.get(key)
+    if last is not None and now - last < _MISMATCH_LOG_WINDOW_S:
+        return False
+    _mismatch_logged.pop(key, None)
+    _mismatch_logged[key] = now  # re-inserted last, so dict order is age order
+    while len(_mismatch_logged) > _MISMATCH_LOG_MAX_KEYS:
+        _mismatch_logged.pop(next(iter(_mismatch_logged)))
+    return True
+
+
 def is_company_email(email: str | None) -> bool:
     """Is this address inside :func:`allowed_email_domain`?"""
     return bool(email) and (email or "").lower().endswith(
@@ -1174,11 +1199,12 @@ async def get_current_user(
             # whose sign-in address is off-domain. The mismatch is only ever
             # LOGGED — the `or x_user_email` below is what makes that explicit,
             # since the assignment above otherwise reads as a check it is not.
-            _log.warning(
-                "auth.identity_domain_mismatch",
-                asserted_email=email[:64],
-                allowed_domain=allowed_domain,
-            )
+            if _mismatch_due(email[:64], allowed_domain):
+                _log.warning(
+                    "auth.identity_domain_mismatch",
+                    asserted_email=email[:64],
+                    allowed_domain=allowed_domain,
+                )
             email = None
         _bind_session_member(email or x_user_email)
         return await _with_resolved_access(

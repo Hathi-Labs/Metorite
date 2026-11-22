@@ -417,7 +417,8 @@ _NO_PAGE_REASON = (
     "damaged, or its pages use a form that I cannot read."
 )
 _BUSY_REASON = (
-    "I am reading another file for you now. Try again when that read is done."
+    "I am reading another file for you now, and it took too long. "
+    "Try again when that read is done."
 )
 
 
@@ -566,6 +567,19 @@ def _is_database_fault(exc: BaseException) -> bool:
 _READING: set[tuple[str, str]] = set()
 
 
+#: The requests of one member that wait for the hold, oldest first. Each
+#: waiter is a future that ``release`` resolves.
+_WAITERS: dict[tuple[str, str], list[asyncio.Future[None]]] = {}
+
+#: The seconds that a read waits for an earlier read of the same member before
+#: it answers busy (Task 3865). The model asks for the files of one mail at
+#: once, and the parse pool has two slots, so the hold serves one read at a
+#: time. A wait of this length leaves room inside the 60 s that
+#: ``read_email_attachment`` allows for the whole call. Fence:
+#: tests/unit/test_email_attachment_text.py (``TestTheHoldWaits``).
+HOLD_WAIT_S = 30.0
+
+
 class _ReadHold:
     """One member's right to read a file now, at most one at a time.
 
@@ -573,7 +587,9 @@ class _ReadHold:
     member who calls the route in a loop holds both slots, and the
     ``read_attachment`` of every other member answers busy. ``take`` runs on
     the event loop with no ``await`` between the test and the add, so two
-    requests of one member cannot both take it.
+    requests of one member cannot both take it. ``take_waiting`` queues
+    behind the holder for at most :data:`HOLD_WAIT_S`, so a burst of reads
+    runs one after the other and does not refuse.
     """
 
     def __init__(self, user: UserContext) -> None:
@@ -581,16 +597,55 @@ class _ReadHold:
         self._held = False
 
     def take(self) -> bool:
+        if self._held:
+            return True
         if self._key in _READING:
             return False
         _READING.add(self._key)
         self._held = True
         return True
 
+    async def take_waiting(self, seconds: float | None = None) -> bool:
+        """Take the hold, waiting up to *seconds* (default :data:`HOLD_WAIT_S`)."""
+        if self.take():
+            return True
+        loop = asyncio.get_running_loop()
+        end = loop.time() + (HOLD_WAIT_S if seconds is None else seconds)
+        while True:
+            left = end - loop.time()
+            if left <= 0:
+                return False
+            waiter: asyncio.Future[None] = loop.create_future()
+            _WAITERS.setdefault(self._key, []).append(waiter)
+            try:
+                await asyncio.wait_for(waiter, left)
+            except TimeoutError:
+                return False
+            finally:
+                queue = _WAITERS.get(self._key)
+                if queue is not None:
+                    if waiter in queue:
+                        queue.remove(waiter)
+                    if not queue:
+                        _WAITERS.pop(self._key, None)
+                if waiter.cancelled() and not self._held:
+                    # A cancelled or timed-out waiter that was woken passes
+                    # the turn on, so the queue does not stall.
+                    self._wake_next()
+            if self.take():
+                return True
+
+    def _wake_next(self) -> None:
+        for waiter in _WAITERS.get(self._key, ()):
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+
     def release(self) -> None:
         if self._held:
             _READING.discard(self._key)
             self._held = False
+            self._wake_next()
 
 
 #: The fields of a cached answer. The file name and the type come from the
@@ -772,7 +827,7 @@ def _route_reads_with_ocr() -> bool:
 
 
 @router.get("/attachments/{attachment_id}/text", response_model=AttachmentTextModel)
-async def attachment_text(
+async def attachment_text(  # noqa: C901 - one branch over the limit: the hold wait (Task 3865)
     attachment_id: str,
     user: UserContext = Depends(get_current_user),
     offset: int = 0,
@@ -851,6 +906,13 @@ async def attachment_text(
                 BACKGROUND_FETCH_LIMIT_S,
             )
 
+    # Task 3865: a second read of this member waits for the first, up to
+    # HOLD_WAIT_S, and then answers busy. The wait is BEFORE the database
+    # session opens, so a waiting read holds no connection. The OCR deadline
+    # above started at the top of the request, so the wait shortens it.
+    busy = await _wait_for_hold(hold, use_ocr, org_id, user, aid)
+    if busy is not None:
+        return busy
     try:
         if use_ocr:
             # P2-2: the route waits FETCH_TIMEOUT_S, and the fetch may go on
@@ -902,6 +964,29 @@ async def attachment_text(
             hold.release()
 
 
+async def _wait_for_hold(
+    hold: _ReadHold, use_ocr: bool, org_id: Any, user: UserContext, aid: str,
+) -> AttachmentTextModel | None:
+    """Task 3865: wait for an earlier read of this member, or the busy answer.
+
+    The wait is BEFORE the database session opens, so a waiting read holds no
+    connection. The OCR deadline started at the top of the request, so the wait
+    shortens it. A retry that joins a running fetch skips the wait. It joins
+    the fetch, and takes its own hold after the fetch (``_ocr_fetch``).
+    """
+    joins = use_ocr and (
+        str(org_id or ""), (user.email or "").strip().lower(), aid,
+    ) in _RUNNING_FETCHES
+    if joins or await hold.take_waiting():
+        return None
+    # No session opened, so the answer names no file. That also keeps the
+    # name of a file of another member out of it.
+    return AttachmentTextModel(
+        filename="attachment", mime_type="application/octet-stream",
+        kind="unreadable", reason=_BUSY_REASON,
+    )
+
+
 async def _ocr_fetch(
     key: tuple[str, str, str], fetch_alone: Callable[[], Awaitable[Any]], hold: Any,
     aid: str, owned: list[_FetchJob],
@@ -937,7 +1022,7 @@ async def _ocr_fetch(
         _log.warning("attachment_text.fetch_slow", aid=aid, seconds=FETCH_TIMEOUT_S,
                      joined=True)
         raise HTTPException(status_code=504, detail=_SLOW_FETCH) from None
-    if not got.stopped and not hold.take():
+    if not got.stopped and not await hold.take_waiting():
         busy = AttachmentTextModel(**_base(got.row), kind="unreadable", reason=_BUSY_REASON)
         return _OwnedAttachment(row=got.row, stopped=busy)
     return got

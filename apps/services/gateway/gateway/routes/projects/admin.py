@@ -44,6 +44,7 @@ from gateway.routes.projects.core import (
     holds_lanes,
     hue_values,
     is_org_wide,
+    load_readable_project,
     load_visible_project,
     org_wide_exists,
     record_activity,
@@ -65,6 +66,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     status_scope_ids,
     status_users,
+    task_visibility_clause,
     update_row,
     validate_choice,
     vocabulary_scope,
@@ -111,7 +113,9 @@ class TypeIn(BaseModel):
     is_epic: bool | None = None
 
 
-async def _root_for(db: Any, vis: Any, project_id: str) -> str:
+async def _root_for(
+    db: Any, vis: Any, project_id: str, *, read: bool = False,
+) -> str:
     """The root whose TYPES a project inherits.
 
     Types are root-scoped and the subtree inherits, so a caller may pass any
@@ -124,13 +128,22 @@ async def _root_for(db: Any, vis: Any, project_id: str) -> str:
     different answer afterwards. Two names for two questions, because the bug
     where they diverge is silent.
     """
-    await load_visible_project(db, vis, project_id)
+    # ``read`` is for a GET only: it also lets in a member who can open a
+    # task of the project (Task 3865). A write keeps the strict check.
+    loader = load_readable_project if read else load_visible_project
+    await loader(db, vis, project_id)
     return await root_project_id(db, project_id)
 
 
-async def _status_owner_for(db: Any, vis: Any, project_id: str) -> str:
-    """The node whose status set ``project_id`` uses, checked for visibility."""
-    await load_visible_project(db, vis, project_id)
+async def _status_owner_for(
+    db: Any, vis: Any, project_id: str, *, read: bool = False,
+) -> str:
+    """The node whose status set ``project_id`` uses, checked for visibility.
+
+    ``read`` is for a GET only. See :func:`_root_for`.
+    """
+    loader = load_readable_project if read else load_visible_project
+    await loader(db, vis, project_id)
     return await status_owner_id(db, project_id)
 
 
@@ -301,7 +314,17 @@ async def list_statuses(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        root = await _status_owner_for(db, vis, project_id)
+        # Task 3865: a member who opens a task by assignment can read the
+        # lanes of its project. Then the counts cover only tasks they can open.
+        try:
+            await load_visible_project(db, vis, project_id)
+            task_only = False
+        except HTTPException as refusal:
+            if refusal.status_code != 404:
+                raise
+            await load_readable_project(db, vis, project_id)
+            task_only = True
+        root = await status_owner_id(db, project_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
@@ -321,11 +344,12 @@ async def list_statuses(
             str(r.status_id): int(r.tasks)
             for r in (await db.execute(
                 text(
-                    "SELECT status_id, count(*) AS tasks FROM pm_tasks "
-                    " WHERE project_id = ANY(CAST(:scope AS uuid[])) "
-                    " GROUP BY status_id"
+                    "SELECT status_id, count(*) AS tasks FROM pm_tasks t "
+                    " WHERE t.project_id = ANY(CAST(:scope AS uuid[])) "
+                    + (f" AND {task_visibility_clause(vis)} " if task_only else "")
+                    + " GROUP BY status_id"
                 ),
-                {"scope": scope},
+                {"scope": scope, **(vis.params if task_only else {})},
             )).fetchall()
         }
         return {
@@ -911,7 +935,7 @@ async def describe_status_set(
     """Where this project's statuses come from, and whether it may change."""
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        node = await load_visible_project(db, vis, project_id)
+        node = await load_readable_project(db, vis, project_id)
         owner = await status_owner_id(db, project_id)
         owner_row = await require_row(db, "pm_projects", owner, "Project")
 
@@ -1203,7 +1227,7 @@ async def list_types(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        root = await _root_for(db, vis, project_id)
+        root = await _root_for(db, vis, project_id, read=True)
         rows = (await db.execute(
             text(
                 f"SELECT * FROM pm_task_types WHERE {vocabulary_scope()} "

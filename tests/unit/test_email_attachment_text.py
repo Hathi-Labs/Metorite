@@ -601,6 +601,46 @@ class TestTheTextRoute:
         assert h.provider_calls == 1
         assert list(h.text_redis.store) == [f"cc:{ORG_A}:email-att-text:{ATT_ID}"]
 
+    async def test_a_second_read_of_one_member_waits_and_succeeds(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865. The model reads 3 files of one mail at once. The second
+        read waits for the first, and then parses. Nothing answers busy."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        gate = asyncio.Event()
+        parses: list[str] = []
+        real = tools.parse_bounded
+
+        async def _slow(data: bytes, suffix: str) -> Any:
+            parses.append(suffix)
+            if len(parses) == 1:
+                await gate.wait()
+            return await real(data, suffix)
+
+        monkeypatch.setattr(m, "parse_bounded", _slow)
+        first = asyncio.create_task(_text())
+        while not parses:
+            await asyncio.sleep(0.001)
+        second = asyncio.create_task(_text())
+        await asyncio.sleep(0.05)
+        assert not second.done(), "the second read did not wait"
+        gate.set()
+        assert (await asyncio.wait_for(first, 5)).text == "words"
+        assert (await asyncio.wait_for(second, 5)).text == "words"
+        assert not m._READING and not m._WAITERS
+        assert h.provider_calls >= 1
+
+    async def test_a_wait_past_the_limit_answers_busy(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
+        m._READING.add((ORG_A, OWNER))
+        try:
+            got = await asyncio.wait_for(_text(), 5)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert (got.kind, got.reason) == ("unreadable", m._BUSY_REASON)
+        assert not m._WAITERS
+
     async def test_one_member_runs_one_read_at_a_time(self, monkeypatch) -> None:
         """Review round 1, P2. A second read of the same member, while the
         first parses, answers busy and parses nothing. Another member reads."""
@@ -623,6 +663,7 @@ class TestTheTextRoute:
                 await asyncio.sleep(0.001)
 
         monkeypatch.setattr(m, "parse_bounded", _slow)
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)  # Task 3865: the wait ends
         first = asyncio.create_task(_text())
         try:
             await _until(lambda: parses)
