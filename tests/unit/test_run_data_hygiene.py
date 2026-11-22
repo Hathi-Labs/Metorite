@@ -381,13 +381,13 @@ async def test_the_notes_tools_reach_only_the_members_own_skill(sandbox) -> None
     ``save_note`` refuse each skill folder that is not the member's own:
     another member's, and one with no marker. A personal agent's dir holds
     no marker, so there the tools work as before."""
-    from acb_skills.agent_paths import claim_skill
+    from acb_skills.agent_paths import claim_skill, tenant_instance
     from acb_skills.note_tools import recall_notes, save_note
 
     x, y = "x-notes@example.com", "y-notes@example.com"
     thread = new_thread()
     with bound_run(ORG_A, agent=PA, thread=thread, member=x) as ws:
-        claim_skill(ws, "agent-data/skills/chart/SKILL.md", x)
+        claim_skill(ws, "agent-data/skills/chart/SKILL.md", x, instance=tenant_instance(ORG_A))
         (ws / "agent-data/skills/chart/SKILL.md").write_text("X SKILL TEXT")
         bare = ws / "agent-data" / "skills" / "bare"
         bare.mkdir(parents=True)

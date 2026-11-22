@@ -165,17 +165,18 @@ class TenantFileStore(FileSystemAgentFileStore):
         inputs_rel: str | None = None,
         instance: str,
     ) -> None:
-        from acb_skills.agent_paths import is_tenant_instance
+        from acb_skills.agent_paths import is_shared_instance
 
         super().__init__(workspace)
         self._workspace = Path(workspace)
         #: The run's store key, from the broker's binding (``RunBinding.instance``),
         #: never from the dir's ``.cc-instance`` marker. The orphan rule of
-        #: :meth:`_skill_refusal` and the store ask of the claim bind only a
-        #: tenant dir (``o:<org>``). It has no default, so no caller can switch
-        #: the rule off by leaving it out.
+        #: :meth:`_skill_refusal` and the store ask of the claim bind every
+        #: shared dir: a tenant dir (``o:<org>``) and a team dir (``t:<team>``).
+        #: Only a personal dir (``u:``) is exempt. It has no default, so no
+        #: caller can switch the rule off by leaving it out.
         self._instance = str(instance)
-        self._tenant_dir = is_tenant_instance(self._instance)
+        self._shared_dir = is_shared_instance(self._instance)
         self._outputs_rel = outputs_rel.strip("/")
         self._run_data = Path(run_data)
         self._guard = guard
@@ -238,8 +239,8 @@ class TenantFileStore(FileSystemAgentFileStore):
 
         * Another member's folder, and one whose marker cannot be read, empty
           or unknown (``agent_paths.skill_owner`` fails closed).
-        * In a tenant dir only, a folder with no marker that holds files
-          (H-245 step 1), the rule of ``agent_paths.claim_skill``. A rehydrate
+        * In a shared dir (a tenant or a team dir), a folder with no marker
+          that holds files (H-245 step 1, task 618 F1), the rule of ``agent_paths.claim_skill``. A rehydrate
           that fails part way can bring back a member's files with no marker,
           and no member may take them. A missing or empty folder stays free,
           so a run still makes a new skill.
@@ -267,7 +268,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         if owner == SKILL_FOREIGN:
             return "That skill belongs to another member."
         if (
-            self._tenant_dir
+            self._shared_dir
             and owner == SKILL_UNCLAIMED
             and skill_folder_orphaned(self._workspace, top)
         ):

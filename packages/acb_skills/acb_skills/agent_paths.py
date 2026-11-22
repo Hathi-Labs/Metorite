@@ -90,6 +90,8 @@ __all__ = [
     "instance_slug",
     "is_loose_rel",
     "is_other_thread_rel",
+    "is_personal_instance",
+    "is_shared_instance",
     "is_tenant_instance",
     "is_thread_slug",
     "is_valid_agent_name",
@@ -224,6 +226,36 @@ def is_tenant_instance(instance: object) -> bool:
         and instance.startswith(TENANT_INSTANCE_PREFIX)
         and len(instance) > len(TENANT_INSTANCE_PREFIX)
     )
+
+
+#: The prefix of a personal key, ``u:<email>`` (``manifest.instance_key``).
+PERSONAL_INSTANCE_PREFIX = "u:"
+#: The prefix of a team key, ``t:<team>`` (``manifest.instance_key``).
+TEAM_INSTANCE_PREFIX = "t:"
+
+
+def is_personal_instance(instance: object) -> bool:
+    """True when *instance* is a ``u:<email>`` key: a dir of one member only."""
+    return isinstance(instance, str) and instance.startswith(PERSONAL_INSTANCE_PREFIX)
+
+
+def is_shared_instance(instance: object) -> bool:
+    """True when the dir of *instance* can hold the files of more than one member.
+
+    Every key that is not a personal key (H-245, task 618 review F1): a tenant
+    dir (``o:<org>``), a team dir (``t:<team>``), and the shared key ``''``.
+    A key that is not a string is shared too, so the skill rules fail closed.
+    """
+    return not is_personal_instance(instance)
+
+
+def store_ask_instances(instance: str) -> tuple[str, ...]:
+    """The store keys that a rehydrate of the dir of *instance* restores.
+
+    A tenant dir also restores this tenant's older rows (``instance=''``,
+    ``executor._rehydrate_target``). Every other dir restores its own key only.
+    """
+    return (instance, "") if is_tenant_instance(instance) else (instance,)
 
 
 # ── The thread's own folders and run data (D86, maf_coding_engine §16.3, H-227) ──
@@ -753,8 +785,7 @@ def skill_folder_orphaned(workspace: Path, top_rel: str) -> bool:
 
 
 def _store_refusal(
-    workspace: Path, top_rel: str, organization_id: str | None = None,
-    instance: str | None = None,
+    workspace: Path, top_rel: str, organization_id: str | None, instance: str,
 ) -> SkillClaimRefusal | None:
     """Why the blob store keeps *top_rel* from a new author, or ``None``.
 
@@ -763,29 +794,28 @@ def _store_refusal(
     row under the folder, ``STORE_UNREAD`` when it cannot say, and ``None``
     when it holds none.
 
-    The key is *instance*, the store key of the run's mirror. A caller that
-    knows it passes it: a route has ``o:<org>`` from the session, and the
-    file store has the broker's binding. Only with ``None`` does the key come
-    from the dir's ``.cc-instance`` marker (:func:`workspace_blob_key`).
+    The key is *instance*, the store key of the run's mirror, from the
+    caller's binding. It never comes from the dir's ``.cc-instance`` marker:
+    a container writes the dir that it mounts.
 
-    The ask binds a tenant dir (``o:<org>``) only. It also asks for the older
-    shared rows (``instance=''``), because a tenant dir restores those too.
-    Outside a tenant dir no route keeps one member's skill from another, so
-    the ask protects nothing there, and a store outage must not block a
-    personal skill. The tenant is *organization_id*, else the bound one. Only
-    a process with no store reads as "no row".
+    The ask binds every shared dir (:func:`is_shared_instance`): a tenant dir
+    and a team dir. It asks for the keys that a rehydrate of the dir restores
+    (:func:`store_ask_instances`). A personal dir (``u:``) holds only its
+    member's files, so the ask protects nothing there, and a store outage must
+    not block a personal skill. The tenant is *organization_id*, else the
+    bound one. Only a process with no store reads as "no row".
     """
+    if not is_shared_instance(instance):
+        return None
     try:
         from acb_memory import blob_store
     except ImportError:
         return None  # no store in this process, so nothing can come back
-    agent, marked = workspace_blob_key(workspace)
-    key = marked if instance is None else instance
-    if not is_tenant_instance(key):
-        return None
+    agent, _marked = workspace_blob_key(workspace)
     try:
         held = blob_store.has_rows_under(
-            agent, top_rel, instances=(key, ""), organization_id=organization_id,
+            agent, top_rel, instances=store_ask_instances(instance),
+            organization_id=organization_id,
         )
     except Exception as exc:  # no answer is a refusal
         from acb_common import get_logger
@@ -798,8 +828,8 @@ def _store_refusal(
 
 
 def claim_skill(
-    workspace: Path, rel: str, member: str | None, *, organization_id: str | None = None,
-    instance: str | None = None,
+    workspace: Path, rel: str, member: str | None, *, instance: str,
+    organization_id: str | None = None,
 ) -> tuple[str, bytes] | None:
     """Record *member* as the author of the skill folder of *rel*, when none is.
 
@@ -812,11 +842,13 @@ def claim_skill(
     :class:`SkillOwnedElsewhere` when the folder is not this member's,
     also when another member claimed it between the check and the write. It
     raises it too for a folder with files and no marker
-    (:func:`skill_folder_orphaned`), and, in a tenant dir, for a folder that
-    the blob store still holds or cannot answer for (:func:`_store_refusal`,
-    with *instance* as the store key). Its :attr:`~SkillOwnedElsewhere.reason`
-    says which. So ``None`` always means "this member's folder", and the
-    caller may write.
+    (:func:`skill_folder_orphaned`), and, in a shared dir, for a folder that
+    the blob store still holds or cannot answer for (:func:`_store_refusal`).
+    Its :attr:`~SkillOwnedElsewhere.reason` says which. So ``None`` always
+    means "this member's folder", and the caller may write.
+
+    *instance* is the store key of the dir, from the caller's binding. It has
+    no default, so a caller that leaves it out fails at once (task 618, F3).
     """
     top = skill_top_rel(rel)
     if top is None:
