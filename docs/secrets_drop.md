@@ -1,7 +1,7 @@
 # The secrets drop
 
 **Status:** BUILT 2026-10-08, for the dev phase. The owner asked for it on
-2026-10-08. Fix round 1 landed the same day. §6, the startup check of the
+2026-10-08, and fix round 1 landed the same day. §6, the startup check of the
 secrets (task 574, WS-2d), is BUILT 2026-11-22 and runs in shadow.
 **Script:** `scripts/secrets.sh`. **Manifest:** `deploy/secrets/manifest.json`.
 **Fence:** `tests/unit/test_secrets_drop.py`.
@@ -282,7 +282,7 @@ Follow these steps for each unit.
 
    ```bash
    since="$(systemctl show -p InactiveExitTimestamp --value acb-gateway)"
-   sudo journalctl -u acb-gateway --since "$since" -o cat | grep -F 'secrets.'
+   sudo journalctl -u acb-gateway --since "$since" -o cat | grep -F 'secrets.' | tail -n 20
    ```
 
 3. Read the summary line. The console form writes `unusable=0`, and it can put colour codes in the line. Add `| sed 's/\x1b\[[0-9;]*m//g'` to remove them.
