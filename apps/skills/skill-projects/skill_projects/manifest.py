@@ -532,6 +532,15 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
     Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B"),
+    # ── sequences.py — project sequences (SW-27a, task 861) ─────────────
+    Route(
+        "POST",
+        "/projects/nodes/{project_id}/sequences/{name}/reserve",
+        "",
+        "X",
+        "SW-27a: an agent reserves a number over MCP once SW-27b (task 3893) adds "
+        "reserve_number. The chat has no need to reserve a number.",
+    ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
     # §12.1). The in-product chat gets them in EA-12e.
@@ -1015,7 +1024,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "include_subtasks": "complete.include_subtasks",
     },
     ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
-    ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
+    ("GET", "/projects/search"): {
+        "q": "find_tasks.query", "limit": "find_tasks.limit",
+        # reads.py sends it with every search, so it is not an argument.
+        "most_words": "find_tasks",
+    },
     # ── activity ─────────────────────────────────────────────────────────
     ("GET", "/projects/tasks/{task_id}/timeline"): {
         "kind": "render_timeline.kind",
@@ -1486,6 +1499,18 @@ _DISPATCHED_BY_REASON = (
     "agent sends it, and the gateway refuses it from a person, so the chat sends none."
 )
 
+_AGENT_FILTER_REASON = (
+    "An agent filter of the board (AGA). The chat reads the agents with the run tools."
+)
+_AGENT_SESSION_REASON = (
+    "A fact about an outside agent session. Only a signed agent sends it, so the "
+    "chat, which acts as its member, sends none."
+)
+_AGENT_OVERVIEW_REASON = (
+    "A shape of the Agents at work section of the web app (AGA-7). The chat has no "
+    "such section."
+)
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
@@ -1544,6 +1569,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "updated_after": _AUDIT_FILTER_REASON,
         "updated_before": _AUDIT_FILTER_REASON,
         "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
+        "agent_focus": _AGENT_FILTER_REASON,
+        "agent_worked": _AGENT_FILTER_REASON,
+        "with_status_counts": (
+            "The count of each status beside the rows, for the board header. The chat "
+            "counts the rows it reads."
+        ),
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. list_tasks filters by status_category, and render_board "
@@ -1577,6 +1608,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "title_prefix": _AUDIT_FILTER_REASON,
         "updated_after": _AUDIT_FILTER_REASON,
         "updated_before": _AUDIT_FILTER_REASON,
+        "agent_focus": _AGENT_FILTER_REASON,
+        "agent_worked": _AGENT_FILTER_REASON,
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
@@ -1601,12 +1634,26 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "has no claim tool."
         ),
         "agent_label": _AGENT_LABEL_REASON,
+        "external_link": _AGENT_SESSION_REASON,
+        "host": _AGENT_SESSION_REASON,
+        "host_kind": _AGENT_SESSION_REASON,
+        "model": _AGENT_SESSION_REASON,
         "dispatched_by": _DISPATCHED_BY_REASON,
     },
     # SW-7b. The start route keeps its other fields in FIELD_PLANNED (G23).
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {
         "agent_label": _AGENT_LABEL_REASON,
+        "host": _AGENT_SESSION_REASON,
+        "host_kind": _AGENT_SESSION_REASON,
+        "model": _AGENT_SESSION_REASON,
         "dispatched_by": _DISPATCHED_BY_REASON,
+    },
+    # The read of the agents overview (AGA-7). The chat reads agents with the
+    # run tools. These fields shape the web section only.
+    ("GET", "/projects/agents/overview"): {
+        "project_id": _AGENT_OVERVIEW_REASON,
+        "shape": _AGENT_OVERVIEW_REASON,
+        "show_quiet": _AGENT_OVERVIEW_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
@@ -1622,6 +1669,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "cannot run it, because the stub upload is a PDF. update_task sends it only "
             "behind CHAT_CARD_PRECONDITION_ORGS (HRD-10a, default off), and "
             "test_card_precondition.py is its witness."
+        ),
+        "completed_at": (
+            "The finish time of a task. The route sets it when the status moves to a done "
+            "lane, and the chat moves the status with update_task."
         ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
@@ -1855,13 +1906,14 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/agent-runs/{run_id}/activities"): {
         "type": "G23", "idempotency_key": "G23", "body": "G23", "options": "G23",
         "allow_multiple": "G23", "selected": "G23", "action": "G23",
-        "parameters": "G23", "signal": "G23",
+        "parameters": "G23", "signal": "G23", "waiting": "G23",
         # CIV-14b: the images of an outside agent's question, with the run tools.
         "attachment_ids": "G23",
     },
     ("POST", "/projects/agent-runs/{run_id}/finish"): {
-        "summary": "G23", "idempotency_key": "G23",
+        "summary": "G23", "idempotency_key": "G23", "handoff": "G23",
     },
+    ("POST", "/projects/agent-runs/{run_id}/release"): {"handoff": "G23"},
     # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
     # WS-55 SW-11a: the resume of a stalled run, with the other run tools.

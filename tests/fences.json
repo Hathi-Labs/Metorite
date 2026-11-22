@@ -94,6 +94,7 @@
       "tests/unit/test_operator_matrix_coverage.py",
       "tests/unit/test_operator_role_matrix_source.py",
       "tests/unit/test_own_tool_scope_parity.py",
+      "tests/unit/test_pack_choose_server_words.py",
       "tests/unit/test_people_key_shape.py",
       "tests/unit/test_personal_tree.py",
       "tests/unit/test_playbook_org_neutral.py",

@@ -244,6 +244,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the admin's text about each server to the context, so only the operator
     # writes it.
     "CONNECTED_SYSTEMS_ORGS",
+    # CSY-4: the orgs where a turn that names a connected server evicts a
+    # sticky mail pack. It moves the precedence of a mail rule, so only the
+    # owner writes it.
+    "MCP_MAIL_PRECEDENCE_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
@@ -401,6 +405,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # capture run sets them. They choose the look and the size of a capture.
     "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
+    # WS-MDC CC-11: the visual capture of e2e/visual/cc11.visual.ts. Only a
+    # local capture run sets it. It adds the long card lots to the feed.
+    "CC11_LOTS",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
