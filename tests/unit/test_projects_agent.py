@@ -63,6 +63,9 @@ _M = load_agent_module()
 AGENT = "projects-assistant"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
+#: Task 3865: a project that the caller reaches only through an assigned task,
+#: so every project read of it answers 404.
+HIDDEN = "2f8fad5b-d9cb-469f-a165-70867728950e"
 
 
 def _registry_entry(name: str) -> dict | None:
@@ -159,7 +162,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # WS-46 P7: "what landed on my plate" reads the inbox with `untriaged`.
     "my_work": [{"view": "inbox"}, {"view": "assigned"}, {"untriaged": True}],
     "people_for": [{"query": "pri"}, {"emails": "a@x.io,b@x.io"}],
-    "vocabulary": [{"project_id": UUID}],
+    # Task 3865: with a task_id, a 404 on the project reads the task's own lanes.
+    "vocabulary": [{"project_id": UUID}, {"project_id": HIDDEN, "task_id": UUID}],
     "analytics_stuck": [{"project_id": UUID}],
     "analytics_load": [{}],
     "analytics_throughput": [{"project_id": UUID, "weeks": 4}],
@@ -609,6 +613,13 @@ def _report_detail(path: str) -> Any:
 
 def _detail_responder(call: dict) -> Any:
     path = call["path"]
+    if path.startswith(f"/projects/nodes/{HIDDEN}/"):
+        from tests.unit._projects_agent_fakes import FakeResponse
+
+        return FakeResponse({"detail": "Project not found"}, status_code=404)
+    if path == f"/projects/my/tasks/{UUID}/lanes":
+        return {"rows": [{"id": "s1", "name": "To do", "category": "todo",
+                          "is_default": True}], "total": 1}
     if path.endswith("/relations"):
         return {"subtasks": [], "links": [], "blocked_by": [], "progress": {}}
     if path.startswith("/projects/tasks/") and path.count("/") == 3:
@@ -758,6 +769,10 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
     # HRD-9a: the cards of the twelve vocabulary writes read this row, not a
     # read tool. The fence that reaches it is ``test_shared_vocab_guard.py``.
     expected.discard(("GET", "/projects/nodes/{project_id}/vocabulary/reach"))
+    # Task 3636: the cards of the create, bulk, plan and batch acts read this row
+    # to name a person who cannot open the task. No read tool calls it. The fence
+    # that reaches it is ``tests/unit/test_assignee_reach_rows.py``.
+    expected.discard(("GET", "/projects/people/reach"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "

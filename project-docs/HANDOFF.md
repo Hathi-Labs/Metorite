@@ -455,12 +455,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-06 · WS-46 P6 review round 2
 
-### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
-- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
-  → no hit means open.
-- **Added:** 2026-10-06 · the EM-T11 session
-
 ### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
 - **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`

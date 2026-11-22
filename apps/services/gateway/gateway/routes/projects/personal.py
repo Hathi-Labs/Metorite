@@ -2438,6 +2438,12 @@ async def my_task_lanes(
     membership fragment is the grant: ``_read_my_task`` answers 404 for a
     task that is not mine, exactly as ``/my/tasks/{id}`` does.
 
+    The chat uses this route too (Task 3865). ``update_task`` resolves a
+    status NAME through it when the project read 404s, and ``vocabulary``
+    does the same when it gets a ``task_id``. It answers lanes only: no
+    counts, no tags and no name of a project, so it shows an assignee no more
+    than the task shows. Fence: tests/unit/test_projects_status_read_assignee_r8.py.
+
     A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
     ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the
     three personal readers to one key set, so the client's one mapper never
