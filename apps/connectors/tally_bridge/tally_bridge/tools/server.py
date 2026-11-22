@@ -32,6 +32,7 @@ from pydantic import Field, ValidationError
 
 from tally_bridge import __version__, calllog
 from tally_bridge.calllog import CallLimiter
+from tally_bridge.localcopy.store import CopyStore
 from tally_bridge.reader import (
     TallyAnswerError,
     TallyDown,
@@ -51,6 +52,7 @@ from tally_bridge.tools.common import (
     pick_company,
     refuse,
 )
+from tally_bridge.tools.fromcopy import copy_ages, source_of, tally_or_copy
 from tally_bridge.tools.reports import register_report_tools
 
 FIND_LIMIT = 50
@@ -64,7 +66,9 @@ def _amount(a: Amount) -> dict[str, Any]:
     return {"amount": a.text, "side": a.side}
 
 
-def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
+def build_read_server(
+    reader: TallyReader, settings: Settings, copy: CopyStore | None = None
+) -> FastMCP:
     """The MCP server with the read tools. The transport sets the HTTP options."""
     mcp = _BridgeMCP(CallLimiter(settings.calls_per_minute), name="tally")
 
@@ -75,15 +79,29 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
     )
     async def status() -> CallToolResult:
         async def work() -> dict[str, Any]:
+            ages = copy_ages(copy, settings.allowed_companies)
             if not await reader.is_up():
-                raise TallyDown
+                if not ages:
+                    raise TallyDown
+                # TallyPrime is closed, and the copy is on: name each copy's age.
+                return {
+                    "tally": "down",
+                    "bridge_version": __version__,
+                    "companies": [
+                        {"name": n, "open": False, "copy_age_minutes": a} for n, a in ages.items()
+                    ],
+                }
             try:
                 root = await reader.post(envelope.collection("BridgeCompanies", company=None))
                 open_now: set[str] | None = set(records.company_names(root))
             except (TallyRefused, TallyAnswerError):
                 open_now = None
             companies = [
-                {"name": n, "open": None if open_now is None else n in open_now}
+                {
+                    "name": n,
+                    "open": None if open_now is None else n in open_now,
+                    **({"copy_age_minutes": ages[n]} if ages else {}),
+                }
                 for n in settings.allowed_companies
             ]
             # Only allowed companies are named. A company that the setup screen
@@ -112,12 +130,19 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
                 raise Refusal(f"Keep the query and the group to {TEXT_LIMIT} characters.")
             name = pick_company(settings, company)
             # The query never goes to Tally. The bridge filters here, so no
-            # text of the member reaches an envelope.
-            root = await reader.post(envelope.collection("BridgeLedgers", company=name))
+            # text of the member reaches an envelope. With TallyPrime closed,
+            # the local copy answers and names its age (TLY-4).
+            root, snap = await tally_or_copy(
+                lambda: reader.post(envelope.collection("BridgeLedgers", company=name)),
+                copy,
+                name,
+                settings.copy_max_age_days,
+            )
+            ledgers = records.ledgers(root) if root is not None else snap.ledgers
             needle = query.casefold()
             hits = [
                 led
-                for led in records.ledgers(root)
+                for led in ledgers
                 if needle in led.name.casefold()
                 and (group is None or led.group.casefold() == group.casefold())
             ]
@@ -130,11 +155,12 @@ def build_read_server(reader: TallyReader, settings: Settings) -> FastMCP:
                 "row_count": len(rows),
                 "truncated": len(hits) > limit,
                 "ledgers": rows,
+                **({"source": source_of(snap)} if snap is not None else {}),
             }
 
         return await guarded(settings, "find_ledgers", work, company=company)
 
-    register_report_tools(mcp, reader, settings)
+    register_report_tools(mcp, reader, settings, copy)
     _compact_schemas(mcp)
     return mcp
 
