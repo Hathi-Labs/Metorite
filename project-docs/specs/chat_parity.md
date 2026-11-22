@@ -43,10 +43,15 @@ or archived page, each tool makes no card and no write. Eight reads join with
 no card: `list_pages`, `list_recent`, `read_page_version`, `list_backlinks`,
 `list_proposals`, `list_sources`, `list_gaps` and `list_maintenance`.
 
-The Knowledge ceiling goes from 15 to 4. Four rows stay in the debt. Publish, archive and restore wait for the owner
-(§7 item 7, D104.4 and F2). The Knowledge search makes a model call, and it
-stays deferred (AD-11, `knowledge_base.md` §8.1). Fences: the same two files
-as PAR-3.
+After the approve, `move_page` and `revert_page` read the state of the page
+again. If the page is no longer a draft, they write nothing. This makes the
+window between the read and the write shorter, but it does not close it. The
+real fix is an `expect_state` guard on the server, which is a follow-up.
+
+The Knowledge ceiling goes from 15 to 4. Four rows stay in the debt. Publish,
+archive and restore wait for the owner (§7 item 7, D104.4 and F2). The
+Knowledge search makes a model call, and it stays deferred (AD-11,
+`knowledge_base.md` §8.1). Fences: the same two files as PAR-3.
 
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The

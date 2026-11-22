@@ -360,3 +360,45 @@ async def test_a_member_with_no_write_right_gets_the_servers_sentence(
                    p=made["id"]) == source
     assert _scalar(ns, "SELECT count(*) FROM kb_page_versions WHERE page_id = :p",
                    p=made["id"]) == 1
+
+
+async def test_a_page_published_while_the_card_waits_is_not_moved(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """The second read after the approve. A person publishes the page while
+    the card waits, through the same real router. The move writes nothing."""
+    _assert_non_priv(app_engine)
+    from acb_skills import ask_tools
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    grant = [{"subject": writer_email, "level": "write"}]
+    source = await _space(ns, admin, "Desk", grant)
+    await _space(ns, admin, "Shelf", grant)
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": source, "title": "Memo", "body_md": "A"}, status=201)
+    cards: list[dict[str, Any]] = []
+
+    async def _publish_then_approve(*args: Any, **kwargs: Any) -> bool:
+        cards.append(kwargs)
+        # The tool's own client reaches the real router in this scope.
+        async with kt.httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{kt._gateway_url()}/knowledge/pages/{made['id']}/publish",
+                headers=kt._headers())
+        assert resp.status_code == 200, resp.text
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _publish_then_approve)
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.move_page(
+        page_id=made["id"], space="Shelf"))
+    assert out == kt.MOVE_PUBLISHED
+    assert len(cards) == 1
+    row = _rows(ns, "SELECT space_id::text, state FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                p=made["id"])
+    assert [tuple(r) for r in row] == [(source, "published")]
+    reasons = _rows(ns, "SELECT reason FROM kb_page_versions WHERE page_id = :p "
+                        "ORDER BY version", p=made["id"])
+    assert "move" not in [r[0] for r in reasons]
