@@ -1467,6 +1467,19 @@ def test_a_skip_on_a_missing_workspace_package_fails() -> None:
     assert guard.uninstalled_workspace_module(sub, mods) == "skill_projects"
 
 
+def test_a_skip_with_its_own_not_installed_reason_fails_for_a_workspace_package() -> None:
+    mods = {"gateway", "skill_projects", "skill_my_tasks", "orchestrator"}
+    for reason in (
+        "Skipped: gateway not installed",
+        "skill-projects not installed",
+        "skill-my-tasks not installed",
+        "the orchestrator is not installed",
+    ):
+        assert guard.uninstalled_workspace_module(reason, mods) is not None, reason
+    for reason in ("MAF not installed", "agent_framework not installed", "mcp not installed"):
+        assert guard.uninstalled_workspace_module(reason, mods) is None, reason
+
+
 def test_a_skip_on_a_third_party_package_stays_legal() -> None:
     mods = {"gateway"}
     reason = "could not import 'agent_framework': No module named 'agent_framework'"

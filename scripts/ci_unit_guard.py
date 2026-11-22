@@ -123,6 +123,9 @@ def _process_fences() -> set[str]:
 _NO_MODULE = re.compile(r"No module named '([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_.]+)?'")
 
 
+_NOT_INSTALLED = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(?:is\s+)?not installed")
+
+
 def workspace_modules(root: Path | None = None) -> set[str]:
     """The top-level import names of the uv workspace members (task 1309).
 
@@ -145,11 +148,15 @@ def uninstalled_workspace_module(reason: str, modules: set[str]) -> str | None:
     ``importorskip`` writes ``could not import 'x': No module named 'x'``. A
     third-party gap such as ``agent_framework`` is not a workspace package, so
     it stays a legitimate skip."""
-    if "could not import" not in reason:
-        return None
-    found = _NO_MODULE.search(reason)
+    found = _NO_MODULE.search(reason) if "could not import" in reason else None
     if found and found.group(1) in modules:
         return found.group(1)
+    # About 300 importorskip calls pass their own reason: "gateway not installed",
+    # "skill-projects not installed", "the orchestrator is not installed".
+    for named in _NOT_INSTALLED.finditer(reason):
+        name = named.group(1).replace("-", "_")
+        if name in modules:
+            return name
     return None
 
 
