@@ -2123,6 +2123,7 @@ They keep their own gates.
 - **Done when.** The HathiLabs orchestrator and two of its lanes show their lines on the map.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
+- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
 
 #### SW-109 · The map draws who dispatched whom
 
@@ -2130,6 +2131,7 @@ They keep their own gates.
 - **Scope.** A line from an orchestrator's session node to each session that it dispatched, also across people. The layout puts an orchestrator to the left of its lanes. A lane with no dispatcher stays a root under its person. A quiet orchestrator reads "waiting" with its last event time.
 - **Done when.** `visual-review` passes at four widths. One line joins the sessions of two people. A loop in the data gives no loop in the layout.
 - **Fence.** `lib/agentMap.test.ts`.
+- **Built and dark, 2026-11-22.** Each depth, at most 4, is one session column, and the tasks of a session sit one step right of it. A dashed arrow joins a dispatcher to each lane, and the lane has no person line. A line that closes a loop drops. A quiet session reads "Waiting" with its last event time when one of its lanes is not quiet. The visual review and the owner preview are open.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-107.
 
 #### SW-110 · Sub-agents and machine health on the map
