@@ -32,7 +32,10 @@
  * with its date. So does a session whose call fails or runs out of time,
  * because agents fix Metorite and a session must start while it is down.
  * The hook never prints the token. Titles are text that other people wrote, so
- * the output frames them as data. Fence: session-handoff.test.mjs.
+ * the output quotes them as data. Until SW-19b gives each HANDOFF entry a
+ * Metorite task, HANDOFF.md is still the queue of cross-session actions, so a
+ * live read ADDS the live rows above it and never replaces it. Fence:
+ * session-handoff.test.mjs.
  */
 
 import { readFileSync, statSync } from "node:fs";
@@ -45,11 +48,13 @@ const STALE_DAYS = 21;
 const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 function emit(context) {
+  // With a live read, its rows come first and the HANDOFF text follows (SW-19a).
+  const full = !live?.context ? context : context ? `${live.context}\n\n---\n\n${context}` : live.context;
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
-        additionalContext: context,
+        additionalContext: full,
       },
     })
   );
@@ -63,7 +68,11 @@ const MAX_ROWS = 15;
 const MAX_TITLE = 120;
 const PROTOCOL = "2025-11-25";
 
-/** The address, or null. Plain http is allowed only to this machine. */
+/**
+ * The address, or null. The token goes only to the Metorite host over https, or
+ * to this machine (a local edge, and the tests). A variable that names any other
+ * host would send the bearer token there, so the hook refuses it.
+ */
 function mcpUrl() {
   let u;
   try {
@@ -71,14 +80,17 @@ function mcpUrl() {
   } catch {
     return null;
   }
+  if (u.username || u.password) return null;
   const local = u.hostname === "127.0.0.1" || u.hostname === "localhost";
-  return u.protocol === "https:" || (u.protocol === "http:" && local) ? u.href : null;
+  const metorite = u.protocol === "https:" && u.hostname === "mcp.metorite.com";
+  return metorite || (local && (u.protocol === "http:" || u.protocol === "https:")) ? u.href : null;
 }
 
 /** A title is data that other people wrote: one short line, no control character. */
 function oneLine(value) {
   const text = typeof value === "object" && value !== null ? value.untrusted_text : value;
   const clean = String(text ?? "")
+    .replace(/[\p{Cf}\p{Co}\p{Cn}]/gu, "")
     .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -102,7 +114,7 @@ async function liveContext() {
   const token = process.env.METORITE_BOX_TOKEN;
   if (!token) return { reason: "no credential: METORITE_BOX_TOKEN is not set" };
   const url = mcpUrl();
-  if (!url) return { reason: "the Metorite address is not https" };
+  if (!url) return { reason: "the Metorite address is not allowed" };
   const signal = AbortSignal.timeout(LIVE_MS);
   const post = (body, session, version) =>
     fetch(url, {
@@ -149,9 +161,9 @@ async function liveContext() {
 function liveText(rows) {
   const shown = rows.slice(0, MAX_ROWS);
   const lines = shown.map((r) => {
-    const number = r?.task_number ? `#${r.task_number}` : "run";
-    const reason = oneLine(r?.reason) || "row";
-    return `- ${number} [${reason}] ${oneLine(r?.title)}`;
+    const number = Number.isInteger(r?.task_number) ? `#${r.task_number}` : "run";
+    const reason = oneLine(r?.reason).replace(/[^a-z_]/g, "") || "row";
+    return `- ${number} [${reason}] ${JSON.stringify(oneLine(r?.title))}`;
   });
   const due = shown.filter((r) => r?.reason === "check_due").length;
   return [
@@ -186,16 +198,23 @@ function snapshotDate() {
 }
 
 const live = await liveContext();
-if (live.context) emit(live.context);
 
-/** The snapshot says what it is, and why Metorite was not read. */
+/**
+ * The note under the HANDOFF entries. After a live read it says why they are
+ * still here. Without one it says what the text is, its date, and why Metorite
+ * was not read.
+ */
 const snapshotNote = () =>
-  `\n\n_Snapshot of \`project-docs/HANDOFF.md\` (${snapshotDate()}). Metorite was not read: ${live.reason}._`;
+  live.context
+    ? "\n\n_The HANDOFF.md entries above hold the cross-session actions. They stay " +
+      "in the session until SW-19b moves each one to a Metorite task._"
+    : `\n\n_Snapshot of \`project-docs/HANDOFF.md\` (${snapshotDate()}). Metorite was not read: ${live.reason}._`;
 
 let raw;
 try {
   raw = readFileSync(join(root, "project-docs", "HANDOFF.md"), "utf-8");
 } catch {
+  if (live.context) emit("");
   process.exit(0); // No queue, nothing to say. Not an error.
 }
 

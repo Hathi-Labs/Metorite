@@ -1416,6 +1416,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 862. `session-handoff.mjs` reads `my_work` and the `check_due` rows with a short timeout. With no answer or no credential, it prints the snapshot of SW-19b with its date. It never blocks a session and never prints a token.
 - **Fence.** `node .claude/hooks/session-handoff.test.mjs`.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-23 and SW-19b.
+- **Built (task 862), 2026-11-22.** The hook reads `my_work` with the box token in `METORITE_BOX_TOKEN` and a 4 s budget. A row with the reason `check_due` is a Check that is due. A session with no box token, no answer or any error gets the HANDOFF.md snapshot with its date and the reason. A hook cannot use the OAuth sign-in of Claude Code, so a laptop session always gets the snapshot. SW-19b is not built, so `HANDOFF.md` is still the queue of cross-session actions. A live read adds its rows above those entries and never replaces them. The token goes only to `mcp.metorite.com` over https or to this machine.
 
 #### SW-19b · Retire HANDOFF.md as a source
 
