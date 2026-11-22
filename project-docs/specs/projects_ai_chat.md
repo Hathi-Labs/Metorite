@@ -5596,8 +5596,10 @@ mutation of one layer alone stays green. The table shows those too.
    none of these doors. An existing row keeps its id.
 3. **An older batch document is the organization's again.** Rule 8 and the
    who-loses-what line above. `workspace._is_batch_row` and
-   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
-   the purge and `session_paths` use it.
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree and
+   `session_paths` use it. The purge deletes each row at a path that the chat
+   began, a batch row too. Today a batch run writes only to its own thread
+   folder, so this touches legacy rows only.
 4. **The run doors with no stream check the room.** `POST /agent/run` and
    `/agent/run/async` took a client thread id with no room check. So a
    member who knew the id of another member's chat ran a shared agent in it
@@ -5646,8 +5648,9 @@ after the fix, so pr-check must show them green. The hermetic fences pass.
    other caller goes through it, and the step checks for the row under its
    lock. So the step purges a new id, and removes nothing of a chat that
    exists.
-2. **The purge deletes a file that the chat began** (residual 9). The
-   decision: delete, and do not keep the file with no owner. Another
+2. **The purge deletes a file that the chat began** (residual 9). The lead
+   of task 689 decided it on 2026-11-22, in review by the owner through the
+   PR. The decision: delete, and do not keep the file with no owner. Another
    session's newest bytes can still hold the chat's text, as a `save_note`
    append of main did. To keep the file with no owner, a row must name the
    chat as the first writer. A new chat can take that id, so such a row
@@ -5657,7 +5660,7 @@ after the fix, so pr-check must show them green. The hermetic fences pass.
    item 5 is gone (`workspace._last_write`).
 3. **The check, the purge and the new row are one step** (residual 6).
    `chat.open_new_session` does all of it in one transaction. It takes
-   `pg_advisory_xact_lock(hashtextextended(id, 0))`, and it checks again that
+   `pg_advisory_xact_lock(hashtextextended('chat_new:' || id, 0))`, and it checks again that
    the tenant has no row. Then it purges and inserts the row.
    `POST /chat/sessions` and the three run doors call it. A door that comes
    second waits on the lock, then finds the row, and purges nothing. A run
@@ -5669,7 +5672,10 @@ after the fix, so pr-check must show them green. The hermetic fences pass.
    second connection. `purge_thread_files`, `session_paths`, `file_history`
    and `purge_files` take that session as `db=`. The transaction stays in
    one worker thread, inside one `with` block, so a cancelled request never
-   leaves the lock held. A wait for the lock of more than 10 s answers 503.
+   leaves the lock held. The store calls go through `asyncio.to_thread`. So
+   the one session crosses threads, one call after another and never at the
+   same time. No code may run two calls on the session at once, for example
+   with `asyncio.gather`. A wait for the lock of more than 10 s answers 503.
    Advisory: no test fences the 10 s wait.
 
 Each mutation below turned the hermetic fences of
@@ -5687,8 +5693,9 @@ mutation count yet, and pr-check runs them.
 | a failed insert only logs, and the run goes on | 1 |
 | the store commits the caller's session | 1 |
 
-A pause hook in `chat.prepare_new_session` holds door A in the purge. The
-test starts door B only then. So the order is fixed, and the test does not
+A pause hook holds door A in the purge. The
+test starts door B only then. The hook is a monkeypatch of the test, and
+not product code. So the order is fixed, and the test does not
 depend on timing.
 
 A second agent did these checks again on the PC on 2026-11-22, after
@@ -5725,7 +5732,7 @@ counts. The R8 race test is the only fence of the lock on Postgres.
 7. **The stream door with no thread id** mints the thread `<agent>:<run
    id>` from a run id that the client may choose. It makes no batch run.
    Its documents go in its own thread folder, never in a loose file, so it
-   cannot forge an older batch row. The purge never deletes one.
+   cannot forge an older batch row.
 8. **Closed by fix round 4 (item 1).** A room of `None` skips the step only
    for the internal service caller.
 9. **Closed by fix round 4 (item 2).** The purge deletes a file that the
@@ -5746,6 +5753,9 @@ counts. The R8 race test is the only fence of the lock on Postgres.
     most cases (`sessions.ts`).
 14. **The continue route keeps the two-step form.** The server mints its id
     (`uuid4`), so no client can race it.
+15. **Two writers have no new-chat step.** `/copilot/chat` (`main.py`) and the
+    upsert of `_store_session_id` in the executor still write chat rows with
+    no new-chat step. The web shell no longer calls `/copilot/chat`.
 
 **Verification.**
 

@@ -586,7 +586,11 @@ def test_the_new_chat_step_locks_checks_purges_and_inserts_in_one_transaction(
     kinds = [e[0] if e[0] != "sql" else e[1].split("(")[0] for e in log]
     assert kinds == ["begin", "SELECT set_config", "SELECT pg_advisory_xact_lock",
                      "check", "purge", "insert", "end-commit"], log
-    assert "hashtextextended(:id, 0)" in log[2][1] and log[2][2] == {"id": "c-1"}
+    assert "hashtextextended('chat_new:' || :id, 0)" in log[2][1]
+    assert log[2][2] == {"id": "c-1"}
+    # The key has its own prefix, so no chat id can take the lock of another
+    # feature, such as ``package_install:<org id>`` of the package host.
+    assert "'chat_new:' ||" in log[2][1]
     session = log[-2][1]
     assert log[4][2] is session, "the purge ran in another session"
 

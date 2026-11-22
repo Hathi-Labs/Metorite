@@ -390,13 +390,17 @@ _NEW_CHAT_LOCK_TIMEOUT = "10s"
 def _open_new_session_locked(
     session_id: str, organization_id: str, insert: Any,
 ) -> bool:
-    """The body of :func:`open_new_session`, in ONE worker thread.
+    """The body of :func:`open_new_session`, in one worker thread.
 
-    The transaction stays in this thread, inside one ``with`` block, so a
-    cancelled request never leaves the lock held. The purge is async, so it
-    runs to its end on a loop of this thread. Its store reads and deletes use
-    this same session (``db=s``), so the step takes no second connection of
-    the small sync pool, and two steps cannot starve each other.
+    The transaction stays inside one ``with`` block, so a cancelled request
+    never leaves the lock held. The purge is async, so it runs to its end on
+    a loop of this thread. The store calls (``session_paths``,
+    ``file_history``, ``purge_files``) go through ``asyncio.to_thread``. So
+    the one session crosses threads, one call after another and never at the
+    same time. No code may run two calls on the session at once, for example
+    with ``asyncio.gather``. Its store reads and deletes use this same
+    session (``db=s``), so the step takes no second connection of the small
+    sync pool, and two steps cannot starve each other.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -407,7 +411,7 @@ def _open_new_session_locked(
             {"t": _NEW_CHAT_LOCK_TIMEOUT},
         )
         s.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"),
+            text("SELECT pg_advisory_xact_lock(hashtextextended('chat_new:' || :id, 0))"),
             {"id": session_id},
         )
         if _refuse_if_elsewhere(s, session_id):

@@ -1231,7 +1231,9 @@ def _is_batch_row(row: dict) -> bool:
     ``<agent>:<run id>``, with the row's own agent and run id. No new chat can
     take an id with a colon (``chat.refuse_run_shaped_id``), so no chat can
     forge that form. ``acb_memory.blob_store._RUN_ROW`` is the same rule in
-    SQL, and the purge never deletes such a row.
+    SQL. A batch row at a path that the chat began goes with the purge. Today
+    a batch run writes only to its own thread folder, so this touches legacy
+    rows only.
     """
     session, run = str(row.get("session_id") or ""), str(row.get("run_id") or "")
     if not run:
@@ -1369,7 +1371,8 @@ async def purge_thread_files(
       hold this chat's text, as a ``save_note`` append of main did. To keep the
       file would hand that text to the next writer, so it goes;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
-      A row of a run with no chat stays (``blob_store._RUN_ROW``);
+      A batch row at a path that the chat began goes too (``blob_store._RUN_ROW``,
+      legacy rows only, because a batch run writes in its own thread folder);
     * the zips of ``package_artifacts`` in the chat's own working dir, also a
       personal or a team one (2026-10-11). A zip is never in the blob store,
       so ``session_paths`` cannot find it. It lies at
