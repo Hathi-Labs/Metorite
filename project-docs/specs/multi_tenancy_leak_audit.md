@@ -762,6 +762,15 @@ belonging in `NEVER_SCOPED` even though they look like it:
 * `audit_event` — an audit trail is per-tenant evidence, not infrastructure. One tenant reading
   another's audit log is a leak in its own right.
 
+> **Status 2026-11-22: task 2221 slice 3 closes the `audit_event` fallback for new writers.**
+> The fix is dark behind `ACB_GRAPH_TENANT_BIND`. `AuditEvent` has an explicit `system` marker
+> (owner answer A). With the bind on, `acb_audit.record` refuses an event that has no org and no
+> marker. It logs the refusal and does not raise.
+>
+> Only a marked event goes under the operator org. Two rows carry the marker: `scheduler_started` and the Zoho `run_ok`. Slices 1 and 2
+> stamp or guard each known writer. Fences: `test_acb_graph_audit_bind.py` (R8),
+> `test_audit_tick_writers_org.py`.
+
 And the three CRM homonyms (§2) must move **out** of `EXPECTED_SCOPED` and **into**
 `NOT_YET_SCOPED`, with `test_the_expected_scoped_set_is_real_not_aspirational` tightened to
 check the FK target rather than the column name.
