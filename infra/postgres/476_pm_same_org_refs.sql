@@ -1,9 +1,9 @@
 -- ============================================================================
 -- 476_pm_same_org_refs.sql — a pm_* key that names a row of another tenant
--- is refused, for the 20 keys that had no org guard (Metorite task 3846).
+-- is refused, for the 21 keys that had no org guard (Metorite task 3846).
 --
 -- What: one new check-only function `pm_same_org_ref(ref_table, ref_column)`
---       and 20 attachments of it. The function reads the row that the key
+--       and 21 attachments of it. The function reads the row that the key
 --       names and refuses the write with SQLSTATE 23503 (foreign_key_violation)
 --       when it finds no row, or a row of another `organization_id`. It never
 --       sets the org of the row. `pm_organization_from_parent()` of 161 and
@@ -15,7 +15,7 @@
 --       so this is defence in depth (R5: never trust the request). 471 closed
 --       the same gap for the 29 attachments of `pm_organization_from_parent`.
 --
--- ── The keys that this file guards (20) ─────────────────────────────────────
+-- ── The keys that this file guards (21) ─────────────────────────────────────
 --
 --   child table               column                parent table          on delete
 --   pm_projects               archived_root_id      pm_projects           SET NULL
@@ -30,7 +30,8 @@
 --   pm_agent_runs             task_id               pm_tasks              CASCADE
 --   pm_agent_runs             connection_id         agent_connection      SET NULL
 --   pm_agent_runs             dispatched_by_run_id  pm_agent_runs         SET NULL
---   pm_agent_run_activities   run_id                pm_agent_runs         CASCADE
+--   pm_agent_runs             parent_run_id         pm_agent_runs         CASCADE
+--   pm_agent_run_activities   run_id               pm_agent_runs         CASCADE
 --   pm_agent_run_activities   task_id               pm_tasks              CASCADE
 --   pm_agent_run_activities   in_reply_to           pm_agent_run_activities SET NULL
 --   pm_agent_run_activities   pm_activity_id        pm_activities         SET NULL
@@ -62,8 +63,19 @@
 -- Its one writer, `agent_runs.set_run_dispatcher`, reads the named run in the
 -- tenant session first. It runs the UPDATE in a savepoint that maps a 23503
 -- to the `unknown` drop. So a refusal here drops the value, and the claim
--- still works. The fence below reads the same two catalogs on the full ladder, so a later
--- pm_* key with no guard fails it.
+-- still works.
+--
+-- SW-39 (475, task 3799) then added `pm_agent_runs.parent_run_id`: the open
+-- run that a child run works under, with ON DELETE CASCADE. This file guards
+-- it as the twenty-first key, with the same function and no special case. A
+-- child has no task and no app, so the guard never reads `task_id`. It reads
+-- only the parent run, and the parent's `organization_id` must equal the
+-- child's. A NULL parent passes, and every run that is not a child has one.
+-- The one writer, `agent_runs.start_child_run`, reads and locks the parent in
+-- the tenant session first, then inserts one VALUES row. It has no handler
+-- for 23503, because RLS already hides a run of another org. No code UPDATEs
+-- the key. The fence below reads the same two catalogs on the full ladder,
+-- so a later pm_* key with no guard fails it.
 --
 -- ── The rule (the rule of 471) ──────────────────────────────────────────────
 --
@@ -121,7 +133,7 @@
 --
 -- ── One transaction for each statement (no deadlock) ───────────────────────
 --
--- The file is 21 blocks: the function first, then one block for each
+-- The file is 22 blocks: the function first, then one block for each
 -- attachment. Each block is `BEGIN; SET LOCAL lock_timeout = '5s'; <one
 -- statement>; COMMIT;`. So the file holds the lock of one table at a time. A
 -- single transaction held ten table locks at once. An agent activity write
@@ -142,7 +154,8 @@
 -- it again at merge.
 --
 -- Depends on: 161_projects_tenancy.sql, 471 (the rule), 255, 267, 305, 340,
---   404 (the tables), 472_agent_run_dispatched_by.sql (the twentieth key).
+--   404 (the tables), 472_agent_run_dispatched_by.sql (the twentieth key),
+--   475_agent_run_child.sql (the twenty-first key).
 -- Fence (R7): tests/unit/test_pm_fk_same_org_r8.py (R8). It probes each
 -- attachment as a role that cannot bypass RLS, with two organizations, and
 -- runs the cascade deletes over each key. Its test
@@ -275,6 +288,13 @@ SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE TRIGGER trg_pm_agent_runs_same_org_dispatched_by_run_id
     BEFORE INSERT OR UPDATE OF dispatched_by_run_id, organization_id ON pm_agent_runs
     FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_agent_runs', 'dispatched_by_run_id');
+COMMIT;
+
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+CREATE OR REPLACE TRIGGER trg_pm_agent_runs_same_org_parent_run_id
+    BEFORE INSERT OR UPDATE OF parent_run_id, organization_id ON pm_agent_runs
+    FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_agent_runs', 'parent_run_id');
 COMMIT;
 
 BEGIN;

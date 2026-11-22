@@ -376,6 +376,11 @@ SW-107 (migration 472, task 3628) added a twentieth key, `pm_agent_runs.dispatch
 with ON DELETE SET NULL. Migration 476 guards it too. Its one writer reads the named run in the
 tenant session first, and it drops a refused value with a warning.
 
+SW-39 (migration 475, task 3799) added a twenty-first key, `pm_agent_runs.parent_run_id`, with
+ON DELETE CASCADE. A child run names the open run that it works under. Migration 476 guards it
+with the same function. A child has no task, so the guard reads only the parent run. The org of
+the parent must equal the org of the child, and a NULL parent passes.
+
 The header of 476 lists each key that it guards and each key that it leaves out. Fence:
 `tests/unit/test_pm_fk_same_org_r8.py`. It reads `pg_constraint`, so a new pm_* key with no
 guard fails it. Two keys of other tables stay open: `wa_commitments.task_id` and

@@ -1,6 +1,6 @@
 """Task 3846 — a pm_* key cannot name a row of another tenant (R8).
 
-Migration: the file that adds ``pm_same_org_ref()`` and its 20 attachments.
+Migration: the file that adds ``pm_same_org_ref()`` and its 21 attachments.
 This file finds it by its CONTENT, never by number (R1). The lane booked 472
 at build time. SW-107 merged its own 472 first, so the file became 476 on
 2026-11-22.
@@ -10,7 +10,9 @@ attachments of ``pm_organization_from_parent()``. Nineteen more pm_* keys had
 no guard: ``pm_tasks.parent_task_id``, ``type_id``, ``status_id`` and others.
 A session bound to org A could set such a key to the id of a row of org B.
 SW-107 (472) then added a twentieth key, ``pm_agent_runs.dispatched_by_run_id``,
-and the file guards it too.
+and the file guards it too. SW-39 (475) added a twenty-first,
+``pm_agent_runs.parent_run_id``: a child run names its parent run. A child has
+no task, so its probe row is ``kind = 'child'`` with no task and no app.
 
 **What this file proves, as a role that cannot bypass RLS, with two orgs.**
 
@@ -25,7 +27,7 @@ and the file guards it too.
 * A NULL key works, for each key where NULL makes a valid row.
 * A superuser that names the row of org B is refused too. The guard compares
   the orgs, and does not rely on RLS to hide the row.
-* The file has 21 transactions: the function, then one for each attachment.
+* The file has 22 transactions: the function, then one for each attachment.
   So a deploy holds the lock of one table at a time, and cannot deadlock with
   a write that takes two of the tables.
 * An UPDATE that sets the key to the row of org B is refused (23503). An
@@ -34,8 +36,10 @@ and the file guards it too.
 * A row that already links two orgs: an UPDATE of another column works, and
   ``SET <key> = <key>`` works (the rule of 471). An UPDATE that changes the org
   gets 23503 from the 476 body, not 42501 from RLS.
-* Eleven deletes over the 20 keys still work: each ``ON DELETE SET NULL`` and
+* Eleven deletes over the 21 keys still work: each ``ON DELETE SET NULL`` and
   ``CASCADE`` of a guarded key, and the delete of the org.
+* A child run (SW-39) that names a parent run of the other org is refused, as
+  the app role and as the admin. A child under a parent of its own org works.
 * **The fences (R7).** ``test_the_probes_cover_every_attachment`` reads
   ``pg_trigger``: the set of attachments must EQUAL the set of probes.
   ``test_every_pm_key_has_a_guard`` reads ``pg_constraint``: each single-column
@@ -154,6 +158,12 @@ def _run(**extra: Any) -> dict[str, Any]:
             "status": "completed", "started_by": _ME, **extra}
 
 
+def _child_run(**extra: Any) -> dict[str, Any]:
+    """SW-39 (475): a child run has no task and no app. Its parent is its tie."""
+    return {"kind": "child", "parent_run_id": _RUN, "member_email": _ME,
+            "client_via": "mcp:probe", "status": "in_progress", "started_by": _ME, **extra}
+
+
 def _run_act(**extra: Any) -> dict[str, Any]:
     return {"run_id": _RUN, "task_id": _T, "type": "thought", "actor": _ME, **extra}
 
@@ -181,6 +191,7 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
     ("pm_agent_runs", "connection_id"): ("agent_connection", _run(connection_id=_CONN)),
     ("pm_agent_runs", "dispatched_by_run_id"): ("pm_agent_runs",
                                                 _run(dispatched_by_run_id=_RUN)),
+    ("pm_agent_runs", "parent_run_id"): ("pm_agent_runs", _child_run()),
     ("pm_agent_runs", "task_id"): ("pm_tasks", _run()),
     ("pm_notifications", "activity_id"): ("pm_activities", {
         "recipient": _ME, "kind": "comment", "task_id": _T, "actor": _ME,
@@ -201,8 +212,11 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
 
 # A NULL key makes a valid row here. `status_id` is NOT NULL. A run or a run
 # activity with no task needs an `app` (342). A project policy needs its
-# project (the CHECK `pm_agent_policies_scope_shape`). The other keys are NOT
-# NULL.
+# project (the CHECK `pm_agent_policies_scope_shape`). A child run needs its
+# parent (the CHECK `pm_agent_runs_child_parent` of 475), so `parent_run_id`
+# is not here. A NULL parent still passes the guard: each other probe of
+# `pm_agent_runs` inserts a run with no parent through it. The other keys are
+# NOT NULL.
 NULLABLE = sorted([
     ("pm_activities", "parent_id"),
     ("pm_agent_guidance", "project_id"),
@@ -601,6 +615,79 @@ class TestTheUpdateProbes:
         assert (n1, n2) == (1, 1)
 
 
+# ── The child run (SW-39, 475) ──────────────────────────────────────────────
+
+_CHILD_SQL = (
+    "INSERT INTO pm_agent_runs (organization_id, kind, parent_run_id, member_email, "
+    "client_via, status, started_by) VALUES (CAST(:org AS uuid), 'child', :p, :me, "
+    "'mcp:probe', 'in_progress', :me) RETURNING id, organization_id, task_id, parent_run_id")
+
+
+class TestTheChildRun:
+    """A child run has no task and no app. Only its parent ties it to an org,
+    so the guard reads the parent run and never ``task_id``."""
+
+    def test_a_child_under_a_parent_of_another_org_is_refused(self, world) -> None:
+        """As the app role bound to org A, and as the admin, which reads the
+        run of org B. Each gets 23503 from the 476 body."""
+        promoted_, eng, _a, b = world
+        args = {"org": promoted_.org_a, "p": b[_RUN], "me": _ME}
+        errors = []
+        with eng.connect() as c:
+            tx = c.begin()
+            _bind(c, promoted_.org_a)
+            try:
+                with pytest.raises(DBAPIError) as caught:
+                    c.execute(text(_CHILD_SQL), args)
+                errors.append(caught.value)
+            finally:
+                tx.rollback()
+        with promoted_.admin_engine.connect() as c:
+            tx = c.begin()
+            try:
+                with pytest.raises(DBAPIError) as caught:
+                    c.execute(text(_CHILD_SQL), args)
+                errors.append(caught.value)
+            finally:
+                tx.rollback()
+        for err in errors:
+            state, message = _pg_error(err)
+            assert state == "23503", message
+            assert _message("pm_agent_runs", "parent_run_id", "pm_agent_runs") in message
+        with promoted_.admin_engine.connect() as c:
+            stored = c.execute(text("SELECT count(*) FROM pm_agent_runs "
+                                    "WHERE parent_run_id = :p"), {"p": b[_RUN]}).scalar_one()
+        assert stored == 0
+
+    def test_a_child_under_a_parent_of_its_own_org_is_accepted(self, world) -> None:
+        promoted_, eng, a, _b = world
+        with eng.connect() as c:
+            tx = c.begin()
+            _bind(c, promoted_.org_a)
+            try:
+                _id, org, task, parent = c.execute(text(_CHILD_SQL), {
+                    "org": promoted_.org_a, "p": a[_RUN], "me": _ME}).one()
+            finally:
+                tx.rollback()
+        assert (str(org), task, parent) == (promoted_.org_a, None, a[_RUN])
+
+    def test_a_delete_of_the_parent_deletes_the_child(self, cascade) -> None:
+        """The CASCADE of ``parent_run_id``, as the app role."""
+        _p, eng, tree = cascade
+        with eng.connect() as c:
+            tx = c.begin()
+            _bind(c, _ORG_C)
+            try:
+                before = c.execute(text("SELECT count(*) FROM pm_agent_runs WHERE id = :c"),
+                                   {"c": tree["C1"]}).scalar_one()
+                c.execute(text("DELETE FROM pm_agent_runs WHERE id = :r"), {"r": tree["R1"]})
+                after = c.execute(text("SELECT count(*) FROM pm_agent_runs WHERE id = :c"),
+                                  {"c": tree["C1"]}).scalar_one()
+            finally:
+                tx.rollback()
+        assert (before, after) == (1, 0)
+
+
 @pytest.fixture
 def straddling(world):
     """Two rows of org A that already name a row of org B: the shape the gap
@@ -740,6 +827,11 @@ def _seed_cascade_tree(conn, org: str) -> dict[str, uuid.UUID]:
     # SW-107: R2 names R1 as its dispatcher. A delete of R1 sets it to NULL.
     one("UPDATE pm_agent_runs SET dispatched_by_run_id = :d WHERE id = :r RETURNING id",
         d=t["R1"], r=t["R2"])
+    # SW-39: C1 is a child run under R1, with no task. A delete of R1 deletes it.
+    t["C1"] = one("INSERT INTO pm_agent_runs (organization_id, kind, parent_run_id, "
+                  "member_email, client_via, status, started_by, connection_id) VALUES "
+                  "(CAST(:org AS uuid), 'child', :r, :me, 'mcp:cascade', 'in_progress', :me, "
+                  ":cn) RETURNING id", r=t["R1"], cn=t["CONN"])
     t["RA1"] = one("INSERT INTO pm_agent_run_activities (organization_id, run_id, task_id, "
                    "type, actor) VALUES (CAST(:org AS uuid), :r, :t, 'thought', :me) "
                    "RETURNING id", r=t["R1"], t=t["T1"])
@@ -787,10 +879,11 @@ _DELETES: dict[str, tuple[str, tuple[str, ...]]] = {
     "activity": ("pm_activities", ("A1",)),
     # pm_agent_run_activities.in_reply_to.
     "run_activity": ("pm_agent_run_activities", ("RA1",)),
-    # pm_agent_run_activities.run_id, pm_agent_run_strands.run_id, and the
-    # SET NULL of pm_agent_runs.dispatched_by_run_id on R2.
+    # pm_agent_run_activities.run_id, pm_agent_run_strands.run_id, the
+    # SET NULL of pm_agent_runs.dispatched_by_run_id on R2, and the CASCADE of
+    # pm_agent_runs.parent_run_id on the child C1.
     "run": ("pm_agent_runs", ("R1",)),
-    # pm_agent_runs.connection_id.
+    # pm_agent_runs.connection_id, on R1, R2 and the child C1.
     "connection": ("agent_connection", ("CONN",)),
 }
 
