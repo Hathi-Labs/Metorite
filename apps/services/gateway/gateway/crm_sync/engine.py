@@ -79,7 +79,6 @@ from acb_common import get_logger
 from acb_common.db import tenant_session
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
 from gateway.connections import store
 from gateway.crm_sources.base import (
@@ -280,6 +279,13 @@ MODULE_READ_EVERY = timedelta(hours=1)
 #: (:func:`_weekly_reread`). Zoho can change a status or rename a pick-list
 #: value and leave ``Modified_Time`` as it was, so only a full read sees it.
 MODULE_REREAD_EVERY = timedelta(days=7)
+#: Task 3869 (review F1): a weekly read that fails this many times in a row
+#: ends (:func:`_module_read_failed`). Its count is in the cursor state under
+#: :data:`REREAD_FAILURES_KEY`, and each page that lands writes a state with
+#: no count. So an error that comes back at one page costs at most this many
+#: tries in each :data:`MODULE_REREAD_EVERY`.
+REREAD_MAX_FAILURES = 3
+REREAD_FAILURES_KEY = "reread_failures"
 #: Task 3869: the marks of the pick-list drift of each generic module, in the
 #: state of :data:`FIELD_RULES_ROW`: ``{entity: [mark, ...]}``. A mark is a
 #: short hash of one stored value that the current options do not list
@@ -2035,6 +2041,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic and not parent_only
     rereading = generic and (_module_reread(ctx, entity, row) or _final_reread(ctx, row))
+    weekly = _is_weekly(saved, generic, rereading)
     # CRM-Z10b: the final sync of the switch reads each module, also one that
     # it read less than MODULE_READ_EVERY ago. An edit of that hour is in it.
     if generic and not rereading and not ctx.final and _module_read_recently(ctx, row):
@@ -2052,7 +2059,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     ):
         return
     stamping = walking or row.initial_done_at is None
-    resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    resumed = (
+        bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+        and not _weekly_read_stopped(saved, generic, rereading)
+    )
     if (
         resumed and ctx.final and row.initial_done_at is not None
         and (rereading or (walking and saved.get("offset_paged")))
@@ -2116,7 +2126,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             # that was turned off first (CRM-Q15).
             if not _skip_module(entity, exc):
                 raise
-            await _mark_unavailable(ctx, entity, row, _unavailable_reason(exc))
+            await _module_read_failed(ctx, entity, row, _unavailable_reason(exc), weekly=weekly)
             return
     if resumed:
         cursor = cursor_from(saved)
@@ -2177,13 +2187,17 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                     ctx.bump(entity, "failed")
                     ctx.flag(entity, TIE_TOO_WIDE_CODE)
                     _log.warning("crm.sync.tie_too_wide entity=%s", entity)
+                    if weekly:
+                        await _module_read_failed(ctx, entity, row, None, weekly=True)
                     return
                 # An optional module that cannot be read for ANY reason that is
                 # not a dead token, a spent budget or a throttle is skipped. So
                 # is any module that the account refuses (CRM-Q15).
                 if not _skip_module(entity, exc):
                     raise
-                await _mark_unavailable(ctx, entity, row, _unavailable_reason(exc))
+                await _module_read_failed(
+                    ctx, entity, row, _unavailable_reason(exc), weekly=weekly,
+                )
                 return
             if page.records and ctx.owners is None:
                 await ctx.load_owners()
@@ -2321,11 +2335,17 @@ def _module_reread(ctx: _Ctx, entity: str, row: CursorRow) -> bool:
 
     A read that is in progress goes on as the read that it is. So a stopped
     incremental read never turns into a second, full read, and a stopped full
-    read never starts again from page 1 (outside the final sync).
+    read never starts again from page 1 (outside the final sync). A stopped
+    weekly read goes on only while its gates hold (:func:`_weekly_allowed`).
+    With the flag off or the key held, :func:`_weekly_read_stopped` ends it,
+    and the read of changes goes on from the cursor. A stopped read of an
+    offset-paged module goes on as before.
     """
     state = row.state or {}
     if state.get("in_progress"):
-        return bool(state.get("reread"))
+        if not state.get("reread"):
+            return False
+        return bool(state.get("offset_paged")) or _weekly_allowed(ctx, entity)
     if row.initial_done_at is None:
         return False
     if not state.get("offset_paged"):
@@ -2346,14 +2366,41 @@ def _weekly_reread(ctx: _Ctx, entity: str, row: CursorRow) -> bool:
     or when the drift check of discovery put the module on the label list
     (:func:`_check_label_drift`). The read uses the full-read path of
     :func:`_changed_pass`, so the reserve and the budget stop it page by
-    page, and the next run goes on from its cursor.
+    page, and the next run goes on from its cursor. A failed read goes on at
+    its page, and :data:`REREAD_MAX_FAILURES` failures end it
+    (:func:`_module_read_failed`).
     """
-    if count_key(entity) in ctx.held or not flags.module_reread_allowed(ctx.org):
+    if not _weekly_allowed(ctx, entity):
         return False
     if entity in ctx.label_rereads:
         return True
     done = row.last_reconciled_at
     return done is None or ctx.started - done >= MODULE_REREAD_EVERY
+
+
+def _weekly_allowed(ctx: _Ctx, entity: str) -> bool:
+    """The gates of a weekly read (task 3869): the org is on
+    ``CRM_MODULE_REREAD_ORGS``, and the key is not held (CRM-Q16)."""
+    return count_key(entity) not in ctx.held and flags.module_reread_allowed(ctx.org)
+
+
+def _is_weekly(saved: dict[str, Any], generic: bool, rereading: bool) -> bool:
+    """True when this read of a generic module is a weekly full read (task
+    3869): a full read of a module that a cursor reads, not by offset. Before
+    task 3869 no such read existed, so its failure rule is new and the rule of
+    every other read stays."""
+    return generic and rereading and not saved.get("offset_paged")
+
+
+def _weekly_read_stopped(saved: dict[str, Any], generic: bool, rereading: bool) -> bool:
+    """True when a stopped weekly read may not go on (task 3869, review F5).
+    The flag went off or the key is held, so :func:`_module_reread` said no.
+    The read does not resume: the read of changes goes on from the cursor,
+    and the next page writes a state with no ``reread`` mark."""
+    return (
+        generic and not rereading and bool(saved.get("in_progress"))
+        and bool(saved.get("reread")) and not saved.get("offset_paged")
+    )
 
 
 def _final_reread(ctx: _Ctx, row: CursorRow) -> bool:
@@ -2550,6 +2597,77 @@ async def _mark_unavailable(
         _count_unavailable(ctx, entity, reason)
         await _save_cursor(ctx, db, marked, "unavailable")
     ctx.cursors[changed_module(entity)] = marked
+
+
+async def _module_read_failed(
+    ctx: _Ctx, entity: str, row: CursorRow, reason: str | None, *, weekly: bool,
+) -> None:
+    """A read of a generic module failed with an error that is not fatal.
+
+    ``reason`` is the reason of :func:`_mark_unavailable`. ``None`` is a tie
+    that is too wide (:data:`TIE_TOO_WIDE_CODE`), which marks nothing.
+
+    Every read that is not a weekly read keeps the rule of before: the module
+    is marked unavailable for :data:`UNAVAILABLE_RETRY`.
+
+    A weekly read (task 3869, review F1) keeps its place. *row* is the cursor
+    of the last page that landed, so the read goes on at the page that
+    failed, with its ``reread`` mark, and it does not start again from page
+    1. A reason also marks the module unavailable, so the next try waits for
+    :data:`UNAVAILABLE_RETRY`. The count of failures in a row is in the state
+    (:data:`REREAD_FAILURES_KEY`). At :data:`REREAD_MAX_FAILURES` the read
+    ends: the progress goes, ``last_reconciled_at`` becomes now, so the
+    module is not due for :data:`MODULE_REREAD_EVERY`, and it leaves the
+    label list. The read of changes then goes on from the cursor.
+    """
+    if not weekly:
+        if reason is not None:
+            await _mark_unavailable(ctx, entity, row, reason)
+        return
+    state = dict(row.state or {})
+    failures = (_whole(state.get(REREAD_FAILURES_KEY)) or 0) + 1
+    if failures >= REREAD_MAX_FAILURES:
+        await _end_weekly_read(ctx, entity, row, reason, failures)
+        return
+    state[REREAD_FAILURES_KEY] = failures
+    if reason is not None:
+        state.update({"unavailable": True, "reason": reason, "checked_at": _iso(_now())})
+    paused = CursorRow(
+        row.module, row.last_pulled_at, state, row.initial_done_at, row.last_reconciled_at,
+    )
+    _log.warning("crm.sync.module_reread_failed entity=%s failures=%s", entity, failures)
+    async with ctx.page() as db:
+        if reason is not None:
+            _count_unavailable(ctx, entity, reason)
+        await _save_cursor(ctx, db, paused, "unavailable" if reason else "partial")
+    ctx.cursors[row.module] = paused
+
+
+async def _end_weekly_read(
+    ctx: _Ctx, entity: str, row: CursorRow, reason: str | None, failures: int,
+) -> None:
+    """End a weekly read that failed :data:`REREAD_MAX_FAILURES` times in a row
+    (task 3869, review F1). One log line. The cursor of the changes stays."""
+    _log.warning("crm.sync.module_reread_ended entity=%s failures=%s", entity, failures)
+    state = row.state or {}
+    ended = CursorRow(
+        row.module, row.last_pulled_at,
+        {
+            "in_progress": False, "offset_paged": False, "watermark_ids": [],
+            "failed": state.get("failed") or {}, "retry_from": state.get("retry_from"),
+            "checked_at": _iso(ctx.started), **_kept_short_by(state),
+        },
+        row.initial_done_at, _now(),
+    )
+    if reason is not None:
+        await _mark_unavailable(ctx, entity, ended, reason)
+        async with ctx.page() as db:
+            await _module_label_read_done(ctx, db, entity)
+        return
+    async with ctx.page() as db:
+        await _save_cursor(ctx, db, ended, "partial")
+        await _module_label_read_done(ctx, db, entity)
+    ctx.cursors[row.module] = ended
 
 
 async def _drop_stale(
@@ -3801,7 +3919,9 @@ async def _missing_labels(
                 "org": ctx.org, "src": EXT_SOURCE, "module": api_name,
                 "labels": json.dumps(labels), "cap": LABEL_DRIFT_CAP,
             })).fetchall()
-    except SQLAlchemyError as exc:
+    except Exception as exc:
+        # Review F7: any error, also one of the session itself and not of
+        # SQLAlchemy. The profile is stored already, and the run must go on.
         _log.warning(
             "crm.sync.label_drift_failed module=%s error=%s", api_name, type(exc).__name__,
         )
