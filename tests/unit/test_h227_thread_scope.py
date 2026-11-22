@@ -553,7 +553,7 @@ def _store(box: Any, b: sb.RunBinding, *, inputs: bool = True) -> Any:
     return TenantFileStore(
         workspace=b.workspace, outputs_rel=b.outputs_rel, run_data=b.run_data,
         guard=st._BrokerGuard(box.broker, b), member="member@example.com",
-        **({"inputs_rel": b.inputs_rel} if inputs else {}),
+        instance=b.instance, **({"inputs_rel": b.inputs_rel} if inputs else {}),
     )
 
 

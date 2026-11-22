@@ -38,7 +38,9 @@ root agent also compares the member's org with the run's org (§15.4).
 push gate of agent code read the membership and the access in the run's
 org (§15.4).
 **H-245 (task 618) is built (2026-11-22).** It closes the four P3 edges of
-the skill rule that the review of PR #635 left (§16.3).
+the skill rule that the review of PR #635 left (§16.3). The review repairs
+of 2026-11-22 are built too: the orphan rule binds the tenant dir only, and
+each refusal has its own text.
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -2393,15 +2395,34 @@ These facts change or add to the text above:
   can read it.
 - **H-245 closed the four P3 edges of the skill rule** (task 618,
   2026-11-22). It made four changes:
-  - The file store of a covered run hides a skill folder that holds files
-    and no marker. A rehydrate that fails part way can bring back a
-    member's files with no marker. No run reads that folder, the author's
-    run too, because `claim_skill` lets no member take it.
-  - `claim_skill` asks the blob store before it takes a name. A row under
-    the folder in the store refuses the claim, so a later rehydrate never
-    puts one member's files in a folder that another member owns. The ask
-    reads the store key of the working dir, and the older shared rows of a
-    tenant dir. When the store cannot answer, the claim is refused.
+  - In a tenant dir (`o:<org>`), the file store of a covered run hides a
+    skill folder that holds files and no marker. A rehydrate that fails part
+    way can bring back a member's files with no marker. No run reads that
+    folder, the author's run too, because `claim_skill` lets no member take
+    it. This orphan rule binds the tenant dir only. The Files routes save a
+    skill in a personal dir with no marker, so there the rule would hide the
+    member's own skills. The store reads the dir kind from the broker's
+    binding, never from the `.cc-instance` marker.
+  - In a tenant dir, `claim_skill` asks the blob store before it takes a
+    name. A row under the folder in the store refuses the claim, so a later
+    rehydrate never puts one member's files in a folder that another member
+    owns. The ask reads the store key of the dir, and the older shared rows
+    (`instance=''`). A route passes the key `o:<org>` from the session. The
+    file store passes the key of the broker's binding. When the store cannot
+    answer, the claim is refused.
+  - Each refusal of `claim_skill` carries a reason
+    (`agent_paths.SkillClaimRefusal`), and each reason has its own text
+    (`SKILL_REFUSAL_TEXT`). The Files routes answer with these statuses:
+
+    | Reason | Status | Text |
+    |---|---|---|
+    | Another member's marker, or a lost race | 403 | That skill belongs to another member. |
+    | Files and no marker, or rows in the store | 409 | That skill name is in use. Pick another name. |
+    | The store does not answer | 503 | This server cannot check that skill name right now, so nothing was saved. Try again in a minute. |
+
+    The 409 tells the member that another name works. The 503 tells the
+    member to try again. The file store gives the same text to the model,
+    after `Refused:`.
   - In a shared agent's tenant dir, `recall_notes` and `save_note` refuse
     each skill folder that is not the member's own. A personal agent's dir
     holds no marker, so there the two tools work as before.

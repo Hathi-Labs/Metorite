@@ -59,8 +59,10 @@ H-245 (2026-11-22):
 * ``note_tools._notes_target`` drops its skill owner check: the notes-tools
   skill test. Run red once by hand.
 * ``claim_skill`` drops its ask of the store, or the ask matches with
-  ``LIKE``: the store-name route test (R8). Not run yet: the box that runs
-  the R8 suites was offline. Run it red once by hand before the merge.
+  ``LIKE``: the store-name route test (R8). Run red once by hand on a
+  private PC database.
+* ``blob_store.has_rows_under`` drops the ``/`` at the end of its prefix:
+  the sibling-name route test (R8). Run red once by hand.
 """
 from __future__ import annotations
 
@@ -288,6 +290,7 @@ async def test_a_read_only_command_shows_no_card_again(sandbox, host_trap) -> No
         store = TenantFileStore(
             workspace=b.workspace, outputs_rel=b.outputs_rel, run_data=b.run_data,
             guard=st._BrokerGuard(sandbox.broker, b), member="member@example.com",
+            instance=b.instance,
         )
         await store.write("outputs/chart.svg", "<svg/>")
         await store.write("outputs/chart.svg", "<svg/>")  # the same content again
@@ -309,6 +312,7 @@ async def test_a_command_never_mirrors_another_threads_agent_data(sandbox, host_
         store = TenantFileStore(
             workspace=b1.workspace, outputs_rel=b1.outputs_rel, run_data=b1.run_data,
             guard=st._BrokerGuard(sandbox.broker, b1), member="x@example.com",
+            instance=b1.instance,
         )
         await store.write("agent-data/t1-notes.md", "T1 NOTES")
     sandbox.mirrored.clear()
@@ -612,8 +616,11 @@ def test_the_files_routes_hide_another_members_skill(
         assert not any(bare in p for p in tree(client, sid))
         assert client.get(f"/agent/workspace/{sid}/file",
                           params={"path": f"{bare}/SKILL.md"}).status_code == 404
-        assert client.put(f"/agent/workspace/{sid}/file", params={"path": f"{bare}/x.md"},
-                          json={"content": "mine now"}).status_code == 403
+        # No member owns the folder, so the name is in use (H-245 review, P2).
+        put = client.put(f"/agent/workspace/{sid}/file", params={"path": f"{bare}/x.md"},
+                         json={"content": "mine now"})
+        assert put.status_code == 409, put.text
+        assert "in use" in put.text and "another member" not in put.text
     assert not (_tenant_dir(a) / bare / ".metorite-author").exists()
 
     # The disk cache lost Alice's folder. Bob's write cannot take it: the
@@ -667,7 +674,9 @@ def test_no_member_takes_a_skill_name_that_the_store_still_holds(
         assert not (_tenant_dir(a) / top).exists()
         taken = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{top}/x.md"},
                         json={"content": "mine now"})
-        assert taken.status_code == 403, (top, taken.text)
+        # No marker names a member, so the name is in use (H-245 review, P2).
+        assert taken.status_code == 409, (top, taken.text)
+        assert "That skill name is in use. Pick another name." in taken.text
         assert not (_tenant_dir(a) / top / ".metorite-author").exists()
     # ``_`` is a LIKE wildcard, and a row under ``held…`` holds no ``hel_…``.
     free = held.replace("/held", "/hel_")
@@ -675,6 +684,42 @@ def test_no_member_takes_a_skill_name_that_the_store_still_holds(
                    json={"content": "BOB SKILL"})
     assert made.status_code == 200, made.text
     assert (_tenant_dir(a) / free / ".metorite-author").read_text() == skill_author_id(_BOB)
+
+
+@_DB_GATE
+def test_a_skill_name_and_its_longer_sibling_do_not_hold_each_other(
+    graph_as_app, disk, monkeypatch,  # noqa: F811
+) -> None:
+    """H-245 review, P3, on the real SQL. A row under ``chart/`` holds the
+    name ``chart`` and not ``chart2``. A row under ``chart2/`` holds the name
+    ``chart2`` and not ``chart``. The ask matches a whole folder name."""
+    from acb_common import get_settings
+    from acb_memory import put_file
+    from acb_skills.agent_paths import skill_author_id, tenant_instance
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "h245-route-secret")
+    a = graph_as_app.org_a
+    s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    s2 = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    bob = _client(_user(_BOB, a))
+    assert bob.get(f"/agent/workspace/{s2}").status_code == 200  # makes the tenant dir
+    tag = uuid.uuid4().hex[:6]
+    # (the name that the store holds, the name that stays free)
+    for held, free in ((f"chart{tag}", f"chart{tag}2"), (f"plot{tag}2", f"plot{tag}")):
+        held_top, free_top = f"agent-data/skills/{held}", f"agent-data/skills/{free}"
+        meta = asyncio.run(put_file(
+            _S, f"{held_top}/SKILL.md", b"ALICE SKILL TEXT", action="create",
+            session_id=s1, actor="agent", instance=tenant_instance(a), organization_id=a,
+        ))
+        assert meta is not None, held_top
+        made = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{free_top}/SKILL.md"},
+                       json={"content": "BOB SKILL"})
+        assert made.status_code == 200, (free_top, made.text)
+        assert (_tenant_dir(a) / free_top / ".metorite-author").read_text() == skill_author_id(_BOB)
+        taken = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{held_top}/x.md"},
+                        json={"content": "mine now"})
+        assert taken.status_code == 409, (held_top, taken.text)
+        assert not (_tenant_dir(a) / held_top / ".metorite-author").exists()
 
 
 @_DB_GATE
@@ -953,6 +998,7 @@ async def test_docker_a_planted_root_pandas_never_leaks_another_threads_rows(
         x_store = TenantFileStore(
             workspace=b1.workspace, outputs_rel=b1.outputs_rel, run_data=b1.run_data,
             guard=st._BrokerGuard(broker, b1), member="x@example.com",
+            instance=b1.instance,
         )
         with pytest.raises(ValueError):
             await x_store.write("pandas.py", _EXFIL_PANDAS)
@@ -966,6 +1012,7 @@ async def test_docker_a_planted_root_pandas_never_leaks_another_threads_rows(
         y_store = TenantFileStore(
             workspace=b2.workspace, outputs_rel=b2.outputs_rel, run_data=b2.run_data,
             guard=st._BrokerGuard(broker, b2), member="y@example.com",
+            instance=b2.instance,
         )
         await y_store.write(".run/rows.csv", "name,salary\nY,100\n")
         # 2. A plain import, from the cwd /workspace.
