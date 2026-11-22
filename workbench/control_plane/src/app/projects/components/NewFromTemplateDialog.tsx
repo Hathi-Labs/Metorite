@@ -35,6 +35,8 @@ interface Props {
   parent: ProjectRow | null;
   /** `null` while the list loads. */
   templates: readonly TemplateRow[] | null;
+  /** The list could not be read: say so, and let the member go on with Blank. */
+  loadFailed?: boolean;
   /** The word for the level: "project" or "subproject". */
   noun: string;
   error?: string | null;
@@ -52,6 +54,7 @@ export function NewFromTemplateDialog(props: Props) {
 function PickerForm({
   parent,
   templates,
+  loadFailed = false,
   noun,
   error,
   busy,
@@ -102,11 +105,15 @@ function PickerForm({
             ]}
             onChange={setChoice}
             defaultValue={BLANK_CHOICE}
-            disabled={templates === null}
+            disabled={templates === null && !loadFailed}
             widthClass="w-full"
             layer="top"
           />
-          {templates === null ? (
+          {templates === null && loadFailed ? (
+            <p className="text-destructive" role="alert">
+              We could not load your templates. Choose Blank to go on, or close this and open it again.
+            </p>
+          ) : templates === null ? (
             <p className="text-muted-foreground">Loading templates…</p>
           ) : templates.length === 0 ? (
             <p className="text-muted-foreground">

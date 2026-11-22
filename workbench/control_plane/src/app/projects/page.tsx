@@ -1323,6 +1323,7 @@ function ProjectsWorkspace() {
   //: hold their own refusal, shown in place.
   const [templates, setTemplates] = useState<TemplateRow[] | null>(null);
   const [templatesOn, setTemplatesOn] = useState(false);
+  const [templatesFailed, setTemplatesFailed] = useState(false);
   const [savingTemplateOf, setSavingTemplateOf] = useState<ProjectRow | null>(null);
   const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
   const [saveTemplateError, setSaveTemplateError] = useState<string | null>(null);
@@ -1355,9 +1356,11 @@ function ProjectsWorkspace() {
   const loadTemplates = useCallback(async () => {
     try {
       const rows = await templatesApi.list();
+      setTemplatesFailed(false);
       setTemplatesOn(rows !== null);
       setTemplates(rows);
     } catch {
+      setTemplatesFailed(true);
       setTemplatesOn(false);
       setTemplates(null);
     }
@@ -1975,7 +1978,7 @@ function ProjectsWorkspace() {
           }
         : {}),
     }),
-    [toast, templatesOn, loadTemplates]
+    [toast, templatesOn]
   );
 
   /**
@@ -5973,6 +5976,7 @@ function ProjectsWorkspace() {
         parent={pickingUnder?.parent ?? null}
         noun={pickingUnder?.noun ?? "project"}
         templates={templates}
+        loadFailed={templatesFailed}
         error={pickError}
         busy={pickBusy}
         onClose={() => {
