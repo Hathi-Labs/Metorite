@@ -1175,6 +1175,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-39 TPL-1a: `list_templates`. It answers 404 while
     # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
     ("GET", "/projects/templates"),
+    # WS-MCP SW-113 (agent_coordination.md §3.12.7 rule 12): `get_agent_map`.
+    # The edge sends `shape=map` only. The route answers 404 while
+    # `AGENTS_VIEW_ORGS` or `AGENT_MAP_ORGS` does not hold the org, and for a
+    # project that the member cannot see.
+    ("GET", "/projects/agents/overview"),
     *MCP_WRITE_ROUTES,
 })
 

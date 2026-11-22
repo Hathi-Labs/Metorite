@@ -97,7 +97,7 @@ def _assert_no_retry(text: str, *names: str) -> None:
 def test_no_answer_text_orders_a_retry() -> None:
     """Every text of the module. Mutation: put back 'then call "{name}"
     again' in ``SUGGEST_LOAD``, or 'Call "{tool}" again' in ``LOADED_NOW`` → red."""
-    assert len(ut.TEXTS) == 10  # HRD-1b added NOT_IN_STEP
+    assert len(ut.TEXTS) == 11  # HRD-1b added NOT_IN_STEP, HRD-1d WITHHELD_MAIL
     for template in ut.TEXTS:
         text = template.format(name="create_task", near="create_tasks", tool="create_task",
                                slug="projects")
