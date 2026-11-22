@@ -490,10 +490,11 @@ def test_a_run_prepares_a_thread_with_no_row_or_no_room(monkeypatch) -> None:
     from acb_auth.roles import UserContext, UserRole
     from gateway.routes import agent, chat
 
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
 
     async def open_new(sid: str, _org: Any, *, insert: Any) -> bool:
-        calls.append((sid, insert.__name__))
+        assert callable(insert)
+        calls.append(sid)
         return True
 
     monkeypatch.setattr(chat, "open_new_session", open_new)
@@ -524,7 +525,7 @@ def test_both_run_doors_with_no_stream_call_the_guard(monkeypatch, door) -> None
 
     seen: list[Any] = []
 
-    async def guard(_user: Any, thread_id: Any) -> None:
+    async def guard(_user: Any, thread_id: Any, *_a: Any) -> None:
         seen.append(thread_id)
         raise HTTPException(status_code=418, detail="guarded")
 

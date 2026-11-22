@@ -1218,12 +1218,6 @@ def _first_write(rows: list[dict]) -> dict | None:
     return min(writes, key=_history_time) if writes else None
 
 
-def _last_write(rows: list[dict]) -> dict | None:
-    """The newest row that writes bytes at a path, or ``None``."""
-    writes = [r for r in rows if r.get("action") != "delete"]
-    return max(writes, key=_history_time) if writes else None
-
-
 def _is_batch_row(row: dict) -> bool:
     """True for a row that a batch run wrote (the H-227 decision, PR #616).
 
@@ -1349,7 +1343,7 @@ class ThreadPurgeFailed(RuntimeError):
 
 async def purge_thread_files(
     session_id: str, organization_id: str | None, *, best_effort: bool = False,
-    member: str | None = None,
+    member: str | None = None, db: Any = None,
 ) -> None:
     """Delete the files of a chat that its owner deletes (H-227, PR #616 review).
 
@@ -1369,9 +1363,11 @@ async def purge_thread_files(
     * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
       the safe opener, and their rows in the blob store and its history;
     * each loose file that this chat began (:func:`_first_writer`), on disk
-      and in the store, so its ownership cannot move to another session.
-      ⚠️ Not when another session wrote its newest bytes (fix round 3). That
-      file and its other rows stay, and only this chat's rows go;
+      and in the store, with every row at its path, so its ownership cannot
+      move to another session. ⚠️ Also when another session wrote its newest
+      bytes (H-242 step 2, the decision of 2026-11-22). Such bytes can still
+      hold this chat's text, as a ``save_note`` append of main did. To keep the
+      file would hand that text to the next writer, so it goes;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
       A row of a run with no chat stays (``blob_store._RUN_ROW``);
     * the zips of ``package_artifacts`` in the chat's own working dir, also a
@@ -1382,13 +1378,17 @@ async def purge_thread_files(
       The delete route passes the member who deletes. A new chat has no row
       yet, so it has no such dir.
 
+    *db* is the open tenant session of ``chat.open_new_session`` (H-242 step
+    3). The reads and the deletes of the store then run in its transaction,
+    beside its lock and its new row, and take no second connection.
+
     The organization is the caller's, from the authenticated identity. A
     failure is logged as ``workspace.thread_purge_failed``.
     """
     if not session_id or not organization_id:
         return
     try:
-        await _purge_thread_files(session_id, organization_id, member=member)
+        await _purge_thread_files(session_id, organization_id, member=member, db=db)
     except Exception as exc:
         _log.warning(
             "workspace.thread_purge_failed", session_id=session_id[:12],
@@ -1424,6 +1424,7 @@ def _tenant_dirs(organization_id: str) -> list[Path]:
 
 async def _purge_thread_files(
     session_id: str, organization_id: str, *, member: str | None = None,
+    db: Any = None,
 ) -> None:
     """Read first, then change (fix round 2 of PR #616). Every read that can
     fail runs before the first removal, so a failure changes nothing. The
@@ -1445,7 +1446,7 @@ async def _purge_thread_files(
     # 1. The reads. `session_paths` raises on a database error.
     began: list[tuple[str, str]] = []
     for agent, path in await session_paths(
-        session_id, instance=key, organization_id=organization_id,
+        session_id, instance=key, organization_id=organization_id, db=db,
     ):
         if not is_loose_rel(path):
             continue
@@ -1453,6 +1454,7 @@ async def _purge_thread_files(
         for instance in (key, ""):
             rows += await file_history(
                 agent, path, 1000, instance=instance, organization_id=organization_id,
+                db=db,
             )
         if not rows:
             # The chat wrote at this path, so its history cannot be empty: the
@@ -1460,12 +1462,9 @@ async def _purge_thread_files(
             raise ThreadPurgeFailed(f"no history read for {path[:120]}")
         if _first_writer(rows) != session_id:
             continue
-        newest = _last_write(rows)
-        if newest is not None and newest.get("session_id") != session_id:
-            # Fix round 3: another session wrote the bytes that lie there now
-            # (main let any session change a loose file). They are not this
-            # chat's to delete. Only this chat's rows go, in step 3.
-            continue
+        # H-242 step 2: a file that this chat began goes, also when another
+        # session wrote its newest bytes. Those bytes can hold this chat's
+        # text, and a kept file would make that session the owner.
         began.append((agent, path))
     dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
     # The chat's own working dir, for its zips (a read, so it comes first).
@@ -1489,7 +1488,7 @@ async def _purge_thread_files(
     gone = await purge_files(
         instance=key, organization_id=organization_id,
         prefixes=tuple(f"{head}/{slug}/" for head in THREAD_HEADS) if slug else (),
-        paths=tuple(began), session_id=session_id,
+        paths=tuple(began), session_id=session_id, db=db,
     )
     _log.info(
         "workspace.thread_purged", session_id=session_id[:12],

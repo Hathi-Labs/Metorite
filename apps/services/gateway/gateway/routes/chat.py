@@ -340,6 +340,12 @@ def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
 # a chat id with ``crypto.randomUUID()`` (``lib/sessions.ts``), so no real id
 # holds a colon. The server mints ``<agent>:<run id>`` and ``email-chat:...``
 # itself, through none of these doors, and an existing row keeps its id.
+#
+# H-242 step 3 (``projects_ai_chat.md`` §22.9): ``POST /chat/sessions`` and
+# the three run doors make a new chat through ONE step, :func:`open_new_session`.
+# It takes the advisory lock of the id, checks again that no row exists,
+# purges, and inserts the row, in one transaction. So a door that comes
+# second waits, finds the row, and purges nothing of the first door's chat.
 
 
 def refuse_run_shaped_id(session_id: str) -> None:
@@ -351,24 +357,100 @@ def refuse_run_shaped_id(session_id: str) -> None:
         )
 
 
-async def prepare_new_session(session_id: str, organization_id: str | None) -> None:
+_NOT_STARTED = "This chat could not be started. Try again."
+
+
+async def prepare_new_session(
+    session_id: str, organization_id: str | None, *, db: Any = None,
+) -> None:
     """Make *session_id* safe to create as a NEW chat. Call it before the row.
 
     It refuses a run's id (:func:`refuse_run_shaped_id`), then removes every
     file and row that the id left in the caller's organization
     (``workspace.purge_thread_files``). When that fails, it answers 503 and
     no row may be made, so the new chat never sees an old chat's files.
+    *db* is the open session of :func:`open_new_session`, so the purge of the
+    store runs in its transaction (H-242 step 3).
     """
     from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
 
     refuse_run_shaped_id(session_id)
     try:
-        await purge_thread_files(session_id, organization_id)
+        await purge_thread_files(session_id, organization_id, db=db)
     except ThreadPurgeFailed:
-        raise HTTPException(
-            status_code=503,
-            detail="This chat could not be started. Try again.",
-        ) from None
+        raise HTTPException(status_code=503, detail=_NOT_STARTED) from None
+
+
+#: How long a new-chat step waits for the lock of its id (H-242 step 3).
+#: The step that holds the lock purges one id, which takes far less time. A
+#: longer wait answers 503, and the member tries again.
+_NEW_CHAT_LOCK_TIMEOUT = "10s"
+
+
+def _open_new_session_locked(
+    session_id: str, organization_id: str, insert: Any,
+) -> bool:
+    """The body of :func:`open_new_session`, in ONE worker thread.
+
+    The transaction stays in this thread, inside one ``with`` block, so a
+    cancelled request never leaves the lock held. The purge is async, so it
+    runs to its end on a loop of this thread. Its store reads and deletes use
+    this same session (``db=s``), so the step takes no second connection of
+    the small sync pool, and two steps cannot starve each other.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        s.execute(
+            text("SELECT set_config('lock_timeout', :t, true)"),
+            {"t": _NEW_CHAT_LOCK_TIMEOUT},
+        )
+        s.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"),
+            {"id": session_id},
+        )
+        if _refuse_if_elsewhere(s, session_id):
+            return False  # Another door made the row first, so it is no new chat.
+        asyncio.run(prepare_new_session(session_id, organization_id, db=s))
+        insert(s)
+    return True
+
+
+async def open_new_session(
+    session_id: str, organization_id: str | None, *, insert: Any,
+) -> bool:
+    """Make the row of a NEW chat, safely. True when this call made the row.
+
+    H-242 step 3. In one transaction, it takes the advisory lock of the id,
+    checks again that the caller's tenant has no row, purges what the id left
+    (:func:`prepare_new_session`), and calls *insert* with the session to
+    write the row. A door that comes second waits on the lock, then finds the
+    row and returns False with no purge. So no create purges the files of a
+    run that another door started. Each door calls it: ``POST /chat/sessions``
+    and the three run doors (``agent._prepare_if_new_thread``).
+
+    A colon id answers 400. A failed purge, a failed insert or a lock wait
+    that runs out answers 503, and no row is made. A row of another tenant
+    raises ``SessionOfAnotherTenant``. With no tenant there is nothing to
+    purge and no row to make, so it refuses a colon id and returns False, as
+    the purge did before.
+    """
+    if not organization_id:
+        refuse_run_shaped_id(session_id)
+        return False
+    try:
+        return await asyncio.to_thread(
+            _open_new_session_locked, session_id, organization_id, insert,
+        )
+    except (HTTPException, SessionOfAnotherTenant):
+        raise
+    except Exception as exc:
+        _log.warning(
+            "chat.new_session_failed", session_id=session_id[:12],
+            error=type(exc).__name__,
+        )
+        raise HTTPException(status_code=503, detail=_NOT_STARTED) from None
 
 
 def _session_is_new(session_id: str, *, organization_id: str | None) -> bool:
@@ -396,61 +478,73 @@ def _upsert_session(
     before.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        _refuse_if_elsewhere(s, req.id)
-        s.execute(
-            text(
-                """
-                INSERT INTO chat_session (id, user_id, agent_name, title, last_preview, message_count)
-                VALUES (:id, :uid, :agent_name, :title, :last_preview, :message_count)
-                ON CONFLICT (id) DO UPDATE SET
-                    agent_name    = EXCLUDED.agent_name,
-                    title         = COALESCE(EXCLUDED.title,        chat_session.title),
-                    last_preview  = COALESCE(EXCLUDED.last_preview, chat_session.last_preview),
-                    message_count = EXCLUDED.message_count,
-                    updated_at    = now()
-                WHERE (
-                       chat_session.user_id = :uid
-                       -- S14 round 3: the creator only while the room has no
-                       -- membership. An owner may have removed her. Round 5:
-                       -- a non-email creator has no row, so it keeps the arm.
-                       AND (
-                           chat_session.user_id NOT LIKE '%@%'
-                           OR NOT EXISTS (
-                               SELECT 1 FROM chat_session_participant p0
-                               WHERE p0.session_id = chat_session.id
-                           )
+        _upsert_session_rows(s, user_id, req, channel=channel)
+
+
+def _upsert_session_rows(
+    s: Any, user_id: str, req: SessionUpsertRequest, *, channel: str | None = None,
+) -> None:
+    """The body of :func:`_upsert_session`, on a bound session *s*.
+
+    :func:`open_new_session` calls it too, so the new chat of ``POST
+    /chat/sessions`` is written in the transaction of its lock (H-242).
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    _refuse_if_elsewhere(s, req.id)
+    s.execute(
+        text(
+            """
+            INSERT INTO chat_session (id, user_id, agent_name, title, last_preview, message_count)
+            VALUES (:id, :uid, :agent_name, :title, :last_preview, :message_count)
+            ON CONFLICT (id) DO UPDATE SET
+                agent_name    = EXCLUDED.agent_name,
+                title         = COALESCE(EXCLUDED.title,        chat_session.title),
+                last_preview  = COALESCE(EXCLUDED.last_preview, chat_session.last_preview),
+                message_count = EXCLUDED.message_count,
+                updated_at    = now()
+            WHERE (
+                   chat_session.user_id = :uid
+                   -- S14 round 3: the creator only while the room has no
+                   -- membership. An owner may have removed her. Round 5:
+                   -- a non-email creator has no row, so it keeps the arm.
+                   AND (
+                       chat_session.user_id NOT LIKE '%@%'
+                       OR NOT EXISTS (
+                           SELECT 1 FROM chat_session_participant p0
+                           WHERE p0.session_id = chat_session.id
                        )
                    )
-                   OR EXISTS (
-                       SELECT 1 FROM chat_session_participant p
-                       WHERE p.session_id = chat_session.id
-                         AND p.subject = :uid
-                         AND p.role IN ('owner', 'member')
-                   )
-                """
+               )
+               OR EXISTS (
+                   SELECT 1 FROM chat_session_participant p
+                   WHERE p.session_id = chat_session.id
+                     AND p.subject = :uid
+                     AND p.role IN ('owner', 'member')
+               )
+            """
+        ),
+        {
+            "id": req.id,
+            "uid": user_id,
+            "agent_name": req.agent_name,
+            # The preview is the last reply, so it can hold a NUL too, and
+            # a SETUP marker of the model (WS-54 fix round 4, item 2).
+            "title": _storable_text(req.title),
+            "last_preview": _storable_text(req.last_preview),
+            "message_count": req.message_count,
+        },
+    )
+    if channel:
+        s.execute(
+            text(
+                "UPDATE chat_session SET channel = :channel "
+                "WHERE id = :id AND user_id = :uid AND channel IS NULL"
             ),
-            {
-                "id": req.id,
-                "uid": user_id,
-                "agent_name": req.agent_name,
-                # The preview is the last reply, so it can hold a NUL too, and
-                # a SETUP marker of the model (WS-54 fix round 4, item 2).
-                "title": _storable_text(req.title),
-                "last_preview": _storable_text(req.last_preview),
-                "message_count": req.message_count,
-            },
+            {"channel": channel, "id": req.id, "uid": user_id},
         )
-        if channel:
-            s.execute(
-                text(
-                    "UPDATE chat_session SET channel = :channel "
-                    "WHERE id = :id AND user_id = :uid AND channel IS NULL"
-                ),
-                {"channel": channel, "id": req.id, "uid": user_id},
-            )
 
 
 def _ensure_session(
@@ -1517,13 +1611,20 @@ async def upsert_session(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     org = user.organization_id
+    uid = user.email or "default"
     try:
         # H-227 fix round 3: before a NEW row, refuse a run's id and purge
-        # what the id left. An update of an existing row skips both.
+        # what the id left. An update of an existing row skips both. H-242:
+        # the check, the purge and the new row are one locked step, so a run
+        # door that made the row in between keeps its files.
         if await asyncio.to_thread(_session_is_new, req.id, organization_id=org):
-            await prepare_new_session(req.id, org)
+            made = await open_new_session(
+                req.id, org, insert=lambda s: _upsert_session_rows(s, uid, req),
+            )
+            if made:
+                return {"ok": True, "id": req.id}
         await asyncio.to_thread(
-            _upsert_session, user.email or "default", req, organization_id=org,
+            _upsert_session, uid, req, organization_id=org,
         )
     except SessionOfAnotherTenant:
         # The same answer as a session that does not exist for this caller.

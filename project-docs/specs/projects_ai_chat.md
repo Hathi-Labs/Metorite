@@ -5298,8 +5298,9 @@ sandbox suite.
 
 ### 22.9 H-227 — the uploads and the documents of one thread
 
-**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
-prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+**Status: BUILT 2026-10-04. Fix round 4 (HANDOFF H-242, task 689) built
+2026-11-22, in review.** HANDOFF H-227. It is a prerequisite of the owner
+flip WS-43w (`maf_coding_engine.md` §16.3).
 
 **The gap.** Every session of projects-assistant in one organization opens
 the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
@@ -5602,7 +5603,8 @@ mutation of one layer alone stays green. The table shows those too.
    member who knew the id of another member's chat ran a shared agent in it
    and read its folders. They now refuse a caller who may not send in the
    room, as the stream door does (`agent._guard_run_thread`).
-5. **The purge keeps a file that another session rewrote.** Main let any
+5. **The purge keeps a file that another session rewrote.** ⚠️ Fix round 4
+   replaces this item: the purge now deletes such a file. Main let any
    session change a loose file. When the newest write of a loose file that
    the chat began is another session's, the purge keeps the file and its
    other rows. It deletes only the rows of the chat. Then the oldest
@@ -5627,10 +5629,59 @@ mutation of one layer alone stays green. The table shows those too.
 | the SQL rule knows only the actor `batch` | 1 |
 | the purge deletes an older batch row | 1 |
 | the tree finds a batch file by the actor alone | 1 |
-| the purge deletes a file that another session rewrote | 1 |
+| the purge deletes a file that another session rewrote (fix round 4 made this the rule) | 1 |
 | the containment check runs first (Windows only) | 1 |
 | the run doors with no stream drop the room check | 1 |
 | the run doors with no stream skip the guard | 2 |
+
+**Fix round 4 (HANDOFF H-242, task 689, 2026-11-22).** The round 3 review
+of PR #616 found three edges of the new-chat step. Each test below failed
+on main at `9d0ea8444` (R8, on the box). Each one passes after the fix.
+
+1. **A room of `None` no longer skips the step** (residual 8). A run door
+   read a room of `None` as "not new". `_resolve_room` gives `None` to a
+   caller with no email, and when the lookup raises. Now only the internal
+   service caller skips the step (`workspace._is_service_caller`). Each
+   other caller goes through it, and the step checks for the row under its
+   lock. So the step purges a new id, and removes nothing of a chat that
+   exists.
+2. **The purge deletes a file that the chat began** (residual 9). The
+   decision: delete, and do not keep the file with no owner. Another
+   session's newest bytes can still hold the chat's text, as a `save_note`
+   append of main did. To keep the file with no owner, a row must name the
+   chat as the first writer. A new chat can take that id, so such a row
+   gives the file back to it. A tombstone is a new mechanism. The delete
+   needs none, and it cannot hand one chat's text to another session. The
+   cost: the other session loses its later bytes at that path. Fix round 3
+   item 5 is gone (`workspace._last_write`).
+3. **The check, the purge and the new row are one step** (residual 6).
+   `chat.open_new_session` does all of it in one transaction. It takes
+   `pg_advisory_xact_lock(hashtextextended(id, 0))`, and it checks again that
+   the tenant has no row. Then it purges and inserts the row.
+   `POST /chat/sessions` and the three run doors call it. A door that comes
+   second waits on the lock, then finds the row, and purges nothing. A run
+   door now makes the row before the run, so no run writes with no row. A
+   failed purge or insert answers 503, and the run does not start. The
+   mint then finds the row and changes nothing.
+4. **One connection for the step.** The sync pool holds 2 + 1 connections
+   by default. So the purge runs in the session of the step, and takes no
+   second connection. `purge_thread_files`, `session_paths`, `file_history`
+   and `purge_files` take that session as `db=`. The transaction stays in
+   one worker thread, inside one `with` block, so a cancelled request never
+   leaves the lock held. A wait for the lock of more than 10 s answers 503.
+
+| Mutation | Tests that fail |
+|---|---|
+| a room of `None` skips the step for every caller again | 3 |
+| the purge keeps a file that another session rewrote again | 2 |
+| the step takes no advisory lock | 1 |
+| the step does not check again for the row under the lock | 1 |
+| the run door makes no row in the step | 2 |
+| a failed insert only logs, and the run goes on | 1 |
+
+A pause hook in `chat.prepare_new_session` holds door A in the purge. The
+test starts door B only then. So the order is fixed, and the test does not
+depend on timing.
 
 **Residuals, named.**
 
@@ -5654,21 +5705,32 @@ mutation of one layer alone stays green. The table shows those too.
    So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
    that thread, and it passes the rules. Production runs on Linux. There
    that path names another folder, and no route lists it.
-6. **A slow mint and a late create.** A run door purges a new id, and then
-   the run's mint makes the row. When the mint times out, the run goes on
-   with no row. A `POST /chat/sessions` that arrives then sees no row, and
-   its purge can remove the first files of that run. HANDOFF H-242 step 3.
+6. **Closed by fix round 4 (item 3).** A run door makes the row in the
+   step that purges. So no create purges the first files of a run.
 7. **The stream door with no thread id** mints the thread `<agent>:<run
    id>` from a run id that the client may choose. It makes no batch run.
    Its documents go in its own thread folder, never in a loose file, so it
    cannot forge an older batch row. The purge never deletes one.
-8. **A null room skips the purge.** A run door reads a room of `None` as
-   "not new". `_resolve_room` gives `None` on an exception, or when the
-   caller has no email. HANDOFF H-242 step 1.
-9. **The next writer can own the deleted chat's text** (fix round 3 item
-   5). The bytes that another session wrote can still hold the text of the
-   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
-   file, or keep it with no owner.
+8. **Closed by fix round 4 (item 1).** A room of `None` skips the step only
+   for the internal service caller.
+9. **Closed by fix round 4 (item 2).** The purge deletes a file that the
+   chat began.
+10. **A room of `None` checks no room** (older than H-242). The run doors
+    skip the room check when `_resolve_room` gives `None`. So a caller with
+    no email, or a run while the room layer raises, can run in a chat that
+    exists. The step purges nothing of it. A fix refuses such a run.
+11. **The second pass of the delete route** runs after the row is gone, with
+    no row check and no lock. A new chat with the same id that starts in
+    that moment can lose its first files. The pass only logs.
+12. **A run with no row.** The internal service caller makes no row, so a
+    run of its own on a chat id has none. A run that started before this
+    change has none either. A new chat with that id purges its files.
+13. **A refused run leaves a row.** The step runs before the run cap and
+    the live-run refusal of the stream door. So a refused first run of a
+    new chat leaves an empty chat row. The browser makes that row first in
+    most cases (`sessions.ts`).
+14. **The continue route keeps the two-step form.** The server mints its id
+    (`uuid4`), so no client can race it.
 
 **Verification.**
 
