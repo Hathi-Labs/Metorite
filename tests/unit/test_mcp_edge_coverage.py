@@ -141,6 +141,12 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         " member's yes and with the member's switch on. The chat deletes"
         " through delete_task and its card."
     ),
+    # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
+    ("POST", "/projects/agent-runs/{run_id}/children"): (
+        "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
+        " through report_subagent, under an open run of the same member and"
+        " connection. The chat starts no sub-agent, and a person gets 422."
+    ),
 }
 
 #: The pairs of ``MCP_WRITE_ROUTES`` that are class C in the manifest, each
@@ -250,6 +256,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/agent-access/apps/{app}/requests"),
         # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
         ("POST", "/projects/tasks/{task_id}/attachments"),
+        # WS-MCP SW-114: `report_subagent` (agent_coordination.md SW-114).
+        ("POST", "/projects/agent-runs/{run_id}/children"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -686,6 +694,35 @@ def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
     assert dict(tool.params) == {"project_id": "project_id", "show_quiet": "show_quiet"}
     classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
     assert classes[pair] == "A"
+
+
+def test_sw114_report_subagent_is_the_one_write_of_the_children_route():
+    """WS-MCP SW-114 (``agent_coordination.md`` §3.12.7 rule 11). The tool
+    writes the POST of the children of a run, and no other route. It needs
+    ``projects:write``, it has the hints of a write, and it shows only while
+    the runs flag is on. The pair is class X in the chat manifest, so it is a
+    named entry of :data:`CLASS_X_WRITES`. The GET of the children stays off
+    the edge. Mutation: drop the pair from ``MCP_WRITE_ROUTES``, and this
+    test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_WRITE
+    from agent_edge.tools import TOOLS, WRITE_ANNOTATIONS
+
+    tool = TOOLS["report_subagent"]
+    pair = ("POST", "/projects/agent-runs/{run_id}/children")
+    assert (tool.method, tool.route) == pair and tool.routes == ()
+    assert pair in MCP_WRITE_ROUTES and pair in CLASS_X_WRITES
+    assert ("GET", pair[1]) not in MCP_ROUTES
+    assert tool.required_scope == PROJECTS_WRITE
+    assert dict(tool.annotations) == dict(WRITE_ANNOTATIONS)
+    assert tool.runs is True and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes
+    assert dict(tool.params) == {"run_id": "run_id", "agent_id": "agent_id",
+                                 "agent_type": "agent_label", "event": "event",
+                                 "model": "model"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "X" and classes[("GET", pair[1])] == "X"
+    reached = _reached(TOOLS)
+    assert ("GET", pair[1]) not in reached
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
