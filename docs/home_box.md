@@ -100,6 +100,12 @@ plain text file on the PC:
 4. For the merge lane only: `scripts/home_server/lanes/lane-merge.md` before
    the lane rules.
 
+When an orchestrator writes the note, its first line names the run id of the
+orchestrator, for example `Dispatched by run <run id>`. The lane passes that id
+as `dispatched_by` on each claim. It keeps the line in the note header, so a
+lane that restarts finds its dispatcher (SW-108). A note with no orchestrator
+carries no such line.
+
 ### 3.3 Start the lane
 
 ```bash
