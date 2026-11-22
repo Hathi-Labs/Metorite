@@ -895,6 +895,70 @@ async def my_tasks_clarify(item_id: str) -> str:
     return json.dumps(p, indent=1)
 
 
+# ── Two proposals of the task page (P-1a, task 3112) ─────────────────────────
+#
+# The "Improve title" and the fill-in buttons of a task (`chat_parity.md` §6.4).
+# Each tool asks the AI door for a PROPOSAL and writes nothing. The member
+# agrees first, and then the task edit tool saves the change. The door reads
+# through `item_source()`, as the clarify door does. A proposal is AI text made
+# from the task, and another member can write the task, so it shows in
+# «guillemets» under `_DATA_LEGEND`. Fence: tests/unit/test_my_tasks_p1a_tools.py.
+
+#: The line of both proposals: nothing changed, and how a change happens.
+_PROPOSAL_ONLY = (
+    "This is a proposal. Nothing changed. Show it to the member, and save a "
+    "field only after the member agrees, with my_tasks_update (or the task edit "
+    "tool that you hold)."
+)
+#: The fields that the enrich door can propose, in the order of the task page.
+_ENRICH_FIELDS = ("context", "energy", "time_estimate_mins", "due_at", "assignee")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_suggest_title(item_id: str, title: str = "") -> str:
+    """Propose a clearer title for one task, and say if the title is vague.
+    Read only: it changes no task. Show the proposal to the member. Save it
+    with my_tasks_update(title=...) only after the member agrees.
+
+    Args:
+        item_id: The item's full UUID (from my_tasks_list).
+        title: A draft title to judge in place of the saved one (empty = the
+            saved title).
+    """
+    params = {"title": title.strip()} if title.strip() else None
+    p = await _request(
+        "POST", f"/tasks/items/{item_id}/suggest-title", params=params) or {}
+    vague = "The title is vague." if p.get("is_vague") else "The title is clear enough."
+    suggested = str(p.get("suggested_title") or "").strip()
+    if not suggested:
+        return f"{vague} No better title was proposed. Nothing changed."
+    return (f"{_DATA_LEGEND}\n{vague}\nProposed title: {_data(suggested)}\n"
+            f"{_PROPOSAL_ONLY}")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_enrich(item_id: str) -> str:
+    """Propose values for the MISSING fields of one task: context, energy, time
+    estimate, due date and assignee. Read only: it changes no task and never
+    overwrites a field that has a value. Show the proposal to the member. Save
+    a field with my_tasks_update only after the member agrees. An assignee goes
+    through my_tasks_delegate.
+
+    Args:
+        item_id: The item's full UUID (from my_tasks_list).
+    """
+    p = await _request("POST", f"/tasks/items/{item_id}/enrich") or {}
+    fields = p.get("fields") if isinstance(p, dict) else None
+    fields = fields if isinstance(fields, dict) else {}
+    lines = [f"• {k}: {_data(fields[k])}" for k in _ENRICH_FIELDS
+             if fields.get(k) not in (None, "")]
+    if not lines:
+        return ("No field to fill: the task has none missing, or no value was "
+                "sure. Nothing changed.")
+    return (f"{_DATA_LEGEND}\nProposed values for the missing fields:\n"
+            + "\n".join(lines) + f"\n{_PROPOSAL_ONLY}")
+
+
 @_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_organize(
     item_id: str,
@@ -1993,6 +2057,62 @@ async def my_tasks_get_calendar_settings() -> str:
     s = await _request("GET", _CAL_SETTINGS_PATH) or {}
     return "Calendar settings:\n" + "\n".join(
         f"• {k}: {v}" for k, v in _cal_view(s).items())
+
+
+# ── The connected calendars (P-1a, task 3112) ────────────────────────────────
+#
+# The read of the Connected calendars section of Calendar settings (CE-10c).
+# The route answers the member's own rows only, and 404 unless
+# ``CALENDAR_SYNC_READ`` names the org. The tool shows ONLY the fields of
+# :data:`_CONNECTION_FIELDS`, so a token or a secret never shows, whatever the
+# body holds. Sync now, the switch and Disconnect are task 3923 (P-1c). The day
+# acts of My Day (capture, focus, plan and close the day) are CC-10's (task
+# 1978): this module builds no day flow for them. Fence:
+# tests/unit/test_my_tasks_p1a_tools.py.
+
+_CAL_CONNECTIONS_PATH = "/tasks/calendar/connections"
+#: The one line when the route answers 404: calendar sync is off for the org.
+CONNECTIONS_OFF = "Calendar sync is not available in your organization yet."
+#: The cut of the last error of a connection, in characters.
+CONNECTION_ERROR_MAX = 120
+
+
+def _connection_line(c: dict[str, Any]) -> str:
+    """One connection, from an allow-list of fields only."""
+    provider = {"google": "Google", "outlook": "Outlook"}.get(
+        str(c.get("provider") or ""), "Other calendar")
+    parts = [f"- {provider}", str(c.get("account_email") or "(no address)"),
+             str(c.get("status") or "unknown")]
+    parts.append(f"last sync {c.get('last_sync_at') or 'never'}")
+    parts.append(f"{int(c.get('entry_count') or 0)} events")
+    parts.append("tasks shown in it: " + ("on" if c.get("push_tasks") else "off"))
+    error = _stranger_text(c.get("last_error"), CONNECTION_ERROR_MAX)
+    if error:
+        parts.append(f"last error {_data(error)}")
+    return " | ".join(parts)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_calendar_connections() -> str:
+    """List the member's own connected calendars (Google or Outlook): the
+    address, the state, the last sync, the count of events and the task
+    switch. It also lists the own mailboxes that can connect. Read only. It
+    shows no token and no secret. Connect happens in Calendar settings.
+    """
+    try:
+        d = await _request("GET", _CAL_CONNECTIONS_PATH) or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return CONNECTIONS_OFF
+        raise
+    rows = [c for c in d.get("connections") or () if isinstance(c, dict)]
+    offers = [o for o in d.get("mailbox_offers") or () if isinstance(o, dict)]
+    out = ([f"Connected calendars ({len(rows)}):", *map(_connection_line, rows)]
+           if rows else ["No calendar is connected."])
+    if offers:
+        out.append("Mailboxes that can connect their calendar in Calendar settings: "
+                   + ", ".join(f"{o.get('provider')} {o.get('address')}" for o in offers))
+    return "\n".join(out)
 
 
 def _cal_patch(

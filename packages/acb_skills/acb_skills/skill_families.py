@@ -803,7 +803,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
+            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules. "
+            "It also lists the connected calendars, and proposes a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -811,7 +812,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
@@ -821,7 +822,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_day_digest",
             "my_tasks_delete_day_rule",
             "my_tasks_edit_day_rule",
+            "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
+            "my_tasks_list_calendar_connections",
             "my_tasks_list_day_rules",
             "my_tasks_list_events",
             "my_tasks_list_schedule",
@@ -831,6 +834,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
             "my_tasks_start_my_day",
+            "my_tasks_suggest_title",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
         ),
