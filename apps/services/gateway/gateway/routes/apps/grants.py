@@ -32,7 +32,7 @@ from gateway.routes.apps._common import (
     get_app_or_404,
     iso,
     load_live_version_scopes,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_user,
     router,
 )
@@ -149,7 +149,7 @@ async def upsert_app_grant(
                 "role": body.role, "granted_by": _uid(user),
             },
         )).fetchone()
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="action",
         detail={"action": "grant_upsert", "subject": body.subject,
                 "role": body.role},
@@ -176,7 +176,7 @@ async def revoke_app_grant(
             ),
             {"app_id": str(row.id), "subject": subject},
         )
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="action",
         detail={"action": "grant_revoke", "subject": subject},
     )
@@ -229,7 +229,7 @@ async def consent_app(
             ),
             {"app_id": str(row.id), "email": email, "hash": live_hash},
         )
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="action",
         detail={"action": "consent", "scope_set_hash": live_hash},
     )

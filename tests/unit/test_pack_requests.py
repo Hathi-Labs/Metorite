@@ -16,9 +16,9 @@ Run: ``uv run pytest tests/unit/test_pack_requests.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
+
 from tests.unit.test_tool_packs_choice import EVERY, MEMBER, ORG, SESSION
 
 #: The base of the real run, in tools (the staging shape of OA-8e).
@@ -166,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -238,8 +240,25 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "save_as_template": ("save this project as a template",),
     "create_project_from_template": ("use the project template Install kit for the Acme job",
                                      "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("show the cycles of Website Relaunch",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
     # SP-8a: the contract of an epic sits in the authority pack.
     "set_epic_contract": ("set the epic contract of this epic",),
+    # WS-55 EA-18d: the authority pack holds the question tools. The phrasings are
+    # the ones of the review: none may load the plan pack alone.
+    "agent_questions": ("what agent questions wait on me?",
+                        "which questions wait on me?"),
+    "answer_agent_question": (
+        "answer the agent question: use the staging box",
+        "give my answer to the agent on the extruder task: use the staging box",
+        "the agent asked me which box to use. tell it the staging box.",
+        "reply to the agent's question: use the staging box",
+    ),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -256,6 +275,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio packages (STU-G1c) --
     "studio_save": ("save my studio app",),
     "studio_publish": ("publish my studio app",),
+    # -- studio package delete (STU-A5c-2) --
+    "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
+    # -- studio ready apps (STU-K1d) --
+    "studio_template_list": ("list my studio app templates",),
+    "studio_create_from_template": ("create my studio app from a template",),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
@@ -263,6 +287,24 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_create": ("add a record to my studio package",),
     "studio_record_update": ("change a record in my studio package",),
     "studio_record_delete": ("delete a record from my studio package",),
+    # -- studio door read (STU-B2b-2c) --
+    "studio_app_read": ("read a knowledge page through my studio app",),
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices",
+                             # STU-E4b: the run id mode, the steps of a run.
+                             "list the steps of the playbook run in my studio app"),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
+    # -- studio-share: the share of a skill with the org (WS-STU J2d) --
+    "studio_skill_share": ("share my skill with the team",
+                           "approve the skill share that waits for me"),
+    # -- studio-repair: the repair of a skill (TOF-3a F12c) --
+    "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
+    "studio_skill_undo": ("undo my skill to the version before",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
@@ -294,6 +336,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- calendar-day flows (CAL-4, task 1678) --
     "my_tasks_start_my_day": ("start my day", "good morning plan"),
     "my_tasks_close_my_day": ("close my day", "wrap up my day"),
+    # -- calendar-day events (CE-15, task 3463) --
+    "my_tasks_list_events": ("what is on my calendar this week?",
+                             "which meetings are on my calendar tomorrow?"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -368,3 +413,16 @@ def test_the_known_gaps_stay_listed_with_a_reason() -> None:
 def test_an_ordinary_turn_keeps_its_packs(words: str, slugs: tuple[str, ...]) -> None:
     """Mutation: add a bare common word to a pack -> a control gains a pack."""
     assert _chosen(words) == slugs
+
+
+def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses_them() -> None:
+    """EA-18d review. Every phrasing loads ``projects-authority``. The plan rule
+    no longer tells the model to refuse an answer. The authority pack says when
+    to use the tools, and its catalog line names agent questions."""
+    for words in REQUESTS["answer_agent_question"] + REQUESTS["agent_questions"]:
+        assert "projects-authority" in _chosen(words), words
+    plan = tp.PACKS["projects-plan"]
+    assert "Never answer a question" not in plan.rules
+    assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
+    assert "agent" in tp.PACKS["projects-authority"].when
+    assert "answer to an agent" not in plan.when

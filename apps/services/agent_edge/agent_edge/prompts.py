@@ -77,6 +77,67 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: Task 3648 (owner, 2026-11-17). What each stage means, and the classes of
+#: task where the lane is not obvious, so the agent asks and does not guess.
+#: Claude Code cuts the instructions at 4096 characters, and the verifier of
+#: task 3648 measured that the full rule at the tail never reached it. So
+#: with the runs flag ON (the state where release_task exists) the stages go
+#: right after the run instructions, before the routine, in a short form that
+#: ends before the cut. The five classes go in the description of
+#: ``ask_on_task`` (:data:`LANE_ASK_CLASSES`), which no cut touches. With the
+#: flag OFF the whole text is under the cut, so the full rule follows the PR
+#: rule. Fence: ``test_release_lane_pins.py`` ``TestTheInstructionsSay...``.
+LANE_STAGES = (
+    "Backlog holds a task that nobody started and that is not planned soon."
+    " To Do holds a task planned to run soon, and a started task that is"
+    " paused or given back. In progress holds work that moves now: a live run,"
+    " or an open pull request that waits for review or merge. Done holds work"
+    " that is merged or delivered. A started task never goes to Backlog."
+)
+
+#: The classes of task where the lane is not obvious (owner, 2026-11-17).
+LANE_ASK_CLASSES = (
+    "a task of a paused project, an umbrella whose first slice merged and"
+    " whose next slices did not start, a task with only its spec merged, a"
+    " task that waits for a production proof or an owner flip, and a board"
+    " whose lanes do not map to the stages"
+)
+
+#: The short form, with the runs flag on. It names ``ask_on_task``. It must
+#: END before character 4096 of the instructions in both states of the
+#: answer-change flag, so it holds about 280 characters at most. The full
+#: stage text is :data:`LANE_STAGES`, and the classes are in the description of
+#: ``ask_on_task``.
+LANE_RULE = (
+    " Lanes: Backlog is not started and not planned soon. To Do is planned"
+    " soon, or started and given back. In progress is moving now: a live run"
+    " or an open pull request. A started task never goes to Backlog. If you"
+    " are unsure, do not guess: ask once per class with ask_on_task."
+)
+
+#: The full form, with the runs flag off. No run tool shows, so the agent asks
+#: in its reply and names no tool.
+LANE_RULE_NO_RUNS = (
+    " Move a task by what its stage means. " + LANE_STAGES
+    + " On a board with custom lanes, pick the lane by its category, then by"
+    " its name. When you are not sure which lane fits, do not guess. These"
+    " classes need a question: " + LANE_ASK_CLASSES + ". Ask the member once"
+    " for the whole class in your reply. Name the class and the number of"
+    " tasks, give two to four options, and mark one as recommended. Then apply"
+    " the answer to every task of that class in this session, and state the"
+    " class and the answer in your report."
+)
+
+#: The sentence that ``ask_on_task`` adds to its description.
+LANE_ASK_RULE = (
+    " When you are not sure which lane a task belongs in, ask once for the"
+    " whole class and do not guess. These classes need that question: "
+    + LANE_ASK_CLASSES + ". Name the class and the number of tasks, give two"
+    " to four options, and mark one as recommended. Then apply the answer to"
+    " every task of that class in this session, and state the class and the"
+    " answer in your report."
+)
+
 #: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
 #: an agent to the images of a task. The prompt, the ``initialize``
 #: instructions and the ``get_task_context`` description each hold it. Fence:
@@ -91,6 +152,19 @@ ANSWER_RULE = (
     " Before you act on an answer, post a thought that names the answer id,"
     " because the member may withdraw it until you post."
 )
+#: SW-43c. The same step while the flag is off, so the work steps carry it by
+#: default. It holds no reason, because with the flag off no member takes an
+#: answer back. The flag turns it into :data:`ANSWER_RULE`
+#: (:func:`answer_thought_rule`). Fence: ``test_mcp_edge_agent_runs.py``
+#: ``TestTheAnswerChangeAtTheEdge``.
+ANSWER_THOUGHT_RULE = (
+    "Before you act on an answer, post a thought that names the answer id.")
+
+
+def answer_thought_rule() -> str:
+    """The step of the thought before an act on an answer, by the flag of
+    SW-43. The step shows with the runs flag alone (SW-43c)."""
+    return ANSWER_RULE.strip() if agent_oauth.answer_change_enabled() else ANSWER_THOUGHT_RULE
 
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
@@ -413,8 +487,8 @@ def _work_steps(*, runs: bool) -> list[str]:
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
         steps.append(WAITING_RULE)
-        if agent_oauth.answer_change_enabled():
-            steps.append(ANSWER_RULE.strip())
+        # SW-43c: on by default, so an agent posts the thought before the flip.
+        steps.append(answer_thought_rule())
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -454,6 +528,7 @@ def _rules() -> str:
 
 __all__ = [
     "ANSWER_RULE",
+    "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
@@ -466,6 +541,7 @@ __all__ = [
     "TEXT_UNKNOWN",
     "WAITING_RULE",
     "PromptRefused",
+    "answer_thought_rule",
     "get",
     "listed",
     "logged_name",

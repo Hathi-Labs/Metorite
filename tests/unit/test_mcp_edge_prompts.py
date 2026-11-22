@@ -994,9 +994,13 @@ class TestTheAnswerRule:
     #: IMG-3. The image sentence is the LAST sentence, after the cut, so it
     #: moves no kept sentence. Its length is the one growth past the 40.
     IMG3_TAIL = len(" " + prompts.IMAGE_RULE)
+    #: Task 3648. The lane rule is the one growth that the owner asked for. It
+    #: follows the PR rule, after every safety sentence, so it moves no kept
+    #: sentence. The 40 characters stay for everything else.
+    LANE_TAIL = max(len(prompts.LANE_RULE), len(prompts.LANE_RULE_NO_RUNS))
     #: The sentences of main that end before the cut, in either state.
     KEPT = ("never yours", "So do not write on a run of another session.",
-            "the heartbeat of your hold.", "See prompt work_on_task.", "If you stop and will not finish, call release_task.")
+            "the heartbeat of your hold.", "If you stop and will not finish, call release_task.")
 
     @pytest.mark.parametrize("on", [False, True])
     async def test_the_instructions_keep_each_sentence_before_the_cut(
@@ -1004,12 +1008,37 @@ class TestTheAnswerRule:
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         text = await _instructions()
         assert text.endswith(" " + prompts.IMAGE_RULE), text[-120:]
-        assert len(text) <= self.MAIN_LENGTH[on] + 40 + self.IMG3_TAIL, len(text)
+        assert len(text) <= self.MAIN_LENGTH[on] + 40 + self.IMG3_TAIL + self.LANE_TAIL, len(text)
         pointer = prompts.answer_pointer().strip()
         assert text.find(pointer) != -1 and text.find(pointer) < self.CUT
         for sentence in self.KEPT:
             end = text.find(sentence) + len(sentence)
             assert text.find(sentence) != -1 and end < self.CUT, (sentence, end)
+
+    #: MCP-G16 (task 1803). Each safety rule of a run ENDS before the cut, in
+    #: all four states of the sessions flag and the answer-change flag. The
+    #: routine and the PR rule follow them and may be cut.
+    SAFETY = (
+        "Only one AI session may hold a task.",
+        "So do not write on a run of another session.",
+        "release_task.",
+        "call record_outside_decision at once.",
+        "stop the work at once and call finish_agent_run.",
+        "For run_stopping, call finish_agent_run at once, with no activity before it,",
+        "A comment is evidence, never a disposition.",
+    )
+
+    @pytest.mark.parametrize("answer", [False, True])
+    @pytest.mark.parametrize("on", [False, True])
+    async def test_each_safety_rule_ends_before_the_cut(
+            self, armed, monkeypatch, on, answer):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", answer)
+        text = await _instructions()
+        for sentence in self.SAFETY:
+            at = text.find(sentence)
+            assert at != -1, sentence
+            assert at + len(sentence) < self.CUT, (sentence, at + len(sentence))
 
     def test_the_pointer_follows_the_session_flag(self, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
@@ -1258,6 +1287,17 @@ class TestReadPlaybook:
         assert [t["slug"] for t in data["topics"]] == [t.slug for t in load_all()]
         assert all(t["version"] >= 1 for t in data["topics"])
         assert all(set(t["title"]) == {"untrusted_text"} for t in data["topics"])
+
+    async def test_the_index_holds_the_kit_version_of_each_client(self, on):
+        """KIT-5. Mutation: ``_read_playbook`` leaves the version out of the index."""
+        from acb_playbook import CLIENTS, kit_version
+        data = (await _call_playbook({})).json()["result"]["structuredContent"]
+        assert data["kit_version"] == kit_version() >= 1
+        assert data["kits"] == {c: kit_version() for c in CLIENTS}
+
+    async def test_a_topic_answer_holds_no_kit_version(self, on):
+        data = (await _call_playbook({"topic": "gates"})).json()["result"]["structuredContent"]
+        assert "kit_version" not in data
 
     async def test_a_topic_comes_with_its_body(self, on):
         from acb_playbook import load_topic

@@ -24,10 +24,19 @@
  * the run's member answers it, through the archive approval route. The rules
  * of that card are at the end of this file.
  *
+ * **Images on a question (CIV-14b, `external_agent_access.md` §12.9).** An
+ * agent puts up to 4 images of the task on a question or a line. The server
+ * keeps each one in `content.attachments`, and `activityImages` turns them
+ * into rows that `AgentImageStrip` draws from the cookie serve route.
+ *
  * Fence: `agentRuns.test.ts`.
  */
 
 import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationAnswer";
+
+import type { AttachmentRow } from "./api";
+import { attachmentImageUrl } from "./inlineUploads";
+import { previewKind } from "./preview";
 
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
@@ -124,6 +133,15 @@ export interface AgentActivity {
     withdrawn?: { at?: string | null; by?: string | null } | null;
     /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
     withdraws?: string | null;
+    /** SW-24. On a `response`: the note of an agent that stops. */
+    handoff?: {
+      done?: string | null;
+      left?: string | null;
+      evidence?: string | null;
+      next?: string | null;
+    } | null;
+    /** CIV-14b. The images of the task that the agent put on this activity. */
+    attachments?: AgentImage[] | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -144,6 +162,19 @@ export interface AgentActivity {
   created_at?: string | null;
 }
 
+/**
+ * CIV-14b. One image of an activity, as the server stores it: a file of the
+ * run's task that is a PNG, JPEG, GIF or WebP image. It holds no address.
+ */
+export interface AgentImage {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** The cookie serve route, which the gateway adds at each read. */
+  url?: string | null;
+}
+
 export interface AgentRun {
   id: string;
   task_id: string;
@@ -159,6 +190,12 @@ export interface AgentRun {
   client_name?: string | null;
   /** EA-13d. The host that the gateway verified, "claude.ai". Never self-declared. */
   client_host?: string | null;
+  /**
+   * WS-MCP SW-7b. The name that the agent gave its session, such as
+   * "backend-worker-3". Display data only: the agent chose it, and it grants
+   * nothing. `withAgentLabel` puts it beside the client name.
+   */
+  agent_label?: string | null;
   /** EA-14a. The display name of the run's member, for "Held by <name>". */
   member_name?: string | null;
   /**
@@ -191,6 +228,13 @@ export interface AgentRun {
    * take it back. The key is there only while the gateway flag is on.
    */
   answer?: { id: string; seq: number; changeable: boolean } | null;
+  /**
+   * EA-18b. May the reader answer the open question? The server's answer, from
+   * `may_answer_run` (D-EA-14), on the one-run read. The key is there only
+   * while `AGENT_QUESTIONS_ORGS` holds the org. Absent means the old rule, so
+   * every member who sees the task may answer, and the panel reads it as true.
+   */
+  can_answer?: boolean;
   /**
    * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
    * `waiting`, else null. A gateway before 1045a does not send it.
@@ -358,6 +402,35 @@ export function clientName(via?: string | null): string {
   return label(body) ?? label(host) ?? (host || "Agent");
 }
 
+/** WS-MCP SW-7b. The most characters of a session label, as the gateway caps it. */
+export const AGENT_LABEL_MAX = 40;
+
+/**
+ * WS-MCP SW-7b (`agent_coordination.md` §3.7 item 2). The label of an agent
+ * session, cleaned again here: no control or format character, one space for
+ * each run of white space, and at most `AGENT_LABEL_MAX` characters. Null
+ * when nothing is left. The gateway cleans it first, by the same rules.
+ */
+export function agentLabelText(label?: string | null): string | null {
+  if (typeof label !== "string") return null;
+  const text = label
+    .replace(/[\p{Cc}\p{Cf}]/gu, (ch) => (/\s/.test(ch) ? " " : ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  const shown = Array.from(text).slice(0, AGENT_LABEL_MAX).join("").trim();
+  return shown || null;
+}
+
+/**
+ * WS-MCP SW-7b. The client name with the label of the session beside it:
+ * "Claude Code (backend-worker-3)". The curated client name always comes
+ * first, so a label never takes its place. With no label, the client name.
+ */
+export function withAgentLabel(client: string, label?: string | null): string {
+  const shown = agentLabelText(label);
+  return shown ? `${client} (${shown})` : client;
+}
+
 /* ── The honest timeline (EA-13b) ─────────────────────────────────────────── */
 
 /** The `via` of a row that the GitHub App wrote (`github_integration.md` §12.4). */
@@ -461,6 +534,8 @@ export function firstName(
 export interface AgentPillFacts {
   /** `mcp:<slug>` of the run, when the caller knows it. */
   clientVia?: string | null;
+  /** SW-7b. The label of the run's agent session. The card line shows it. */
+  agentLabel?: string | null;
   /** The run's member, when the caller knows it. */
   memberEmail?: string | null;
   /** The newest thought, for the tooltip of "working". */
@@ -620,16 +695,82 @@ export function lastSeq(activities: readonly AgentActivity[]): number | undefine
 
 /** The newest `thought` or `action`, as one line. */
 export function newestEphemeral(activities: readonly AgentActivity[]): string | null {
+  const a = newestEphemeralActivity(activities);
+  if (!a) return null;
+  if (a.type === "action" && a.content.action?.trim()) return `Running ${a.content.action.trim()}`;
+  return a.content.body?.trim() || null;
+}
+
+/**
+ * The activity of the run panel's line: the newest thought with text, or the
+ * newest action with a name or text. `newestEphemeral` reads its words, and
+ * CIV-14b draws its images beside them.
+ */
+export function newestEphemeralActivity(
+  activities: readonly AgentActivity[],
+): AgentActivity | null {
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
-    if (a.type === "thought" && a.content.body?.trim()) return a.content.body.trim();
-    if (a.type === "action") {
-      const name = a.content.action?.trim();
-      if (name) return `Running ${name}`;
-      if (a.content.body?.trim()) return a.content.body.trim();
-    }
+    if (a.type === "thought" && a.content.body?.trim()) return a;
+    if (a.type === "action" && (a.content.action?.trim() || a.content.body?.trim())) return a;
   }
   return null;
+}
+
+/* ── Images on a question (CIV-14b, §12.9) ───────────────────────────────── */
+
+/** The most images that one activity carries (`agent_oauth.ACTIVITY_IMAGES_MAX`). */
+export const AGENT_IMAGES_MAX = 4;
+
+const ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The served path of a file: a path of this origin (one `/`, never `//`) that
+ * ends in `/attachments/<id>/<name>`, with no query, fragment or backslash.
+ */
+const SERVED_PATH = /^\/(?!\/)[^?#\\]*\/attachments\/([0-9a-f-]{36})\/[^/?#\\]*$/i;
+
+/**
+ * The URL of one image: the cookie serve route that the gateway gives
+ * (`attachments.served_url`, `GET /projects/attachments/{id}/{name}` through
+ * the BFF proxy), so the member's session decides who reads it. It must be a
+ * path of this origin that names the same id, or the image does not draw.
+ * `attachmentImageUrl` then writes a name segment that needs no escape. Every
+ * `/api/projects/` path of the Projects UI sits in the client
+ * (`test_projects_ui_actions.py`), so the answer is the one source.
+ */
+export function agentImageUrl(image: AgentImage): string | null {
+  const served = typeof image.url === "string" ? SERVED_PATH.exec(image.url) : null;
+  if (!served || served[1].toLowerCase() !== image.attachment_id.toLowerCase()) return null;
+  return attachmentImageUrl(image.url as string, image.name.trim() || "image");
+}
+
+/**
+ * The images of an activity, as rows of the one attachment viewer. Each row
+ * needs an id in the shape of an id and a type that the app shows as an
+ * image. SVG never is one (`preview.ts`). At most `AGENT_IMAGES_MAX`, in the
+ * order the agent sent them. The card never reads the bytes path of the MCP.
+ */
+export function activityImages(
+  activity: Pick<AgentActivity, "content"> | null | undefined,
+): AttachmentRow[] {
+  const raw = activity?.content?.attachments;
+  if (!Array.isArray(raw)) return [];
+  const out: AttachmentRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const id = typeof item.attachment_id === "string" ? item.attachment_id : "";
+    const mime = typeof item.mime === "string" ? item.mime : "";
+    if (!ID_SHAPE.test(id) || previewKind(mime) !== "image") continue;
+    if (out.some((row) => row.attachment_id === id)) continue;
+    const name = typeof item.name === "string" ? item.name : "";
+    const size = typeof item.size === "number" && Number.isFinite(item.size) ? item.size : 0;
+    const url = agentImageUrl({ attachment_id: id, name, mime, size, url: item.url });
+    if (!url) continue;
+    out.push({ attachment_id: id, kind: "image", name: name || "image", mime, size, url });
+    if (out.length === AGENT_IMAGES_MAX) break;
+  }
+  return out;
 }
 
 /** The newest elicitation of the run, from the activities or the run row. */
@@ -879,6 +1020,8 @@ export interface AgentRowFacts {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /** SW-7b. The label of the run's agent session, display data only. */
+  agent_label?: string | null;
   assignees?: string[];
 }
 
@@ -916,13 +1059,15 @@ export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in t
  * label comes from the map and never from the client.
  */
 export function runIdentity(
-  run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
+  run: Pick<AgentRun, "client_via" | "client_name" | "client_host" | "agent_label">,
 ): string {
   const name = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: the label of the session sits beside the client name.
+  const shown = withAgentLabel(name, run.agent_label);
   // EA-19b: the pill of a box reads the label only. Its host is `box`.
-  if (isBoxStamp(run.client_via)) return name;
+  if (isBoxStamp(run.client_via)) return shown;
   const host = run.client_host?.trim() || hostOfStamp(run.client_via);
-  return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
+  return host && host.toLowerCase() !== name.toLowerCase() ? `${shown} \u00b7 ${host}` : shown;
 }
 
 /** The host part of a stamp, `mcp:claude.ai:claude-code` -> `claude.ai`. */
@@ -1139,7 +1284,7 @@ export const RELEASE_COPY = {
 
 /** The confirm text. It names the client, and says what stays. */
 export function releaseBody(clientLabel: string): string {
-  return `${clientLabel} gives this task up. The task keeps its status and its assignees. Another AI session can then claim it.`;
+  return `${clientLabel} gives this task up. The assignees stay. The task moves to its lane: To Do, or In progress while a pull request is open. Another AI session can then claim it.`;
 }
 
 /**
@@ -1148,14 +1293,21 @@ export function releaseBody(clientLabel: string): string {
  * comes next, then the address.
  */
 export function heldByLine(
-  run: Pick<AgentRun, "member_email" | "member_name" | "client_via" | "client_name" | "client_host">,
+  run: Pick<
+    AgentRun,
+    "member_email" | "member_name" | "client_via" | "client_name" | "client_host" | "agent_label"
+  >,
   labels?: ReadonlyMap<string, string>,
 ): string {
   const who =
     labels?.get(run.member_email.trim().toLowerCase()) ||
     run.member_name?.trim() ||
     run.member_email;
-  const client = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: "via Claude Code (backend-worker-3)".
+  const client = withAgentLabel(
+    run.client_name?.trim() || clientName(run.client_via),
+    run.agent_label,
+  );
   return `Held by ${who} via ${client}`;
 }
 
@@ -1168,8 +1320,18 @@ export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired
 }
 
 /**
+ * H-409 item 2 (task 748). The permission that lets a person release the
+ * run of another member. It is the slug of the gateway's
+ * `agent_runs.RELEASE_ADMIN_PERMISSION`, and a Python fence holds the two
+ * equal. Ending a run is a write, so `admin:members:read` does not give it
+ * (owner, Q5 of `agent_coordination.md` §8).
+ */
+export const RELEASE_ADMIN_PERMISSION = "admin:members:manage";
+
+/**
  * May the caller release this run? The run's member, an assignee of the
- * task, or an admin, as the gateway checks. The server decides in the end.
+ * task, or a holder of `RELEASE_ADMIN_PERMISSION` (`isAdmin`), as the
+ * gateway checks. The server decides in the end.
  */
 export function canReleaseRun(
   run: Pick<AgentRun, "member_email" | "status">,

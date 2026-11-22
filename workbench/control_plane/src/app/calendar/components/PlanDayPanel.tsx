@@ -10,6 +10,7 @@ import {
   type DayPlanResult,
 } from "@/app/tasks/lib/api";
 import { energyWindowsPayload, fmtClock } from "./shared";
+import { EMPTY_WINDOW_TEXT, planWindow } from "../lib/planWindow";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 
 
@@ -93,18 +94,30 @@ export function PlanDayPanel({
         : new Date(baseMs + Number(hz) * 3600_000);
 
   const run = async (n: string, hz: string = horizon) => {
-    setLoading(true);
-    setError(null);
-    const dayStartAt = new Date(target);
-    dayStartAt.setHours(dayStart, 0, 0, 0);
     // Fresh "now" at tap time — a "N more hours" / past-time-wrap horizon is
     // measured from when you actually plan, not when the panel opened.
-    const dayEndAt = endForHorizon(hz, Date.now());
+    const nowMs = Date.now();
+    // Task 3163: before the working day starts (after midnight), a from-now
+    // horizon ends before the working-day start, so the window starts now.
+    const span = planWindow({
+      target,
+      dayStartHour: dayStart,
+      end: endForHorizon(hz, nowMs),
+      nowMs,
+      planningToday,
+      horizon: hz,
+    });
+    if (!span) {
+      setError(EMPTY_WINDOW_TEXT);
+      return;
+    }
+    setLoading(true);
+    setError(null);
     try {
       setPlan(
         await (isReplan ? apiReplan : apiPlanDay)({
-          day_start: dayStartAt.toISOString(),
-          day_end: dayEndAt.toISOString(),
+          day_start: span.start.toISOString(),
+          day_end: span.end.toISOString(),
           energy_windows: energyWindowsPayload(energyWindows, target),
           capacity_mins: capacityMins,
           buffer_mins: bufferMins,

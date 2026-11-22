@@ -27,6 +27,8 @@ LIVE_ROUTES = {
     # Re-enable arms the triggers again — same authority as publish, and the
     # escape hatch out of the R2 auto-disable policy.
     "/workflows/{workflow_id}/enable",
+    # STB-6c: arming one trigger makes it live (owner decision, 2026-11-13).
+    "/workflows/{workflow_id}/triggers/{kind}/state",
 }
 
 #: Authoring routes that must never need the publish verb — a draft fires no

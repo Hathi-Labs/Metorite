@@ -238,6 +238,9 @@ def test_the_dependency_takes_no_host_derived_input_at_all(identity):
 _BRANCH_ZERO = (
     "get_current_user", "_is_agent_request", "_one_header", "_agent_user",
     "_verify_signed_request", "_matched_template", "_effective_template",
+    # CIV-14b: the one body reader. It reads the copy that the gateway keeps
+    # of a signed form, or `await request.body()`.
+    "_signed_body",
 )
 
 #: The attribute chains a scan accepts from `request`, each with the ONE use
@@ -249,19 +252,28 @@ _ALLOWED_CHAINS = frozenset({
     ("body",),
 })
 #: ``route`` and ``app`` find the matched route template. ``path`` and
-#: ``query_string`` are the signed path and query (§10.1).
-_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
+#: ``query_string`` are the signed path and query (§10.1). CIV-14b:
+#: ``acb.agent_signed_body`` is the copy of the body of a signed form that the
+#: gateway wrapper ``AgentUploadBody`` keeps. The server sets it, a client
+#: cannot, and the HMAC covers its bytes.
+_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_signed_body"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
-#: (SW-7, spec §12.5).
+#: GET, the nonce of a write (EA-6a, EA3-28), the signed MCP session key
+#: (SW-7, spec §12.5), and the signed approval of a door write with the ONE
+#: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17).
+#: ``If-Match`` is not signed. The digest binds it: another value is another
+#: digest, so the spend refuses it.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
+    "x-agent-approval", "if-match",
 })
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
 #: for the signature. The runtime tripwire refuses the read on a GET.
-_BODY_READER = "_agent_user"
+#: CIV-14b moves the read from ``_agent_user`` into ``_signed_body``, which
+#: first reads the copy of a signed form (``acb.agent_signed_body``).
+_BODY_READER = "_signed_body"
 #: A header or scope key that names where the request came from.
 _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
@@ -910,6 +922,20 @@ def test_the_body_is_read_once_and_in_one_function():
     assert found == [_BODY_READER]
 
 
+def test_the_kept_body_key_is_the_one_constant():
+    """CIV-14b. The scan accepts only a literal scope key, so ``_signed_body``
+    names the key as text. The gateway wrapper and the tripwire use the same
+    value, through the one constant of ``agent_signing``."""
+    from acb_auth import agent_signing
+
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    key = agent_signing.SIGNED_BODY_SCOPE_KEY
+    assert key == "acb.agent_signed_body"
+    assert key in _SCOPE_KEYS and key in tripwire.ALLOWED_SCOPE_KEYS
+    assert f'request.scope.get("{key}")' in _sources()["_signed_body"]
+
+
 def test_every_scanned_branch_zero_function_reads_the_request():
     """The scan is not vacuous: each branch-0 name is a real function that
     reads the request."""
@@ -1164,17 +1190,51 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: request: the scan and the tripwire are as before. The pins before it were
 #: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
 #: the diff-reviewer review and the independent verification.
+#:
+#: MCP-P1b-2 (2026-11-11, external_agent_access.md §19.5 and AD-6, task 1722):
+#: step 2 reads the optional signed ``X-Agent-Approval`` once and in the shape
+#: of a lower-case request id, on a write only. The canonical string gains the
+#: line ``approval:<id>`` after the session line, only when it is present.
+#: Step 5a' gives `_approval_of` the signed path, query and body, the matched
+#: template and the ``If-Match`` values, and it forms the digest of AD-17 with
+#: the binding of the ROW's connection. `_claim_call` refuses an approval on a
+#: pair that is not a door write that waits for the member, or one with no
+#: digest. It checks any ``<app>:write`` for the ask route. `_door_gate`
+#: refuses a door write with no approval (AD-18, as before), and spends the
+#: approval LAST, after the scope and the caps, in `_spend_approval`. That
+#: helper opens a tenant session of the ROW's organization and calls
+#: ``acb_auth.app_requests.spend``. The audit row holds the request id. The
+#: scan and the tripwire allow ``x-agent-approval`` and ``if-match``. The pins
+#: before it were 3.12 ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``.
+#: This pin needs the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
-    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
-    # This pin needs the diff-reviewer review and the independent verification.
-    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
-    # change of `_audit_door`: it adds the `policy` key of the audit payload
-    # (door.scope). No step of branch 0 changed. Both digests were computed
-    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # MCP-P1b-2 (2026-11-11): both digests were computed from the files with
+    # the steps of this test's own function, under CPython 3.12.12 and 3.13.2.
+    # That reader gave the pins of main exactly. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
-    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
+    # CIV-14b (2026-11-12, external_agent_access.md §12.9, task 1727): branch 0
+    # reads the body of a write through the new scanned helper `_signed_body`,
+    # the ONE body reader (`_BODY_READER`). It reads the copy of a signed form
+    # that the gateway wrapper `AgentUploadBody` keeps under the server scope
+    # key `acb.agent_signed_body`, else `await request.body()`. A consumed
+    # stream with no copy is the refusal `body` in `_verify_signed_request`.
+    # The scope key joins `_SCOPE_KEYS` and the tripwire's list. The pins
+    # before it were 3.12 ``f5c27b8e…62cdf515c`` and 3.13 ``bbc92971…13815e8cb``.
+    # The 3.12 pin comes from this test's own function, and the 3.13 pin from
+    # the same texts hashed under CPython 3.13.2. This pin needs the
+    # diff-reviewer review and the independent verification.
+    # MCP-P1b-2 after the merge with CIV-14b (2026-11-16, task 1722): the
+    # spend of this slice and the `_signed_body` of CIV-14b, together.
+    # `_verify_signed_request` takes `bytes | None` and gives the approval.
+    # Review P2: the approval of `_claim_call` is keyword-only. The pins of
+    # CIV-14b alone were 3.12 ``0733bb97…5354f3a4a`` and 3.13
+    # ``74734f6e…aac2aa3bbda24``. The pins of this slice before the merge
+    # were 3.12 ``1bd6d959…d876ea1d`` and 3.13 ``3484cbb6…e38ba02d``. Both
+    # pins come from the same texts, hashed under CPython 3.12.3, 3.12.16
+    # and 3.13.18. This test's own function gave the 3.13 pin. This pin
+    # needs the diff-reviewer review and the independent verification.
+    (3, 12): "fa6f00233d61ddb5668b1c6a9b63330b6f6826b225f26b69df91135b486fbfe9",
+    (3, 13): "de65055359bd130e0827855ea1bbc09083b46a969d6b71c17fee08b506653174",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1183,9 +1243,13 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: digest covers them, and an edit to either one fails the digest test.
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
-#: and the audit row. None of them sees the request.
+#: and the audit row. None of them sees the request. MCP-P1b-2 adds the two
+#: helpers of the spend: ``_approval_of``, the digest of an approved call,
+#: and ``_spend_approval``, the one spend in a tenant session of the ROW's
+#: organization. Neither sees the request.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door")
+                        "_claim_door_read", "_audit_door", "_approval_of",
+                        "_spend_approval")
 
 
 def _branch_zero_digest() -> str:
@@ -1673,7 +1737,8 @@ def test_a_route_served_at_two_prefixes_runs_under_the_tripwire(monkeypatch, tri
     assert matched, "the two-prefix path did not call matches"
     assert matched <= tripwire_armed.MATCHES_SCOPE_KEYS
     plain = {k for k in armed.scope_reads if not k.startswith("matches:")}
-    assert plain == tripwire_armed.ALLOWED_SCOPE_KEYS
+    # CIV-14b: a GET reads no body, so it never reads the kept body of a form.
+    assert plain == tripwire_armed.ALLOWED_SCOPE_KEYS - {"acb.agent_signed_body"}
 
 
 def _signed_app(monkeypatch, *, row_org: str, member_org: str):
