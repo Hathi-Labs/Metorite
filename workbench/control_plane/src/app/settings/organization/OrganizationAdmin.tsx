@@ -147,6 +147,8 @@ const PURGE_LABELS: Record<string, string> = {
   crm_member_rules: "own CRM business rule",
   // WS-CRM CRM-M1: a Change history row that only the member reads.
   crm_private_changes: "private CRM change record",
+  // Task 1570 (D175.5): a CRM saved view that only the member reads.
+  crm_private_views: "private CRM saved view",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.

@@ -41,6 +41,8 @@ from fastapi import Depends, Form, HTTPException, UploadFile
 from gateway.avatar import AvatarError
 from gateway.routes.people.core import (
     _tenant_session,
+    avatar_refusal,
+    avatar_uri,
     can_manage_people,
     clear_avatar,
     is_self,
@@ -182,17 +184,23 @@ async def upload_avatar(
 
     Authorized as a write of ``avatar``, which is the self class: the same
     question the PATCH asks about a timezone, asked in the same place. The
-    normalisation is `core.store_avatar`, shared with the self door — a second
+    normalisation is `core.avatar_uri`, shared with the self door — a second
     normaliser would be a second answer to what shape an avatar is.
+
+    Two sessions, and no session while the child decodes (task 2186). The
+    write session asks the same question again, so a row that went, or a
+    right that changed, while the child ran stops the write.
     """
     async with _tenant_session() as db:
         await _authorized_row(db, person_id, user, ["avatar"])
-        try:
-            await store_avatar(db, person_id, await file.read(),
-                               (crop_x, crop_y, crop_size),
-                               getattr(user, "email", None) or "anonymous")
-        except AvatarError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        uri = await avatar_uri(file, (crop_x, crop_y, crop_size))
+    except AvatarError as exc:
+        raise avatar_refusal(exc) from exc
+    async with _tenant_session() as db:
+        await _authorized_row(db, person_id, user, ["avatar"])
+        await store_avatar(db, person_id, uri,
+                           getattr(user, "email", None) or "anonymous")
         row = (await db.execute(
             text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id})).fetchone()
