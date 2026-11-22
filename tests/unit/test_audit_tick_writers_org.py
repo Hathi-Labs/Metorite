@@ -35,6 +35,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
@@ -1060,61 +1061,275 @@ def test_the_fence_catches_each_marker_mutant(label: str) -> None:
 MARKER_ROOTS = ("apps", "packages", "scripts")
 #: Folders that hold no writer of ours.
 _SKIP_PARTS = {"node_modules", ".venv", "__pycache__", "tests", ".next"}
+#: The names that write an attribute by a string.
+_SETATTR_NAMES = {"setattr", "delattr", "__setattr__", "__delattr__"}
+#: The names that copy a dataclass with a changed field.
+_COPY_NAMES = {"replace", "__replace__", "evolve"}
+#: The names that make a class at run time.
+_CLASS_MAKERS = {"type", "make_dataclass", "new_class"}
+
+_SETATTR = "a setattr of system"
+_COPY = "a copy with system="
+_DICT_KEY = "a dict key system in an audit file"
+_UNPACK = "an unpack into AuditEvent"
+_POSITIONAL = "a positional system argument to AuditEvent"
+_SUBCLASS = "a subclass of AuditEvent"
+#: The texts that a rule on ``system`` needs: ``.system`` (a comment or a
+#: line break may sit after the dot), the string ``"system"``, or
+#: ``system=``. A file with none of them and no ``AuditEvent`` is not parsed.
+_MAY_MARK = re.compile(r"""\.(?:\s|\\|#[^\n]*)*system\b|["']system["']|\bsystem\s*=""")
 
 
-def marker_violations(src: str, path: str) -> list[str]:
-    """Each ``system=`` keyword and each ``.system`` write in *src* that is not allowed.
+def _system_slot() -> int:
+    """The position of ``system`` in the fields of the real ``AuditEvent``."""
+    import dataclasses
 
-    The scan covers each call, not only ``AuditEvent``, so an alias of the
-    class cannot hide the marker. ``dataclasses.replace(event, system=True)``
-    is caught the same way.
+    from acb_audit import AuditEvent
+
+    return [f.name for f in dataclasses.fields(AuditEvent)].index("system")
+
+
+def _called_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _is_event(node: ast.AST, names: set[str]) -> bool:
+    """*node* names the event class: a known name, or ``<x>.AuditEvent``."""
+    return ((isinstance(node, ast.Name) and node.id in names)
+            or (isinstance(node, ast.Attribute) and node.attr == "AuditEvent"))
+
+
+def _event_names(nodes: list[ast.AST]) -> set[str]:
+    """``AuditEvent`` and each local name for it among *nodes*.
+
+    An alias comes from ``from acb_audit... import AuditEvent as X``, or from
+    a plain ``X = <an event name>`` at any depth.
     """
-    tree = ast.parse(src)
-    parents: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-    top = {id(n) for n in tree.body if isinstance(n, _FUNCTIONS)}
+    names = {"AuditEvent"}
+    for node in nodes:
+        if (isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] == "acb_audit"):
+            names |= {a.asname for a in node.names if a.name == "AuditEvent" and a.asname}
+    assigns = [n for n in nodes if isinstance(n, ast.Assign)]
+    grew = True
+    while grew:
+        grew = False
+        for node in assigns:
+            if _is_event(node.value, names):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id not in names:
+                        names.add(t.id)
+                        grew = True
+    return names
+
+
+def _call_violations(node: ast.Call, names: set[str], slot: int) -> list[str]:
+    """The rules for one call. They hold in every file of the roots."""
     out: list[str] = []
-    for node in ast.walk(tree):
-        at = f"{path}:{getattr(node, 'lineno', '?')}"
-        if (isinstance(node, ast.keyword) and node.arg == "system"
-                and not _marker_ok(node, parents, top, path)):
-            out.append(f"{at}: system= outside a named system row. {_MARKER}")
-        if (isinstance(node, ast.Attribute) and node.attr == "system"
-                and isinstance(node.ctx, ast.Store | ast.Del)):
-            out.append(f"{at}: a write to .system. {_MARKER}")
+    name = _called_name(node.func)
+    if name in _SETATTR_NAMES and any(
+            isinstance(a, ast.Constant) and a.value == "system" for a in node.args):
+        out.append(_SETATTR)
+    if name in _COPY_NAMES and any(kw.arg == "system" for kw in node.keywords):
+        out.append(_COPY)
+    if _is_event(node.func, names):
+        if (any(isinstance(a, ast.Starred) for a in node.args)
+                or any(kw.arg is None for kw in node.keywords)):
+            out.append(_UNPACK)
+        if len(node.args) > slot:
+            out.append(_POSITIONAL)
+    if name in _CLASS_MAKERS and any(
+            _is_event(n, names) for a in [*node.args, *node.keywords]
+            for n in ast.walk(a)):
+        out.append(_SUBCLASS)
     return out
 
 
-def _marker_files() -> list[str]:
-    """Each Python file under the roots that can reach ``acb_audit``."""
+def marker_violations(src: str, path: str) -> list[str]:
+    """Each way to set the marker in *src* that is not a named system row.
+
+    Two groups of rules. The first group holds in every file, because each
+    shape names the marker or the class itself:
+
+    * a write to an attribute named ``system``, on any object;
+    * ``setattr``, ``delattr``, ``__setattr__`` or ``__delattr__`` with the
+      constant ``"system"``, as ``object.__setattr__(e, "system", True)``;
+    * ``replace``, ``__replace__`` or ``evolve`` with ``system=``;
+    * a ``*`` or ``**`` unpack into ``AuditEvent``, because no reader can
+      see the keys. Pass each field by name;
+    * a positional argument in the ``system`` slot of ``AuditEvent``;
+    * a class with ``AuditEvent`` as a base, or a ``type`` or
+      ``make_dataclass`` call that names it. A subclass can change the
+      default of the marker.
+
+    The second group holds only in a file that names ``acb_audit`` or
+    ``AuditEvent``: a ``system=`` keyword on any call, and a dict literal
+    with the key ``"system"``. A model call passes ``system=`` as its prompt
+    in many other files, so these rules stay narrow.
+
+    Limits, by design. A name built at run time (``"sys" + "tem"``), an
+    event class reached by ``type(e)`` in a file that names neither token,
+    and an edit of ``AuditEvent.__init__.__defaults__`` are not seen. The
+    refusal in ``record`` and the R8 suites are the next layers.
+
+    Each rule needs ``AuditEvent``, or ``system`` as an attribute, a string
+    or a keyword, in the text of the source. ``_MAY_MARK`` finds those
+    texts, so a file with none of them is skipped before the parse. That
+    keeps the tree scan fast, and it skips no shape that a rule can see.
+    """
+    if "AuditEvent" not in src and not _MAY_MARK.search(src):
+        return []
+    tree = ast.parse(src)
+    audit_file = "acb_audit" in src or "AuditEvent" in src
+    # One pass over the tree: each node, and the parent of each node.
+    nodes: list[ast.AST] = [tree]
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in nodes:
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+            nodes.append(child)
+    names = _event_names(nodes) if "AuditEvent" in src else {"AuditEvent"}
+    slot = _system_slot()
+    top = {id(n) for n in tree.body if isinstance(n, _FUNCTIONS)}
+    out: list[str] = []
+    for node in nodes:
+        why: list[str] = []
+        if (audit_file and isinstance(node, ast.keyword) and node.arg == "system"
+                and not _marker_ok(node, parents, top, path)):
+            why.append("system= outside a named system row")
+        elif (isinstance(node, ast.Attribute) and node.attr == "system"
+                and isinstance(node.ctx, ast.Store | ast.Del)):
+            why.append("a write to .system")
+        elif isinstance(node, ast.Call):
+            why += _call_violations(node, names, slot)
+        elif audit_file and isinstance(node, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == "system" for k in node.keys):
+            why.append(_DICT_KEY)
+        elif isinstance(node, ast.ClassDef) and any(_is_event(b, names) for b in node.bases):
+            why.append(_SUBCLASS)
+        line = getattr(node, "lineno", None) or getattr(parents.get(node), "lineno", "?")
+        out += [f"{path}:{line}: {w}. {_MARKER}" for w in why]
+    return out
+
+
+def _marker_files(root: Path = REPO) -> list[str]:
+    """Each Python file under the roots, as a path relative to *root*.
+
+    The scan reads every file, not only the files that name ``acb_audit``.
+    A helper that gets an event as an argument names neither token, and it
+    can still set the marker.
+    """
     found: list[str] = []
-    for root in MARKER_ROOTS:
-        for f in (REPO / root).rglob("*.py"):
-            if _SKIP_PARTS & set(f.relative_to(REPO).parts):
+    for top in MARKER_ROOTS:
+        for f in (root / top).rglob("*.py"):
+            if _SKIP_PARTS & set(f.relative_to(root).parts):
                 continue
-            text = f.read_text(encoding="utf-8-sig", errors="replace")
-            if "acb_audit" in text or "AuditEvent" in text:
-                found.append(f.relative_to(REPO).as_posix())
+            found.append(f.relative_to(root).as_posix())
     return sorted(found)
+
+
+def marker_scan(root: Path = REPO) -> list[str]:
+    """Each marker violation in the files under *root*."""
+    return [
+        v for f in _marker_files(root)
+        for v in marker_violations(
+            (root / f).read_text(encoding="utf-8-sig", errors="replace"), f)
+    ]
 
 
 def test_the_marker_sits_only_on_the_named_system_rows() -> None:
     files = _marker_files()
     assert "apps/services/ingestion/ingestion/scheduler.py" in files
-    assert len(files) > 20, f"the scan found too few audit files: {files}"
-    out = [v for f in files for v in marker_violations(_source(f), f)]
+    assert len(files) > 500, f"the scan found too few files: {len(files)}"
+    out = marker_scan()
     assert out == [], "\n".join(out)
 
 
-def test_the_tree_scan_catches_a_marker_off_the_list() -> None:
+#: One source per shape, and a part of the message of its own rule.
+_DEF = "def _other(e: AuditEvent) -> None:\n"
+_ROW = '"a", "b", "c", {}, None, None, None, True'
+MARKER_SHAPES = {
+    "a keyword on a tenant row": (None, "system= outside a named system row"),
+    "an attribute write": (_DEF + "    e.system = True\n", "a write to .system"),
+    "an attribute delete": (_DEF + "    del e.system\n", "a write to .system"),
+    "setattr": (_DEF + '    setattr(e, "system", True)\n', _SETATTR),
+    "object.__setattr__": (_DEF + '    object.__setattr__(e, "system", True)\n', _SETATTR),
+    "a bound __setattr__": (_DEF + '    e.__setattr__("system", True)\n', _SETATTR),
+    "dataclasses.replace": (
+        "import dataclasses\n\n\n" + _DEF
+        + "    dataclasses.replace(e, system=True)\n", _COPY),
+    "a dict literal unpack": (
+        _DEF + '    AuditEvent(**{"actor": "a", "action": "b", "target": "c", '
+        '"system": True})\n', _UNPACK),
+    "a dict literal that a name unpacks": (
+        _DEF + '    kw = {"actor": "a", "action": "b", "target": "c", "system": True}\n'
+        "    AuditEvent(**kw)\n", _DICT_KEY),
+    "a dict() call that a name unpacks": (
+        _DEF + '    kw = dict(actor="a", action="b", target="c", system=True)\n'
+        "    AuditEvent(**kw)\n", _UNPACK),
+    "a star unpack": (_DEF + "    AuditEvent(*e.args)\n", _UNPACK),
+    "a positional argument in the slot": (
+        _DEF + f"    AuditEvent({_ROW})\n", _POSITIONAL),
+    "a positional argument through an alias": (
+        "from acb_audit import AuditEvent as _AE\n\n\n" + _DEF
+        + f"    _AE({_ROW})\n", _POSITIONAL),
+    "a positional argument through a module": (
+        "import acb_audit\n\n\n" + _DEF
+        + f"    acb_audit.AuditEvent({_ROW})\n", _POSITIONAL),
+    "a dataclass subclass with a default": (
+        "import dataclasses\n\n\n@dataclasses.dataclass(slots=True)\n"
+        "class _Sys(AuditEvent):\n    system: bool = True\n", _SUBCLASS),
+    "a subclass of an assigned alias": (
+        "_Base = AuditEvent\n\n\nclass _Sys(_Base):\n    pass\n", _SUBCLASS),
+    "a class made by type()": (
+        '_Sys = type("_Sys", (AuditEvent,), {})\n', _SUBCLASS),
+}
+
+
+@pytest.mark.parametrize("label", sorted(MARKER_SHAPES))
+def test_the_tree_scan_catches_each_marker_shape(label: str) -> None:
     src = _source(_GMAIL)
     assert marker_violations(src, _GMAIL) == []
-    for bad in (
-        mutant_marked_tenant_row(src),
-        _add(src, "def _other(e: AuditEvent) -> None:\n    e.system = True\n"),
-        _add(src, "import dataclasses\n\n\ndef _other(e: AuditEvent) -> AuditEvent:\n"
-                  "    return dataclasses.replace(e, system=True)\n"),
-    ):
-        assert marker_violations(bad, _GMAIL), "the scan missed a marker off the list"
+    code, reason = MARKER_SHAPES[label]
+    bad = mutant_marked_tenant_row(src) if code is None else _add(src, code)
+    found = marker_violations(bad, _GMAIL)
+    assert any(reason in v for v in found), f"{label}: expected {reason!r} in {found}"
+
+
+def test_the_slot_rule_reads_the_real_field_order() -> None:
+    """Seven positional arguments stop before the slot, so they pass."""
+    assert _system_slot() == 7
+    ok = _add(_source(_GMAIL), _DEF + '    AuditEvent("a", "b", "c", {}, None, None, "org")\n')
+    assert not [v for v in marker_violations(ok, _GMAIL) if _POSITIONAL in v]
+
+
+def test_the_tree_scan_reads_a_file_that_names_no_audit_token(tmp_path: Path) -> None:
+    """A helper that gets the event as an argument names neither token."""
+    helpers = {
+        "apps/svc/helper_attr.py": "def mark(e):\n    e.system = True\n",
+        "packages/pkg/helper_setattr.py":
+            'def mark(e):\n    object.__setattr__(e, "system", True)\n',
+        "scripts/helper_copy.py":
+            "import dataclasses\n\n\ndef mark(e):\n"
+            "    return dataclasses.replace(e, system=True)\n",
+    }
+    clean = {
+        # A model call passes a system prompt. No audit token: not a marker.
+        "apps/svc/model_call.py": 'def ask(client):\n    client.create(system="be brief")\n',
+        "apps/svc/node_modules/x.py": "def mark(e):\n    e.system = True\n",
+        "apps/svc/tests/test_x.py": "def mark(e):\n    e.system = True\n",
+    }
+    for rel, code in {**helpers, **clean}.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(code, encoding="utf-8")
+    joined = "".join(helpers.values())
+    assert "acb_audit" not in joined and "AuditEvent" not in joined
+    found = marker_scan(tmp_path)
+    for rel in helpers:
+        assert any(v.startswith(rel + ":") for v in found), f"{rel} was not scanned: {found}"
+    for rel in clean:
+        assert not any(v.startswith(rel + ":") for v in found), f"{rel}: {found}"

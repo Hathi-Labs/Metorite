@@ -306,9 +306,9 @@ async def classify(
     keyword: the caller passes the tenant its run or job is bound to, never a
     value from request input. The audit row carries the sender and the subject.
     Task 2173 found that a tenant-less event then went under the operator org
-    and leaked the mail metadata there. Task 2221 slice 3 closed that path:
-    with ``ACB_GRAPH_TENANT_BIND`` on, ``acb_audit.record`` refuses an unmarked
-    tenant-less event, so the row is lost. So ``audit=True`` with no tenant
+    and leaked the mail metadata there. Task 2221 slice 3 closed that path.
+    With ``ACB_GRAPH_TENANT_BIND`` on, ``acb_audit.record`` refuses an unmarked
+    event with no tenant, and the row is lost. So ``audit=True`` with no tenant
     raises before any work.
     Fence: ``tests/unit/test_triage_audit_org_r8.py``.
     """

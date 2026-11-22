@@ -5290,9 +5290,9 @@ async def _settle_agent_push(
             agent=agent_name, run_id=run_id, reason=why,
         )
         with contextlib.suppress(Exception):
-            # Task 2221 slice 3: a delegated sub-run passes no thread_id, so
+            # Task 2221 slice 3: a delegated sub-run passes no thread_id. So
             # the org falls back to the run on this frame, as the gate does.
-            # With the bind on, a row with no org is refused, never kept.
+            # With the bind on, record refuses a row with no org.
             record(AuditEvent(
                 actor=f"agent:{agent_name}", action="agent_push_request_refused",
                 target=f"agent:{agent_name}", payload={"run_id": run_id, "reason": why},
@@ -5767,10 +5767,10 @@ async def _detect_agent_commits(
                 },
                 # WS-29 acb_graph slice 5: stamp the run's tenant ONTO the event
                 # on THIS frame (never a ContextVar inside _persist's worker
-                # thread). With no thread entry, the org of the run on this
-                # frame. Task 2221 slice 3: with the bind on, a row with no org
-                # at all is refused, and only the refusal log line keeps its
-                # action and actor. It never goes under the operator org.
+                # thread). With no thread entry, use the org of the run on this
+                # frame. Task 2221 slice 3: with the bind on, record refuses a
+                # row with no org at all. Only the refusal log line keeps its
+                # action and actor. The row never goes under the operator org.
                 organization_id=(
                     (_RUN_ORG.get(thread_id) if thread_id else None)
                     or _current_run_org()

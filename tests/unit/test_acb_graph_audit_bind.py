@@ -361,6 +361,50 @@ def test_the_marker_defaults_to_off() -> None:
     assert audit.AuditEvent(actor="a", action="b", target="c").system is False
 
 
+@pytest.fixture
+def no_graph(monkeypatch):
+    """``acb_graph`` cannot be imported, and the bind env is unset.
+
+    The refusal must then fail closed. A ``None`` entry in ``sys.modules``
+    makes ``from acb_graph import ...`` raise ``ImportError``. The real
+    ``_persist`` imports ``acb_graph`` too, so a spy stands in for it. Here
+    "persists" means "reaches ``_persist``".
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "acb_graph", None)
+    monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
+    with pytest.raises(ImportError):
+        from acb_graph import tenant_bind_enabled  # noqa: F401
+
+
+def test_with_no_db_layer_an_unmarked_tenantless_event_is_refused(monkeypatch, no_graph):
+    """The ``except`` branch of ``_refuse_unmarked`` sets the bind on, so the
+    event is refused and logged. RED when that branch answers ``bind = False``."""
+    persisted, fake = _install_record_spy(monkeypatch)
+
+    audit.record(_tenant_event(organization_id=None))  # must not raise
+
+    assert persisted == [], "with no DB layer an unmarked event reached _persist"
+    _assert_refusal_logged(fake)
+
+
+@pytest.mark.parametrize("kw", [
+    {"organization_id": None, "system": True},
+    {"organization_id": "org-A"},
+], ids=["marked", "with-org"])
+def test_with_no_db_layer_a_marked_or_owned_event_reaches_persist(
+    monkeypatch, no_graph, kw,
+):
+    """The fail-closed branch refuses only the unmarked tenant-less event."""
+    persisted, fake = _install_record_spy(monkeypatch)
+
+    audit.record(_event(**kw))
+
+    assert len(persisted) == 1, "a marked or owned event was refused"
+    assert not any(ev == REFUSED for ev, _ in fake.warnings)
+
+
 # ==========================================================================
 # 2. Operator-org resolution (no DB; env override + caching semantics).
 # ==========================================================================

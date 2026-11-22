@@ -844,8 +844,8 @@ than defaulting; a test proves the refusal.
 > is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
 > 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
 >
-> **Update 2026-11-22 (task 2221 slice 3, dark behind `ACB_GRAPH_TENANT_BIND`):**
-> the operator-org fallback above now takes only an event that carries `system=True`.
+> **Update 2026-11-22 (task 2221 slice 3, dark behind `ACB_GRAPH_TENANT_BIND`).**
+> The operator-org fallback above now takes only a marked event (`system=True`).
 > With the bind on, `acb_audit.record` refuses an event that has no org and no marker.
 > Only the log line `audit.refused_unmarked_tenantless` keeps its action and actor.
 > This replaces each "operator-org audit fallback" claim in this section and in slice 6a.

@@ -132,10 +132,10 @@ def _persist(event: AuditEvent) -> None:
       bind stamps the column through its phase-1 DEFAULT — the ORM INSERT names
       no ``organization_id`` (the §1.3 "no INSERT had to learn about
       organization_id" property the chat_session/pending_commit paths also rely
-      on). The write is SKIPPED and logged (``audit.persist_skipped_no_org``)
-      when the event has no org and either has no marker or the operator-org
-      lookup fails. So a tenant-less row is lost, never filed under the wrong
-      tenant, and only the log line keeps its action and actor.
+      on). This SKIPS the write and logs ``audit.persist_skipped_no_org`` when
+      the event has no org and no marker. It does the same when the
+      operator-org lookup fails. So a tenant-less row is lost, never filed
+      under the wrong tenant, and only the log line keeps its action and actor.
     """
     try:
         # Local import avoids a hard dep from acb_audit -> acb_graph at import time
