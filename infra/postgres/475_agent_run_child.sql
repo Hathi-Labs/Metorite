@@ -164,6 +164,13 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes
                     WHERE indexname = 'pm_agent_runs_one_open_per_task'
                       AND indexdef LIKE '%kind%') THEN
+        -- Take the strongest lock first. CREATE UNIQUE INDEX takes SHARE and
+        -- DROP INDEX takes ACCESS EXCLUSIVE, so without this line the block
+        -- would upgrade its lock inside one transaction. A gateway write that
+        -- holds ROW SHARE on a run could then deadlock with the upgrade. With
+        -- the lock first, a write waits its turn, and lock_timeout (5 s) makes
+        -- the runner try the whole file again.
+        LOCK TABLE pm_agent_runs IN ACCESS EXCLUSIVE MODE;
         DROP INDEX IF EXISTS pm_agent_runs_one_open_per_task_sw39;
         CREATE UNIQUE INDEX pm_agent_runs_one_open_per_task_sw39
             ON pm_agent_runs (organization_id, task_id)
