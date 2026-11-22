@@ -1463,11 +1463,11 @@ def _pyproject_agent_deps(pyproject: Path) -> list[str]:
     if not pyproject.is_file():
         return []
     try:
-        import tomllib  # noqa: PLC0415
+        import tomllib
         data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
         raw = (data.get("project") or {}).get("dependencies") or []
         return [d for d in raw if isinstance(d, str) and not _is_platform_dep(d)]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -1560,7 +1560,7 @@ def _dep_files_untouched(agent_dir: Path, *, source_dir: Path | None) -> bool:
             ["status", "--porcelain", "--ignored", "--", *_DEP_FILES],
             cwd=agent_dir, timeout=15,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     return result.returncode == 0 and not (result.stdout or "").strip()
 
