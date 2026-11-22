@@ -2135,7 +2135,10 @@ async def task_subtree(
     Every descendant the caller can see, at any depth, top down, archived
     ones included. ``hidden`` counts the ones the caller cannot see, with no
     title, because a delete keeps them (``delete_task_in``). One read through
-    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes.
+    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes,
+    with one exception (ARC-2b): ``delete_all`` keeps a subtask in an
+    archived project, and a list that names one is 409. This read still
+    shows such a subtask, with no mark (ARC-2c follow-up).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)

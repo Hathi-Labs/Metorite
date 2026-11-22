@@ -3,8 +3,9 @@
 The delete dialog and the chat card read their subtasks here. The route shows
 the descendants the caller can see, archived ones too, and counts the hidden
 ones without a title. Both facts must match what ``delete_task_in`` takes with
-``delete_all``. Hermetic: ``load_subtree`` is the real SQL's seam, and R8 holds
-it in ``test_mcp_edge_delete.py``.
+``delete_all``, except a subtask in an archived project, which the delete keeps
+(ARC-2b, ``test_projects_archived_readonly_r8.py``). Hermetic: ``load_subtree``
+is the real SQL's seam, and R8 holds it in ``test_mcp_edge_delete.py``.
 """
 
 from __future__ import annotations
