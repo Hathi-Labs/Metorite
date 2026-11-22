@@ -37,6 +37,8 @@ root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
 push gate of agent code read the membership and the access in the run's
 org (§15.4).
+**H-245 (task 618) is built (2026-11-22).** It closes the four P3 edges of
+the skill rule that the review of PR #635 left (§16.3).
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -2389,11 +2391,30 @@ These facts change or add to the text above:
   another member runs it. And the container cannot write a shared folder,
   so a script has no place to put another member's data where its author
   can read it.
-- **Skill privacy holds while the org is covered** (a named residual for the
-  switch-on). A covered run does not hold `recall_notes` or `save_note`, and
-  those tools check no skill owner. So if `MAF_CODING_SCOPE` stops covering
-  an org, a run of that org can read another member's skill with
-  `recall_notes`. This stays open until HANDOFF H-245 step 3 closes.
+- **H-245 closed the four P3 edges of the skill rule** (task 618,
+  2026-11-22). It made four changes:
+  - The file store of a covered run hides a skill folder that holds files
+    and no marker. A rehydrate that fails part way can bring back a
+    member's files with no marker. No run reads that folder, the author's
+    run too, because `claim_skill` lets no member take it.
+  - `claim_skill` asks the blob store before it takes a name. A row under
+    the folder in the store refuses the claim, so a later rehydrate never
+    puts one member's files in a folder that another member owns. The ask
+    reads the store key of the working dir, and the older shared rows of a
+    tenant dir. When the store cannot answer, the claim is refused.
+  - In a shared agent's tenant dir, `recall_notes` and `save_note` refuse
+    each skill folder that is not the member's own. A personal agent's dir
+    holds no marker, so there the two tools work as before.
+  - The tree of the Files routes leaves out each path that
+    `_odd_name_form` refuses, so the tree never names a file that GET
+    answers 404 for.
+- **The residual of the skill rule, named.** The disk can lose a skill
+  folder while the store still holds it. Until the marker comes back, a
+  covered run of the author cannot write into that folder. The rehydrate at
+  the next agent load brings the marker back. So does the author's next GET
+  of a file of the folder. When the store holds files of the folder and no
+  marker row, no member can take that name again. Nothing leaks, because
+  each lock fails closed.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads

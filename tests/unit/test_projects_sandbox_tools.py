@@ -1031,6 +1031,121 @@ async def test_no_member_takes_a_folder_with_files_and_no_author(sandbox) -> Non
     assert _marker(ws, "empty").read_text() == skill_author_id(_X)
 
 
+# ── H-245: the four P3 edges that the review of PR #635 left ────────────────
+#
+# Mutations, each run red once by hand on 2026-11-22:
+#
+# * ``TenantFileStore._skill_refusal`` hides only a FOREIGN folder again: the
+#   no-author store test;
+# * ``claim_skill`` drops its ask of the store: the store-row claim test;
+# * ``agent_paths._store_holds_skill`` answers ``False`` on a store error:
+#   the store-error claim test;
+# * ``get_workspace_tree`` drops the ``_odd_name_form`` filter: the tree test.
+
+
+async def test_the_store_hides_a_folder_with_files_and_no_author(sandbox) -> None:  # noqa: F811
+    """H-245 step 1. A rehydrate that fails part way can bring back X's files
+    with no marker. No covered run reads that folder, X's own run too, because
+    no member can take it (``claim_skill``)."""
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    y_store, _ws, _ = _store(sandbox, thread, member=_Y)
+    bare = ws / "agent-data" / "skills" / "bare"
+    (bare / "scripts").mkdir(parents=True)
+    (bare / "SKILL.md").write_text("X SKILL TEXT")
+    (bare / "scripts" / "plot.py").write_text("print('X CODE')")
+    for store in (x_store, y_store):
+        for call in (
+            store.read("agent-data/skills/bare/SKILL.md"),
+            store.read("agent-data/skills/bare/scripts/plot.py"),
+            store.list_children("agent-data/skills/bare"),
+            store.list_children("agent-data/skills/bare/scripts"),
+            store.create_directory("agent-data/skills/bare/more"),
+        ):
+            with pytest.raises(ValueError, match="no author"):
+                await call
+        assert await store.file_exists("agent-data/skills/bare/SKILL.md") is False
+        assert [e.name for e in await store.list_children("agent-data/skills")] == []
+        found = await store.search("agent-data", "X SKILL|X CODE", recursive=True)
+        assert found == [], found
+    # An empty folder holds nothing to give, so a member still makes a skill in it.
+    (ws / "agent-data" / "skills" / "fresh").mkdir()
+    await y_store.create_directory("agent-data/skills/fresh")
+    await y_store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
+    await y_store.create_directory("agent-data/skills/fresh/scripts")
+    assert [e.name for e in await y_store.list_children("agent-data/skills")] == ["fresh"]
+    assert await y_store.read("agent-data/skills/fresh/SKILL.md") == _SKILL.format(name="fresh")
+
+
+async def test_a_claim_is_refused_while_the_store_holds_the_folder(sandbox) -> None:  # noqa: F811
+    """H-245 step 2. The disk lost X's folder, and the store still holds its
+    files. Y cannot take the name, so a later rehydrate never puts X's files
+    in a folder that Y owns."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill, tenant_instance
+
+    y_store, ws, _ = _store(sandbox, member=_Y)
+    sandbox.stored.add("agent-data/skills/chart/SKILL.md")
+    with pytest.raises(SkillOwnedElsewhere):
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y)
+    with pytest.raises(ValueError, match="another member"):
+        await y_store.write("agent-data/skills/chart/x.py", "mine now")
+    assert not _marker(ws, "chart").exists()
+    # The ask names the key that the run's mirror writes, and the older
+    # shared rows that a tenant dir also restores.
+    assert sandbox.store_asks[0] == (PA, "agent-data/skills/chart", (tenant_instance(ORG_A), ""))
+    # A name with no row is free. The R8 route test pins the real query.
+    await y_store.write("agent-data/skills/chart2/SKILL.md", _SKILL.format(name="chart2"))
+    assert _marker(ws, "chart2").read_text() == skill_author_id(_Y)
+
+
+async def test_a_claim_is_refused_when_the_store_cannot_answer(sandbox) -> None:  # noqa: F811
+    """H-245 step 2 fails closed: with no answer from the store, no name is free."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    y_store, ws, _ = _store(sandbox, member=_Y)
+    sandbox.store_error = RuntimeError("no database")
+    with pytest.raises(SkillOwnedElsewhere):
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y)
+    assert not _marker(ws, "chart").exists()
+    # An owned folder asks the store nothing, so its author still writes.
+    sandbox.store_error = None
+    await y_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    asks = len(sandbox.store_asks)
+    sandbox.store_error = RuntimeError("no database")
+    await y_store.write("agent-data/skills/chart/more.md", "still mine")
+    assert len(sandbox.store_asks) == asks
+
+
+@pytest.mark.parametrize("own", [None, "slug"])
+async def test_the_tree_leaves_out_a_path_that_get_refuses(own, short_tmp, monkeypatch) -> None:  # noqa: F811
+    """H-245 step 4. ``_odd_name_form`` refuses an ``agent-data/Skills/`` head
+    in every dir, so the tree must not list a path under it either."""
+    import types
+
+    from gateway.routes import workspace as wsr
+
+    ws = short_tmp / "ws"
+    (ws / "agent-data" / "Skills" / "chart").mkdir(parents=True)
+    (ws / "agent-data" / "Skills" / "chart" / "SKILL.md").write_text("ODD")
+    (ws / "agent-data" / "NOTES.md").write_text("ok")
+
+    class _Room:
+        can_read = can_send = True
+
+    async def _in_room(*_a: Any, **_k: Any) -> _Room:
+        return _Room()
+
+    monkeypatch.setattr(wsr, "_room_for", _in_room)
+    monkeypatch.setattr(wsr, "_get_workspace_path", lambda *a, **k: ws)
+    monkeypatch.setattr(wsr, "_own_thread_slug", lambda *a, **k: own)
+    user = types.SimpleNamespace(email=_X, organization_id=ORG_A)
+    tree = await wsr.get_workspace_tree("s1", user)
+    paths = {f.path for f in tree.files}
+    assert "agent-data/NOTES.md" in paths
+    assert wsr._odd_name_form("agent-data/Skills/chart/SKILL.md") is True
+    assert not any("Skills" in p for p in paths), paths
+
+
 def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
     from orchestrator import _tool_injection as ti
 

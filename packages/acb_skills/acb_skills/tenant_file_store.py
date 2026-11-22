@@ -37,7 +37,9 @@ Tool path              Host path                                    Kept
 * **A skill folder belongs to the member who made it**
   (``agent_paths.claim_skill``). The store refuses to read, list, write or
   delete a skill folder that another member made, so no member's skill text
-  or code reaches another member's run.
+  or code reaches another member's run. It also refuses to read or list a
+  skill folder with files and no marker (``SKILL_UNCLAIMED``, H-245 step 1),
+  because no member may take it.
 * **Every open goes through** :mod:`acb_skills.safe_open`, so a link at any
   depth fails the call, also one that appears during it.
 * **Every call holds the dir lock** (``guard.hold()``, the broker's
@@ -219,25 +221,46 @@ class TenantFileStore(FileSystemAgentFileStore):
             raise safe_open.UnsafePath("That folder belongs to another chat.")
         return rest[1:]
 
-    def _foreign_skill(self, place: _Place) -> bool:
-        """True when *place* lies in a skill folder that is not this member's.
+    def _skill_refusal(self, place: _Place) -> str | None:
+        """Why *place* lies in a skill folder that this run may not touch, or ``None``.
 
-        Another member's folder, and one whose marker cannot be read, empty or
-        unknown (``agent_paths.skill_owner`` fails closed).
+        * Another member's folder, and one whose marker cannot be read, empty
+          or unknown (``agent_paths.skill_owner`` fails closed).
+        * A folder with no marker that holds files (H-245 step 1), the rule
+          of ``agent_paths.claim_skill``. A rehydrate that fails part way can
+          bring back a member's files with no marker, and no member may take
+          them. A missing or empty folder stays free, so a run still makes a
+          new skill.
         """
-        from acb_skills.agent_paths import SKILL_FOREIGN, skill_owner, skill_top_rel
+        from acb_skills.agent_paths import (
+            SKILL_FOREIGN,
+            SKILL_UNCLAIMED,
+            skill_folder_orphaned,
+            skill_owner,
+            skill_top_rel,
+        )
 
         if place.store_rel is None or place.root != self._workspace:
-            return False
+            return None
         # A path inside a skill folder, or the skill folder itself.
         top = skill_top_rel(place.store_rel) or skill_top_rel(f"{place.store_rel}/x")
         if top is None:
-            return False
-        return skill_owner(self._workspace, top, self._member) == SKILL_FOREIGN
+            return None
+        owner = skill_owner(self._workspace, top, self._member)
+        if owner == SKILL_FOREIGN:
+            return "That skill belongs to another member."
+        if owner == SKILL_UNCLAIMED and skill_folder_orphaned(self._workspace, top):
+            return "That skill folder has no author, so no member may read it."
+        return None
+
+    def _foreign_skill(self, place: _Place) -> bool:
+        """True when *place* lies in a skill folder that this run may not touch."""
+        return self._skill_refusal(place) is not None
 
     def _refuse_foreign_skill(self, place: _Place) -> None:
-        if self._foreign_skill(place):
-            raise ValueError("That skill belongs to another member.")
+        reason = self._skill_refusal(place)
+        if reason:
+            raise ValueError(reason)
 
     async def _claim(self, place: _Place, *, create: bool = True) -> None:
         """Check the write rules, and record this member on a new skill folder.

@@ -53,6 +53,13 @@ WS-43v (each run red once by hand on 2026-10-05):
   row: the Files-routes skill test;
 * the write rules do not bring a lost marker back from the store, or a
   DELETE of a skill folder answers 400: the Files-routes skill test.
+
+H-245 (each run red once by hand on 2026-11-22):
+
+* ``note_tools._notes_target`` drops its skill owner check: the notes-tools
+  skill test;
+* ``claim_skill`` drops its ask of the store, or the ask matches with
+  ``LIKE``: the store-name route test (R8).
 """
 from __future__ import annotations
 
@@ -364,6 +371,43 @@ async def test_the_host_tools_never_write_another_threads_folder_or_skill(sandbo
     assert not (ws / "agent-data" / "skills" / "chart" / "scripts" / "evil.py").exists()
 
 
+async def test_the_notes_tools_reach_only_the_members_own_skill(sandbox) -> None:  # noqa: F811
+    """H-245 step 3. In a shared agent's tenant dir, ``recall_notes`` and
+    ``save_note`` refuse each skill folder that is not the member's own:
+    another member's, and one with no marker. A personal agent's dir holds
+    no marker, so there the tools work as before."""
+    from acb_skills.agent_paths import claim_skill
+    from acb_skills.note_tools import recall_notes, save_note
+
+    x, y = "x-notes@example.com", "y-notes@example.com"
+    thread = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=thread, member=x) as ws:
+        claim_skill(ws, "agent-data/skills/chart/SKILL.md", x)
+        (ws / "agent-data/skills/chart/SKILL.md").write_text("X SKILL TEXT")
+        bare = ws / "agent-data" / "skills" / "bare"
+        bare.mkdir(parents=True)
+        (bare / "SKILL.md").write_text("NO AUTHOR TEXT")
+        assert await recall_notes("agent-data/skills/chart/SKILL.md") == "X SKILL TEXT"
+        assert (await save_note("agent-data/skills/chart/notes.md", "x fact")).startswith("Saved")
+    with bound_run(ORG_A, agent=PA, thread=thread, member=y) as ws:
+        for path in ("agent-data/skills/chart/SKILL.md", "agent-data/skills/bare/SKILL.md",
+                     "skills/chart/SKILL.md"):
+            got = await recall_notes(path)
+            assert got.startswith("Refused") and "TEXT" not in got, (path, got)
+        for path in ("agent-data/skills/chart/notes.md", "agent-data/skills/bare/SKILL.md",
+                     "agent-data/skills/new/notes.md"):
+            assert (await save_note(path, "y fact")).startswith("Refused"), path
+        assert await recall_notes("agent-data/NOTES.md") == "agent-data/NOTES.md: (file not found)"
+    assert (bare / "SKILL.md").read_text() == "NO AUTHOR TEXT"
+    assert "y fact" not in (ws / "agent-data/skills/chart/notes.md").read_text()
+    assert not (ws / "agent-data/skills/new").exists()
+    # A personal agent's dir: its own skill has no marker, and still reads.
+    with bound_run(ORG_A, agent=PA, thread=thread, member=y, instance=f"u:{y}") as pws:
+        (pws / "agent-data/skills/mine").mkdir(parents=True)
+        (pws / "agent-data/skills/mine/SKILL.md").write_text("Y PERSONAL")
+        assert await recall_notes("agent-data/skills/mine/SKILL.md") == "Y PERSONAL"
+
+
 # ═════════════════════════ the route half (R8) ══════════════════════════════
 
 from tests.unit.test_chat_write_under_rls import (  # noqa: E402,F401 — fixtures by name
@@ -590,6 +634,46 @@ def test_the_files_routes_hide_another_members_skill(
     assert got.status_code == 200 and got.text == "ALICE SKILL TEXT"
     assert bob.get(f"/agent/workspace/{s2}/file",
                    params={"path": f"{top}/SKILL.md"}).status_code == 404
+
+
+@_DB_GATE
+def test_no_member_takes_a_skill_name_that_the_store_still_holds(
+    graph_as_app, disk, monkeypatch,  # noqa: F811
+) -> None:
+    """H-245 step 2, on the real store. The disk lost Alice's skill folder, and
+    the store holds its files with no marker row. Bob's write cannot take the
+    name, so a later rehydrate never puts Alice's files in a folder he owns.
+    A row of the older shared partition (``instance=''``) holds a name too,
+    because a tenant dir restores those rows. A name with no row stays free."""
+    from acb_common import get_settings
+    from acb_memory import put_file
+    from acb_skills.agent_paths import skill_author_id, tenant_instance
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "h245-route-secret")
+    a = graph_as_app.org_a
+    s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    s2 = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    bob = _client(_user(_BOB, a))
+    assert bob.get(f"/agent/workspace/{s2}").status_code == 200  # makes the tenant dir
+    held = f"agent-data/skills/held{uuid.uuid4().hex[:6]}"
+    legacy = f"agent-data/skills/old{uuid.uuid4().hex[:6]}"
+    for top, instance in ((held, tenant_instance(a)), (legacy, "")):
+        meta = asyncio.run(put_file(
+            _S, f"{top}/SKILL.md", b"ALICE SKILL TEXT", action="create",
+            session_id=s1, actor="agent", instance=instance, organization_id=a,
+        ))
+        assert meta is not None, top
+        assert not (_tenant_dir(a) / top).exists()
+        taken = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{top}/x.md"},
+                        json={"content": "mine now"})
+        assert taken.status_code == 403, (top, taken.text)
+        assert not (_tenant_dir(a) / top / ".metorite-author").exists()
+    # ``_`` is a LIKE wildcard, and a row under ``held…`` holds no ``hel_…``.
+    free = held.replace("/held", "/hel_")
+    made = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{free}/SKILL.md"},
+                   json={"content": "BOB SKILL"})
+    assert made.status_code == 200, made.text
+    assert (_tenant_dir(a) / free / ".metorite-author").read_text() == skill_author_id(_BOB)
 
 
 @_DB_GATE

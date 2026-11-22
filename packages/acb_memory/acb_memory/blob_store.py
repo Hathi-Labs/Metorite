@@ -219,6 +219,44 @@ def _sync_list(
     ]
 
 
+def has_rows_under(
+    agent_name: str, prefix: str, *, instances: Any,
+    organization_id: str | None = None,
+) -> bool:
+    """True when the store holds a live row under ``<prefix>/`` in one of *instances*.
+
+    SYNC, for a caller that already runs in a worker thread:
+    ``acb_skills.agent_paths.claim_skill`` asks it before it takes a skill
+    folder name (HANDOFF H-245 step 2). Unlike the public async functions,
+    it RAISES on every error, no tenant and no database too, so that caller
+    can fail closed. The tenant is *organization_id*, else the bound one
+    (:func:`_caller_tenant`). ``asyncio.to_thread`` carries the bound tenant
+    into the thread.
+
+    The match is exact (``starts_with``), so a ``_`` or a ``%`` in a folder
+    name matches only itself.
+    """
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    head = str(prefix or "").strip("/") + "/"
+    keys = [str(i) for i in instances]
+    if not agent_name or head == "/" or not keys:
+        return False
+    with tenant_session(_caller_tenant(organization_id)) as s:
+        for instance in keys:
+            row = s.execute(
+                text(
+                    "SELECT 1 FROM agent_blob WHERE agent_name = :a "
+                    "AND instance = :i AND starts_with(path, :p) LIMIT 1"
+                ),
+                {"a": agent_name, "i": instance, "p": head},
+            ).fetchone()
+            if row is not None:
+                return True
+    return False
+
+
 def _sync_delete(
     agent_name: str, path: str, *, run_id: str | None, session_id: str | None,
     actor: str, instance: str = "", organization_id: str | None = None,

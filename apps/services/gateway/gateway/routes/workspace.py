@@ -1650,7 +1650,10 @@ async def _apply_write_rules(
     from acb_skills.agent_paths import SkillOwnedElsewhere
 
     try:
-        claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+        claimed = await asyncio.to_thread(
+            claim_skill, workspace.resolve(), rel, user.email,
+            organization_id=user.organization_id,
+        )
     except SkillNameRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except SkillOwnedElsewhere:
@@ -1857,6 +1860,10 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
+    # H-245 step 4: a path form that GET refuses in every dir
+    # (``_odd_name_form``, such as an ``agent-data/Skills/`` head) is not
+    # listed either, so the tree never names a file that GET answers 404 for.
+    files = [f for f in files if not _odd_name_form(f.path)]
     # WS-43d (§16.3) and H-227: another thread's output and upload folders
     # are not listed, and a loose file only for the session that wrote it.
     own = _own_thread_slug(workspace, session_id, _user.organization_id)

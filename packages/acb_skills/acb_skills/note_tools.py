@@ -62,18 +62,26 @@ def _notes_target(root: Path, clean: str, path: str) -> tuple[Path, str] | str:
       and the folder of another chat are refused. Before this rule,
       ``save_note`` on a colleague's loose file appended to it, and the
       history row it wrote under this session took the file over (PR #616
-      review, P1).
+      review, P1);
+    * a skill folder that is not this member's own (``agent_paths.skill_owner``
+      is not MINE) is refused, for both tools (HANDOFF H-245 step 3). That is
+      another member's folder, one with no marker, and a new one: a notes tool
+      records no author, so it never makes a skill. A personal agent's dir
+      holds no marker, so the rule binds the tenant dir only.
 
     ``agent-data/`` is not a thread folder, so ``agent-data/NOTES.md`` stays
     one file for the whole tenant dir, as before. That file is shared by every
     member of the organization (HANDOFF H-237).
     """
     from acb_skills.agent_paths import (  # noqa: PLC0415
+        SKILL_MINE,
         THREAD_HEADS,
         instance_slug,
         is_loose_rel,
         is_other_thread_rel,
         is_tenant_instance,
+        skill_owner,
+        skill_top_rel,
     )
     from acb_skills.write_artifact import (  # noqa: PLC0415
         _thread_scoped,
@@ -96,6 +104,10 @@ def _notes_target(root: Path, clean: str, path: str) -> tuple[Path, str] | str:
     own = instance_slug(str(session_id)) if session_id else None
     if is_loose_rel(scoped) or is_other_thread_rel(scoped, own):
         return f"Refused: path '{path}' belongs to another chat."
+    # H-245 step 3: only a skill folder that is this member's own.
+    top = skill_top_rel(scoped)
+    if top is not None and skill_owner(root_r, top, ctx.get("member")) != SKILL_MINE:
+        return f"Refused: path '{path}' is in a skill folder that is not yours."
     parts = scoped.split("/")
     if parts[0] in THREAD_HEADS and len(parts) < 3:
         return f"Refused: path '{path}' names no file."

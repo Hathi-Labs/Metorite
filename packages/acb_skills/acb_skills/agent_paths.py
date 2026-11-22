@@ -95,6 +95,7 @@ __all__ = [
     "require_agent_name",
     "run_data_rel",
     "skill_author_id",
+    "skill_folder_orphaned",
     "skill_owner",
     "skill_top_rel",
     "state_root",
@@ -685,7 +686,61 @@ def refused_write(
     return None
 
 
-def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, bytes] | None:
+def skill_folder_orphaned(workspace: Path, top_rel: str) -> bool:
+    """True when the skill folder *top_rel* holds an entry and no marker.
+
+    Such a folder came from a writer that records no author, from before
+    PR #603, or from a rehydrate that failed part way and brought back a
+    member's files with no marker. No member may take it (:func:`claim_skill`),
+    and the covered file store reads none of it (H-245 step 1). A folder that
+    cannot be listed (a link, a read error) is orphaned too, so the rule fails
+    closed. A missing or empty folder is not.
+    """
+    from acb_skills import safe_open
+
+    try:
+        held = safe_open.list_dir(Path(workspace), top_rel)
+    except (safe_open.UnsafePath, OSError):
+        return True
+    names = {name for name, _kind in held or ()}
+    return bool(names) and SKILL_AUTHOR_MARKER not in names
+
+
+def _store_holds_skill(
+    workspace: Path, top_rel: str, organization_id: str | None = None,
+) -> bool:
+    """True when the blob store holds a row under *top_rel*, or cannot say.
+
+    H-245 step 2. The disk is a cache of the store, so a folder that the disk
+    lost can still be another member's. The ask uses the key of the run's
+    mirror (:func:`workspace_blob_key`). A tenant dir also restores the older
+    shared rows (``instance=''``), so it asks for those too. The tenant is
+    *organization_id* (a route passes the session's), else the bound one.
+    Only a process with no store reads as "no row". Every other error
+    refuses the claim.
+    """
+    try:
+        from acb_memory import blob_store
+    except ImportError:
+        return False  # no store in this process, so nothing can come back
+    agent, instance = workspace_blob_key(workspace)
+    instances = (instance, "") if is_tenant_instance(instance) else (instance,)
+    try:
+        return bool(blob_store.has_rows_under(
+            agent, top_rel, instances=instances, organization_id=organization_id,
+        ))
+    except Exception as exc:  # no answer is a refusal
+        from acb_common import get_logger
+
+        get_logger("acb_skills.agent_paths").warning(
+            "skill_claim.store_unread", agent=agent, error=type(exc).__name__,
+        )
+        return True
+
+
+def claim_skill(
+    workspace: Path, rel: str, member: str | None, *, organization_id: str | None = None,
+) -> tuple[str, bytes] | None:
     """Record *member* as the author of the skill folder of *rel*, when none is.
 
     Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
@@ -695,7 +750,10 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     Raises ``ValueError`` when there is no member id (no member, or no usable
     secret), because a skill with no author never loads. Raises
     :class:`SkillOwnedElsewhere` when the folder is not this member's,
-    also when another member claimed it between the check and the write. So
+    also when another member claimed it between the check and the write. It
+    raises it too for a folder with files and no marker
+    (:func:`skill_folder_orphaned`), and for a folder that the blob store
+    still holds or cannot answer for (:func:`_store_holds_skill`). So
     ``None`` always means "this member's folder", and the caller may write.
     """
     top = skill_top_rel(rel)
@@ -717,15 +775,14 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     from acb_skills import safe_open
 
     # A folder that already holds files and no marker came from a writer that
-    # records no author, or from before PR #603. The routes hide it from every
-    # member, so no member may take it and read what is in it.
-    try:
-        held = safe_open.list_dir(Path(workspace), top)
-    except (safe_open.UnsafePath, OSError):
-        raise SkillOwnedElsewhere("that skill folder cannot be read") from None
-    names = {name for name, _kind in held or ()}
-    if names and SKILL_AUTHOR_MARKER not in names:
+    # records no author, or from before PR #603. The routes and the file store
+    # hide it from every member, so no member may take it and read what is in it.
+    if skill_folder_orphaned(workspace, top):
         raise SkillOwnedElsewhere("that skill folder has no author, so no member can take it")
+    # The disk can lose a folder that the store still holds. A later rehydrate
+    # would put those files in this member's folder (H-245 step 2).
+    if _store_holds_skill(workspace, top, organization_id):
+        raise SkillOwnedElsewhere("the store still holds that skill folder")
     marker = f"{top}/{SKILL_AUTHOR_MARKER}"
     data = who.encode("ascii")
     try:
