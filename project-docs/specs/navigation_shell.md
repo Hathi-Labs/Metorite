@@ -469,8 +469,9 @@ each under its own category.
 **The storage.** `shell_prefs.pins` now holds the starred apps. The field
 keeps its NS-7 name, so no row and no migration changes (R6). A new field,
 `known`, holds the apps that the member could see at their last save. The
-gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
-`pins`.
+gateway accepts the `nav.ts` hrefs, and the install hrefs of the viewer's
+own resolved manifest while `PACKAGE_HOST_ORGS` holds the org
+(`package_host.md` PKG-6c-1). It caps `known` as it caps `pins`.
 
 **Four rules for what shows** (`starredHrefs` in `presets.ts`):
 
@@ -818,20 +819,31 @@ starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/l
 Home file calls a `center.` feature check. A gateway test drives rule 4 with a
 private task of another member and asserts that no card returns it.
 
-### 4.3 Personal Center — three apps, three jobs
+### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
+
+Decided 2026-11-10: the owner approved this on task 2531. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+
+A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
+
+Fence: `src/lib/shell/teamScope.test.ts` (new) fails when the value takes a third form or when a scope opens a row. Until T-4 builds it, the rule is advisory (R7).
+
+### 4.3 Personal Center — four apps, four jobs
+
+**Amended 2026-11-07 (D188, `my_day_command_centre.md`).** My Day is now the command centre. It notices, plans, starts work, focuses and closes the day. Calendar keeps the week, the full grid and events. Projects keeps the structure. The table below shows the new jobs.
 
 My Tasks and Calendar already read the one task store. My Day joins them at
 the top. The risk is a third view of the same tasks, so each app gets one job.
 
 | App | Its job | The question | What it may change | What it hands on |
 |---|---|---|---|---|
-| **My Day** | Notice | "What needs me, across every app?" | One-click acts only: done, approve, snooze. A longer act opens the owning app | Planning goes to Calendar. Lists go to My Tasks |
+| **My Day** | Run the day | "What needs me, and what do I do now?" | Capture, the top 3, the One Thing, today's blocks, the focus session, done, roll over. A longer act opens the owning app | The week and the full grid go to Calendar. Lists go to My Tasks |
 | **My Tasks** | Commit | "What have I promised, and what is next?" | Every task field, every list, capture | Time goes to Calendar |
-| **Calendar** | Place | "When will I do it?" | The schedule, focus blocks, the start and the end of the day | What to do goes to My Tasks |
+| **Calendar** | Plan the week | "When will I do it, this week?" | The schedule of any day, events, recurring windows, planner settings | What to do goes to My Tasks |
 | **Email** | Reply | "Who waits for my answer?" | Its own threads | It feeds My Day through its manifest |
 
-**No second ritual.** Calendar has `StartupRitual`. The first open of My Day
-each day offers that ritual. My Day does not copy it.
+**No second ritual.** Calendar has `StartupRitual`. The Plan phase of My Day
+mounts that same component. My Day does not copy it. `my_day_command_centre.md`
+§5 owns the phases.
 
 **What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
 2026-10-13).** That spec owns the signals, the cards, the order, the life of
@@ -839,6 +851,12 @@ a card and the AI that prepares one. **D101 (owner, 2026-10-13) widens the
 acts in the table above for that feed:** a card acts in place, unless the act
 needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
 page frame, the bell, the manifest and the flags.
+
+**D213 (owner, 2026-11-09) changes "A longer act opens the owning app" for
+each link to a task.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, a row's link or an
+act's link opens the task in a panel on My Day, and the member stays on My
+Day. An act with its own button runs in place. "Open in Projects" and a
+Ctrl-click still open the app. `my_day_feed.md` §11.5 holds the rule.
 
 ### 4.4 Cards
 
@@ -1504,10 +1522,11 @@ display order stays as below.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
 - `id` is `tasks:<task id>`, `approvals:<pending action id>`,
-  `projects:<notification id>`, `email:<account id>:<thread id>` or
-  `reminders:<reminder id>`.
+  `projects:<notification id>`, `email:<account id>:<thread id>`,
+  `reminders:<reminder id>` or `providers:<vendor>` (AO-2).
 - `kind` is `overdue`, `approval`, `due_today`, `notification`,
-  `needs_reply`, `reminder_due`, `reminder_check` or `reminder_unconfirmed`.
+  `needs_reply`, `reminder_due`, `reminder_check`, `reminder_unconfirmed` or
+  `provider_alert` (AO-2).
   The three reminder kinds come last in `KIND_ORDER`, in that order.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
@@ -1544,6 +1563,21 @@ is a link only, to `/chat?do=new-chat&reminder=<id>`. The source has no
 sidebar count (`calendar_events_reminders.md` RM-2b decision 5). A failed
 `reminders` source prints "Calendar did not answer, so its reminders may be
 missing."
+
+**The AI vendor source (AO-2, task 3683, amended 2026-11-18).** This amendment
+adds the `providers` source, the `providers:<vendor>` item id and the kind
+`provider_alert`. It tells the admins of the operator org that an AI vendor
+is out of credit, is low, or serves again (`customer_console.md` §6A.17b).
+
+- The gate is `feature:chat` and the admin test. `PROVIDER_ALERT_ORGS` must
+  list the org, or the source reads `absent`.
+- The rows come from the last alert that `gateway/provider_alerts.py` sent,
+  in the tenant Redis of the org. The source writes no table.
+- The kind sorts after the two fired reminder kinds and before `overdue`. An
+  empty vendor account stops the chat for every member.
+- The row is a link only, to the provider page of the Operator Console. It
+  has no act, no feed signal and no sidebar count. Its app id is `providers`,
+  and the client has no app entry for it, as for `studio`.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent

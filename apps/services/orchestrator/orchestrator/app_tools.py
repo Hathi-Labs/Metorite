@@ -80,6 +80,8 @@ def _granted_live_apps(agent_name: str) -> list[tuple[str, dict[str, Any]]]:
                        JOIN app_versions v
                          ON v.app_id = a.id AND v.version = a.live_version
                        WHERE a.status = 'live' AND a.live_version IS NOT NULL
+                         AND a.organization_id = CAST(NULLIF(
+                             current_setting('app.tenant_id', true), '') AS uuid)
                          AND a.format IS DISTINCT FROM 'manifest'
                          AND g.subject IN ('agents:*', :subject)"""
                 ),

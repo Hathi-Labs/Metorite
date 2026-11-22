@@ -1,0 +1,10 @@
+{
+  "context": {
+    "fileName": ["AGENTS.md", "GEMINI.md"]
+  },
+  "mcpServers": {
+    "metorite": {
+      "httpUrl": "https://mcp.metorite.com/mcp"
+    }
+  }
+}

@@ -108,8 +108,8 @@ Add a section per feature as you build it. Example:
 
 | # | Item | Why | Done when |
 |---|---|---|---|
-| WB-1 | Move `_PinnedTransport` to `acb_common`, and put the gateway's two pinned copies on it | `web_tools.py` holds the third copy of the pin, beside `outbound_guard.send` and `outbound_guard._PinnedTransport`. A package cannot import the gateway, so WEB-1 copied the pattern. Three copies can drift (WEB-1 review, 2026-11-01) | One pinned transport lives in `acb_common`. `web_tools.py` and `outbound_guard.py` use it, and no other copy of the pin is left |
-| WB-2 | Read a page once when Jina is on | The walk reads the page, and then Jina reads it again from its own network. So the site sees two reads for one call (WEB-1 review, 2026-11-01) | WEB-2's local reader reads the body of the walk. A test shows that one call reads the page once |
+| WEBH-1 | Move `_PinnedTransport` to `acb_common`, and put the gateway's two pinned copies on it | `web_tools.py` holds the third copy of the pin, beside `outbound_guard.send` and `outbound_guard._PinnedTransport`. A package cannot import the gateway, so WEB-1 copied the pattern. Three copies can drift (WEB-1 review, 2026-11-01) | One pinned transport lives in `acb_common`. `web_tools.py` and `outbound_guard.py` use it, and no other copy of the pin is left |
+| WEBH-2 | Read a page once when Jina is on | The walk reads the page, and then Jina reads it again from its own network. So the site sees two reads for one call (WEB-1 review, 2026-11-01) | WEB-2's local reader reads the body of the walk. A test shows that one call reads the page once |
 
 ### MCP board reads (MCP-G19a, task 1957)
 

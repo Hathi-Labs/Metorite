@@ -79,6 +79,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.due_day import (
@@ -662,7 +663,7 @@ async def capture(
 async def create_personal_task(
     db: Any, email: str, project_id: str, root_id: str, status_id: str,
     values: dict[str, Any], overlay: dict[str, Any] | None = None,
-    *, announce: bool = True,
+    *, announce: bool = True, actor: str | None = None,
 ) -> Any:
     """One `pm_tasks` row in the member's own tree, assigned to them.
 
@@ -696,6 +697,13 @@ async def create_personal_task(
     that. With no event, the `shell.cache.on_event` sink moves no My Day
     version, so the park calls `shell.cache.bump_member_safe` for the owner
     after its commit. Fence: `tests/unit/test_auto_park.py`.
+
+    **`actor`** (STU-E4) names who acted when it is not the member: the
+    `system:workflow:<id>` of D-PM-4. It stamps `assigned_by` and the
+    "Captured" activity, and flags that activity `meta.automation`. It never
+    stamps `created_by`: the member stays the creator of a task in their own
+    tree, because `authority.may_move_task` and `may_delete_task` read the
+    creator. Left out, each caller writes the member as before.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -722,16 +730,16 @@ async def create_personal_task(
     await db.execute(
         text(
             "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
-            "VALUES (CAST(:tid AS uuid), :who, :who) "
+            "VALUES (CAST(:tid AS uuid), :who, :by) "
             "ON CONFLICT (task_id, assignee) DO NOTHING"
         ),
-        {"tid": task_id, "who": email},
+        {"tid": task_id, "who": email, "by": actor or email},
     )
     if overlay:
         await _upsert_personal(db, task_id, email, overlay)
     await record_activity(
-        db, activity_type="system", created_by=email, task_id=task_id,
-        body="Captured",
+        db, activity_type="system", created_by=actor or email, task_id=task_id,
+        body="Captured", automation=actor is not None,
     )
     if not announce:
         return task
@@ -2319,6 +2327,7 @@ async def in_my_tree(db: Any, email: str, task: Any) -> bool:
 
 
 @router.delete("/my/tasks/{task_id}")
+@transient_as_409
 async def purge_my_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> DeleteResponse:
@@ -2428,6 +2437,12 @@ async def my_task_lanes(
     alone holds none, so that read 404s and the select is dead. Here the
     membership fragment is the grant: ``_read_my_task`` answers 404 for a
     task that is not mine, exactly as ``/my/tasks/{id}`` does.
+
+    The chat uses this route too (Task 3865). ``update_task`` resolves a
+    status NAME through it when the project read 404s, and ``vocabulary``
+    does the same when it gets a ``task_id``. It answers lanes only: no
+    counts, no tags and no name of a project, so it shows an assignee no more
+    than the task shows. Fence: tests/unit/test_projects_status_read_assignee_r8.py.
 
     A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
     ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the

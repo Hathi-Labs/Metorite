@@ -150,6 +150,11 @@ def configure_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, 
     monkeypatch.setattr(settings, "maf_coding_scope", "code_task:*,app_builder:*")
     monkeypatch.setattr(settings, "sandbox_min_free_disk_mb", 0)
     monkeypatch.setattr(sb, "_process_ids", lambda: (1000, 1000))
+    # Task 2462: an app-builder dir must be the folder of an app of the run's
+    # org, and that is an ``apps`` read. These suites have no database, so
+    # every dir under the root counts as an app of the run's org.
+    # ``test_app_delete_workspace_r8.py`` runs the real read.
+    monkeypatch.setattr(sb, "_app_dir_of_org", lambda path, org: bool(org))
     return {"settings": settings, "clone": clone, "apps": apps, "tmp": tmp_path}
 
 

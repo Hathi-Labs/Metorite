@@ -23,8 +23,11 @@ gone, so a moved call cannot hide behind a stale entry.
 * the door itself,
 * ``wa_embeddings.py``: WhatsApp is frozen (D115),
 * ``capability.py``: the capability index. It moves in a later slice,
-* ``main.py`` of the gateway: the ``/v1/embeddings`` route,
 * ``customer_console/``: the Router IS the place that calls a vendor.
+
+``main.py`` of the gateway left the list in task 3553 (2449 S2). Its
+``/v1/embeddings`` route calls ``embed.relay`` in the door, so it calls no
+verb itself.
 
 The count of direct vendor calls is held by the ratchet in
 ``test_no_direct_ai_vendor_calls.py``.
@@ -48,8 +51,6 @@ _ALLOWED: dict[str, str] = {
         "WhatsApp is frozen (D115). No new WhatsApp work.",
     "apps/services/gateway/gateway/routes/tasks/capability.py":
         "The capability index. It moves to the door in a later slice.",
-    "apps/services/gateway/gateway/main.py":
-        "The /v1/embeddings route of the gateway.",
     "apps/services/customer_console/":
         "The Console is the Router, the one place that calls a vendor.",
 }

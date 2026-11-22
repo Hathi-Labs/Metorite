@@ -501,12 +501,14 @@ def _body_of_size(size: int) -> dict[str, Any]:
         "description": "Use it for a \u201cquote\u201d, a tab\t, a / and a \\.\n",
         "instructions": "i",
         "actions": ["crm.read_deal"],
-        "cards": [{"bb": [1.5, -2, 0.25, 123456789012345.6, True, False, None]}],
+        "cards": [{"bb": [1.5, -2, 0.25, 123456789012345.6, True, False, None],
+                   "n": 10 ** 20}],
         # F1b refuses the other controls, so the legal ones carry the escapes.
         # The kept scripts of the fixture add joiners and selectors.
         "knowledge": [{"zz": {}, "a": [], "ctl": "\r\t\n", "ls": "\u2028",
                        "kept": [case["text"] for case in _KEPT]}],
-        "tests": [{"q": "\u20ac and \U0001f600", "n": 10 ** 20}],
+        # F4a: `tests` has a shape, so the text of the fixture sits in a valid test.
+        "tests": [{"id": "t1", "input": "\u20ac and \U0001f600", "expect": []}],
     }
     pad = size - len(store.check_body(body).encode("utf-8"))
     body["instructions"] = "i" * (1 + pad)

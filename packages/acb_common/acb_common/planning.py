@@ -45,6 +45,9 @@ REVIEW_WAIT_MINS = 60
 #: gateway (``routes/projects/core.py``). A closed blocker no longer blocks.
 CLOSED_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
 
+#: A slice over this many minutes is too big: 10 working days (spec §3.4, gaps).
+MAX_SLICE_MINS = 10 * WORKING_DAY_MINS
+
 #: The least number of linked open slices for a critical path.
 MIN_LINKED = 2
 NOT_ENOUGH_TEXT = "need 2 linked tasks"
@@ -64,6 +67,8 @@ class PlanTask:
     type: str | None = None
     parent: str | None = None
     priority_rank: int | None = None
+    #: True when the task has a "done when" text (its description is not blank).
+    done_when: bool = False
 
 
 @dataclass
@@ -84,6 +89,10 @@ class PlanResult:
     slices: int = 0
     #: Links that are not dependencies: `{blocker, blocked, reason}`.
     ignored_links: list[dict[str, str]] = field(default_factory=list)
+    #: Gaps in the breakdown (PJP-6): task ids by kind, and plain words.
+    gaps: dict[str, Any] = field(default_factory=dict)
+    #: Last Planner readiness (PJP-6): `{task_id, reasons}` for each slice that is not ready.
+    not_ready: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -234,6 +243,45 @@ def _missing(g: _Graph) -> dict[str, Any]:
     }
 
 
+def _gaps(g: _Graph) -> dict[str, Any]:
+    """Gaps in the breakdown, over the open slices. Each kind lists task ids."""
+    ids = g.slices
+    kinds = {
+        "no_owner": [s for s in ids if not g.by_id[s].owner],
+        "no_estimate": [s for s in ids if g.by_id[s].estimate_mins is None],
+        "too_big": [s for s in ids if (g.by_id[s].estimate_mins or 0) > MAX_SLICE_MINS],
+        "no_done_when": [s for s in ids if not g.by_id[s].done_when],
+    }
+    phrase = {
+        "no_owner": "have no owner",
+        "no_estimate": "have no estimate",
+        "too_big": "have an estimate over 10 working days",
+        "no_done_when": "have no done-when",
+    }
+    words = [_plain(len(v), phrase[k]) for k, v in kinds.items() if v]
+    return {**kinds, "words": words}
+
+
+def _not_ready(g: _Graph) -> list[dict[str, Any]]:
+    """Last Planner readiness: a slice is ready with an owner, an estimate, a
+    done-when and no open blocker. The rest are listed with their reasons."""
+    out: list[dict[str, Any]] = []
+    for s in g.slices:
+        t = g.by_id[s]
+        reasons = []
+        if g.preds[s] or g.held_by[s]:
+            reasons.append("open blocker")
+        if not t.owner:
+            reasons.append("no owner")
+        if t.estimate_mins is None:
+            reasons.append("no estimate")
+        if not t.done_when:
+            reasons.append("no done-when")
+        if reasons:
+            out.append({"task_id": s, "reasons": reasons})
+    return out
+
+
 def _order(g: _Graph) -> list[str]:
     """Kahn's method. A slice that is left out is on a cycle or after one."""
     indeg = {s: len(g.preds[s]) for s in g.slices}
@@ -353,6 +401,8 @@ def analyze_plan(
     ]
     result.missing = _missing(g)
     result.ignored_links = g.ignored
+    result.gaps = _gaps(g)
+    result.not_ready = _not_ready(g)
 
     order = _order(g)
     if len(order) < len(g.slices):
@@ -379,6 +429,7 @@ def tasks_from_rows(rows: Sequence[Mapping[str, Any]]) -> list[PlanTask]:
             type=r.get("type"),
             parent=str(r["parent"]) if r.get("parent") else None,
             priority_rank=r.get("priority_rank"),
+            done_when=bool(r.get("done_when")),
         )
         for r in rows
     ]

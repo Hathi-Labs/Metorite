@@ -70,6 +70,7 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.filters import attach_agent_state
@@ -437,6 +438,7 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
 
 
 @router.post("/tasks/{task_id}/merge")
+@transient_as_409
 async def merge_tasks(
     task_id: str, payload: MergeIn,
     user: UserContext = Depends(get_current_user),

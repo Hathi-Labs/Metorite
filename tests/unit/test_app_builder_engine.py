@@ -804,20 +804,11 @@ def t2_vendor(docker_image: str, tmp_path_factory: pytest.TempPathFactory) -> Pa
     if given:
         return Path(given).resolve()
     vendor = tmp_path_factory.mktemp("t2-vendor").resolve()
-    # The install writes into a host dir that this process owns. On a GitHub
-    # runner (uid 1001) a container user of 1000:1000 got EACCES, and both
-    # Docker tests skipped, which the CI job counts as a failure. So the
-    # container runs as the host's own uid and gid. Windows has no getuid, and
-    # Docker Desktop maps any user onto the bind mount.
-    user = f"{os.getuid()}:{os.getgid()}" if hasattr(os, "getuid") else "1000:1000"
-    done = subprocess.run(
-        ["docker", "run", "--rm", "--user", user,
-         "--mount", f"type=bind,source={vendor},target=/v",
-         "-e", "HOME=/tmp", "-e", "npm_config_cache=/tmp/npm",
-         docker_image, "npm", "install", "--prefix", "/v", "--no-audit", "--no-fund",
-         "--no-bin-links", "--no-package-lock", *T2_VENDOR_PACKAGES],
-        capture_output=True, text=True, timeout=600, check=False,
-    )
+    # The one install (tests/unit/_t2_vendor.py) runs as the host's uid and
+    # gid, so a GitHub runner (uid 1001) gets no EACCES and no skip.
+    from tests.unit._t2_vendor import install_t2_vendor
+
+    done = install_t2_vendor(docker_image, vendor, T2_VENDOR_PACKAGES)
     if done.returncode != 0 or not (vendor / "node_modules" / "esbuild").is_dir():
         pytest.skip(f"no T2 vendor cache could be installed: {done.stderr[-400:]}")
     return vendor

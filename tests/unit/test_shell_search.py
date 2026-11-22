@@ -382,12 +382,22 @@ class TestSearchRecordsStaysOffTheRouteContract:
         async def session():
             yield object()
 
+        hits: list[str] = []
+
+        async def spy_hits(db, entity, q):
+            # HRD-18a: the related names are read once, before the contract.
+            hits.append(entity.slug)
+            return core.RelatedHits(tuple({} for _ in core.search_words(q)))
+
         monkeypatch.setattr(records, "list_contract", spy_contract)
         monkeypatch.setattr(records, "run_list", spy_run_list)
+        monkeypatch.setattr(records, "related_hits", spy_hits)
         monkeypatch.setattr(records, "_tenant_session", session)
         asyncio.run(records.search_records(crm_member("crm"), "zephyr", 5))
         assert sorted(c["entity"] for c in contracts) == [
             "contacts", "deals", "leads", "organizations"]
+        assert sorted(hits) == ["contacts", "deals", "leads", "organizations"]
+        assert all(c["related"] is not None for c in contracts)
         assert all(c["sort"] == "last_activity_at" and c["page_size"] == 5 for c in contracts)
         # The converted-lead rule of the Leads list.
         leads = next(c for c in contracts if c["entity"] == "leads")

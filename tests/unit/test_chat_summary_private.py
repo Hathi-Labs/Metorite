@@ -90,6 +90,13 @@ IMPORTERS[JOB_MODULE] = frozenset({
 #: switch and the rules of a chat, so the executor imports no other name.
 EXECUTOR = ROOT / "apps" / "services" / "orchestrator" / "orchestrator" / "executor.py"
 IMPORTERS[EXECUTOR] = frozenset({"recent"})
+#: (c) WS-CO CO-4: the shadow join match (`gateway/chat_join_shadow.py`). It
+#: reads the summaries of the member's own chats, gated as `recent` is (the
+#: flag and the member's switch), and turns each into word hashes at once. It
+#: stores no text. The two rules of a chat are the SQL of this module.
+IMPORTERS[GATEWAY / "chat_join_shadow.py"] = frozenset({
+    "ELIGIBLE_SQL", "NOT_OFF_SQL", "OPEN_RUN_SQL", "list_for_member",
+    "member_switch_on"})
 #: The trees that (c) reads: all code of the platform.
 PLATFORM = (ROOT / "apps", ROOT / "packages")
 

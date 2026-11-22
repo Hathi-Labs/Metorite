@@ -11,11 +11,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: string[] = [];
 
+const readOperatorSession = vi.fn();
+const readElevation = vi.fn();
 const listOrganizations = vi.fn();
 const purgeOrgRegistry = vi.fn();
 const purgeTenantOrg = vi.fn();
 
 vi.mock("@/lib/console", () => ({
+  readOperatorSession: (...a: unknown[]) => {
+    calls.push("session");
+    return readOperatorSession(...a);
+  },
+  readElevation: (...a: unknown[]) => {
+    calls.push("elevate");
+    return readElevation(...a);
+  },
   listOrganizations: (...a: unknown[]) => {
     calls.push("list");
     return listOrganizations(...a);
@@ -63,9 +73,23 @@ const DELETED_LIST = {
   }),
 };
 
+const sessionOf = (role: string | null, method = "session") => ({
+  status: 200,
+  body: JSON.stringify(
+    method === "breakglass"
+      ? { method }
+      : { method, actor: "op@example.com", role },
+  ),
+});
+
 beforeEach(() => {
   calls.length = 0;
   vi.clearAllMocks();
+  readOperatorSession.mockResolvedValue(sessionOf("admin"));
+  readElevation.mockResolvedValue({
+    status: 200,
+    body: JSON.stringify({ required: true, elevated: true }),
+  });
   listOrganizations.mockResolvedValue(DELETED_LIST);
   purgeTenantOrg.mockResolvedValue({
     status: 200,
@@ -81,7 +105,15 @@ describe("the order", () => {
   it("authority check, then tenant, then registry — exactly once each", async () => {
     const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["list", "tenant", "registry"]);
+    expect(calls).toEqual(["session", "elevate", "list", "tenant", "registry"]);
+  });
+
+  // The rank is the CALLER's: a read with no token reaches the Console as the
+  // shared break-glass token, which the rule admits. Fails if an edit drops `d`.
+  it("reads the rank with the caller's session token, never the shared one", async () => {
+    await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(readOperatorSession).toHaveBeenCalledWith({ authToken: "cc_sess_test_token" });
+    expect(readElevation).toHaveBeenCalledWith({ authToken: "cc_sess_test_token" });
   });
 
   it("an org outside `deleted` stops BEFORE any destruction", async () => {
@@ -93,14 +125,14 @@ describe("the order", () => {
     });
     const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
     expect(res.status).toBe(409);
-    expect(calls).toEqual(["list"]);
+    expect(calls).toEqual(["session", "elevate", "list"]);
   });
 
   it("a failed tenant purge stops BEFORE the registry purge", async () => {
     purgeTenantOrg.mockResolvedValue({ status: 502, body: "boom" });
     const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
     expect(res.status).toBe(502);
-    expect(calls).toEqual(["list", "tenant"]);
+    expect(calls).toEqual(["session", "elevate", "list", "tenant"]);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("nothing was destroyed on the registry");
   });
@@ -124,7 +156,7 @@ describe("the order", () => {
     });
     const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
     expect(res.status).toBe(409);
-    expect(calls).toEqual(["list", "tenant"]);
+    expect(calls).toEqual(["session", "elevate", "list", "tenant"]);
     const body = (await res.json()) as { needs_accept_absent?: boolean };
     expect(body.needs_accept_absent).toBe(true);
   });
@@ -138,7 +170,73 @@ describe("the order", () => {
       req({ org_slug: "acme", confirm: "acme", accept_absent: true }),
     );
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["list", "tenant", "registry"]);
+    expect(calls).toEqual(["session", "elevate", "list", "tenant", "registry"]);
+  });
+});
+
+// H-313: the caller's rank is read BEFORE any other upstream call. The tenant
+// purge is destroyed data, and the Console's own rank check comes after it.
+describe("the caller's rank (H-313)", () => {
+  const DESTROYED = ["tenant", "registry"];
+
+  it.each(["viewer", "editor", null, "superuser"])(
+    "a %s is refused 403 and touches nothing after the session read",
+    async (role) => {
+      readOperatorSession.mockResolvedValue(sessionOf(role as string | null));
+      const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; refused_by: string };
+      expect(body.error).toContain("admin role");
+      expect(body.refused_by).toBe("operator-console");
+      expect(calls).toEqual(["session", "elevate"]);
+      for (const step of DESTROYED) expect(calls).not.toContain(step);
+      expect(purgeTenantOrg).not.toHaveBeenCalled();
+    },
+  );
+
+  it("an admin without an open elevation window is refused before the tenant act", async () => {
+    readElevation.mockResolvedValue({
+      status: 200,
+      body: JSON.stringify({ required: true, elevated: false }),
+    });
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(403);
+    expect(calls).toEqual(["session", "elevate"]);
+    expect(purgeTenantOrg).not.toHaveBeenCalled();
+  });
+
+  it("a missing `required` reads as required, and an admin with no window is refused", async () => {
+    readElevation.mockResolvedValue({ status: 200, body: JSON.stringify({}) });
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(403);
+    expect(purgeTenantOrg).not.toHaveBeenCalled();
+  });
+
+  it("an admin whose Console does not require elevation goes on", async () => {
+    readElevation.mockResolvedValue({
+      status: 200,
+      body: JSON.stringify({ required: false, elevated: false }),
+    });
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(200);
+  });
+
+  it("the break-glass token is admitted, with no elevation read", async () => {
+    readOperatorSession.mockResolvedValue(sessionOf(null, "breakglass"));
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(["session", "list", "tenant", "registry"]);
+  });
+
+  it("an unreadable session, or a failed read, fails closed", async () => {
+    readOperatorSession.mockResolvedValue({ status: 200, body: "not json" });
+    expect((await POST(req({ org_slug: "acme", confirm: "acme" }))).status).toBe(502);
+    readOperatorSession.mockResolvedValue({ status: 401, body: "{}" });
+    expect((await POST(req({ org_slug: "acme", confirm: "acme" }))).status).toBe(401);
+    readOperatorSession.mockResolvedValue(sessionOf("admin"));
+    readElevation.mockResolvedValue({ status: 500, body: "boom" });
+    expect((await POST(req({ org_slug: "acme", confirm: "acme" }))).status).toBe(500);
+    expect(purgeTenantOrg).not.toHaveBeenCalled();
   });
 });
 
@@ -158,6 +256,6 @@ describe("the confirmation protocol", () => {
   it("an unknown slug is a 404 after the list read only", async () => {
     const res = await POST(req({ org_slug: "ghost", confirm: "ghost" }));
     expect(res.status).toBe(404);
-    expect(calls).toEqual(["list"]);
+    expect(calls).toEqual(["session", "elevate", "list"]);
   });
 });

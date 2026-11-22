@@ -22,6 +22,7 @@ import { clearAccountNamespaces } from "@/lib/sessions";
 import { FORGET_TIMEOUT_MS, forgetThisDevice, thisDeviceEndpoint } from "@/lib/push";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
+import { clearPinSuggestForAccounts } from "@/lib/shell/pinSuggestStore";
 
 /**
  * The keys that belong to one organization. Each test in
@@ -430,6 +431,7 @@ export async function signOutThis(
     if (!(await removed(next.slot)) && !(await removed(next.slot))) return await fallBack();
     clearAccountNamespaces([activeEmail]);
     clearAppearanceForAccounts([activeEmail]);
+    clearPinSuggestForAccounts([activeEmail]);
     clearOrgScopedStorage();
     leaveAccount();
     go("/");
@@ -469,6 +471,7 @@ export async function signOutAll(): Promise<void> {
     // The same accounts' appearance keys, which carry each address in their
     // names (lib/theme/scope.ts).
     clearAppearanceForAccounts(body.emails ?? []);
+    clearPinSuggestForAccounts(body.emails ?? []);
   } catch {
     /* the sign-out below still runs */
   }
