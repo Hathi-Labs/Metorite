@@ -1233,8 +1233,14 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # pins come from the same texts, hashed under CPython 3.12.3, 3.12.16
     # and 3.13.18. This test's own function gave the 3.13 pin. This pin
     # needs the diff-reviewer review and the independent verification.
-    (3, 12): "fa6f00233d61ddb5668b1c6a9b63330b6f6826b225f26b69df91135b486fbfe9",
-    (3, 13): "de65055359bd130e0827855ea1bbc09083b46a969d6b71c17fee08b506653174",
+    # Task 3865 (PR 2740) moved both pins. The `auth.identity_domain_mismatch`
+    # warning in branch 1a is now gated by `_mismatch_due` (once per address
+    # and domain per hour). Branch 0 does not change, and the bound identity
+    # does not change. Diff-reviewer (Opus) APPROVE and an independent
+    # verification PASS. The old pins were 3.12 ``fa6f0023…6fbfe9`` and 3.13
+    # ``de650553…653174``. CPython 3.12.12 and 3.13.2 gave the new pins.
+    (3, 12): "acb6431cdc901da090564c5212e194576915fcda94c802074cf2a63aff7c0624",
+    (3, 13): "caf1fed03b3a63278a16016dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
