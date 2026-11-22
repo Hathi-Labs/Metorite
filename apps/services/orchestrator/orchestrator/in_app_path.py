@@ -22,7 +22,7 @@ before the client hears of it.
 3. :func:`member_features` says which features the member holds, and a path
    to a pane the member does not hold is refused. A pane that ``nav.ts`` marks
    ``adminOnly`` opens only for an admin of the org. The right is the one
-   admin check of the orchestrator (``guide_tools.member_is_admin``), read for
+   admin page right (``guide_tools.member_is_admin``), read for
    the VERIFIED run member and never from a tool argument.
 
 The member comes from the run binding, never from the tool's arguments.
