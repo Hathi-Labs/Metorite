@@ -638,10 +638,11 @@ class TestTheKeyStoreStartup:
         pytest.param("sk-x\u2028OPENAI_API_KEY=evil", id="U+2028"),
         pytest.param(OVER_CAP, id="over-cap"),
     ])
-    async def test_a_bad_llm_key_is_skipped(self, value, monkeypatch):
+    async def test_a_bad_llm_key_is_skipped(self, value, monkeypatch, byok_on):
         # Task 625 (D58.2): no loader copies a stored key into the env. A
         # direct call takes it per call from `provider_key`, which refuses a
-        # value that fails layer A, and writes the env in neither case.
+        # value that fails layer A, and writes the env in neither case. It
+        # reads a stored row only while BYOK is on, so this test turns it on.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         ks, _ = _key_store(monkeypatch, {"openai": value, "anthropic": "sk-ant-good"})
