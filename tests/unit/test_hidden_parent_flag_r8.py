@@ -17,6 +17,10 @@ that FORCE ROW LEVEL SECURITY binds. The world is the one of
 * ``move_node`` refuses that member a move to the top level (403), with words
   that name no parent. It allows a top-level move to a member who sees the
   parent, and it does not refuse a reorder under the same parent.
+* The member's own Area says ``false``: its parent is in the personal tree,
+  not in the team rows. A team node under another member's personal root
+  (migration 297) says ``true`` to its lead, who gets the 403, and ``false``
+  to the owner of that root.
 * The chat refuses before its card, through the real gateway.
 
 Run (one private ladder database)::
