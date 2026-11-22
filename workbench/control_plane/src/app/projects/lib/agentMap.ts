@@ -97,6 +97,8 @@ export const PROJECT_MAP_EMPTY_COPY = "No agent works on this project yet.";
 export const MAP_TRUNCATED_COPY = "The map shows the first sessions and runs only.";
 export const SHOW_QUIET_LABEL = "Show quiet runs";
 export const GROUP_BY_MACHINE_LABEL = "Group by machine";
+export const DISPATCHED_BY_LABEL = "Dispatched by";
+export const DISPATCHED_LABEL = "Dispatched";
 export const OPEN_TASK_LABEL = "Open task";
 
 const SESSION_STATES: readonly MapSessionState[] = ["waiting_on_person", "waiting", "working", "quiet"];
@@ -124,16 +126,30 @@ const STATE_WORD: Record<MapSessionState, string> = {
   quiet: "Quiet",
 };
 
-export function sessionStateWord(state: MapSessionState): string {
-  return STATE_WORD[state];
+/**
+ * SW-109. A quiet orchestrator with a live lane is in a quiet stretch between events. It reads
+ * "Waiting", and never "lost" (`agent_coordination.md` §3.12.2). A session
+ * that dispatched no lane keeps the word "Quiet".
+ */
+export const ORCHESTRATOR_QUIET_WORD = "Waiting";
+
+const isQuietWait = (state: MapSessionState, waits: boolean): boolean => waits && state === "quiet";
+
+/**
+ * `waits` is true when the session dispatched at least one lane that is not
+ * quiet (`DispatchGraph.waiting`). If every lane is quiet, the session reads Quiet.
+ */
+export function sessionStateWord(state: MapSessionState, waits = false): string {
+  return isQuietWait(state, waits) ? ORCHESTRATOR_QUIET_WORD : STATE_WORD[state];
 }
 
-export function sessionStateChip(state: MapSessionState): string {
-  return agentStateChip(STATE_VOCABULARY[state]);
+export function sessionStateChip(state: MapSessionState, waits = false): string {
+  return agentStateChip(isQuietWait(state, waits) ? "waiting" : STATE_VOCABULARY[state]);
 }
 
-export function sessionStateIcon(state: MapSessionState): string {
-  return agentStateVisual(STATE_VOCABULARY[state])?.icon ?? "Bot";
+export function sessionStateIcon(state: MapSessionState, waits = false): string {
+  const key = isQuietWait(state, waits) ? "waiting" : STATE_VOCABULARY[state];
+  return agentStateVisual(key)?.icon ?? "Bot";
 }
 
 /** The word of a run. A quiet run reads as quiet, whatever its state. */
@@ -279,6 +295,8 @@ export interface MapNode {
   sessionId?: string;
   /** SW-106. The machine and the model of a session or a machine node. */
   place?: Place;
+  /** SW-109. True for a quiet session node that waits on a lane that is not quiet. It reads "Waiting". */
+  quietWait?: boolean;
 }
 
 export interface MapEdge {
@@ -304,6 +322,18 @@ export const COLUMN_X = { person: 0, session: 300, task: 640 } as const;
  * node and no person line: the person shows on the client line of each session.
  */
 export const COLUMN_X_BY_MACHINE = { machine: 0, session: 280, task: 620 } as const;
+/**
+ * SW-109. The by-person map has one session column for each depth of the
+ * dispatch chain. A session at depth 0 has no dispatcher on the map. Each
+ * deeper session sits one step to the right of the session that dispatched it.
+ * The depth stops at the cap, so the canvas stays bounded.
+ *
+ * Accepted limits: a chain longer than the cap puts a lane in the column of its
+ * dispatcher, so its arrow runs backwards. A line that skips a depth can pass
+ * behind the card of a session in between. Both are rare, and no data is lost.
+ */
+export const MAX_DISPATCH_DEPTH = 4;
+export const DEPTH_STEP = 340;
 export const NODE_W = { person: 220, machine: 220, session: 280, task: 300, quiet: 300 } as const;
 /** Each height is fixed. A session holds four lines: name, state, machine, model. */
 export const NODE_H = { person: 48, machine: 48, session: 96, task: 52, quiet: 32 } as const;
@@ -314,11 +344,16 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** A quiet session that reads "Waiting" (SW-109) ranks as a waiting session. */
+function rankOf(s: MapSession, waiting?: ReadonlySet<string>): number {
+  return waiting?.has(s.id) ? STATE_RANK.waiting : STATE_RANK[s.state];
+}
+
 /** Waiting first, then working, then quiet. Ties by name, person, then id. */
-export function sortSessions(sessions: readonly MapSession[]): MapSession[] {
+export function sortSessions(sessions: readonly MapSession[], waiting?: ReadonlySet<string>): MapSession[] {
   return [...sessions].sort(
     (a, b) =>
-      STATE_RANK[a.state] - STATE_RANK[b.state] ||
+      rankOf(a, waiting) - rankOf(b, waiting) ||
       compareText(a.name.toLowerCase(), b.name.toLowerCase()) ||
       compareText(a.person, b.person) ||
       compareText(a.id, b.id),
@@ -344,7 +379,120 @@ export function quietLine(count: number, lastAt: string | null, nowMs: number): 
   return when ? `${count} ${noun}, newest ${when}` : `${count} ${noun}`;
 }
 
-function groupByPerson(map: AgentMap): Array<[string, MapSession[]]> {
+/* ── Who dispatched whom (SW-109) ───────────────────────────────────────── */
+
+export interface DispatchGraph {
+  /** The lines that the map draws: both ends on the map, no self line, no copy, no loop. */
+  lines: MapLine[];
+  /** Session id to its depth. Only a session that holds a line is in the map; others read 0. */
+  depth: Map<string, number>;
+  /** Session id to the ids of the sessions that dispatched it, sorted. */
+  dispatchers: Map<string, string[]>;
+  /** Session id to the ids of the sessions that it dispatched, sorted. */
+  dispatched: Map<string, string[]>;
+  /**
+   * The quiet sessions that read "Waiting": each holds a kept line to a lane
+   * that is not quiet. A quiet session whose lanes are all quiet reads Quiet,
+   * so a whole tree never reads Waiting over quiet lanes.
+   */
+  waiting: Set<string>;
+}
+
+/**
+ * Clean the lines of the map read and compute the depth of each session.
+ *
+ * - A line with an end that is not a session of the map, or with the same end
+ *   twice, drops. A copy of a line drops.
+ * - The data may hold a loop, because two claims at once can write one
+ *   (§3.12.4). A depth-first pass visits the sessions by sorted id, and takes
+ *   the lines of each by sorted id. A line into a session that is still open
+ *   on the walk closes a loop, and drops. The result depends on the ids, and
+ *   never on the input order.
+ * - The depth of a session is the longest chain of dispatchers above it,
+ *   stopped at `MAX_DISPATCH_DEPTH`.
+ */
+export function dispatchGraph(map: Pick<AgentMap, "sessions" | "lines">): DispatchGraph {
+  const known = new Set(map.sessions.map((s) => s.id));
+  const unique = new Map<string, MapLine>();
+  for (const line of map.lines) {
+    if (line.from === line.to || !known.has(line.from) || !known.has(line.to)) continue;
+    unique.set(`${line.from}\u0000${line.to}`, line);
+  }
+  const out = new Map<string, string[]>();
+  for (const { from, to } of unique.values()) {
+    const list = out.get(from) ?? [];
+    list.push(to);
+    out.set(from, list);
+  }
+  for (const list of out.values()) list.sort(compareText);
+  const involved = new Set<string>();
+  for (const { from, to } of unique.values()) {
+    involved.add(from);
+    involved.add(to);
+  }
+
+  const OPEN = 1;
+  const DONE = 2;
+  const mark = new Map<string, number>();
+  const finished: string[] = [];
+  const kept: MapLine[] = [];
+  for (const root of [...involved].sort(compareText)) {
+    if (mark.has(root)) continue;
+    mark.set(root, OPEN);
+    const stack: Array<{ id: string; next: number }> = [{ id: root, next: 0 }];
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      const kids = out.get(top.id) ?? [];
+      if (top.next < kids.length) {
+        const kid = kids[top.next++];
+        const seen = mark.get(kid);
+        if (seen === OPEN) continue; // This line closes a loop: drop it.
+        kept.push({ from: top.id, to: kid });
+        if (seen === undefined) {
+          mark.set(kid, OPEN);
+          stack.push({ id: kid, next: 0 });
+        }
+      } else {
+        mark.set(top.id, DONE);
+        finished.push(top.id);
+        stack.pop();
+      }
+    }
+  }
+
+  const dispatchers = new Map<string, string[]>();
+  const dispatched = new Map<string, string[]>();
+  for (const { from, to } of kept) {
+    dispatchers.set(to, [...(dispatchers.get(to) ?? []), from]);
+    dispatched.set(from, [...(dispatched.get(from) ?? []), to]);
+  }
+  for (const list of dispatchers.values()) list.sort(compareText);
+  for (const list of dispatched.values()) list.sort(compareText);
+
+  // The reverse of the finish order puts each dispatcher before its lanes.
+  const depth = new Map<string, number>();
+  for (const id of [...finished].reverse()) {
+    let d = 0;
+    for (const up of dispatchers.get(id) ?? []) d = Math.max(d, (depth.get(up) ?? 0) + 1);
+    depth.set(id, Math.min(d, MAX_DISPATCH_DEPTH));
+  }
+  kept.sort((a, b) => compareText(a.from, b.from) || compareText(a.to, b.to));
+  const stateOf = new Map(map.sessions.map((s) => [s.id, s.state]));
+  const waiting = new Set<string>();
+  for (const [id, lanes] of dispatched) {
+    if (stateOf.get(id) === "quiet" && lanes.some((lane) => stateOf.get(lane) !== "quiet")) waiting.add(id);
+  }
+  return { lines: kept, depth, dispatchers, dispatched, waiting };
+}
+
+/** "Claude Code · 3h ago": the last event of a quiet orchestrator joins the client line. */
+function withLastEvent(client: string, s: MapSession, waits: boolean, nowMs: number): string {
+  if (!isQuietWait(s.state, waits)) return client;
+  const when = relativeTime(s.last_at, nowMs);
+  return when ? `${client} \u00b7 ${when}` : client;
+}
+
+function groupByPerson(map: AgentMap, waiting?: ReadonlySet<string>): Array<[string, MapSession[]]> {
   const groups = new Map<string, MapSession[]>();
   for (const s of map.sessions) {
     const list = groups.get(s.person) ?? [];
@@ -352,8 +500,8 @@ function groupByPerson(map: AgentMap): Array<[string, MapSession[]]> {
     groups.set(s.person, list);
   }
   return [...groups.entries()]
-    .map(([person, list]): [string, MapSession[]] => [person, sortSessions(list)])
-    .sort((a, b) => STATE_RANK[a[1][0].state] - STATE_RANK[b[1][0].state] || compareText(a[0], b[0]));
+    .map(([person, list]): [string, MapSession[]] => [person, sortSessions(list, waiting)])
+    .sort((a, b) => rankOf(a[1][0], waiting) - rankOf(b[1][0], waiting) || compareText(a[0], b[0]));
 }
 
 export function sessionPlace(s: Pick<MapSession, "host" | "host_kind" | "host_source" | "model">): Place {
@@ -377,7 +525,7 @@ export const NO_MACHINE_KEY = "none";
  * neither a name nor a kind goes in the group "Not reported", which comes
  * last. The order is fixed: the same input gives the same groups.
  */
-export function groupByMachine(sessions: readonly MapSession[]): MachineGroup[] {
+export function groupByMachine(sessions: readonly MapSession[], waiting?: ReadonlySet<string>): MachineGroup[] {
   const groups = new Map<string, MapSession[]>();
   for (const s of sessions) {
     const key =
@@ -392,7 +540,7 @@ export function groupByMachine(sessions: readonly MapSession[]): MachineGroup[] 
     key === NO_MACHINE_KEY ? 4 : first.host_kind ? KIND_RANK[first.host_kind] : 3;
   return [...groups.entries()]
     .map(([key, list]): MachineGroup => {
-      const ordered = sortSessions(list);
+      const ordered = sortSessions(list, waiting);
       const first = ordered[0];
       const allChecked = ordered.every((s) => s.host_source === "checked");
       return {
@@ -415,7 +563,12 @@ export function groupByMachine(sessions: readonly MapSession[]): MachineGroup[] 
 }
 
 /**
- * Place the nodes. Three columns from left to right: person, session, task.
+ * Place the nodes. Columns from left to right: person, one column of sessions
+ * for each depth of the dispatch chain (SW-109), then task. A session with no
+ * dispatcher on the map has depth 0 and hangs from its person. A session that
+ * another session dispatched sits one column right of it, in the block of its
+ * own person, and hangs from its dispatcher by a dashed line (also across
+ * people). A loop in the data drops one line, so the layout has no loop.
  * With `groupByMachine`, the columns are machine, session and task. The
  * sessions sit in blocks beside their machine, and no person node or person
  * line is drawn: the person shows on the client line of the session. The
@@ -429,17 +582,25 @@ export function layoutAgentMap(
 ): MapLayout {
   const nodes: MapNode[] = [];
   const edges: MapEdge[] = [];
-  const sessionIds = new Set<string>();
   const grouped = options.groupByMachine === true;
+  const dispatch = dispatchGraph(map);
+  // Grouped, there are no depth columns: every session sits in the one column.
+  const depthOf = (id: string): number => (grouped ? 0 : (dispatch.depth.get(id) ?? 0));
   const columns = grouped ? COLUMN_X_BY_MACHINE : { ...COLUMN_X, machine: 0 };
+  // By person, the tasks of a session sit one step right of that session. Grouped, they share one column.
+  const sessionX = (id: string): number => columns.session + DEPTH_STEP * depthOf(id);
+  const taskX = (id: string): number => (grouped ? columns.task : sessionX(id) + DEPTH_STEP);
+  const waits = (id: string): boolean => dispatch.waiting.has(id);
   // Grouped, the person joins the client line of the session (it has no node).
-  const detailOf = (s: MapSession): string => (grouped ? `${s.client} \u00b7 ${s.person}` : s.client);
+  const detailOf = (s: MapSession): string => {
+    const client = withLastEvent(s.client, s, waits(s.id), nowMs);
+    return grouped ? `${client} \u00b7 ${s.person}` : client;
+  };
   let y = 0;
 
   /** Place one session and its tasks at `y`, then move `y` below the block. */
   const placeSession = (session: MapSession, personId: string | null, machineId: string | null): void => {
     const sid = `s:${session.id}`;
-    sessionIds.add(sid);
     const runs = runsOf(map, session.id);
     const hidden = hiddenQuiet(session, runs);
     let ty = y;
@@ -448,7 +609,7 @@ export function layoutAgentMap(
       nodes.push({
         id: tid,
         kind: "task",
-        x: columns.task,
+        x: taskX(session.id),
         y: ty,
         w: NODE_W.task,
         h: NODE_H.task,
@@ -469,7 +630,7 @@ export function layoutAgentMap(
       nodes.push({
         id: qid,
         kind: "quiet",
-        x: columns.task,
+        x: taskX(session.id),
         y: ty,
         w: NODE_W.quiet,
         h: NODE_H.quiet,
@@ -485,7 +646,7 @@ export function layoutAgentMap(
     nodes.push({
       id: sid,
       kind: "session",
-      x: columns.session,
+      x: sessionX(session.id),
       y,
       w: NODE_W.session,
       h: NODE_H.session,
@@ -495,8 +656,12 @@ export function layoutAgentMap(
       ref: session.id,
       sessionId: session.id,
       place: sessionPlace(session),
+      quietWait: waits(session.id),
     });
-    if (personId) edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
+    // A lane that a session dispatched hangs from that session, and not from a person.
+    if (personId && !dispatch.dispatchers.has(session.id)) {
+      edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
+    }
     if (machineId) edges.push({ id: `${machineId}>${sid}`, from: machineId, to: sid, kind: "tree" });
     y += Math.max(NODE_H.session, ty - y - GAP) + BLOCK_GAP;
   };
@@ -515,12 +680,12 @@ export function layoutAgentMap(
   });
 
   if (!grouped) {
-    for (const [person, sessions] of groupByPerson(map)) {
+    for (const [person, sessions] of groupByPerson(map, dispatch.waiting)) {
       nodes.push(personNode(person, sessions.length, y));
       for (const session of sessions) placeSession(session, `p:${person}`, null);
     }
   } else {
-    for (const group of groupByMachine(map.sessions)) {
+    for (const group of groupByMachine(map.sessions, dispatch.waiting)) {
       const machineId = `m:${group.key}`;
       nodes.push({
         id: machineId,
@@ -539,13 +704,11 @@ export function layoutAgentMap(
     }
   }
 
-  // The lines of SW-107: only a pair of sessions that this map draws.
-  for (const line of map.lines) {
+  // The lines of SW-107, cleaned by `dispatchGraph`: a pair of sessions that this map draws.
+  for (const line of dispatch.lines) {
     const from = `s:${line.from}`;
     const to = `s:${line.to}`;
-    if (from !== to && sessionIds.has(from) && sessionIds.has(to)) {
-      edges.push({ id: `${from}~${to}`, from, to, kind: "line" });
-    }
+    edges.push({ id: `${from}~${to}`, from, to, kind: "line" });
   }
   return { nodes, edges };
 }
@@ -570,6 +733,12 @@ export interface OutlineSession {
   chip: string;
   /** SW-106. The machine and the model of the session. */
   place: Place;
+  /** SW-109. The names of the sessions that dispatched this one, untrusted text. */
+  dispatchedBy: string[];
+  /** SW-109. True when the session is quiet and waits on a lane that is not quiet. */
+  quietWait: boolean;
+  /** SW-109. The last event of a quiet orchestrator, for example "3h ago". */
+  lastEvent: string | null;
   tasks: OutlineTask[];
   quiet: string | null;
 }
@@ -581,19 +750,25 @@ export interface OutlinePerson {
 
 /** The same order as the canvas: person > sessions > tasks. */
 export function agentMapOutline(map: AgentMap, nowMs: number = Date.now()): OutlinePerson[] {
-  return groupByPerson(map).map(([person, sessions]) => ({
+  const dispatch = dispatchGraph(map);
+  const nameOf = new Map(map.sessions.map((s) => [s.id, s.name]));
+  return groupByPerson(map, dispatch.waiting).map(([person, sessions]) => ({
     person,
     sessions: sessions.map((s) => {
       const runs = runsOf(map, s.id);
       const hidden = hiddenQuiet(s, runs);
+      const waits = dispatch.waiting.has(s.id);
       return {
         id: s.id,
         name: s.name,
         client: s.client,
         state: s.state,
-        word: sessionStateWord(s.state),
-        chip: sessionStateChip(s.state),
+        word: sessionStateWord(s.state, waits),
+        chip: sessionStateChip(s.state, waits),
         place: sessionPlace(s),
+        quietWait: waits,
+        dispatchedBy: (dispatch.dispatchers.get(s.id) ?? []).map((id) => nameOf.get(id) ?? ""),
+        lastEvent: isQuietWait(s.state, waits) ? relativeTime(s.last_at, nowMs) || null : null,
         tasks: runs.map((r) => ({
           runId: r.run_id,
           taskId: r.task_id,
