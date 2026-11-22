@@ -41,6 +41,10 @@ from gateway.crm_sync import engine
 from gateway.crm_sync.runs import CursorRow
 from sqlalchemy.exc import OperationalError
 
+#: The real check, kept before a fixture replaces it. ``None`` on the code of
+#: before task 3869.
+_REAL_CHECK = getattr(engine, "_check_label_drift", None)
+
 ORG = "00000000-0000-0000-0000-000000000001"
 NOW = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
 T0 = "2026-11-01T10:00:00+00:00"
@@ -116,7 +120,7 @@ class _Db:
         self.world.sql.append(sql)
         if sql == engine.MODE_SHARE_SQL:
             return _Result(scalar="mirror")
-        if sql == engine._LABEL_DRIFT_SQL:
+        if sql == getattr(engine, "_LABEL_DRIFT_SQL", None):
             if self.world.drift_fails:
                 raise OperationalError(sql, {}, Exception("canceling statement"))
             return _Result(rows=self.world.drift_rows(params or {}))
@@ -508,7 +512,7 @@ async def test_the_check_skips_a_held_a_stopped_and_a_new_module(world: World) -
     new = CursorRow(module, None, {"in_progress": True}, None, None)
     for ctx in (_ctx(cursors, holds=held), _ctx({module: stopped}), _ctx({module: new})):
         await engine._check_label_drift(ctx, {"Quotes": [STAGE]})
-    assert engine._LABEL_DRIFT_SQL not in world.sql
+    assert not any("crm_module_records r" in sql for sql in world.sql)
     assert engine.FIELD_RULES_ROW not in world.saved
 
 
@@ -636,3 +640,25 @@ async def test_a_refused_discovery_calls_no_check(
     await engine._discover(_ctx({}, budget=500))
     assert discovery["seen"]["calls"] == []
     assert world.saved == {}
+
+
+async def test_discovery_runs_the_real_check_and_queues_the_read(
+    world: World, discovery: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end through ``_discover``: the stored value "Draft" left the
+    options that discovery read now, so the module joins the label list."""
+    monkeypatch.setattr(engine, "_check_label_drift", _REAL_CHECK, raising=False)
+    await engine._discover(_ctx(_quotes(world), budget=500))
+    assert _label_list(world) == [QUOTES]
+
+
+async def test_a_refused_discovery_reads_no_value_and_queues_nothing(
+    world: World, discovery: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real check, a drifted row and a done module: the refusal still
+    sends no drift statement and writes no rules row."""
+    monkeypatch.setattr(engine, "_check_label_drift", _REAL_CHECK, raising=False)
+    discovery["script"]["discover"] = SourceError("refused")
+    await engine._discover(_ctx(_quotes(world), budget=500))
+    assert not any("crm_module_records r" in sql for sql in world.sql)
+    assert engine.FIELD_RULES_ROW not in world.saved
