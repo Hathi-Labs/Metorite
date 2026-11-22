@@ -158,6 +158,9 @@ EXPECTED_SCOPED = {
     # WS-55 SW-10a (2026-10-25): the strands of agent runs (the fingerprint
     # of a nudge, and the recovery record).
     "pm_agent_run_strands",
+    # SW-27a (2026-11-22, task 861): the named number sequences of a project
+    # and the reservations that hand each number out once.
+    "pm_project_sequences", "pm_sequence_reservations",
     # WS-STU C1 (2026-11-01): migration 323 puts `apps.organization_id` on
     # the numbered ladder, because an object's foreign key names
     # `apps (organization_id, id)`. Production has the column already. The

@@ -83,17 +83,12 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-445 · Finish the setup of the Google Cloud dev box `aroh-dev-1`, then delete the temporary office SSH rule · [AGENT]
-- **Metorite:** no task yet, so the full entry is here. The Metorite MCP was signed out in the session that built the box.
-- **Why:** D230 approved the box. The VM runs, and nothing else is set up on it. `docs/gcp_aroh.md` §5 and §6 hold the steps and the three traps of `setup.sh`.
-- **Do this:**
-  1. A person signs the box in to Tailscale, with the account of the home server. On the box, `sudo tailscale up --hostname=aroh-dev-1` prints the link.
-  2. Run `BOX_NAME=aroh-dev-1 SETUP_NO_SIGNIN=1 bash setup.sh`, then `dev_toolchain.sh` and `dev_verify.sh` as `dev`.
-  3. A person signs `dev` in to Claude, GitHub and the Metorite MCP.
-  4. Add `aroh-dev-1` to `~/.ssh/config` on the PC. Point `CI_HOME` at `ci@aroh-dev-1` when the CI lane moves there.
-  5. Delete the firewall rule `aroh-vpc-tmp-ssh-office` and the `ufw` rule for `49.204.144.74` on the box.
-- **Check:** `gcloud compute firewall-rules describe aroh-vpc-tmp-ssh-office --project=metorite-513907 --format='value(name)'` prints the name → STILL PENDING. "not found" means step 5 is done. Then confirm `ssh dev@aroh-dev-1 'bash ~/Metorite/scripts/home_server/dev_verify.sh'` passes over Tailscale.
-- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+### H-445 · Add `aroh-dev-1` to the SSH config of the owner's PC, and point CI at it when the CI lane moves there · [OWNER]
+- **Metorite:** task 3899 finished the rest of the box setup on 2026-11-22. The box is on the tailnet as `aroh-dev-1` (`100.64.118.14`), `dev_verify.sh` passed (R8: 42 passed, no skip), and both office rules are gone.
+- **Why:** only the owner's PC is left. `docs/gcp_aroh.md` §5 holds the Tailscale and IAP access.
+- **Do this:** add `aroh-dev-1` to `~/.ssh/config` on the PC. Point `CI_HOME` at `ci@aroh-dev-1` when the CI lane moves there.
+- **Check:** on the PC, `ssh dev@aroh-dev-1 'bash ~/Metorite/scripts/home_server/dev_verify.sh; tail -2 ~/dev-verify.log'` prints `FAILED: none` → DONE. Delete this entry then.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record` · trimmed 2026-11-22, task 3899
 
 ### H-446 · Ask the Google Cloud admin for four roles that the dev box needs · [OWNER]
 - **Metorite:** no task yet, so the full entry is here.
