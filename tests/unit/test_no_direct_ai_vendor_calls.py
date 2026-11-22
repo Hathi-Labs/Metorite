@@ -266,10 +266,8 @@ _BASELINE: dict[str, _Entry] = {
     # gateway. A new file, or a client with no provider, goes to GitHub.
     # Each row goes in 2449 S5, which removes every native Copilot session.
     "agents.py": _Entry(
-        {
-            "sdk agent_framework_github_copilot": 1, "sdk copilot": 1,
-            "client GitHubCopilotAgent": 1,
-        },
+        # Task 560 (H-211) took the ``copilot`` import of ``approve_all`` out.
+        {"sdk agent_framework_github_copilot": 1, "client GitHubCopilotAgent": 1},
         "The root agents.py builds one GitHubCopilotAgent [2449 S5]",
     ),
     "apps/agents/agent-app-builder/agents.py": _Entry(
