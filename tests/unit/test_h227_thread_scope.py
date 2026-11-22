@@ -479,27 +479,38 @@ def test_a_new_chat_id_with_a_colon_is_refused_before_any_purge(monkeypatch) -> 
     assert refused.value.status_code == 503
 
 
-def test_a_run_prepares_only_a_thread_with_no_row(monkeypatch) -> None:
-    """The run doors prepare the id only when the room lookup found no row.
-    A room that exists, or a lookup that failed, is never purged."""
+def test_a_run_prepares_a_thread_with_no_row_or_no_room(monkeypatch) -> None:
+    """The run doors open a new chat when the room lookup found no row. A room
+    that exists, or a lookup that failed, is never purged. H-242 step 1: a
+    room of ``None`` is "not new" ONLY for the internal caller. For any other
+    caller, the locked step itself checks for the row (``chat.open_new_session``)."""
     from types import SimpleNamespace
 
+    from acb_auth.access import SERVICE_ACCESS
+    from acb_auth.roles import UserContext, UserRole
     from gateway.routes import agent, chat
 
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
 
-    async def prepare(sid: str, _org: Any) -> None:
-        calls.append(sid)
+    async def open_new(sid: str, _org: Any, *, insert: Any) -> bool:
+        calls.append((sid, insert.__name__))
+        return True
 
-    monkeypatch.setattr(chat, "prepare_new_session", prepare)
+    monkeypatch.setattr(chat, "open_new_session", open_new)
+    member = UserContext(email="m@a.test", role=UserRole.EMPLOYEE, organization_id=ORG_A)
+    nobody = UserContext(email=None, role=UserRole.EMPLOYEE, organization_id=ORG_A)
+    service = UserContext(email="", role=UserRole.AGENT, access=SERVICE_ACCESS)
     new = SimpleNamespace(unknown_session=True, resolve_failed=False)
-    for room in (None, SimpleNamespace(unknown_session=False, resolve_failed=False),
+    for room in (SimpleNamespace(unknown_session=False, resolve_failed=False),
                  SimpleNamespace(unknown_session=True, resolve_failed=True)):
-        asyncio.run(agent._prepare_if_new_thread(room, "t-1", ORG_A))
-    asyncio.run(agent._prepare_if_new_thread(new, "", ORG_A))
+        asyncio.run(agent._prepare_if_new_thread(room, "t-1", ORG_A, member, "x"))
+    asyncio.run(agent._prepare_if_new_thread(new, "", ORG_A, member, "x"))
+    asyncio.run(agent._prepare_if_new_thread(None, "t-1", ORG_A, service, "x"))
     assert calls == []
-    asyncio.run(agent._prepare_if_new_thread(new, "t-1", ORG_A))
-    assert calls == ["t-1"]
+    asyncio.run(agent._prepare_if_new_thread(new, "t-1", ORG_A, member, "x"))
+    asyncio.run(agent._prepare_if_new_thread(None, "t-2", ORG_A, member, "x"))
+    asyncio.run(agent._prepare_if_new_thread(None, "t-3", ORG_A, nobody, "x"))
+    assert calls == ["t-1", "t-2", "t-3"], calls
 
 
 @pytest.mark.parametrize("door", ["sync", "async"])
@@ -973,8 +984,9 @@ def test_a_deleted_chat_leaves_nothing_for_a_new_session_with_its_id(graph_as_ap
     _seed_blob(a, carols, b"CAROL", session_id="s-carol", actor="agent")
     (ws / carols).write_bytes(b"CAROL + ALICE")
     _seed_blob(a, carols, b"CAROL + ALICE", session_id=sid, actor="agent")
-    # Fix round 3: the chat began this one, and Bob's session wrote its bytes
-    # later (main let any session do that). The bytes are Bob's to keep.
+    # The chat began this one, and Bob's session wrote its bytes later (main
+    # let any session do that). H-242 step 2: those bytes can hold the chat's
+    # text, so the purge deletes the file and every row at its path.
     rewritten = f"outputs/rw-{uuid.uuid4().hex[:6]}.md"
     sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
     _seed_blob(a, rewritten, b"ALICE FIRST", session_id=sid, actor="agent")
@@ -999,13 +1011,10 @@ def test_a_deleted_chat_leaves_nothing_for_a_new_session_with_its_id(graph_as_ap
     assert (ws / carols).read_bytes() == b"CAROL + ALICE", "a file Alice did not begin"
     for rel in (upload, doc, began):
         assert _rows(graph_as_app, rel) == [], rel
-    # Bob's later bytes stay, and only the chat's rows go. Bob's write is now
-    # the oldest, and it wrote these bytes, so Bob's session holds only what
-    # it wrote. Alice's bytes are not on disk, and her rows are gone.
-    assert (ws / rewritten).read_bytes() == b"BOB AFTER", "the purge deleted Bob's bytes"
-    left = _history(bob, sbob, rewritten)
-    assert left and all(h["session_id"] == sbob for h in left), left
-    assert bob.get(f"/agent/workspace/{sbob}/file", params={"path": rewritten}).text == "BOB AFTER"
+    # H-242 step 2: no session inherits a file that the chat began.
+    assert not (ws / rewritten).exists(), "the purge kept a file that the chat began"
+    assert _rows(graph_as_app, rewritten) == [] and _history_rows(graph_as_app, rewritten) == []
+    assert bob.get(f"/agent/workspace/{sbob}/file", params={"path": rewritten}).status_code == 404
 
     # Bob chooses the same id for a new chat of his own.
     again = bob.post("/chat/sessions", json={
@@ -1179,13 +1188,15 @@ def test_a_chat_deleted_before_the_purge_hands_nothing_to_a_new_chat(
     if door == "chat-create":
         assert _make_chat(bob, sid, "Bob").status_code == 200
     else:
-        # The run door prepares the id. The run's mint then makes the row,
-        # as `_ensure_session` does, with no purge of its own.
+        # The run door prepares the id. Since H-242 it makes the row itself,
+        # in the step that purges. The run's mint then finds the row, as
+        # `_ensure_session` does (ON CONFLICT DO NOTHING), with no purge.
         asyncio.run(_guard_run_thread(_user(_BOB, a), sid))
         with graph_as_app.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO chat_session (id, user_id, agent_name, organization_id) "
-                "VALUES (:s, :u, :a, CAST(:o AS uuid))"), {"s": sid, "u": _BOB, "a": _S, "o": a})
+                "VALUES (:s, :u, :a, CAST(:o AS uuid)) ON CONFLICT (id) DO NOTHING"),
+                {"s": sid, "u": _BOB, "a": _S, "o": a})
     slug = thread_slug(sid)
     for rel in (f"inputs/{slug}", f"outputs/{slug}", began):
         assert not (ws / rel).exists(), rel
@@ -1312,6 +1323,249 @@ def test_a_personal_agent_keeps_its_flat_folders(graph_as_app, disk) -> None:  #
     put = alice.put(f"/agent/workspace/{sid}/file", params={"path": "outputs/new.md"},
                     json={"content": "NEW"})
     assert put.status_code == 200, put.text
+
+
+# ═════════════════════ H-242: three edges of the new-chat purge ═════════════
+
+def _left_by_a_deleted_chat(promoted, disk_: Any, org: str, sid: str) -> tuple[str, str, str]:  # noqa: F811
+    """Alice's chat *sid* with an upload, a document and a loose file it began.
+    Then main's delete: the row goes, and its files and rows stay."""
+    from sqlalchemy import text
+
+    alice = _chat_and_files(_user(_ALICE, org))
+    assert _make_chat(alice, sid, "Alice").status_code == 200
+    name = f"payslip-{uuid.uuid4().hex[:6]}.txt"
+    up = alice.post(f"/agent/workspace/{sid}/upload", files={"files": (name, b"ALICE PAYSLIP")})
+    assert up.status_code == 200, up.text
+    doc = _in_run(disk_, org, sid, _ALICE, lambda: wa.write_artifact("plan.md", "ALICE PLAN"))["path"]
+    ws = _tenant_dir(org)
+    began = f"outputs/old-{uuid.uuid4().hex[:6]}.md"
+    (ws / began).write_bytes(b"ALICE OLD PLAN")
+    _seed_blob(org, began, b"ALICE OLD PLAN", session_id=sid, actor="agent")
+    with promoted.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM chat_session WHERE id = :s"), {"s": sid})
+    return up.json()[0]["path"], doc, began
+
+
+def _all_gone(promoted, org: str, sid: str, paths: tuple[str, ...]) -> None:  # noqa: F811
+    from acb_skills.agent_paths import thread_slug
+
+    ws, slug = _tenant_dir(org), thread_slug(sid)
+    for rel in (f"inputs/{slug}", f"outputs/{slug}", paths[-1]):
+        assert not (ws / rel).exists(), rel
+    for rel in paths:
+        assert _rows(promoted, rel) == [] and _history_rows(promoted, rel) == [], rel
+
+
+def _rooms_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gateway.rooms as rooms
+
+    def _down(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the room layer is gone")
+
+    monkeypatch.setattr(rooms, "resolve_room_access", _down)
+
+
+@_DB_GATE
+@pytest.mark.parametrize("why", ["no-email", "lookup-raised"])
+def test_a_null_room_still_purges_a_new_id(graph_as_app, disk, monkeypatch, why) -> None:  # noqa: F811
+    """H-242 step 1. ``_resolve_room`` gives ``None`` to a caller with no email,
+    and when the room lookup raises. On main the run door read ``None`` as
+    "not new", so the run's mint made the row over the files of a deleted
+    chat. Only the internal caller may skip the step now."""
+    from gateway.routes.agent import _guard_run_thread
+
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    left = _left_by_a_deleted_chat(graph_as_app, disk, a, sid)
+    if why == "no-email":
+        caller = _user(None, a)
+    else:
+        _rooms_down(monkeypatch)
+        caller = _user(_BOB, a)
+    asyncio.run(_guard_run_thread(caller, sid))
+    _all_gone(graph_as_app, a, sid, left)
+
+
+@_DB_GATE
+def test_a_null_room_on_a_chat_that_exists_removes_nothing(graph_as_app, disk, monkeypatch) -> None:  # noqa: F811
+    """The inverse of H-242 step 1. A ``None`` room on an id with a row is no
+    new chat, so the step removes nothing of it."""
+    from gateway.routes.agent import _guard_run_thread
+
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    alice = _chat_and_files(_user(_ALICE, a))
+    assert _make_chat(alice, sid, "Alice").status_code == 200
+    up = alice.post(f"/agent/workspace/{sid}/upload", files={"files": ("b.txt", b"ALICE")})
+    assert up.status_code == 200, up.text
+    upload = up.json()[0]["path"]
+    _rooms_down(monkeypatch)
+    for caller in (_user(None, a), _user(_BOB, a)):
+        asyncio.run(_guard_run_thread(caller, sid))
+    assert (_tenant_dir(a) / upload).read_bytes() == b"ALICE"
+    assert _rows(graph_as_app, upload), "the step deleted a row of a live chat"
+
+
+_NOTES = b"# Alice's notes" + bytes([10]) + b"Offer to Ravi: 42 lakh" + bytes([10])
+
+
+@_DB_GATE
+def test_the_purge_deletes_a_file_that_another_session_rewrote(graph_as_app, disk) -> None:  # noqa: F811
+    """H-242 step 2. Alice's chat began a loose file. Bob's ``save_note`` of main
+    appended to it, so the bytes on disk still hold Alice's text. On main the
+    purge kept the file and deleted only Alice's rows, and Bob's session then
+    owned it. Now the purge deletes the file and every row at its path."""
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    alice = _chat_and_files(_user(_ALICE, a))
+    bob = _chat_and_files(_user(_BOB, a))
+    assert _make_chat(alice, sid, "Alice").status_code == 200
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    assert bob.get(f"/agent/workspace/{sbob}").status_code == 200  # makes the tenant dir
+    ws = _tenant_dir(a)
+    rewritten = f"outputs/rw-{uuid.uuid4().hex[:6]}.md"
+    appended = _NOTES + b"- planted by bob"
+    (ws / "outputs").mkdir(parents=True, exist_ok=True)
+    _seed_blob(a, rewritten, _NOTES, session_id=sid, actor="agent")
+    (ws / rewritten).write_bytes(appended)
+    _seed_blob(a, rewritten, appended, session_id=sbob, actor="agent")
+
+    gone = alice.delete(f"/chat/sessions/{sid}")
+    assert gone.status_code == 204, gone.text
+    got = bob.get(f"/agent/workspace/{sbob}/file", params={"path": rewritten})
+    assert got.status_code == 404, f"Bob reads Alice's text: {got.status_code} {got.text[:60]}"
+    assert not (ws / rewritten).exists(), "the purge kept bytes that hold Alice's text"
+    assert _rows(graph_as_app, rewritten) == [] and _history_rows(graph_as_app, rewritten) == []
+    assert rewritten not in _files(bob, sbob)
+
+
+@_DB_GATE
+def test_a_run_door_makes_the_row_so_a_late_create_purges_nothing(graph_as_app, disk) -> None:  # noqa: F811
+    """H-242 step 3, residual 6 of §22.9. A run door purged a new id, and the
+    mint timed out, so the run wrote with no row. A ``POST /chat/sessions`` in
+    that window purged the run's first document. Now the run door makes the
+    row in the step that purges, so the create finds a row and purges
+    nothing."""
+    from gateway.routes.agent import _guard_run_thread
+    from sqlalchemy import text
+
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    bob = _chat_and_files(_user(_BOB, a))
+    asyncio.run(_guard_run_thread(_user(_BOB, a), sid))
+    # No mint here: the mint timed out. The run writes its first document.
+    doc = _in_run(disk, a, sid, _BOB, lambda: wa.write_artifact("first.md", "BOB FIRST"))["path"]
+    assert _make_chat(bob, sid, "Bob").status_code == 200
+    assert _rows(graph_as_app, doc), "the late create purged the run's document"
+    assert (_tenant_dir(a) / doc).read_text(encoding="utf-8") == "BOB FIRST"
+    assert doc in _files(bob, sid)
+    with graph_as_app.admin_engine.connect() as c:
+        owner = c.execute(text(
+            "SELECT s.user_id, p.role FROM chat_session s JOIN chat_session_participant p "
+            "ON p.session_id = s.id WHERE s.id = :s"), {"s": sid}).fetchall()
+    assert [(r[0], r[1]) for r in owner] == [(_BOB, "owner")], owner
+
+
+@_DB_GATE
+def test_a_run_door_answers_503_when_it_cannot_make_the_row(graph_as_app, disk, monkeypatch) -> None:  # noqa: F811
+    """H-242 step 3. The row is no longer best effort for a new thread. When
+    the insert fails, the run door answers 503, and the run does not start."""
+    from fastapi import HTTPException
+    from gateway.routes import chat
+    from gateway.routes.agent import _guard_run_thread
+    from sqlalchemy import text
+
+    def _broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the insert failed")
+
+    monkeypatch.setattr(chat, "_ensure_session_rows", _broken)
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(_guard_run_thread(_user(_BOB, a), sid))
+    assert refused.value.status_code == 503
+    with graph_as_app.admin_engine.connect() as c:
+        assert c.execute(text("SELECT 1 FROM chat_session WHERE id = :s"), {"s": sid}).first() is None
+
+
+def _advisory_waiters(promoted) -> int:  # noqa: F811
+    from sqlalchemy import text
+
+    with promoted.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+        )).scalar() or 0)
+
+
+@_DB_GATE
+def test_a_create_that_races_a_run_door_never_purges_the_runs_files(
+    graph_as_app, disk, monkeypatch,  # noqa: F811
+) -> None:
+    """H-242 step 3, the race itself. Two doors make the same new chat at once:
+    a run door (A) and ``POST /chat/sessions`` (B). Both read "no row". A
+    purges, and a pause hook holds A there. The run's first document lands.
+    Then B runs. On main B purged that document. Now B waits on the advisory
+    lock of the id, finds A's row when A commits, and purges nothing.
+
+    The pause is a controlled hook in ``chat.prepare_new_session``, the purge
+    step of each door. So the order is fixed, and the test is deterministic."""
+    import threading
+    import time
+
+    from gateway.routes import chat
+    from gateway.routes.agent import _guard_run_thread
+
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    real = chat.prepare_new_session
+    purged: list[str] = []
+    a_purged, go = threading.Event(), threading.Event()
+
+    async def _hooked(session_id: str, org: Any, **kw: Any) -> None:
+        first = not purged
+        purged.append("A" if first else "B")
+        await real(session_id, org, **kw)
+        if first:
+            a_purged.set()
+            await asyncio.to_thread(go.wait, 30)
+
+    monkeypatch.setattr(chat, "prepare_new_session", _hooked)
+    errors: list[BaseException] = []
+    answers: list[int] = []
+
+    def _door_a() -> None:
+        try:
+            asyncio.run(_guard_run_thread(_user(_BOB, a), sid))
+        except BaseException as exc:  # reported below
+            errors.append(exc)
+
+    def _door_b() -> None:
+        try:
+            answers.append(_make_chat(_chat_and_files(_user(_BOB, a)), sid, "Bob").status_code)
+        except BaseException as exc:  # reported below
+            errors.append(exc)
+
+    door_a = threading.Thread(target=_door_a, daemon=True)
+    door_a.start()
+    assert a_purged.wait(30), errors
+    # The run's first document lands after A purged.
+    doc = _in_run(disk, a, sid, _BOB, lambda: wa.write_artifact("first.md", "BOB FIRST"))["path"]
+    door_b = threading.Thread(target=_door_b, daemon=True)
+    door_b.start()
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if "B" in purged or _advisory_waiters(graph_as_app) or not door_b.is_alive():
+            break
+        time.sleep(0.05)
+    go.set()
+    door_a.join(30)
+    door_b.join(30)
+    assert not errors, errors
+    assert answers == [200], answers
+    assert purged == ["A"], f"door B purged too: {purged}"
+    assert _rows(graph_as_app, doc), "door B purged the run's document"
+    assert (_tenant_dir(a) / doc).read_text(encoding="utf-8") == "BOB FIRST"
 
 
 # ═════════════════════════ the sandbox_docker half ══════════════════════════
