@@ -487,11 +487,12 @@ class TestEveryEmailHandlerProvesOwnership:
         assert routes.get("download_attachment") is True
         assert routes.get("attachment_text") is True
 
-    def test_the_signature_writer_proves_send_access_itself(self):
+    def test_the_signature_writer_proves_mailbox_access_itself(self):
         """WS-17 SG-3a (§23.4, §23.3.10). The read and the write of the
         signature row of one mailbox each call ``_assert_account_owner`` in
-        their own body. They are NOT exempt: the row is keyed by the mailbox,
-        so only a member who may send from it may read or change it."""
+        their own body. They are NOT exempt: the row is keyed by the mailbox.
+        Only a member who may send from it may read it, and only a member who
+        may manage it may change it (``shared_mailbox.md`` §4.3)."""
         path = _EMAIL / "signature_settings.py"
         routes = dict(handlers_of(path.read_text(encoding="utf-8-sig")))
         assert routes == {"get_signature_settings": True,

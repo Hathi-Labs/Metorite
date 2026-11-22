@@ -17,7 +17,8 @@ superuser, no BYPASSRLS). It pins:
   renders while the flag holds the org, and a row of another org is never
   read. The settings GET and the PUT answer carry the same bytes as main.
 * The writer of SG-3a (``signature_settings.py``, §23.3.10) on a real
-  database. Organization A cannot write or read a row of organization B. The
+  database. Organization A cannot write or read a row of organization B. A
+  ``send`` grantee of a shared mailbox reads the row and cannot write it. The
   writer refuses an image address of another org, and a value that a CHECK
   refuses is a 422 that writes nothing. The tenant comes from the bound
   session, and the send carries what the PUT answered.
@@ -454,6 +455,56 @@ class TestTheWriterOnRealSql:
                 await _as(promoted, promoted.org_b, call)
             assert caught.value.status_code == 404
         assert _row(promoted.admin_engine, acc) is None
+
+    async def test_a_send_grantee_of_a_shared_mailbox_reads_but_cannot_write(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """``shared_mailbox.md`` §4.3: a ``send`` member may not change the
+        signature. The PUT needs ``manage``, so the ``send`` grantee gets 404
+        and the row does not change. The GET needs ``send``, so the same
+        grantee reads the row. A ``manage`` grantee writes it."""
+        _flag(monkeypatch, "*")
+        monkeypatch.setattr(get_settings(), "email_shared_mailbox", True, raising=False)
+        tag = uuid.uuid4().hex[:8]
+        sender, manager = f"sam-{tag}@sg3a.test", f"mia-{tag}@sg3a.test"
+        with promoted.admin_engine.begin() as c:
+            acc = str(c.execute(text(
+                "INSERT INTO email_accounts (user_id, provider, email_address, "
+                "credentials_encrypted, initial_sync_done, organization_id, shared_since) "
+                "VALUES (:u, 'microsoft', :a, 'x', true, CAST(:o AS uuid), now()) "
+                "RETURNING id"),
+                {"u": f"own-{tag}@sg3a.test", "a": f"sales-{tag}@sg3a.test",
+                 "o": promoted.org_b}).scalar_one())
+            for subject, level in ((sender, "send"), (manager, "manage")):
+                c.execute(text(
+                    "INSERT INTO email_mailbox_grants (organization_id, account_id, "
+                    "subject, level, created_by) VALUES (CAST(:o AS uuid), "
+                    "CAST(:a AS uuid), :s, :l, 'admin@sg3a.test')"),
+                    {"o": promoted.org_b, "a": acc, "s": subject, "l": level})
+        try:
+            _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                           reply_mode="short")
+            before = _row(promoted.admin_engine, acc)
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                    _body(acc, mode="custom", reply_mode="none"),
+                    user=_member(sender, promoted.org_b)))
+            assert caught.value.status_code == 404
+            assert _row(promoted.admin_engine, acc) == before
+            got = await _as(promoted, promoted.org_b, lambda: writer.get_signature_settings(
+                account_id=acc, user=_member(sender, promoted.org_b)))
+            assert (got["mode"], got["reply_mode"]) == ("template", "short")
+            put = await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                _body(acc, mode="custom", reply_mode="none"),
+                user=_member(manager, promoted.org_b)))
+            assert (put["mode"], put["reply_mode"]) == ("custom", "none")
+            assert _row(promoted.admin_engine, acc)[1:5] == (
+                "custom", "classic", _FIELDS, "none")
+        finally:
+            # The grants and the signature row go with the mailbox (ON DELETE CASCADE).
+            with promoted.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                          {"a": acc})
 
     async def test_an_image_address_of_another_org_is_a_422(
         self, promoted, app_engine, monkeypatch,  # noqa: F811

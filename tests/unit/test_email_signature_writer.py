@@ -7,23 +7,29 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §23.3.10, §23.4 and
 This file pins, with no database:
 
 * **Dark.** With ``EMAIL_SIGNATURE_TEMPLATES_ORGS`` off, both routes answer
-  404 to any request, a bad body too, and open no session.
+  404, a body that breaks the model too. One case answers 422: a body with a
+  JSON content type that does not parse, because FastAPI parses it before the
+  dependency runs. No dark request opens a session.
 * **The owner check.** Both routes read the mailbox through
   ``resolve_account_filter(required=True)`` and call
-  ``_assert_account_owner(level="send")`` in the session. A caller with no
-  send access gets 404, and no statement writes.
+  ``_assert_account_owner`` in the session. The GET needs ``send``, and the
+  PUT needs ``manage``, the default (``shared_mailbox.md`` §4.3). A caller
+  with no access at that level gets 404, and no statement writes.
 * **The image rule.** An image is stored only at
   ``public_base_url() + "/email/signature-image/" + <bound tenant> + "/"``,
   in the renderer's hosted shape. Another host, another org, ``http:``,
   ``data:`` and an unset base each give 422 with a sentence.
 * **The body.** ``company``, a ``fields`` object past 16384 bytes, a
-  ``fields`` value that is not an object, a bad layout, a bad
-  ``reply_mode`` and an unknown key each give 422. A value that the database
-  refuses gives a 4xx, never 500.
-* **The answer.** The PUT answer holds the saved row, and its ``html`` is the
-  signature that the send of the mailbox carries.
+  ``fields`` value that is not an object, a ``fields`` value deeper than
+  ``MAX_FIELDS_DEPTH``, a bad layout, a bad ``reply_mode`` and an unknown key
+  each give 422. A value that the database refuses gives a 4xx, never 500.
+* **The answer.** The PUT answer holds the saved row. For a ``template`` row,
+  its ``html`` is the signature that the send of the mailbox carries. For a
+  ``custom`` row, the send carries the stored HTML, not that ``html``.
 * **One seam.** The module imports ``_tenant_session`` and opens no connection
   of its own.
+* **One writer.** No product file outside ``signature.py`` holds SQL that
+  writes ``email_signature_settings`` (a source scan of string literals).
 
 ``test_email_signature_settings_r8.py`` runs the SQL on a real Postgres (R8).
 """
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,7 +59,12 @@ from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError
 
 from tests.unit.test_email_signature_resolver import _Db as _ResolverDb
-from tests.unit.test_email_signature_resolver import _Result, _send
+from tests.unit.test_email_signature_resolver import (
+    _literals,
+    _product_files,
+    _Result,
+    _send,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _MODULE = _ROOT / "apps/services/gateway/gateway/routes/email/signature_settings.py"
@@ -158,12 +170,13 @@ async def _put(**over: Any) -> dict[str, Any]:
     return await ss.put_signature_settings(_req(**over), user=_USER)
 
 
-def _client() -> TestClient:
-    """The real email router, mounted as ``gateway/main.py`` mounts it."""
+def _client(*, raise_server_exceptions: bool = True) -> TestClient:
+    """The real email router, mounted as ``gateway/main.py`` mounts it. With
+    ``raise_server_exceptions`` false, a fault answers 500 as in production."""
     app = FastAPI(dependencies=[require_authenticated(public=())])
     app.include_router(email_pkg.router)
     app.dependency_overrides[get_current_user] = lambda: _USER
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 _GOOD_BODY = {"account_id": _ACC, "mode": "template", "layout": "classic",
@@ -179,7 +192,7 @@ _GOOD_BODY = {"account_id": _ACC, "mode": "template", "layout": "classic",
     {**_GOOD_BODY, "organization_id": _OTHER_ORG},
     {**_GOOD_BODY, "fields": "x"},
 ])
-def test_with_the_flag_off_both_routes_answer_404_to_any_request(
+def test_with_the_flag_off_both_routes_answer_404_to_a_body_that_parses(
     monkeypatch: pytest.MonkeyPatch, wired: SimpleNamespace, body: dict,
 ) -> None:
     _flag(monkeypatch, "")
@@ -188,6 +201,29 @@ def test_with_the_flag_off_both_routes_answer_404_to_any_request(
     assert client.get("/email/signature/settings",
                       params={"account_id": _ACC}).status_code == 404
     assert client.get("/email/signature/settings").status_code == 404
+    assert wired.sessions.opened == 0 and wired.db.sql == []
+
+
+def test_with_the_flag_off_a_body_that_is_not_json_is_a_422_that_opens_nothing(
+    monkeypatch: pytest.MonkeyPatch, wired: SimpleNamespace,
+) -> None:
+    """FastAPI parses the JSON before the route dependency runs, so the flag
+    cannot answer first. The 422 tells the caller nothing about the flag, and
+    no session opens."""
+    _flag(monkeypatch, "")
+    answer = _client().put("/email/signature/settings", content=b"{not json",
+                           headers={"content-type": "application/json"})
+    assert answer.status_code == 422
+    assert wired.sessions.opened == 0 and wired.db.sql == []
+
+
+def test_with_the_flag_off_a_deep_body_is_a_404(
+    monkeypatch: pytest.MonkeyPatch, wired: SimpleNamespace,
+) -> None:
+    """The flag dependency runs before the depth dependency."""
+    _flag(monkeypatch, "")
+    answer = _put_raw(_client(), _deep_body(1000))
+    assert answer.status_code == 404
     assert wired.sessions.opened == 0 and wired.db.sql == []
 
 
@@ -225,17 +261,30 @@ def test_the_flag_is_on_for_the_org_of_the_list_only(
 # ── 2. The owner check ──────────────────────────────────────────────────────
 
 
-async def test_the_put_proves_send_access_before_it_writes(wired: SimpleNamespace) -> None:
+async def test_the_put_proves_manage_access_before_it_writes(wired: SimpleNamespace) -> None:
+    """A ``send`` member may not change the signature (``shared_mailbox.md``
+    §4.3). So the PUT names no level, and ``_assert_account_owner`` checks its
+    default ``manage``, as ``PUT /email/assistant/settings`` does."""
     out = await _put()
     assert wired.owner.await_args.args[1:] == (_ACC, _ME)
-    assert wired.owner.await_args.kwargs == {"level": "send"}
+    assert wired.owner.await_args.kwargs == {}
     assert wired.sessions.opened == 1
     assert out["mode"] == "template" and wired.db.writes()
 
 
-@pytest.mark.parametrize("route", ["get", "put"])
-async def test_a_caller_with_no_send_access_gets_404_and_nothing_is_written(
-    wired: SimpleNamespace, route: str,
+def test_the_default_level_of_the_owner_check_is_manage() -> None:
+    """The PUT relies on this default. A change of it must fail here."""
+    import inspect
+
+    from gateway.routes.email import core
+
+    level = inspect.signature(core._assert_account_owner).parameters["level"]
+    assert level.default == "manage"
+
+
+@pytest.mark.parametrize(("route", "level"), [("get", {"level": "send"}), ("put", {})])
+async def test_a_caller_with_no_access_at_the_level_gets_404_and_nothing_is_written(
+    wired: SimpleNamespace, route: str, level: dict,
 ) -> None:
     wired.owner.side_effect = HTTPException(status_code=404, detail="Account not found")
     with pytest.raises(HTTPException) as caught:
@@ -244,7 +293,7 @@ async def test_a_caller_with_no_send_access_gets_404_and_nothing_is_written(
         else:
             await ss.get_signature_settings(account_id=_ACC, user=_USER)
     assert caught.value.status_code == 404
-    assert wired.owner.await_args.kwargs == {"level": "send"}
+    assert wired.owner.await_args.kwargs == level
     assert wired.db.writes() == []
     assert not any("email_signature_settings" in s for s in wired.db.sql)
 
@@ -448,6 +497,106 @@ def test_a_bad_body_through_the_router_is_a_4xx(wired: SimpleNamespace) -> None:
     assert wired.db.writes() == []
 
 
+def _deep_body(depth: int, *, shape: str = "object") -> bytes:
+    """A PUT body whose ``fields`` holds objects or lists ``depth`` levels
+    deep. The ``fields`` object is level 1. The body is raw bytes, so no
+    encoder of the client can fail first."""
+    open_, close = ('{"a": ', "}") if shape == "object" else ("[", "]")
+    value = open_ * (depth - 1) + '"x"' + close * (depth - 1)
+    head = json.dumps({"account_id": _ACC, "mode": "custom", "layout": None,
+                       "reply_mode": "full"})[:-1]
+    return f'{head}, "fields": {{"name": "Jane Doe", "deep": {value}}}}}'.encode()
+
+
+def _put_raw(client: TestClient, body: bytes) -> Any:
+    return client.put("/email/signature/settings", content=body,
+                      headers={"content-type": "application/json"})
+
+
+@pytest.mark.parametrize(("depth", "shape"), [
+    (99, "object"), (99, "list"), (200, "object"), (1000, "object"), (1000, "list"),
+])
+def test_a_deep_fields_value_is_a_422_and_the_row_stays_readable(
+    wired: SimpleNamespace, depth: int, shape: str,
+) -> None:
+    """Verifier finding P2. A value about 99 levels deep passed the model, and
+    the row committed. Then the answer serializer failed, so the PUT and each
+    later GET answered 500. About 970 levels deep, ``pg_text.storable``
+    raised RecursionError. This test runs the real router and its answer
+    serializer, which the direct calls above never run."""
+    client = _client(raise_server_exceptions=False)
+    good = client.put("/email/signature/settings", json=_GOOD_BODY)
+    assert good.status_code == 200, good.text[:300]
+    saved = list(wired.db.writes())
+    answer = _put_raw(client, _deep_body(depth, shape=shape))
+    assert answer.status_code == 422, answer.text[:300]
+    assert ss.NOT_JSON in answer.text
+    assert wired.db.writes() == saved
+    got = client.get("/email/signature/settings", params={"account_id": _ACC})
+    assert got.status_code == 200, got.text[:300]
+    assert got.json()["fields"] == _FIELDS
+
+
+def test_a_body_past_the_limit_of_the_json_parser_is_a_400_that_writes_nothing(
+    wired: SimpleNamespace,
+) -> None:
+    client = _client(raise_server_exceptions=False)
+    answer = _put_raw(client, _deep_body(5000))
+    assert answer.status_code == 400, answer.text[:300]
+    # Under another content type, FastAPI does not parse the body, and the
+    # depth dependency meets the parser's RecursionError. It still is a 4xx.
+    for depth in (1000, 5000):
+        other = client.put("/email/signature/settings", content=_deep_body(depth),
+                           headers={"content-type": "text/plain"})
+        assert 400 <= other.status_code < 500, (depth, other.text[:300])
+    assert wired.db.writes() == [] and wired.sessions.opened == 0
+
+
+def test_the_depth_bound_holds_the_deepest_layout_field_and_stops_at_8(
+    wired: SimpleNamespace,
+) -> None:
+    """The deepest layout field is level 3 (``links``, then one link). The
+    bound of 8 leaves room for the form, and stays far under the 99 levels
+    where the answer serializer fails."""
+    assert ss.MAX_FIELDS_DEPTH == 8
+    links = [{"label": "LinkedIn", "url": "https://linkedin.com/in/jane"}]
+    assert _req(fields={**_FIELDS, "links": links}).fields["links"] == links
+    client = _client(raise_server_exceptions=False)
+    for shape in ("object", "list"):
+        at = _put_raw(client, _deep_body(ss.MAX_FIELDS_DEPTH, shape=shape))
+        assert at.status_code == 200, at.text[:300]
+        got = client.get("/email/signature/settings", params={"account_id": _ACC})
+        assert got.status_code == 200, got.text[:300]
+        over = _put_raw(client, _deep_body(ss.MAX_FIELDS_DEPTH + 1, shape=shape))
+        assert over.status_code == 422, over.text[:300]
+        assert ss.NOT_JSON in over.text
+
+
+def test_the_depth_walk_never_recurses() -> None:
+    value: Any = "x"
+    for _ in range(5000):
+        value = {"a": [value]}
+    assert ss.too_deep(value) is True
+    assert ss.too_deep({"a": [{"b": "x"}]}, limit=3) is False
+    assert ss.too_deep({"a": [{"b": {}}]}, limit=3) is True
+
+
+def test_the_model_refuses_a_deep_value_before_storable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct call skips the route dependency, so the model must refuse
+    first. ``storable`` never sees the value, so no ``RecursionError``."""
+    seen: list[Any] = []
+    monkeypatch.setattr(ss, "storable", lambda v: seen.append(v) or v)
+    value: Any = "x"
+    for _ in range(5000):
+        value = {"a": value}
+    with pytest.raises(ValidationError) as caught:
+        _req(fields={"name": "Jane Doe", "deep": value})
+    assert ss.NOT_JSON in str(caught.value)
+    assert seen == []
+
+
 def test_the_literals_are_the_vocabularies_of_the_resolver() -> None:
     model = ss.SignatureSettingsRequest.model_fields
     assert get_args(model["mode"].annotation) == sig.SIGNATURE_MODES
@@ -616,3 +765,67 @@ def test_the_seam_scan_can_go_red(source: str) -> None:
 
 def test_the_account_reader_is_the_one_of_account_ref() -> None:
     assert ss.resolve_account_filter is account_ref.resolve_account_filter
+
+
+# ── 9. One writer of email_signature_settings (R7) ─────────────────────────
+#
+# Gateway AGENTS.md: ``signature.py`` is the ONE writer of the table
+# (``save_settings``). ``admin/members.py`` names the table in its purge map,
+# and the foreign key cascade does that delete, so it holds no write SQL.
+# ⚠️ Limit of the scan: it reads string literals, and a ``+`` of literals. A
+# table name that the code builds at run time passes it.
+
+_WRITE = re.compile(
+    r"\b(?:INSERT\s+INTO|UPDATE(?:\s+ONLY)?|DELETE\s+FROM(?:\s+ONLY)?|MERGE\s+INTO"
+    r"|TRUNCATE(?:\s+TABLE)?(?:\s+ONLY)?)\s+email_signature_settings\b",
+    re.IGNORECASE)
+
+
+def settings_writes(source: str) -> list[int]:
+    """The line of each string literal that writes ``email_signature_settings``."""
+    return sorted({line for line, s in _literals(ast.parse(source))
+                   if _WRITE.search(" ".join(s.split()))})
+
+
+def test_no_code_outside_signature_py_writes_the_settings_table() -> None:
+    found = {}
+    for path in _product_files():
+        if path == _SIGNATURE_PY:
+            continue
+        lines = settings_writes(path.read_text(encoding="utf-8-sig"))
+        if lines:
+            found[path.relative_to(_ROOT).as_posix()] = lines
+    assert not found, (
+        "SQL writes email_signature_settings outside routes/email/signature.py: "
+        f"{found}. Call signature.save_settings, the one writer.")
+
+
+def test_signature_py_holds_the_one_write() -> None:
+    assert settings_writes(_SIGNATURE_PY.read_text(encoding="utf-8")) != []
+
+
+@pytest.mark.parametrize("source", [
+    'X = "INSERT INTO email_signature_settings (account_id) VALUES (1)"\n',
+    'X = "insert into  email_signature_settings (account_id) values (1)"\n',
+    'X = "UPDATE email_signature_settings SET mode = \'custom\'"\n',
+    'X = "UPDATE ONLY email_signature_settings SET mode = 1"\n',
+    'X = "DELETE FROM email_signature_settings WHERE account_id = :a"\n',
+    'X = "DELETE\\n  FROM email_signature_settings"\n',
+    'X = "TRUNCATE email_signature_settings"\n',
+    'X = "MERGE INTO email_signature_settings s USING x ON true"\n',
+    'X = "INSERT INTO " + "email_signature_settings (mode) VALUES (1)"\n',
+    'X = """WITH a AS (SELECT 1)\nUPDATE email_signature_settings SET mode = 1"""\n',
+])
+def test_the_writer_scan_sees_a_write(source: str) -> None:
+    assert settings_writes(source) == [1]
+
+
+@pytest.mark.parametrize("source", [
+    'X = "SELECT mode FROM email_signature_settings WHERE account_id = :aid"\n',
+    'X = ("email_signature_settings", "email_sync_log")\n',
+    'X = "INSERT INTO email_signature_images (token) VALUES (1)"\n',
+    'X = "UPDATE email_assistant_settings SET signature = :s"\n',
+    'X = "DELETE FROM email_accounts WHERE id = :id"\n',
+])
+def test_the_writer_scan_passes_a_read_and_another_table(source: str) -> None:
+    assert settings_writes(source) == []

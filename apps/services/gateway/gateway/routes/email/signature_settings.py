@@ -11,17 +11,28 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §23.3.10, §23.3.3 and
   with the ``html`` and the ``text`` that ``signature_render.render`` gives.
 
 Both routes are dark. While ``signature.templates_on`` is false, each answers
-404 before FastAPI reads the body (:func:`_dark_route`), and nothing reads or
-writes the table. Both read the mailbox with ``resolve_account_filter`` and
-prove send access with ``_assert_account_owner(level="send")`` inside
-``_tenant_session()``. A caller with no send access gets 404, and nothing is
-written.
+404 before FastAPI validates the query and the body (:func:`_dark_route`).
+One case answers 422: a body with a JSON content type that does not parse,
+because FastAPI parses it before any dependency runs. Nothing reads or
+writes the table in either case.
+
+Both read the mailbox with ``resolve_account_filter`` and call
+``_assert_account_owner`` inside ``_tenant_session()``. The GET needs
+``send``. The PUT needs ``manage``, the default, because a ``send`` member
+may not change the signature (``shared_mailbox.md`` §4.3). A caller with no
+access at that level gets 404, and nothing is written.
 
 The writer stores an image only at a hosted address of this server and of
 the bound tenant (:func:`image_refusal`). ``signature.save_settings`` is the
 one write. The tenant comes from the bound session, and no request field
 names it (R5). A ``company`` body is refused until SG-4. A ``reply_mode`` of
 ``short`` is stored as given, and its effect starts at SG-5.
+
+A ``fields`` value deeper than :data:`MAX_FIELDS_DEPTH` gets 422 with
+``NOT_JSON``, before any walk that recurses. The model refuses it, for a
+direct call too. Through the router, :func:`_shallow_fields` refuses it
+first, because the 422 of the model echoes the value, and FastAPI encodes
+that echo with recursion.
 
 Fences: ``tests/unit/test_email_signature_writer.py`` and
 ``tests/unit/test_email_signature_settings_r8.py`` (R8).
@@ -36,7 +47,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_common.db import current_tenant
 from acb_common.pg_text import storable
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.email import signature, signature_render
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import _assert_account_owner, _log, _tenant_session, router
@@ -47,6 +58,12 @@ from sqlalchemy.exc import DBAPIError
 
 #: The two image fields of §23.3.1.
 IMAGE_FIELDS: tuple[str, ...] = ("logo", "photo")
+#: The deepest ``fields`` value that the writer stores, in levels of objects
+#: and lists. The ``fields`` object is level 1, and the deepest layout field
+#: is level 3 (``links``, then one link). At about 99 levels the answer
+#: serializer fails, and at about 970 levels ``pg_text.storable`` raises
+#: ``RecursionError``. So 8 leaves room for the form, far under both.
+MAX_FIELDS_DEPTH = 8
 #: The path of a hosted image up to the org: ``/email/signature-image/``.
 IMAGE_PATH = PUBLIC_ROUTE.split("{org}", 1)[0]
 
@@ -83,6 +100,26 @@ _NOT_UPLOADED = (
     "button, then save again.")
 
 
+def too_deep(value: Any, limit: int = MAX_FIELDS_DEPTH) -> bool:
+    """True when ``value`` holds an object or a list deeper than ``limit``.
+
+    ``value`` itself is level 1. The walk uses a stack and never recurses, so
+    a value of any depth gives an answer and no ``RecursionError``."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, Mapping):
+            children: Any = node.values()
+        elif isinstance(node, (list, tuple)):
+            children = node
+        else:
+            continue
+        if depth > limit:
+            return True
+        stack.extend((child, depth + 1) for child in children)
+    return False
+
+
 class SignatureSettingsRequest(BaseModel):
     """The signature of one mailbox. Any other key is refused."""
 
@@ -97,8 +134,12 @@ class SignatureSettingsRequest(BaseModel):
     @field_validator("fields")
     @classmethod
     def _storable_and_small(cls, value: dict[str, Any]) -> dict[str, Any]:
-        """Each NUL and lone surrogate becomes U+FFFD (``pg_text.storable``),
-        a value that is not JSON is refused, and the preview's bound holds."""
+        """A value deeper than :data:`MAX_FIELDS_DEPTH` is refused first, so
+        no walk that recurses meets it. Then each NUL and lone surrogate
+        becomes U+FFFD (``pg_text.storable``), a value that is not JSON is
+        refused, and the preview's bound holds."""
+        if too_deep(value):
+            raise ValueError(NOT_JSON)
         value = storable(value)
         try:
             json.dumps(value, allow_nan=False)
@@ -114,10 +155,30 @@ def _dark() -> None:
 
 
 async def _dark_route(_user: UserContext = Depends(get_current_user)) -> None:
-    """The route dependency of :func:`_dark`. FastAPI runs it before it reads
-    the query and the body, so a dark route answers 404 to any request. The
-    session member is resolved first, and that binds the tenant."""
+    """The route dependency of :func:`_dark`. FastAPI runs it before it
+    validates the query and the body, so a dark route answers 404. One case
+    answers 422: a body with a JSON content type that does not parse, because
+    FastAPI parses it first. No session opens in either case. The session
+    member is resolved first, and that binds the tenant."""
     _dark()
+
+
+async def _shallow_fields(request: Request) -> None:
+    """The second route dependency of the PUT. It answers 422 for a
+    ``fields`` value deeper than :data:`MAX_FIELDS_DEPTH`, before the model.
+
+    The model refuses that value too (``_storable_and_small``). But its 422
+    echoes the value, and FastAPI encodes the echo with recursion.
+    So a value about 1000 levels deep answered 500. This 422 holds a sentence
+    and no echo. A body that is not a JSON object goes on to the model. So
+    does a body that the parser refuses, as a deep body under another
+    content type can make it do (``RecursionError``)."""
+    try:
+        body = await request.json()
+    except (ValueError, RecursionError):
+        return
+    if isinstance(body, Mapping) and too_deep(body.get("fields")):
+        raise HTTPException(status_code=422, detail=NOT_JSON)
 
 
 def _member(user: UserContext) -> str:
@@ -234,7 +295,8 @@ async def get_signature_settings(
     }
 
 
-@router.put("/signature/settings", dependencies=[Depends(_dark_route)])
+@router.put("/signature/settings",
+            dependencies=[Depends(_dark_route), Depends(_shallow_fields)])
 async def put_signature_settings(
     req: SignatureSettingsRequest,
     user: UserContext = Depends(get_current_user),
@@ -256,7 +318,9 @@ async def put_signature_settings(
         async with _tenant_session() as db:
             account_id = await resolve_account_filter(
                 db, req.account_id, member, required=True)
-            await _assert_account_owner(db, account_id, member, level="send")
+            # The default level ``manage``: a ``send`` member may not change
+            # the signature (shared_mailbox.md §4.3).
+            await _assert_account_owner(db, account_id, member)
             saved = await signature.save_settings(
                 db, account_id, mode=req.mode, layout=req.layout,
                 fields=req.fields, reply_mode=req.reply_mode)
@@ -271,8 +335,10 @@ async def put_signature_settings(
 
 __all__ = [
     "IMAGE_FIELDS",
+    "MAX_FIELDS_DEPTH",
     "SignatureSettingsRequest",
     "get_signature_settings",
     "image_refusal",
     "put_signature_settings",
+    "too_deep",
 ]

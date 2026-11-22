@@ -22773,8 +22773,8 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 **Status: SPECIFIED. SG-1 MERGED as `6a4b08bc9` (task 2177, migration 378), live since
 2026-11-09 07:00 UTC. SG-2 MERGED as `623948e7f` (task 2178, migration 393), dark behind
 `EMAIL_SIGNATURE_TEMPLATES_ORGS`. A spec-auditor split SG-3 into SG-3a to SG-3d on 2026-11-09
-(23.3.10, tasks 2495 to 2498). SG-3a, the writer, is BUILT (task 2495), dark behind the same
-flag, with no migration. SG-3b to SG-3d and SG-4 to SG-9 are not built.**
+(23.3.10, tasks 2495 to 2498). SG-3a, the writer, is BUILT (task 2495, fix round 1 on
+2026-11-22), dark behind the same flag, with no migration. SG-3b to SG-3d and SG-4 to SG-9 are not built.**
 
 Task 1959. Owner request in chat, 2026-11-07: "design and create good signatures for our
 email." The orchestrator checked the anchors at `origin/main`
@@ -23109,10 +23109,12 @@ already holds each column and CHECK.
 | Route | Body | Answer | Errors |
 |---|---|---|---|
 | `GET /email/signature/settings?account_id=` | — | `{mode, layout, fields, reply_mode, layouts, image_upload}`. A mailbox with no row answers `custom`, `null`, `{}` and `full` | 404 with the flag off, or with no send access |
-| `PUT /email/signature/settings` | `{account_id, mode, layout, fields, reply_mode}`, with `extra="forbid"` | The saved row, and the `html` and `text` that `signature_render.render` gives | 404 as above. 422 for `company` (until SG-4), a `fields` object over 16384 bytes, or an image address that breaks the rule below |
+| `PUT /email/signature/settings` | `{account_id, mode, layout, fields, reply_mode}`, with `extra="forbid"` | The saved row, and the `html` and `text` that `signature_render.render` gives | 404 with the flag off, or with no manage access. 422 for `company` (until SG-4), a `fields` object over 16384 bytes, or an image address that breaks the rule below |
 
-- Both routes read the account with `resolve_account_filter(..., required=True)`. Both call
+- Both routes read the account with `resolve_account_filter(..., required=True)`. The GET calls
   `_assert_account_owner(db, account_id, member, level="send")` inside `_tenant_session()`.
+  The PUT calls it with the default level `manage` (fix round 1, 2026-11-22). A `send` member
+  may not change the signature (`shared_mailbox.md` §4.3).
 - The writer stores an image (`logo` or `photo`) only when its address starts with
   `public_base_url()`, then `/email/signature-image/`, then the bound tenant id. The address must
   also have the hosted shape of the renderer. Each refusal names the next step. With no
@@ -23137,6 +23139,9 @@ already holds each column and CHECK.
   button.
 - "Edit as HTML" saves the HTML through `PUT /email/assistant/settings` first. Only then does it
   set `custom`. A cancel then loses no layout signature.
+- For a `custom` row, the `html` of the SG-3a PUT answer is the render of the kept layout. The
+  send uses the stored HTML. So the form must not show that `html` as the live signature of a
+  `custom` row.
 - The preview draws in a sandboxed iframe with no script. The form calls three routes, so
   `chat_parity.py` gets three rows in DEBT, paid by SG-6.
 
@@ -23170,9 +23175,11 @@ before any flip of the flag.
   `organization_id`, with ENABLE and FORCE RLS and one policy, and use `_tenant_session`.
 - The public route binds the tenant from the URL, and returns a row only when the 256-bit token
   matches under that tenant's RLS (D-EM-68). The id of the organization opens nothing by itself.
-- The key of `email_signature_settings` is `account_id`, and each route that writes it (SG-3)
-  calls `_assert_account_owner(..., level="send")`, as `PUT /email/assistant/settings` does.
-  SG-2 adds no writer. The preview route reads no table, so it needs no owner check.
+- The key of `email_signature_settings` is `account_id`. Each route that writes it (SG-3)
+  calls `_assert_account_owner(...)` with the default level `manage`, as
+  `PUT /email/assistant/settings` does. A `send` member may not change the signature
+  (`shared_mailbox.md` §4.3). The read route needs `send`. SG-2 adds no writer. The preview
+  route reads no table, so it needs no owner check.
 - The company signature is per organization in `org_settings`. A member reads it, and only
   `admin:settings:manage` writes it.
 - The re-encode runs on bytes that a member sent. The sniff and the 2 MB cap run first, in the
@@ -23269,8 +23276,11 @@ change with no restart.
 
 **SG-3a as built (2026-11-09).** These points narrow or correct 23.3.10:
 
-- A route dependency calls `templates_on` before FastAPI reads the query or the body. So with
-  the flag off, each request gets 404, a bad body too. The handler calls `templates_on` again.
+- A route dependency calls `templates_on` before FastAPI validates the query and the body. So
+  with the flag off, each request gets 404, a body that breaks the model too. One case gets
+  422: a body with a JSON content type that does not parse. FastAPI parses it before any
+  dependency runs (fix round 1). Neither case opens a session. The handler calls
+  `templates_on` again.
 - `signature.py` holds the one read (`stored_settings`, through `SETTINGS_SQL`) and the one
   write (`save_settings`). `signature_settings.py` holds the routes and no SQL.
 - The PUT needs `account_id`, `mode` and `reply_mode`. `layout` starts as `null`, and `fields`
@@ -23279,6 +23289,9 @@ change with no restart.
   send then gives the stored signature, so the answer would not match the send.
 - The answer holds the render of the saved layout, for a `custom` row too. A row with no
   layout answers `""` for `html` and `text`. The GET also answers `account_id`.
+- For a `custom` row, the send uses the stored HTML, not that render. So only for a
+  `template` row is the `html` of the answer the signature of the send. SG-3b must not show
+  the `html` of a `custom` row as the live signature.
 - An image address must be `public_base_url()`, then `/email/signature-image/`, the bound
   tenant in canonical form and `/`. The rest holds no other `/`.
 - The image must also pass `signature_render.hosted_image_src`, the shape check of the
@@ -23295,7 +23308,31 @@ change with no restart.
   the UI calls and the rows.
 - Fences: `test_email_signature_writer.py`, `test_email_signature_settings_r8.py`
   (`TestTheWriterOnRealSql`), and a case each in `test_email_owner_scope_fence.py` and
-  `test_email_account_ref.py`.
+  `test_email_account_ref.py`. 14 mutations went red (first build).
+
+**SG-3a fix round 1 (2026-11-22).** The verifier and the diff review found these points:
+
+- The PUT needed `send`. Now it calls `_assert_account_owner` with the default `manage`, and the
+  GET keeps `send` (`shared_mailbox.md` §4.3). Fence:
+  `test_email_signature_settings_r8.py::test_a_send_grantee_of_a_shared_mailbox_reads_but_cannot_write`.
+- A `fields` value about 99 levels deep stored the row. Then the answer serializer failed, so
+  the PUT and each later GET answered 500. About 970 levels deep, `pg_text.storable` raised
+  `RecursionError`. Now a value deeper than `MAX_FIELDS_DEPTH` (8) gets 422 with `NOT_JSON`,
+  before `storable` runs. The deepest layout field is level 3 (`links`, then one link), so 8
+  leaves room for the form. Fence:
+  `test_email_signature_writer.py::test_a_deep_fields_value_is_a_422_and_the_row_stays_readable`.
+- The model refuses that value, for a direct call too. But the 422 of the model echoes the
+  value, and FastAPI encodes the echo with recursion, so 1000 levels still answered 500. So
+  the PUT dependency `_shallow_fields` refuses it first, with a sentence and no echo. A body
+  of about 5000 levels gets 400 from the JSON parser. No case writes the row.
+- Only `signature.py` writes `email_signature_settings`. A source scan of string literals holds
+  this rule:
+  `test_email_signature_writer.py::test_no_code_outside_signature_py_writes_the_settings_table`.
+  `admin/members.py` names the table in its purge map only, because the foreign key cascade
+  deletes the row. A scratch file with a `DELETE FROM email_signature_settings` made the scan
+  go red.
+- Follow-up: the preview route (`signature_preview.py`) has no depth bound. It stores nothing,
+  and a probe at 1000 levels answered 200.
 
 The flag flip of `EMAIL_SIGNATURE_TEMPLATES_ORGS` needs the `enforcement-flip` grant. The
 person who flips it names the flag and the box in the same message.
@@ -23311,7 +23348,7 @@ person who flips it names the flag and the box in the same message.
 | With the flag off and no row, each reader sends the bytes of main (rule 7) | `tests/unit/test_email_signature_resolver.py`, `tests/unit/test_email_signature_settings_r8.py` (SG-2) |
 | `email_signature_settings` has FORCE RLS and one policy. Organization B cannot read a row of A, and WITH CHECK refuses a row of another org. The CHECKs hold the modes, and a row goes with its mailbox | `tests/unit/test_email_signature_settings_r8.py` (SG-2, R8), `tests/unit/test_tenant_coverage.py` |
 | The preview route answers 404 with the flag off, renders with the renderer of the send, and writes nothing | `tests/unit/test_email_signature_resolver.py` (SG-2) |
-| The writer answers 404 with the flag off and to a member with no send access. It stores an image of the bound tenant only, and its answer is the signature of the send | `tests/unit/test_email_signature_writer.py`, `tests/unit/test_email_signature_settings_r8.py` (SG-3a) |
+| The writer answers 404 with the flag off. The GET answers 404 to a member with no `send` access, and the PUT to a member with no `manage` access. It stores an image of the bound tenant only. For a `template` row, its answer is the signature of the send. A `fields` value deeper than 8 levels is a 422 that writes nothing. Only `signature.py` writes the table (a source scan) | `tests/unit/test_email_signature_writer.py`, `tests/unit/test_email_signature_settings_r8.py` (SG-3a) |
 | An admin change reaches a `company` mailbox at the next resolve, and a member cannot write the brand key | `tests/unit/test_email_signature_resolver.py` (SG-4) |
 | Organization B cannot read an image of organization A. A token of A under the id of B gives 404. A bad token gives 404. The route serves a retired image | `tests/unit/test_email_signature_images_r8.py` (SG-1, R8) |
 | The public route is in `PUBLIC_ROUTES`, in the email `exempt` list and in `GATED_ROUTERS` | `tests/unit/test_org_access_enforcement.py`, `tests/unit/test_default_deny_auth.py` (SG-1) |

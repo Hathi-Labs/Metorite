@@ -430,7 +430,7 @@ async def resolve_signature_for_send(
 #: The ONE write of ``email_signature_settings`` (§23.3.10). The column default
 #: gives ``organization_id`` from the bound tenant, and the policy WITH CHECK
 #: refuses any other org, so no request field reaches the tenant (R5). The
-#: caller has proved send access to the mailbox in the same session.
+#: caller has proved manage access to the mailbox in the same session.
 SAVE_SETTINGS_SQL = (
     "INSERT INTO email_signature_settings "
     "(account_id, mode, layout, fields, reply_mode) "
