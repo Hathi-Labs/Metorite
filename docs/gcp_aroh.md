@@ -5,7 +5,7 @@
 **Status:** the dev box `aroh-dev-1` runs, and its setup is finished
 (2026-11-22, task 3899). `project-docs/HANDOFF.md` entries H-445 (step 4
 only) to H-449 hold the open work.
-**Verified:** 2026-11-19, by `gcloud` reads from the PC of Ishaan Pilar.
+**Verified:** 2026-11-22, by `gcloud` reads and checks on the box from the Mac of Ishaan Pilar (task 3899).
 **Decisions:** D229 (the aroh name) and D230 (the dev box), in
 `project-docs/work_plan.md` §3.
 
@@ -146,7 +146,9 @@ release timer. The home server keeps the release timer (`docs/home_box.md`).
 ## 5. How to reach the box
 
 **Through Tailscale.** The box is on the tailnet as `aroh-dev-1`
-(`100.64.118.14`), on the account of the home server. From a tailnet machine:
+(`100.64.118.14`), on the account of the home server. A direct link can
+need 10 to 15 pings to form, so use `tailscale ping --c 15`. From a tailnet
+machine:
 `ssh dev@aroh-dev-1` and `ssh acb@aroh-dev-1`.
 
 **Through Google IAP**, from a machine that is not on the tailnet. Use plain
