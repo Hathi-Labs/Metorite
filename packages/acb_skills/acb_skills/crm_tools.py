@@ -2319,6 +2319,10 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     what = _measure_words(measure, field, data)
     plural = f"{ENTITY_LABELS[slug]}s" if slug in ENTITY_LABELS else _entity_label(slug)
     note = await _short_note(frozenset({slug})) + _resolved_note(params, data)
+    served = str(data.get("entity") or "")
+    used = _module_used(slug, served[len(MODULE_PREFIX):]) if served.startswith(MODULE_PREFIX) else ""
+    if used:
+        note = "\n" + used.rstrip("\n") + note
     # §18.16 part 7: each filter, and the values that it counted.
     filters = [line for line in (filters_line(params, data), find_line(data),
                                  no_number_line(params, data)) if line]
@@ -2379,6 +2383,18 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     lines.extend([*filters, *mine, *_text_number_lines(data, split),
                   *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
+
+
+def _module_used(asked: Any, served: Any) -> str:
+    """Task 3864: one line when the gateway served a module under another
+    name than the one asked (``resolve_module``: a label, a singular label or
+    a final "s"). Else empty. The line ends with a newline."""
+    word, used = str(asked or "").strip(), str(served or "").strip()
+    if word.lower().startswith(MODULE_PREFIX):
+        word = word[len(MODULE_PREFIX):].strip()
+    if not word or not used or word == used:
+        return ""
+    return f"Used module {used} for '{word}'.\n"
 
 
 def _resolved_note(params: dict[str, Any], data: dict[str, Any]) -> str:
@@ -4355,7 +4371,8 @@ async def _module_records_text(
     data = await _get(f"/crm/modules/{mod}/records", {
         "q": q, "page": number, "page_size": size, **(extra or {}),
     }) or {}
-    return lead + await _module_records_body(mod, data, number, size)
+    return lead + _module_used(mod, data.get("module")) + await _module_records_body(
+        mod, data, number, size)
 
 
 async def _module_records_body(mod: str, data: dict[str, Any], number: int, size: int) -> str:

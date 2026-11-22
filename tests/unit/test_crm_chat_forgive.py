@@ -305,3 +305,45 @@ def test_the_same_reason_again_logs_nothing_and_keeps_the_state(monkeypatch, cap
 def test_a_new_reason_logs_again(monkeypatch, caplog) -> None:
     _mark(monkeypatch, {"unavailable": True, "reason": "scope"}, "hidden")
     assert len(_logged(caplog)) == 1
+
+
+# ── 5. a module named by its label ("Collection" is Payment_Received) ───────
+
+_COLLECTION = {
+    "Payment_Received": {"api_name": "Payment_Received", "label": "Collection",
+                         "singular_label": "Collections"},
+    "Payment_Made": {"api_name": "Payment_Made", "label": "Payment Made",
+                     "singular_label": "Payment Made"},
+}
+
+
+@pytest.mark.parametrize("word", ["Collection", "collections", "COLLECTION", "collection"])
+def test_the_one_resolver_finds_a_module_by_its_label(word) -> None:
+    from gateway.routes.crm.modules import resolve_module
+
+    assert resolve_module(_COLLECTION, word) == "Payment_Received"
+
+
+def test_a_truly_absent_module_keeps_the_404() -> None:
+    from gateway.routes.crm.modules import resolve_module
+
+    with pytest.raises(HTTPException) as err:
+        resolve_module(_COLLECTION, "Zebra")
+    assert "This module is not mirrored." in err.value.detail["message"]
+
+
+def test_the_module_used_line() -> None:
+    assert T._module_used("module:Collection", "Payment_Received") == (
+        "Used module Payment_Received for 'Collection'.\n")
+    assert T._module_used("module:Payment_Received", "Payment_Received") == ""
+    assert T._module_used("Products", None) == ""
+
+
+def test_an_aggregate_on_a_label_says_which_module_served(monkeypatch) -> None:
+    def answer(call: dict) -> Any:
+        return {"entity": "module:Payment_Received", "measure": "count", "groups": [],
+                "total": 3.0, "records": 3}
+
+    fake_gateway(T, monkeypatch, answer, client_class=_Routed)
+    out = asyncio.run(T.crm_aggregate("module:Collection"))
+    assert "Used module Payment_Received for 'Collection'." in out
