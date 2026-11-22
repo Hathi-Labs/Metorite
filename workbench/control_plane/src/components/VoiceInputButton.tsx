@@ -75,15 +75,28 @@ export default function VoiceInputButton({
   const ringRef = useRef<HTMLSpanElement>(null);
   const wrapRef = useRef<HTMLSpanElement>(null);
 
+  // The press that is held now: when it began, and the pointer that holds it
+  // (null for a key).
+  const held = useRef<{ at: number; pointerId: number | null } | null>(null);
   const { stop, cancel } = voice;
-  useImperativeHandle(ref, () => ({ stop: () => void stop(), cancel }), [stop, cancel]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      stop: () => {
+        held.current = null;
+        void stop();
+      },
+      cancel: () => {
+        held.current = null;
+        cancel();
+      },
+    }),
+    [stop, cancel],
+  );
   useEffect(() => {
     onPhase?.(phase);
   }, [phase, onPhase]);
 
-  // The press that is held now: when it began, and the pointer that holds it
-  // (null for a key).
-  const held = useRef<{ at: number; pointerId: number | null } | null>(null);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
@@ -201,6 +214,8 @@ export default function VoiceInputButton({
             begin(e.pointerId);
           }}
           onPointerUp={(e) => {
+            // Only the pointer that began the hold ends it.
+            if (held.current?.pointerId !== e.pointerId) return;
             const off = isOffButton(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), 4);
             end(off);
           }}
