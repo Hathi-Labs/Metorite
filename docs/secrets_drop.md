@@ -260,26 +260,53 @@ of public values. Each non-empty default of `Settings` and each placeholder
 of `.env.example` must be on it, and the fence fails if one is not. For
 `DATABASE_URL`, the check reads the password only.
 
+Two secrets have a reader with its own rule. The check calls that reader,
+and it never copies the rule or the value.
+
+- `GATEWAY_INTERNAL_TOKEN`: the check calls `internal_service_token` in `acb_common/settings.py`. It reads the env first and the settings second, like the gateway verifier.
+- `AGENT_EDGE_SIGNING_KEY`: the check calls `agent_signing.signing_key`. That reader also refuses a key of fewer than 32 bytes, and a key that equals `GATEWAY_INTERNAL_TOKEN` or `LITELLM_MASTER_KEY`.
+
 ### The flip to enforce
 
-The flip is the grant `enforcement-flip`. A refusal at start stops the unit,
-and a release cannot roll back. So follow these steps for each unit.
+A refusal at start stops the unit, and a release cannot roll back. The flip
+needs three grants in `.claude/OWNER_GRANTS.md`:
+
+- `deploy`: ssh to the box, read the journal and restart a unit.
+- `env-write`: write the env file of a unit.
+- `enforcement-flip`: set `SECRET_STARTUP_CHECK=enforce`.
+
+Follow these steps for each unit.
 
 1. Let one release run in shadow.
-2. Read the lines of the unit on the box: `sudo journalctl -u acb-gateway -o cat | grep secrets.` Do the same for `acb-agent-edge`.
-   The console log writes `unusable=0`, and it can put colour codes in the line. Add `| sed 's/\x1b\[[0-9;]*m//g'` to remove them. Under `LOG_FORMAT=json` the line holds `"unusable": 0`.
-3. Set each named secret in the env file of the unit. Then restart the unit and read its line again.
-4. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
-5. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+2. Read the lines of the last start of the unit only. Do the same for `acb-agent-edge`.
+
+   ```bash
+   since="$(systemctl show -p InactiveExitTimestamp --value acb-gateway)"
+   sudo journalctl -u acb-gateway --since "$since" -o cat | grep -F 'secrets.'
+   ```
+
+3. Read the summary line. The console form writes `unusable=0`, and it can put colour codes in the line. Add `| sed 's/\x1b\[[0-9;]*m//g'` to remove them.
+4. Under `LOG_FORMAT=json` the gateway line holds `"unusable": 0`. The edge does not call `configure_logging`, so its line is always the console form.
+5. Set each named secret in the env file of the unit. Then restart the unit, and read its line again.
+6. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
+7. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+
+Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
+`acb-agent-edge` reads `/opt/acb/app/apps/services/agent_edge/.env`.
+
+Obey these rules when you write a value in an env file:
+
+- Keep the inode of `/opt/acb/app/.env`. Do not use `sed -i`, and do not move a file onto it. `deploy/AGENTS.md` gives the rule, and its fence is `tests/unit/test_env_inode.py`.
+- Set `AGENT_EDGE_SIGNING_KEY` to the same value in the two env files. The edge signs with it, and the gateway checks the signature with it.
+- The signing key must have 32 bytes or more. It must not equal `GATEWAY_INTERNAL_TOKEN` or `LITELLM_MASTER_KEY`.
+- On an enforce box, set `AGENT_EDGE_SIGNING_KEY` before you turn on `AGENT_ACCESS_ENABLED`. If you do not, the next restart stops the whole gateway.
+- `scripts/vps_apply.sh` copies `GATEWAY_INTERNAL_TOKEN` to `/opt/acb/app/workbench/control_plane/.env.local` at each deploy only. If you set the token by hand, copy it to that file too, and restart `acb-workbench`. If you do not, each call from the workbench to the gateway gets 401.
 
 ⚠️ `scripts/secrets.sh` pushes only the keys that `allowed_keys` lists in
 `deploy/secrets/manifest.json`. The six required names and
 `SECRET_STARTUP_CHECK` are not on that list today. A write of one of them
 to a box env file is the grant `env-write`. A holder of that grant does the
 write by hand.
-
-Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
-`acb-agent-edge` reads `/opt/acb/app/apps/services/agent_edge/.env`.
 
 ### The services
 
@@ -293,6 +320,10 @@ Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
 | Meeting bot | its own container | Not wired. It imports no `acb_*` package and reads `MEETING_BOT_TOKEN` itself |
 | Mutation runner | the sandbox container | Not wired. It imports no `acb_*` package and keeps its own env allowlist |
 | Reconciler, ingestion scheduler, Zoho webhook `standalone` app | none | Not wired. No unit on the box runs them |
+| WhatsApp bridge | `acb-whatsapp-bridge` | Not wired. It is a Go binary with no `acb_*` package. It reads `/opt/acb/app/.env` and holds `WHATSAPP_BRIDGE_SECRET` |
+| Operator Console | `acb-operator-console` | Not wired. It is a Next.js app with no Python. It reads `workbench/operator_console/.env.local` |
+| Workbench | `acb-workbench` | Not wired. It is a Next.js app with no Python. It reads `workbench/control_plane/.env.local`, and that file holds a copy of `GATEWAY_INTERNAL_TOKEN` |
+| Pull, backup, health watchdog, chat smoke, `acb` | `acb-pull`, `acb-backup`, `acb-health-watchdog`, `acb-smoke-chat`, `acb` | Not wired. Each is a one-shot unit that runs a shell script or `docker compose` |
 
 ### The required secrets
 

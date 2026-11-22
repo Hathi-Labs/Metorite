@@ -284,7 +284,11 @@ def test_the_direct_set_is_create_update_delete_only() -> None:
 
 def test_only_the_proof_module_and_settings_read_the_direct_key() -> None:
     allowed = {"packages/acb_auth/acb_auth/direct_proof.py",
-               "packages/acb_common/acb_common/settings.py"}
+               "packages/acb_common/acb_common/settings.py",
+               # Task 574: OPTIONAL names the key with a reason and reads no
+               # value. Pin: test_secret_startup_check.py
+               # test_the_check_reads_no_optional_secret.
+               "packages/acb_auth/acb_auth/secret_check.py"}
     pattern = re.compile(r"studio_direct_key|STUDIO_DIRECT_KEY", re.I)
     readers = {_rel(p) for p in _sources(".py") if pattern.search(p.read_text(encoding="utf-8"))}
     assert readers <= allowed, sorted(readers - allowed)

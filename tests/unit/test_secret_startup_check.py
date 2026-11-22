@@ -32,11 +32,43 @@ GOOD = {
 }
 
 
+#: The settings that the readers of the process see. ``_settings`` sets it.
+_PROCESS: list = [None]
+
+
 def _settings(**over):
+    """Build a ``Settings``, and make it the settings of the process.
+
+    Two secrets are judged by their own reader (``internal_service_token``
+    and ``agent_signing.signing_key``). Each reads ``get_settings()``, not the
+    object that a test passes, so the fixture below points both at this one.
+    """
     from acb_common.settings import Settings
 
     values = {"acb_env": "prod", **GOOD, **over}
-    return Settings(_env_file=None, **values)
+    built = Settings(_env_file=None, **values)
+    _PROCESS[0] = built
+    return built
+
+
+@pytest.fixture(autouse=True)
+def _process_settings(monkeypatch):
+    """The readers see the last ``_settings``, and no token of the host env."""
+    from acb_auth import agent_signing
+    from acb_common import settings as settings_mod
+
+    real = settings_mod.get_settings
+    _PROCESS[0] = None
+
+    def current():
+        return _PROCESS[0] if _PROCESS[0] is not None else real()
+
+    monkeypatch.setattr(settings_mod, "get_settings", current)
+    monkeypatch.setattr(agent_signing, "get_settings", current)
+    for name in ("GATEWAY_INTERNAL_TOKEN", "LITELLM_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    yield
+    _PROCESS[0] = None
 
 
 def _events(logs, name):
@@ -49,7 +81,7 @@ def _events(logs, name):
 @pytest.fixture
 def edge_env(monkeypatch):
     """Run the edge app on a prod box with the access switch on and no key."""
-    from acb_common.settings import get_settings
+    from acb_common import get_settings  # the real one, not the fixture's
 
     for name, value in GOOD.items():
         monkeypatch.setenv(name.upper(), value)
@@ -76,7 +108,7 @@ def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env):
 
 
 def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env):
-    from acb_common.settings import get_settings
+    from acb_common import get_settings  # the real one, not the fixture's
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
@@ -283,6 +315,67 @@ def test_a_conditional_secret_binds_only_when_its_switch_is_on():
     on = _settings(agent_edge_signing_key="", agent_access_enabled=True)
     assert unusable_secrets("gateway", on) == ["agent_edge_signing_key"]
     assert unusable_secrets("agent_edge", on) == ["agent_edge_signing_key"]
+
+
+@pytest.mark.parametrize("service", ["gateway", "agent_edge"])
+@pytest.mark.parametrize("case", ["short", "internal token", "llm key", "env token"])
+def test_the_signing_key_is_judged_by_its_own_reader(service, case, monkeypatch):
+    """The reviewer's P1. ``agent_signing.signing_key`` refuses a key shorter
+    than 32 bytes, and a key equal to the internal token or the LLM key. The
+    edge then refuses each request, so the check must name such a key too.
+    """
+    from acb_auth.secret_check import unusable_secrets
+
+    key = {
+        "short": "short-key-not-public-1a2b3c",  # 27 bytes
+        "internal token": GOOD["gateway_internal_token"],
+        "llm key": GOOD["litellm_master_key"],
+        "env token": "env-only-internal-token-0a1b2c3d4e5f6a7b",
+    }[case]
+    if case == "env token":
+        monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", key)
+    s = _settings(agent_access_enabled=True, agent_edge_signing_key=key)
+    assert "agent_edge_signing_key" in unusable_secrets(service, s), case
+    # The same key with the switch off binds nothing.
+    off = _settings(agent_access_enabled=False, agent_edge_signing_key=key)
+    assert "agent_edge_signing_key" not in unusable_secrets(service, off), case
+
+
+def test_a_long_distinct_signing_key_is_usable():
+    from acb_auth.secret_check import unusable_secrets
+
+    s = _settings(agent_access_enabled=True)
+    assert unusable_secrets("agent_edge", s) == []
+    assert unusable_secrets("gateway", s) == []
+
+
+def test_the_check_reads_no_optional_secret():
+    """``OPTIONAL`` is a table of names. The check reads no value of it.
+
+    Two source fences allow ``secret_check.py`` to NAME a secret because of
+    this pin: ``test_studio_direct_proof.py`` (``studio_direct_key``) and
+    ``test_crm_connection_scan.py`` (``crm_zoho_client_secret``). The
+    recorder sees each read, by the check and by the readers it calls.
+    """
+    from acb_auth.secret_check import NOT_A_SECRET, OPTIONAL, check_startup_secrets
+
+    class Recorder:
+        def __init__(self, inner):
+            object.__setattr__(self, "_inner", inner)
+            object.__setattr__(self, "seen", set())
+
+        def __getattr__(self, name):
+            self.seen.add(name)
+            return getattr(self._inner, name)
+
+    inner = _settings(agent_access_enabled=True)
+    rec = Recorder(inner)
+    _PROCESS[0] = rec
+    for service in ("gateway", "agent_edge"):
+        assert check_startup_secrets(service, rec) == []
+    secrets_ = {n for n, why in OPTIONAL.items() if not why.startswith(NOT_A_SECRET)}
+    assert "agent_edge_signing_key" in rec.seen  # the recorder does see reads
+    assert rec.seen & secrets_ == set(), sorted(rec.seen & secrets_)
 
 
 def test_the_edge_does_not_need_the_gateway_secrets():

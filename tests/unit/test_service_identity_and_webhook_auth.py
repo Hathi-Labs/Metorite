@@ -652,6 +652,12 @@ _DIRECT_ALLOWED = {
     "packages/acb_common/acb_common/studio_residency.py":
         "names the setting in NOT_A_RECORD_PATH, a set of names, and reads no value",
     "scripts/onboarding_preflight.py": "checks the env files of a box, sends nothing",
+    # Task 574. Names the setting in REQUIRED for the log line only. The value
+    # comes from internal_service_token (_READER_ALLOWED), and the pin
+    # test_the_startup_check_judges_the_token_through_the_one_reader below
+    # goes red on a getattr read of the settings field.
+    "packages/acb_auth/acb_auth/secret_check.py":
+        "names the setting in REQUIRED; reads the value only through the reader",
     "scripts/_test_memory_e2e.py": "a manual e2e script, with its E2E_TOKEN override first",
     "evals/coding_engine/run.py": "the harness sets the token of the run under test",
     "evals/email_narrowing/run.py": "the harness passes the token to the agent child env",
@@ -664,6 +670,8 @@ _READER_ALLOWED = {
     _ACCESSOR: "defines it, and internal_auth_headers calls it",
     "apps/services/orchestrator/orchestrator/executor.py":
         "passes the token as ctx gateway_token to write_artifact and documents",
+    "packages/acb_auth/acb_auth/secret_check.py":
+        "task 574: tests that the token is usable at start; never sends, logs or keeps it",
 }
 
 _TOKEN_NAMES = frozenset({"GATEWAY_INTERNAL_TOKEN", "gateway_internal_token"})
@@ -735,6 +743,25 @@ def test_no_copy_of_the_internal_token_reader() -> None:
         "Send internal_auth_headers(). Do not read the token or copy the "
         f"reader: {found}"
     )
+
+
+def test_the_startup_check_judges_the_token_through_the_one_reader(monkeypatch) -> None:
+    """Task 574. ``secret_check.py`` is on both allow lists, so the AST rule
+    cannot see a read through ``getattr(settings, need.setting)``. This pin
+    can: the env holds a good token and the settings field is empty. The one
+    reader reads the env first, like the gateway verifier, so the check must
+    find the token usable. A settings read finds it empty and names it.
+    """
+    from acb_auth.secret_check import unusable_secrets
+    from acb_common import settings as settings_mod
+    from acb_common.settings import Settings
+
+    field_empty = Settings(_env_file=None, acb_env="prod", gateway_internal_token="")
+    monkeypatch.setattr(settings_mod, "get_settings", lambda: field_empty)
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "env-token-read-first-5b7d9f1a3c")
+    assert "gateway_internal_token" not in unusable_secrets("gateway", field_empty)
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "")
+    assert "gateway_internal_token" in unusable_secrets("gateway", field_empty)
 
 
 def test_each_allowed_file_exists() -> None:

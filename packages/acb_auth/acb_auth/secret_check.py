@@ -16,6 +16,19 @@ service starts. Each service calls it once, from its own start.
 A secret is unusable when it is empty or on ``member_proof.PUBLIC_DEFAULT_SECRETS``
 (``member_proof._usable``). This module keeps no second deny list.
 
+Two secrets have a reader with its own rule. The check calls that reader,
+and it never copies the rule or the value:
+
+* ``gateway_internal_token``: ``acb_common.settings.internal_service_token``,
+  the one reader. It reads the env, then the settings, the order of the
+  gateway verifier. Fence: ``test_service_identity_and_webhook_auth.py``.
+* ``agent_edge_signing_key``: ``acb_auth.agent_signing.signing_key``. It also
+  refuses a key shorter than 32 bytes, and a key equal to the internal token
+  or the LLM key.
+
+``OPTIONAL`` is a table of names with a reason. The check reads no value of
+it (``test_the_check_reads_no_optional_secret``).
+
 🔴 A log line and an error name the SETTING only, never its value.
 
 🔴 The flip to ``enforce`` is the grant ``enforcement-flip``. Flip it on a box
@@ -24,14 +37,20 @@ start takes the unit down at the next release, and we cannot roll back.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
 from acb_common import get_logger
-from acb_common.settings import get_settings, secret_startup_check_mode
+from acb_common.settings import (
+    get_settings,
+    internal_service_token,
+    secret_startup_check_mode,
+)
 
+from acb_auth.agent_signing import signing_key
 from acb_auth.member_proof import _usable
 
 __all__ = [
@@ -62,17 +81,32 @@ class Need:
     when: str | None = None
     #: Why the service needs it, for the table of the spec.
     why: str = ""
+    #: The real reader of the secret, when it has a rule of its own. It reads
+    #: the value itself and gives True when the secret works. None: the check
+    #: reads the setting and applies ``member_proof._usable``.
+    works: Callable[[], bool] | None = None
 
 
 _GW = frozenset({"gateway"})
 _BOTH = frozenset({"gateway", "agent_edge"})
+
+
+def _token_works() -> bool:
+    # The one reader of the service-identity token. The value stays here.
+    return _usable(internal_service_token())
+
+
+def _signing_key_works() -> bool:
+    # The rule of the edge and of branch 0: 32 bytes or more, not public,
+    # not equal to the internal token or the LLM key.
+    return signing_key() is not None
 
 #: The secrets that each service needs. Keep this list small: each entry can
 #: stop a unit under ``enforce``.
 REQUIRED: tuple[Need, ...] = (
     Need("gateway_session_secret", _GW,
          why="signs the member proof, the OAuth state and the email links"),
-    Need("gateway_internal_token", _GW,
+    Need("gateway_internal_token", _GW, works=_token_works,
          why="service identity: the control plane and the jobs call with it"),
     Need("acb_master_key", _GW,
          why="decrypts the stored provider keys and connection credentials"),
@@ -81,6 +115,7 @@ REQUIRED: tuple[Need, ...] = (
     Need("database_url", _BOTH,
          why="the database login (the check reads the password only)"),
     Need("agent_edge_signing_key", _BOTH, when="agent_access_enabled",
+         works=_signing_key_works,
          why="the HMAC of each request from the agent edge to the gateway"),
 )
 
@@ -158,7 +193,12 @@ def _value_usable(setting: str, raw: Any) -> bool:
 
 
 def unusable_secrets(service: str, settings: Any) -> list[str]:
-    """The sorted names of the required secrets of *service* that are unusable."""
+    """The sorted names of the required secrets of *service* that are unusable.
+
+    A need with ``works`` asks its own reader. That reader reads the settings
+    of the process (``get_settings``), so *settings* gives only the switch.
+    At a real start the two are one object.
+    """
     if service not in SERVICES:
         raise ValueError(f"unknown service {service!r}; expected one of {SERVICES}")
     bad = []
@@ -167,7 +207,11 @@ def unusable_secrets(service: str, settings: Any) -> list[str]:
             continue
         if need.when is not None and not bool(getattr(settings, need.when, False)):
             continue
-        if not _value_usable(need.setting, getattr(settings, need.setting, "")):
+        if need.works is not None:
+            usable = need.works()
+        else:
+            usable = _value_usable(need.setting, getattr(settings, need.setting, ""))
+        if not usable:
             bad.append(need.setting)
     return sorted(bad)
 

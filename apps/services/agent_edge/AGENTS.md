@@ -6,7 +6,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 ## Start
 
-- `app._lifespan` calls `acb_auth.secret_check.check_startup_secrets("agent_edge")` (task 574, `docs/secrets_drop.md` §6). The edge needs `database_url`, and `agent_edge_signing_key` while `agent_access_enabled` is on. It needs no gateway secret. `SECRET_STARTUP_CHECK` in the env file of this unit sets the mode, and the default `shadow` only logs. Fence: `tests/unit/test_secret_startup_check.py`.
+- `app._lifespan` calls `acb_auth.secret_check.check_startup_secrets("agent_edge")` (task 574, `docs/secrets_drop.md` §6). The edge needs `database_url`, and `agent_edge_signing_key` while `agent_access_enabled` is on. The check uses the rule of `agent_signing.signing_key`: 32 bytes or more, and not equal to the internal token or the LLM key. It needs no gateway secret. `SECRET_STARTUP_CHECK` in the env file of this unit sets the mode, and the default `shadow` only logs. Fence: `tests/unit/test_secret_startup_check.py`.
 
 ## Routes (EA-2a)
 
