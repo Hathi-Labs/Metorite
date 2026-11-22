@@ -65,9 +65,10 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # via a bounded Copilot session (code_task) and cheaply re-run the durable
     # scripts it accumulated (run_script). Workspace-jailed + env-scrubbed;
     # list_integrations shows what a script may reach (names, never values).
-    # ⚠️ D85: the floor NAMES the two shell tools, and a SHARED agent still
-    # does not get them. `_withheld_shell_tools` takes every SHELL_TOOLS
-    # member away from a shared agent until the sandbox broker covers it.
+    # ⚠️ D85 and D129: the floor NAMES the two shell tools, and no agent but
+    # the root dev agent gets them. `_withheld_shell_tools` takes every
+    # SHELL_TOOLS member away, a personal agent's too, until the sandbox
+    # broker covers the agent.
     "run_script", "code_task", "list_integrations",
     # Inter-agent delegation (multi_agent_orchestration.md Phase 0.1): the
     # floor previously guaranteed every tool an agent needs to work ALONE and
@@ -209,8 +210,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
     Only that may lift the host half of D85. No such path exists: the
     container of ``copilot_sandbox.py`` is not the broker's (it holds the
     model loop, a key and a network, §4.2), and WS-43h moves app-builder off
-    the CLI instead of into it. So this is ``False`` for every agent, and a
-    shared agent's CLI shell is always refused today.
+    the CLI instead of into it. So this is ``False`` for every agent, and
+    the CLI shell of every agent in scope is always refused today.
     """
     del agent_name, organization_id
     return False
@@ -232,25 +233,17 @@ _D85_OWNER_PENDING: frozenset[str] = frozenset({"metorite"})
 def _d85_leaves_alone(agent_name: str | None, agent_config: dict[str, Any] | None) -> bool:
     """True for an agent that D85 does not touch, in either half.
 
-    * A ``personal`` agent. The owner left personal agents out of scope
-      (HANDOFF H-225 asks for the same rule there).
-    * A name in :data:`_D85_OWNER_PENDING`: the root dev agent, which only a
-      first-party admin may run (owner, 2026-10-03, §15.4).
+    Only a name in :data:`_D85_OWNER_PENDING` is left alone: the root dev
+    agent, which only a first-party admin may run (owner, 2026-10-03, §15.4).
 
-    Every other agent is in scope: ``shared`` (the default when the config has
-    no ``sharing`` block), ``team``, a config that does not parse, and
-    ``agent_config=None``. So a caller that forgets the config fails closed.
+    Every other agent is in scope, whatever its config says: ``shared`` (the
+    default when the config has no ``sharing`` block), ``team``, ``personal``,
+    a config that does not parse, and ``agent_config=None``. D129 (task 808,
+    H-225) put ``personal`` in scope on 2026-10-27, because a member reaches a
+    personal agent too, and a shared agent can delegate to one.
     """
-    if agent_name in _D85_OWNER_PENDING:
-        return True
-    try:
-        from acb_skills.manifest import AgentManifest
-        instancing = AgentManifest.from_config(
-            agent_config, name=agent_name,
-        ).sharing.instancing
-    except Exception:  # a config that does not parse is shared
-        instancing = "shared"
-    return instancing == "personal"
+    del agent_config  # the scope reads the name only since D129
+    return agent_name in _D85_OWNER_PENDING
 
 
 def _run_org() -> str | None:
@@ -271,7 +264,8 @@ def _withheld_shell_tools(
     ``install_dependency``) run code on the HOST today. ``run_script`` has the
     network and the agent's integration credentials. A SHARED agent serves
     every member of an organization from one process, so the owner blocked
-    these tools for it on 2026-10-03 until the sandbox covers it.
+    these tools for it on 2026-10-03 until the sandbox covers it. D129 blocked
+    them for a PERSONAL agent too on 2026-10-27.
 
     It withholds nothing for an agent that :func:`_d85_leaves_alone`, and all
     three for every other one, unless :func:`_sandbox_covers` says the broker
@@ -827,7 +821,7 @@ def _resolve_injected_scope(
     The declared scope and the skill toggles resolve first
     (:func:`_resolve_declared_scope`). ``withheld`` then takes names away,
     the core floor included. It is the D85 interim block: the shell tools
-    that :func:`_withheld_shell_tools` keeps from a shared agent. An unscoped
+    that :func:`_withheld_shell_tools` keeps from an agent. An unscoped
     agent with a withheld tool gets an explicit set, so the addendum, the
     skill bodies and the injection read ONE scope that lacks the tool. With
     no withheld names the result is byte-identical to the declared scope.
@@ -1091,6 +1085,33 @@ def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
 
 
+def _forget_card_marks() -> None:
+    """``acb_skills.ask_tools.forget_card_marks`` (task 3595): no title and
+    no proof of an act carry into this call. A fault is no act, so it
+    records nothing later either."""
+    try:
+        from acb_skills.ask_tools import forget_card_marks
+    except Exception:
+        return
+    forget_card_marks()
+
+
+def _note_approved_act() -> None:
+    """``acb_skills.ask_tools.note_approved_act`` for one call that returned
+    (task 3595, PARK-LINE). It records the act of the call's card only when
+    the member approved it AND the tool said at its success site that the
+    act ran (``ask_tools.act_ran``). It reads no result text. A park then
+    names it. A delegation tool records nothing itself: each tool of its
+    child run records its own act into the parent's record. It never
+    raises, so the tool's result always reaches the model."""
+    try:
+        from acb_skills.ask_tools import note_approved_act
+
+        note_approved_act()
+    except Exception:  # a line is never worth a lost result
+        _log.debug("park_line.note_failed", exc_info=True)
+
+
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
@@ -1226,7 +1247,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             # outside a WhatsApp run with writes on. Task 3130: the act key
             # of each card that this call draws.
             with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
-                return await fn(*args, **kwargs)
+                _forget_card_marks()
+                result = await fn(*args, **kwargs)
+            # Task 3595: an approved card whose tool said "the act ran" at
+            # its success site. A raise never reaches this line.
+            if not is_delegation_tool(fn):
+                _note_approved_act()
+            return result
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
@@ -2491,12 +2518,11 @@ def _inject_agent_tools(
     reaches another tool in-process asks the same answer (§14.10 of
     ``projects_ai_chat.md``). Empty when nothing was injected.
 
-    ``agent_config`` is the agent's parsed ``config.json``. Its ``sharing``
-    block decides the D85 interim block (:func:`_withheld_shell_tools`): a
-    shared agent gets no ``SHELL_TOOLS`` member until the sandbox broker
-    covers it. ``None`` reads as shared, so a caller that forgets it fails
-    closed. Every executor call site passes it, and
-    ``tests/unit/test_shared_agent_shell_tools.py`` says so. Its
+    ``agent_config`` is the agent's parsed ``config.json``. The D85 interim
+    block (:func:`_withheld_shell_tools`) gives no agent but the root dev
+    agent a ``SHELL_TOOLS`` member until the sandbox broker covers it, a
+    personal agent included (D129). Every executor call site passes the
+    config, and ``tests/unit/test_shared_agent_shell_tools.py`` says so. Its
     ``floor_opt_out`` list takes floor and workflow tools away from this
     agent (:func:`_floor_opt_out`).
 
@@ -2573,9 +2599,10 @@ def _inject_agent_tools(
             "executor.skill_families_disabled",
             agent=agent_name, families=sorted(_disabled_families),
         )
-    # D85 (the interim block): a shared agent gets no shell tool until the
-    # sandbox broker covers it. The withheld names leave the SCOPE, so the
-    # addendum below never describes a tool this agent does not hold.
+    # D85 (the interim block) and D129: an agent gets no shell tool until the
+    # sandbox broker covers it, a personal agent too. The withheld names leave
+    # the SCOPE, so the addendum below never describes a tool this agent does
+    # not hold.
     _withheld = _withheld_shell_tools(agent_name, agent_config)
     if _withheld:
         _log.info(
@@ -3880,10 +3907,58 @@ async def _drop_pack_unless_studio(
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
     :func:`_studio_member_open`). For an open member, the second filter
-    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b), and
+    then the third, :func:`_drop_studio_repair_unless_open` (TOF-3a F12c)."""
     if await _studio_member_open():
-        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        tools, dropped = await _drop_studio_writes_unless_requests(tools, dropped, held=held)
+        return _drop_studio_repair_unless_open(tools, dropped)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+#: The pack of the two repair tools (TOF-3a F12c).
+REPAIR_PACK = "studio-repair"
+
+
+def _skill_repair_tools_open() -> bool:
+    """True when the run's org is on ``STUDIO_ORGS``,
+    ``STUDIO_SKILL_TESTS_ORGS`` and ``STUDIO_SKILL_REPAIR_ORGS``: the switches
+    of the repair route (F12.md check 1). The org is the run's own, never an
+    argument (R5). It fails closed."""
+    try:
+        from gateway.routes.studio.flags import skill_tests_allowed
+
+        return _skill_repair_open() and bool(skill_tests_allowed(_run_org_or_none()))
+    except Exception:  # fail closed
+        return False
+
+
+def _without_closed_repair(allow: frozenset[str]) -> frozenset[str]:
+    """*allow* less :data:`REPAIR_PACK` while the org of the run is off the
+    switches of the repair (TOF-3a F12c). Then ``tool_packs.choose`` and the
+    loader plan never offer it, also where the owner pack list names it. An
+    *allow* with no repair pack reads no flag."""
+    if REPAIR_PACK in allow and not _skill_repair_tools_open():
+        return allow - {REPAIR_PACK}
+    return allow
+
+
+def _drop_studio_repair_unless_open(
+    tools: list[Any], dropped: list[str],
+) -> tuple[list[Any], list[str]]:
+    """Take the two repair tools out of a ``studio-repair`` pack while the org
+    is off the switches of the repair (TOF-3a F12c,
+    :func:`_skill_repair_tools_open`). A pack with no repair tool reads no
+    flag. The names are ``acb_skills.studio_tools.STUDIO_REPAIR_NAMES``, the
+    one list. Fence: ``tests/unit/test_skill_repair.py``."""
+    from acb_skills.studio_tools import STUDIO_REPAIR_NAMES
+
+    if not any(_tool_name(t) in STUDIO_REPAIR_NAMES for t in tools):
+        return tools, dropped
+    if _skill_repair_tools_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_REPAIR_NAMES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_REPAIR_NAMES]
+    return kept, [*dropped, *gone]
 
 
 def _studio_requests_open() -> bool:
@@ -4490,6 +4565,9 @@ async def _apply_tool_packs(
     # its parent off, as it is on where the pack flag names its parent.
     disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
+    # TOF-3a F12c: the repair pack is off for an org off the switches of the
+    # repair, so neither ``choose`` nor the loader offers it there.
+    allow = _without_closed_repair(allow)
     # WS-STU F3: the published skills that the words of this turn name. G2: a
     # WhatsApp turn loads none.
     # TOF-3a F12b: the facts of each skill that the turn reads, for the record

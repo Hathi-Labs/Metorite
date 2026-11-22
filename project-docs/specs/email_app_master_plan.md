@@ -21181,7 +21181,7 @@ in step.
 
 **Status:** ✅ BUILT and MERGED on `main` (#1785, task 1650), dark behind
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
-1533, slice 3 of 4. The link covered a new mail only. HRD-8b-1 and HRD-8b-2 (task 3459, task 3650) extend it: the link keeps the act kind and the Cc, and a held forward card joins the revise. A reply card joins in HRD-8b-3 (task 3651).
+1533, slice 3 of 4. The link covered a new mail only. HRD-8b-1 and HRD-8b-2 (task 3459, task 3650) extend it: the link keeps the act kind and the Cc, and a held forward card joins the revise. A reply card joins in HRD-8b-3 (task 3651), and the Bcc joins the changed line.
 
 **Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
 new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
@@ -22991,6 +22991,11 @@ mailbox of the organization may upload.
    - It returns the real pixmap width and height. It also returns the share of dark,
      transparent pixels, for the dark-logo check.
 3. The route writes the row, and returns the id and the public URL.
+
+**The profile picture uses this child too** (task 2186, 2026-11-21). `avatar.normalise()` keeps
+the byte cap and the sniff in the request, and sends the decode to the child with the kind
+`avatar`. The fence is `tests/unit/test_people_avatar.py` section 5. It stops a slow child, and
+it shows that the request process decodes nothing.
 
 **Retire.** `DELETE /email/signature/images/{id}` sets `retired_at`. The uploader or an admin
 may call it. A retired image leaves the picker and stays served.

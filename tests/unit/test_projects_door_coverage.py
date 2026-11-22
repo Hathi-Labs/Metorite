@@ -314,13 +314,30 @@ def test_each_change_asks_the_member_for_each_call():
             assert door.scope == "projects:write", door.name
 
 
-def test_ad18_each_change_fails_closed_today():
-    """Before MCP-P1b-2 no approval can exist, so the shared rule of
-    availability refuses each change (AD-18)."""
-    for door in am.door_ops(DOOR).values():
-        available, code = agent_oauth.door_available(door)
-        if door.kind == "write":
-            assert (available, code) == (False, agent_oauth.APPROVAL_REQUIRED_CODE), door.name
+def test_ad18_each_change_fails_closed_today(monkeypatch):
+    """MCP-P1b-2 (§19.4) puts the spend in place of the blanket refusal of
+    AD-18. The shared rule now checks the writes flag first, as branch 0
+    does (``deps._door_gate`` step 0), then the approval path. With either
+    flag off, each change is unavailable. With both on, each change reads
+    available, and branch 0 still refuses a call with no approval with 403
+    ``approval_required`` (``test_mcp_edge_app_door.py::
+    test_a_write_with_no_approval_fails_closed``). No Projects op sends, so
+    none gets ``sends_off``. A read is available in each case."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    cases = (
+        (False, False, agent_oauth.DOOR_WRITES_OFF_CODE),
+        (False, True, agent_oauth.DOOR_WRITES_OFF_CODE),
+        (True, False, agent_oauth.REQUESTS_OFF_CODE),
+        (True, True, None),
+    )
+    for writes, runs, code in cases:
+        monkeypatch.setattr(settings, "agent_access_writes_enabled", writes)
+        monkeypatch.setattr(settings, "agent_runs_enabled", runs)
+        for door in am.door_ops(DOOR).values():
+            want = (code is None, code) if door.kind == "write" else (True, None)
+            assert agent_oauth.door_available(door) == want, (door.name, writes, runs)
 
 
 def test_the_scopes_are_the_two_fixed_projects_scopes():

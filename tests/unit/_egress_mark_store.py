@@ -32,6 +32,13 @@ class MemoryMarkClient:
         self.values[name] = value
         return True
 
+    async def set(self, name: str, value: str, nx: bool = False, ex: int | None = None) -> bool | None:
+        self.calls.append(("set", name))
+        if nx and name in self.values:
+            return None
+        self.values[name] = value
+        return True
+
     async def get(self, name: str) -> str | None:
         self.calls.append(("get", name))
         return self.values.get(name)

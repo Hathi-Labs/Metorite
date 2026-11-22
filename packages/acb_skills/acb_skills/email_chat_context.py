@@ -42,6 +42,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import structlog
+from acb_common.settings import internal_auth_headers
 
 from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE
 
@@ -494,14 +495,6 @@ def _gateway_url() -> str:
 
     return os.environ.get("GATEWAY_URL", "http://localhost:8080").rstrip("/")
 
-
-def _internal_token() -> str:
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 async def fetch_accounts(member: str) -> list[dict[str, Any]]:
     """``GET /email/accounts`` as *member*. A seam, so a test fakes it.
 
@@ -512,7 +505,7 @@ async def fetch_accounts(member: str) -> list[dict[str, Any]]:
     import httpx
 
     headers = {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": member,
     }
