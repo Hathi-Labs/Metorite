@@ -173,7 +173,7 @@ def _zoho_push(mp, module: str | None = None) -> str:
 
 
 def _reconciler_app(mp) -> None:
-    from reconciler import main as reconciler_main
+    reconciler_main = writer_module("reconciler.main")
 
     import scripts.reconciler as core
 
@@ -281,12 +281,39 @@ def assert_no_tenant_payload(case: str, event: Any) -> None:
     assert all(set(j) == {"id", "trigger"} for j in jobs), jobs
 
 
+def writer_module(name: str) -> Any:
+    """Import one writer module by name, whatever order the test run has.
+
+    Several test files put ``scripts/`` first on ``sys.path`` when they load.
+    Then the name ``reconciler`` resolves to ``scripts/reconciler.py``, a
+    plain module, and ``reconciler.main`` cannot import. So this import takes
+    ``scripts/`` off ``sys.path`` for the one call, and it drops a plain
+    ``reconciler`` module that took the package name.
+    """
+    import importlib
+    import os
+    import sys
+
+    if not name.startswith("reconciler"):
+        return importlib.import_module(name)
+    cached = sys.modules.get("reconciler")
+    if cached is not None and not hasattr(cached, "__path__"):
+        del sys.modules["reconciler"]
+    scripts = os.path.normcase(os.path.abspath(REPO / "scripts"))
+    saved = list(sys.path)
+    sys.path[:] = [
+        p for p in sys.path if os.path.normcase(os.path.abspath(p or ".")) != scripts
+    ]
+    try:
+        return importlib.import_module(name)
+    finally:
+        sys.path[:] = saved
+
+
 def spy_on_writers(mp, sink: Callable[[Any], None]) -> None:
     """Point the ``record`` name of each writer module at *sink*."""
-    import importlib
-
     for name in WRITERS:
-        mp.setattr(importlib.import_module(name), "record", sink)
+        mp.setattr(writer_module(name), "record", sink)
 
 
 # ==========================================================================
