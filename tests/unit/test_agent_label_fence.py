@@ -473,7 +473,7 @@ class TestTheChildGrantsNothing:
             for path in sorted((_REPO / top).rglob("*.py")):
                 if "tests" in path.parts or ".venv" in path.parts:
                     continue
-                if re.search(r"\bparent_run_id\b|'child'", _read(path)):
+                if _CHILD.search(_read(path)):
                     found.append(path.relative_to(_REPO).as_posix())
         assert found == ["apps/services/gateway/gateway/routes/projects/agent_runs.py"], found
 
