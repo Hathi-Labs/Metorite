@@ -201,6 +201,8 @@ describe("agentPlaceLine (SW-106)", () => {
     const at = panel.indexOf("data-agent-place");
     expect(at).toBeGreaterThan(0);
     expect(panel.slice(Math.max(0, at - 400), at)).toContain("placeLook.none ? null");
+  });
+});
 
 describe("a plan on the live line (SW-32)", () => {
   it("shows the step in progress and the count", () => {
