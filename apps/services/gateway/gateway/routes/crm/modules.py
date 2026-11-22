@@ -363,9 +363,14 @@ def _ladder(mirrored: dict[str, dict[str, Any]], module: str) -> list[str]:
         return [module]
     if not folded:
         return []
+    # Task 3864: the last step takes a final "s" more or less, so "invoice"
+    # finds Invoices and "invoices" finds a module with the label Invoice.
+    other = folded[:-1] if folded.endswith("s") else folded + "s"
     for found in (
         [n for n in mirrored if fold_module(n) == folded],
         [n for n, row in mirrored.items() if folded in _forms(n, row)],
+        [n for n, row in mirrored.items()
+         if other == fold_module(n) or other in _forms(n, row)],
     ):
         if found:
             return found
