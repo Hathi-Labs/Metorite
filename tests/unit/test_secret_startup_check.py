@@ -242,6 +242,7 @@ def test_a_database_url_with_a_public_password_is_unusable():
 
     public = "postgresql+psycopg://acb:acb_dev_change_me@localhost:5432/acb"
     assert unusable_secrets("gateway", _settings(database_url=public)) == ["database_url"]
+    assert unusable_secrets("gateway", _settings(database_url="")) == ["database_url"]
     # A socket or peer login carries no password, and that is not a default.
     peer = "postgresql+psycopg://acb@/acb?host=/var/run/postgresql"
     assert unusable_secrets("gateway", _settings(database_url=peer)) == []

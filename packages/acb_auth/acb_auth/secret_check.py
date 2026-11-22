@@ -137,7 +137,7 @@ class SecretsUnusable(RuntimeError):
         super().__init__(
             f"{service} refuses to start: these secret settings are empty or "
             f"public: {listed}. Set each one, or set SECRET_STARTUP_CHECK=shadow "
-            "(docs/secrets_drop.md §6)."
+            "(docs/secrets_drop.md section 6)."
         )
 
 
@@ -145,7 +145,10 @@ def _value_usable(setting: str, raw: Any) -> bool:
     value = str(raw or "")
     if setting == "database_url":
         # A URL is not a secret. Its password is. A login with no password
-        # (a socket or peer login) has no default to leak.
+        # (a socket or peer login) has no default to leak. An empty URL has
+        # no database at all.
+        if not value.strip():
+            return False
         try:
             password = urlsplit(value).password
         except ValueError:
