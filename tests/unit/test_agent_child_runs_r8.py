@@ -63,6 +63,19 @@ the migration.
   ``TestTheDarkRoute`` (each test).
 * C15. ``G`` ``start_child_run``: move the flag check after the parent lock.
   ``test_the_flag_off_takes_no_lock``.
+* C16. ``G`` ``_parent_for_child``: drop the execute of ``_LOCK_TASK_RUN_SQL``.
+  ``TestTheRaces``: ``test_21_starts_at_once_give_20_children_and_one_429``,
+  ``test_40_starts_at_once_give_20_children_and_20_429`` and
+  ``test_30_replays_at_once_write_one_child``.
+* C17. ``G`` ``_parent_for_child``: drop the member test before the 403.
+  ``test_a_run_of_another_member_or_connection_is_refused`` (Bob gets 403).
+* C18. ``G`` ``_STOP_CHILD_SQL``: drop ``kind = 'child'``.
+  ``test_the_stop_names_the_child_subject``. The subject fence of
+  ``test_app_requests_r8.py`` does not see it: it reads only a statement
+  with ``FROM`` or ``JOIN pm_agent_runs``, and an UPDATE has neither.
+* C19. ``acb_auth.agent_oauth.MCP_ROUTES``: add the GET of the children.
+  ``test_mcp_edge_coverage.py``
+  ``test_sw114_report_subagent_is_the_one_write_of_the_children_route``.
 """
 
 from __future__ import annotations
@@ -735,6 +748,113 @@ class TestTheSubagentReports:
         assert _child_rows(w, parent) == []
 
 
+async def _all_at_once(calls: list[Any]) -> list[Any]:
+    """Run *calls* at the same time. Each request of the one ASGI client
+    opens its own session from the pool, so the requests overlap in the
+    database. The barrier holds each call until all of them are ready."""
+    import asyncio
+
+    gate = asyncio.Event()
+    waiting = 0
+
+    async def one(make: Any) -> Any:
+        nonlocal waiting
+        waiting += 1
+        if waiting == len(calls):
+            gate.set()
+        await gate.wait()
+        return await make()
+
+    return list(await asyncio.gather(*(one(c) for c in calls)))
+
+
+def _codes(answers: list[Any]) -> dict[int, int]:
+    out: dict[int, int] = {}
+    for a in answers:
+        out[a.status_code] = out.get(a.status_code, 0) + 1
+    return out
+
+
+@_DB_GATE
+class TestTheRaces:
+    """SW-114. The parent lock of ``_parent_for_child`` puts the starts and
+    the stops of one parent in turn. So the cap and the replay hold when the
+    hooks of many sub-agents call at once (C16).
+
+    ``_clock`` runs between the reads (the replay key and the count) and the
+    INSERT. The fixture makes it wait 0.1 s, so each start holds its open
+    transaction across that gap. With the lock the starts wait in turn.
+    Without it, they all read before any of them writes, and the counts
+    break every time, not only on a lucky schedule."""
+
+    @pytest.fixture(autouse=True)
+    def _slow_clock(self, monkeypatch):
+        import asyncio
+
+        from gateway.routes.projects import agent_runs
+
+        real = agent_runs._clock
+
+        async def slow(db: Any) -> Any:
+            await asyncio.sleep(0.1)
+            return await real(db)
+
+        monkeypatch.setattr(agent_runs, "_clock", slow)
+
+    async def _starts(self, w: Any, n: int, ids: list[str] | None = None) -> tuple[
+            str, list[Any]]:
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            names = ids or [f"race-{i}" for i in range(n)]
+            answers = await _all_at_once([
+                (lambda a=a: _child(call, session, parent, agent_id=a)) for a in names])
+        return parent, answers
+
+    def _open(self, w: Any, parent: str) -> int:
+        return sum(1 for r in _child_rows(w, parent) if r.status in _OPEN)
+
+    async def test_21_starts_at_once_give_20_children_and_one_429(self, w):
+        parent, answers = await self._starts(w, 21)
+        assert _codes(answers) == {201: 20, 429: 1}, [a.text for a in answers]
+        assert self._open(w, parent) == 20 and len(_child_rows(w, parent)) == 20
+
+    async def test_40_starts_at_once_give_20_children_and_20_429(self, w):
+        parent, answers = await self._starts(w, 40)
+        assert _codes(answers) == {201: 20, 429: 20}, _codes(answers)
+        assert self._open(w, parent) == 20 and len(_child_rows(w, parent)) == 20
+
+    async def test_30_replays_at_once_write_one_child(self, w):
+        parent, answers = await self._starts(w, 30, ["same-id"] * 30)
+        assert _codes(answers) == {201: 1, 200: 29}, _codes(answers)
+        assert sum(1 for a in answers if a.json()["created"]) == 1
+        assert len({a.json()["run"]["id"] for a in answers}) == 1
+        assert len(_child_rows(w, parent)) == 1
+
+    async def test_a_stop_that_races_starts_at_the_cap(self, w):
+        """20 open children. A stop of one and two new starts go at once.
+        After them, at most 20 are open, at most one start took the freed
+        slot, and the stopped child has the status that its answer gave."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            for n in range(20):
+                assert (await _child(call, session, parent,
+                                     agent_id=f"full-{n}")).status_code == 201
+            stop, one, two = await _all_at_once([
+                lambda: _stop(call, session, parent, "full-0"),
+                lambda: _child(call, session, parent, agent_id="late-1"),
+                lambda: _child(call, session, parent, agent_id="late-2"),
+            ])
+        assert stop.status_code == 200 and stop.json()["ended"] is True, stop.text
+        started = [a for a in (one, two) if a.status_code == 201]
+        assert {a.status_code for a in (one, two)} <= {201, 429}
+        assert len(started) <= 1
+        rows = {r.idempotency_key.rsplit(":", 1)[1]: r.status for r in _child_rows(w, parent)}
+        assert rows["full-0"] == stop.json()["run"]["status"] == "completed"
+        assert self._open(w, parent) == 19 + len(started) <= 20
+
+
 def _run_count(w: Any) -> int:
     return int(_rows(w.p, "SELECT count(*) AS n FROM pm_agent_runs")[0].n)
 
@@ -849,6 +969,17 @@ class TestTheEndOfTheChildren:
                 raise AssertionError(str(statement))
 
         await agent_runs._end_children(_Db(), "r1", status, "ts")
+
+    def test_the_stop_names_the_child_subject(self) -> None:
+        """SW-114 (C18). The stop of one child names ``kind = 'child'``, the
+        parent, the key and the member, and only open statuses."""
+        from gateway.routes.projects import agent_runs
+
+        sql = agent_runs._STOP_CHILD_SQL
+        for needed in ("kind = 'child'", "parent_run_id = CAST(:rid AS uuid)",
+                       "idempotency_key = :key", "member_email = :me",
+                       "status = ANY(:open)"):
+            assert needed in sql, needed
 
     def test_the_end_names_the_child_subject_and_the_open_statuses(self) -> None:
         from gateway.routes.projects import agent_runs
