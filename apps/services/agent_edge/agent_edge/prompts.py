@@ -145,6 +145,19 @@ LANE_ASK_RULE = (
 IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
               " you start.")
 
+#: WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tip for an
+#: orchestrator. ⚠️ HELD BACK: no prompt holds it yet. ``AGENT_MAP_ORGS`` is
+#: off, and only the gateway reads it (``agent_summary.agent_map_allowed``),
+#: so the edge cannot show the tip only where the map works. An agent of an
+#: org off the flag would get ``TEXT_MAP_NOT_FOUND`` and could think that it
+#: lost access. The slice that flips ``AGENT_MAP_ORGS`` adds the tip to the
+#: work step of ``_work_steps``. Fence: ``test_mcp_edge_prompts.py``
+#: ``TestTheMapTip``.
+MAP_RULE = (
+    " Before you dispatch a sub-agent or another session, call get_agent_map"
+    " for the project of the task. It shows which sessions already work on"
+    " which tasks, so that two agents do not take one task.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -542,6 +555,7 @@ __all__ = [
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
+    "MAP_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
     "PR_RULE",

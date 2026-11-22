@@ -666,6 +666,28 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
     assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
+def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tool
+    reads the map of SW-102 through the overview route, and no other route.
+    It needs ``projects:read``, it has the hints of a read, and it shows with
+    the runs flag off too, as the gateway map answers then. The pair is
+    class A in the Projects manifest, so rule 2 needs no exception. Mutation:
+    drop the pair from ``MCP_ROUTES``, and this test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_agent_map"]
+    pair = ("GET", "/projects/agents/overview")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair not in NAMED_EXCEPTIONS
+    assert tool.required_scope == PROJECTS_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.runs is False and not tool.edge_inputs and not tool.prior_writes
+    assert dict(tool.params) == {"project_id": "project_id", "show_quiet": "show_quiet"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "A"
+
+
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
     params = _route_parameters()
     wrong: list[str] = []
