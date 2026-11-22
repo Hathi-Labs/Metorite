@@ -309,14 +309,14 @@
   },
   {
    "name": "the word task, punctuation after",
-   "text": "task 21, task 22. task 23; task 24: task 25! task 26?",
+   "text": "task 21, task 22. task 23; task 25! task 26? (task 27)",
    "numbers": [
     21,
     22,
     23,
-    24,
     25,
-    26
+    26,
+    27
    ]
   },
   {
@@ -346,11 +346,9 @@
    ]
   },
   {
-   "name": "only the number right after task",
-   "text": "task 2 of 3 is done",
-   "numbers": [
-    2
-   ]
+   "name": "a position, task N of M, is no reference",
+   "text": "stopped: task 5 of 7, «Step 5», was refused. Task 2 Of 3 and task 4 of 9",
+   "numbers": []
   },
   {
    "name": "a count after task reaches the lookup",
@@ -397,6 +395,20 @@
   {
    "name": "the word task after a unicode letter",
    "text": "étask 5 and 中task 6 and -task 7",
+   "numbers": [
+    7
+   ]
+  },
+  {
+   "name": "of with no number after it",
+   "text": "task 5 of the plan",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a label, task N and a colon, is no reference",
+   "text": "task 1: #7 «Fix the extruder» and Task 2: set up and task 3 : go",
    "numbers": [
     7
    ]

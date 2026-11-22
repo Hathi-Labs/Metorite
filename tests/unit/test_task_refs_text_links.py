@@ -92,7 +92,7 @@ def test_the_python_finder_agrees_with_the_case_file(case: dict[str, Any]) -> No
         span = case["text"][m.start:m.end]
         assert span in (f"#{m.number}", f"{m.number}"), span
         if not span.startswith("#"):
-            assert case["text"][:m.start].rstrip(" \t ").lower().endswith("task")
+            assert case["text"][:m.start].rstrip(" \t\u00a0").lower().endswith("task")
 
 
 @pytest.mark.parametrize("case", _shared()["markdown_cases"], ids=lambda c: c["name"])

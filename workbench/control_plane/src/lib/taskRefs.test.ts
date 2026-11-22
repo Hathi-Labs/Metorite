@@ -109,8 +109,11 @@ describe("findTaskRefs", () => {
       { kind: "ref", ref: "7", number: 7 },
       { kind: "text", text: ")" },
     ]);
-    // Only the number right after the word: `of 3` is a count.
-    expect(refs("task 2 of 3")).toEqual(["2"]);
+    // A position, as the Projects tools write it, is no task: `task 5 of 7`
+    // and the card line `task 1: #7 «…»`. The `#7` is still a reference.
+    expect(refs("stopped: task 5 of 7, «Step 5», was refused.")).toEqual([]);
+    expect(refs("task 1: #7 «Fix the extruder»")).toEqual(["#7"]);
+    expect(refs("task 5 of the plan")).toEqual(["5"]);
     expect(refs("tasks 3, multitask 5, subtask 6, task12, task-12, task 10:30")).toEqual([]);
   });
 });

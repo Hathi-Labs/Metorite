@@ -67,14 +67,20 @@ import { statusAccent } from "@/lib/statusAccent";
 //    - Then spaces, tabs or no-break spaces on the SAME line, then the number
 //      of rule 1. So `tasks 3`, `task12`, `task-12`, `task: 12` and a
 //      `task` at the end of a line are no reference.
-//    - Rules 4, 6 and 7 hold from the number. A `:`, `/` or `-` and a digit
-//      after it is a time, a fraction or a range, so `task 10:30`,
-//      `task 3/4` and `task 5-7` are no reference.
-//    - Only the number right after `task` counts: `task 2 of 3` names 2. A
-//      number that counts something (`do the task 3 times`) cannot be told
-//      apart, so it reaches the lookup, which links it only to one task.
-//    - The spelling is `[Tt][Aa][Ss][Kk]`, not the `i` flag, and the gap is
-//      `[ \t ]`, not `\s`, so the gateway's copy reads the same text.
+//    - Rules 4, 6 and 7 hold from the number. A `/` or `-` and a digit after
+//      it is a fraction or a range, so `task 3/4` and `task 5-7` are no
+//      reference.
+//    - A position is no reference. The Projects tools write `task 5 of 7`
+//      (`forms.py`) and the card line `task 1: #7 «Fix the extruder»`
+//      (`guarded.py`). So `of` and a digit after the number, or a colon
+//      after it with or without a gap, makes no reference. `task 10:30` is
+//      no reference for the same reason. The `#7` there is still rule 1's.
+//    - A plan heading with no colon (`Task 1 — Set up`, `Task 1. Set up`) and
+//      a count (`do the task 3 times`) cannot be told apart from a task
+//      number. They reach the lookup, which links only one visible task.
+//    - The spelling is `[Tt][Aa][Ss][Kk]` and `[Oo][Ff]`, not the `i` flag,
+//      and the gap is `[ \t\u00a0]`, not `\s`, so the gateway's copy reads
+//      the same text.
 //
 // Code, inline code and a heading's own `#` marker are the CALLER's to skip:
 // a Markdown caller hands this function text nodes only (`remarkEntityPills`).
@@ -90,7 +96,7 @@ export interface TaskRefMatch {
 /** Rules 1 to 4 and 8. The lookbehind is rules 2 and 3, each lookahead rule
  *  4. Group 1 is the number after `#`, group 2 the number after `task`. */
 const CANDIDATE =
-  /(?<![\p{L}\p{N}_/\\#&=?@])(?:#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])|[Tt][Aa][Ss][Kk][ \t ]+([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,:/-][0-9]))/gu;
+  /(?<![\p{L}\p{N}_/\\#&=?@])(?:#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])|[Tt][Aa][Ss][Kk][ \t\u00a0]+([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,/-][0-9]|[ \t\u00a0]*:|[ \t\u00a0]+[Oo][Ff][ \t\u00a0]+[0-9]))/gu;
 
 /** Rule 5: the hex run that starts at `#`. */
 const HEX_RUN = /^#[0-9a-fA-F]+/;

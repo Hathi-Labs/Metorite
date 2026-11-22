@@ -113,11 +113,14 @@ _SPACE_RE = re.compile(f"[{_JS_SPACE}]")
 
 #: Rules 1 to 4 and 8. `\w` is the Python spelling of `[\p{L}\p{N}_]`.
 #: Group 1 is the number after `#`. Group 2 is the number after the word
-#: `task` (rule 8, task 1595): `[Tt][Aa][Ss][Kk]` and not IGNORECASE, and a
-#: same-line gap of `[ \t ]`, so both languages read the same text.
+#: `task` (rule 8, task 1595). Its lookahead refuses a fraction or a range
+#: (`task 3/4`, `task 5-7`) and a position (`task 5 of 7`, `task 1: …`).
+#: `[Tt][Aa][Ss][Kk]` and `[Oo][Ff]`, not IGNORECASE, and a same-line gap of
+#: `[ \t\u00a0]`, so both languages read the same text.
 _CANDIDATE = re.compile(
     r"(?<![\w/\\#&=?@])(?:#([1-9][0-9]{0,8})(?!\w|[.,][0-9])"
-    r"|[Tt][Aa][Ss][Kk][ \t ]+([1-9][0-9]{0,8})(?!\w|[.,:/-][0-9]))"
+    r"|[Tt][Aa][Ss][Kk][ \t\u00a0]+([1-9][0-9]{0,8})"
+    r"(?!\w|[.,/-][0-9]|[ \t\u00a0]*:|[ \t\u00a0]+[Oo][Ff][ \t\u00a0]+[0-9]))"
 )
 #: Rule 5: the hex run that starts at `#`.
 _HEX_RUN = re.compile(r"#[0-9a-fA-F]+")

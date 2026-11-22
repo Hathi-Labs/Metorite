@@ -193,6 +193,7 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
       text(m[1], true);
     } else if (m[3] !== undefined) {
       const name = m[3].trim();
+      if (name && !m[2]) echoInto(out, name);
       if (name) out.push(pillNode(name, m[2]));
       else if (m[2]) text(`${m[2]} `);
     } else {
@@ -208,6 +209,21 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
     else merged.push(n);
   }
   return glueTrailingPunctuation(merged);
+}
+
+/**
+ * `task 235 «Title»` (task 1595): the fence takes a number only with its
+ * `#`, so the `235` before the name is a bare reference. Give it the name as
+ * the words after it, so the pill sees that the answer wrote the title there
+ * and does not draw the title twice. A `#235 «Title»` never gets here: the
+ * fence takes it whole.
+ */
+function echoInto(out: MdNode[], name: string): void {
+  const last = out[out.length - 1];
+  const gap = last?.type === "text" && /^\s*$/.test(last.value ?? "") ? (last.value ?? "") : null;
+  const ref = gap === null ? last : out[out.length - 2];
+  const props = ref?.type === "taskRef" ? ref.data?.hProperties : undefined;
+  if (props) props[TASK_REF_AFTER_ATTR] = `${gap ?? ""}${name}`.slice(0, 200);
 }
 
 /** The class of the span that keeps a pill and its punctuation together. */

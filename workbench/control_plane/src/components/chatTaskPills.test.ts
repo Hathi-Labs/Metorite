@@ -268,6 +268,22 @@ describe("task 1595: the word task names a task too", () => {
     expect(html).toContain(words);
   });
 
+  it("does not link a position, as the Projects tools write one", () => {
+    // #1 and #12 are tasks here, so only the guard keeps them text.
+    const stopped = "stopped: task 1 of 7, «Step 1», was refused.";
+    expect(hrefs(mainChat(stopped))).toEqual([]);
+    expect(hrefs(mainChat("task 1: #12 «Fix the login page»"))).toEqual([idOf(12)]);
+    expect(hrefs(mainChat("Task 12: set up the build box."))).toEqual([]);
+  });
+
+  it("task N «Title»: one link, and the title draws once", () => {
+    const html = mainChat(`Made task 235 «${TITLES[235]}».`);
+    expect(hrefs(html)).toEqual([idOf(235)]);
+    expect(html.match(new RegExp(TITLES[235], "g"))).toHaveLength(1);
+    // The orchestrator with no hand-off links it too: the title follows.
+    expect(hrefs(mainChat(`Made task 235 «${TITLES[235]}».`, "orchestrator", []))).toEqual([idOf(235)]);
+  });
+
   it("not another agent's answer", () => {
     expect(hrefs(mainChat("Ticket task 235 is closed.", "email-assistant"))).toEqual([]);
   });
