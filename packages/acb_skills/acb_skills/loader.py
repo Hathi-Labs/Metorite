@@ -1449,8 +1449,9 @@ def read_dep_status(agent_dir: Path) -> dict[str, Any] | None:
 # The first-party gate of the host install (task 3850, D85, D129)
 # ---------------------------------------------------------------------------
 
-#: The two files that declare an agent's deps. ``_install_agent_deps`` reads
-#: these two and no other file.
+#: The two files that declare an agent's deps. A line of them can name another
+#: file, so :func:`_dep_lines_plain` refuses such a line for a first-party
+#: install.
 _DEP_FILES: tuple[str, ...] = ("requirements.txt", "pyproject.toml")
 
 
@@ -1509,9 +1510,13 @@ def first_party_source(
       inside :func:`_platform_agents_root`, the code that the deploy ships.
     * Else the GitHub repo (``"owner/repo"``, a bare name, or the default
       ``agent-<name>``): first party only when its owner is
-      ``settings.github_org``, the org whose repos only the platform's own
-      people write. The owner and the repo must be valid GitHub names, so a
-      ``..`` segment cannot point the clone at another owner.
+      ``settings.github_org``, the org that owns the platform's ``agent-*``
+      and ``skill-*`` repos. The owner and the repo must be valid GitHub
+      names, so a ``..`` segment cannot point the clone at another owner.
+
+    ⚠️ With no ``repo_name`` and no ``local_path`` it reads the default repo
+    ``agent-<name>`` under ``github_org``, as :func:`load_agent` does. So a
+    caller must pass the registry's two values, never drop them.
     """
     if local_path:
         root = _platform_agents_root()
@@ -1565,6 +1570,34 @@ def _dep_files_untouched(agent_dir: Path, *, source_dir: Path | None) -> bool:
     return result.returncode == 0 and not (result.stdout or "").strip()
 
 
+def _plain_dep_line(line: str) -> bool:
+    """True for a dep line that names a project from the index, and no file.
+
+    A ``-r`` or ``-c`` include, a ``--find-links`` dir, a path, a wheel file
+    or a ``name @ url`` reference can read a file that is not one of
+    :data:`_DEP_FILES`, and a run can write that file. Each is False.
+    """
+    text = line.strip()
+    if agent_site.requirement_name(text) is None:
+        return False
+    if any(ch in text for ch in "@/\\"):
+        return False
+    return not text.lower().endswith((".whl", ".zip", ".tar.gz", ".tgz"))
+
+
+def _dep_lines_plain(agent_dir: Path) -> bool:
+    """True when each declared dep of *agent_dir* is a :func:`_plain_dep_line`."""
+    lines = list(_pyproject_agent_deps(agent_dir / "pyproject.toml"))
+    req = agent_dir / "requirements.txt"
+    if req.is_file():
+        try:
+            text = req.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        lines += agent_site.requirement_lines(text)
+    return all(_plain_dep_line(line) for line in lines)
+
+
 def _gated_install_agent_deps(
     agent_dir: Path,
     settings: Any,
@@ -1579,7 +1612,11 @@ def _gated_install_agent_deps(
 
     * A repo that declares no dep loads as before. Nothing installs.
     * A first-party source (:func:`first_party_source`) whose dep files are
-      its own (:func:`_dep_files_untouched`) installs as before.
+      its own (:func:`_dep_files_untouched`) and name only index projects
+      (:func:`_dep_lines_plain`) installs as before.
+    * A first-party source whose dep files changed, or name a file, installs
+      nothing. It logs ``loader.agent_deps_skipped`` and still loads, so a
+      file that a run wrote into a shared copy cannot stop a built-in agent.
     * Any other repo that declares a dep raises :class:`AgentDepsRefused`.
       It installs nothing, and the log line names the agent, never a package.
 
@@ -1588,18 +1625,25 @@ def _gated_install_agent_deps(
     agent_site.ensure_on_sys_path()
     if not _declares_agent_deps(agent_dir):
         return
-    first_party = first_party_source(
+    source = "local" if local_path else "github"
+    if first_party_source(
         agent_name, repo_name=repo_name, local_path=local_path, settings=settings,
-    )
-    source_dir = Path(local_path) if local_path else None
-    if first_party and _dep_files_untouched(agent_dir, source_dir=source_dir):
-        _install_agent_deps(agent_dir, settings)
+    ):
+        source_dir = Path(local_path) if local_path else None
+        if not _dep_files_untouched(agent_dir, source_dir=source_dir):
+            reason = "dep_files_changed"
+        elif not _dep_lines_plain(agent_dir):
+            reason = "dep_line_names_a_file"
+        else:
+            _install_agent_deps(agent_dir, settings)
+            return
+        _log.warning(
+            "loader.agent_deps_skipped", agent=agent_name, source=source, reason=reason,
+        )
         return
     _log.warning(
-        "loader.agent_deps_refused",
-        agent=agent_name,
-        source="local" if local_path else "github",
-        reason="dep_files_changed" if first_party else "not_first_party",
+        "loader.agent_deps_refused", agent=agent_name, source=source,
+        reason="not_first_party",
     )
     raise AgentDepsRefused(AGENT_DEPS_REFUSED_TEXT.format(agent=agent_name))
 

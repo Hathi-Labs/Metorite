@@ -11,9 +11,11 @@ until the sandbox (SBX) runs it.
 ``loader._gated_install_agent_deps`` is the ONE gate, and the only caller of
 the installer. ``loader.first_party_source`` is the ONE test of a first-party
 source: a ``local_path`` inside the platform's ``apps/agents``, or a GitHub
-repo whose owner is ``settings.github_org``. ``_dep_files_untouched`` makes
-sure that the dep files of the working copy are the source's own, so a file
-that a run planted in the copy is not first party.
+repo whose owner is ``settings.github_org``. No earlier predicate described a
+repo, so this one is new. A first-party source installs only when the dep
+files of the working copy are the source's own (``_dep_files_untouched``)
+and each line names an index project (``_plain_dep_line``). Else it installs
+nothing and still loads, so a file that a run planted cannot stop a built-in.
 
 Hermetic: git runs for real in a temp dir, and every other process is a
 fake that records its argv. No package is ever installed, and no network is
@@ -26,6 +28,8 @@ Mutations this suite catches (R7), each run red by hand on 2026-11-22:
 * the ``local_path`` path calls it with no gate ->
   ``test_a_tenant_local_agent_with_deps_is_refused`` and the fence;
 * the gateway startup calls it with no gate -> the two startup fences;
+* the gateway startup drops ``repo_name`` and ``local_path`` ->
+  ``test_startup_passes_the_registry_source``;
 * ``first_party_source`` answers True for every repo -> both tenant tests,
   the skill test and the spoof test.
 """
@@ -222,20 +226,56 @@ def test_a_tenant_local_agent_with_no_deps_loads(
     assert installs == []
 
 
-def test_a_planted_dep_file_in_a_first_party_copy_is_refused(
+def _skipped(log: _Log) -> list[str]:
+    return [kw["reason"] for e, kw in log.events if e == "loader.agent_deps_skipped"]
+
+
+def test_a_planted_dep_file_in_a_first_party_copy_is_not_installed(
     platform_root: Path, settings: Any, installs: list, log: _Log,
 ) -> None:
     """The sync leaves a file that only the copy holds. A run that wrote a
-    requirements.txt there does not make it first party."""
+    requirements.txt there gets no install, and the agent still loads, so the
+    file cannot stop a built-in agent for every org."""
     source = _agent_source(platform_root / "agent-own", deps=False)
     copy = Path(settings.agents_clone_dir) / "repos" / "own"
     copy.mkdir(parents=True)
     (copy / "requirements.txt").write_text(FAKE_PKG + "\n", encoding="utf-8")
-    exc = _load("own", local_path=str(source))
+    assert _load("own", local_path=str(source)) is None
     assert _pip_installs(installs) == []
-    _assert_refused(exc, "own")
-    refused = [kw for e, kw in log.events if e == "loader.agent_deps_refused"]
-    assert refused[0]["reason"] == "dep_files_changed"
+    assert _skipped(log) == ["dep_files_changed"]
+    assert "loader.agent_deps_refused" not in log.names()
+
+
+def test_a_first_party_include_line_is_not_installed(
+    platform_root: Path, settings: Any, installs: list, log: _Log,
+) -> None:
+    """A ``-r`` include reads a file that the copy check does not cover."""
+    source = _agent_source(platform_root / "agent-own", deps=False)
+    (source / "requirements.txt").write_text("-r extra.txt\n", encoding="utf-8")
+    assert _load("own", local_path=str(source)) is None
+    assert _pip_installs(installs) == []
+    assert _skipped(log) == ["dep_line_names_a_file"]
+
+
+@pytest.mark.parametrize(
+    ("line", "plain"),
+    [
+        ("httpx>=0.27", True),
+        ("skill-projects", True),
+        ('pandas[excel]==2.2; sys_platform == "linux"', True),
+        ("six==1.17.0 --hash=sha256:abc", True),
+        ("-r extra.txt", False),
+        ("-c constraints.txt", False),
+        ("--find-links ./wheels", False),
+        ("--index-url https://example.com/simple", False),
+        ("./hostile-1.0-py3-none-any.whl", False),
+        ("hostile-1.0-py3-none-any.whl", False),
+        ("hostile @ file:///tmp/hostile.whl", False),
+        ("hostile @ https://example.com/hostile.whl", False),
+    ],
+)
+def test_a_plain_dep_line_names_only_an_index_project(line: str, plain: bool) -> None:
+    assert loader._plain_dep_line(line) is plain
 
 
 # ── 2. The clone path ────────────────────────────────────────────────────────
@@ -259,14 +299,14 @@ def test_a_first_party_github_agent_still_installs(
     assert len(_pip_installs(installs)) == 1, installs
 
 
-def test_a_new_dep_file_in_a_first_party_clone_is_refused(
-    settings: Any, installs: list, no_network: None,
+def test_a_new_dep_file_in_a_first_party_clone_is_not_installed(
+    settings: Any, installs: list, no_network: None, log: _Log,
 ) -> None:
     clone = _seed_clone(Path(settings.agents_clone_dir) / "repos", "own-gh", deps=False)
     (clone / "requirements.txt").write_text(FAKE_PKG + "\n", encoding="utf-8")
-    exc = _load("own-gh", repo_name=f"{PLATFORM_ORG}/agent-own-gh")
+    assert _load("own-gh", repo_name=f"{PLATFORM_ORG}/agent-own-gh") is None
     assert _pip_installs(installs) == []
-    _assert_refused(exc, "own-gh")
+    assert _skipped(log) == ["dep_files_changed"]
 
 
 def test_a_tenant_skill_repo_with_deps_is_not_attached(
@@ -346,6 +386,28 @@ def test_startup_installs_only_through_the_gate() -> None:
     }
     assert "warm_install_agent_deps" in names
     assert "_install_agent_deps" not in names
+
+
+def test_startup_passes_the_registry_source() -> None:
+    """With no source, the predicate reads the default repo under
+    ``github_org``. So the startup call must pass the entry's two values."""
+    func = _warm_clone_func()
+    calls = [
+        n for n in ast.walk(func)
+        if isinstance(n, ast.Call)
+        and any(isinstance(a, ast.Name) and a.id == "warm_install_agent_deps" for a in n.args)
+    ]
+    assert len(calls) == 1, "one startup call of the gate"
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert isinstance(kw.get("repo_name"), ast.Name) and kw["repo_name"].id == "repo_name"
+    assert isinstance(kw.get("local_path"), ast.Name) and kw["local_path"].id == "local_path"
+    sources = {
+        t.id: ast.unparse(n.value)
+        for n in ast.walk(func) if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Name)
+    }
+    assert sources.get("repo_name") == "entry.get('repo_name')"
+    assert sources.get("local_path") == "entry.get('local_path')"
 
 
 # ── 4. The predicate ─────────────────────────────────────────────────────────
