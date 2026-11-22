@@ -1686,6 +1686,28 @@ def _plan_rows(labels: dict[str, Any], ids: list[Any], slack: dict[str, Any]) ->
     return out
 
 
+def _plan_finish_lines(finish: Any) -> list[str]:
+    """The finish of a plan in words (task 2473). With no estimate on any slice it
+    says the finish is unknown, and names the count. With some, it keeps the date
+    and says how many slices it guessed."""
+    if not finish:
+        return []
+    if finish.get("unknown"):
+        return [
+            f"{finish.get('words') or 'The finish is unknown.'} Give each slice an"
+            " estimate, then ask again."
+        ]
+    lines: list[str] = []
+    if finish.get("guessed"):
+        lines.append(f"Note: {finish.get('words') or 'Some slices have no estimate.'}")
+    lines.append(
+        f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
+        f" {finish.get('mins')} minutes of work and review wait). One date from the"
+        " length of the path. It is not a forecast with a range."
+    )
+    return lines
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def get_plan(root_task_id: str) -> str:
     """The order of work under one goal, epic or project task, computed by the
@@ -1725,21 +1747,7 @@ async def get_plan(root_task_id: str) -> str:
     if path:
         out.append(f"Critical path ({len(path)} slices, in order):")
         out.extend(_plan_rows(labels, path, slack))
-    finish = plan.get("finish")
-    if finish and finish.get("unknown"):
-        # Task 2473: no open slice has an estimate, so there is nothing to add up.
-        out.append(
-            f"{finish.get('words') or 'The finish is unknown.'} Give each slice an"
-            " estimate, then ask again."
-        )
-    elif finish:
-        if finish.get("guessed"):
-            out.append(f"Note: {finish.get('words') or 'Some slices have no estimate.'}")
-        out.append(
-            f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
-            f" {finish.get('mins')} minutes of work and review wait). One date from the"
-            " length of the path. It is not a forecast with a range."
-        )
+    out.extend(_plan_finish_lines(plan.get("finish")))
     waves = plan.get("waves") or []
     if waves:
         out.append(
