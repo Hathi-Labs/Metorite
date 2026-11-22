@@ -2901,6 +2901,17 @@ async def _parent_for_child(db: Any, user: UserContext, parent_id: str, *,
     return parent
 
 
+def _child_writes_on(user: UserContext) -> bool:
+    """SW-114. The child writes are dark behind ``AGENT_MAP_ORGS``, the flag
+    of the map that draws them. ``agent_summary.agent_map_allowed`` is the one
+    reader of that flag. The organization is the one of the signed context,
+    which also binds the tenant session, never a value of the request (R5).
+    The import is local because ``agent_summary`` imports this module."""
+    from gateway.routes.projects.agent_summary import agent_map_allowed
+
+    return agent_map_allowed(getattr(user, "organization_id", None))
+
+
 @router.post("/agent-runs/{run_id}/children", status_code=201, dependencies=_ENABLED)
 async def start_child_run(
     run_id: str, payload: ChildIn, response: Response,
@@ -2920,7 +2931,13 @@ async def start_child_run(
     A ``stop`` ends the open child of that ``agent_id``, 200. A stop of an
     unknown or ended child changes nothing, and answers 200 too.
 
-    Only a signed agent sends one: a person's call is 422."""
+    Only a signed agent sends one: a person's call is 422.
+
+    Dark (SW-114): the route answers the one 404 of :data:`CHILD_PARENT_REFUSED`
+    while ``AGENT_MAP_ORGS`` leaves out the caller's organization. That check
+    comes first, before any read, lock or write (:func:`_child_writes_on`)."""
+    if not _child_writes_on(user):
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
     if getattr(user, "agent", None) is None:
         raise HTTPException(status_code=422, detail=CHILD_PERSON_REFUSED)
     _require_write_scope(user)

@@ -59,6 +59,10 @@ the migration.
   ``test_a_stop_ends_one_child_and_a_second_stop_is_quiet``.
 * C13. ``G`` ``_parent_for_child``: give 404 for another connection.
   ``test_a_run_of_another_member_or_connection_is_refused``.
+* C14. ``G`` ``start_child_run``: drop the ``_child_writes_on`` check.
+  ``TestTheDarkRoute`` (each test).
+* C15. ``G`` ``start_child_run``: move the flag check after the parent lock.
+  ``test_the_flag_off_takes_no_lock``.
 """
 
 from __future__ import annotations
@@ -128,7 +132,11 @@ def world(promoted):  # noqa: F811
 
 @pytest.fixture
 def w(world, monkeypatch):
+    """SW-114: the child writes are dark behind ``AGENT_MAP_ORGS``, so each
+    test runs with the flag on for every org. ``TestTheDarkRoute`` turns it
+    off or on for one org."""
     monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    monkeypatch.setattr(get_settings(), "agent_map_orgs", "*")
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs"))
     return world
@@ -725,6 +733,85 @@ class TestTheSubagentReports:
         assert answer.status_code == 409, answer.text
         assert answer.json() == {"detail": "That agent_id is the key of another run of yours."}
         assert _child_rows(w, parent) == []
+
+
+def _run_count(w: Any) -> int:
+    return int(_rows(w.p, "SELECT count(*) AS n FROM pm_agent_runs")[0].n)
+
+
+@_DB_GATE
+class TestTheDarkRoute:
+    """SW-114. The child writes are dark behind ``AGENT_MAP_ORGS``. Off for
+    the caller's org, a start and a stop answer the 404 of an unknown run,
+    byte for byte, before any read, lock or write."""
+
+    async def test_the_flag_off_gives_the_unknown_run_404_and_writes_nothing(
+            self, w, monkeypatch):
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            assert (await _child(call, session, parent, agent_id="on-1")).status_code == 201
+            unknown = await _child(call, session, str(uuid.uuid4()))
+            before = _run_count(w)
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", "")
+            off = [await _child(call, session, parent, agent_id="off-1"),
+                   await _child(call, session, parent, agent_id="on-1"),
+                   await _stop(call, session, parent, "on-1"),
+                   await _child(call, w.alice_person, parent),
+                   await _child(call, session, str(uuid.uuid4()))]
+            after = _run_count(w)
+        assert unknown.status_code == 404
+        for answer in off:
+            assert answer.status_code == 404, answer.text
+            assert answer.content == unknown.content
+        assert after == before
+        assert [r.status for r in _child_rows(w, parent)] == ["in_progress"]
+
+    async def test_the_flag_off_takes_no_lock(self, w, monkeypatch):
+        """An admin transaction holds the parent row FOR UPDATE. With the flag
+        off, the start and the stop still answer at once, so the route never
+        asks for the lock. With the flag on the route would wait for it."""
+        import asyncio
+
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", "")
+            with w.p.admin_engine.connect() as c:
+                trans = c.begin()
+                c.execute(text("SELECT id FROM pm_agent_runs WHERE id = CAST(:i AS uuid)"
+                               " FOR UPDATE"), {"i": parent})
+                try:
+                    start = await asyncio.wait_for(
+                        _child(call, session, parent, agent_id="lock-1"), 10)
+                    stop = await asyncio.wait_for(
+                        _stop(call, session, parent, "lock-1"), 10)
+                finally:
+                    trans.rollback()
+        assert start.status_code == 404 and stop.status_code == 404
+        assert _child_rows(w, parent) == []
+
+    async def test_the_flag_is_read_for_each_org(self, w, monkeypatch):
+        """On for org A only: org A writes and org B gets the 404. Then on
+        for org B only: the answers swap."""
+        alice = _in_session(w.alice, _key())
+        other = _in_session(w.other, _key())
+        async with _session(w.p) as call:
+            mine = await _claim(call, alice, _fresh(w))
+            theirs = await _claim(call, other, _fresh(w, w.org_b, OTHER))
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", w.org)
+            a_on = await _child(call, alice, mine, agent_id="a-1")
+            b_off = [await _child(call, other, theirs, agent_id="b-1"),
+                     await _stop(call, other, theirs, "b-1")]
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", w.org_b)
+            a_off = [await _child(call, alice, mine, agent_id="a-2"),
+                     await _stop(call, alice, mine, "a-1")]
+            b_on = await _child(call, other, theirs, agent_id="b-1")
+        assert a_on.status_code == 201 and b_on.status_code == 201, (a_on.text, b_on.text)
+        for answer in (*b_off, *a_off):
+            assert answer.status_code == 404 and answer.json() == {"detail": _REFUSED}
+        assert [r.status for r in _child_rows(w, mine)] == ["in_progress"]
+        assert len(_child_rows(w, theirs)) == 1
 
 
 def _open_child_rows(c: Any, parent: str) -> list[Any]:

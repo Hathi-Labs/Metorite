@@ -2112,6 +2112,13 @@ class TestChildRunsBesideTheRunRoutes:
     task, so the run routes and the sweep never meet one. The rest of SW-39
     is ``test_agent_child_runs_r8.py``."""
 
+    @pytest.fixture(autouse=True)
+    def _map_on(self, monkeypatch):
+        """SW-114: the child writes are dark behind ``AGENT_MAP_ORGS``."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_map_orgs", "*")
+
     async def _parent_and_child(self, w: Any, call: Any) -> tuple[str, str]:
         rid = (await _start(w, call, idempotency_key=_key()))["id"]
         made = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/children",

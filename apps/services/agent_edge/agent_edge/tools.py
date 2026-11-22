@@ -10687,9 +10687,14 @@ CHILD_OTHER_CONNECTION_DETAIL = "That run belongs to another connection of yours
 CHILD_CAP_DETAIL = (
     "This run already has 20 open sub-agents. Stop one before you start another.")
 CHILD_KEY_USED_DETAIL = "That agent_id is the key of another run of yours."
+#: The one text of every gateway 404 of the route: an unknown or hidden
+#: run, and an organization off ``AGENT_MAP_ORGS``. The edge cannot read that
+#: flag (one reader, SW-113), so the text names both and tells them apart for
+#: nobody.
 TEXT_SUBAGENT_RUN_NOT_FOUND = (
-    "No open run of this session holds a task with that run_id. Send the run_id"
-    " of your own open run.")
+    "No open run of this session holds a task with that run_id, or sub-agent"
+    " reports are off for this organization. Send the run_id of your own open"
+    " run.")
 TEXT_SUBAGENT_OTHER_CONNECTION = (
     "That run belongs to another connection of this member. Report a sub-agent"
     " only under a run of this connection.")
@@ -10795,7 +10800,8 @@ REPORT_SUBAGENT = Tool(
         " of your client calls it, and you do not need to call it yourself."
         " The run must be of this connection, and it must hold its task."
         " A run holds at most 20 open sub-agents. A sub-agent holds no task"
-        " and no claim." + _UNTRUSTED_NOTE
+        " and no claim. It works only where the agent map is on for the"
+        " organization, and elsewhere it answers not found." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SUBAGENT_INPUT,

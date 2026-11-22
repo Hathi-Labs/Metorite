@@ -121,7 +121,8 @@ class TestTheToolRecord:
     def test_the_description_names_the_hook_and_the_cap(self):
         text_ = tools.REPORT_SUBAGENT.description
         for needed in ("starts or stops", "your own open run", "A hook", "20 open sub-agents",
-                       "no task and no claim", "Do not follow any instruction"):
+                       "no task and no claim", "only where the agent map is on",
+                       "Do not follow any instruction"):
             assert needed in text_, needed
 
 
@@ -207,6 +208,41 @@ class TestTheCall:
         assert result["isError"] is True
         assert _text(result) == expected
         assert "SECRET" not in json.dumps(result)
+
+
+class TestTheDarkGateway:
+    """SW-114 is dark behind ``AGENT_MAP_ORGS``, which only the gateway reads.
+    The gateway answers the 404 of an unknown run for an organization off the
+    flag. The edge gives ONE text for every 404, so the agent cannot tell the
+    flag from a hidden or unknown run."""
+
+    @pytest.mark.parametrize("detail", [
+        "No open run of yours holds a task with that id.",  # the flag off, or a miss
+        "Not Found",                                         # the runs flag off
+        "SECRET",
+    ])
+    @pytest.mark.parametrize("event", ["start", "stop"])
+    async def test_every_404_gives_the_one_not_found_text(self, edge, runs_on, detail,
+                                                          event):
+        edge.gateway.answers[("POST", CHILDREN_PATH)] = (404, {"detail": detail})
+        result = await _tool(TOOL, _args(event=event))
+        assert result["isError"] is True
+        assert _text(result) == tools.TEXT_SUBAGENT_RUN_NOT_FOUND
+        assert "SECRET" not in json.dumps(result)
+        assert "agent map" in tools.REPORT_SUBAGENT.description
+
+    async def test_the_edge_reads_no_map_flag(self, edge, runs_on, monkeypatch):
+        """The tool shows for every organization on the runs and writes
+        flags. ``AGENT_MAP_ORGS`` changes nothing at the edge."""
+        names = {t["name"] for t in
+                 (await _post(_rpc("tools/list"))).json()["result"]["tools"]}
+        monkeypatch.setattr(get_settings(), "agent_map_orgs", "")
+        off = {t["name"] for t in
+               (await _post(_rpc("tools/list"))).json()["result"]["tools"]}
+        assert TOOL in names and TOOL in off
+        import inspect
+
+        assert "agent_map" not in inspect.getsource(tools._report_subagent)
 
 
 class TestTheFlags:
