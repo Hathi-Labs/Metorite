@@ -225,3 +225,138 @@ async def test_edit_page_never_changes_a_published_page(
     assert before[0][2] == "published"
     assert _scalar(ns, "SELECT count(*) FROM kb_page_versions WHERE page_id = :p",
                    p=made["id"]) == versions
+
+
+# ── PAR-3b (task 3901): move and revert a draft, on a real database ────────
+
+
+async def test_move_page_moves_a_draft_to_another_space_and_it_stays_a_draft(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    grant = [{"subject": writer_email, "level": "write"}]
+    source = await _space(ns, admin, "Drafts", grant)
+    target = await _space(ns, admin, "Handbook", grant)
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": source, "title": "Onboarding", "body_md": "Day one."},
+                     status=201)
+    cards = _approve(monkeypatch)
+
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.move_page(
+        page_id=made["id"], space="Handbook"))
+    assert out.startswith("Moved the page. It stays a draft."), out
+    assert len(cards) == 1
+    lines = cards[0]["context"].splitlines()
+    assert lines[lines.index("Now:") + 1] == "Space: Drafts"
+    assert lines[lines.index("After the move:") + 1].startswith("Space: Handbook (slug: ")
+    row = _rows(ns, "SELECT space_id::text, state, published_at FROM kb_pages "
+                    "WHERE id = CAST(:p AS uuid)", p=made["id"])
+    assert [tuple(r) for r in row] == [(target, "draft", None)]
+    versions = _rows(ns, "SELECT version, reason, via FROM kb_page_versions "
+                         "WHERE page_id = :p ORDER BY version", p=made["id"])
+    assert [tuple(v) for v in versions] == [(1, "create", "web"), (2, "move", "chat")]
+
+
+async def test_revert_page_brings_back_an_old_text_of_a_draft(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Ops", [{"subject": writer_email, "level": "write"}])
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": space, "title": "Runbook", "body_md": BODY}, status=201)
+    await _ok(ns, writer, "PATCH", f"/knowledge/pages/{made['id']}",
+              {"title": "Runbook v2", "body_md": "A newer text."})
+    cards = _approve(monkeypatch)
+
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.revert_page(
+        page_id=made["id"], version=1))
+    assert out.startswith("Brought back version 1 as a new version."), out
+    assert len(cards) == 1
+    assert BODY.strip() in cards[0]["context"] and "THE END." in cards[0]["context"]
+    assert "Title of version 1: Runbook" in cards[0]["context"]
+    row = _rows(ns, "SELECT title, body_md, state, published_at FROM kb_pages "
+                    "WHERE id = CAST(:p AS uuid)", p=made["id"])
+    assert [tuple(r) for r in row] == [("Runbook", BODY, "draft", None)]
+    versions = _rows(ns, "SELECT version, reason, via FROM kb_page_versions "
+                         "WHERE page_id = :p ORDER BY version", p=made["id"])
+    assert [tuple(v) for v in versions] == [
+        (1, "create", "web"), (2, "edit", "web"), (3, "revert", "chat")]
+
+    # The real read tool reads the same old version, framed as data.
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.read_page_version(
+        page_id=made["id"], version=2))
+    assert "Title: Runbook v2" in out and kt.PAGE_HEADER in out and "A newer text." in out
+
+
+async def test_move_and_revert_never_change_a_published_page(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """F2: a person moves or reverts published text in the app. The real tools
+    make no card and no write, and the row and its versions stay."""
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    grant = [{"subject": writer_email, "level": "write"}]
+    space = await _space(ns, admin, "Policies", grant)
+    await _space(ns, admin, "Archive room", grant)
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": space, "title": "Leave", "body_md": "old"}, status=201)
+    await _ok(ns, writer, "PATCH", f"/knowledge/pages/{made['id']}", {"body_md": "newer"})
+    await _ok(ns, writer, "POST", f"/knowledge/pages/{made['id']}/publish")
+    sql = ("SELECT space_id::text, parent_id, title, body_md, state, updated_at "
+           "FROM kb_pages WHERE id = CAST(:p AS uuid)")
+    before = [tuple(r) for r in _rows(ns, sql, p=made["id"])]
+    count = "SELECT count(*) FROM kb_page_versions WHERE page_id = :p"
+    versions = _scalar(ns, count, p=made["id"])
+    cards = _approve(monkeypatch)
+
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.move_page(
+        page_id=made["id"], space="Archive room"))
+    assert out == kt.MOVE_PUBLISHED
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.revert_page(
+        page_id=made["id"], version=1))
+    assert out == kt.PUBLISHED_PAGE
+    assert cards == []
+    assert before[0][4] == "published"
+    assert [tuple(r) for r in _rows(ns, sql, p=made["id"])] == before
+    assert _scalar(ns, count, p=made["id"]) == versions
+
+
+async def test_a_member_with_no_write_right_gets_the_servers_sentence(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """The tool checks no right itself. The server refuses, and nothing moves."""
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    source = await _space(ns, admin, "Team", [{"subject": writer_email, "level": "write"}])
+    target = await _space(ns, admin, "Board", [{"subject": writer_email, "level": "read"}])
+    made = await _ok(ns, writer, "POST", "/knowledge/pages",
+                     {"space_id": source, "title": "Plan", "body_md": "A"}, status=201)
+    cards = _approve(monkeypatch)
+
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.move_page(
+        page_id=made["id"], space="Board"))
+    assert out == "Nothing was saved. Moving into this space needs a write grant on it."
+    assert len(cards) == 1, "the card shows, and the server refuses the write"
+    assert target != source
+    assert _scalar(ns, "SELECT space_id::text FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                   p=made["id"]) == source
+    assert _scalar(ns, "SELECT count(*) FROM kb_page_versions WHERE page_id = :p",
+                   p=made["id"]) == 1

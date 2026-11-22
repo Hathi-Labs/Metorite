@@ -35,6 +35,19 @@ no write, and it names `propose_edit`, which needs `KNOWLEDGE_PROPOSALS`. The
 PATCH route takes no base version, so a draft edit can overwrite a change
 that a colleague made while the card waited.
 
+**PAR-3b (task 3901, the other Knowledge debt rows) is BUILT, 2026-11-22, dark
+behind `KNOWLEDGE_CHAT_WRITES`.** `move_page` and `revert_page` act on a draft
+only, behind one card. The move card shows the old place and the new place.
+The revert card shows the full old text under the `_fits` rule. For a published
+or archived page, each tool makes no card and no write. Eight reads join with
+no card: `list_pages`, `list_recent`, `read_page_version`, `list_backlinks`,
+`list_proposals`, `list_sources`, `list_gaps` and `list_maintenance`.
+
+The Knowledge ceiling goes from 15 to 4. Four rows stay in the debt. Publish, archive and restore wait for the owner
+(§7 item 7, D104.4 and F2). The Knowledge search makes a model call, and it
+stays deferred (AD-11, `knowledge_base.md` §8.1). Fences: the same two files
+as PAR-3.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -261,7 +274,7 @@ task of each wave.
 |---|---|---|---|---|
 | 1 | PAR-3: make a page, change a page, make a space (wave P-5a) | 3105 | STANDARD | To do |
 | 2 | The demo of rung 2 | 3106 | none | To do |
-| 3 | PAR-3b: the other Knowledge debt rows | 3901 | STANDARD | To do |
+| 3 | PAR-3b: the other Knowledge debt rows | 3901 | STANDARD | Built, dark |
 
 - **Demo (task 3106).** The chat researches a topic. After one card, it saves
   the result as a draft page. A person publishes it in the app.

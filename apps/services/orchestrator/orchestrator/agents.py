@@ -310,7 +310,12 @@ _KB_WRITES_SWAP: tuple[str, str] = (
     + "- create_page, edit_page, create_space, edit_space: when the member asks you to\n"
     "  write a page, change a draft page, or make or change a space in Knowledge. Each\n"
     "  one shows the full text on a card first. A new page is a draft. edit_page changes\n"
-    "  only a draft. For a published page, use propose_edit. You never publish\n",
+    "  only a draft. For a published page, use propose_edit. You never publish\n"
+    # PAR-3b (task 3901): the move, the revert and the eight more reads.
+    "- move_page, revert_page: move a draft page, or bring back an old version of a\n"
+    "  draft, behind a card. A person moves or reverts a published page in the app\n"
+    "- list_pages, list_recent, read_page_version, list_backlinks, list_proposals,\n"
+    "  list_sources, list_gaps, list_maintenance: read more of Knowledge\n",
 )
 
 
@@ -1311,9 +1316,13 @@ def build_orchestrator_agent(
         # PAR-3 (task 3105): the four Knowledge writes, only with
         # KNOWLEDGE_CHAT_WRITES on. Each shows the full text on one card.
         if kb_writes:
+            from acb_skills.knowledge_tools import MORE_READ_TOOLS as _KB_MORE_READS
+            from acb_skills.knowledge_tools import MOVE_REVERT_TOOLS as _KB_MOVE_REVERT
             from acb_skills.knowledge_tools import WRITE_TOOLS as _KB_WRITE_TOOLS
 
-            retrieval_tools += list(_KB_WRITE_TOOLS)
+            # PAR-3b (task 3901): the move, the revert and the eight more
+            # reads, on the same flag, after the four writes.
+            retrieval_tools += [*_KB_WRITE_TOOLS, *_KB_MOVE_REVERT, *_KB_MORE_READS]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
