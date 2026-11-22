@@ -99,7 +99,8 @@ for a query with no operator:
   Email asks for the mail from that sender (``sender=``), because a full
   text word never matches inside an address;
 * each hit found so says ``matched_by`` ``near``, with ``word`` and ``as``.
-  A hit that two rungs found keeps the lower rung. ``near`` in the answer
+  A hit that two rungs found keeps the copy with more words, then the lower
+  rung (FIND-2b). ``near`` in the answer
   names each word, its spelling, its hits and ``held``: true when the word
   has a hit of its own (:func:`find.near_report`). The log line is
   ``search.company.near``, with no word.
@@ -880,8 +881,7 @@ def _wins_a_tie(new: Hit, kept: Hit) -> bool:
     rungs found (HRD-18b review of 2026-11-16, P2-d).
 
     The copy that holds more words wins, and on a tie the lower rung: the
-    order of §3.4. The text of §3.5 says the lower rung alone. The owner is
-    asked (a3). To go back to §3.5, compare ``find.rung_of`` here only.
+    order of §3.4 and the text of §3.5 (the planner, FIND-2b, 2026-11-17).
     """
     return _first_in_order(new) < _first_in_order(kept)
 
