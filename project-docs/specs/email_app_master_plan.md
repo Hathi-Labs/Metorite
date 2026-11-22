@@ -23075,7 +23075,7 @@ the kind of each draft. SG-5c makes the composers ask by kind.
    `split_quoted_text`. The rule binds `for_body`, the dedupe and the HTML swap in
    `build_signed_bodies`. `sign_html` already searches only the text above the quote.
 3. **Rule 7 and the quote rule.** The quote rule applies only to a rendered form: `template`,
-   and `company` after SG-4. `SignatureForms.rendered` marks it. A `custom` form keeps the
+   and `company` after SG-4. SG-5a adds a `rendered` flag to `SignatureForms` to mark it. A `custom` form keeps the
    search of main, so its bytes do not change.
 4. **The kind of a draft is a column.** `email_messages.draft_kind` holds `new`, `reply` or
    `forward`. It is nullable, and NULL reads as `new`. No stored header records the kind. Two
@@ -23346,8 +23346,8 @@ bash scripts/ci_local.sh && bash scripts/premerge.sh
   app (SG-8).
 - The chat makes and changes a signature through one card (SG-6).
 - A mailbox with a signature today sends the same bytes after each slice merges (SG-2 fence).
-- A reply carries one signature in `full` and `short` mode and none in `none` mode, from each
-  composer and each server writer (SG-5a to SG-5c, 23.3.6).
+- A reply carries one signature in `full` and `short` mode, and none in `none` mode. This holds
+  for each composer and each server writer (SG-5a to SG-5c, 23.3.6).
 
 ### 23.9 Recorded risks and board findings
 
