@@ -18,8 +18,9 @@ Each webhook checks one shared secret for the deployment, and no code maps the
 mailbox or the module to an org. So each row that holds tenant data goes
 through a local ``_audit``: with no org and the bind on, ``refuse_tenantless``
 skips it. Two rows hold no tenant data, the Zoho ``run_ok`` (an empty payload)
-and ``scheduler_started`` (job ids and cron triggers). They keep Option-A, and
-this file proves that their payload stays free of tenant data. With the bind
+and ``scheduler_started`` (job ids and cron triggers). They carry the explicit
+``system=True`` marker of slice 3 and keep Option-A, and this file proves that
+their payload stays free of tenant data. With the bind
 off, every row stays as before, so the change is dark. A payload field never
 gives the org (R5).
 
@@ -352,6 +353,9 @@ def test_with_the_bind_on_a_system_row_stays_with_no_tenant_data(
     drive(monkeypatch)
     [ev] = matching(events, actor, action, target)
     assert ev.organization_id is None, "a system row takes the operator org"
+    assert ev.system is True, (
+        f"{case}: a system row with no system marker is refused by record"
+    )
     assert_no_tenant_payload(case, ev)
 
 
@@ -367,6 +371,9 @@ def test_with_the_bind_off_each_row_stays(
     got = matching(events, actor, action, target or got_target)
     assert [e.organization_id for e in got] == [None], (
         f"{case}: with the bind off the row must stay as before"
+    )
+    assert [e.system for e in got] == [kind == SYSTEM], (
+        f"{case}: only a named system row carries the system marker"
     )
 
 
@@ -416,6 +423,9 @@ def test_an_escalation_row_keeps_its_tenant_text_with_the_bind_off(events, monke
 # * A ``record`` call is legal at two places only. One is the single statement
 #   of the guard's ``if``, by node identity. The other is a statement in the
 #   body of a module-level function that ``SYSTEM_CALLS`` names with its action.
+# * Slice 3: a named system row carries ``system=True``, as a constant. A
+#   ``system=`` keyword anywhere else is refused. Section 5 checks the same
+#   rule across ``apps/``, ``packages/`` and ``scripts/``.
 # * ``acb_audit`` is imported once, at module level, with the allowed names.
 #   A pinned name enters a module only through that one line.
 # * A writer module imports another writer module only where
@@ -432,7 +442,13 @@ FENCED_WRITERS = {
     "scripts/reconciler.py": "scripts.reconciler",
     "scripts/zoho_sync.py": "scripts.zoho_sync",
 }
-#: The Option-A system rows: (path, module-level function, action).
+#: The Option-A system rows: (path, module-level function, action). Each one
+#: carries ``system=True`` (task 2221 slice 3). Why each is a system row:
+#:
+#: * ``_run_zoho`` ``run_ok``: the payload is ``{}``. It says only that the
+#:   deployment's Zoho job ran, and no tenant owns that job.
+#: * ``_serve`` ``scheduler_started``: the job ids and the cron triggers that
+#:   the code fixes. The scheduler process serves the whole deployment.
 SYSTEM_CALLS = {
     ("apps/services/ingestion/ingestion/scheduler.py", "_run_zoho", "run_ok"),
     ("apps/services/ingestion/ingestion/scheduler.py", "_serve", "scheduler_started"),
@@ -465,6 +481,10 @@ ALLOWED_DUNDER_NAMES = {"__name__", "__all__", "__doc__"}
 
 _THROUGH = (
     "Send the row through _audit(), or add a SYSTEM_CALLS entry with a reason"
+)
+_MARKER = (
+    "Stamp the org of the event. Only a SYSTEM_CALLS row with a reason takes "
+    "system=True"
 )
 _LINE = "Import record, refuse_tenantless and AuditEvent only through the one acb_audit line"
 _BODY = "    if not refuse_tenantless(event):\n        record(event)"
@@ -533,6 +553,30 @@ def _system_call_ok(call: ast.Call, parents: dict, top: set[int], path: str) -> 
     return (path, up.name, action_of(call)) in SYSTEM_CALLS
 
 
+def has_system_marker(call: ast.Call) -> bool:
+    """The ``AuditEvent`` in *call* passes ``system=True`` as a constant."""
+    if not (call.args and isinstance(call.args[0], ast.Call)):
+        return False
+    return any(
+        kw.arg == "system" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+        for kw in call.args[0].keywords
+    )
+
+
+def _marker_ok(kw: ast.keyword, parents: dict, top: set[int], path: str) -> bool:
+    """*kw* is ``system=True`` on the ``AuditEvent`` of a named system row."""
+    event = parents.get(kw)
+    call = parents.get(event)
+    return (
+        isinstance(kw.value, ast.Constant) and kw.value.value is True
+        and isinstance(event, ast.Call) and isinstance(event.func, ast.Name)
+        and event.func.id == "AuditEvent"
+        and isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        and call.func.id == "record" and call.args and call.args[0] is event
+        and _system_call_ok(call, parents, top, path)
+    )
+
+
 def _binds(node: ast.AST) -> list[str]:
     """The names that *node* binds, other than through an import."""
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
@@ -587,6 +631,22 @@ def _import_violations(node: ast.AST, path: str, at: str, tree: ast.Module) -> l
     return out
 
 
+def _sink_violations(node: ast.Name, at: str, parents: dict, sink: ast.Call | None,
+                     top: set[int], path: str) -> list[str]:
+    """A ``record`` or ``_persist`` name: the guard's call, or a marked system row."""
+    call = parents.get(node)
+    if not (isinstance(call, ast.Call) and call.func is node):
+        return [f"{at}: {node.id} used as a value, not called. Call _audit(event)"]
+    if call is sink:
+        return []
+    if not _system_call_ok(call, parents, top, path):
+        return [f"{at}: {node.id}() outside the guard and the system rows. {_THROUGH}"]
+    if not has_system_marker(call):
+        return [f"{at}: a system row with no system=True marker. Add "
+                "system=True to its AuditEvent, or record refuses it"]
+    return []
+
+
 def _node_violations(node: ast.AST, path: str, at: str, parents: dict,
                      sink: ast.Call | None, top: set[int]) -> list[str]:
     out: list[str] = []
@@ -607,11 +667,10 @@ def _node_violations(node: ast.AST, path: str, at: str, parents: dict,
                 and node.id not in ALLOWED_DUNDER_NAMES):
             out.append(f"{at}: the dunder name {node.id}. Use a public name")
         if node.id in SINKS and isinstance(node.ctx, ast.Load):
-            call = parents.get(node)
-            if not (isinstance(call, ast.Call) and call.func is node):
-                out.append(f"{at}: {node.id} used as a value, not called. Call _audit(event)")
-            elif call is not sink and not _system_call_ok(call, parents, top, path):
-                out.append(f"{at}: {node.id}() outside the guard and the system rows. {_THROUGH}")
+            out += _sink_violations(node, at, parents, sink, top, path)
+    elif isinstance(node, ast.keyword) and node.arg == "system":
+        if not _marker_ok(node, parents, top, path):
+            out.append(f"{at}: system= outside a named system row. {_MARKER}")
     elif isinstance(node, ast.keyword) and node.arg == "organization_id":
         out.append(f"{at}: organization_id= on an audit row with no tenant source. This "
                    "module has no bound tenant, so never take the org from the payload")
@@ -918,3 +977,144 @@ def test_the_fence_refuses_a_nested_function_with_a_system_name() -> None:
     ))
     found = audit_fence_violations("".join(lines), path)
     assert any("record() outside the guard" in v for v in found), found
+
+
+# --------------------------------------------------------------------------
+# Slice 3: the system marker. Each named system row carries it, and no other
+# row in the fenced writers does.
+# --------------------------------------------------------------------------
+def test_each_named_system_row_carries_the_marker() -> None:
+    for path, fn, action in SYSTEM_CALLS:
+        tree = ast.parse(_source(path))
+        [call] = [
+            c
+            for n in tree.body
+            if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef) and n.name == fn
+            for c in ast.walk(n)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            and c.func.id == "record" and action_of(c) == action
+        ]
+        assert has_system_marker(call), (path, fn, action)
+
+
+def _system_row(src: str, action: str) -> ast.Call:
+    """The ``AuditEvent`` call of the named system row with *action*."""
+    [call] = [
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "record" and action_of(n) == action
+    ]
+    return call.args[0]
+
+
+def mutant_unmarked(src: str) -> str:
+    """M1: the ``scheduler_started`` row loses its marker."""
+    event = _system_row(src, "scheduler_started")
+    [kw] = [k for k in event.keywords if k.arg == "system"]
+    lines = _lines(src)
+    i = kw.value.lineno - 1
+    lines[i] = lines[i].replace("system=True,", "", 1)
+    return "".join(lines)
+
+
+def mutant_marked_tenant_row(src: str) -> str:
+    """M2: a tenant row in the guard gains the marker."""
+    call = _first_guarded_call(src)
+    event = call.args[0]
+    lines = _lines(src)
+    i, col = event.func.end_lineno - 1, event.func.end_col_offset + 1
+    assert lines[i][col - 1] == "("
+    lines[i] = lines[i][:col] + "system=True, " + lines[i][col:]
+    return "".join(lines)
+
+
+MARKER_MUTANTS = {
+    "M1 a system row with no marker": (
+        _SCHEDULER, mutant_unmarked, "a system row with no system=True marker"),
+    "M2 a tenant row with the marker": (
+        _GMAIL, mutant_marked_tenant_row, "system= outside a named system row"),
+    "M3 a false marker on a system row": (
+        _SCHEDULER, lambda s: s.replace("payload={}, system=True,",
+                                        "payload={}, system=bool(1),", 1),
+        "system= outside a named system row"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(MARKER_MUTANTS))
+def test_the_fence_catches_each_marker_mutant(label: str) -> None:
+    path, make, reason = MARKER_MUTANTS[label]
+    src = _source(path)
+    mutant = make(src)
+    assert mutant != src, f"{label}: the mutant did not change the source"
+    found = audit_fence_violations(mutant, path)
+    assert any(reason in v for v in found), f"{label}: expected {reason!r} in {found}"
+
+
+# ==========================================================================
+# 5. The system marker across the tree (task 2221 slice 3). ``record`` takes a
+#    tenant-less event under the operator org only when it carries
+#    ``system=True``. So the marker is the one way past the refusal, and it
+#    may sit only on a row that ``SYSTEM_CALLS`` names.
+# ==========================================================================
+#: The roots that hold the audit writers.
+MARKER_ROOTS = ("apps", "packages", "scripts")
+#: Folders that hold no writer of ours.
+_SKIP_PARTS = {"node_modules", ".venv", "__pycache__", "tests", ".next"}
+
+
+def marker_violations(src: str, path: str) -> list[str]:
+    """Each ``system=`` keyword and each ``.system`` write in *src* that is not allowed.
+
+    The scan covers each call, not only ``AuditEvent``, so an alias of the
+    class cannot hide the marker. ``dataclasses.replace(event, system=True)``
+    is caught the same way.
+    """
+    tree = ast.parse(src)
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    top = {id(n) for n in tree.body if isinstance(n, _FUNCTIONS)}
+    out: list[str] = []
+    for node in ast.walk(tree):
+        at = f"{path}:{getattr(node, 'lineno', '?')}"
+        if (isinstance(node, ast.keyword) and node.arg == "system"
+                and not _marker_ok(node, parents, top, path)):
+            out.append(f"{at}: system= outside a named system row. {_MARKER}")
+        if (isinstance(node, ast.Attribute) and node.attr == "system"
+                and isinstance(node.ctx, ast.Store | ast.Del)):
+            out.append(f"{at}: a write to .system. {_MARKER}")
+    return out
+
+
+def _marker_files() -> list[str]:
+    """Each Python file under the roots that can reach ``acb_audit``."""
+    found: list[str] = []
+    for root in MARKER_ROOTS:
+        for f in (REPO / root).rglob("*.py"):
+            if _SKIP_PARTS & set(f.relative_to(REPO).parts):
+                continue
+            text = f.read_text(encoding="utf-8-sig", errors="replace")
+            if "acb_audit" in text or "AuditEvent" in text:
+                found.append(f.relative_to(REPO).as_posix())
+    return sorted(found)
+
+
+def test_the_marker_sits_only_on_the_named_system_rows() -> None:
+    files = _marker_files()
+    assert "apps/services/ingestion/ingestion/scheduler.py" in files
+    assert len(files) > 20, f"the scan found too few audit files: {files}"
+    out = [v for f in files for v in marker_violations(_source(f), f)]
+    assert out == [], "\n".join(out)
+
+
+def test_the_tree_scan_catches_a_marker_off_the_list() -> None:
+    src = _source(_GMAIL)
+    assert marker_violations(src, _GMAIL) == []
+    for bad in (
+        mutant_marked_tenant_row(src),
+        _add(src, "def _other(e: AuditEvent) -> None:\n    e.system = True\n"),
+        _add(src, "import dataclasses\n\n\ndef _other(e: AuditEvent) -> AuditEvent:\n"
+                  "    return dataclasses.replace(e, system=True)\n"),
+    ):
+        assert marker_violations(bad, _GMAIL), "the scan missed a marker off the list"

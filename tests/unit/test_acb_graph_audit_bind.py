@@ -18,6 +18,15 @@ dropped. So — unlike slices 3/4 which SKIP on no-org — audit FALLS BACK to t
 operator org and only skips if BOTH the event org and the default-org lookup are
 unavailable (near-impossible: the ``default`` org is seeded by migration 130).
 
+**Task 2221 slice 3 (owner answer A) narrows Option-A to a MARKED event.** An
+``AuditEvent`` carries ``system: bool = False``. With the bind on,
+``acb_audit.record`` refuses a tenant-less event with no marker: it logs
+``audit.refused_unmarked_tenantless`` (the action, the actor and the writer
+module, never the target or the payload), it does not raise, and it never
+reaches ``_persist``. ``_persist`` also takes the operator org only for a
+marked event, so a direct caller cannot misfile a row either. With the bind
+off, every event is written as before. Sections 1b and 4b hold the fences.
+
 Fences (R7):
 
 * ``audit-event-write-bound-under-rls`` (R8, phase-4 two-org catalog, non-priv
@@ -26,14 +35,18 @@ Fences (R7):
   ``_persist`` to the unbound ``get_session()`` under the phase-4 catalog is
   NOT-NULL / RLS refused (``test_an_unbound_get_session_write_is_refused``), so
   the row never lands and the visibility assertion goes RED.
-* ``audit-system-event-falls-back-to-operator-org`` (R8): flag ON + an event
-  with NO org → the row LANDS under the operator/DEFAULT org (retained, not
-  refused), stamped that org.
+* ``audit-system-event-falls-back-to-operator-org`` (R8): flag ON + a MARKED
+  event with NO org → the row LANDS under the operator/DEFAULT org (retained,
+  not refused), stamped that org.
+* ``audit-unmarked-tenantless-refused`` (R8, slice 3): flag ON + ``record`` of
+  an unmarked event with no org → no row in any org. A marked event through
+  ``record`` lands under the operator org, and org B cannot read it.
 * flag-OFF regression: ``_persist`` opens ``get_session()`` unchanged and a real
   row lands on the pre-phase-4 shared ladder, byte-identical to today.
 * the flag → opener decision (no DB): OFF → ``get_session``; ON + event org →
   ``tenant_session(event org)``; ON + no event org → ``tenant_session(operator
-  org)``; ON + neither → skip + log, no session opened.
+  org)`` for a marked event; ON + an unmarked event with no org, or neither
+  org → skip + log, no session opened.
 
 Run (Windows/psycopg, real Postgres)::
 
@@ -152,14 +165,14 @@ def test_flag_on_with_event_org_binds_that_org(monkeypatch):
 
 
 def test_flag_on_no_event_org_falls_back_to_operator_org(monkeypatch):
-    """flag ON + a tenant-less event → ``_persist`` binds the OPERATOR/DEFAULT
-    org (Option-A) so the row is retained — it must NOT skip when a fallback
-    exists."""
+    """flag ON + a tenant-less MARKED system event → ``_persist`` binds the
+    OPERATOR/DEFAULT org (Option-A) so the row is retained — it must NOT skip
+    when a fallback exists."""
     spy, fake = _install_spy(monkeypatch)
     monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
     monkeypatch.setattr(audit, "_resolve_operator_org_id", lambda: "op-org")
 
-    audit._persist(_event(organization_id=None))
+    audit._persist(_event(organization_id=None, system=True))
 
     assert spy.opened == [("tenant", "op-org")], (
         "a tenant-less event must fall back to the operator org, not skip"
@@ -174,12 +187,178 @@ def test_flag_on_no_org_and_no_operator_org_skips_and_logs(monkeypatch):
     monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
     monkeypatch.setattr(audit, "_resolve_operator_org_id", lambda: None)
 
-    audit._persist(_event(organization_id=None))
+    audit._persist(_event(organization_id=None, system=True))
 
     assert spy.opened == [], "no org anywhere must open NO session, not an unbound one"
     assert any("skipped_no_org" in ev for ev, _ in fake.warnings), (
         f"the fail-closed skip must be LOGGED: {[e for e, _ in fake.warnings]}"
     )
+
+
+def test_flag_on_unmarked_tenantless_event_at_persist_is_skipped(monkeypatch):
+    """Slice 3, the second layer: flag ON + a tenant-less event with NO marker
+    that reaches ``_persist`` directly → no session, and the skip is logged.
+    The operator org is never resolved for it."""
+    spy, fake = _install_spy(monkeypatch)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+
+    def _no_lookup() -> str:
+        raise AssertionError("an unmarked event must not reach the operator org")
+
+    monkeypatch.setattr(audit, "_resolve_operator_org_id", _no_lookup)
+
+    audit._persist(_event(organization_id=None))
+
+    assert spy.opened == [], "an unmarked tenant-less event opened a session"
+    assert any("skipped_no_org" in ev for ev, _ in fake.warnings)
+
+
+# ==========================================================================
+# 1b. Task 2221 slice 3: ``record`` refuses an unmarked tenant-less event
+#     (no DB; always runs).
+# ==========================================================================
+REFUSED = "audit.refused_unmarked_tenantless"
+#: Values that stand for tenant data. The refusal line must hold none of them.
+SECRET_TARGET = "gmail:asha@orgb.test"
+SECRET_PAYLOAD = {"error": "org B deal Acme owes 12 lakh"}
+
+
+class _RecLog(_FakeLog):
+    """A logger that also keeps each ``info`` line."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.infos: list[tuple[str, dict]] = []
+
+    def info(self, event: str, **kw: object) -> None:
+        self.infos.append((event, kw))
+
+
+def _install_record_spy(monkeypatch) -> tuple[list, _RecLog]:
+    persisted: list[audit.AuditEvent] = []
+    fake = _RecLog()
+    monkeypatch.setattr(audit, "_persist", persisted.append)
+    monkeypatch.setattr(audit, "_log", fake)
+    return persisted, fake
+
+
+def _tenant_event(**kw: object) -> audit.AuditEvent:
+    return _event(target=SECRET_TARGET, payload=dict(SECRET_PAYLOAD), **kw)
+
+
+def _assert_refusal_logged(fake: _RecLog) -> None:
+    hits = [kw for ev, kw in fake.warnings if ev == REFUSED]
+    assert len(hits) == 1, f"the refusal was not logged once: {fake.warnings}"
+    [kw] = hits
+    assert set(kw) == {"action", "actor", "writer"}, sorted(kw)
+    assert kw["action"] == "slice5"
+    assert kw["writer"] == __name__, (
+        "the refusal line must name the module that called record"
+    )
+    text_of = repr(kw)
+    assert SECRET_TARGET not in text_of and "Acme" not in text_of, (
+        "the refusal line holds the target or the payload"
+    )
+    assert not any(ev == "audit" for ev, _ in fake.infos), (
+        "a refused event still logged its payload line"
+    )
+
+
+def test_record_refuses_an_unmarked_tenantless_event_with_the_bind_on(monkeypatch):
+    """flag ON + no org + no marker → refused: logged, no raise, and
+    ``_persist`` is never reached. RED when the refusal is dropped."""
+    persisted, fake = _install_record_spy(monkeypatch)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+
+    audit.record(_tenant_event(organization_id=None))  # must not raise
+
+    assert persisted == [], "an unmarked tenant-less event reached _persist"
+    _assert_refusal_logged(fake)
+
+
+def test_record_refuses_on_a_running_event_loop_too(monkeypatch):
+    """The async path: the refusal runs before the thread hop, so no write is
+    queued in ``_PENDING`` and the caller gets no error."""
+    import asyncio
+
+    persisted, fake = _install_record_spy(monkeypatch)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+    before = set(audit._PENDING)
+
+    async def _go() -> int:
+        audit.record(_tenant_event(organization_id=None))
+        queued = len(set(audit._PENDING) - before)
+        await audit.drain()
+        return queued
+
+    assert asyncio.run(_go()) == 0, "a refused event queued a write"
+    assert persisted == []
+    _assert_refusal_logged(fake)
+
+
+def test_a_broken_logger_does_not_raise_into_the_writer(monkeypatch):
+    """The refusal log line itself must never raise into the caller."""
+    persisted: list = []
+    monkeypatch.setattr(audit, "_persist", persisted.append)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+
+    class _Boom:
+        def warning(self, *_a: object, **_k: object) -> None:
+            raise RuntimeError("log sink down")
+
+        def info(self, *_a: object, **_k: object) -> None:
+            raise AssertionError("a refused event must not log its payload line")
+
+    monkeypatch.setattr(audit, "_log", _Boom())
+    audit.record(_tenant_event(organization_id=None))
+    assert persisted == []
+
+
+def test_record_persists_a_marked_system_event_with_the_bind_on(monkeypatch):
+    """flag ON + no org + ``system=True`` → it reaches ``_persist``, and
+    ``_persist`` binds the operator org. RED when marked events are refused."""
+    spy, _ = _install_spy(monkeypatch)
+    rec = _RecLog()
+    monkeypatch.setattr(audit, "_log", rec)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+    monkeypatch.setattr(audit, "_resolve_operator_org_id", lambda: "op-org")
+
+    audit.record(_event(organization_id=None, system=True))
+
+    assert spy.opened == [("tenant", "op-org")], (
+        "a marked system event must land under the operator org"
+    )
+    assert not any(ev == REFUSED for ev, _ in rec.warnings)
+
+
+@pytest.mark.parametrize("system", [False, True], ids=["unmarked", "marked"])
+def test_record_with_the_bind_off_persists_as_today(monkeypatch, system):
+    """flag OFF → both a marked and an unmarked tenant-less event are written
+    through the unbound ``get_session``, exactly as before slice 3."""
+    spy, fake = _install_spy(monkeypatch)
+    monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
+
+    audit.record(_tenant_event(organization_id=None, system=system))
+
+    assert spy.opened == [("get", None)]
+    assert not any(ev == REFUSED for ev, _ in fake.warnings)
+
+
+@pytest.mark.parametrize("system", [False, True], ids=["unmarked", "marked"])
+def test_record_with_an_org_is_unchanged(monkeypatch, system):
+    """flag ON + an event with an org → its own org, whatever the marker."""
+    spy, fake = _install_spy(monkeypatch)
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+
+    audit.record(_event(organization_id="org-A", system=system))
+
+    assert spy.opened == [("tenant", "org-A")]
+    assert not any(ev == REFUSED for ev, _ in fake.warnings)
+
+
+def test_the_marker_defaults_to_off() -> None:
+    """A writer that says nothing is a tenant writer, never a system one."""
+    assert audit.AuditEvent(actor="a", action="b", target="c").system is False
 
 
 # ==========================================================================
@@ -328,7 +507,7 @@ class TestAuditWriteBoundUnderRls:
         try:
             audit._persist(
                 _event(id=eid, actor="system:cron", action="nightly_sweep",
-                       target="job:1", organization_id=None)
+                       target="job:1", organization_id=None, system=True)
             )
 
             assert _stamped_org(p.admin_engine, eid) == default_org, (
@@ -360,7 +539,8 @@ class TestAuditWriteBoundUnderRls:
         p = graph_on_promoted
         eid = uuid.uuid4()
         try:
-            audit._persist(_event(id=eid, organization_id=None))  # must not raise
+            # must not raise
+            audit._persist(_event(id=eid, organization_id=None, system=True))
             assert _stamped_org(p.admin_engine, eid) is None, (
                 "a row landed despite no resolvable org — fail-closed broke"
             )
@@ -393,6 +573,80 @@ class TestAuditWriteBoundUnderRls:
 
 
 # ==========================================================================
+# 4b. Task 2221 slice 3 through ``record`` (R8 — real phase-4 Postgres).
+# ==========================================================================
+def _rows_in_any_org(admin_engine, eid: uuid.UUID) -> int:
+    """Rows with ``id == eid`` in ANY org, as the RLS-bypassing admin."""
+    with admin_engine.connect() as c:
+        return c.execute(
+            text("SELECT count(*) FROM audit_event WHERE id = :i"), {"i": str(eid)},
+        ).scalar_one()
+
+
+@_DB_GATE
+class TestRecordRefusesUnmarkedUnderRls:
+    def test_an_unmarked_tenantless_record_leaves_no_row(
+        self, graph_on_promoted, monkeypatch,
+    ):
+        """flag ON + ``record`` of an unmarked event with no org → no row in any
+        org, and the refusal is logged. RED when the refusal and the
+        ``_persist`` gate are both dropped: the row lands under the operator org."""
+        monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+        fake = _FakeLog()
+        monkeypatch.setattr(audit, "_log", fake)
+        p = graph_on_promoted
+        eid = uuid.uuid4()
+        try:
+            audit.record(
+                _event(id=eid, actor="job:new-writer", action="forgot_org",
+                       target="deal:org-b", payload={"note": "org B text"})
+            )
+            assert _rows_in_any_org(p.admin_engine, eid) == 0, (
+                "an unmarked tenant-less event wrote a row — the operator org "
+                "took a row that a writer forgot to stamp"
+            )
+            assert any(ev == "audit.refused_unmarked_tenantless"
+                       for ev, _ in fake.warnings), fake.warnings
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(
+                    text("DELETE FROM audit_event WHERE id = :i"), {"i": str(eid)},
+                )
+
+    def test_a_marked_system_record_lands_under_the_operator_org_only(
+        self, graph_on_promoted, monkeypatch,
+    ):
+        """flag ON + ``record`` of a marked system event → the row lands under
+        the operator org, and neither org A nor org B can read it. RED when
+        ``record`` refuses marked events too."""
+        monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+        p = graph_on_promoted
+        with p.admin_engine.connect() as c:
+            default_org = c.execute(
+                text("SELECT id::text FROM organization WHERE slug = 'default'")
+            ).scalar_one()
+        eid = uuid.uuid4()
+        try:
+            audit.record(
+                _event(id=eid, actor="job:scheduler", action="scheduler_started",
+                       target="scheduler", organization_id=None, system=True)
+            )
+            assert _stamped_org(p.admin_engine, eid) == default_org, (
+                "a marked system event did not land under the operator org"
+            )
+            assert _count_visible_as(p.app_url, default_org, eid) == 1
+            assert _count_visible_as(p.app_url, p.org_b, eid) == 0, (
+                "org B read a system row of the operator org"
+            )
+            assert _count_visible_as(p.app_url, p.org_a, eid) == 0
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(
+                    text("DELETE FROM audit_event WHERE id = :i"), {"i": str(eid)},
+                )
+
+
+# ==========================================================================
 # 5. flag-OFF regression (R8 — a real row lands on the pre-phase-4 ladder).
 # ==========================================================================
 @_DB_GATE
@@ -404,6 +658,7 @@ class TestFlagOffWriteLandsUnbound:
     @pytest.fixture
     def graph_on_ladder(self, monkeypatch):
         from acb_graph import db as graph_db
+
         from tests.unit._tenant_ladder import apply_ladder
 
         eng = create_engine(_URL, future=True, poolclass=NullPool)

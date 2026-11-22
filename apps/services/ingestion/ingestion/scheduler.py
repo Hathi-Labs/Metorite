@@ -41,11 +41,12 @@ def _audit(event: AuditEvent) -> None:
     the operator org. With the bind off, the row stays as before. The
     structlog line keeps each run visible.
 
-    Two rows hold no tenant data, and they call ``record`` directly: the
-    Zoho ``run_ok`` (an empty payload) and ``scheduler_started`` (the job ids
-    and the cron triggers). ``acb_audit`` keeps the operator org for a real
-    system event (Option-A), so these two stay there. Do not add tenant data
-    to them. Fences: ``tests/unit/test_audit_tick_writers_org.py`` and
+    Two rows hold no tenant data, and they call ``record`` directly with
+    ``system=True``: the Zoho ``run_ok`` (an empty payload) and
+    ``scheduler_started`` (the job ids and the cron triggers). ``acb_audit``
+    keeps the operator org for a marked system event (Option-A), so these two
+    stay there. ``record`` refuses an unmarked event with no org (slice 3).
+    Do not add tenant data to them. Fences: ``tests/unit/test_audit_tick_writers_org.py`` and
     ``tests/unit/test_audit_tick_writers_org_r8.py`` (R8).
     """
     if not refuse_tenantless(event):
@@ -58,8 +59,14 @@ async def _run_zoho() -> None:
     _log.info("scheduler.zoho_sync.start")
     try:
         await zoho_sync.main()
-        # A pure system row: no tenant data, so it keeps Option-A (task 2221).
-        record(AuditEvent(actor="job:scheduler", action="run_ok", target="job:zoho_sync", payload={}))
+        # A pure system row: no tenant data. The ``system`` marker keeps it
+        # under the operator org (Option-A, task 2221 slice 3).
+        record(
+            AuditEvent(
+                actor="job:scheduler", action="run_ok", target="job:zoho_sync",
+                payload={}, system=True,
+            )
+        )
     except Exception as exc:
         _log.exception("scheduler.zoho_sync.failed")
         _audit(
@@ -115,8 +122,9 @@ def build_scheduler(*, tz: str = "Asia/Kolkata") -> AsyncIOScheduler:
 async def _serve() -> None:
     sched = build_scheduler()
     sched.start()
-    # A pure system row: the job ids and the cron triggers only, so it keeps
-    # Option-A (task 2221). Do not add tenant data here.
+    # A pure system row: the job ids and the cron triggers only. The ``system``
+    # marker keeps it under the operator org (Option-A, task 2221 slice 3).
+    # Do not add tenant data here.
     record(
         AuditEvent(
             actor="job:scheduler",
@@ -128,6 +136,7 @@ async def _serve() -> None:
                     for j in sched.get_jobs()
                 ]
             },
+            system=True,
         )
     )
     _log.info("scheduler.started", jobs=[j.id for j in sched.get_jobs()])

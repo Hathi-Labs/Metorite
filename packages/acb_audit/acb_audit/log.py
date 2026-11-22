@@ -17,7 +17,9 @@ worker thread **only when it is called from a running event loop**.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -47,9 +49,20 @@ class AuditEvent:
     #: slice 5). It rides here — not a ContextVar — so :func:`_persist` can bind
     #: the right tenant AFTER the ``asyncio.to_thread`` hop, which does not carry
     #: a ContextVar reliably (the design mandates never relying on that copy).
-    #: ``None`` ⇒ a tenant-less system/cron event, bound to the operator/DEFAULT
-    #: org by :func:`_persist` so the row is RETAINED, never RLS-dropped.
+    #: ``None`` with ``system`` set ⇒ a tenant-less system event, bound to the
+    #: operator/DEFAULT org by :func:`_persist` so the row is RETAINED.
+    #: ``None`` with no ``system`` ⇒ :func:`record` refuses the event while
+    #: ``ACB_GRAPH_TENANT_BIND`` is on (task 2221 slice 3).
     organization_id: str | None = None
+    #: The explicit system marker (task 2221 slice 3, owner answer A). Set it
+    #: ONLY on an event that no tenant can own: a deployment-level tick with
+    #: no tenant data in its payload. With the bind on, the operator org takes
+    #: a tenant-less event only when this is ``True``. :func:`record` refuses
+    #: any other tenant-less event, so a writer that forgets the org loses the
+    #: row and never files a tenant's text under the operator org. An event
+    #: with an org ignores the marker. The column is not stored. Fence:
+    #: ``tests/unit/test_audit_tick_writers_org.py`` names each ``system=True``.
+    system: bool = False
 
 
 #: The operator/DEFAULT org id, resolved at most once and cached. A tenant-less
@@ -112,8 +125,10 @@ def _persist(event: AuditEvent) -> None:
     * flag ON  → :func:`acb_graph.tenant_session` bound to
       ``event.organization_id`` (captured onto the EVENT on the calling frame —
       never a ContextVar read here, this may run on a worker thread) OR, for a
-      tenant-less system/cron event, the operator/DEFAULT org so the row is
-      RETAINED under FORCE RLS rather than refused and silently dropped. The GUC
+      tenant-less event that carries the ``system`` marker, the operator/DEFAULT
+      org so the row is RETAINED under FORCE RLS. A tenant-less event with no
+      marker never takes the operator org: :func:`record` refuses it first,
+      and this skips it too, for a direct caller (task 2221 slice 3). The GUC
       bind stamps the column through its phase-1 DEFAULT — the ORM INSERT names
       no ``organization_id`` (the §1.3 "no INSERT had to learn about
       organization_id" property the chat_session/pending_commit paths also rely
@@ -128,7 +143,9 @@ def _persist(event: AuditEvent) -> None:
         from acb_graph.models import AuditEvent as AuditRow
 
         if tenant_bind_enabled():
-            org = event.organization_id or _resolve_operator_org_id()
+            org = event.organization_id or (
+                _resolve_operator_org_id() if event.system else None
+            )
             if not org:
                 _log.warning(
                     "audit.persist_skipped_no_org",
@@ -173,8 +190,12 @@ def refuse_tenantless(event: AuditEvent) -> bool:
     so nothing can leak, and it answers ``False``: the old row is kept. If
     ``acb_graph`` cannot load, it fails closed and answers ``True``.
 
-    The Option-A fallback in :func:`_persist` stays for real system events.
-    Fences: ``tests/unit/test_action_broker_audit_org_r8.py``,
+    The Option-A fallback in :func:`_persist` stays for real system events,
+    and only for an event with the ``system`` marker. This check ignores the
+    marker: a writer that calls it holds tenant events only, so a marked
+    event that comes here is refused too. :func:`record` refuses an unmarked
+    tenant-less event by itself (task 2221 slice 3), so this check is a
+    second layer for the writers that already call it. Fences: ``tests/unit/test_action_broker_audit_org_r8.py``,
     ``test_llm_usage_audit_org_r8.py``, ``test_notes_dispatch_audit_org_r8.py``.
     """
     if event.organization_id:
@@ -196,8 +217,56 @@ def refuse_tenantless(event: AuditEvent) -> bool:
     return True
 
 
+def _writer_module() -> str | None:
+    """The module that called :func:`record`, for the refusal log line only."""
+    try:
+        return sys._getframe(3).f_globals.get("__name__")
+    except Exception:  # an odd frame stack must never break audit
+        return None
+
+
+def _refuse_unmarked(event: AuditEvent) -> bool:
+    """``True`` when :func:`record` must refuse *event* (task 2221 slice 3).
+
+    Owner answer A. With ``ACB_GRAPH_TENANT_BIND`` on, an event with no
+    ``organization_id`` and no ``system`` marker is refused. The writer
+    forgot its org, and the operator org must never take a tenant's text.
+    This logs ``audit.refused_unmarked_tenantless`` with the action, the
+    actor and the writer module. It never logs the target or the payload,
+    because those can hold tenant data. It never raises into the caller.
+    With the bind off, nothing changes. If ``acb_graph`` cannot load, it
+    fails closed and refuses, like :func:`refuse_tenantless`.
+    """
+    if event.organization_id or event.system:
+        return False
+    try:
+        from acb_graph import tenant_bind_enabled
+
+        bind = tenant_bind_enabled()
+    except Exception:  # no DB layer: fail closed, never the operator org
+        bind = True
+    if not bind:
+        return False
+    # A broken logger must never raise into the writer.
+    with contextlib.suppress(Exception):
+        _log.warning(
+            "audit.refused_unmarked_tenantless",
+            action=event.action,
+            actor=event.actor,
+            writer=_writer_module(),
+        )
+    return True
+
+
 def record(event: AuditEvent) -> None:
     """Persist an audit event. Logs always; DB write is best-effort.
+
+    ⚠️ One exception (task 2221 slice 3, owner answer A): with
+    ``ACB_GRAPH_TENANT_BIND`` on, an event with no ``organization_id`` and no
+    ``system`` marker is REFUSED. Nothing is written and the ``audit`` line
+    with the payload is not logged. :func:`_refuse_unmarked` logs the
+    refusal, and the caller gets no error. With the bind off, every event is
+    written as before.
 
     Synchronous by signature, and synchronous in fact for sync callers. On an
     event loop the DB write is handed to a worker thread and this returns
@@ -210,6 +279,8 @@ def record(event: AuditEvent) -> None:
     ``routes/admin/members.py::purge_member``, which reasons explicitly about
     both) — but a caller that wants the row *now* must ``await drain()``.
     """
+    if _refuse_unmarked(event):
+        return
     _log.info("audit", **asdict(event))
     try:
         loop = asyncio.get_running_loop()
