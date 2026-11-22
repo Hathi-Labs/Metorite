@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from tally_bridge.localcopy.store import CopyStore, Snapshot
+from tally_bridge.localcopy.sync import copy_window
 from tally_bridge.reader import TallyDown
 from tally_bridge.tools.common import Refusal
 
@@ -29,11 +30,18 @@ from tally_bridge.tools.common import Refusal
 def source_of(snap: Snapshot, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     at = snap.copied_at.astimezone(UTC)
+    # The copy holds two financial years only. An empty answer for an older
+    # date means "not in the copy", never "none exist", so the note says so.
+    holds_from = copy_window(at.date())[0]
     return {
         "from": "local_copy",
         "copied_at": at.isoformat(timespec="minutes"),
         "age_minutes": snap.age_minutes(now),
-        "note": f"From the local copy of {at:%Y-%m-%d %H:%M} UTC. TallyPrime is closed.",
+        "holds_from": holds_from.isoformat(),
+        "note": (
+            f"From the local copy of {at:%Y-%m-%d %H:%M} UTC. TallyPrime is closed. "
+            f"The copy holds vouchers from {holds_from.isoformat()} only."
+        ),
     }
 
 
@@ -49,7 +57,7 @@ def fresh_copy(copy: CopyStore | None, company: str, max_age_days: int) -> Snaps
     if age_days > max_age_days:
         raise Refusal(
             f"TallyPrime is not running, and the local copy of '{company}' is "
-            f"{int(age_days)} days old, past the limit of {max_age_days} days."
+            f"{age_days:.1f} days old, past the limit of {max_age_days} days."
         )
     return snap
 

@@ -343,7 +343,7 @@ def test_a_copy_past_the_maximum_age_answers_nothing(copied):
     old.copied_at = datetime.now(UTC) - timedelta(days=8)
     store.save(old)
     text = _err(_call(books, store, "find_ledgers", {"query": "a"}))
-    assert "8 days old" in text and "limit of 7 days" in text
+    assert "8.0 days old" in text and "limit of 7 days" in text
     assert "Alpha Traders" not in text
 
 
@@ -367,3 +367,30 @@ def test_status_with_tally_closed_names_the_copy_age(copied):
     assert body["tally"] == "down"
     assert body["companies"][0]["name"] == CO
     assert isinstance(body["companies"][0]["copy_age_minutes"], int)
+
+
+def test_the_note_says_how_far_back_the_copy_goes(copied):
+    books, store = copied
+    body = _ok(
+        _call(books, store, "list_vouchers", {"from_date": "2023-01-01", "to_date": "2023-01-31"})
+    )
+    assert body["vouchers"] == []
+    assert body["source"]["holds_from"] == "2025-04-01"
+    assert "from 2025-04-01 only" in body["source"]["note"]
+
+
+def test_a_decryptable_file_of_the_wrong_shape_reads_as_no_copy(store, tmp_path):
+    from tally_bridge.localcopy.store import SUFFIX
+
+    store.save(Snapshot(company=CO, copied_at=datetime.now(UTC)))
+    path = next((tmp_path / "copy").glob(f"*{SUFFIX}"))
+    bad = b'{"company": "Alpha Co", "copied_at": "2026-11-22T00:00:00+00:00", "max_alter_id": 0, "ledgers": [[1]], "vouchers": []}'
+    path.write_bytes(store._fernet().encrypt(bad))
+    assert store.load(CO) is None
+
+
+def test_delete_all_also_removes_a_left_over_temp_file(store, tmp_path):
+    store.save(Snapshot(company=CO, copied_at=datetime.now(UTC)))
+    (tmp_path / "copy" / "x.tmp").write_bytes(b"x")
+    store.delete_all()
+    assert list((tmp_path / "copy").iterdir()) == []

@@ -148,7 +148,9 @@ class CopyStore:
             return None
         try:
             found = from_json(self._fernet().decrypt(path.read_bytes()))
-        except (InvalidToken, ValueError, KeyError):
+        # The file is authenticated, so a wrong shape is unlikely. Any failure
+        # still reads as no copy, never as a tool error.
+        except (InvalidToken, ValueError, KeyError, TypeError, IndexError, ArithmeticError):
             log.warning("the local copy of one company does not read; the next sync replaces it")
             return None
         # A file is the copy of the company whose name hashes to it, and of no other.
@@ -165,6 +167,9 @@ class CopyStore:
         for path in self._folder.glob(f"*{SUFFIX}"):
             path.unlink(missing_ok=True)
             gone += 1
+        # A crash between the write and the replace leaves a .tmp file.
+        for path in self._folder.glob("*.tmp"):
+            path.unlink(missing_ok=True)
         return gone
 
     def keep_only(self, companies: tuple[str, ...] | list[str]) -> int:
