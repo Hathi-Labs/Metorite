@@ -28,6 +28,7 @@ missed run is recoverable; a missed notification is invisible.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -462,8 +463,10 @@ async def list_notifications(
             ),
             {"me": me, **vis.params},
         )).fetchone()
+        wire = [_row(r) for r in rows]
+        await _name_actors(db, wire)
     return {
-        "rows": [_row(r) for r in rows],
+        "rows": wire,
         "total": len(rows),
         # `{total, mentions}`, not a bare number: "you were named" is a
         # stronger claim on attention than "something you follow moved", and
@@ -473,6 +476,26 @@ async def list_notifications(
             "mentions": int(getattr(unread, "mentions", 0) or 0),
         },
     }
+
+
+async def _name_actors(db: Any, wire: list[dict]) -> None:
+    """Task 1574: each row gets ``actor_name``, the directory name of its actor,
+    from the one resolver (``people.core.names_of``, as the decision card does).
+    An actor with no directory row (an agent, a system actor) has none, and the
+    caller keeps its own label. A fault of the read leaves every name out: the
+    list must never fail for a label."""
+    emails = {str(r.get("actor") or "") for r in wire if "@" in str(r.get("actor") or "")}
+    names: dict[str, str] = {}
+    if emails:
+        try:
+            from gateway.routes.people.core import names_of
+
+            names = await names_of(db, emails)
+        except Exception as exc:  # noqa: BLE001 - a label never fails the list
+            logging.getLogger(__name__).warning(
+                "notifications.actor_names_unavailable class=%s", type(exc).__name__)
+    for r in wire:
+        r["actor_name"] = names.get(str(r.get("actor") or "").strip().lower())
 
 
 async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
