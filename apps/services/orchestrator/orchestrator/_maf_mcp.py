@@ -1054,6 +1054,16 @@ def _fit_run_budget(tools: list[Any]) -> None:
         _log.warning("mcp.schema_over_budget", total=total, budget=RUN_SCHEMA_TOKENS)
 
 
+class _Answers(list[int]):
+    """The status codes of :func:`_watch_status`, with one more fact.
+
+    ``challenged`` is True when an answer of 401 or 403 carried an OAuth
+    challenge: a ``WWW-Authenticate`` header with ``resource_metadata``. The
+    header value is never kept."""
+
+    challenged: bool = False
+
+
 def _watch_status(client: Any) -> list[int]:
     """The status code of each answer that *client* gets, in order (rule 9).
 
@@ -1061,19 +1071,33 @@ def _watch_status(client: Any) -> list[int]:
     failure. MAF wraps a 401 in a ``ToolException`` whose chain holds a
     cancel and not the HTTP error, and whose message holds the URL. A client
     with no hooks (a test double) gives an empty list."""
-    codes: list[int] = []
+    codes = _Answers()
     hooks = getattr(client, "event_hooks", None)
     if not isinstance(hooks, dict):
         return codes
 
     async def _record(response: Any) -> None:
         codes.append(int(getattr(response, "status_code", 0) or 0))
+        if _has_oauth_challenge(response):
+            codes.challenged = True
 
     try:
         client.event_hooks = {**hooks, "response": [*hooks.get("response", []), _record]}
     except Exception:  # a client that refuses hooks: no 401 is seen
         return codes
     return codes
+
+
+def _has_oauth_challenge(response: Any) -> bool:
+    """True when *response* is a 401 or 403 whose ``WWW-Authenticate`` header
+    names a ``resource_metadata`` (RFC 9728). It reuses the parser of the MCP
+    SDK, which the OAuth discovery of ``mcp_oauth`` uses. Reads the header
+    here only, and never keeps or logs its value."""
+    try:
+        from mcp.client.auth.utils import extract_resource_metadata_from_www_auth
+        return bool(extract_resource_metadata_from_www_auth(response))
+    except Exception:  # a double with no headers: no challenge is seen
+        return False
 
 
 #: A status that a healthy session also gets. The client opens the optional
@@ -1128,6 +1152,7 @@ async def attach_mcp_tools(
     agent: Any, servers: list[McpServer], opened: Opened,
     *, member_present: bool = False,
     on_unauthorized: Callable[[McpServer], Awaitable[Any]] | None = None,
+    on_needs_signin: Callable[[McpServer], Awaitable[Any]] | None = None,
     failures: dict[str, str] | None = None,
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
@@ -1163,7 +1188,13 @@ async def attach_mcp_tools(
 
     *on_unauthorized* (WS-54 IN-8b, rule 9) is called for an OAuth server
     whose connect gets a 401. The caller reads ``oauth_refreshed`` and marks
-    the row."""
+    the row.
+
+    *on_needs_signin* (task 3866) is called for a server with no sign-in and
+    no stored header, whose connect gets a 401 or 403 with an OAuth challenge
+    (:func:`_has_oauth_challenge`). The caller marks the row ``needs_reconnect``,
+    and the console then offers Connect. A 401 with no challenge keeps the
+    old path: a key that the server refused is not a sign-in to start."""
     try:
         tool_cls = _run_scoped_tool_class()
         from agent_framework._feature_stage import ExperimentalWarning
@@ -1245,6 +1276,10 @@ async def attach_mcp_tools(
             _note_unreachable(server.name, host, exc, codes, failures)
             _record_mcp_failure(exc, server.name)  # TOF-2d, C6
             await _close_one(tool, client, client_first=True)
+            if (on_needs_signin is not None and not server.oauth and not server.headers
+                    and getattr(codes, "challenged", False)
+                    and _refused_status(codes) in (401, 403)):
+                await _report_unauthorized(on_needs_signin, server)
             continue
         _choose_disclosure(tool)
         # WS-8c item 29: with disclosure on, ``functions`` holds the loaders
