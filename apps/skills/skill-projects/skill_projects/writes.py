@@ -552,11 +552,27 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = 
     return _refuse_agent_assignee(resolved)
 
 
+#: One address: one ``@``, a local part and a domain, with no space, no second
+#: ``@`` and no fence mark. It does not prove that the person exists: the card
+#: warns about an unknown address (:func:`_unknown_addresses`).
+_ADDRESS_SHAPE = re.compile(r"[^\s@«»,;<>()]+@[^\s@«»,;<>()]+")
+
+
 async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
-    if "@" in raw or raw.lower().startswith("agent:"):
+    if raw.lower().startswith("agent:"):
+        return raw.lower()
+    if "@" in raw:
+        # H-162 (task 487): an address passes through, but only in the shape of
+        # one. A broken one ("anitha@", "a b@c.io", "a@b@c") would reach the
+        # route as a bare string, so it is refused here, before any card.
+        if not _ADDRESS_SHAPE.fullmatch(raw):
+            raise GatewayRefusal(
+                f"{data(raw)} is not a valid email address. Pass one address, like "
+                "name@company.com, or the person's name."
+            )
         return raw.lower()
     payload = await get("/projects/assignees", {"q": raw})
     people = (payload or {}).get("people") or []
