@@ -17,10 +17,13 @@ migrations before it restarts the services:
   three writers name the new indexes as their conflict targets. A same-org
   write updates the row. A write of a key that another org holds still fails,
   on the old key.
-* **Contract (a later release).** It drops ``copilot_config_pkey`` and
-  ``notes_glossary_user_term_idx``. Then each org keeps its own row for one
-  key, and the two strict xfails in ``test_notes_tenant_isolation_r8.py``
-  come out.
+* **Contract (a later release, task 3886).** It moves the primary key of
+  ``copilot_config`` from ``owner_email`` to ``copilot_config_org_owner_key``
+  (``PRIMARY KEY USING INDEX``, as PR 2719 does for ``agent_avatars``), so
+  the table never has no primary key. It removes
+  ``notes_glossary_user_term_idx``, and ``notes_glossary`` keeps its ``id``
+  primary key. Then each org keeps its own row for one key, and the two
+  strict xfails in ``test_notes_tenant_isolation_r8.py`` come out.
 
 The DB tests run on a REAL, phase-4-promoted catalog, as the NOSUPERUSER
 NOBYPASSRLS app role, through the real route functions and the real
@@ -74,6 +77,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 _CFG_NEW = "copilot_config_org_owner_key"
 _CFG_OLD = "copilot_config_pkey"
+#: The primary key name that the contract release gives copilot_config.
+_CFG_CONTRACT_PK = "copilot_config_org_owner_pkey"
 _GLS_NEW = "notes_glossary_org_user_term_idx"
 _GLS_OLD = "notes_glossary_user_term_idx"
 
@@ -346,10 +351,13 @@ def test_a_key_another_org_holds_still_fails_on_the_old_key(as_app) -> None:
 
 @pytest.fixture
 def contracted(as_app) -> Iterator[Any]:
-    """The contract state: both old keys dropped, as the later release does.
-    Restored at the end, after the rows that share a key go."""
+    """The contract state, as the later release (task 3886) makes it: the
+    primary key of copilot_config moves to the per-org index, and the old
+    glossary key goes. Restored at the end, after the rows that share a key go."""
     with as_app.admin_engine.begin() as c:
         c.execute(text(f"ALTER TABLE copilot_config DROP CONSTRAINT {_CFG_OLD}"))
+        c.execute(text(f"ALTER TABLE copilot_config ADD CONSTRAINT {_CFG_CONTRACT_PK} "
+                       f"PRIMARY KEY USING INDEX {_CFG_NEW}"))
         c.execute(text(f"DROP INDEX {_GLS_OLD}"))
     try:
         yield as_app
@@ -359,6 +367,9 @@ def contracted(as_app) -> Iterator[Any]:
                       {"l": _LIKE})
             c.execute(text("DELETE FROM notes_glossary WHERE user_id LIKE :l"),
                       {"l": _LIKE})
+            c.execute(text(f"ALTER TABLE copilot_config DROP CONSTRAINT {_CFG_CONTRACT_PK}"))
+            c.execute(text(f"CREATE UNIQUE INDEX {_CFG_NEW} "
+                           "ON copilot_config (organization_id, owner_email)"))
             c.execute(text(f"ALTER TABLE copilot_config ADD CONSTRAINT {_CFG_OLD} "
                            "PRIMARY KEY (owner_email)"))
             c.execute(text(f"CREATE UNIQUE INDEX {_GLS_OLD} "
@@ -370,6 +381,16 @@ def test_after_the_contract_each_org_keeps_its_own_row(contracted) -> None:
     db = contracted
     a, b = db.org_a, db.org_b
     email = _email("both")
+
+    # The contract never leaves copilot_config with no primary key.
+    with db.admin_engine.connect() as c:
+        pk = c.execute(text(
+            "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i "
+            "WHERE i.indrelid = 'copilot_config'::regclass AND i.indisprimary"
+        )).scalar()
+    assert pk is not None and "organization_id" in pk and "owner_email" in pk, (
+        "the contract leaves copilot_config with no primary key on "
+        f"(organization_id, owner_email): {pk!r}")
 
     # Each org writes one key, and a second write of each org updates its row.
     _write_instructions(email, a, "a-value")

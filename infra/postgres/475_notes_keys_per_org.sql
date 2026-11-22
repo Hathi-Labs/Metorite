@@ -65,10 +65,12 @@
 -- a policy. This file adds no table, no policy and no
 -- `gen_tenant_migration.EXEMPT` row.
 --
--- Never wait for the lock: CREATE INDEX takes a SHARE lock on each table, and
--- each notes settings or glossary write needs it. So the file sets
--- lock_timeout first, as 414 does. On a lock timeout the runner tries the
--- whole file again, and the file is idempotent.
+-- Locks: each ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes an ACCESS
+-- EXCLUSIVE lock before it checks the column, also when it then skips. The
+-- lock stays until COMMIT, so the index builds also block the reads of both
+-- tables. Both tables are small, so the hold is short. Never wait for a lock:
+-- the file sets lock_timeout first, as 414 does. On a lock timeout the runner
+-- tries the whole file again, and the file is idempotent.
 -- Depends on: 99_note_taker_slice2.sql (notes_glossary and its key),
 --             125_meeting_agenda.sql (copilot_config and its primary key),
 --             130_org_access_control.sql (organization).
@@ -100,14 +102,16 @@ ALTER TABLE notes_glossary
 
 -- ── 2. One notes settings row per organization and member ───────────────────
 --
--- copilot_config_pkey stays. The contract release drops it.
+-- copilot_config_pkey stays. The contract release (task 3886) moves the
+-- primary key to this index (PRIMARY KEY USING INDEX), as PR 2719 does for
+-- agent_avatars. The table must never be left with no primary key.
 CREATE UNIQUE INDEX IF NOT EXISTS copilot_config_org_owner_key
     ON copilot_config (organization_id, owner_email);
 
 COMMENT ON INDEX copilot_config_org_owner_key IS
     'Task 3844: one notes settings row per organization and member. '
     'copilot_config_pkey on owner_email alone stays until the contract '
-    'release drops it.';
+    'release moves the primary key to this index.';
 
 -- ── 3. One glossary term per organization, member and case-folded term ──────
 --
