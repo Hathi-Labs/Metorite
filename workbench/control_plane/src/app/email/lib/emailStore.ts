@@ -1384,7 +1384,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       selectedAccountId, selectedFolder,
       emailsPage, emails, loadingMore, emailsTotal,
     } = state;
-    if (loadingMore || emails.length >= emailsTotal) return;
+    // A broadened answer exists on page 1 only: page 2 would run the strict
+    // AND query again and overwrite the total with 0 (task 2975 verifier).
+    if (loadingMore || state.searchBroadened || emails.length >= emailsTotal) return;
     set({ loadingMore: true });
     // A newer read or a change of the pool replaced the list this page
     // extends (EM-T8g-2 review F4).
@@ -1582,7 +1584,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
-  searchBroadened: false,
+      searchBroadened: false,
     });
     get().fetchEmails();
   },
@@ -1720,7 +1722,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
-  searchBroadened: false,
+      searchBroadened: false,
       selectedEmailId: null,
       selectedEmailOverride: null,
     });
