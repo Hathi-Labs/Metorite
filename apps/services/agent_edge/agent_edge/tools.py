@@ -2983,6 +2983,9 @@ _RUN_SCHEMA = _object({
     "agent_host": _UNTRUSTED_OR_NULL,
     "agent_model": _UNTRUSTED_OR_NULL,
     "agent_host_kind": {"type": ["string", "null"], "enum": [*HOST_KINDS, None]},
+    # SW-107. The run that dispatched this one. The column is a uuid that the
+    # gateway checked, so it leaves as an id (S), never as text.
+    "dispatched_by_run_id": _NULLABLE_STRING,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
@@ -3143,7 +3146,8 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     The link is (S). The question and the line hold free text, so (U).
     SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
     SW-104: ``agent_host`` and ``agent_model`` are (U) for the same reason.
-    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`.
+    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`. SW-107:
+    ``dispatched_by_run_id`` leaves only in the shape of an id.
     """
     label = row.get("agent_label")
     host, model = row.get("agent_host"), row.get("agent_model")
@@ -3166,6 +3170,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "agent_host": untrusted(host) if isinstance(host, str) else None,
         "agent_model": untrusted(model) if isinstance(model, str) else None,
         "agent_host_kind": kind if kind in HOST_KINDS else None,
+        "dispatched_by_run_id": _id(row.get("dispatched_by_run_id")),
         "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
@@ -5458,12 +5463,16 @@ PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
 #: ``claim_task`` sends back as ``expected_version``. SW-104: the machine, its
-#: kind and the model of the row's run, as on the run wire, or null.
+#: kind and the model of the row's run, as on the run wire, or null. SW-107:
+#: the run that dispatched the row's run, an id or null.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
     "run_id", "held_by", "yours", "external_link",
-    "agent_host", "agent_model", "agent_host_kind",
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id",
 )
+#: SW-104 and SW-107. The keys of the run wire that a ``my_work`` row copies.
+_WORK_RUN_KEYS: tuple[str, ...] = (
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id")
 
 _MY_WORK_INPUT: dict[str, Any] = {
     "type": "object",
@@ -5486,6 +5495,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "agent_host": _RUN_SCHEMA["properties"]["agent_host"],
     "agent_model": _RUN_SCHEMA["properties"]["agent_model"],
     "agent_host_kind": _RUN_SCHEMA["properties"]["agent_host_kind"],
+    "dispatched_by_run_id": _RUN_SCHEMA["properties"]["dispatched_by_run_id"],
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
     "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
@@ -5663,10 +5673,11 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
     null and the row still names the run. ``external_link`` is the link of
     the run, shaped as on the run wire, or null (CIV-14a). SW-104: the
     machine, its kind and the model of *run*, shaped by :func:`agent_run`,
-    or null for a row with no run."""
+    or null for a row with no run. SW-107: and its dispatcher, by the same
+    rule."""
     shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
     wire = agent_run(run) if run is not None else {}
-    place = {key: wire.get(key) for key in ("agent_host", "agent_model", "agent_host_kind")}
+    place = {key: wire.get(key) for key in _WORK_RUN_KEYS}
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
@@ -7831,6 +7842,42 @@ _HOST_KIND_INPUT: dict[str, Any] = {
         " server for a VPS or a box, cloud for a hosted agent sandbox. It is"
         " display data only.")}
 
+#: SW-107 (``agent_coordination.md`` §3.12.3). The optional run id of the
+#: session that dispatched this one, on a claim and a start.
+_DISPATCHED_BY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": (
+        "The run id of the session that handed you this task, when one did."
+        " Use the run id from its hand-off. It is display data only. A run"
+        " that your organization does not have, your own run, or a loop of"
+        " dispatchers is dropped, and the result has warning. A new value"
+        " replaces the old one.")}
+
+#: SW-107. The fixed text of each dropped ``dispatched_by``, by the code of
+#: the gateway (``agent_runs.DISPATCH_DROPS``). The edge never shows the
+#: gateway's text. A pin test compares the two.
+DISPATCH_TEXTS: Mapping[str, str] = {
+    "unknown": "Metorite kept no dispatcher: your organization has no run with that id.",
+    "self": "Metorite kept no dispatcher: a run cannot dispatch itself.",
+    "loop": "Metorite kept no dispatcher: that run would make a loop of dispatchers.",
+    "no_run": "Metorite kept no dispatcher, because the claim opened no run.",
+}
+
+
+def _dispatch_body(args: Mapping[str, Any]) -> dict[str, str]:
+    """SW-107. The ``dispatched_by`` of *args*, for the body of a claim or a
+    start. Never a header."""
+    value = _id(args.get("dispatched_by"))
+    return {"dispatched_by": value} if value is not None else {}
+
+
+def _dispatch_warning(written: Mapping[str, Any]) -> str | None:
+    """SW-107. The fixed text for the gateway's code of a dropped
+    ``dispatched_by``, or ``None``."""
+    code = written.get("dispatched_by_dropped")
+    return DISPATCH_TEXTS.get(code) if isinstance(code, str) else None
+
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7857,6 +7904,7 @@ _CLAIM_INPUT: dict[str, Any] = {
         "host": _HOST_INPUT,
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7895,6 +7943,7 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
     body only, and its pattern refuses every control character. SW-104:
     ``host``, ``model`` and ``host_kind`` go in the body by the same rule.
+    SW-107: so does ``dispatched_by``. A dropped one adds a fixed warning.
     """
     body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
@@ -7904,6 +7953,7 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if label is not None:
         body["agent_label"] = label
     body.update(_place_body(args))
+    body.update(_dispatch_body(args))
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
@@ -7929,11 +7979,20 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # fixed on the gateway, and the ids leave only in the shape of an id.
     ids = [i for i in (_id(v) for v in
                        (written.get("open_subtasks") or [])[:5]) if i]
-    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
-            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
-            r" the epic\.", written["warning"]):
-        result["warning"] = written["warning"]
+    said = written.get("warning")
+    subtasks = re.match(
+        r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
+        r" the epic\.(?= |$)", said) if isinstance(said, str) else None
+    warnings: list[str] = []
+    if ids and subtasks is not None:
+        warnings.append(subtasks.group(0))
         result["open_subtasks"] = ids
+    # SW-107: the fixed text of a dropped dispatcher, after that warning.
+    dropped = _dispatch_warning(written)
+    if dropped is not None:
+        warnings.append(dropped)
+    if warnings:
+        result["warning"] = " ".join(warnings)
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     protocol = _protocol(ctx)
@@ -7982,7 +8041,8 @@ CLAIM_TASK = Tool(
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
             "external_link": "external_link", "agent_label": "agent_label",
-            "host": "host", "model": "model", "host_kind": "host_kind"},
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -9285,6 +9345,17 @@ async def _start(ctx: Context, task_id: str, key: str,
     SW-7b: *label* is the display name of this session, in the body only.
     SW-104: *place* holds ``host``, ``model`` and ``host_kind``, by the same
     rule."""
+    created, run, _ = await _start_answer(ctx, task_id, key, link, label, place)
+    return created, run
+
+
+async def _start_answer(ctx: Context, task_id: str, key: str,
+                        link: str | None = None,
+                        label: str | None = None,
+                        place: Mapping[str, str] | None = None,
+                        ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+    """:func:`_start`, and the whole answer of the gateway. SW-107: *place*
+    may also hold ``dispatched_by``, and the answer then may name a drop."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
@@ -9295,7 +9366,7 @@ async def _start(ctx: Context, task_id: str, key: str,
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
         texts={409: TEXT_KEY_USED})
-    return status == 201, _run_body(body)
+    return status == 201, _run_body(body), body
 
 
 async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], *,
@@ -9334,19 +9405,29 @@ _START_INPUT: dict[str, Any] = {
         "host": _HOST_INPUT,
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
 }
-_START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}})
+_START_OUTPUT: dict[str, Any] = _optional(
+    _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}}),
+    # SW-107: set only when the gateway dropped `dispatched_by`.
+    "warning", {"type": "string"})
 
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")),
-                                _str_or_none(args.get("agent_label")),
-                                _place_body(args))
-    return {"run": agent_run(run), "created": created}
+    created, run, answer = await _start_answer(
+        ctx, str(args["task_id"]), str(args["idempotency_key"]),
+        _str_or_none(args.get("external_link")),
+        _str_or_none(args.get("agent_label")),
+        {**_place_body(args), **_dispatch_body(args)})
+    result: dict[str, Any] = {"run": agent_run(run), "created": created}
+    # SW-107: a fixed text for a dropped dispatcher. The start still worked.
+    dropped = _dispatch_warning(answer)
+    if dropped is not None:
+        result["warning"] = dropped
+    return result
 
 
 START_AGENT_RUN = Tool(
@@ -9372,7 +9453,8 @@ START_AGENT_RUN = Tool(
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
             "idempotency_key": "idempotency_key", "agent_label": "agent_label",
-            "host": "host", "model": "model", "host_kind": "host_kind"},
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",
