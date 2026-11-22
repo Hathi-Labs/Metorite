@@ -419,6 +419,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # Task 3559: the capture rig of e2e/touch-targets.spec.ts. Only a local
+    # run sets it, and it names a folder for screenshots.
+    "TOUCH_OUT",
     # STU-B2c-1: vps_apply.sh holds the key of the Studio direct proof here.
     # Do not name that key in this file: only the proof module and the
     # settings may name it (test_studio_direct_proof.py).
