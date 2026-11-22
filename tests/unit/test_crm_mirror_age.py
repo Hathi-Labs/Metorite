@@ -76,13 +76,14 @@ def test_star_needs_an_org_and_the_crm_switch(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_no_tenant_route_may_write_the_flag() -> None:
-    """The ``CRM_`` prefix of ``env_guard.PLATFORM_ENV_PREFIXES`` covers the
-    name, as it covers ``CRM_MODULE_FIND_ORGS``. So no exact entry is added."""
+    """The exact name is on the deny list, so the fence holds if the ``CRM_``
+    prefix ever narrows. The env example lists the flag, empty."""
     from acb_common.env_guard import PLATFORM_ENV_NAMES, is_platform_env
 
-    assert is_platform_env("CRM_MIRROR_AGE_ORGS")
+    assert "CRM_MIRROR_AGE_ORGS" in PLATFORM_ENV_NAMES
     assert is_platform_env(" crm_mirror_age_orgs ")
-    assert "CRM_MODULE_FIND_ORGS" not in PLATFORM_ENV_NAMES
+    example = Path(__file__).resolve().parents[2] / ".env.example"
+    assert "\nCRM_MIRROR_AGE_ORGS=\n" in example.read_text(encoding="utf-8")
 
 
 def test_the_flag_has_one_reader() -> None:
@@ -287,6 +288,35 @@ async def test_the_answer_holds_times_and_marks_only(monkeypatch) -> None:
     ages = await _ages(monkeypatch, _Db(CURSORS, holds=HOLDS))
     for row in ages.values():
         assert set(row.model_dump()) == {"key", "api_name", "checked_at", "held", "unavailable"}
+
+
+async def test_the_tool_reads_the_answer_of_the_route(monkeypatch) -> None:
+    """One join of the two halves: the JSON of the route goes to the read
+    tool through a fake ``_get``. It proves the key and the time format."""
+    from acb_skills import crm_tools as T
+
+    ages = await _ages(monkeypatch, _Db(CURSORS, holds=HOLDS))
+    wire = [row.model_dump(mode="json") for row in ages.values()]
+    records = {"rows": [{"id": _ORG, "name": "R-1"}], "total": 1, "field_defs": []}
+    routes = {
+        T.SHORT_READS_PATH: [], T.MIRROR_AGE_PATH: wire,
+        "/crm/modules/Invoices/records": records,
+        "/crm/modules/Purchase_Orders/records": records,
+        "/crm/modules/Quotes/records": records,
+    }
+
+    async def get(path: str, params: dict[str, Any] | None = None, **_kw: Any) -> Any:
+        return routes[path]
+
+    monkeypatch.setattr(T, "_get", get)
+    monkeypatch.setattr(T, "_utc_now", lambda: _NOW)
+    monkeypatch.setattr(T, "_run_org", lambda: _ORG)
+    out = await T.crm_list_module_records("Invoices")
+    assert out.endswith("\nInvoices were last read from Zoho 3 days ago.")
+    held = await T.crm_list_module_records("Purchase_Orders")
+    assert held.endswith("\nPurchase_Orders are held, so they may be old.")
+    quotes = await T.crm_list_module_records("Quotes")
+    assert quotes.endswith("\nQuotes were last read from Zoho 3 hours ago.")
 
 
 # ── 4. The shared key rule ───────────────────────────────────────────────────

@@ -5526,6 +5526,7 @@ Done when:
 Files: `routes/crm/sync.py`, `routes/crm/flags.py`,
 `packages/acb_skills/acb_skills/crm_tools.py`,
 `packages/acb_common/acb_common/settings.py`, the CRM manifest,
+`env_guard.PLATFORM_ENV_NAMES`, `.env.example`,
 `docs/flag_reload.md`, `tests/unit/test_crm_mirror_age.py`,
 `tests/unit/test_crm_mirror_age_note.py`, `tests/unit/test_flag_reload.py`
 and this section. Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q30b. No
@@ -5536,6 +5537,10 @@ Verify with:
 
 - `uv run pytest tests/unit/test_crm_mirror_age.py tests/unit/test_crm_mirror_age_note.py tests/unit/test_crm_short_read_note.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_crm_ui_actions.py -q`
 - `uv run pytest tests/unit/test_flag_reload.py -q`
+- ⚠️ On 2026-11-22, `main` serves `GET /crm/fields-search` (CRM-Q34-6) with
+  no row in the CRM manifest. So 3 tests of `test_crm_ui_actions.py` fail on
+  `main` too. The row of `/crm/sync/mirror-age` passes. The file is a
+  `process` fence, so it warns in build.
 
 **Built as (2026-11-22, task 3868, not merged).** Dark, no migration.
 
