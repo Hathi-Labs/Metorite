@@ -409,7 +409,7 @@ export const CHECK_TRAIL = "Check it before you send.";
 
 const ACT_WORDS: Record<string, string> = { new: "a new mail", forward: "a forward", reply: "a reply" };
 
-function peopleWords(label: "To" | "Cc", p: { added: string[]; removed: string[] }): string {
+function peopleWords(label: "To" | "Cc" | "Bcc", p: { added: string[]; removed: string[] }): string {
   const parts = [`The ${label} list changed.`];
   if (p.added.length) parts.push(`Added to ${label}: ${p.added.join(", ")}.`);
   if (p.removed.length) parts.push(`Removed from ${label}: ${p.removed.join(", ")}.`);
@@ -417,7 +417,7 @@ function peopleWords(label: "To" | "Cc", p: { added: string[]; removed: string[]
 }
 
 /**
- * The line for a card whose act kind, To or Cc differ from the card it
+ * The line for a card whose act kind, To, Cc or Bcc differ from the card it
  * replaces, or "" when nothing differs. It reads the gateway's `changed`, never
  * a claim of the model, and it names no word of a mail.
  */
@@ -427,5 +427,6 @@ export function changedLinkLine(changed: LinkChange | undefined): string {
   if (changed.act) parts.push(`The card before it was ${ACT_WORDS[changed.act.was]}. This card is ${ACT_WORDS[changed.act.now]}.`);
   if (changed.to) parts.push(peopleWords("To", changed.to));
   if (changed.cc) parts.push(peopleWords("Cc", changed.cc));
+  if (changed.bcc) parts.push(peopleWords("Bcc", changed.bcc));
   return parts.length ? [NOT_THE_SAME_LEAD, ...parts, CHECK_TRAIL].join(" ") : "";
 }

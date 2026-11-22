@@ -152,6 +152,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # starts before the turn-kind answer. A restart can bill a prompt twice,
     # so only the operator writes it (ai_tier_routing.md §13.1).
     "AI_TURN_KIND_PARALLEL",
+    # Chat speed (task 3592): the orgs whose delegated runs ask no turn-kind
+    # question. It moves the tier that such a run pays for, so only the
+    # operator writes it (ai_tier_routing.md §4.3).
+    "AI_TURN_KIND_NOWAIT_ORGS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
@@ -346,6 +350,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
     # org. The view reads the agent runs of the org, so only the owner writes it.
     "AGENTS_VIEW_ORGS",
+    # WS-MCP SW-102: AGENT_MAP_ORGS opens the map read of the agent runs for
+    # an org. The map reads the runs of the org, so only the owner writes it.
+    "AGENT_MAP_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.

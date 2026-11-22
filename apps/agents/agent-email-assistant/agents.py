@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import bounds, page_line, paged, prefix_limit, prefix_page
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -380,18 +381,6 @@ def _current_user_email() -> str:
     except Exception:  # noqa: BLE001
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
-
-    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
-    no longer accepts the LLM key as service identity, so that rung would only
-    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
-    """
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -416,7 +405,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -3132,6 +3121,11 @@ async def compose_reply(
         # The run decides it, never the model. The record keeps it for a Bcc
         # that the member types on the card.
         steer["held"] = True
+    # HRD-8b-3: in a run that draws the edit card the reply card names the chat
+    # thread, so a message that closes it can spend it and link the next card.
+    thread = _run_thread() if _edit_card_open() else ""
+    if thread:
+        steer["card_thread_id"] = thread
     # HRD-10d-3: the flag is read once for this call. Off, the requests are
     # the requests of before.
     check_thread = _thread_check_on()
@@ -3174,6 +3168,8 @@ async def compose_reply(
         **({"request_id": card_id} if card_id else {}),
     )
     if answer is ask_tools.REVISED:
+        if thread and card_id:
+            await _revise_closed_card(card_id, thread)
         return await _revised_line(form, kept, prep)
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard, a timeout, and a card whose draft left Drafts (2026-11-03).
@@ -7044,9 +7040,9 @@ def _noted(out: Any, came_back: bool) -> Any:
     return f"{_REVISE_UNREAD}\n\n{out}"
 
 
-async def _revise_forward_card(card_id: str, thread: str) -> None:
-    """Spend the forward card that a chat message closed, and link the next card
-    to it (HRD-8b-2). It is best effort: the link is a label, and the member's
+async def _revise_closed_card(card_id: str, thread: str) -> None:
+    """Spend the forward or reply card that a chat message closed, and link the
+    next card to it (HRD-8b-2, HRD-8b-3). It is best effort: the link is a label, and the member's
     answer to the card is already "closed by your message". A fault only logs,
     so the model still reads the text of the forward and nothing is lost."""
     try:
@@ -7825,7 +7821,7 @@ async def _held_card(
     )
     if _revised(answer):
         if forward and thread and prep.get("card_id"):
-            await _revise_forward_card(str(prep["card_id"]), thread)
+            await _revise_closed_card(str(prep["card_id"]), thread)
         return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
         return _unapproved_line() or _not_done(act)

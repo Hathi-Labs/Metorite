@@ -247,6 +247,10 @@ class ReplyCardRequest(BaseModel):
     #: ``org`` or ``sent``, and the record keeps the flag for the Bcc that
     #: the member types on the card (``/reply-card/bcc``).
     held: bool = False
+    #: The chat thread that shows the card (HRD-8b-3). The tool sets it from the
+    #: run, in a run that draws the edit card. With the thread, the record of the
+    #: card can be revised through a chat message (``redraft.revise_new_mail_card``).
+    card_thread_id: str = Field(default="", max_length=200)
     #: HRD-10d-3 (task 3824): True asks for ``thread_head``, the local id of
     #: the newest message of the thread that is not a draft, read before the
     #: drafter. Only ``compose_reply`` with ``CHAT_CARD_PRECONDITION_ORGS`` on
@@ -632,9 +636,20 @@ async def reply_card(
     # Item 10 (task 1526): a card with a text will write a draft, so its record
     # says ``draft_pending`` in this same write. The act refuses a card whose
     # draft id never reached the record.
+    # HRD-8b-3: with the edit card on, the record names the chat thread, and the
+    # card TAKES a link that fits it (a reply card draws no "Draft N", so it would
+    # only leave the link waiting for an unrelated card).
+    from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import link_fields
+
+    org = str(getattr(user, "organization_id", None) or "")
+    thread = req.card_thread_id.strip() if org and edit_card_on(org) else ""
+    link = (await link_fields(user, thread, all_to, cc=[*all_cc, *added], bcc=bcc_people,
+                              act="reply") if thread else {})
     card_id = await _write_reply_record(
         user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held,
-        draft_pending=bool(body.strip()), thread_head=head.get("thread_head", ""))
+        draft_pending=bool(body.strip()), thread=thread, to=all_to,
+        cc=[*all_cc, *added], link=link, thread_head=head.get("thread_head", ""))
     # With no record, the card writes no draft (task 1526, fix round 1): the
     # act could not check that the draft left Drafts, and a send from the
     # Email app plus a Send on the card would mail each person twice.
@@ -1194,6 +1209,8 @@ def _reply_record_key(card_id: str) -> Any:
 async def _write_reply_record(
     user: UserContext, message_id: str, added: list[str], *,
     bcc: Sequence[str] = (), held: bool = False, draft_pending: bool = False,
+    thread: str = "", to: Sequence[str] = (), cc: Sequence[str] = (),
+    link: dict[str, Any] | None = None,
     thread_head: str = "",
 ) -> str:
     """Record the added people of one card under a card id that this server
@@ -1203,7 +1220,13 @@ async def _write_reply_record(
     and ``made_at``, the time the server made the card (2026-11-03). The act
     refuses when the mailbox sent a reply in the thread after that time.
     ``draft_pending`` (item 10) says that the card will write a draft. Only
-    :func:`_note_card_draft` clears it, and the act refuses while it is set."""
+    :func:`_note_card_draft` clears it, and the act refuses while it is set.
+
+    HRD-8b-3: with a chat ``thread`` the record also holds ``kind``, the thread,
+    and the To and Cc of the card (all of the mail's people and the added ones),
+    so a chat message that closes the card can spend it and link the next card
+    (``redraft``). *link* is the link that this card took (``revises``, ``draft``,
+    ``changed``). The act reads none of these keys."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -1216,6 +1239,9 @@ async def _write_reply_record(
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
            "added": list(added), "bcc": list(bcc), "held": bool(held),
            "made_at": time.time(), "draft_pending": bool(draft_pending)}
+    if thread:
+        rec.update({"kind": "reply", "thread": thread,
+                    "to": [str(a) for a in to], "cc": [str(a) for a in cc], **(link or {})})
     if thread_head:
         # HRD-10d-3: the head of the thread that the card showed. Only a card
         # that asked for it holds it, so the record of before is unchanged.

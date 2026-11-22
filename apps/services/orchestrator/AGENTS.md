@@ -79,9 +79,9 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A failed remote `docker rm -f` goes to `_remote_orphans`. Each reaper tick removes only those recorded ids (`_reap_remote_orphans`), because a shared daemon holds containers of other deployments. Only the startup sweep removes every labelled container.
    - `sandbox_max_per_org` is the one per-org cap. A start refuses when it is above `sandbox_max_total`.
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_sandbox_remote_backend.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
-15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
-   - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both.
-   - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
+15. **No agent that a member reaches runs a shell on the host** (D85, D129, spec `maf_coding_engine.md` §7.9).
+   - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both. A personal agent is in scope. Only the root `metorite` dev agent is not.
+   - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config loses the agent's own `floor_opt_out`.
    - Give a Copilot agent its handler through `_copilot_session._install_copilot_permission_handler` and nowhere else. Fence: `test_shared_agent_shell_tools.py`.
 16. **Only an admin of the first-party organization may run the root `metorite` agent** (spec `maf_coding_engine.md` §15.4).
    - `_assert_may_run_agent(agent_name)` is the one gate. Each load site calls it once, before the load. Add no other load site without it.
@@ -95,6 +95,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `_tier_policy_for_run` is the one entry. Fence: `test_tier_policy.py`.
    - The parallel start (2026-10-30, §4.3) is dark behind `AI_TURN_KIND_PARALLEL`. Only the native Tier 1 stream of `run_agent_stream` uses it. The batch path, a sub-agent, a delegated run and a Copilot SDK agent still await the answer.
    - The stream loop takes the answer only while a pull is in flight, so a cancel closes the request inside its stream. Each output of the loop calls `seal()` first. `_apply_parallel_tier` mirrors the tier site, so change both together. Fence: `test_turn_kind_parallel.py`.
+   - Task 3592: a delegated run asks no turn kind while `AI_TURN_KIND_NOWAIT_ORGS` names its org (`_turn_kind_nowait`). The batch site passes `delegated` for a run under a parent run, and the Copilot sub-agent site always passes it. `_TierWait` gives `ai_route.turn_kind` its `waited_ms`. Fence: `test_turn_kind_nowait.py`.
 19. **A Mirror run gets no CRM record write** (spec `crm_platform.md` §20.10 item 4).
    - `_drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites. In Mirror mode it drops `MIRROR_RECORD_WRITES`, and `log_activity` stays. Fence: `test_crm_mirror_run_tools.py`.
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
@@ -108,6 +109,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A Copilot SDK agent (`GitHubCopilotAgent`) gets no steer turn during its run. `steer.return_unconsumed` gives the steer back at the run end, and the follow-up turn answers it.
    - Task 3130: `run_agent_stream` opens one `ask_tools.ClosedCards` record and releases it in its `finally`. `_take_card_line` takes the "Not done" line, and `_close_native_session` puts it in the native session right before the save. `_finish_native_session` keeps its one argument. `_closed_card_events` sends it just before each `RUN_FINISHED`, after the CRM note. `pending_ask.park` sends it before a parked end.
    - The gate wrapper (`_tool_injection._card_call`) binds the act key of each card. A delegation tool gets no key. A run with two or more steers ends its newest steer turn with `steer.steers_frame`. Fence: `test_steer_unsent_card.py`.
+   - Task 3595 (PARK-LINE): `_agated` clears the card title and the proof of an act before each call (`_forget_card_marks`). After a normal return it records the act of an approved card only when the tool called `ask_tools.act_ran()` (`_note_approved_act`). A tool that delegates records nothing itself. `run_agent_stream` opens the `ask_tools.ApprovedActs` record through `_open_approved_acts(_delegated_run)`, so a child run writes into its parent's record. It releases the record in its `finally`. `pending_ask.park` sends the park line after the "Not done" line and before the parked `RUN_FINISHED`. No act sends nothing. Fence: `test_park_made_line.py`.
    - HRD-22: after a plain card of a confirmation parks, `pending_ask.park` records its offer (`acb_skills.late_approve.record_offer`), in the card's own wait and before the Future leaves. An answer during the park drops it again (`drop_offer`). It writes nothing with `CHAT_LATE_APPROVE_ORGS` off, and a fault records nothing. Fence: `test_late_approve_grant.py`.
 20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
@@ -238,6 +240,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A sticky pack that left at the start of the turn (`choice.evicted`) goes to the setup as loaded. So `find_tools` never offers a pack that `left_line` tells the model not to call.
    - `_maf_mcp._names_held` holds the name of `find_tools` while a `FindToolsProvider` is on the run. So a registry server tool of that name stays out (`mcp.name_collision`). Fence: `test_maf_mcp_injection.py`.
    - CSY-6: `RunScopedMCPTool` keeps the `instructions` of the server's `initialize` answer (`_maf_mcp.server_instructions`). It is third-party text. Only `_tool_injection._note_mcp_briefs` reads it, for `acb_skills.server_brief`. Do not put it in the persona, a tool description, `find_tools` or a log line. Fence: `test_mcp_server_instructions.py`.
+   - Task 1444: `McpPermissionGate` puts each answer of an MCP server, and the index of the list loader, in ONE frame of `acb_skills.untrusted` (`_maf_mcp.frame_mcp_result`). It frames only after the server answered (`_note_server_answer`), so a refusal that Metorite writes stays outside. The frame changes no card and marks no session. Fences: `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
 
 29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.
    - `_prime_member_briefing` runs in `run_agent_stream` only, after `bind_artifact_context` and `_prime_chat_constraints`. The run awaits it once. Fence: `test_executor_briefing_block.py::test_1_the_stream_run_awaits_the_prime_once_after_the_binding`. It needs the agent `orchestrator`, `assistant_profile.briefing_for(org)`, a verified member and a solo room. The run must also show cards, and it must not be a batch run or a delegated run. So a WhatsApp run gets no block.
@@ -266,6 +269,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 4. The Docker sandbox runs mutation_runner.py with the MUTATION_PROMPT env var
 5. Commits become pending_commit rows for inbox approval
 6. _pull_latest() in acb_skills.loader keeps local-only commits (pending approval) through a rebase, never reset --hard
+7. The two audit rows take the run's tenant (task 2221). The executor passes `audit_organization_id=_RUN_ORG.get(thread_id)`. It does not feed the first-party gate. With no org and the bind on, `refuse_tenantless` skips the rows. The pull agents and `resolution.py` stamp `_current_run_org()` the same way. Fence: `test_audit_writers_org_r8.py` (R8).
 
 ### Session continuity
 - Copilot SDK session IDs live in memory (_copilot_session_store) AND in Postgres (chat_session.service_session_id).
