@@ -347,7 +347,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_tasks_list_calendar_connections": ("what calendars are connected",
                                            "which calendars do I have connected",
                                            "list my calendar connections"),
-    "my_tasks_suggest_title": ("improve the title of this task", "suggest a better title"),
+    "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
 }
 

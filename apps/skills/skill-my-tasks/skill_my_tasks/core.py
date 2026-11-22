@@ -119,6 +119,9 @@ def _data(s: Any) -> str:
     as one. Guillemets are a firmer boundary than quotes (which a title can
     itself contain); any embedded guillemets are stripped so the delimiter
     stays unambiguous. Pairs with _DATA_LEGEND / the persona's fencing note."""
+    if isinstance(s, dict):
+        # A person ({"name", "email", "provider_user_id"}): show the name only.
+        s = s.get("name") or s.get("email") or ""
     return "«" + str(s or "").replace("«", "").replace("»", "") + "»"
 
 
@@ -906,9 +909,10 @@ async def my_tasks_clarify(item_id: str) -> str:
 
 #: The line of both proposals: nothing changed, and how a change happens.
 _PROPOSAL_ONLY = (
-    "This is a proposal. Nothing changed. Show it to the member, and save a "
-    "field only after the member agrees, with my_tasks_update (or the task edit "
-    "tool that you hold)."
+    "This is a proposal. Nothing changed. Show it to the member. After the "
+    "member agrees, save a title, a due date or a time estimate with "
+    "update_task, and an assignee with assign. Find the task with find_tasks. "
+    "No chat tool saves context or energy: the member saves those on the task page."
 )
 #: The fields that the enrich door can propose, in the order of the task page.
 _ENRICH_FIELDS = ("context", "energy", "time_estimate_mins", "due_at", "assignee")
@@ -918,20 +922,22 @@ _ENRICH_FIELDS = ("context", "energy", "time_estimate_mins", "due_at", "assignee
 async def my_tasks_suggest_title(item_id: str, title: str = "") -> str:
     """Propose a clearer title for one task, and say if the title is vague.
     Read only: it changes no task. Show the proposal to the member. Save it
-    with my_tasks_update(title=...) only after the member agrees.
+    with update_task only after the member agrees.
 
     Args:
-        item_id: The item's full UUID (from my_tasks_list).
+        item_id: The task's full UUID (find it with find_tasks).
         title: A draft title to judge in place of the saved one (empty = the
             saved title).
     """
     params = {"title": title.strip()} if title.strip() else None
     p = await _request(
         "POST", f"/tasks/items/{item_id}/suggest-title", params=params) or {}
-    vague = "The title is vague." if p.get("is_vague") else "The title is clear enough."
     suggested = str(p.get("suggested_title") or "").strip()
     if not suggested:
-        return f"{vague} No better title was proposed. Nothing changed."
+        # The route also sends this when the member's AI clarify setting is off
+        # or the model call failed, so it says nothing about the title.
+        return "No better title was proposed. Nothing changed."
+    vague = "The title is vague." if p.get("is_vague") else "The title is clear enough."
     return (f"{_DATA_LEGEND}\n{vague}\nProposed title: {_data(suggested)}\n"
             f"{_PROPOSAL_ONLY}")
 
@@ -941,11 +947,12 @@ async def my_tasks_enrich(item_id: str) -> str:
     """Propose values for the MISSING fields of one task: context, energy, time
     estimate, due date and assignee. Read only: it changes no task and never
     overwrites a field that has a value. Show the proposal to the member. Save
-    a field with my_tasks_update only after the member agrees. An assignee goes
-    through my_tasks_delegate.
+    a due date or time estimate with update_task, and an assignee with assign,
+    only after the member agrees. Context and energy: the member saves them on
+    the task page.
 
     Args:
-        item_id: The item's full UUID (from my_tasks_list).
+        item_id: The task's full UUID (find it with find_tasks).
     """
     p = await _request("POST", f"/tasks/items/{item_id}/enrich") or {}
     fields = p.get("fields") if isinstance(p, dict) else None
