@@ -195,7 +195,8 @@ def refuse_tenantless(event: AuditEvent) -> bool:
     marker: a writer that calls it holds tenant events only, so a marked
     event that comes here is refused too. :func:`record` refuses an unmarked
     tenant-less event by itself (task 2221 slice 3), so this check is a
-    second layer for the writers that already call it. Fences: ``tests/unit/test_action_broker_audit_org_r8.py``,
+    second layer for the writers that already call it. Fences:
+    ``tests/unit/test_action_broker_audit_org_r8.py``,
     ``test_llm_usage_audit_org_r8.py``, ``test_notes_dispatch_audit_org_r8.py``.
     """
     if event.organization_id:
