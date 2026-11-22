@@ -16,6 +16,8 @@
 
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
 
+**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475. No agent token reaches the route until SW-114.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -2178,6 +2180,11 @@ They keep their own gates.
 - **Done when.** R8: a child starts under an open parent while the parent holds the task. A second normal run on the task still gets the lease refusal. A parent of another organization is refused. A parent that ends ends its open children. A viewer who cannot see the parent sees no child.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (new), `tests/unit/test_agent_runs_r8.py` and `tests/unit/test_tenant_coverage.py`.
 - **Risk.** HIGH (a migration, and the lease index). **Gate.** AGENT-SAFE. **Depends on.** None.
+- **Built (task 3799), 2026-11-22.** Migration 475 adds `kind` and `parent_run_id`, with ON DELETE CASCADE and an index on the parent. A child has no task and no app. So every read of task runs leaves it out: the lists, the holder, `unheld`, `my_work`, the counts, the sweep and the map.
+- **The lease index.** The file builds the new index, then drops the old one, then renames the new one, in one statement. So no writer sees the table with no lease index. `pm_agent_runs_one_open` needs no change, because a child has no task.
+- **The write path.** `POST /projects/agent-runs/{run_id}/children` starts a child, and `GET` on the same path reads the children. The parent must be an open task run of the same member and connection, and it must hold its task. Every miss gets one 404 with the same text. A person gets 422.
+- **The end.** `_move_run` and `_take_over` end the open children of a run that ends. The child takes the parent's status.
+- **Not built.** The edge tool, the replay key and the cap of 20 children are SW-114. The pair is not in `MCP_WRITE_ROUTES`, so no agent token reaches the route until SW-114 adds it.
 
 #### SW-114 · The plugin reports sub-agents
 
