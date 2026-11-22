@@ -169,6 +169,41 @@ async def names_of(db: Any, emails: Any) -> dict[str, str]:
     return {str(r.email): str(r.name) for r in rows if r.name}
 
 
+#: Which people in the directory cannot open a task that is given to them
+#: (task 3636): the ``people`` row is not membership. A former person
+#: (``people.status`` alumni), a member whose ``app_user`` is suspended or
+#: removed, and a person with no ``app_user`` row in THIS organization (a
+#: contractor or an imported person) or one who is only invited. The tenant
+#: scope is the rule of :func:`has_login`: a login in another customer's
+#: organization is no login here. ``NULLIF(…, '')`` fails closed.
+_REACH_SQL = (
+    "SELECT lower(p.email) AS email, p.status AS status, "
+    "  (SELECT u.status FROM app_user u WHERE lower(u.email) = lower(p.email) "
+    "    AND u.organization_id = CAST(NULLIF("
+    "          current_setting('app.tenant_id', true), '') AS uuid) LIMIT 1) AS login "
+    "FROM people p WHERE lower(p.email) = ANY(:emails) AND p.name <> ''"
+)
+
+
+async def not_reachable(db: Any, emails: Any) -> list[str]:
+    """The addresses of *emails* that the directory names and whose person
+    cannot open a task given to them, sorted, in lower case. ONE answer and no
+    reason: a suspended or removed account is a fact that only an admin route
+    shows (``admin:members:read``), so this read says "cannot open" and never
+    why. An address that the directory does not know is ABSENT (a stranger,
+    which :func:`names_of` tells by its absence). One read, in the caller's
+    tenant session."""
+    wanted = sorted({str(e).strip().lower() for e in emails or () if str(e).strip()})
+    if not wanted:
+        return []
+    rows = (await db.execute(text(_REACH_SQL), {"emails": wanted})).fetchall()
+    return sorted(
+        str(r.email) for r in rows
+        if str(r.status or "").strip().lower() == "alumni"
+        or str(r.login or "").strip().lower() != "active"
+    )
+
+
 # ── The shared read seam ────────────────────────────────────────────────────
 #
 # `person_payload` and its two helpers live HERE, in the leaf module, and not
