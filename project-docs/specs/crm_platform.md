@@ -80,10 +80,9 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
-> **Built later, not merged:** CRM-Q25e, large reads (2026-11-13, branch
-> `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live when
-> it merges. The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`.
-> See §18.11.
+> **Built later, merged (`5a760b10b`):** CRM-Q25e, large reads (2026-11-13,
+> branch `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live.
+> The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`. See §18.11.
 >
 > **Built later, merged (#1111, `d72f92184`):** Batch I, from the branch
 > `crm-batch-i` (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the

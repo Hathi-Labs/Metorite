@@ -50,6 +50,7 @@ const OFFERED: Record<ViewMode, readonly SubtaskMode[]> = {
   table: ALL,
   calendar: FLAT,
   timeline: NONE,
+  agents: NONE,
 };
 
 const DEFAULTS: Record<ViewMode, SubtaskMode> = {
@@ -59,6 +60,7 @@ const DEFAULTS: Record<ViewMode, SubtaskMode> = {
   table: "nested",
   calendar: "separate",
   timeline: "nested",
+  agents: "nested",
 };
 
 /** The modes the Subtasks control offers on this canvas. Empty = no control. */

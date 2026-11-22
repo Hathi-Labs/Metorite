@@ -249,6 +249,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the admin's text about each server to the context, so only the operator
     # writes it.
     "CONNECTED_SYSTEMS_ORGS",
+    # CSY-4: the orgs where a turn that names a connected server evicts a
+    # sticky mail pack. It moves the precedence of a mail rule, so only the
+    # owner writes it.
+    "MCP_MAIL_PRECEDENCE_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.

@@ -90,6 +90,7 @@ from skill_projects.writes import (
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
     REPORT_CHANGE_REFUSED,
+    _assignee_rows,
     _clears,
     _confirm,
     _date_arg,
@@ -117,7 +118,6 @@ from skill_projects.writes import (
     _subtasks_phrase,
     _subtasks_wanted,
     _task,
-    _unknown_addresses,
     _vocab,
     _with_line,
     agent_assignee_refusal_as_text,
@@ -642,10 +642,12 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         chosen = frozenset(answer - {tid})
     elif not answer:
         return _not_confirmed()
-    if len(chosen) > DELETE_QUERY_IDS:
-        # Only "all" gets here: a card with tick boxes holds under 100 rows,
-        # and a wider tree refuses any list above. A flag has no id list to
-        # overrun the URL.
+    if len(chosen) > DELETE_QUERY_IDS or (chosen and chosen == frozenset(offered)):
+        # "All" sends the flag, as the app does. A named list that holds a
+        # subtask of an archived project gets a 409 (ARC-2b), and "all" keeps
+        # that subtask. A flag has no id list to overrun the URL either: a card
+        # with tick boxes holds under 100 rows, and a wider tree refuses any
+        # list above.
         params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
     else:
         params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
@@ -1220,15 +1222,12 @@ async def bulk_update(
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
-    # Task 3634: an address to ADD that the people directory does not know is
-    # named on the card, as the create cards name it (H-162), so the member sees
-    # it before the Approve. The same one lookup as the other cards. A change
-    # with no address to add reads nothing.
-    # One fence round a comma list, the shape of the create cards
-    # (`_assignee_card_lines`), and each address once.
-    strangers = await _unknown_addresses(list(dict.fromkeys(body.get("assignees_add") or [])))
-    if strangers:
-        rest["not in the directory"] = data(", ".join(strangers))
+    # Task 3634 and 3636: an address to ADD that the people directory does not
+    # know, or whose person cannot open the task (not active, no login), is named
+    # on the card as the create cards name it (H-162), so the member sees it
+    # before the Approve. One lookup. A change with no address to add reads
+    # nothing. One fence round a comma list, and each address once.
+    rest.update(await _assignee_rows(list(dict.fromkeys(body.get("assignees_add") or []))))
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).

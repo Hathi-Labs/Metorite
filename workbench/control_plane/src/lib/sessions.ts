@@ -14,6 +14,7 @@ import { clearCachedLayouts, clearNudgeMarks } from "@/lib/shell/shellCache";
 import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
 import { clearComposerHeights } from "@/app/email/lib/composerSize";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
+import { foldFailedTurns } from "@/lib/chatRunFailed";
 
 export interface ChatSession {
   id: string;
@@ -1540,7 +1541,9 @@ export async function fetchMessagesFromDb(
     // Map Postgres `reasoning` field to localStorage `reasoningBlocks`.
     // Split on the block separator WITHOUT dropping empty segments so block
     // indices stay aligned with each tool's reasoningCutoff.
-    const mapped = remote.map((r) => ({
+    // AO-3b: a failed turn's saved marker draws as its card, last turn only.
+    // A window of older rows is never the tail, so its markers go.
+    const mapped = foldFailedTurns(remote.map((r) => ({
       ...r,
       reasoningBlocks: parseReasoning(r.reasoning),
       reasoning: undefined,
@@ -1564,7 +1567,7 @@ export async function fetchMessagesFromDb(
       runMemberEmail: r.runMemberEmail ?? undefined,
       redacted: r.redacted || undefined,
       redactedCaps: r.redactedCaps,
-    }));
+    })), !paginated);
     // Update localStorage cache with authoritative Postgres data — only on a
     // full (unpaginated) fetch.  A windowed/paginated fetch must not shrink or
     // clobber the cache.

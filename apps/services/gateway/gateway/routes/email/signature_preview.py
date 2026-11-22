@@ -28,6 +28,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 MAX_FIELDS_BYTES = 16384
 
 
+def fields_within_bound(value: dict[str, Any]) -> dict[str, Any]:
+    """``value`` when its JSON holds at most :data:`MAX_FIELDS_BYTES`.
+
+    Past the bound it raises ``ValueError`` with a sentence, so a body model
+    answers 422. The preview and the SG-3a writer (``signature_settings.py``)
+    use this one rule."""
+    size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    if size > MAX_FIELDS_BYTES:
+        raise ValueError(
+            f"The signature fields hold {size} bytes. The limit is {MAX_FIELDS_BYTES}.")
+    return value
+
+
 class SignaturePreviewRequest(BaseModel):
     """One layout and the fields to draw in it."""
 
@@ -39,11 +52,7 @@ class SignaturePreviewRequest(BaseModel):
     @field_validator("fields")
     @classmethod
     def _small(cls, value: dict[str, Any]) -> dict[str, Any]:
-        size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
-        if size > MAX_FIELDS_BYTES:
-            raise ValueError(
-                f"The signature fields hold {size} bytes. The limit is {MAX_FIELDS_BYTES}.")
-        return value
+        return fields_within_bound(value)
 
 
 @router.post("/signature/preview")
@@ -58,4 +67,9 @@ async def preview_signature(
     return {"layout": req.layout, "html": html, "text": text}
 
 
-__all__ = ["MAX_FIELDS_BYTES", "SignaturePreviewRequest", "preview_signature"]
+__all__ = [
+    "MAX_FIELDS_BYTES",
+    "SignaturePreviewRequest",
+    "fields_within_bound",
+    "preview_signature",
+]
