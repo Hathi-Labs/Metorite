@@ -85,6 +85,7 @@ const ERROR_TEXT: Record<string, string> = {
   invalid_grant: "The sign-in was revoked. Connect again.",
   auth_failed: "The account refused the sign-in.",
   unauthorized: "The account refused the sign-in.",
+  needs_signin: "This server asks for a sign-in. Connect it to start.",
   rate_limited: "The provider is slowing requests. It will retry.",
   unreachable: "The server did not answer.",
   timeout: "The server took too long to answer.",
@@ -285,6 +286,10 @@ export function actsAsLine(
 export function mcpConnect(row: Connection, canManage: boolean): "connect" | "reconnect" | null {
   if (!canManage || row.kind !== "mcp" || row.can_connect !== true || mcpName(row) === null) {
     return null;
+  }
+  // A row that the server asked to sign in has no consent yet: it offers Connect.
+  if (row.status === "needs_reconnect" && row.last_error === "needs_signin" && !row.acts_as) {
+    return "connect";
   }
   return row.acts_as || row.status === "needs_reconnect" ? "reconnect" : "connect";
 }
