@@ -134,6 +134,20 @@ SEARCH_KINDS = frozenset(
 )
 
 
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def strip_id_label(value: Any) -> str:
+    """*value* without the ``id=`` label that the list tools print (task 3882).
+
+    It trims space and quotes, cuts one leading ``id=`` (any case, space
+    allowed), and trims again. It changes nothing else.
+    """
+    text = str(value if value is not None else "").strip().strip("\"'`").strip()
+    text = _ID_LABEL.sub("", text, count=1)
+    return text.strip().strip("\"'`").strip()
+
+
 def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") -> str:
     """*value* without a known ``kind:`` prefix of the tool's own kind (HRD-2).
 
@@ -373,6 +387,16 @@ def _one_line(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+#: ARC-2b (spec ``one_projects_app.md`` 9b.6 rule 2). The 409 detail of a task
+#: write into an archived project. ONE source: the gateway raises it
+#: (``projects.core``), the chat's refusal text and the MCP edge match it.
+ARCHIVED_PROJECT_REFUSAL = "This project is archived. Restore it to change its work."
+ARCHIVED_PROJECT_NEXT = (
+    "Ask the member to restore the project first, or work in a live project. "
+    "Do not try the same write again."
+)
+
+
 def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
     """The text the model reads for *exc*, in the shape of the module doc.
 
@@ -405,8 +429,10 @@ def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
             f"Fix the value for {', '.join(fields)}, and call the tool once more. "
             "If it is refused again, tell the member what the gateway said."
         )
-    lines = [f"{REFUSED} {what}"]
     detail = getattr(exc, "detail", "") or ""
+    if status == 409 and detail == ARCHIVED_PROJECT_REFUSAL:
+        nxt = ARCHIVED_PROJECT_NEXT
+    lines = [f"{REFUSED} {what}"]
     if detail:
         lines.append(f"Gateway said: {data(detail)}")
     lines.append(f"Next: {nxt}")

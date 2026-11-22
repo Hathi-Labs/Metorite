@@ -7,6 +7,7 @@ import type { ConfiguredProvider } from "@/authPosture";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { forgetThisDevice } from "@/lib/push";
+import { clearOutbox } from "@/lib/chatOutbox";
 import { Input, Select } from "@/components/ui/Input";
 import { RESERVED_LABELS, SLUG_RE, suggestSlug } from "@/lib/subdomain";
 
@@ -121,6 +122,7 @@ export function alreadyMemberMessage(email: string | null, orgName: string | nul
  * names this account. It never throws and gives up after a few seconds.
  */
 function signOutForAnotherEmail(): void {
+  clearOutbox(); // HRD-17b
   void forgetThisDevice().then(() => signOut({ callbackUrl: "/signup" }));
 }
 

@@ -931,7 +931,9 @@ def check_restore_path(env: Env, box: bool) -> Check:
     if not backup_dir.is_dir():
         problems.append(f"{backup_dir} does not exist")
     else:
-        entries = list(backup_dir.iterdir())
+        # A `<stamp>-console` dir holds the Console dump only (H-170). It is
+        # not a night, so it must not set the age or the size of the newest one.
+        entries = [p for p in backup_dir.iterdir() if not p.name.endswith("-console")]
         if not entries:
             problems.append(f"{backup_dir} is empty — nothing has ever landed")
         else:

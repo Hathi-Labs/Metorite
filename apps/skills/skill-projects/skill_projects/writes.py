@@ -319,6 +319,20 @@ def _not_confirmed() -> str:
     return parked_line() or card_not_done_text()
 
 
+def _act_ran(when: bool = True) -> None:
+    """The act of this call's card really ran (task 3595, PARK-LINE):
+    ``acb_skills.ask_tools.act_ran``, when *when* is True. A tool calls it at
+    its success site only, after the write landed in full, so the park line
+    of the reply may name the act. With no platform package, it does nothing."""
+    if not when:
+        return
+    try:
+        from acb_skills.ask_tools import act_ran
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return
+    act_ran()
+
+
 def _drop_card_facts() -> None:
     """Forget the facts bound for a card that was refused (HRD-22b item 5)."""
     try:
@@ -428,9 +442,38 @@ async def _named(
         return row
 
 
-async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
-    """The one status row a spoken name means, or a refusal that lists them."""
-    return await _named(await _statuses_of(project_id), status, "status", "statuses")
+async def _lanes_of_task(project_id: str, task_id: str) -> list[dict[str, Any]]:
+    """The lanes a task can be in. The project read first, and the task's own
+    lanes read when the project is not visible (Task 3865).
+
+    A member who holds a task by assignment alone cannot see its project, so
+    ``/nodes/{id}/statuses`` answers 404. ``/my/tasks/{id}/lanes`` is behind
+    the task, and it returns the lanes with no counts and no names of the
+    project. Only a 404 falls back, and a refusal of the task read raises the
+    first refusal, so the member sees one answer.
+    """
+    try:
+        return await _statuses_of(project_id)
+    except GatewayRefusal as first:
+        if first.status != 404 or not str(task_id or "").strip():
+            raise
+        tid = uuid_of(str(task_id), "task_id")
+        try:
+            return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+        except GatewayRefusal:
+            raise first from None
+
+
+async def _resolve_status(
+    project_id: str, status: str, task_id: str = "",
+) -> dict[str, Any]:
+    """The one status row a spoken name means, or a refusal that lists them.
+
+    *task_id* names the task being changed. It lets an assignee who cannot see
+    the project resolve the name through the task's own lanes.
+    """
+    rows = await _lanes_of_task(project_id, task_id) if task_id else await _statuses_of(project_id)
+    return await _named(rows, status, "status", "statuses")
 
 
 #: H-236: the refusal of an agent assignee in a run that may not send. Such a
@@ -546,22 +589,80 @@ async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     )
 
 
-async def _unknown_addresses(who: list[str]) -> list[str]:
-    """The addresses among ``who`` that the people directory does not know.
+async def _names_known(addresses: list[str]) -> set[str]:
+    """The lower-case addresses of *addresses* that the people directory names.
+    One exact lookup (`/people/names`), not the picker: the picker matches by
+    substring and only among active people (S6 review)."""
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    return {str(k).lower() for k in (payload.get("names") or {})}
+
+
+async def _cannot_open(addresses: list[str]) -> list[str]:
+    """The addresses of *addresses* (known to the directory) whose person cannot
+    open a task given to them: not active, or no login (task 3636). One read of
+    ``/people/reach``, none for an empty list. A failed read raises, so no card
+    shows with a warning missing."""
+    if not addresses:
+        return []
+    reach = (await get("/projects/people/reach", {"emails": ",".join(addresses)})) or {}
+    listed = {str(a).lower() for a in reach.get("not_reachable") or []}
+    return [a for a in addresses if a.lower() in listed]
+
+
+async def _address_check(who: list[str]) -> tuple[list[str], list[str]]:
+    """The addresses among ``who`` that the people directory does not know
+    (strangers), and the known ones whose person cannot open a task given to
+    them (task 3636).
 
     An assignee is a bare string the route accepts whatever it is (D-PM-4),
     so an address passes through ``_resolve_assignee`` unchecked. The card
     names the ones the picker cannot find, so a typo is seen before it is
     signed (H-162). Agents are not addresses and are skipped.
+    ``/people/names`` answers the strangers, and ``/people/reach`` (only when
+    someone is known) answers the rest.
     """
     addresses = [a for a in who if "@" in a]
     if not addresses:
+        return [], []
+    known = await _names_known(addresses)
+    strangers = [a for a in addresses if a.lower() not in known]
+    return strangers, await _cannot_open([a for a in addresses if a.lower() in known])
+
+
+async def _unknown_addresses(who: list[str]) -> list[str]:
+    """The addresses among ``who`` that the people directory does not know
+    (H-162). The names read only: a card that asks for the strangers alone
+    does not pay for the reach read."""
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
         return []
-    # One exact lookup (`/people/names`), not the picker: the picker matches
-    # by substring and only among active people (S6 review).
-    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
-    known = {str(k).lower() for k in (payload.get("names") or {})}
+    known = await _names_known(addresses)
     return [a for a in addresses if a.lower() not in known]
+
+
+#: The card's key for a known person who cannot open the task, and the client
+#: label of it (``cardFields.ts``). One key and no reason: see
+#: ``people.core.not_reachable``.
+CANNOT_OPEN_KEY = "cannot open the task"
+
+
+def _reach_rows(cannot: list[str]) -> dict[str, str]:
+    """The card row for the known people who cannot open the task: one comma
+    list, each address once. Empty when nobody is listed."""
+    return {CANNOT_OPEN_KEY: data(", ".join(dict.fromkeys(cannot)))} if cannot else {}
+
+
+async def _assignee_rows(who: list[str]) -> dict[str, str]:
+    """All the warning rows of a card for the people in ``who``: the
+    strangers (``not in the directory``) and the known people who cannot open
+    the task (``cannot open the task``). Empty when every address is a person
+    who can. One names read, and one reach read when someone is known."""
+    strangers, cannot = await _address_check(who)
+    rows: dict[str, str] = {}
+    if strangers:
+        rows["not in the directory"] = data(", ".join(dict.fromkeys(strangers)))
+    rows.update(_reach_rows(cannot))
+    return rows
 
 
 def _split(csv: str) -> list[str]:
@@ -1226,12 +1327,15 @@ async def create_task(
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
     lines = [*_task_line(task, status_label), *level_note(edit.asked(priority), task),
-             *edit.lines()]
+             *edit.lines(status_label)]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
     receipt = repeating.receipt(task, lines, saved, failed, new.extra)
     if chat_files:
         receipt += await _attach_new_files(task, chat_files, str(new.payload.get("description") or ""))
+    # Task 3595: the task exists and each write after it landed. A create
+    # with chat files is not named: a file may not have landed.
+    _act_ran(when=not chat_files and failed is None and bool(task.get("id")))
     return receipt
 
 
@@ -1531,11 +1635,77 @@ class _CardEdit:
         flag on the card: the level of the call no longer holds."""
         return "" if {"important", "leveraged"} & set(self.changes) else priority
 
-    def lines(self) -> list[str]:
-        """The receipt's line of each stranger, in the words of the card line."""
-        if not self.strangers:
+    def lines(self, status_label: str = "") -> list[str]:
+        """The receipt lines of an edited card (EAC-1b), or ``[]`` for none.
+
+        With no change (a plain approve, a late approve, a no-change edit,
+        the card off), the receipt is the receipt of before. With changes,
+        the note of the written values comes first, then the line of each
+        stranger, in the words of the card line."""
+        if not self.changes:
             return []
-        return [f"  not in the directory: {', '.join(self.strangers)}"]
+        out = [_edit_note(self.changes, self.new, status_label or self.new.status_label)]
+        if self.strangers:
+            out.append(f"  not in the directory: {', '.join(self.strangers)}")
+        return out
+
+
+#: What the model reads after an edit card, ahead of the changed values (EAC-1b).
+#: It is our result text, so it holds in no tool description.
+_EDIT_NOTE_LEAD = (
+    "The member edited the card before they approved it. These are the approved "
+    "values. Treat them as final:"
+)
+
+
+#: The longest text of the member that the note shows, and the most people.
+_NOTE_ITEM_MAX = 120
+_NOTE_PEOPLE_MAX = 10
+
+
+def _note_item(text: str) -> str:
+    """One text of the member for the note: cut, then fenced by ``data()``."""
+    flat = " ".join(str(text).split())
+    if len(flat) > _NOTE_ITEM_MAX:
+        flat = flat[: _NOTE_ITEM_MAX - 1] + "…"
+    return data(flat)
+
+
+def _edit_note(changes: dict[str, Any], new: _NewTask, status_label: str) -> str:
+    """The receipt line of a changed edit card: the changed keys, each with
+    the value that the write sent (EAC-1b). No original value appears.
+
+    The text of the member (a lane, a person) goes through ``data()``. A
+    description is named and never quoted. A key that did not change is left
+    out. The order is the order of ``changed_values``."""
+    from acb_skills.task_card import TASK_EDIT_KEYS
+
+    payload = new.payload
+    parts: list[str] = []
+    for key in sorted(TASK_EDIT_KEYS):
+        if key not in changes:
+            continue
+        if key in ("due", "start"):
+            day = payload.get("due_at" if key == "due" else "start_date")
+            parts.append(f"{key} {day or 'none'}")
+        elif key == "status":
+            known = "status_id" in payload or new.parent or status_label not in ("", "the default")
+            lane = status_label if known else ""
+            parts.append(f"status {_note_item(lane) if lane else 'the default lane'}")
+        elif key == "assignees":
+            shown = ", ".join(_note_item(w) for w in new.who[:_NOTE_PEOPLE_MAX])
+            more = len(new.who) - _NOTE_PEOPLE_MAX
+            if more > 0:
+                shown += f" and {more} more"
+            parts.append("people " + (shown or "none"))
+        elif key == "important":
+            value = changes[key]
+            parts.append("important " + ("not judged" if value is None else "yes" if value else "no"))
+        elif key == "leveraged":
+            parts.append("leveraged " + ("yes" if changes[key] else "no"))
+        else:
+            parts.append("description (changed, read the task)")
+    return f"  {_EDIT_NOTE_LEAD} {' · '.join(parts)}."
 
 
 async def _card_edit(
@@ -1816,9 +1986,7 @@ async def _assignee_card_lines(who: list[str]) -> dict[str, Any]:
     if not who:
         return {}
     lines = {"assignees": ", ".join(who)}
-    strangers = await _unknown_addresses(who)
-    if strangers:
-        lines["not in the directory"] = ", ".join(strangers)
+    lines.update(await _assignee_rows(who))
     return lines
 
 
@@ -2232,7 +2400,9 @@ async def _plan_task_edit(
         before["description"] = (task.get("description") or "")[:200]
     lane: dict[str, Any] | None = None
     if status.strip():
-        lane = await _resolve_status(str(task.get("project_id")), status)
+        lane = await _resolve_status(
+            str(task.get("project_id")), status, str(task.get("id") or ""),
+        )
         payload["status_id"] = str(lane.get("id"))
     if due.strip():
         payload["due_at"] = due.strip()
@@ -4685,6 +4855,7 @@ async def create_project(
     ):
         return _not_confirmed()
     row = await post("/projects/nodes", payload)
+    _act_ran(when=bool(row.get("id")))  # Task 3595: the node exists, with its id.
     return (
         f"Created {which} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
     )
@@ -6930,6 +7101,7 @@ async def set_reminder(
     row = await post(REMINDERS, payload) or {}
     if row.get("already") is True:
         return _reminder_receipt("Reminder already set", row, _ALREADY_SET)
+    _act_ran(when=bool(row.get("id")))  # Task 3595: a new reminder, with its id.
     return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 

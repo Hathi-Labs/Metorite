@@ -152,6 +152,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # starts before the turn-kind answer. A restart can bill a prompt twice,
     # so only the operator writes it (ai_tier_routing.md §13.1).
     "AI_TURN_KIND_PARALLEL",
+    # Chat speed (task 3592): the orgs whose delegated runs ask no turn-kind
+    # question. It moves the tier that such a run pays for, so only the
+    # operator writes it (ai_tier_routing.md §4.3).
+    "AI_TURN_KIND_NOWAIT_ORGS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
@@ -165,6 +169,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # moves what the chat can do and spends model tokens, so only the owner
     # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
     "TOOL_SEARCH_ORGS",
+    # Task 3559: the folder where the touch-target e2e spec writes its report
+    # (workbench/control_plane/e2e/touch-targets.spec.ts). A test-only read of
+    # the test runner. No integration may write it.
+    "TOUCH_OUT",
     # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
@@ -236,6 +244,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the admin's text about each server to the context, so only the operator
     # writes it.
     "CONNECTED_SYSTEMS_ORGS",
+    # CSY-4: the orgs where a turn that names a connected server evicts a
+    # sticky mail pack. It moves the precedence of a mail rule, so only the
+    # owner writes it.
+    "MCP_MAIL_PRECEDENCE_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
@@ -342,6 +354,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
     # org. The view reads the agent runs of the org, so only the owner writes it.
     "AGENTS_VIEW_ORGS",
+    # WS-MCP SW-102: AGENT_MAP_ORGS opens the map read of the agent runs for
+    # an org. The map reads the runs of the org, so only the owner writes it.
+    "AGENT_MAP_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.
