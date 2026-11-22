@@ -285,12 +285,42 @@ def test_a_wrapper_no_shape_fits_is_refused_and_starts_nothing(
     assert tools["hand_written"]() == __import__("os").environ.get("HOME", "")
 
 
+def test_an_edited_docstring_does_not_hide_an_old_wrapper() -> None:
+    """The docstring is the tool description, so a person may edit it. The
+    signature and the alias import still mark the wrapper as generated."""
+    edited = OLD_A.replace(
+        '"""Run env_dump (probe). Pass CLI args as strings."""', '"""Dump the env names."""'
+    )
+    new, upgraded, refused = loader.upgrade_old_wrappers(HEAD + edited + TAIL)
+    assert upgraded == [("env_dump", "?")] and refused == []
+    assert "{**_os.environ" not in new
+
+
 def test_the_banner_alone_does_not_make_a_wrapper_generated() -> None:
-    """A person's function under the banner, without the generator's
-    docstring and alias import, is not a generated wrapper."""
-    own = OLD_A.replace('"""Run env_dump (probe). Pass CLI args as strings."""', '"""Mine."""')
+    """A person's function under the banner, without the alias import as its
+    first statement, is not a generated wrapper."""
+    own = OLD_A.replace(
+        "    import asyncio as _a, os as _os, subprocess as _s, sys as _sys\n",
+        "    import os as _os, subprocess as _s, sys as _sys\n    import asyncio as _a\n",
+    )
     text = HEAD + own + TAIL
     assert loader.upgrade_old_wrappers(text) == (text, [], [])
+
+
+def test_a_bom_file_is_upgraded_and_keeps_its_bom(
+    tmp_path: Path, git_calls: list[list[str]], secret: None
+) -> None:
+    """The importer strips a UTF-8 BOM, so the gate must too."""
+    agent_dir = _clone(tmp_path, OLD_A)
+    path = agent_dir / "agents.py"
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    # The gate alone, before any sync: the child still gets child_env.
+    names = asyncio.run(_load_tools(agent_dir, "t691e")["env_dump"]()).split()
+    assert SECRET not in names and "PATH" in names
+    loader._sync_new_skills(agent_dir, SimpleNamespace())
+    after = path.read_bytes()
+    assert after.startswith(b"\xef\xbb\xbf")
+    assert b"{**_os.environ" not in after and b"_child_env(extra=" in after
 
 
 # ── the fence (R7) ──────────────────────────────────────────────────────────
@@ -307,7 +337,7 @@ def test_the_template_passes_only_the_one_env(tmp_path: Path, git_calls: list[li
     import ast
 
     wrappers = loader._generated_wrappers(ast.parse(text))
-    assert [fn.name for fn, _ in wrappers] == ["env_dump"]
+    assert [(fn.name, skill) for fn, skill, _ in wrappers] == [("env_dump", "probe")]
     assert loader._wrapper_is_safe(wrappers[0][0])
 
 
@@ -319,7 +349,7 @@ def test_no_agent_dir_in_the_repo_holds_a_whole_env_wrapper() -> None:
     bad: list[str] = []
     for path in files:
         text = path.read_text(encoding="utf-8")
-        for fn, _skill in loader._generated_wrappers(ast.parse(text)):
+        for fn, _skill, _first in loader._generated_wrappers(ast.parse(text)):
             segment = ast.get_source_segment(text, fn) or ""
             if WHOLE_ENV.search(segment) or not loader._wrapper_is_safe(fn):
                 bad.append(f"{path.relative_to(REPO).as_posix()}:{fn.lineno} {fn.name}")

@@ -1084,11 +1084,13 @@ def _sync_source_to_cache(source_dir: Path, cache_dir: Path) -> None:
 # script the whole gateway env. A clone that holds such a wrapper keeps it
 # until it changes. So each load upgrades it, and the import refuses one that
 # it cannot upgrade. A wrapper is "generated" when its own structure says so:
-# the signature ``async def <fn>(*args: str) -> str:``, the generator
-# docstring and the ``import asyncio as _a`` alias line. The banner comment is
-# no proof, because a person can add code under it.
+# the signature ``async def <fn>(*args: str) -> str:`` and, as the first
+# statement after the docstring, the ``import asyncio as _a`` alias line. The
+# docstring gives the skill name only, because it is the tool description and
+# a person may edit it. The banner comment is no proof, because a person can
+# add code under it.
 
-#: The docstring that every version of the template writes.
+#: The docstring that every version of the template writes. It names the skill.
 _WRAPPER_DOC = re.compile(r"\ARun (?P<stem>.+) \((?P<skill>.+)\)\. Pass CLI args as strings\.\Z")
 #: Shape A (b97ed0c5a to 980c04a49^): ``_env = {**_os.environ, <extra>}``.
 _OLD_ENV_LINE = re.compile(
@@ -1104,6 +1106,8 @@ _OLD_RUN_LINE = re.compile(
 )
 _CHILD_ENV_IMPORT = "from acb_common.child_env import child_env as _child_env"
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
+#: Every version of the template writes this alias line.
+_WRAPPER_IMPORT = "import asyncio as _a"
 
 #: What a refused tool says when the model calls it.
 WRAPPER_REFUSED_TEXT = (
@@ -1113,9 +1117,13 @@ WRAPPER_REFUSED_TEXT = (
 )
 
 
-def _generated_wrappers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, str]]:
-    """Return each generated wrapper at the top level of *tree*, with its skill."""
-    found: list[tuple[ast.AsyncFunctionDef, str]] = []
+def _generated_wrappers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, str, ast.stmt]]:
+    """Return each generated wrapper at the top level of *tree*.
+
+    Each item is ``(function, skill, first statement after the docstring)``.
+    The skill is ``"?"`` when a person edited the docstring.
+    """
+    found: list[tuple[ast.AsyncFunctionDef, str, ast.stmt]] = []
     for node in getattr(tree, "body", []):
         if not isinstance(node, ast.AsyncFunctionDef):
             continue
@@ -1124,17 +1132,20 @@ def _generated_wrappers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, str]]
             args.args or args.posonlyargs or args.kwonlyargs or args.kwarg
             or args.vararg is None or args.vararg.arg != "args"
             or not isinstance(node.returns, ast.Name) or node.returns.id != "str"
-            or len(node.body) < 2
         ):
             continue
-        match = _WRAPPER_DOC.match(ast.get_docstring(node, clean=False) or "")
-        first = node.body[1]
-        if match is None or not (
+        doc = ast.get_docstring(node, clean=False)
+        body = node.body[1:] if doc is not None else node.body
+        if not body:
+            continue
+        first = body[0]
+        if not (
             isinstance(first, ast.Import)
             and any(a.name == "asyncio" and a.asname == "_a" for a in first.names)
         ):
             continue
-        found.append((node, match.group("skill")))
+        match = _WRAPPER_DOC.match(doc or "")
+        found.append((node, match.group("skill") if match else "?", first))
     return found
 
 
@@ -1162,9 +1173,9 @@ def _wrapper_is_safe(fn: ast.AsyncFunctionDef) -> bool:
     """
     env_kwargs = 0
     for node in ast.walk(fn):
-        if isinstance(node, ast.Name) and node.id in {"environ", "os", "subprocess"}:
+        if isinstance(node, ast.Name) and node.id in {"environ", "environb", "subprocess"}:
             return False
-        if isinstance(node, ast.Attribute) and node.attr in {"environ", "system", "popen"}:
+        if isinstance(node, ast.Attribute) and node.attr in {"environ", "environb", "system", "popen"}:
             return False
         if isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -1221,9 +1232,13 @@ def _upgrade_segment(segment: str) -> str | None:
     return None
 
 
-def _refused_segment(segment: str, fn: ast.AsyncFunctionDef, body_start: int) -> str:
-    """Keep the def line and the docstring of *fn*, and make its body raise."""
-    indent = segment[body_start: body_start + fn.body[1].col_offset]
+def _refused_segment(segment: str, first: ast.stmt, body_start: int) -> str:
+    """Keep the def line and the docstring, and make the body raise.
+
+    *first* is the first statement after the docstring. It starts at
+    *body_start* in *segment*.
+    """
+    indent = segment[body_start: body_start + first.col_offset]
     nl = _LINE_BREAK.search(segment)
     newline = nl.group(0) if nl else "\n"
     return segment[:body_start] + f"{indent}raise RuntimeError({WRAPPER_REFUSED_TEXT!r}){newline}"
@@ -1240,6 +1255,8 @@ def upgrade_old_wrappers(
     ``raise``, for the in-memory import only. Hand-written code and each byte
     outside a changed wrapper stay the same.
     """
+    if _WRAPPER_IMPORT not in text:
+        return text, [], []  # no generated wrapper: parse nothing
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -1248,7 +1265,7 @@ def upgrade_old_wrappers(
     upgraded: list[tuple[str, str]] = []
     refused: list[tuple[str, str]] = []
     edits: list[tuple[int, int, str]] = []
-    for fn, skill in _generated_wrappers(tree):
+    for fn, skill, first in _generated_wrappers(tree):
         if _wrapper_is_safe(fn):
             continue
         end_line = fn.end_lineno or fn.lineno
@@ -1261,14 +1278,15 @@ def upgrade_old_wrappers(
                 new_fns = _generated_wrappers(ast.parse(new))
             except SyntaxError:
                 new_fns = []
-            if len(new_fns) == 1 and new_fns[0][0].name == fn.name and _wrapper_is_safe(new_fns[0][0]):
+            if (len(new_fns) == 1 and new_fns[0][0].name == fn.name
+                    and _wrapper_is_safe(new_fns[0][0])):
                 edits.append((begin, end, new))
                 upgraded.append((fn.name, skill))
                 continue
         refused.append((fn.name, skill))
         if refuse:
-            body_start = starts[fn.body[1].lineno - 1] - begin
-            edits.append((begin, end, _refused_segment(segment, fn, body_start)))
+            body_start = starts[first.lineno - 1] - begin
+            edits.append((begin, end, _refused_segment(segment, first, body_start)))
     for begin, end, new in sorted(edits, reverse=True):
         text = text[:begin] + new + text[end:]
     return text, upgraded, refused
@@ -1296,15 +1314,18 @@ def _upgrade_agents_file(agent_dir: Path) -> bool:
     ``LoadedAgent.build_agents`` refuses it at the import.
     """
     agents_file = agent_dir / "agents.py"
+    bom = b"\xef\xbb\xbf"
     try:
-        text = agents_file.read_bytes().decode("utf-8")
+        raw = agents_file.read_bytes()
+        head = bom if raw.startswith(bom) else b""
+        text = raw[len(head):].decode("utf-8")
     except (OSError, UnicodeDecodeError):
-        return False
+        return False  # the gate in build_agents still refuses it
     new_text, upgraded, refused = upgrade_old_wrappers(text)
     _log_wrappers(agent_dir.name, upgraded, refused, where="clone")
     if new_text == text:
         return False
-    agents_file.write_bytes(new_text.encode("utf-8"))
+    agents_file.write_bytes(head + new_text.encode("utf-8"))
     return True
 
 
@@ -1319,8 +1340,10 @@ def _safe_agents_source(agent_name: str, agents_file: Path) -> str | None:
     a failed commit restores the old file.
     """
     try:
-        text = agents_file.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
+        # The importer's own decode: a BOM and a coding line give the same
+        # text here as in the import.
+        text = importlib.util.decode_source(agents_file.read_bytes())
+    except (OSError, SyntaxError, UnicodeDecodeError, LookupError):
         return None  # the import reads the same bytes and fails on its own
     new_text, upgraded, refused = upgrade_old_wrappers(text, refuse=True)
     if new_text == text:
