@@ -1765,9 +1765,10 @@ def redact_server_text(text: Any, *, held: Any = (), limit: int = ERROR_TEXT_MAX
     1. ``git_credentials.redact``: each value of *held* as it is (the
        header values and the URL key of :func:`_held_values`).
     2. The cut to :data:`_ERROR_SCAN_MAX` (:func:`_scan_window`).
-    3. :func:`_mask_secrets`, the mask of the card: a header or a
-       ``key=value`` pair with a secret name, a PEM key, the password of a
-       URL, and the key shapes of ``acb_common.secret_shapes``.
+    3. :func:`_mask_secrets`, the mask of the card, with the wider pair
+       :data:`_SERVER_KEY_VALUE`: a header or a ``key=value`` pair with a
+       secret name, a PEM key, the password of a URL, and the key shapes of
+       ``acb_common.secret_shapes``. The card itself keeps its own pair.
     4. ``acb_common._log.BOX_TOKEN_RE``: a box token.
     5. ``tool_refusals.scrub_text``: each URL, bearer, key shape, email
        address and server path. It makes one line, and the cut to *limit*
@@ -1779,7 +1780,7 @@ def redact_server_text(text: Any, *, held: Any = (), limit: int = ERROR_TEXT_MAX
     out = str(text or "")[:_HELD_SCAN_MAX]
     out = redact(out, sorted({str(h) for h in held if h}, key=len, reverse=True))
     out = _scan_window(out)
-    out = _mask_secrets(out)
+    out = _mask_secrets(out, pairs=_SERVER_KEY_VALUE)
     out = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, out)
     return scrub_text(out, limit=limit)
 
@@ -1900,12 +1901,20 @@ _PEM_KEY = re.compile(
 #: The password in the user-info of a URL or a DSN: ``scheme://user:PASS@``.
 _URL_PASSWORD = re.compile(r"(?P<head>[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:)[^\s@/]+(?=@)")
 #: A ``key=value`` or ``key: value`` pair. The value is hidden only when the
-#: key is a secret name (``Password=...``, ``api_key=...``). The key may stand
-#: in double or single quotes (``'authorization': ...``). Task 3896: a value
-#: may start with one scheme word before a token of 8 characters or more, as
-#: in a header (``Authorization: Zoho-oauthtoken 1000.x.y``), so the token
-#: goes too. Each repeat of the scheme word is bounded.
+#: key is a secret name (``Password=...``, ``api_key=...``).
 _KEY_VALUE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])(?P<key>[A-Za-z][A-Za-z0-9_.\-]*)(?P<sep>\"?\s*[=:]\s*)"
+    r"(?P<value>(?:(?:bearer|basic|token)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s;&,\"']+))",
+    re.IGNORECASE,
+)
+#: The same pair, wider, for the words of a server only (task 3896,
+#: :func:`redact_server_text`). The card keeps :data:`_KEY_VALUE`, so it shows
+#: as much of a call as before. The key may stand in single quotes
+#: (``'authorization': ...``). A value may start with one scheme word before a
+#: token of 8 characters or more, as in a header
+#: (``Authorization: Zoho-oauthtoken 1000.x.y``), so the token goes too. Each
+#: repeat of the scheme word is bounded.
+_SERVER_KEY_VALUE = re.compile(
     r"(?<![A-Za-z0-9_.\-])(?P<key>[A-Za-z][A-Za-z0-9_.\-]*)(?P<sep>[\"']?\s*[=:]\s*)"
     r"(?P<value>(?:(?:bearer|basic|token)\s+"
     r"|[A-Za-z][A-Za-z0-9._\-]{0,40}[ \t]{1,8}(?=[^\s;&,\"']{8}))?"
@@ -1964,13 +1973,15 @@ def _key_value(match: re.Match[str]) -> str:
     return match.group("key") + match.group("sep") + REDACTED
 
 
-def _mask_secrets(text: str) -> str:
+def _mask_secrets(text: str, *, pairs: re.Pattern[str] = _KEY_VALUE) -> str:
     """*text* with each credential INSIDE it replaced by :data:`REDACTED`.
 
-    The rest of the value stays, so a member still reads the call."""
+    The rest of the value stays, so a member still reads the call. The card
+    uses the default *pairs*. :func:`redact_server_text` passes
+    :data:`_SERVER_KEY_VALUE` (task 3896)."""
     text = _PEM_KEY.sub(REDACTED, text)
     text = _URL_PASSWORD.sub(lambda m: m.group("head") + REDACTED, text)
-    text = _KEY_VALUE.sub(_key_value, text)
+    text = pairs.sub(_key_value, text)
     for pattern in _KEY_SHAPES:
         text = pattern.sub(REDACTED, text)
     return text

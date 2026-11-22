@@ -277,6 +277,15 @@ def test_a_header_value_that_the_run_does_not_hold_is_removed(form: str) -> None
     assert ZOHO_TOKEN not in text and ZOHO_TOKEN[:12] not in text, text
 
 
+def test_the_card_mask_does_not_change() -> None:
+    """The wider pair is for the words of a server only. The card of a call
+    still shows the word after a scheme word, as before task 3896."""
+    note = "password: hunter2 transferAllFunds"
+    assert _maf_mcp._mask_secrets(note) == "password: [redacted] transferAllFunds"
+    assert _maf_mcp.redact_arguments({"note": note}) == {
+        "note": "password: [redacted] transferAllFunds"}
+
+
 def test_the_redaction_is_bounded_on_hostile_text() -> None:
     """The server writes the text, and the redaction runs on the event loop.
     Some patterns of the scrub cost the square of the length, so the scan
