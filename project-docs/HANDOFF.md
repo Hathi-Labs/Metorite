@@ -136,6 +136,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10.
 - **Added:** 2026-11-07 · H-240, branch `h240-mt-526d36b7`
 
+### H-450 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
+- **Metorite:** #1843. The task holds the slice record. No own task yet, so the full entry is here.
+- **Why:** Slice 2 made one reader of the internal token. Three gaps stay:
+  - The deploy does not copy `GATEWAY_INTERNAL_TOKEN` into `workbench/operator_console/.env.local`. This needs the `deploy-write` grant.
+  - `scripts/setup_secrets.sh` line 65 appends the `EXECUTIVE_EMAILS` comment again on each run.
+  - `env_value` in `setup_secrets.sh` does not handle two token lines, a quoted value or a CRLF line end.
+- **Do this:** Under a `deploy-write` grant, copy the token into the operator console `.env.local` in `scripts/vps_apply.sh`. Make the comment append run once. Make `env_value` take the last line, strip quotes and strip a CR. Fence each change in `tests/unit/test_setup_secrets.py`.
+- **Check:** run each command. Each item has its own pass condition.
+  1. Operator console copy: `grep -c 'operator_console/.env.local' scripts/vps_apply.sh`. The output `0` means OPEN. A count of 1 or more, with a copy step on those lines, means closed.
+  2. `EXECUTIVE_EMAILS`: `grep -cF 'grep -q "^EXECUTIVE_EMAILS=" .env || echo "# EXECUTIVE_EMAILS=' scripts/setup_secrets.sh`. The output `1` means OPEN, because the guard never matches the comment line that it writes. The output `0` means closed.
+  3. `env_value`: `grep -A2 '^env_value()' scripts/setup_secrets.sh | grep -c 'head -1 | cut -d= -f2-$'`. The output `1` means OPEN: the function takes the first line, and keeps quotes and a CR. The output `0` means closed.
+  - When all three are closed, delete this entry.
+- **Added:** 2026-11-07 · WS-24c slice 2, branch `ws24c2-mt-de46e5c8`
+
 ### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
 - **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
 - **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.
@@ -441,12 +455,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-06 · WS-46 P6 review round 2
 
-### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
-- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
-  → no hit means open.
-- **Added:** 2026-10-06 · the EM-T11 session
-
 ### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
 - **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
@@ -518,29 +526,11 @@ line — never reclaim a number by deleting the other entry.
   document of an assigned task's run a home (rule 8). So this id now holds
   the count.
 
-### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
-- **Metorite:** #689. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these three searches.
-  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
-     A hit means step 1 is open.
-  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
-     A hit means step 2 is open.
-  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
-     No hit means step 3 is open, unless the run doors insert the row
-     before the run (the second form of Do 3).
-- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Added:** 2026-10-03 · PR #584 fix round 1
-
-### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
-- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open.
-- **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
 - **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
@@ -668,7 +658,7 @@ line — never reclaim a number by deleting the other entry.
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
-  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -cx customer_console.dump`.
   A zero means no backup on the box holds the Console database, and this is
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
@@ -1406,20 +1396,10 @@ line — never reclaim a number by deleting the other entry.
   not merged.
 - **Part 5 (task 1719, H-201d):** the expand half of the `agent_avatars` key.
   Migration 354 adds the unique index on `(organization_id, agent_name)`, and
-  `_save_avatar` names it. Built 2026-11-07 on branch `h201d-mt-66c5a664`,
-  not merged. H-443 carries the contract half.
+  `_save_avatar` names it. Merged 2026-11-07. Migration 474 drops the old key
+  (the contract, built 2026-11-22). It merges only after the production ledger
+  holds 354 from an earlier release.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
-
-### H-443 · H-201d contract: drop the old agent_avatars primary key one release after the expand migration ships · [AGENT]
-- **Metorite:** #1719. Do it only when the migration ledger of production
-  holds `354_agent_avatars_key_per_tenant.sql` from an EARLIER release. In the same
-  release as 354, the old gateway's `ON CONFLICT (agent_name)` fails on each
-  save until the restart. The contract file drops `agent_avatars_pkey` and
-  flips the two cross-org pins in `test_agent_avatars_key_per_tenant_r8.py`
-  and `test_h201_readers_under_rls.py`.
-- **Check:** `grep -lnE "DROP CONSTRAINT (IF EXISTS )?agent_avatars_pkey" infra/postgres/*.sql`
-  → no hit means the contract is still open.
-- **Added:** 2026-11-07 · the H-201d expand session (task 1719)
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
@@ -1480,12 +1460,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `grep -n "_remove_container(handle.container_id, handle.start_id)" apps/services/orchestrator/orchestrator/sandbox_broker.py`
   → a hit, and no retry of the start-label removal, means the entry is still open.
 - **Added:** 2026-10-03 · WS-43c, the sandbox broker
-
-### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
-- **Metorite:** #808. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
-  → a hit means a personal agent still keeps its host shell tools.
-- **Added:** 2026-10-03 · the D85 interim block
 
 ### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
 - **Metorite:** #615. The task holds the full entry (moved 2026-10-28, D118).

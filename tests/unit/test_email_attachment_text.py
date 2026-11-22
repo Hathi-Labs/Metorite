@@ -266,9 +266,9 @@ def _spy_parse(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     real = tools.parse_bounded
 
-    async def _spy(data: bytes, suffix: str) -> Any:
+    async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
         calls.append(suffix)
-        return await real(data, suffix)
+        return await real(data, suffix, **kw)
 
     monkeypatch.setattr(m, "parse_bounded", _spy)
     return calls
@@ -601,6 +601,83 @@ class TestTheTextRoute:
         assert h.provider_calls == 1
         assert list(h.text_redis.store) == [f"cc:{ORG_A}:email-att-text:{ATT_ID}"]
 
+    async def test_a_cached_read_answers_while_another_read_holds_the_hold(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865 review P2: the cache answers before the hold, so a cached
+        file never waits behind a slow read of the same member."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        first = await _text()  # fills the cache
+        assert first.text == "words"
+        m._READING.add((ORG_A, OWNER))  # another read holds the member's hold
+        try:
+            got = await asyncio.wait_for(_text(), 2)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert got.text == "words" and got.kind == first.kind
+        assert not m._WAITERS
+        assert h.provider_calls == 1
+
+    async def test_a_woken_then_cancelled_waiter_passes_the_turn_on(self) -> None:
+        """Task 3865 review P3: the reviewer's lost wake-up. A waiter is woken
+        by ``release``, and then its task is cancelled before it takes the
+        hold. The next waiter must get the free hold."""
+        user = SimpleNamespace(organization_id=ORG_A, email=OWNER)
+        holder, first, second = (m._ReadHold(user) for _ in range(3))
+        assert holder.take()
+        t1 = asyncio.create_task(first.take_waiting(5))
+        await asyncio.sleep(0)
+        t2 = asyncio.create_task(second.take_waiting(5))
+        await asyncio.sleep(0)
+        holder.release()  # wakes t1's future
+        t1.cancel()  # t1 is cancelled before it runs again
+        await asyncio.gather(t1, return_exceptions=True)
+        assert await asyncio.wait_for(t2, 2) is True
+        second.release()
+        assert not m._READING and not m._WAITERS
+
+    async def test_a_second_read_of_one_member_waits_and_succeeds(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865. The model reads 3 files of one mail at once. The second
+        read waits for the first, and then parses. Nothing answers busy."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        gate = asyncio.Event()
+        parses: list[str] = []
+        real = tools.parse_bounded
+
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
+            # H-253 passes ``on_worker_done``. A fake that refuses the keyword
+            # raises before it records the call, and the wait below spins.
+            parses.append(suffix)
+            if len(parses) == 1:
+                await gate.wait()
+            return await real(data, suffix, **kw)
+
+        monkeypatch.setattr(m, "parse_bounded", _slow)
+        first = asyncio.create_task(_text())
+        while not parses:
+            await asyncio.sleep(0.001)
+        second = asyncio.create_task(_text())
+        await asyncio.sleep(0.05)
+        assert not second.done(), "the second read did not wait"
+        gate.set()
+        assert (await asyncio.wait_for(first, 5)).text == "words"
+        assert (await asyncio.wait_for(second, 5)).text == "words"
+        assert not m._READING and not m._WAITERS
+        assert h.provider_calls >= 1
+
+    async def test_a_wait_past_the_limit_answers_busy(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
+        m._READING.add((ORG_A, OWNER))
+        try:
+            got = await asyncio.wait_for(_text(), 5)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert (got.kind, got.reason) == ("unreadable", m._BUSY_REASON)
+        assert not m._WAITERS
+
     async def test_one_member_runs_one_read_at_a_time(self, monkeypatch) -> None:
         """Review round 1, P2. A second read of the same member, while the
         first parses, answers busy and parses nothing. Another member reads."""
@@ -610,10 +687,10 @@ class TestTheTextRoute:
         parses: list[str] = []
         real = tools.parse_bounded
 
-        async def _slow(data: bytes, suffix: str) -> Any:
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
             parses.append(suffix)
             await gate.wait()
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         async def _until(ready: Any) -> None:
             """A bound on each wait, so a broken guard fails and never hangs."""
@@ -623,6 +700,7 @@ class TestTheTextRoute:
                 await asyncio.sleep(0.001)
 
         monkeypatch.setattr(m, "parse_bounded", _slow)
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)  # Task 3865: the wait ends
         first = asyncio.create_task(_text())
         try:
             await _until(lambda: parses)
@@ -711,9 +789,9 @@ class TestTheParseIsBounded:
         seen: list[bool] = []
         real = tools.parse_bounded
 
-        async def _spy(data: bytes, suffix: str) -> Any:
+        async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
             seen.append(h.session_open)
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         monkeypatch.setattr(m, "parse_bounded", _spy)
         got = await _text()
@@ -732,6 +810,11 @@ class TestTheParseIsBounded:
 
         monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
         monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
         monkeypatch.setattr(tools, "extract_text", _stuck)
         _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7")
         try:
@@ -750,6 +833,84 @@ class TestTheParseIsBounded:
         while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
             time.sleep(0.05)
         assert _free_slots() == tools.MAX_PARSES
+
+
+class TestTheHoldFollowsTheWorker:
+    """H-253, EM-T11 slot gap. The hold of a member ends with the worker that
+    holds the parse slot, and not with the request."""
+
+    @staticmethod
+    def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
+
+    @staticmethod
+    def _wait(ready: Any) -> None:
+        end = time.monotonic() + 30
+        while not ready() and time.monotonic() < end:
+            time.sleep(0.02)
+        assert ready(), "the wait timed out"
+
+    async def test_a_stuck_worker_keeps_the_hold_until_it_ends(self, monkeypatch) -> None:
+        self._fast(monkeypatch)
+        go_on = threading.Event()
+        calls: list[int] = []
+
+        def _extract(_data: bytes, _suffix: str) -> Any:
+            calls.append(1)
+            if len(calls) == 1:
+                go_on.wait(20)
+            raise at.AttachmentRefused("late")
+
+        monkeypatch.setattr(tools, "extract_text", _extract)
+        _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7",
+                 owners=frozenset({OWNER, SECOND}))
+        try:
+            first = await _text()
+            assert "took too long" in (first.reason or "")
+            assert _free_slots() == tools.MAX_PARSES - 1
+            again = await _text()
+            assert (again.kind, again.reason) == ("unreadable", m._BUSY_REASON)
+            assert len(calls) == 1, "the second read of one member parsed"
+            # Member B still gets the free slot.
+            other = await _text(email=SECOND)
+            assert other.reason == "late"
+            assert len(calls) == 2
+        finally:
+            go_on.set()
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+        third = await _text()
+        assert third.reason == "late", "the hold stayed after the worker ended"
+        assert not m._READING
+        await asyncio.to_thread(self._wait, lambda: _free_slots() == tools.MAX_PARSES)
+
+    async def test_the_hold_goes_when_the_worker_raises(self, monkeypatch) -> None:
+        def _boom(_data: bytes, _suffix: str) -> Any:
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr(tools, "extract_text", _boom)
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        got = await _text()
+        assert got.kind == "unreadable"
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+
+    async def test_the_hold_goes_when_no_slot_is_free(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        taken = 0
+        while tools._SLOTS.acquire(blocking=False):
+            taken += 1
+        try:
+            got = await _text()
+            assert "Another file is being read" in (got.reason or "")
+            assert not m._READING, "the hold leaked when no slot was free"
+        finally:
+            for _ in range(taken):
+                tools._SLOTS.release()
 
 
 # ── 3. The download route is unchanged ──────────────────────────────────────

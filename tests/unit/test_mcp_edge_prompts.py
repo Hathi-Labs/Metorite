@@ -628,6 +628,36 @@ class TestTheImageRule:
         assert "get_attachment" in tools.TOOLS
 
 
+class TestTheMapTip:
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12, R7). The
+    tip that sends an orchestrator to ``get_agent_map`` is HELD BACK. The
+    edge does not read ``AGENT_MAP_ORGS``, so it cannot show the tip only
+    where the map works. No prompt holds it, with the map flag off or on, and
+    with the runs flag off or on. The slice that flips the flag adds it, and
+    changes this test. Mutation: add ``MAP_RULE`` to the work step in
+    ``prompts.py``, and ``test_no_prompt_holds_the_tip`` fails."""
+
+    def test_the_tip_names_the_map_tool(self):
+        assert "Before you dispatch a sub-agent or another session" in prompts.MAP_RULE
+        assert "call get_agent_map" in prompts.MAP_RULE
+        assert "get_agent_map" in tools.TOOLS
+
+    @pytest.mark.parametrize("map_orgs", ["", "*"])
+    @pytest.mark.parametrize("runs", [True, False])
+    async def test_no_prompt_holds_the_tip(self, armed, monkeypatch, runs, map_orgs):
+        monkeypatch.setattr(get_settings(), "agent_map_orgs", map_orgs)
+        if not runs:
+            _runs_off(monkeypatch)
+        texts = [await _prompt_text({"task": TASK})]
+        if runs:
+            texts.append(await _prompt_text())  # the queued form of my_work
+        texts.append(await _instructions())
+        for text in texts:
+            flat = " ".join(text.split())
+            assert prompts.MAP_RULE.strip() not in flat
+            assert "get_agent_map" not in flat
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # P11, P12: the checks of §9.6 and the other methods
 # ═══════════════════════════════════════════════════════════════════════════
@@ -682,6 +712,17 @@ class TestTheChecks:
             assert "pass it as external_link" in prompts._task_text("42", runs=runs)
         assert "pass it as external_link" in prompts._queued_text()
 
+    def test_sw105_the_claim_step_asks_for_the_label_the_machine_and_the_model(self):
+        """SW-105. The claim step names the four inputs that the map reads, and
+        the three kinds of machine. Each name is an input of claim_task."""
+        inputs = tools.CLAIM_TASK.input_schema["properties"]
+        for text in (prompts._task_text("42", runs=True),
+                     prompts._task_text("42", runs=False), prompts._queued_text()):
+            for name in ("agent_label", "host", "host_kind", "model"):
+                assert name in text and name in inputs, name
+            assert "computer, server or cloud" in text
+            assert "Pass a value only when you know it" in text
+
     def test_the_prompt_never_names_an_unknown_tool(self):
         """Each tool name in the message is a tool of the edge."""
         for runs in (True, False):
@@ -692,6 +733,10 @@ class TestTheChecks:
                                                  "untrusted_text", "held_by", "run_id",
                                                  "agent_run_id", "task_held",
                                                  "external_link",
+                                                 # SW-105: inputs of claim_task.
+                                                 "agent_label", "host_kind",
+                                                 # SW-108: an input of claim_task.
+                                                 "dispatched_by",
                                                  # Task 1045a: an input of
                                                  # post_agent_activity.
                                                  "until_minutes",
@@ -830,6 +875,29 @@ class TestTheProtocol:
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)
         assert "my_work" not in text and "409" not in text
+
+
+class TestTheDispatchRule:
+    """SW-108. The work_on_task steps tell a lane to pass the run id of its
+    dispatcher, and tell an orchestrator to hold a run and name it. With the
+    runs flag off, the step is absent, because a run id needs a run."""
+
+    async def test_the_prompt_gives_the_dispatch_step_with_the_runs_flag(
+            self, armed, monkeypatch):
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert prompts.DISPATCH_RULE in flat
+        for needle in ("dispatched_by on claim_task", "header of your notes",
+                       "Hold an open run on a coordination task of your own",
+                       "Put that run id in each hand-off", "waiting line with on agent"):
+            assert needle in flat, needle
+        _runs_off(monkeypatch)
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert "dispatched_by" not in flat
+
+    def test_dispatched_by_is_an_input_of_claim_task_and_the_rule_holds_no_org_term(self):
+        assert "dispatched_by" in tools.CLAIM_TASK.input_schema["properties"]
+        for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+            assert term not in prompts.DISPATCH_RULE, term
 
 
 class TestTheWaitingRule:

@@ -22,7 +22,7 @@ before the client hears of it.
 3. :func:`member_features` says which features the member holds, and a path
    to a pane the member does not hold is refused. A pane that ``nav.ts`` marks
    ``adminOnly`` opens only for an admin of the org. The right is the one
-   admin check of the orchestrator (``guide_tools.member_is_admin``), read for
+   admin page right (``guide_tools.member_is_admin``), read for
    the VERIFIED run member and never from a tool argument.
 
 The member comes from the run binding, never from the tool's arguments.
@@ -167,6 +167,13 @@ def pane_of(path: str) -> Pane | None:
     return best
 
 
+#: A first segment that is no pane, and the pane that took its place. It adds
+#: no page to the allowlist: it only names the way on in the refusal.
+#: ``/tasks`` is a redirect into Projects (WS-64 OP-4), and ``nav.ts`` marks it
+#: ``preview``. Fence: ``test_show_in_app.py``.
+_MOVED = {"tasks": "/projects"}
+
+
 def chat_first_tools_enabled() -> bool:
     """True when ``CHAT_FIRST_TOOLS`` is on. Fails closed.
 
@@ -220,6 +227,11 @@ def refusal(path: str, features: frozenset[str] | None, admin: bool = False) -> 
         return "not a path inside this app"
     pane = pane_of(path)
     if pane is None:
+        moved = _MOVED.get((path_segments(urlsplit(path).path) or [""])[0])
+        if moved:
+            # Task 3865: the model asked for /tasks in production. It is a
+            # redirect into Projects, and a preview pane, so it is no pane.
+            return f"no page of this app at that path. Open {moved} instead."
         return "no page of this app at that path"
     if pane.admin and not (admin and features is not None):
         return f"Only an admin of your organization opens {pane.label or pane.href}."
