@@ -63,6 +63,8 @@ _ORG_B = "bbbbbbbb-0000-0000-0000-00000000000b"
 _KEY_A = "sk-test-org-a-0001"
 _KEY_B = "sk-test-org-b-0002"
 _PLATFORM = "sk-test-platform-0003"
+_DG_A, _DG_B = "dg-test-org-a-0004", "dg-test-org-b-0005"
+_AAI_A, _AAI_B = "aai-test-org-a-0006", "aai-test-org-b-0007"
 
 _MODEL = "deepseek/deepseek-chat"
 _ENV = "DEEPSEEK_API_KEY"
@@ -141,7 +143,12 @@ def store(monkeypatch: pytest.MonkeyPatch, clean_process) -> _TwoOrgStore:
     import acb_llm.key_store as key_store
 
     fake = _TwoOrgStore(
-        {(_ORG_A, "deepseek"): _KEY_A, (_ORG_B, "deepseek"): _KEY_B}, sole=_ORG_B,
+        {
+            (_ORG_A, "deepseek"): _KEY_A, (_ORG_B, "deepseek"): _KEY_B,
+            (_ORG_A, "deepgram"): _DG_A, (_ORG_B, "deepgram"): _DG_B,
+            (_ORG_A, "assemblyai"): _AAI_A, (_ORG_B, "assemblyai"): _AAI_B,
+        },
+        sole=_ORG_B,
     )
     monkeypatch.setattr(key_store, "_store", fake)
     return fake
@@ -287,6 +294,139 @@ class TestTheSaveDoor:
         assert (_ORG_B, "deepseek") in store.rows, "the save missed org B's store"
         await _complete_as(_ORG_A)
         assert _sent_key(calls[-1]) == _KEY_A
+
+
+# ── Every direct site, as org A and then as org B ───────────────────────────
+
+
+class _Captured(Exception):
+    """The fake litellm call raises this after it records its kwargs."""
+
+
+@pytest.fixture()
+def capture(monkeypatch: pytest.MonkeyPatch, store: _TwoOrgStore) -> list[dict[str, Any]]:
+    """Each litellm verb records its kwargs and raises. Two orgs exist."""
+    import acb_llm.client as client
+    import acb_llm.context as context
+    import acb_llm.routed as routed
+    import litellm
+
+    seen: list[dict[str, Any]] = []
+
+    async def fake(**kw: Any) -> Any:
+        seen.append(kw)
+        raise _Captured()
+
+    monkeypatch.setattr(routed, "routing_is_on", lambda: False)
+    monkeypatch.setattr(client, "acompletion", fake)
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    monkeypatch.setattr(litellm, "atranscription", fake)
+    monkeypatch.setattr(client, "_emit_usage", lambda *_a, **_k: None)
+    monkeypatch.setattr(context, "resolve_underlying_model", lambda m: m)
+    monkeypatch.setitem(client._TIER_MODEL, "tier1", _MODEL)
+    store.org_count = 2
+    return seen
+
+
+async def _site_complete_with_tools() -> None:
+    from acb_llm.client import LLMTier, complete_with_tools
+
+    tool = {"type": "function", "function": {
+        "name": "noop", "parameters": {"type": "object", "properties": {}}}}
+    await complete_with_tools(
+        tier=LLMTier.TIER_1, messages=[{"role": "user", "content": "hi"}], tools=[tool],
+    )
+
+
+async def _site_acompletion_with_fallback() -> None:
+    from acb_llm.context import acompletion_with_fallback
+
+    await acompletion_with_fallback(
+        model=_MODEL, messages=[{"role": "user", "content": "hi"}], max_tokens=50,
+    )
+
+
+async def _site_acompletion_stream_text() -> None:
+    from acb_llm.context import acompletion_stream_text
+
+    await acompletion_stream_text(
+        model=_MODEL, messages=[{"role": "user", "content": "hi"}], max_tokens=50,
+    )
+
+
+async def _site_litellm_stt() -> None:
+    from acb_stt.litellm_provider import LiteLLMSTT
+    from acb_stt.types import AudioInput, SttOptions
+
+    await LiteLLMSTT("deepgram/nova-3").transcribe(
+        AudioInput(data=b"\x00" * 16), SttOptions(model="deepgram/nova-3"),
+    )
+
+
+_SITES = {
+    "complete_with_tools": (_site_complete_with_tools, _KEY_A, _KEY_B),
+    "acompletion_with_fallback": (_site_acompletion_with_fallback, _KEY_A, _KEY_B),
+    "acompletion_stream_text": (_site_acompletion_stream_text, _KEY_A, _KEY_B),
+    "litellm_stt": (_site_litellm_stt, _DG_A, _DG_B),
+}
+
+
+async def _as(org: str, site: Any) -> None:
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(org)
+    try:
+        await site()
+    except Exception:  # the fake raises once it has the kwargs
+        pass
+    finally:
+        release_tenant(token)
+
+
+class TestEveryDirectSiteCarriesItsOwnKey:
+    """A then B in one process, at each direct site besides ``complete``."""
+
+    @pytest.mark.parametrize("name", sorted(_SITES))
+    async def test_the_site_sends_the_bound_org_key(self, name, capture) -> None:
+        site, key_a, key_b = _SITES[name]
+        await _as(_ORG_A, site)
+        await _as(_ORG_B, site)
+        await _as(_ORG_A, site)
+        assert [c.get("api_key") for c in capture] == [key_a, key_b, key_a], name
+
+    async def test_the_assemblyai_provider_resolves_the_bound_org_key(self, store) -> None:
+        from acb_common.db import bind_tenant, release_tenant
+        from acb_stt.assemblyai_provider import resolve_api_key
+
+        store.org_count = 2
+        got = []
+        for org in (_ORG_A, _ORG_B):
+            token = bind_tenant(org)
+            try:
+                got.append(await resolve_api_key())
+            finally:
+                release_tenant(token)
+        assert got == [_AAI_A, _AAI_B]
+
+    async def test_the_live_token_resolves_the_bound_org_keys(self, store) -> None:
+        from acb_common.db import bind_tenant, release_tenant
+        from gateway.routes.notes import live
+
+        store.org_count = 2
+        got = []
+        for org in (_ORG_A, _ORG_B):
+            token = bind_tenant(org)
+            try:
+                got.append(await live._stt_keys())
+            finally:
+                release_tenant(token)
+        assert got == [(_AAI_A, _DG_A), (_AAI_B, _DG_B)]
+
+    async def test_a_caller_api_key_of_none_is_not_doubled(self, store) -> None:
+        from acb_llm.client import call_credentials
+
+        assert await call_credentials(_MODEL, {"api_key": None}) == {}
+        assert await call_credentials(_MODEL, {"api_base": "http://local"}) == {}
 
 
 # ── The fence ───────────────────────────────────────────────────────────────
@@ -461,3 +601,109 @@ class TestNoProcessGlobalProviderKeyWrite:
         tree = ast.parse(source)
         assert _env_write_sites(tree) == {"configure_litellm": 1}
         assert _litellm_key_writes(tree) == [7]
+
+
+# ── Each litellm call names its own key ─────────────────────────────────────
+
+_VERB_TREES = ("apps", "packages")
+#: The Router passes ``call_kwargs["api_key"]`` itself (D58.1). It is the model.
+_VERB_EXEMPT = ("apps/services/customer_console/",)
+_LITELLM_VERBS = frozenset({
+    "acompletion", "completion", "atranscription", "transcription",
+    "aembedding", "embedding", "aspeech", "speech",
+    "aimage_generation", "image_generation",
+})
+#: A call is keyed when an enclosing function names one of these.
+_KEY_SOURCES = frozenset({"call_credentials", "caller_provider_key"})
+
+
+def _verb_name(call: ast.Call) -> str | None:
+    f = call.func
+    if isinstance(f, ast.Name) and f.id.startswith("a") and f.id in _LITELLM_VERBS:
+        return f.id  # a bare name: only the async verbs, which `from litellm` binds
+    if isinstance(f, ast.Attribute) and _is_litellm(f.value) and f.attr in _LITELLM_VERBS:
+        return f.attr
+    return None
+
+
+def _names_a_key_source(fn: ast.AST) -> bool:
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Name) and n.id in _KEY_SOURCES:
+            return True
+        if isinstance(n, ast.Attribute) and n.attr in _KEY_SOURCES:
+            return True
+    return False
+
+
+def _unkeyed_verb_calls(tree: ast.AST) -> list[int]:
+    """Lines of a litellm verb call with no ``api_key=`` and no key source.
+
+    A call is keyed when it passes ``api_key=`` itself, or when a function
+    that encloses it calls ``call_credentials`` or ``caller_provider_key``.
+    """
+    parent: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[id(child)] = node
+    hits: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _verb_name(node) is None:
+            continue
+        if any(k.arg == "api_key" for k in node.keywords):
+            continue
+        cur: ast.AST = node
+        keyed = False
+        while id(cur) in parent:
+            cur = parent[id(cur)]
+            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef) and _names_a_key_source(cur):
+                keyed = True
+                break
+        if not keyed:
+            hits.append(node.lineno)
+    return hits
+
+
+@cache
+def _verb_scan() -> dict[str, list[int]]:
+    found: dict[str, list[int]] = {}
+    for tree_name in _VERB_TREES:
+        for here, dirs, names in os.walk(ROOT / tree_name):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+            for n in names:
+                if not n.endswith(".py"):
+                    continue
+                path = Path(here) / n
+                rel = path.relative_to(ROOT).as_posix()
+                if rel.startswith(_VERB_EXEMPT):
+                    continue
+                source = _read(path)
+                if not any(v in source for v in _LITELLM_VERBS):
+                    continue
+                lines = _unkeyed_verb_calls(ast.parse(source))
+                if lines:
+                    found[rel] = lines
+    return found
+
+
+class TestEveryLitellmCallNamesItsKey:
+    def test_no_litellm_call_leans_on_a_process_global_key(self) -> None:
+        found = _verb_scan()
+        assert found == {}, (
+            f"a litellm call names no key: {found}. With no api_key, litellm "
+            "reads a process-global env var for every caller. Merge "
+            "`await acb_llm.client.call_credentials(model, kwargs)` into the "
+            "call, or pass api_key= yourself (D58.2)."
+        )
+
+    def test_the_scan_sees_an_unkeyed_call(self) -> None:
+        source = "\n".join([
+            "from litellm import acompletion",
+            "async def f(model):",
+            "    return await acompletion(model=model, messages=[])",
+            "async def g(model):",
+            "    creds = await call_credentials(model)",
+            "    return await acompletion(model=model, messages=[], **creds)",
+            "async def h(model):",
+            "    return await acompletion(model=model, messages=[], api_key='k')",
+        ])
+        assert _unkeyed_verb_calls(ast.parse(source)) == [3]

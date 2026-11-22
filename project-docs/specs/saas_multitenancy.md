@@ -3335,11 +3335,16 @@ ratchet's cadence; each PR banks its progress.
 >
 > | Site | Why no tenant is reachable |
 > |---|---|
-> | `acb_llm/client.py::_ensure_keys_loaded` (2 store calls) | a **once-per-process latch** whose whole output is process-global: `configure_litellm()` assigns `litellm.<provider>_api_key` and `os.environ`. Calling it per org would make the LAST org's key the one every caller sends. 🆕 **2026-11-22 (task 625, D58.2):** the latch now only seeds the store on first boot, and task 625 removed `configure_litellm`. Each direct call takes the key of its bound organization per call (`acb_llm.client.call_credentials`). |
+> | `acb_llm/client.py::_ensure_keys_loaded` (2 store calls) | a **once-per-process latch** whose whole output is process-global: `configure_litellm()` assigns `litellm.<provider>_api_key` and `os.environ`. Calling it per org would make the LAST org's key the one every caller sends. |
 > | `routes/v1_compat.py::_handle_chat_completions` (its caller) | authed by `require_llm_api_auth` — the deployment-wide `LITELLM_MASTER_KEY` **every agent holds**. That Bearer resolves through `get_current_user`'s branch 1b to `system:internal`, which never reaches `_with_resolved_access`, so `current_tenant()` is `None`. `X-CC-Agent`/the body are request input — R11 forbids both. |
 > | `acb_llm/client.py::_init_tier_models` (1 blob call) | runs at **import** time and fills the process-global `_TIER_MODEL`. |
 > | `gateway/main.py` lifespan (2 store calls) | startup: no request, no session, no tenant. |
-> | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. 🆕 Task 625 removed the `os.environ` half (D58.2). |
+> | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. |
+>
+> 🆕 **2026-11-22 (task 625, D58.2):** the latch now only seeds the store on first boot, and
+> task 625 removed `configure_litellm`. Each direct call takes the key of its bound
+> organization per call (`acb_llm.client.call_credentials`). Task 625 also removed the
+> `os.environ` half of `_inject_env_into_litellm`.
 >
 > **What a real fix needs:** a **tenant-scoped API key** (`user_management_contract.md`
 > R11's second admitted identity source) plus per-request provider credentials instead of

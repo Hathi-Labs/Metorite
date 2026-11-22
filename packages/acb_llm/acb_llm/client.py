@@ -356,7 +356,9 @@ async def call_credentials(
 
     Fence: ``tests/unit/test_llm_call_credentials.py``.
     """
-    if call_kwargs and (call_kwargs.get("api_key") or call_kwargs.get("api_base")):
+    # `in`, not a truthy test: a caller's `api_key=None` must not meet a second
+    # `api_key` in the same call (a duplicate keyword is a TypeError).
+    if call_kwargs and ("api_key" in call_kwargs or call_kwargs.get("api_base")):
         return {}
     from acb_llm.key_store import caller_provider_key, provider_slug
 
