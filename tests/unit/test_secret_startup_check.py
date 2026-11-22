@@ -147,6 +147,20 @@ def test_shadow_never_raises_on_a_bug_of_the_check(monkeypatch):
     assert _events(logs, "secrets.startup_check_failed")
 
 
+def test_a_settings_load_that_fails_never_stops_the_unit(monkeypatch):
+    """With no settings the mode is unknown. The unit fails on its own settings."""
+    from acb_auth import secret_check
+
+    def broken():
+        raise ValueError("a bad env file")
+
+    monkeypatch.setattr(secret_check, "get_settings", broken)
+    with structlog.testing.capture_logs() as logs:
+        assert secret_check.check_startup_secrets("agent_edge") == []
+    failed = _events(logs, "secrets.startup_check_failed")
+    assert [e["error"] for e in failed] == ["ValueError"]
+
+
 # ── Enforce refuses with the names ────────────────────────────────────────────
 
 
@@ -305,9 +319,10 @@ SECRET_NAME = re.compile(r"(^|_)(key|secret|token|password|passwd|salt|pem)(_|$)
 def _secret_like_fields() -> set[str]:
     from acb_common.settings import Settings
 
+    # Only a plain number or switch is out. `str | None` and `SecretStr` are in.
     return {
         name for name, field in Settings.model_fields.items()
-        if SECRET_NAME.search(name) and field.annotation is str
+        if SECRET_NAME.search(name) and field.annotation not in (bool, int, float)
     }
 
 

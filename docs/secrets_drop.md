@@ -267,9 +267,15 @@ and a release cannot roll back. So follow these steps for each unit.
 
 1. Let one release run in shadow.
 2. Read the lines of the unit on the box: `sudo journalctl -u acb-gateway -o cat | grep secrets.` Do the same for `acb-agent-edge`.
-3. Push each named secret with `scripts/secrets.sh`. Then restart the unit and read its line again.
+3. Set each named secret in the env file of the unit. Then restart the unit and read its line again.
 4. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
 5. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+
+⚠️ `scripts/secrets.sh` pushes only the keys that `allowed_keys` lists in
+`deploy/secrets/manifest.json`. The six required names and
+`SECRET_STARTUP_CHECK` are not on that list today. A write of one of them
+to a box env file is the grant `env-write`. A holder of that grant does the
+write by hand.
 
 Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
 `acb-agent-edge` reads `/opt/acb/app/apps/services/agent_edge/.env`.
@@ -283,6 +289,9 @@ Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
 | Orchestrator | none | It runs in the gateway process, so the gateway check covers it |
 | Customer Console | `acb-customer-console` | Not wired. It imports no `acb_*` package by design (CP-9 §9.4) |
 | Web worker | its own container | Its own start refuses an empty `WEB_WORKER_TOKEN` |
+| Meeting bot | its own container | Not wired. It imports no `acb_*` package and reads `MEETING_BOT_TOKEN` itself |
+| Mutation runner | the sandbox container | Not wired. It imports no `acb_*` package and keeps its own env allowlist |
+| Reconciler, ingestion scheduler, Zoho webhook `standalone` app | none | Not wired. No unit on the box runs them |
 
 ### The required secrets
 
