@@ -929,10 +929,12 @@ out (D-FIND-3).
   matches the part of the address before the `@` for a People row too.
   Here only a member record carries that form. So "Chris" finds «Christopher
   Lee» <chris@…> only when an `app_user` row holds that address.
-- **An alias does not hide a sender from outside the org.** Tier 1 drops the
-  person and member rows only. A mail sender of the same name with an
-  address outside the org stays, so the answer is `several`.
-  `resolve_person` acts on the alias, because its tier 1 wins outright.
+- **An alias does not hide each other sender.** Tier 1 drops the person and
+  member rows only. A mail sender of the same name stays when its address is
+  outside the org. It also stays when the colleague of its address prints no
+  address: a contractor, an invited person or a person with no status. So
+  the answer is `several`. `resolve_person` acts on the alias, because its
+  tier 1 wins outright. It fails safe: the answer asks the member which one.
 - **A preferred name that the full name does not hold** gives no People row
   (see "Limits of FIND-5" above). `resolve_person` matches the preferred
   name itself, so it finds that person.

@@ -981,6 +981,7 @@ class TestTheCrmReader:
 # `resolve_name` answers what `resolve_person` answers (find_engine.md §5.2,
 # "As built (FIND-6b)"): the member of `app_user`, the member's own saved
 # names (tier 1) and the colleague address, with the rules of resolve_person.
+# The parity holds except for the limits that §5.2 lists ("Limits of FIND-6b").
 
 MEMBER_ADDR = "tara.rao@acme.test"
 ALIAS_ADDR = "rajesh.kumar@acme.test"
