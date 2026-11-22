@@ -2589,6 +2589,16 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_connected_systems_block.py.
     connected_systems_orgs: str = ""
 
+    # `MCP_MAIL_PRECEDENCE_ORGS` (CSY-4, chat_connected_systems.md §3.4) lists
+    # the organization ids where a turn whose words name a connected server
+    # evicts a sticky mail pack, so the server attaches. It acts only when the
+    # chat's mail mark reads set. Comma list, `*` for all, empty (default) for
+    # none. Empty keeps the choice of main. The reader is
+    # `acb_skills.egress.mcp_mail_precedence_on`, on the run's org. A reload of
+    # the gateway applies a change. Any non-empty value is OWNER-ONLY
+    # (work_plan.md §6 D4). Fence: tests/unit/test_pack_choose_server_words.py.
+    mcp_mail_precedence_orgs: str = ""
+
     # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
     #
     # `MCP_OAUTH_ENABLED`, default OFF. OFF: the start route, the callback and

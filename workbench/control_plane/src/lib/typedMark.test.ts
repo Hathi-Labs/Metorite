@@ -113,9 +113,10 @@ describe("each send path of the chat", () => {
       "autoSend.text, askTyped ? { typed: true, onKept } : { onKept }",
       "withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined",
     ]);
-    // Every other call names its words only: no second argument.
+    // Every other call names its words only. HRD-17c: it may add the hold
+    // mark, which is no typed mark (`historyHold.fence.test.ts`).
     for (const call of calls.filter((c) => !c.includes("typed"))) {
-      expect(call, call).not.toMatch(/,\s*\{/);
+      expect(call, call).not.toMatch(/,\s*\{(?!\s*hold:)/);
     }
     // The composer reads the mark of the box, never a fixed `true`.
     expect(chat).toContain("const typed = composerTyped(boxMarkRef.current);");
@@ -124,7 +125,7 @@ describe("each send path of the chat", () => {
 
   it("a pill, a choice, a feed starter and a card action go through handleChoice, with no mark", () => {
     const choice = chat.match(/const handleChoice = useCallback\(\s*\(choice: string\) => \{([^}]*)\}/);
-    expect(choice?.[1].trim()).toBe("submitText(choice);");
+    expect(choice?.[1].trim()).toBe("submitText(choice, HOLD_WORDS);");
     // The feed starters, the starter pills under the day's brief (WS-62
     // CF-4b) and the "Follow up" pills.
     expect(chat.match(/onPick=\{handleChoice\}/g)).toHaveLength(3);

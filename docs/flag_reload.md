@@ -463,6 +463,18 @@ start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MCP_MAIL_PRECEDENCE_ORGS` turns on the precedence rule of a connected server
+over a sticky mail pack (`chat_connected_systems.md` §3.4, CSY-4). For each
+listed org, a turn whose words name an attachable MCP server evicts each sticky
+mail pack, so the server attaches. It acts only when the chat's mail mark reads
+set. `*` lists every org, and the default is empty. Empty keeps the choice of
+main.
+
+Its one reader is `acb_skills.egress.mcp_mail_precedence_on`, which
+`tool_packs.choose` and `_tool_injection._with_server_words` ask on each turn,
+on the run's org. A reload applies a change. Any value other than empty is
+owner-only (`work_plan.md` §6 D4), and the §3a window does not open it.
+
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
 the member, and it adds the affinity of each kind to the score. A needs card
