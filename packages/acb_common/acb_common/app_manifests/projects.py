@@ -207,6 +207,11 @@ _ARCHIVE_ANSWER = (
     "§19.11: only the member of the run answers the request of an agent, on "
     "the task card (EA3-40, D-OP-13)."
 )
+_CHILD_RUN = (
+    "SW-39: a child run is a sub-agent of an open run. Only a signed agent "
+    "starts one, through its hook. SW-114 adds the edge tool, so no door op "
+    "names it."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -551,6 +556,8 @@ PROJECTS_DOOR = App(
               off_door=TYPED),
         Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X",
               reason=_ARCHIVE_ANSWER),
+        Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
+        Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
         Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", reason=_AGENT_DELETE),
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
