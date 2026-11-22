@@ -1064,3 +1064,8 @@ class TestTheFlagOff:
         assert src.index("focus_slot=_focus_slot") < src.index("_load_agent_off_loop(")
         assert (src.index('_laps.lap("constraints")') < src.index("await _prime_chat_focus(")
                 < src.index('_laps.lap("focus")'))
+
+
+def test_an_email_focus_id_loses_the_id_label() -> None:
+    uid = "41c0e817-fb4a-4e45-870a-2da9a953bf4b"
+    assert cf.clean_focus({"kind": cf.EMAIL, "id": f"id={uid}"}) == {"kind": cf.EMAIL, "id": uid}

@@ -137,7 +137,7 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Show me open tasks due this week for Ayush" | `list_tasks` | `GET /projects/tasks` with the filter set the app uses |
 | "Tell me about #142" | `task_detail` | `GET /projects/tasks/{id}` + `/timeline` + `/relations` |
 | "What is mine?" | `my_work` | `GET /projects/assigned-to-me`, `GET /projects/my/inbox` |
-| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names` |
+| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names`, `GET /projects/people/reach` (a card reads it, task 3636) |
 | "What statuses does this project use?" | `vocabulary` | `GET /nodes/{id}/statuses`, `/types`, `/tags`, `/fields` |
 | "Where is work stuck?" | `analytics_stuck` | `GET /projects/analytics/stuck` |
 | "Who is overloaded?" | `analytics_load` | `GET /projects/analytics/load` |
@@ -7048,6 +7048,10 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 **Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
 first live run (task 2265).
+
+**VOX-7 status.** BUILT 2026-11-09 on branch `mt-ae7b5305-wave`. It waits for
+its pull request.
+
 Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
 2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
@@ -7470,6 +7474,53 @@ the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-
 - **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
   `test_operator_console_invocations.py` and `providerGuides.test.ts`.
 
+**VOX-7 (task 2501). The layered wave.** STANDARD. A front-end slice with no
+migration, no flag and no new route. BUILT 2026-11-09 on branch
+`mt-ae7b5305-wave`, and it waits for the pull request.
+
+- **Why:** the owner asked for a better recording state than a bar, on
+  2026-11-09: "can you think of a better animation for the voice input mode
+  instead of just a bar? Maybe like a sound wave … do something a little bit
+  more tasteful with fun UI/UX for sound input. Since the main way to stop
+  talking is just by clicking on the mic button again, ensure that the UI/UX is
+  clean and clear to indicate that the mic button has to be pressed to stop the
+  voice input." The owner then chose variant B: "i prefer the layered wave as
+  the audio input animation." The owner also set one rule for the box: "ensure
+  that I'm able to append to previously transcribed sections. For example, I
+  might turn on audio transcription, say something, and then turn it off. Then
+  type something manually … and then do auto transcription again. The system
+  should allow me to do that."
+- **Files:** `components/VoiceInputButton.tsx`, a new `components/VoiceWave.tsx`,
+  a new `lib/voiceWave.ts`, and `hooks/useVoiceDictation.ts`.
+- **Do:**
+  - Draw three sine lines in a band of the bar row, between the timer and the
+    pickers. The lines stroke `currentColor` in a `text-primary` box, with
+    three opacities and three weights. No status token and no hex literal.
+  - Keep the level in a ref (`levelRef`). A `requestAnimationFrame` loop reads it
+    and writes the `d` of each path. No React state changes on an audio block.
+    The loop stops when the recording ends or the chat unmounts.
+  - While it records, the mic is a filled round Stop button in the accent
+    colour, named "Stop recording". A ring follows the voice and takes no click. The first
+    recording of a browser shows "Tap ■ to finish" for 4.5 s. The mark is in
+    `localStorage`.
+  - Show a mono timer. In the last 15 s it turns to the warning token and shows
+    "N s left". A cross, "Discard recording", calls the cancel. Enter finishes,
+    and Esc discards.
+  - Keep the box mounted and visible. The wave never covers the draft, and the
+    composer keeps its height in every phase. The words go in at the caret, as
+    in VOX-1.
+  - With `prefers-reduced-motion`, the lines do not move. A static meter of 10
+    segments shows the level.
+- **Done when:** a draft of text stays in view while the mic records, and a
+  second dictation lands at the caret after a typed edit.
+- **Fence (R7):** `src/lib/voiceWave.test.ts` and
+  `src/lib/voiceDictation.test.ts`.
+  - `voiceWave.test.ts` tests the lines, the timer rule and the hint.
+  - It tests reduced motion, the colour fence and the box kept mounted.
+  - It tests the order of "hello", "world" and "again" at the caret.
+  - `voiceDictation.test.ts` tests the label of the Stop button.
+  - `src/lib/theme/conformance.test.ts` holds the colour rules.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7577,12 +7628,14 @@ The code is the fact. The build differs from §31.5 in these places.
 
 ## 32. Editable approval cards (task 2493)
 
-**Status (2026-11-16): EAC-1 built dark (task 3468). EAC-2 built dark (task
+**Status (2026-11-16): EAC-1 built dark (task 3468).  EAC-2 built dark (task
 3469, the client half: due date and people). EAC-3a built dark (task 3470, the
 client half: start date, status, priority flags and description). EAC-3b and
 EAC-4 to EAC-8 stay in the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
 Metorite task 2493. The first demo is on Rung 2 of the ladder (D211, task 2927,
 `orchestration_playbook.md` §6d).
+
+**EAC-1b (2026-11-17).** Built dark (task 3645). The receipt line of an edited card ships with it.
 
 ### 32.1 Scope
 
@@ -7723,6 +7776,13 @@ a dead run).
 
 - The receipt after an approved edit card is the receipt of the write itself.
   It comes from `ask_tools.CARD_OUTCOMES` and `lib/cardOutcomes.ts` (HRD-7).
+  EAC-1b adds one line to it, and only when the answer changed a value. The line
+  is result text of ours in `writes._CardEdit.lines`. It reads: "The member
+  edited the card before they approved it. These are the approved values. Treat
+  them as final:" and then each changed key with the written value. It never
+  states an original value. It names a changed description and never quotes it.
+  It fences member text with `data()`. A plain approve, a no-change edit, a late
+  approve and the card off give the receipt of before, byte for byte.
 - A declined edit card shows "You said no, so nothing was changed." through
   `memberLineOf`. This section adds NO new decline string.
 - When the member types in the chat while an edit card is open, the card closes
@@ -7762,7 +7822,9 @@ a dead run).
 This section does not edit `agent-crm/instructions.md`,
 `agent-email-assistant/instructions.md`, `agent-projects/instructions.md`,
 `tool_packs.py`, `orchestrator/agents.py` or the docstrings of `create_task` and
-`update_task`. Ask cal-tasks to add one line about the edit card after EAC-1 lands.
+`update_task`. EAC-1b needs no change of tool text. The line that tells the model
+about an edited card is result text of ours in `writes.py`, and cal-tasks owns
+none of it. A tool description cannot carry it (cal-tasks refused the change).
 
 ### 32.5 Slices
 
@@ -7772,6 +7834,7 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 | Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
 |---|---|---|---|---|---|---|---|
 | **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
+| **EAC-1b** | 3645 | STANDARD, dark | 2 | `writes.py` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-17.** An approved edit card whose answer changes a value ends its receipt with the sentence and the changed keys with the written values. It names only changed keys, never an original value, and fences member text. A plain approve, a no-change edit, a late approve and the flag-off card give the receipt of before, byte for byte. Nothing the approve writes changes. The HRD-7 leads and `test_card_outcome_vocabulary.py` stay as they are. |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `ConfirmationQueue.tsx`, `confirmationQueue.ts`, `lib/taskEditCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts`, `taskEditCard.test.ts`, `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
 | **EAC-3a** | 3470 | STANDARD, dark, client only | 2 | `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `taskEditCard.test.ts` (the parity of the status and description rules with `task_card.py`), `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** The form edits the start date, the status (a lane of the project, by exact name), the `important` and `leveraged` flags and the description. The answer keeps the seven keys. A start date after the due date warns and does not hold Approve. |
 | **EAC-3b** | 3470 (the task of EAC-3 holds both parts) | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `tests/unit/test_task_card_project.py` (new, hermetic), `tests/unit/test_task_edit_card_r8.py` (extended: it replaces `test_r8_a_forged_project_id_writes_nothing`), `taskEditCard.test.ts`, `taskCardForm.test.ts` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card (§32.4, "The project"). The answer gets the optional key `project`. After PR 2547. |
@@ -7855,6 +7918,16 @@ belong to task 3559.
   showed it. An id on the card has no effect. A late edit answer writes nothing
   and carries no value. An R8 test shows that route grants refuse a field that
   the member may not write.
+- **EAC-1b.** An edit answer that changes a value ends the receipt with the
+  sentence of §32.4. After it come the changed keys, each with the value that
+  the write sent. The keys are `due`, `start`, `status`, `important`,
+  `leveraged`, `description` and `assignees`. A cleared value reads `none`, and
+  a cleared judgement reads `not judged`. The note names a changed description
+  and never quotes it. No original value appears. Member text goes through
+  `data()`, and each item stops at 120 characters. The note shows 10 people and
+  then "and N more". A default-lane edit names the lane that the row landed in.
+  The stranger line follows the sentence. The tests prove the text only. They
+  do not prove how a model behaves.
 - **EAC-2.** The card shows a form for `create_task` when the flag is on for the
   org. The edits survive a tab change and a replay. The receipt is the receipt of
   the write. A decline shows the standard decline line. The form warns of an

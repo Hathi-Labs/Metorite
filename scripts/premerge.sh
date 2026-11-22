@@ -164,7 +164,8 @@ present=()
 for t in "${FENCES[@]}"; do [ -f "$t" ] && present+=("$t"); done
 say "collision fences on the merge result: ${#present[@]} files"
 if [ "${#present[@]}" -gt 0 ] && ! env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider "${present[@]}" > "$logs/fences.log" 2>&1; then
-  { grep -E "^(FAILED|ERROR|E )" "$logs/fences.log" || true; } | head -15 >&2
+  # CIV-15b (task 2187): an INTERNALERROR or "no tests ran" has no FAILED line, so name them too.
+  { grep -E "^(FAILED|ERROR|E |INTERNALERROR)|no tests ran" "$logs/fences.log" || true; } | head -15 >&2
   fail "a collision fence fails once $BASE is merged in. Fix it on the branch, push, and wait for pr-check."
 fi
 

@@ -4690,6 +4690,8 @@ The text was verified against code on 2026-10-06. The spec-auditor gave GO-NARRO
 holds its corrections. The "As built" notes below record the build. The owner reported the gap: a
 chat answered that it could not read the files of a mail.
 
+**EM-T11 slot gap closed (2026-11-22, H-253).** The hold of a member (`_ReadHold`) now ends when the parse worker gives its slot back. `parse_bounded` takes `on_worker_done`, and the route passes `hold.release`. A parse past its deadline still answers "took too long", and its member cannot start a second read until the worker ends.
+
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It adds one read route and one agent tool. The
 route reads mail of the member, so it takes the full review loop and a security review.
 
@@ -6241,7 +6243,10 @@ The line numbers are those of PR-B3 (`64e9f9bb0`).
   accepts it.
 - **The webhook overlap.** A `process_new_mail` that the webhook starts can
   classify at the same time as the classify of the scheduler. PR-A does not
-  change that. `HANDOFF.md` H-285 holds the follow-up.
+  change that. H-285 (task 731) builds the fix: the flag
+  `EMAIL_CLASSIFY_ONE_AT_A_TIME` (default off) makes a second classify of one
+  mailbox skip while the first runs. Fence:
+  `tests/unit/test_email_classify_one_at_a_time.py`.
 - **The reclassify count.** In `on`, `_count_reply_zero_backlog` also counts
   marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
   cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of
@@ -22991,6 +22996,11 @@ mailbox of the organization may upload.
    - It returns the real pixmap width and height. It also returns the share of dark,
      transparent pixels, for the dark-logo check.
 3. The route writes the row, and returns the id and the public URL.
+
+**The profile picture uses this child too** (task 2186, 2026-11-21). `avatar.normalise()` keeps
+the byte cap and the sniff in the request, and sends the decode to the child with the kind
+`avatar`. The fence is `tests/unit/test_people_avatar.py` section 5. It stops a slow child, and
+it shows that the request process decodes nothing.
 
 **Retire.** `DELETE /email/signature/images/{id}` sets `retired_at`. The uploader or an admin
 may call it. A retired image leaves the picker and stays served.

@@ -196,6 +196,15 @@ export interface AgentRun {
    * nothing. `withAgentLabel` puts it beside the client name.
    */
   agent_label?: string | null;
+  /**
+   * WS-MCP SW-104 and SW-106. The machine, its kind and the model that the
+   * agent reported for its session, or that its box token proved. Display
+   * data only: the agent chose the text, and it grants nothing. `null` or
+   * absent reads "Not reported" (`agentPlaceLine` of `agentCardLook.ts`).
+   */
+  agent_host?: string | null;
+  agent_host_kind?: string | null;
+  agent_model?: string | null;
   /** EA-14a. The display name of the run's member, for "Held by <name>". */
   member_name?: string | null;
   /**

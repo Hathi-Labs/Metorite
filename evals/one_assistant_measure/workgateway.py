@@ -514,6 +514,8 @@ class WorkGateway:
                 {"name": "Kiran", "assignee": KIRAN, "load": {"open": 0}}], "agents": []}
         if rest == "people/names":
             return {"names": {ANANYA: "Ananya", ME: "Member", KIRAN: "Kiran"}}
+        if rest == "people/reach":
+            return {"not_reachable": []}  # task 3636: each fake person can open a task
         if rest == "needs-attention":
             return {"rows": [], "total": 0, "counts": {}}
         if rest == "agent-runs":
