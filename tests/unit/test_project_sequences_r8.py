@@ -68,7 +68,7 @@ def test_the_migration_is_expand_only_and_holds_no_member_email() -> None:
     sql = "\n".join(line for line in _migration().read_text(encoding="utf-8").splitlines()
                     if not line.lstrip().startswith("--")).upper()
     for word in ("DROP TABLE", "DROP COLUMN", "RENAME", "ALTER COLUMN", "DELETE FROM", "UPDATE "):
-        assert word not in sql.replace("ON UPDATE", ""), word
+        assert word not in sql.replace("ON UPDATE", "").replace("OR UPDATE", ""), word
     assert "MEMBER_EMAIL" not in sql
     assert "PM_SEQUENCE_RESERVATIONS_VALUE" in sql  # one row for each number
 
@@ -175,7 +175,7 @@ def _seed_run(p: Any, org: str, task: str, email: str) -> str:
 
 
 def _reserve(project: str, name: str = "migration") -> str:
-    return f"/projects/projects/{project}/sequences/{name}/reserve"
+    return f"/projects/nodes/{project}/sequences/{name}/reserve"
 
 
 @pytest.fixture
@@ -270,7 +270,7 @@ class TestProjectSequencesOnARealDatabase:
                 {"i": ok.json()["reservation_id"]}).one()
         assert str(row.run_id) == run and row.state == "reserved"
 
-    @pytest.mark.parametrize("name", ["Migration", "1st", "a b", "x" * 41, "a;drop"])
+    @pytest.mark.parametrize("name", ["Migration", "1st", "a b", "x" * 41, "a;drop", "migration%0A"])
     async def test_a_bad_name_is_refused(self, world, name):
         w = world
         async with _session(w.p) as call:
@@ -297,3 +297,96 @@ class TestProjectSequencesOnARealDatabase:
         async with _session(w.p) as call:
             second = await call(w.a, "POST", _reserve(w.ta.project), {"task_id": w.ta.task})
         assert second.json()["value"] == first.json()["value"] + 1
+
+
+# ── The same-org guard on every key (review P1) ─────────────────────────────
+
+
+def _as_app(w: Any, org: str):
+    """A connection as `acb_app` (NOBYPASSRLS), bound to *org*."""
+    from sqlalchemy import create_engine
+
+    eng = create_engine(w.p.app_url, future=True)
+    return eng
+
+
+def _app_write(w: Any, org: str, sql: str, **params: Any) -> None:
+    eng = _as_app(w, org)
+    try:
+        with eng.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+            c.execute(text(sql), params)
+    finally:
+        eng.dispose()
+
+
+@pytest.mark.parametrize("trigger", [
+    "trg_pm_project_sequences_org_from_project",
+    "trg_pm_sequence_reservations_org_from_sequence",
+    "trg_pm_sequence_reservations_org_from_task",
+    "trg_pm_sequence_reservations_org_from_run",
+])
+def test_the_migration_guards_each_key_with_the_shared_function(trigger: str) -> None:
+    sql = _migration().read_text(encoding="utf-8")
+    block = sql[sql.index(f"CREATE OR REPLACE TRIGGER {trigger}"):]
+    assert "pm_organization_from_parent(" in block.split(";")[0]
+
+
+@_DB_GATE
+class TestTheSameOrgGuard:
+    def test_a_reservation_cannot_name_a_task_of_another_org(self, world):
+        """As acb_app bound to org A, a row that names org B's task fails with
+        the foreign key SQLSTATE. Mutation: drop the task trigger, and the
+        row goes in (the foreign key skips RLS)."""
+        from sqlalchemy.exc import DBAPIError
+
+        w = world
+        with w.p.admin_engine.begin() as c:
+            seq = str(c.execute(text(
+                "INSERT INTO pm_project_sequences (organization_id, project_id, name)"
+                " VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'probe') RETURNING id"),
+                {"o": w.p.org_a, "p": w.ta.project}).scalar())
+        with pytest.raises(DBAPIError) as exc:
+            _app_write(w, w.p.org_a,
+                       "INSERT INTO pm_sequence_reservations (sequence_id, value, task_id)"
+                       " VALUES (CAST(:s AS uuid), 1, CAST(:t AS uuid))",
+                       s=seq, t=w.tb.task)
+        assert getattr(exc.value.orig, "sqlstate", None) == "23503"
+
+    def test_a_sequence_cannot_name_a_project_of_another_org(self, world):
+        from sqlalchemy.exc import DBAPIError
+
+        w = world
+        with pytest.raises(DBAPIError) as exc:
+            _app_write(w, w.p.org_a,
+                       "INSERT INTO pm_project_sequences (project_id, name)"
+                       " VALUES (CAST(:p AS uuid), 'probe')", p=w.tb.project)
+        assert getattr(exc.value.orig, "sqlstate", None) == "23503"
+
+    async def test_a_task_delete_keeps_the_burned_number(self, world):
+        """Review P2: a task delete sets task_id to NULL and keeps the row."""
+        w = world
+        doomed = _seed(w.p, w.p.org_a, w.a_email)
+        async with _session(w.p) as call:
+            got = await call(w.a, "POST", _reserve(doomed.project), {"task_id": doomed.task})
+        rid = got.json()["reservation_id"]
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": doomed.task})
+            row = c.execute(text(
+                "SELECT task_id, value FROM pm_sequence_reservations WHERE id = CAST(:i AS uuid)"),
+                {"i": rid}).one()
+        assert row.task_id is None and row.value == 1
+
+    async def test_an_archived_project_refuses_a_reservation(self, world):
+        w = world
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET archived_at = now() WHERE id = CAST(:p AS uuid)"),
+                      {"p": w.ta.project})
+        try:
+            async with _session(w.p) as call:
+                got = await call(w.a, "POST", _reserve(w.ta.project), {"task_id": w.ta.task})
+            assert got.status_code == 422 and "archived" in got.json()["detail"], got.text
+        finally:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_projects SET archived_at = NULL"
+                               " WHERE id = CAST(:p AS uuid)"), {"p": w.ta.project})

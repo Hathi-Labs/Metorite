@@ -1,5 +1,5 @@
 -- ============================================================================
--- 473_pm_project_sequences.sql — named number sequences of a project, and
+-- 477_pm_project_sequences.sql — named number sequences of a project, and
 -- the reservations that hand each number out once.
 --
 -- What: two new tables.
@@ -23,7 +23,8 @@
 --       Parallel agents read a shared number from their own checkout, and two
 --       take the same one (R1: three migration clashes in two weeks).
 -- Depends on: 130_org_access_control.sql (organization), 146_projects.sql
---       (pm_projects, pm_tasks), 267_pm_agent_runs.sql (pm_agent_runs).
+--       (pm_projects, pm_tasks), 267_pm_agent_runs.sql (pm_agent_runs), and
+--       471_pm_org_from_parent_refuses_hidden_parent.sql (the same-org guard).
 --
 -- Expand only (R6): two new tables and their indexes. No rename, no drop and
 -- no change to a row of another table. The gateway that runs before the
@@ -39,8 +40,10 @@
 -- session (the column default), never from request input.
 -- No member email is stored: a reservation names its task and its run, so no
 -- person's data lives here.
--- The number is taken at build time (R1). On 2026-11-22 main held 472, and the
--- open PRs #2719 and #2744 held 474 and 475. The owner named 473 on task 861.
+-- The number is taken at build time (R1). On 2026-11-22 at 13:45 UTC main held
+-- 472, and open PRs held 473 (#2757), 474 (#2719), 475 (#2744, #2758) and 476
+-- (#2737). The owner's Go on task 861 named 473. That number went to #2757 and
+-- sat below main's top after #2744, so this file takes 477.
 -- Check it again at merge. Pinned by tests/unit/test_project_sequences_r8.py,
 -- which finds this file by CONTENT, never by number (R1).
 -- ============================================================================
@@ -74,7 +77,9 @@ CREATE TABLE IF NOT EXISTS pm_sequence_reservations (
     sequence_id       UUID NOT NULL
                       REFERENCES pm_project_sequences (id) ON DELETE CASCADE,
     value             BIGINT NOT NULL CHECK (value > 0),
-    task_id           UUID NOT NULL REFERENCES pm_tasks (id) ON DELETE CASCADE,
+    -- The task that reserved it. A task delete keeps the row with NULL, so
+    -- the record of a burned number stays.
+    task_id           UUID NULL REFERENCES pm_tasks (id) ON DELETE SET NULL,
     -- The agent run that reserved it, when an agent did. A run delete keeps
     -- the reservation, because the number stays burned.
     run_id            UUID NULL REFERENCES pm_agent_runs (id) ON DELETE SET NULL,
@@ -102,6 +107,30 @@ CREATE INDEX IF NOT EXISTS pm_sequence_reservations_task
     ON pm_sequence_reservations (task_id);
 CREATE INDEX IF NOT EXISTS pm_sequence_reservations_run
     ON pm_sequence_reservations (run_id);
+
+-- Same org on every key. A foreign key check skips RLS, so without a guard a
+-- row of one org could name a project, a task or a run of another. The guard
+-- is 161's pm_organization_from_parent, as 471 hardened it: it fills a NULL
+-- org from the parent, refuses a parent of another org, and refuses a parent
+-- that the session cannot read (under FORCE RLS, another org's row), with the
+-- SQLSTATE of a foreign key. One attachment for each key. Pinned by
+-- test_project_sequences_r8.py (the cross-org probes).
+CREATE OR REPLACE TRIGGER trg_pm_project_sequences_org_from_project
+    BEFORE INSERT OR UPDATE ON pm_project_sequences
+    FOR EACH ROW EXECUTE FUNCTION
+    pm_organization_from_parent('pm_projects', 'project_id');
+CREATE OR REPLACE TRIGGER trg_pm_sequence_reservations_org_from_sequence
+    BEFORE INSERT OR UPDATE ON pm_sequence_reservations
+    FOR EACH ROW EXECUTE FUNCTION
+    pm_organization_from_parent('pm_project_sequences', 'sequence_id');
+CREATE OR REPLACE TRIGGER trg_pm_sequence_reservations_org_from_task
+    BEFORE INSERT OR UPDATE ON pm_sequence_reservations
+    FOR EACH ROW EXECUTE FUNCTION
+    pm_organization_from_parent('pm_tasks', 'task_id');
+CREATE OR REPLACE TRIGGER trg_pm_sequence_reservations_org_from_run
+    BEFORE INSERT OR UPDATE ON pm_sequence_reservations
+    FOR EACH ROW EXECUTE FUNCTION
+    pm_organization_from_parent('pm_agent_runs', 'run_id');
 
 DO $rls$
 BEGIN
