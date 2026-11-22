@@ -350,6 +350,7 @@
       "tests/unit/test_package_promotion_r8.py",
       "tests/unit/test_pending_ask_prune_r8.py",
       "tests/unit/test_people_events_r8.py",
+      "tests/unit/test_people_not_reachable_r8.py",
       "tests/unit/test_pm_org_from_parent_r8.py",
       "tests/unit/test_pm_project_updates_r8.py",
       "tests/unit/test_project_rules.py",
