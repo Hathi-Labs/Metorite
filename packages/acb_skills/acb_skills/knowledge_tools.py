@@ -63,6 +63,7 @@ from __future__ import annotations
 import functools
 import os
 import re
+import textwrap
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -772,7 +773,7 @@ def _refusal(resp: httpx.Response, fallback: str) -> str:
     example "Writing in this space needs a write grant." It is folded to one
     line, so it cannot forge a line of the answer.
     """
-    detail = _line(_detail(resp))[:_DETAIL_MAX]
+    detail = textwrap.shorten(_line(_detail(resp)), width=_DETAIL_MAX, placeholder=" ...")
     return f"Nothing was saved. {detail}" if detail else fallback
 
 
