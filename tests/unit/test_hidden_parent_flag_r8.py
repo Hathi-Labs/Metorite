@@ -177,6 +177,46 @@ async def test_r8_a_reorder_under_the_same_parent_is_not_refused(live) -> None: 
     assert str(row.parent_project_id) == parent and row.position == 7.5
 
 
+async def test_r8_the_members_own_area_has_a_visible_parent(live) -> None:  # noqa: F811
+    """The personal tree. Its parent is in the response, but not in the team
+    rows that ``get_tree`` passes as *known*, so the tree asks
+    ``project_clause``. A true answer here would make the chat refuse to
+    reorder the member's own Areas."""
+    made = await _as(live, OUTSIDER, "POST", "/projects/my/areas", {"name": _name()})
+    assert made.status_code == 201, made.text
+    area = made.json()["id"]
+    tree = (await _as(live, OUTSIDER, "GET", "/projects/tree")).json()
+    in_tree = _find(tree["personal"], area)
+    assert in_tree is not None and in_tree["parent_hidden"] is False
+    node = await _as(live, OUTSIDER, "GET", f"/projects/nodes/{area}")
+    assert node.status_code == 200, node.text
+    assert node.json()["parent_hidden"] is False
+
+
+async def test_r8_a_team_node_under_another_members_personal_root(live) -> None:  # noqa: F811
+    """Migration 297 can keep a TEAM node under a personal root. Its owner
+    sees the root, and no one else does. So the flag is true for the lead of
+    the team node, and the guard refuses that lead a move to the top level.
+    The owner sees the parent, so the guard lets the owner's move go on to
+    the checks that follow it."""
+    # One personal root for each member (`uq_pm_projects_personal_root`), so
+    # the route makes it or returns the one that exists.
+    mine = await _as(live, OUTSIDER, "POST", "/projects/my/project")
+    assert mine.status_code == 201, mine.text
+    root = mine.json()["id"]
+    team = _child(live, root, lead=LEAD)
+    d._grant(live.seeder, team, LEAD)
+    lead_view = (await _as(live, LEAD, "GET", f"/projects/nodes/{team}")).json()
+    assert lead_view["parent_hidden"] is True
+    owner_view = (await _as(live, OUTSIDER, "GET", f"/projects/nodes/{team}")).json()
+    assert owner_view["parent_hidden"] is False
+    r = await _as(live, LEAD, "POST", f"/projects/nodes/{team}/move",
+                  {"parent_project_id": None})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == _words()
+    assert str(_row(live, team).parent_project_id) == root
+
+
 async def test_r8_the_chat_refuses_before_its_card(live, monkeypatch) -> None:  # noqa: F811
     """Through the real gateway: the node read carries the flag, and the
     chat posts no move."""
