@@ -673,11 +673,24 @@ async def test_the_eviction_path_never_awaits_a_reader_that_fails_open(run,
 
 
 async def test_the_apply_logs_the_reason_on_the_chosen_line(run, monkeypatch) -> None:
-    """(d): ``Choice.server_named`` rides on ``executor.packs_chosen``."""
-    import structlog
+    """(d): ``Choice.server_named`` rides on ``executor.packs_chosen``.
 
+    The module logger is replaced with a recorder. ``capture_logs`` sees
+    nothing when an earlier test in the same process ran
+    ``configure_logging(level="WARNING")``, because the filtering wrapper drops
+    ``info`` before any processor. So that form passed or failed by the order
+    of the shard (local CI, 2026-11-22).
+    """
+    from orchestrator import _tool_injection as ti
+
+    seen: list[dict[str, Any]] = []
+
+    class _Recorder:
+        def __getattr__(self, _level: str) -> Any:
+            return lambda event, **kw: seen.append({"event": event, **kw})
+
+    monkeypatch.setattr(ti, "_log", _Recorder())
     _flag(monkeypatch, "*")
-    with structlog.testing.capture_logs() as seen:
-        await _apply(run, _turn())
+    await _apply(run, _turn())
     chosen = [e for e in seen if e["event"] == "executor.packs_chosen"]
     assert chosen and chosen[0]["server_named"] == ["email"]
