@@ -96,6 +96,7 @@ from acb_common.card_body import (
 )
 from acb_common.door_values import KEY_RE, compact_json, door_value
 from acb_common.paging import bounds, page_line, paged
+from acb_common.settings import internal_auth_headers
 from acb_common.studio_manifest import (
     BLOCKS,
     MAX_CELLS_PER_PAGE,
@@ -223,14 +224,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 class _Refused(Exception):
     """A refusal that is an answer: its text goes to the model."""
 
@@ -243,7 +236,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(_SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
