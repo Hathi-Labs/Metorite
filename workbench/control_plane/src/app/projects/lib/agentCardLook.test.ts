@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { agentCardLook, agentPlaceLine } from "./agentCardLook";
+import { agentCardLook, agentPlaceLine, splitPlanProgress } from "./agentCardLook";
 
 const via = "mcp:claude.ai:claude-code";
 
@@ -243,5 +243,17 @@ describe("a plan on the live line (SW-32)", () => {
         plan: { done: 1, total: 3, step: "x" },
       }).line,
     ).toBe("Waiting on CI");
+  });
+});
+
+describe("the count of a plan stays apart from the step (SW-32)", () => {
+  it("splits the head and the count, and leaves other lines whole", () => {
+    expect(
+      splitPlanProgress("Claude Code (lane-invites) · Pull the invite list · 0 of 2", { done: 0, total: 2 }),
+    ).toEqual({ head: "Claude Code (lane-invites) · Pull the invite list", tail: "· 0 of 2" });
+    expect(splitPlanProgress("Claude Code working", { done: 0, total: 2 })).toBeNull();
+    expect(splitPlanProgress("Claude Code · n", null)).toBeNull();
+    expect(splitPlanProgress(null, { done: 1, total: 3 })).toBeNull();
+    expect(splitPlanProgress(" · 1 of 3", { done: 1, total: 3 })).toBeNull();
   });
 });

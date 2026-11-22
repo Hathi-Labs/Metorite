@@ -57,6 +57,23 @@ export interface AgentCardLook {
 
 export const NO_AGENT_LOOK: AgentCardLook = { edge: null, line: null };
 
+/**
+ * SW-32: the line of a run with a plan ends in " · 3 of 7". The board draws
+ * the step part truncated and the count apart, so a long step never hides the
+ * count. Null when the line holds no count.
+ */
+export function splitPlanProgress(
+  line: string | null,
+  plan?: Parameters<typeof planProgressText>[0],
+): { head: string; tail: string } | null {
+  const progress = planProgressText(plan);
+  if (!line || !progress) return null;
+  const suffix = ` · ${progress}`;
+  if (!line.endsWith(suffix)) return null;
+  const head = line.slice(0, line.length - suffix.length);
+  return head ? { head, tail: `· ${progress}` } : null;
+}
+
 export function agentCardLook(
   state: string | null | undefined,
   facts: AgentPillFacts = {},
