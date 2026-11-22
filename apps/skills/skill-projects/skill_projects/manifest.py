@@ -532,6 +532,15 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
     Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B"),
+    # ── sequences.py — project sequences (SW-27a, task 861) ─────────────
+    Route(
+        "POST",
+        "/projects/nodes/{project_id}/sequences/{name}/reserve",
+        "",
+        "X",
+        "SW-27a: an agent reserves a number over MCP once SW-27b (task 3893) adds "
+        "reserve_number. The chat has no need to reserve a number.",
+    ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
     # §12.1). The in-product chat gets them in EA-12e.

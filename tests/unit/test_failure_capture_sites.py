@@ -1071,11 +1071,21 @@ async def _through_gate(gate: Any, fn: Any, exc: BaseException) -> BaseException
     return raised.value
 
 
+async def _answered_by_gate(gate: Any, fn: Any, exc: BaseException) -> Any:
+    """The text that the gate gives for *exc*, which it does not raise."""
+    ctx = SimpleNamespace(function=fn, arguments={"invoice": "INV-7"}, result=None)
+    await gate.process(ctx, _failing(exc))
+    return ctx.result
+
+
 async def test_c5_an_is_error_answer_writes_mcp_tool_error(monkeypatch) -> None:
+    """Task 3896: the gate answers an ``isError`` answer with text, and no
+    longer raises it. C5 still writes its one record first."""
     gate, fn = _mcp_gate(monkeypatch)
     exc = _tool_exc("Invoice INV-7 of Ravi Kumar is not found")
     with run("whatsapp"):
-        assert await _through_gate(gate, fn, exc) is exc
+        text = await _answered_by_gate(gate, fn, exc)
+    assert text.startswith("Refused:"), text
     [rec] = records()
     assert (rec.source, rec.error_code, rec.tool, rec.surface, rec.run_id) == (
         "mcp_call", "mcp_tool_error", "mcp", "whatsapp", "run-1")
@@ -1117,14 +1127,22 @@ async def test_c5_a_function_that_is_not_an_mcp_tool_writes_none(monkeypatch) ->
 
 
 async def test_c5_the_capture_never_changes_what_the_gate_raises(monkeypatch) -> None:
+    """A fault of the transport still raises. A server-side error answers as
+    text (task 3896). The flag of the capture changes neither."""
     gate, fn = _mcp_gate(monkeypatch)
-    exc = _tool_exc("x")
+    exc = _raised(_tool_exc("Connection closed"), cause=_mcp_error(-32000))
+    error = _tool_exc("x")
     with run():
         on = await _through_gate(gate, fn, exc)
+        said_on = await _answered_by_gate(gate, fn, error)
     monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", "")
     with run():
         off = await _through_gate(gate, fn, exc)
+        said_off = await _answered_by_gate(gate, fn, error)
     assert on is off is exc
+    token = re.compile(r"[0-9a-f]{16}")
+    assert said_on.startswith("Refused:")
+    assert token.sub("T", said_on) == token.sub("T", said_off)
 
 
 # ── C6: the connect of a chat run ────────────────────────────────────────────

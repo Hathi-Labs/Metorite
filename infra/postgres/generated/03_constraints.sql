@@ -1407,6 +1407,30 @@ ALTER TABLE pm_agent_run_strands ADD CONSTRAINT pm_agent_run_strands_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_agent_run_strands_org_idx ON pm_agent_run_strands (organization_id);
 
+-- pm_project_sequences
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_sequences WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_sequences still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_sequences ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_sequences ADD CONSTRAINT pm_project_sequences_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_sequences_org_idx ON pm_project_sequences (organization_id);
+
+-- pm_sequence_reservations
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_sequence_reservations WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_sequence_reservations still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_sequence_reservations ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_sequence_reservations ADD CONSTRAINT pm_sequence_reservations_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_sequence_reservations_org_idx ON pm_sequence_reservations (organization_id);
+
 -- pm_agent_runs
 DO $$
 BEGIN

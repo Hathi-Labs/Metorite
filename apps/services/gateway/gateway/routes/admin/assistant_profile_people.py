@@ -50,8 +50,15 @@ as ``people/core.py::has_login`` does, and an unbound GUC matches no row
 (R5). The route takes no flag: the tool is the part behind
 ``ASSISTANT_PROFILE_ENABLED``.
 
+**The name route (WS-FIND FIND-6b).** :func:`saved_names` and
+:func:`members_named` give tier 1 and the members of the directory tier to
+``GET /search/names``, through ``retrieval/sources.py``. They run the SQL of
+this route and its rules, and add no second alias or member read.
+
 Fences: ``tests/unit/test_resolve_person.py`` and
 ``tests/unit/test_resolve_person_r8.py`` (R8, the one-org read).
+``tests/unit/test_resolve_name_tool.py`` and
+``tests/unit/test_find_near_visibility_r8.py`` fence the two reads above.
 """
 
 from __future__ import annotations
@@ -260,6 +267,50 @@ def _near_tier(people: list[tuple[str, str, str]], members: list[tuple[str, str]
     ranked = sorted(best.values(), key=lambda b: (-b[0], fold(b[1]), b[2].lower()))
     source = "people" if any(b[3] == "people" for b in ranked) else "member"
     return [{"name": b[1], "email": b[2]} for b in ranked], source
+
+
+# ── The reads of ``GET /search/names`` (WS-FIND FIND-6b) ────────────────────
+# ``gateway/retrieval/sources.py`` calls these two, so ``resolve_name`` reads
+# the aliases and the members with the SQL and the rules of this route. Each
+# opens its own session in the bound tenant. Spec: ``find_engine.md`` §5.2.
+
+
+async def saved_names(user: UserContext, name: str) -> list[dict[str, str]]:
+    """Tier 1 of this route for *name*: the member's own aliases whose fold
+    equals the fold of *name*, ``[{name, email}]``. :func:`_alias_tier` reads
+    them, and an alias of a person who left drops (:func:`email_in_org`).
+    No feature, as tier 1 needs none. The member and the tenant come from the
+    session. An unbound tenant raises, so the caller names the read failed."""
+    uid = getattr(user, "email", None) or ""
+    org = current_tenant()
+    wanted = fold(name)
+    if not uid or not org:
+        raise HTTPException(status_code=503, detail="unavailable")
+    if not wanted:
+        return []
+    async with _tenant_session() as db:
+        return await _alias_tier(db, uid, org, wanted, "")
+
+
+async def members_named(user: UserContext, word: str,
+                        k: int) -> tuple[list[dict[str, str]], bool]:
+    """The active members of the bound org whose display name or local part
+    holds *word*: :data:`MEMBERS_SQL`, the read of the directory tier.
+
+    At most *k* ``{name, email}``, and True when more may match: more than
+    *k* held the word, or the table gave :data:`DIRECTORY_CAP` rows. Only a
+    member who holds ``feature:people`` reads them, as in this route. The
+    caller tests the whole name, so this holds one word only."""
+    from sqlalchemy import text
+
+    wanted = fold(word)
+    if not wanted or not user.has_permission(PEOPLE_FEATURE):
+        return [], False
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(MEMBERS_SQL), {"cap": DIRECTORY_CAP})).fetchall()
+    found = [{"name": str(r.display_name or ""), "email": str(r.email)} for r in rows
+             if wanted in fold(r.display_name) or wanted in fold(str(r.email).split("@", 1)[0])]
+    return found[:k], len(found) > k or len(rows) >= DIRECTORY_CAP
 
 
 def _name(value: str) -> str:
