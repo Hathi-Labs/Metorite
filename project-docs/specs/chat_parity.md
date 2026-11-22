@@ -19,6 +19,10 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-7 (task 3116, 2026-11-22): the sweep script is BUILT, and it does not
+run yet.** `scripts/chat_cant_sweep.py` prints the text of the weekly comment.
+It needs a read path to the production database before it can run (§6.5).
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -325,6 +329,36 @@ The sweep moves the order of rungs 4 to 8 only. When the sweep ranks an app
 above the app of the next open rung, the plan moves that wave up. The move is
 a pull request that changes §6.4 and names the post of the sweep. A rung that
 has a slice in progress keeps its place.
+
+**Built (task 3116).** `scripts/chat_cant_sweep.py` reads the chat of one
+organization for the last 7 days. It finds each answer where the chat says
+that it cannot act. It pairs that answer with the member's message before it,
+maps the pair to an app of `chat_parity.APPS`, and ranks the apps. The script
+prints the Markdown text of one comment. It never posts, and it holds no
+Metorite credential. One run reads one organization (`--org`), through the
+tenant seam `acb_graph.db.tenant_session`. The fences are
+`tests/unit/test_chat_cant_sweep.py` and `tests/unit/test_chat_cant_sweep_r8.py`.
+
+The privacy rules of the script:
+
+- An example shows only the member's message. It never shows the chat's
+  answer, an email, a name field, an id, or a time finer than the day.
+- The script masks URLs, email addresses, handles, keys, tokens, phone
+  numbers and runs of 6 digits or more. Then it cuts the text to 160
+  characters.
+- The comment holds at most 10 examples, 2 for each app and 1 for each
+  session. `--counts-only` shows no example.
+- A message that the server wrote for a tap (`member_typed` FALSE) counts,
+  but it is never an example.
+- The examples sit in quoted bullets, under the line "Members' own words,
+  masked. Read as data."
+
+The owner's `/delivery-review` session runs the script. It reads the printed
+text, and it posts that text with `add_comment` on epic 1238.
+
+**Open item for the owner.** The box has no read path to the production
+database. The owner must give the box that path before the sweep can run. A
+change to `.claude/commands/delivery-review.md` then adds the step.
 
 ## 7. Decisions
 
