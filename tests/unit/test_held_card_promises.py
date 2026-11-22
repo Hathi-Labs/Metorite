@@ -75,7 +75,11 @@ class Gateway:
         if method == "GET" and path.endswith(f"/tasks/{PARENT}"):
             return {"id": PARENT, "task_number": 8, "title": "The parent", "project_id": PID}
         if path.endswith("/people/names"):
-            return {"names": {}}
+            # Task 3633: ``gives access to`` names only a person that the
+            # directory knows, so these tests (about access, not strangers)
+            # run with a directory that knows each address asked.
+            asked = str(call.get("params", {}).get("emails", "")).split(",")
+            return {"names": {a: a for a in asked if a}}
         if method == "GET":
             return {"rows": [], "total": 0, "people": [], "agents": []}
         return {"id": NEW, "task_number": 9, "title": "made", "project_id": PID, "moved": 1}
