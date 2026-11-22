@@ -5598,8 +5598,9 @@ mutation of one layer alone stays green. The table shows those too.
    who-loses-what line above. `workspace._is_batch_row` and
    `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree and
    `session_paths` use it. The purge deletes each row at a path that the chat
-   began, a batch row too. Today a batch run writes only to its own thread
-   folder, so this touches legacy rows only.
+   began, a batch row too. A new batch run cannot add such a row.
+   `write_artifact._take_batch_name` skips each name that `_path_has_history`
+   finds written. So this touches legacy rows only.
 4. **The run doors with no stream check the room.** `POST /agent/run` and
    `/agent/run/async` took a client thread id with no room check. So a
    member who knew the id of another member's chat ran a shared agent in it
@@ -5670,9 +5671,10 @@ after the fix, so pr-check must show them green. The hermetic fences pass.
 4. **One connection for the step.** The sync pool holds 2 + 1 connections
    by default. So the purge runs in the session of the step, and takes no
    second connection. `purge_thread_files`, `session_paths`, `file_history`
-   and `purge_files` take that session as `db=`. The transaction stays in
-   one worker thread, inside one `with` block, so a cancelled request never
-   leaves the lock held. The store calls go through `asyncio.to_thread`. So
+   and `purge_files` take that session as `db=`. The step runs its
+   transaction inside one `with` block in one worker thread, so a cancelled
+   request never leaves the lock held. The store calls go through
+   `asyncio.to_thread`. So
    the one session crosses threads, one call after another and never at the
    same time. No code may run two calls on the session at once, for example
    with `asyncio.gather`. A wait for the lock of more than 10 s answers 503.
