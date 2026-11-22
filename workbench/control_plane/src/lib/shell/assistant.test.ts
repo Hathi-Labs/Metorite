@@ -1115,7 +1115,8 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
     const src = chat();
     expect(src).toContain("{hasComposerControls && !phoneChrome && (");
     expect((src.match(/<ChatMoreMenu\b/g) ?? []).length).toBe(1);
-    expect(src).toMatch(/\{phoneChrome && \(\s*<ChatMoreMenu/);
+    // VOX-7: the "…" control gives the row to the wave while the mic records.
+    expect(src).toMatch(/\{phoneChrome && !voiceBusy && \(\s*<ChatMoreMenu/);
     // The ring joins the composer only where the compaction band begins.
     expect(src).toContain("export const PHONE_RING_PCT = 75;");
     expect(src).toContain("const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;");

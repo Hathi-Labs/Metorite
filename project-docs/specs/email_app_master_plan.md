@@ -6241,7 +6241,10 @@ The line numbers are those of PR-B3 (`64e9f9bb0`).
   accepts it.
 - **The webhook overlap.** A `process_new_mail` that the webhook starts can
   classify at the same time as the classify of the scheduler. PR-A does not
-  change that. `HANDOFF.md` H-285 holds the follow-up.
+  change that. H-285 (task 731) builds the fix: the flag
+  `EMAIL_CLASSIFY_ONE_AT_A_TIME` (default off) makes a second classify of one
+  mailbox skip while the first runs. Fence:
+  `tests/unit/test_email_classify_one_at_a_time.py`.
 - **The reclassify count.** In `on`, `_count_reply_zero_backlog` also counts
   marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
   cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of

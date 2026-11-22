@@ -125,6 +125,17 @@ describe("Connect and Reconnect", () => {
     expect(panelPlan(needs, true).reconnect).toBe(false);
   });
 
+  it("shows the sign-in state and Connect on a URL row that the server asked to sign in (task 3866)", () => {
+    const asked = mcp({ acts_as: null, status: "needs_reconnect", last_error: "needs_signin" });
+    expect(mcpConnect(asked, true)).toBe("connect");
+    const html = sheet(asked);
+    expect(html).toContain("This server asks for a sign-in. Connect it to start.");
+    expect(html).toContain('data-mcp-connect="connect"');
+    expect(html).toMatch(/>Connect</);
+    expect(html).toContain("Needs reconnect");
+    expect(mcpConnect(asked, false)).toBeNull();
+  });
+
   it("shows the consent as loading while it starts", () => {
     const html = sheet(mcp(), { connecting: true });
     expect(html).toMatch(/data-mcp-connect="reconnect"[^>]*disabled|disabled[^>]*data-mcp-connect="reconnect"/);
