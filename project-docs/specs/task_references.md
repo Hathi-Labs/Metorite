@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. TR-5b, the word form `task 3596` (task 1595), is built on branch `pc-chat-1595`, with no flag and no migration. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. TR-5b, the word form `task 3596` (task 1595), is built on branch `pc-chat-1595`, with no flag and no migration. Proposed 2026-10-13 by owner directive, and verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -135,12 +135,12 @@ The owner chose the narrow slice on 2026-11-22 (answer 209e4bcb). A chat answer 
 
 - **The rule.** The word `task`, in any case, then spaces, tabs or no-break spaces on the same line, then a number that obeys rule 1. Examples: `task 3596`, `Task 12` and `(task 3596)`. `taskRefs.ts` rule 8 holds the rule, and `text_links.py` holds the same rule.
 - **The pill covers the number only.** The word `task` stays words before the pill. `task #12` uses the old `#` rule, so nothing new finds it.
-- **No reference:** `tasks 3`, `multitask 5`, `subtask 6`, `task12`, `task-12`, `task: 12`, a line break after `task`, and a `/` or `-` with a digit after the number (`task 3/4`, `task 5-7`). The old guards still apply from the number.
+- **No reference:** `tasks 3`, `multitask 5`, `subtask 6`, `task12`, `task-12`, `task: 12` and a line break after `task`. A `/` or `-` with a digit after the number makes no reference too (`task 3/4`, `task 5-7`). The old guards still apply from the number.
 - **A position is no reference.** The Projects tools write `task 5 of 7` (`forms.py`) and the card line `task 1: #7 «Fix the extruder»` (`guarded.py`). So `of` and a digit after the number make no reference. A colon after the number, with or without a space, makes no reference too, and so `task 10:30` is none. The `#7` in that card line still links.
 - **What the parser cannot tell apart.** A plan heading with no colon (`Task 1 — Set up`) and a count (`do the task 3 times`) look like a task number. They go to the lookup, and it links only when exactly one visible task has that number.
 - **`task 235 «Title»` draws the title once.** The fence takes a number only with its `#`. So `remarkEntityPills.ts` gives the bare reference the fenced name as the words after it. The pill then shows the number only, and the name after it draws once. With entity pills on, that name draws as its own name chip.
 - **The lookup does not change.** The link needs exactly one visible task with the number. Otherwise the words stay as written. A chat turn that streams draws text. An orchestrator turn that asked no task agent links `task N` only when the task's title follows the number.
-- **The server saves more.** The gateway runs the same rule on a saved title, description or comment. So a newly typed `task 12` adds a `relates_to` link, as a newly typed `#12` does. Text that held `task 12` before this change adds nothing on a save of the same words, because rule 4 reads the old value with the new rule.
+- **The server saves more.** The gateway runs the same rule on a saved title, description or comment. So a newly typed `task 12` adds a `relates_to` link, as a newly typed `#12` does. A save of the same words adds nothing for old text that held `task 12`. Rule 4 reads the old value with the new rule.
 - **Fences:** the new rows of `tests/fixtures/task_ref_cases.json`, `taskRefs.test.ts`, `chatTaskPills.test.ts` and `test_task_refs_text_links.py`.
 
 ## 7. Verification commands
