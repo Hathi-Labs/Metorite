@@ -123,7 +123,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 from acb_common import get_settings
 from agent_edge import tools
 from fastapi import HTTPException
-from gateway.routes.projects import agent_runs, filters
+from gateway.routes.projects import agent_runs, agent_summary, filters
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -256,6 +256,34 @@ class TestTheLabelGrantsNothing:
             f" or a session. Remove agent_label from: {bad}")
         for sql in (agent_runs._OPEN_RUN_SQL, agent_runs._HOLDER_SQL, agent_runs._ADOPT_SQL):
             assert not _LABEL.search(sql), sql
+
+    def test_no_reach_rule_of_the_map_reads_the_place(self) -> None:
+        """SW-106 (§3.12.4 rule 2). The map read selects ``agent_host``,
+        ``agent_host_kind``, ``agent_model`` and ``box_checked`` as display
+        data. The reach rule, the flags, the viewer level and the ``WHERE``
+        of the ONE ``seen`` text never read them."""
+        bad = _offenders(_GATEWAY / "agent_summary.py", (
+            "_reach_sql", "_viewer", "agents_view_allowed", "agent_map_allowed",
+            "parse_map_query", "_map_sql", "_session_state"))
+        assert not bad, (
+            "SW-106 (agent_coordination.md §3.12.4 rule 2): the machine, its kind and the"
+            f" model grant nothing. Remove them from: {bad}")
+        pattern = re.compile(_LABEL.pattern + r"|\bbox_checked\b")
+        guarded = agent_summary._SEEN_RUNS_SQL.split("WHERE r.task_id IS NOT NULL", 1)[1]
+        assert "r.organization_id" in guarded
+        assert not pattern.search(guarded), guarded
+        for admin in (True, False):
+            assert not pattern.search(agent_summary._reach_sql(admin)), admin
+
+    def test_the_place_of_a_session_comes_only_from_the_columns_of_the_runs(self) -> None:
+        """SW-106 (§3.12.4 rules 4 and 5). The sessions read names the three
+        columns and the box proof. It names no address column, and it reads
+        no chat run table, so a built-in or org agent has no model."""
+        sql = agent_summary._MAP_SESSIONS_SQL
+        for name in ("agent_host", "agent_host_kind", "agent_model", "box_checked"):
+            assert name in sql, name
+        assert "last_seen_addr" not in sql and "last_seen_addr" not in agent_summary._SEEN_RUNS_SQL
+        assert "agent_run " not in sql and "dynamic_agents" not in sql
 
     def test_the_session_key_never_meets_the_label_at_the_edge(self) -> None:
         """The edge mints and reads the session key in ``mcp.py``, checks the

@@ -150,6 +150,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_STATE_SQL,
     AGENT_RUN_WAITING_MAX_MIN,
     BOUND_ORG_SQL,
+    OPEN_STRANDS_SQL,
     agent_questions_allowed,
     agent_run_lease_s,
     agent_run_waiting_cap_min,
@@ -165,7 +166,7 @@ from gateway.routes.projects.filters import (
     open_strand_sql,
     run_idle_s_sql,
     run_life_at_sql,
-    strand_fits_sql,
+    stranded_of,
     task_closed_sql,
     waiting_of,
 )
@@ -1002,15 +1003,10 @@ SELECT DISTINCT ON (a.run_id) a.*
  ORDER BY a.run_id, a.seq DESC
 """
 
-#: SW-10a (spec §12.6). The open strand of each run that still fits it, for
-#: ``stranded`` on the runs wire. The rule is ``filters.open_strand_sql``.
-_OPEN_STRANDS_SQL = f"""
-SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
-  FROM pm_agent_run_strands s
-  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
- WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
- ORDER BY s.run_id, s.nudged_at DESC
-"""
+#: SW-10a (spec §12.6). The open strand of each run, for ``stranded`` on the
+#: runs wire. The one text lives in ``filters`` (task 1045d), because the
+#: task row reads it too.
+_OPEN_STRANDS_SQL = OPEN_STRANDS_SQL
 
 
 #: Task 1045a. The note of the newest waiting line of each run. Any later
@@ -1035,15 +1031,8 @@ def _waiting_out(row: Any, notes: dict[str, Any]) -> dict[str, Any] | None:
     return {**found, "note": notes.get(str(row.id))}
 
 
-def _stranded_out(found: Any, idle_s: Any) -> dict[str, Any]:
-    """``stranded`` of one run: the reason, the first miss, the second miss
-    (the recovery record) and the seconds since the last activity."""
-    return {
-        "reason": found.reason,
-        "nudged_at": wire(found.nudged_at),
-        "recovered_at": wire(found.recovered_at),
-        "idle_s": int(float(idle_s)) if idle_s is not None else None,
-    }
+#: The shape of one open strand. The one builder lives in ``filters``.
+_stranded_out = stranded_of
 
 
 async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:

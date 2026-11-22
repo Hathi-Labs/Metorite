@@ -5,7 +5,9 @@
  *
  * Reading this as: the same lens as the List, drawn as a tree from left to
  * right: person, then session, then task. Its neighbour is the List beside
- * it, and it reads the same state chips.
+ * it, and it reads the same state chips. SW-106: a session shows its machine
+ * and its model, and the switch "Group by machine" puts a machine node
+ * between the person and the sessions.
  *
  * ⚠️ **Read only.** Nothing drags, connects or edits. A click on a node opens
  * a side sheet with its facts. The sheet opens a task, and nothing else acts.
@@ -13,13 +15,14 @@
  * ⚠️ The words of the answer are untrusted. This file draws them as text.
  * Below 640 px the canvas gives way to an outline of nested lists.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Handle,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -38,6 +41,7 @@ import {
   type AgentMap,
   type AgentMapRead,
   CANVAS_LABEL,
+  GROUP_BY_MACHINE_LABEL,
   MAP_EMPTY_COPY,
   MAP_ERROR_COPY,
   MAP_TRUNCATED_COPY,
@@ -46,14 +50,26 @@ import {
   OUTLINE_LABEL,
   SHOW_QUIET_LABEL,
   agentMapOutline,
+  groupByMachine,
   layoutAgentMap,
   runStateChip,
   runStateIcon,
   runStateWord,
+  sessionPlace,
   sessionStateChip,
   sessionStateIcon,
   sessionStateWord,
 } from "../lib/agentMap";
+import {
+  MODEL_ICON,
+  NOT_REPORTED,
+  type Place,
+  hostKindIcon,
+  hostKindWord,
+  hostSourceSentence,
+  hostSourceWord,
+  placeSentence,
+} from "../lib/agentPlace";
 
 const CHIP = "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium";
 
@@ -89,6 +105,40 @@ function StateChip({ node }: { node: MapNode }) {
   return null;
 }
 
+/** The machine and the model of a session, as two short lines (SW-106). */
+function PlaceLines({ place }: { place: Place }) {
+  return (
+    <>
+      <span
+        data-map-machine=""
+        className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+        title={hostKindWord(place.kind)}
+      >
+        <Icon name={hostKindIcon(place.kind)} size={12} className="shrink-0" aria-hidden />
+        <span className="min-w-0 truncate">{place.host ?? NOT_REPORTED}</span>
+        {place.source ? (
+          <span data-map-source={place.source} className="shrink-0">
+            {hostSourceWord(place.source)}
+          </span>
+        ) : null}
+      </span>
+      <span data-map-model="" className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <Icon name={MODEL_ICON} size={12} className="shrink-0" aria-hidden />
+        <span className="min-w-0 truncate">{place.model ?? NOT_REPORTED}</span>
+      </span>
+    </>
+  );
+}
+
+function nodeLabel(node: MapNode): string {
+  const place = node.place;
+  if (node.kind === "session" && place) return `${node.label}. ${node.detail}. ${placeSentence(place)}`.trim();
+  if (node.kind === "machine" && place) {
+    return `Machine ${node.label}. ${hostKindWord(place.kind)}. ${node.detail}.`;
+  }
+  return `${node.label}. ${node.detail}`.trim();
+}
+
 function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
   const { node, onPick } = data;
   return (
@@ -97,7 +147,7 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
       <button
         type="button"
         data-map-node={node.kind}
-        aria-label={`${node.label}. ${node.detail}`.trim()}
+        aria-label={nodeLabel(node)}
         onClick={() => onPick(node.id)}
         style={{ width: node.w, height: node.h }}
         className={`pointer-events-auto flex flex-col justify-center gap-0.5 overflow-hidden rounded-md border border-border bg-card px-3 py-1 text-left text-foreground hover:bg-secondary ${
@@ -109,7 +159,27 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
             <span className="truncate text-sm font-medium">{node.label}</span>
             <span className="flex items-center gap-2">
               <StateChip node={node} />
-              {node.detail ? <span className="min-w-0 truncate text-xs text-muted-foreground">{node.detail}</span> : null}
+              {node.detail ? (
+                <span className="min-w-0 truncate text-xs text-muted-foreground" title={node.detail}>
+                  {node.detail}
+                </span>
+              ) : null}
+            </span>
+            {node.place ? <PlaceLines place={node.place} /> : null}
+          </>
+        ) : node.kind === "machine" && node.place ? (
+          <>
+            <span className="flex min-w-0 items-center gap-2">
+              <Icon name={hostKindIcon(node.place.kind)} size={14} className="shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
+            </span>
+            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              <span className="truncate">{node.detail}</span>
+              {node.place.source ? (
+                <span data-map-source={node.place.source} className="shrink-0">
+                  {hostSourceWord(node.place.source)}
+                </span>
+              ) : null}
             </span>
           </>
         ) : (
@@ -129,9 +199,50 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
 
 const NODE_TYPES = { agentMap: MapNodeCard };
 
-function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) => void; nowMs: number }) {
+/** The fit that every map uses. */
+const FIT_OPTIONS = { padding: 0.08, maxZoom: 1 };
+const REFIT_MS = 150;
+
+/**
+ * Fits the map again when the box settles or changes size, because the first
+ * fit runs while the box is still short. It stops once the member moves the map.
+ */
+function RefitOnResize({ box, moved }: { box: React.RefObject<HTMLDivElement | null>; moved: React.RefObject<boolean> }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let timer: number | undefined;
+    const watcher = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (!moved.current) void fitView(FIT_OPTIONS);
+      }, REFIT_MS);
+    });
+    watcher.observe(el);
+    return () => {
+      window.clearTimeout(timer);
+      watcher.disconnect();
+    };
+  }, [box, moved, fitView]);
+  return null;
+}
+
+function Canvas({
+  map,
+  onPick,
+  nowMs,
+  byMachine,
+}: {
+  map: AgentMap;
+  onPick: (id: string) => void;
+  nowMs: number;
+  byMachine: boolean;
+}) {
   const { resolvedTheme } = useTheme();
-  const layout = useMemo(() => layoutAgentMap(map, nowMs), [map, nowMs]);
+  const box = useRef<HTMLDivElement | null>(null);
+  const moved = useRef(false);
+  const layout = useMemo(() => layoutAgentMap(map, nowMs, { groupByMachine: byMachine }), [map, nowMs, byMachine]);
   const nodes: Node<NodeData>[] = useMemo(
     () =>
       layout.nodes.map((node) => ({
@@ -163,6 +274,7 @@ function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) =>
   );
   return (
     <div
+      ref={box}
       role="group"
       aria-label={CANVAS_LABEL}
       data-agent-map-canvas=""
@@ -171,6 +283,8 @@ function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) =>
     >
       <ReactFlowProvider>
         <ReactFlow
+          // A new key refits the view when the switch changes the layout width.
+          key={byMachine ? "by-machine" : "by-person"}
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
@@ -182,11 +296,17 @@ function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) =>
           // The page paints the canvas, so it follows every mode and density.
           style={{ "--xy-background-color": "transparent" } as React.CSSProperties}
           fitView
+          fitViewOptions={FIT_OPTIONS}
+          // An event means the member moved the map. A fit by code has none.
+          onMoveStart={(event) => {
+            if (event) moved.current = true;
+          }}
           minZoom={0.2}
           maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={22} size={1.2} />
+          <RefitOnResize box={box} moved={moved} />
         </ReactFlow>
       </ReactFlowProvider>
     </div>
@@ -222,6 +342,9 @@ function Outline({
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground">{session.client}</p>
+                  <div data-outline-place="" className="space-y-0.5">
+                    <PlaceLines place={session.place} />
+                  </div>
                   {session.tasks.length > 0 || session.quiet ? (
                     <ul className="ml-3 mt-1 space-y-1 border-l border-border pl-3">
                       {session.tasks.map((task) => (
@@ -262,6 +385,18 @@ function Fact({ term, children }: { term: string; children: React.ReactNode }) {
       <dt className="w-28 shrink-0 text-muted-foreground">{term}</dt>
       <dd className="min-w-0 flex-1 break-words text-foreground">{children}</dd>
     </div>
+  );
+}
+
+/** Machine, Kind, Place and Model, in the words of §3.12.3 (SW-106). */
+function PlaceFacts({ place }: { place: Place }) {
+  return (
+    <>
+      <Fact term="Machine">{place.host ?? NOT_REPORTED}</Fact>
+      <Fact term="Kind">{hostKindWord(place.kind)}</Fact>
+      <Fact term="Place">{hostSourceSentence(place.source)}</Fact>
+      <Fact term="Model">{place.model ?? NOT_REPORTED}</Fact>
+    </>
   );
 }
 
@@ -307,6 +442,7 @@ function NodeFacts({
         <dl className="space-y-2">
           <Fact term="Person">{session.person}</Fact>
           <Fact term="Client">{session.client}</Fact>
+          <PlaceFacts place={sessionPlace(session)} />
           <Fact term="State">{sessionStateWord(session.state)}</Fact>
           <Fact term="Last active">{relativeTime(session.last_at, nowMs) || "Unknown"}</Fact>
           <Fact term="Open runs">{session.run_count}</Fact>
@@ -324,6 +460,17 @@ function NodeFacts({
           </ul>
         ) : null}
       </div>
+    );
+  }
+  if (node.kind === "machine" && node.place) {
+    const group = groupByMachine(map.sessions).find((g) => g.key === node.ref);
+    return (
+      <dl className="space-y-2" data-map-facts="machine">
+        <Fact term="Machine">{node.place.host ?? NOT_REPORTED}</Fact>
+        <Fact term="Kind">{hostKindWord(node.place.kind)}</Fact>
+        <Fact term="Place">{hostSourceSentence(node.place.source)}</Fact>
+        <Fact term="Sessions">{group?.sessions.length ?? 0}</Fact>
+      </dl>
     );
   }
   if (node.kind === "task") {
@@ -358,6 +505,8 @@ export interface AgentMapViewProps {
   phone: boolean;
   onOpenTask?: (taskId: string) => void;
   nowMs?: number;
+  /** SW-112: the empty-state copy. A project map says no agent works on it. */
+  emptyCopy?: string;
 }
 
 export function AgentMapView({
@@ -367,10 +516,16 @@ export function AgentMapView({
   phone,
   onOpenTask,
   nowMs = Date.now(),
+  emptyCopy = MAP_EMPTY_COPY,
 }: AgentMapViewProps) {
   const [pickedId, setPickedId] = useState<string | null>(null);
+  // The switch is local: it is a view of the map, not a setting that persists.
+  const [byMachine, setByMachine] = useState(false);
   const map = read.kind === "ready" ? read.map : null;
-  const layout = useMemo(() => (map ? layoutAgentMap(map, nowMs) : null), [map, nowMs]);
+  const layout = useMemo(
+    () => (map ? layoutAgentMap(map, nowMs, { groupByMachine: byMachine }) : null),
+    [map, nowMs, byMachine],
+  );
   const picked = layout?.nodes.find((n) => n.id === pickedId) ?? null;
   const open = useCallback(
     (taskId: string) => {
@@ -386,10 +541,18 @@ export function AgentMapView({
 
   return (
     <div data-agent-map="" className="flex min-h-0 flex-1 flex-col">
-      <label className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        <Switch checked={showQuiet} onChange={onShowQuiet} label={SHOW_QUIET_LABEL} />
-        {SHOW_QUIET_LABEL}
-      </label>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+        <label className="flex items-center gap-2">
+          <Switch checked={showQuiet} onChange={onShowQuiet} label={SHOW_QUIET_LABEL} />
+          {SHOW_QUIET_LABEL}
+        </label>
+        {phone ? null : (
+          <label className="flex items-center gap-2" data-agent-map-group="">
+            <Switch checked={byMachine} onChange={setByMachine} label={GROUP_BY_MACHINE_LABEL} />
+            {GROUP_BY_MACHINE_LABEL}
+          </label>
+        )}
+      </div>
       {read.kind === "loading" ? (
         <div className="space-y-2 p-3">
           <Skeleton className="h-10 w-full" />
@@ -398,12 +561,12 @@ export function AgentMapView({
       ) : read.kind === "ready" && map ? (
         map.sessions.length === 0 ? (
           <p data-agent-map-empty="" className="p-3 text-sm text-muted-foreground">
-            {MAP_EMPTY_COPY}
+            {emptyCopy}
           </p>
         ) : phone ? (
           <Outline map={map} nowMs={nowMs} onOpenTask={open} />
         ) : (
-          <Canvas map={map} onPick={setPickedId} nowMs={nowMs} />
+          <Canvas map={map} onPick={setPickedId} nowMs={nowMs} byMachine={byMachine} />
         )
       ) : (
         <p role="alert" data-agent-map-error="" className="p-3 text-sm text-foreground">
