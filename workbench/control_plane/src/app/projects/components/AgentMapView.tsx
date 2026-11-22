@@ -13,13 +13,14 @@
  * ⚠️ The words of the answer are untrusted. This file draws them as text.
  * Below 640 px the canvas gives way to an outline of nested lists.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Handle,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -129,8 +130,39 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
 
 const NODE_TYPES = { agentMap: MapNodeCard };
 
+/** The fit that every map uses. */
+const FIT_OPTIONS = { padding: 0.08, maxZoom: 1 };
+const REFIT_MS = 150;
+
+/**
+ * Fits the map again when the box settles or changes size, because the first
+ * fit runs while the box is still short. It stops once the member moves the map.
+ */
+function RefitOnResize({ box, moved }: { box: React.RefObject<HTMLDivElement | null>; moved: React.RefObject<boolean> }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let timer: number | undefined;
+    const watcher = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (!moved.current) void fitView(FIT_OPTIONS);
+      }, REFIT_MS);
+    });
+    watcher.observe(el);
+    return () => {
+      window.clearTimeout(timer);
+      watcher.disconnect();
+    };
+  }, [box, moved, fitView]);
+  return null;
+}
+
 function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) => void; nowMs: number }) {
   const { resolvedTheme } = useTheme();
+  const box = useRef<HTMLDivElement | null>(null);
+  const moved = useRef(false);
   const layout = useMemo(() => layoutAgentMap(map, nowMs), [map, nowMs]);
   const nodes: Node<NodeData>[] = useMemo(
     () =>
@@ -163,6 +195,7 @@ function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) =>
   );
   return (
     <div
+      ref={box}
       role="group"
       aria-label={CANVAS_LABEL}
       data-agent-map-canvas=""
@@ -182,11 +215,17 @@ function Canvas({ map, onPick, nowMs }: { map: AgentMap; onPick: (id: string) =>
           // The page paints the canvas, so it follows every mode and density.
           style={{ "--xy-background-color": "transparent" } as React.CSSProperties}
           fitView
+          fitViewOptions={FIT_OPTIONS}
+          // An event means the member moved the map. A fit by code has none.
+          onMoveStart={(event) => {
+            if (event) moved.current = true;
+          }}
           minZoom={0.2}
           maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={22} size={1.2} />
+          <RefitOnResize box={box} moved={moved} />
         </ReactFlow>
       </ReactFlowProvider>
     </div>
@@ -358,6 +397,8 @@ export interface AgentMapViewProps {
   phone: boolean;
   onOpenTask?: (taskId: string) => void;
   nowMs?: number;
+  /** SW-112: the empty-state copy. A project map says no agent works on it. */
+  emptyCopy?: string;
 }
 
 export function AgentMapView({
@@ -367,6 +408,7 @@ export function AgentMapView({
   phone,
   onOpenTask,
   nowMs = Date.now(),
+  emptyCopy = MAP_EMPTY_COPY,
 }: AgentMapViewProps) {
   const [pickedId, setPickedId] = useState<string | null>(null);
   const map = read.kind === "ready" ? read.map : null;
@@ -398,7 +440,7 @@ export function AgentMapView({
       ) : read.kind === "ready" && map ? (
         map.sessions.length === 0 ? (
           <p data-agent-map-empty="" className="p-3 text-sm text-muted-foreground">
-            {MAP_EMPTY_COPY}
+            {emptyCopy}
           </p>
         ) : phone ? (
           <Outline map={map} nowMs={nowMs} onOpenTask={open} />

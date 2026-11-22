@@ -286,20 +286,27 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
 
     @mcp.tool(
         name="get_voucher",
-        description="One voucher by its GUID, with its ledger and stock entries.",
+        description="One voucher by guid, or by voucher_type and number.",
         annotations=READ_ONLY,
     )
     async def get_voucher(
-        guid: Annotated[str, Field(description="GUID from list_vouchers.")],
+        guid: Annotated[str | None, Field(description="GUID from list_vouchers.")] = None,
+        voucher_type: Annotated[
+            str | None, Field(description="With number, such as Sales.")
+        ] = None,
+        number: Annotated[str | None, Field(description="With voucher_type.")] = None,
         company: Company = None,
     ) -> CallToolResult:
         async def work() -> dict[str, Any]:
-            if not envelope.is_guid(guid):
-                raise Refusal("That is not a Tally voucher GUID. Find it with list_vouchers.")
-            name = pick_company(settings, company)
-            found = records.vouchers(await reader.post(envelope.voucher(guid, company=name)))
+            name, request = _voucher_request(guid, voucher_type, number, company)
+            found = records.vouchers(await reader.post(request))
             if not found:
-                raise Refusal("No voucher has that GUID in this company.")
+                raise Refusal("No voucher matches in this company.")
+            if len(found) > 1:
+                raise Refusal(
+                    f"{len(found)} vouchers have that type and number. "
+                    "Ask with the GUID from list_vouchers."
+                )
             v = found[0]
             return {
                 "company": name,
@@ -317,6 +324,21 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
                     for s in v.stock
                 ],
             }
+
+        def _voucher_request(guid, voucher_type, number, company) -> tuple[str, bytes]:
+            by_number = voucher_type is not None or number is not None
+            if (guid is None) == (not by_number):
+                raise Refusal("Give the guid, or the voucher_type and the number.")
+            if guid is not None:
+                if not envelope.is_guid(guid):
+                    raise Refusal("That is not a Tally voucher GUID. Find it with list_vouchers.")
+                name = pick_company(settings, company)
+                return name, envelope.voucher(guid, company=name)
+            if not voucher_type or not number:
+                raise Refusal("Give both the voucher_type and the number.")
+            short(voucher_type, number)
+            name = pick_company(settings, company)
+            return name, envelope.voucher_by_number(voucher_type, number, company=name)
 
         return await guarded(settings, "get_voucher", work, company=company)
 

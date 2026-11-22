@@ -91,6 +91,11 @@ RECORDINGS: tuple[Recording, ...] = (
         "get_voucher: put the GUID of one voucher from R09 in place of the zeros",
         lambda c, led: envelope.voucher(_SAMPLE_GUID, company=c),
     ),
+    Recording(
+        "R12_voucher_by_number.xml",
+        "get_voucher by type and number: put a voucher type and number from R09 in place of the placeholders",
+        lambda c, led: envelope.voucher_by_number("VOUCHER TYPE", "NUMBER", company=c),
+    ),
 )
 
 

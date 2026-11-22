@@ -76,6 +76,7 @@ export const CANVAS_LABEL = "Map of people, sessions and tasks";
 export const OUTLINE_LABEL = "Outline of people, sessions and tasks";
 export const MAP_ERROR_COPY = "The map did not load. Check your connection, then open it again.";
 export const MAP_EMPTY_COPY = "No agent session is open now.";
+export const PROJECT_MAP_EMPTY_COPY = "No agent works on this project yet.";
 export const MAP_TRUNCATED_COPY = "The map shows the first sessions and runs only.";
 export const SHOW_QUIET_LABEL = "Show quiet runs";
 export const OPEN_TASK_LABEL = "Open task";

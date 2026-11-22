@@ -310,7 +310,7 @@ def test_get_voucher_refuses_text_that_is_not_a_guid(guid):
 
 def test_get_voucher_with_no_match():
     text = err(call("get_voucher", {"guid": "ffffffff-0000-1111-2222-333344445555-00000001"}))
-    assert text == "No voucher has that GUID in this company."
+    assert text == "No voucher matches in this company."
 
 
 # --- stock_summary ---------------------------------------------------------------------------
@@ -403,3 +403,72 @@ def test_a_missing_or_wrong_input_is_one_plain_sentence(tool, args, sentence):
     reader = FakeReader()
     assert err(call(tool, args, reader=reader)) == sentence
     assert reader.sent == []
+
+
+# --- get_voucher by voucher type and number ------------------------------------------
+
+
+class ByNumberReader(FakeReader):
+    """Answers the by-number collection from the SYNTHETIC day book, filtered
+    by the two static variables, as Tally's fixed formula would."""
+
+    async def post(self, envelope: bytes):
+        req = SafeET.fromstring(envelope)
+        self.sent.append(req)
+        if req.find("HEADER/ID").text != "BridgeVoucherByNumber":
+            return await super().post(envelope)
+        sv = req.find("BODY/DESC/STATICVARIABLES")
+        want = (sv.findtext("BridgeVchType"), sv.findtext("BridgeVchNumber"))
+        root = parse_answer((SYNTHETIC / "SYNTHETIC_day_book.xml").read_bytes())
+        msg = root.find("BODY/DATA/TALLYMESSAGE")
+        for v in list(msg):
+            if (v.findtext("VOUCHERTYPENAME"), v.findtext("VOUCHERNUMBER")) != want:
+                msg.remove(v)
+        return root
+
+
+def test_get_voucher_by_type_and_number():
+    reader = ByNumberReader()
+    body = ok(call("get_voucher", {"voucher_type": "Sales", "number": "101"}, reader=reader))
+    assert body["guid"] == GUID and body["party"] == "Alpha Traders"
+    req = reader.sent[0]
+    assert req.find("HEADER/ID").text == "BridgeVoucherByNumber"
+    assert [el.text for el in req.iter("TALLYREQUEST")] == ["Export"]
+
+
+@pytest.mark.parametrize(
+    "number", ['101" OR 1=1', "##BridgeVchType", "$$SysName:XML", "</BridgeVchNumber><x>", "a & b"]
+)
+def test_the_type_and_number_stay_values_and_never_enter_the_formula(number):
+    reader = ByNumberReader()
+    call("get_voucher", {"voucher_type": "Sales", "number": number}, reader=reader)
+    req = reader.sent[0]
+    assert req.find("BODY/DESC/STATICVARIABLES/BridgeVchNumber").text == number
+    formula = req.find("BODY/DESC/TDL/TDLMESSAGE/SYSTEM").text
+    assert formula == "$VoucherTypeName = ##BridgeVchType AND $VoucherNumber = ##BridgeVchNumber"
+
+
+@pytest.mark.parametrize(
+    "args,sentence",
+    [
+        ({}, "Give the guid, or the voucher_type and the number."),
+        ({"guid": GUID, "number": "101"}, "Give the guid, or the voucher_type and the number."),
+        ({"number": "101"}, "Give both the voucher_type and the number."),
+        ({"voucher_type": "Sales", "number": ""}, "Give both the voucher_type and the number."),
+        ({"voucher_type": "Sales", "number": "9"}, "No voucher matches in this company."),
+    ],
+)
+def test_get_voucher_refuses_an_unclear_ask(args, sentence):
+    assert err(call("get_voucher", args, reader=ByNumberReader())) == sentence
+
+
+def test_two_vouchers_with_one_number_ask_for_the_guid():
+    class Twice(ByNumberReader):
+        async def post(self, envelope: bytes):
+            root = await super().post(envelope)
+            msg = root.find("BODY/DATA/TALLYMESSAGE")
+            msg.append(next(iter(msg)))
+            return root
+
+    text = err(call("get_voucher", {"voucher_type": "Sales", "number": "101"}, reader=Twice()))
+    assert text == "2 vouchers have that type and number. Ask with the GUID from list_vouchers."

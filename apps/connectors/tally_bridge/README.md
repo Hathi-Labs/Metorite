@@ -16,7 +16,8 @@ An MCP server that runs on the machine with TallyPrime. It reads Tally on
 |---|---|---|
 | `tally_bridge/reader/` | Talks to TallyPrime over HTTP | `settings` only |
 | `tally_bridge/tools/` | The MCP tools | `reader`, `settings` |
-| `tally_bridge/transport/` | How Metorite reaches the tools (address mode now, link mode in rung 2) | `tools`, `reader`, `settings`, `secret_store` |
+| `tally_bridge/transport/` | How Metorite reaches the tools (address mode now, link mode in rung 2) | `tools`, `reader`, `setup`, `settings`, `secret_store` |
+| `tally_bridge/setup/` | The setup page on 127.0.0.1 (brief §6.7) | `reader`, `settings`, `secret_store` |
 
 `settings.py` and `secret_store.py` each hold a store interface. A dev box
 reads the environment. Step 4 of the build order adds the Windows stores
@@ -53,10 +54,14 @@ such as `office-pc.<tailnet>.ts.net`. The MCP layer refuses a request whose
 | §5.4 envelopes, §5.5 traps, §6.5 rules 3 and 7 | Built (PR 2). `reader/envelope.py`, `reader/parse.py`, `reader/values.py`, the queue of one in `reader/client.py` |
 | §6.4 `find_ledgers`, and `status` with the allowed companies | Built (PR 3). Each tool takes the optional `company` input. The `tools/list` answer is about 1.1 KB for 2 tools (1,127 bytes over HTTP) |
 | §6.5 rule 4: the company allow-list | Built (PR 3). `ALLOWED_COMPANIES`, exact names. With no allowed company, no tool reads the books |
-| §6.4 read tools 3 to 9 | Built (PR 3, later commits). `tools/reports.py`. All 9 tools fit in 4,602 bytes of `tools/list` |
+| §6.4 read tools 3 to 9 | Built (PR 3, later commits). `tools/reports.py`. All 9 tools fit in 4,758 bytes of `tools/list` (PR 4) |
 | §6.5 rule 5: 60 calls a minute for each token | Built (PR 3). `calllog.CallLimiter`, one for each MCP server, so one for each token. `CALLS_PER_MINUTE` changes it. A call past the limit never reaches Tally |
 | §6.5 rule 6: one log line for each call, no token | Built (PR 3). `calllog.record`: time, tool, inputs, row count, duration and a result code. With `LOG_DIR` set, `calls.log` rotates at midnight and keeps 90 days |
-| §6.7 installer, Windows service, DPAPI, setup screen | Step 4. Needs Windows |
+| §6.7 setup page, address-mode form: find Tally, choose companies, token and address, done | Built (PR 4). `setup/`. The allow-list that it saves holds from the next tool call |
+| §6.7 per-install secret and the Origin check (brief test 18) | Built (PR 4). `setup/guard.py` |
+| §6.3 settings store that the setup page writes | Built (PR 4). `FileSettingsStore` (JSON, atomic write) |
+| §6.3 secret store | Built (PR 4). `DevFileSecretStore` holds hashes only, mode 600, DEV ONLY |
+| §6.7 installer, Windows service, DPAPI store, start-at-sign-in, keep awake | Step 4. Needs Windows |
 
 ## Brief tests at the unit level (PR 1)
 
@@ -74,13 +79,43 @@ unit pass is not the brief test. The brief test runs on the public address.
 `tests/unit/test_tally_bridge_reader.py` holds the fence of §6.5 rule 7: no
 read path can build an Import request.
 
+## The setup page (dev box)
+
+```bash
+cd apps/connectors/tally_bridge
+uv run --project . python -m tally_bridge setup-link --settings-file s.json --dev-secret-file k.json
+uv run --project . python -m tally_bridge serve --settings-file s.json --dev-secret-file k.json
+```
+
+`setup-link` makes a new per-install key, stores only its hash, and prints
+the address that opens the page. On Windows the installer does this (step 4).
+The bridge serves the page at `/setup` on 127.0.0.1 only. Each request must
+pass four checks (`setup/guard.py`):
+
+1. The `Host` header is exactly `127.0.0.1:<port>`. A request through the
+   tunnel carries the tunnel host name, so the tunnel cannot reach the page.
+2. No forwarding header (`X-Forwarded-For`, `Tailscale-Funnel-Request`,
+   `CF-Connecting-IP` and others).
+3. The key: in the address for the page, and in `X-Setup-Key` for each API
+   call. The bridge compares hashes in constant time.
+4. An API call carries `Origin: http://127.0.0.1:<port>`.
+
+The access log of the server is off, so the key in the address reaches no
+log. The page writes every value as text, never as HTML.
+
+**`--dev-secret-file` is for a dev box only.** It holds hashes, never a token,
+in a file that only its owner reads. A customer's machine uses Windows DPAPI
+(build step 4).
+
 ## Where the tools differ from the brief table
 
 - The date inputs are `from_date` and `to_date`, because `from` is a reserved
   word in Python.
-- `get_voucher` takes a `guid` only. Find the GUID with `list_vouchers`. The
-  brief also allows `voucher_type` and `number`. A later commit adds that
-  path when recording R09 shows the numbering.
+- `get_voucher` takes a `guid`, or a `voucher_type` and a `number` (PR 4).
+  The second form sends a collection with a fixed filter formula. The type
+  and the number go in only as the values of two TDL variables, so they never
+  become part of the formula. Two vouchers with one number answer a request
+  for the GUID. Recording R12 proves the request on a real TallyPrime.
 - `ledger_statement` answers `opening` and `closing` as null. Recording R06
   shows where Tally puts them, and then the tool reads them.
 - `trial_balance` reads from 1 April of the financial year that holds
@@ -106,7 +141,7 @@ when the recorded one lands.
 | # | Request | Why |
 |---|---|---|
 | R01 | `curl -s -i http://127.0.0.1:9000/` (a GET with no body) | `is_up` reads "up" from any 200 answer. Record the exact body, so that the bridge can tell TallyPrime from another program on port 9000 |
-| R02 to R11 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each. In R11, put the GUID of one voucher from the R09 answer in place of the zeros |
+| R02 to R12 | The files that `record-requests` writes (below) | Each tool builds on one of them. `reader/recording.py` says why for each. In R11, put the GUID of one voucher from the R09 answer in place of the zeros. In R12, put the type and the number of that voucher in place of the placeholders |
 
 Write the requests with the real names. Then send each one, and keep the
 answer and its headers:

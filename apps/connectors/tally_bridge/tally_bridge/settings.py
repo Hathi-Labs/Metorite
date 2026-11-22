@@ -12,9 +12,11 @@ behind the same interface, and no tool changes.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -111,8 +113,21 @@ def settings_from_mapping(values: Mapping[str, str]) -> Settings:
     return Settings(**kwargs).validate()  # type: ignore[arg-type]
 
 
+def settings_to_mapping(settings: Settings) -> dict[str, str]:
+    """The names of brief section 6.3, as text. The reverse of settings_from_mapping."""
+    out: dict[str, str] = {}
+    for name, (attr, kind) in _NAMES.items():
+        value = getattr(settings, attr)
+        out[name] = "|".join(value) if kind is tuple else str(value)
+    return out
+
+
 class SettingsStore(Protocol):
     def load(self) -> Settings: ...
+
+    def save(self, settings: Settings) -> None:
+        """Write the settings. The setup screen calls it. A read-only store raises."""
+        ...
 
 
 class EnvSettingsStore:
@@ -130,3 +145,62 @@ class EnvSettingsStore:
             if self.PREFIX + name in self._env
         }
         return settings_from_mapping(values)
+
+    def save(self, settings: Settings) -> None:
+        raise SettingsError("The environment store is read only. Pass --settings-file.")
+
+
+class FileSettingsStore:
+    """The settings in one JSON file, with the names of brief section 6.3.
+
+    For a dev box, and the shape that step 4 keeps on Windows (under
+    ProgramData). A save writes a new file and then replaces the old one, so a
+    crash never leaves half a file. The file holds no secret.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self._path = Path(path)
+
+    def load(self) -> Settings:
+        if not self._path.exists():
+            return Settings().validate()
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SettingsError(f"The settings file {self._path} is not readable.") from exc
+        if not isinstance(data, dict):
+            raise SettingsError(f"The settings file {self._path} is not a JSON object.")
+        return settings_from_mapping({str(k): str(v) for k, v in data.items()})
+
+    def save(self, settings: Settings) -> None:
+        settings.validate()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(settings_to_mapping(settings), fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, self._path)
+
+
+class LiveSettings:
+    """The settings that the running bridge reads on each call.
+
+    The tools and the setup screen share one LiveSettings. When the setup
+    screen saves a new allow-list, ``replace`` swaps the settings, and the next
+    tool call reads the new list with no restart. The bind address, the port,
+    the public host and the call limit take effect at the next start.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings.validate()
+
+    @property
+    def current(self) -> Settings:
+        return self._settings
+
+    def replace(self, settings: Settings) -> None:
+        self._settings = settings.validate()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._settings, name)
