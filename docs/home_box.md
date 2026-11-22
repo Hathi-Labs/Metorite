@@ -93,7 +93,9 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 The start note is the first prompt of the session. Put these parts in one
 plain text file on the PC:
 
-1. The lane's name, its stream and the task numbers, in priority order.
+1. The lane's name, its stream and the task numbers, in priority order. Name
+   the lane as `agent_label`, and the machine as `host`. The lane sends both
+   with each claim (task 3626, SW-105).
 2. A time window, not a hard deadline. A lane refuses a HIGH slice that
    cannot finish before a hard deadline, so it stops early.
 3. The full text of `scripts/home_server/lanes/lane-rules.md`.

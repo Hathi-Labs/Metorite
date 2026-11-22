@@ -682,6 +682,17 @@ class TestTheChecks:
             assert "pass it as external_link" in prompts._task_text("42", runs=runs)
         assert "pass it as external_link" in prompts._queued_text()
 
+    def test_sw105_the_claim_step_asks_for_the_label_the_machine_and_the_model(self):
+        """SW-105. The claim step names the four inputs that the map reads, and
+        the three kinds of machine. Each name is an input of claim_task."""
+        inputs = tools.CLAIM_TASK.input_schema["properties"]
+        for text in (prompts._task_text("42", runs=True),
+                     prompts._task_text("42", runs=False), prompts._queued_text()):
+            for name in ("agent_label", "host", "host_kind", "model"):
+                assert name in text and name in inputs, name
+            assert "computer, server or cloud" in text
+            assert "Pass a value only when you know it" in text
+
     def test_the_prompt_never_names_an_unknown_tool(self):
         """Each tool name in the message is a tool of the edge."""
         for runs in (True, False):
@@ -692,6 +703,8 @@ class TestTheChecks:
                                                  "untrusted_text", "held_by", "run_id",
                                                  "agent_run_id", "task_held",
                                                  "external_link",
+                                                 # SW-105: inputs of claim_task.
+                                                 "agent_label", "host_kind",
                                                  # SW-108: an input of claim_task.
                                                  "dispatched_by",
                                                  # Task 1045a: an input of
