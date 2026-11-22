@@ -179,7 +179,12 @@ def check_startup_secrets(service: str, settings: Any = None) -> list[str]:
     if service not in SERVICES:
         raise ValueError(f"unknown service {service!r}; expected one of {SERVICES}")
     if settings is None:
-        settings = get_settings()
+        try:
+            settings = get_settings()
+        except Exception as exc:  # the unit fails on its own settings anyway
+            _log.error("secrets.startup_check_failed", service=service,
+                       mode="shadow", error=type(exc).__name__)
+            return []
     if str(getattr(settings, "acb_env", "prod")) == "dev":
         return []
     mode = secret_startup_check_mode(settings)
