@@ -279,6 +279,7 @@ _SEEN_RUNS_SQL = """
            EXISTS (SELECT 1 FROM agent_connection bc WHERE bc.id = r.connection_id
                       AND bc.organization_id = r.organization_id
                       AND bc.credential = 'box') AS box_checked,
+           r.dispatched_by_run_id,
            """ + run_life_at_sql("r") + """ AS life_at,
            {state} AS state,
            COALESCE(r.started_at, r.created_at) AS run_at,
@@ -641,6 +642,9 @@ MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
     "last_at",
 )
+#: SW-107. One line of who dispatched whom: from the dispatcher's session
+#: node to the session node of the run that it dispatched.
+MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
 
 #: The ``{only}`` of the map with a ``project_id``: the runs on the tasks of
 #: the project and of each project under it (the CTE ``sub`` of
@@ -666,6 +670,7 @@ _MAP_CTE = "{head}seen AS (" + _SEEN_RUNS_SQL + """), live AS (
     SELECT seen.id, seen.client_via, seen.task_id, seen.state, seen.run_at,
            seen.life_at, seen.agent_label, lower(seen.member_email) AS person,
            seen.agent_host, seen.agent_host_kind, seen.agent_model, seen.box_checked,
+           seen.dispatched_by_run_id,
            """ + _NODE_SQL + """ AS node_id,
            (seen.life_at < now() - interval '{quiet_s} seconds'
             AND seen.state NOT IN ('awaiting', 'waiting')) AS quiet
@@ -713,6 +718,27 @@ SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
   JOIN pm_tasks t ON t.id = live.task_id
  WHERE {fold}
  ORDER BY live.life_at DESC NULLS LAST, live.id DESC
+ LIMIT :cap
+"""
+
+
+#: SW-107 (§3.12.3, §3.12.4 rule 1). The lines of who dispatched whom. A
+#: line joins the dispatcher's session node to the run's session node, so a
+#: line outlives the dispatcher's run while its session has a node. The
+#: dispatcher's run must be in ``seen`` too, so a run that the viewer cannot
+#: see gives no line and no node. ``:nodes`` holds the listed session nodes.
+#: It reads ONE step, never the whole chain: two concurrent claims can make
+#: a loop (``agent_runs.set_run_dispatcher``), and one step always ends.
+_MAP_LINES_SQL = _MAP_CTE + """, node_of AS (
+    SELECT seen.id, """ + _NODE_SQL + """ AS node_id FROM seen
+)
+SELECT DISTINCT d.node_id AS from_id, live.node_id AS to_id
+  FROM live
+  JOIN node_of d ON d.id = live.dispatched_by_run_id
+ WHERE d.node_id <> live.node_id
+   AND d.node_id = ANY(CAST(:nodes AS text[]))
+   AND live.node_id = ANY(CAST(:nodes AS text[]))
+ ORDER BY 1, 2
  LIMIT :cap
 """
 
@@ -806,15 +832,17 @@ async def _agent_map(
     """The map read of SW-102 (``agent_coordination.md`` §3.12.2).
 
     People, session nodes and the open runs that the caller may see, through
-    the ONE ``seen`` text. ``lines`` stays empty until SW-107 stores who
-    dispatched whom. No value of the answer holds a session key or an address
-    (§3.12.4 rule 5). SW-106: a session node holds the machine, its kind and
-    the model of its newest visible run (:func:`_place_of`). The read lists no
-    chat agent, so no built-in or org agent has a model here (rule 4). *project_id* is a checked UUID
+    the ONE ``seen`` text. ``lines`` joins the session nodes of who
+    dispatched whom (SW-107), when the caller sees both runs. No value of the
+    answer holds a session key or an address (§3.12.4 rule 5). SW-106: a session
+    node holds the machine, its kind and the model of its newest visible run
+    (:func:`_place_of`). The read lists no chat agent, so no built-in or org
+    agent has a model here (rule 4). *project_id* is a checked UUID
     (:func:`parse_map_query`). A project that the caller cannot see answers
     the one 404 of :func:`_not_found`.
 
-    ``truncated`` counts the LISTED runs only. When more than
+    ``truncated`` is True when the runs, the session nodes or the lines pass
+    their cap. For the runs it counts the LISTED runs only. When more than
     :data:`MAP_RUNS_MAX` runs are quiet and ``show_quiet`` is off,
     ``truncated`` is False while ``count`` is over the cap.
     """
@@ -846,9 +874,14 @@ async def _agent_map(
                           fold="true" if show_quiet else "NOT live.quiet")),
             {**params, "cap": MAP_RUNS_MAX + 1},
         )).fetchall())
+        kept = sessions[:MAP_SESSIONS_MAX]
+        nodes = {str(s.node_id) for s in kept}
+        # SW-107: one step from each listed node, and both ends listed.
+        lines = list((await db.execute(
+            text(_map_sql(_MAP_LINES_SQL, vis=vis, admin=admin, scoped=scoped)),
+            {**params, "nodes": sorted(nodes), "cap": MAP_RUNS_MAX + 1},
+        )).fetchall()) if nodes else []
 
-    kept = sessions[:MAP_SESSIONS_MAX]
-    nodes = {str(s.node_id) for s in kept}
     listed = [r for r in runs[:MAP_RUNS_MAX] if str(r.node_id) in nodes]
     people: dict[str, int] = {}
     for s in kept:
@@ -879,11 +912,12 @@ async def _agent_map(
             "age": _age_s(r.run_at),
             "last_at": _when(r.life_at),
         } for r in listed],
-        # SW-107 fills the lines of who dispatched whom. The key stays, so the
-        # shape of the answer does not change then.
-        "lines": [],
+        # SW-107: who dispatched whom, from session node to session node.
+        "lines": [{"from": str(x.from_id), "to": str(x.to_id)}
+                  for x in lines[:MAP_RUNS_MAX]],
         "count": int(sessions[0].total_runs or 0) if sessions else 0,
-        "truncated": len(runs) > MAP_RUNS_MAX or len(sessions) > MAP_SESSIONS_MAX,
+        "truncated": (len(runs) > MAP_RUNS_MAX or len(sessions) > MAP_SESSIONS_MAX
+                      or len(lines) > MAP_RUNS_MAX),
         "viewer": viewer,
     }
 

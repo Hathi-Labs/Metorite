@@ -106,3 +106,16 @@ describe("AgentMapView", () => {
     expect(view({ phone: true })).not.toContain("Group by machine");
   });
 });
+
+describe("AgentsCanvas (SW-112)", () => {
+  it("says no agent works on the project when the map has no session", async () => {
+    const { AgentsCanvas } = await import("./AgentsCanvas");
+    const empty = parseAgentMap({ sessions: [], runs: [], lines: [], count: 0, truncated: false, viewer: "admin" });
+    const read: AgentMapRead = empty ? { kind: "ready", map: empty } : { kind: "loading" };
+    const html = renderToStaticMarkup(
+      createElement(AgentsCanvas, { read, showQuiet: false, onShowQuiet: () => {} }),
+    );
+    expect(empty).not.toBeNull();
+    expect(html).toContain("No agent works on this project yet.");
+  });
+});
