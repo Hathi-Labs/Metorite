@@ -2193,6 +2193,11 @@ They keep their own gates.
 - **Done when.** R8: a start writes one child, a replayed start writes none, and a stop ends the child. A run of another connection gives 403. The 21st open child gives 429. On a real Claude Code with the plugin, a lane shows its implementer and its verifier under it on the map.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (from SW-39), `tests/unit/test_mcp_edge_coverage.py`, and a `node` test for each hook.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE, dark. At dispatch, check the hook path of §3.12.7 ("The way a hook calls Metorite"). **Depends on.** SW-39, SW-82, SW-83.
+- **Built (task 3797), 2026-11-22: the tool and the gateway rules.** The edge tool `report_subagent` sends one POST to `/projects/agent-runs/{run_id}/children`. The body holds `agent_id`, `event`, `agent_label` and `model`. The pair is now in `MCP_WRITE_ROUTES`. It stays class X in the chat manifest, so the chat never sends it. The tool shows only while the runs flag and the writes flag are on.
+- **The key.** The child keeps `child:<parent id>:<agent_id>` in `idempotency_key`. The unique index of migration 267 is on the organization, the member and the key, and it takes a row with no task. So the slice adds no migration. A replayed start writes nothing and answers the first child with 200.
+- **The stop.** A stop gives the open child the status `completed` and `ended_at`. A stop of an unknown or ended child answers 200 and changes nothing. The UPDATE names the parent, the key and the member, so a stop never ends another run.
+- **The cap and the refusals.** The start of a 21st open child answers 429 with a fixed text. An own run of another connection answers 403. A run of another member keeps the one 404, so the 403 tells a member only about the member's own run.
+- **Not built.** The `SubagentStart` and `SubagentStop` hooks, the plugin of SW-82, the run id cache of SW-83, and the hook entries in `.claude/settings.json`. The plugin and the cache do not exist yet. The settings edit needs the `guard-write` grant. Nobody checked the hook path of §3.12.7 on a real Claude Code, so the map of a real lane is not proven.
 
 ---
 
