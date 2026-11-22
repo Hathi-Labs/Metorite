@@ -326,12 +326,14 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities",
-                                   "pm_agent_run_strands"])
+                                   "pm_agent_run_strands", "pm_project_sequences",
+                                   "pm_sequence_reservations"])
 def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
     """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
     an outside agent and their activities hold one organization's work. Neither
     may be exempt, and the committed policy phase must carry each (R5). SW-10a
-    (§12.6) adds the strands of a run: a nudge and a recovery record."""
+    (§12.6) adds the strands of a run: a nudge and a recovery record. SW-27a
+    (task 861) adds the project sequences and their reservations."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT

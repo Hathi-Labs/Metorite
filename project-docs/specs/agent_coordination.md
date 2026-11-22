@@ -6,6 +6,8 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
+**SW-27a (the project sequences: migration 477 and the reserve route) is built, 2026-11-22. SW-27b, SW-27c and SW-27d are open.**
+
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
@@ -1372,6 +1374,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** R8: 20 parallel calls get 20 different numbers, as the NOBYPASSRLS role. A second org never sees or moves the first org's sequence.
 - **Fence.** A new R8 suite, `test_project_sequences_r8.py`, and `test_tenant_coverage.py`.
 - **Risk.** HIGH (a new tenant table, concurrency). **Gate.** AGENT-SAFE.
+- **Owner answers (task 861, 2026-11-22, prompt e6f9f76c).** The contributor fleet may add the migration. A released number stays burned: no code lowers `last_value`, so no number comes back. A reservation is `used` on the agent's call, or when a pull request that the task references merges.
+- **Slices.**
+  - **SW-27a** (this row's first slice): migration `477_pm_project_sequences.sql` (473 went to PR 2757) (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/nodes/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
+  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). A seam: ask first.
+  - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task.
+  - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
+  - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
+- **Non-goals.** No number comes back. No sequence spans two projects or two orgs. Neither table holds a member email.
+- **Rung.** Multi-agent safety (§ order list item 6): it ends the R1 class of number clash at its source. Its demo: two agents reserve a migration number at the same moment and get two numbers.
 
 #### SW-35 · Triage suggestions
 
@@ -1412,6 +1423,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 871. The session-start hook prints the six steps of CLAUDE.md "Work under a Metorite task", and the tasks that this member's sessions hold. A PreToolUse hook on `gh pr create` reminds an agent when the body has no task URL. It warns in build and blocks in a `harden` pull request.
 - **Done when.** A `gh pr create` with no task URL gets the reminder, and the hook tests cover both paths.
 - **Risk.** LOW. **Gate.** OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30.
+- **Built (task 871), 2026-11-22, without the settings entry.** The session-start hook prints the rule in three lines, and a live read names the tasks that the member's sessions hold (reason `held_by_you`). The new hook `pr-task-url.mjs` warns with `additionalContext`, and refuses with exit 2 when `TASK_URL_BLOCK=1`. It sets no `permissionDecision`. It cannot read a body that comes from a pipe or an unset variable, so it stays silent then. `next-ticket.md` step 7 and `handoff.md` point at CLAUDE.md §4. The grant opens `guard-write` for the owner's agents only. So the contributor's fleet did not edit `.claude/settings.json`. The hook does not run until the owner adds its entry. The entry is a `PreToolUse` entry with matcher `Bash` and the command `node "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-task-url.mjs"`.
 
 #### SW-19a · The session-start hook reads Metorite
 
