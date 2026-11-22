@@ -19,13 +19,15 @@ import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
 import type { AppMeta } from "@/app/build/apps/lib/types";
-import { shellChatOn } from "@/lib/shell/chatFlag";
-import { openAssistant } from "@/lib/shell/assistant";
+import { startApp } from "@/lib/studio/startApp";
+import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
+  ACTION_CALLS_LABEL, PACKAGES_FAILED_LINE, type LibraryFilter, type OrgCard,
+  changedWords, effectiveFilter, libraryCounts, membersPill, mergeLibrary, orgCard,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
-import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
+import { buildHref } from "@/lib/studio/packageDraft";
+import { STUDIO_OFF, type OrgPackage, type PackageSummary, listOrgPackages, listPackages } from "@/lib/studio/realDoor";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -260,30 +262,82 @@ function AppCard({
 function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => void }) {
   const live = card.state === "live";
   return (
-    <button
-      type="button"
-      data-package-card={card.id}
-      onClick={onOpen}
-      className="group relative text-left w-full p-3 sm:p-4 rounded-xl border tech-transition flex flex-col gap-2.5 border-border bg-card hover:border-primary/40 hover:bg-secondary/30"
-    >
-      <div className="flex items-start gap-3">
-        <div
-          className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}
-        >
-          <Icon name="Boxes" className="w-4 h-4 text-primary" />
+    <div className="group flex w-full flex-col rounded-xl border tech-transition border-border bg-card hover:border-primary/40 hover:bg-secondary/30">
+      <button type="button" data-package-card={card.id} onClick={onOpen} className="w-full p-3 sm:p-4 pb-2 text-left">
+        <div className="flex items-start gap-3">
+          <div
+            className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}
+          >
+            <Icon name="Boxes" className="w-4 h-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+              <Icon name="Clock" className="w-3 h-3 shrink-0" />
+              <span>{changedWords(card.changedAt)}</span>
+            </div>
+          </div>
         </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
-            <Icon name="Clock" className="w-3 h-3 shrink-0" />
-            <span>{changedWords(card.changedAt)}</span>
+      </button>
+      <div className="mt-auto flex items-center justify-between gap-2 px-3 sm:px-4 pb-3">
+        <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
+        <Button variant="ghost" size="sm" icon="Code" href={buildHref(card.id)}>Open in Studio IDE</Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Org package card (admin view, J4) ────────────────────────────────────
+
+/** One line of the card: a label and its value. The value wraps and never clips the label. */
+function Fact({ label, children, tone = "text-foreground" }: { label: string; children: React.ReactNode; tone?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+      <dt className="text-muted-foreground shrink-0">{label}</dt>
+      <dd className={`min-w-0 text-right break-words ${tone}`}>{children}</dd>
+    </div>
+  );
+}
+
+/** An action id such as `reassign_ticket_to_desk` may wrap at an underscore, not in the middle of a word. */
+function breakAtUnderscores(text: string): React.ReactNode {
+  const parts = text.split("_");
+  return parts.map((part, i) => (
+    <span key={i}>{part}{i < parts.length - 1 ? <>_<wbr /></> : null}</span>
+  ));
+}
+
+/** A package of any member, as an admin sees it. It opens nothing, because the package page is the owner's. It holds no reason text and no value. */
+function OrgPackageCard({ card }: { card: OrgCard }) {
+  const live = card.state === "live";
+  return (
+    <div data-org-package={card.id} className="flex w-full flex-col rounded-xl border border-border bg-card">
+      <div className="w-full p-3 sm:p-4 pb-2 text-left">
+        <div className="flex items-start gap-3">
+          <div className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}>
+            <Icon name="Boxes" className="w-4 h-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+              <span className="truncate" title={card.owner}>by {card.mine ? "you" : card.owner}</span>
+              <span>·</span>
+              <Icon name="Clock" className="w-3 h-3 shrink-0" />
+              <span className="shrink-0">{changedWords(card.changedAt)}</span>
+            </div>
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-2 mt-auto pt-1">
+      <dl className="flex flex-col gap-1 px-3 sm:px-4 pb-2">
+        <Fact label="Live version">{card.version}</Fact>
+        <Fact label={ACTION_CALLS_LABEL}>{card.calls}</Fact>
+        <Fact label="Last error" tone={card.error ? "text-destructive" : "text-foreground"}>{breakAtUnderscores(card.errorLine)}</Fact>
+        <Fact label="Use">{card.use}</Fact>
+      </dl>
+      <div className="mt-auto flex items-center gap-2 px-3 sm:px-4 pb-3">
         <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -291,6 +345,7 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
 
 export default function AppsGallery() {
   const router = useRouter();
+  const { isMobile } = useViewMode();
   const { data: session } = useSession();
   const myEmail = (session?.user?.email ?? "").toLowerCase();
 
@@ -298,14 +353,35 @@ export default function AppsGallery() {
   const [loading, setLoading] = useState(true);
   const packagesSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [chosen, setChosen] = useState<Filter>("all");
   const [describe, setDescribe] = useState("");
   const [packages, setPackages] = useState<PackageSummary[]>([]);
   const [packagesError, setPackagesError] = useState(false);
+  // The admin view (J4). The gateway says `admin: true` only to a holder of the admin right.
+  const [orgPackages, setOrgPackages] = useState<OrgPackage[]>([]);
+  const [orgAdmin, setOrgAdmin] = useState(false);
+  const [orgTruncated, setOrgTruncated] = useState(false);
 
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
   // tasks/components/AssistantRail.tsx.
   /* eslint-disable react-hooks/set-state-in-effect */
+  const orgSeq = useRef(0);
+  const readOrg = useCallback(async () => {
+    const seq = ++orgSeq.current;
+    try {
+      const found = await listOrgPackages();
+      if (seq !== orgSeq.current) return;
+      setOrgAdmin(found.admin);
+      setOrgPackages(found.packages);
+      setOrgTruncated(found.truncated);
+    } catch {
+      if (seq !== orgSeq.current) return;
+      setOrgAdmin(false);
+      setOrgPackages([]);
+      setOrgTruncated(false);
+    }
+  }, []);
+
   const fetchApps = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -343,21 +419,34 @@ export default function AppsGallery() {
       // while the packages are still on the way. A failure of one still shows the other.
       await packagesRead;
       setLoading(false);
+      // The admin read starts AFTER the library shows, so a slow org list never holds the
+      // member's own apps. A failure, a switch that is off and a caller without the right all
+      // leave the pill out, so a member never sees a broken control.
+      void readOrg();
     }
-  }, []);
+  }, [readOrg]);
 
   useEffect(() => {
     fetchApps();
   }, [fetchApps]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Chat first: Mira builds the app in the one assistant, from the brief. The words wait
-  // in the box for the member to read and send. With the shell chat off, `/chat?q=` does the same.
+  // Chat first, in the Studio IDE (G3a): "Build it" makes a draft package, opens its IDE, and opens
+  // the dock with the brief waiting in the box. The page of the IDE binds the dock to that package.
+  // With the shell chat off, `/chat?q=` does what it did before.
+  const buildingRef = useRef(false);
+  const [building, setBuilding] = useState(false);
+  const [buildError, setBuildError] = useState<string | null>(null);
   const createApp = useCallback(
+    // One flow for this button and the phone bar's New app tab (`startApp`).
     (seed: string) => {
-      const brief = appBrief(seed);
-      if (shellChatOn()) openAssistant({ draft: brief, fresh: true });
-      else router.push(`/chat?q=${encodeURIComponent(brief)}`);
+      if (buildingRef.current) return;
+      buildingRef.current = true;
+      setBuilding(true);
+      setBuildError(null);
+      void startApp(seed, (href) => router.push(href))
+        .then((r) => { if (r && !r.ok) setBuildError(r.message); })
+        .finally(() => { buildingRef.current = false; setBuilding(false); });
     },
     [router]
   );
@@ -441,6 +530,9 @@ export default function AppsGallery() {
   );
 
   const counts = useMemo(() => libraryCounts(apps, packages, myEmail), [apps, packages, myEmail]);
+  const members = membersPill(orgAdmin, orgPackages.length);
+  // ONE filter for the grid and the pills. A pill that is gone cannot stay chosen.
+  const filter = effectiveFilter(chosen, members !== null);
 
   const visible = useMemo(() => {
     const keep = (a: AppMeta): boolean => {
@@ -461,6 +553,8 @@ export default function AppsGallery() {
     return mergeLibrary(apps.filter(keep), shownPackages);
   }, [apps, packages, filter, myEmail]);
   const total = apps.length + packages.length;
+  const orgCards = useMemo(() => orgPackages.map((p) => orgCard(p)), [orgPackages]);
+  const showMembers = filter === "members";
 
   return (
     <section className="flex flex-col" aria-label="Apps">
@@ -480,10 +574,13 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")}>
-            <Icon name="Plus" className="w-4 h-4" />
-            New app
-          </Button>
+          {/* On a phone the bar's New app tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} loading={building} disabled={building}>
+              <Icon name="Plus" className="w-4 h-4" />
+              New app
+            </Button>
+          )}
         </div>
       </div>
 
@@ -495,10 +592,18 @@ export default function AppsGallery() {
           { id: "team", label: "Team", count: counts.team },
           { id: "drafts", label: "Drafts", count: counts.drafts },
           { id: "templates", label: "Templates", count: counts.templates },
+          ...(members ? [members] : []),
         ]}
         activeId={filter}
-        onChange={(id) => setFilter(id as Filter)}
+        onChange={(id) => setChosen(id as Filter)}
       />
+
+      {buildError && (
+        <div role="alert" className="flex items-center gap-2 mx-4 sm:mx-6 mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive shrink-0">
+          <Icon name="X" className="w-3.5 h-3.5 shrink-0" />
+          {buildError}
+        </div>
+      )}
 
       {forkError && (
         <div className="flex items-center gap-2 mx-4 sm:mx-6 mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive shrink-0">
@@ -532,7 +637,7 @@ export default function AppsGallery() {
                 placeholder="Describe the tool you need… e.g. “A board that shows every printer's service history and next due date”"
                 className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
               />
-              <Button size="none" layout="" type="submit" disabled={!describe.trim()} className="px-3 py-1.5 text-xs font-semibold shrink-0">
+              <Button size="none" layout="" type="submit" loading={building} disabled={!describe.trim() || building} className="px-3 py-1.5 text-xs font-semibold shrink-0">
                 Build it
               </Button>
             </form>
@@ -575,7 +680,26 @@ export default function AppsGallery() {
             </div>
           )}
 
-          {!loading && !(error && total === 0) && visible.length === 0 && (
+          {/* The admin view: every package of the org */}
+          {!loading && showMembers && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                {`Every Studio app of the org, with its owner. ${ACTION_CALLS_LABEL} are calls through the door of an app. They are not workflow runs.`}
+                {orgTruncated ? " The list shows the newest 500 apps." : ""}
+              </p>
+              {orgCards.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No Studio apps in this org yet. The apps that members build show here.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                  {orgCards.map((card) => (
+                    <OrgPackageCard key={card.id} card={card} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {!loading && !showMembers && !(error && total === 0) && visible.length === 0 && (
             <div className="flex flex-col items-center justify-center h-56 gap-3 text-center">
               <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center">
                 <Icon name="Hammer" className="w-5 h-5 text-primary" />
@@ -589,7 +713,7 @@ export default function AppsGallery() {
                   : "Switch filters, or describe a new tool above."}
               </p>
               {total === 0 && (
-                <Button size="none" layout="" onClick={() => createApp("")} className="px-4 py-2 text-sm">
+                <Button size="none" layout="" onClick={() => createApp("")} loading={building} disabled={building} className="px-4 py-2 text-sm">
                   Create an app
                 </Button>
               )}
@@ -597,7 +721,7 @@ export default function AppsGallery() {
           )}
 
           {/* App grid */}
-          {!loading && !(error && total === 0) && visible.length > 0 && (
+          {!loading && !showMembers && !(error && total === 0) && visible.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {visible.map((item) => item.kind === "package" ? (
                 <PackageCard key={item.key} card={item} onOpen={() => router.push(item.href)} />

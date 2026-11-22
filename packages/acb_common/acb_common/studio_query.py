@@ -1,6 +1,7 @@
-"""The filter, the sort and the paging of a Studio object query (WS-STU C2a).
+"""The filter, the sort and the paging of a Studio object query (WS-STU C2a),
+and the group and the measures of an aggregate (C2b).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a row.
+Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a and C2b rows.
 
 **One grammar.** The store (``gateway/studio/objects_store.query_records``)
 parses its input here. B2b's ``object:<name>.list`` action and the chat tool
@@ -29,6 +30,16 @@ ticked. A form that does not send an unticked box writes no value, so
 ``eq false`` and ``ne true`` match a record with no value too. ``is_empty``
 matches only a record with no value. This is the one exception to the rule
 that ``ne`` matches only a record that holds a value.
+
+**The aggregate (C2b).** :func:`parse_aggregate` checks a filter of the same
+grammar, one group and at most :data:`MAX_MEASURES` measures. The store
+(``objects_store.aggregate_records``) builds the SQL. A group and each measure
+read a hot field only, and another field gives ``query_not_indexed``. A group
+takes each type of the op table except money, because a money value has a
+currency. A date or a datetime groups by day or by month in UTC. A sum takes a
+number or a money field, and an average takes a number field. The store keeps
+the :data:`MAX_GROUPS` groups with the most records, and the rest fold into
+one group, ``other``.
 
 **Errors.** Each refusal raises :class:`QueryError` with one of
 :data:`QUERY_ERROR_CODES` and one sentence. The sentence names the field key
@@ -98,12 +109,15 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "checkbox": frozenset({"eq", "ne", "is_empty"}),
     # A relation holds an id (C7b). It joins a child to its parent, and it has no order.
     "relation": frozenset({"eq", "ne", "in", "is_empty"}),
+    # C8a. A person holds the lower-case address of a member, as the relation
+    # set: it has no order. A value runs through `studio_fields._person`.
+    "person": frozenset({"eq", "ne", "in", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
 #: no index, so a checkbox field takes no sort. An id has no useful order, so a
-#: relation field takes none either.
-SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation"}
+#: relation field takes none either, and a person field (C8a) takes none.
+SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation", "person"}
 
 # --- the errors -------------------------------------------------------------
 
@@ -229,6 +243,9 @@ def check_shape(filter: Any, sort: Any = None) -> list[Mapping[str, Any]]:
             raise QueryError(
                 VALUE_INVALID, "Each condition is an object with field, op and value, and no other key.")
         key = _named(item["field"])
+        if not isinstance(item["field"], str):
+            # C8a fix round 1 (P2): a field name is text, before any read.
+            raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
         if item["op"] not in OPS:
             raise QueryError(OP_NOT_ALLOWED, f"Field `{key}`: the op is unknown. Use {_OP_LIST}.", key)
         if item["op"] == "in":
@@ -246,8 +263,98 @@ def _check_sort_shape(sort: Any) -> None:
         return
     if not isinstance(sort, Mapping) or "field" not in sort or not set(sort) <= _SORT_KEYS:
         raise QueryError(VALUE_INVALID, 'A sort is an object: {"field": <key>, "dir": "asc" or "desc"}.')
+    if not isinstance(sort["field"], str):
+        # C8a fix round 1 (P2): a field name is text, before any read.
+        raise QueryError(FIELD_UNKNOWN, "Field `?` is not a field of this object.", "?")
     if sort.get("dir", "asc") not in ("asc", "desc"):
         raise QueryError(VALUE_INVALID, 'The sort `dir` is "asc" or "desc".', _named(sort["field"]))
+
+
+# --- the shape of a store query (WS-SEM SEM-1b-1) ---------------------------
+#
+# ``semantic_model.md`` §5.1, Option A: the shape of this module serves each
+# store, and each store keeps its own compiler and its own value rules. A store
+# query adds ONE group, ``{"any": [leaf, ...]}``, of 2 to 8 leaves, one level
+# deep. The store names its own ops. The Studio parse above never calls this
+# check, so a Studio query, :data:`OPS` and each Studio schema do not change.
+# Fence: ``tests/unit/test_crm_query_grammar.py``.
+
+#: The key of a group, and the fewest and the most leaves of one group.
+ANY_KEY = "any"
+ANY_MIN = 2
+ANY_MAX = 8
+#: The longest key that a refusal names. A longer key is ``?``.
+_STORE_KEY_CHARS = 100
+
+
+def store_named(key: Any) -> str:
+    """The key to name in a refusal of a store query. A store key is not a
+    Studio key (a CRM key is a mixed-case API name or an ``@`` key word), so
+    :data:`NAME_PATTERN` does not apply. Text that is too long, holds a
+    backtick or holds a control character is ``?``."""
+    if (isinstance(key, str) and 0 < len(key) <= _STORE_KEY_CHARS and key.isprintable()
+            and "`" not in key):
+        return key
+    return "?"
+
+
+def _store_leaf(item: Any, ops: Sequence[str], max_in: int) -> Mapping[str, Any]:
+    """One leaf of a store query, after a check of its shape."""
+    if not isinstance(item, Mapping) or not {"field", "op"} <= set(item) \
+            or not set(item) <= _CONDITION_KEYS:
+        raise QueryError(
+            VALUE_INVALID, "Each condition is an object with field, op and value, and no "
+                           'other key. A group is {"any": [condition, ...]}, one level only.')
+    key = store_named(item["field"])
+    if not isinstance(item["field"], str) or not item["field"]:
+        raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
+    if item["op"] not in ops:
+        raise QueryError(OP_NOT_ALLOWED,
+                         f"Field `{key}`: the op is not one that this store takes. "
+                         f"Use {', '.join(ops)}.", key)
+    if item["op"] == "in":
+        values = item.get("value")
+        if not _is_list(values) or not values:
+            raise QueryError(VALUE_INVALID, f"Field `{key}`: `in` takes a list of values.", key)
+        if len(values) > max_in:
+            raise QueryError(TOO_BIG, f"Field `{key}`: `in` takes at most {max_in} values.", key)
+    return item
+
+
+def check_store_shape(query: Any, ops: Sequence[str], *, max_leaves: int = MAX_FILTERS,
+                      max_in: int = MAX_IN_VALUES) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+    """The nodes of a store query, after a check of the shape only. Pure.
+
+    *query* is a list of nodes, and a record must meet each node (AND). A
+    node is a leaf ``{"field", "op", "value"}`` or a group ``{"any": [leaf,
+    ...]}`` of :data:`ANY_MIN` to :data:`ANY_MAX` leaves (OR), with no group
+    inside a group. Each node comes back as a tuple of its leaves: one leaf
+    for a leaf, each leaf of a group for a group. *ops* are the ops of the
+    store, and the refusal of another op names them. *max_leaves* caps the
+    leaves of the whole query, and *max_in* the values of one ``in``. The
+    check reads no field and no value, so the store checks each key and
+    value with its own rules. Raises :class:`QueryError`.
+    """
+    if not _is_list(query):
+        raise QueryError(VALUE_INVALID,
+                         'A query is a list of conditions {field, op, value} and groups '
+                         '{"any": [condition, ...]}.')
+    nodes: list[tuple[Mapping[str, Any], ...]] = []
+    for item in query:
+        if isinstance(item, Mapping) and ANY_KEY in item:
+            group = item[ANY_KEY]
+            if set(item) != {ANY_KEY} or not _is_list(group) or len(group) < ANY_MIN:
+                raise QueryError(VALUE_INVALID,
+                                 f'A group is {{"any": [condition, ...]}} with {ANY_MIN} to '
+                                 f"{ANY_MAX} conditions, and no other key.")
+            if len(group) > ANY_MAX:
+                raise QueryError(TOO_BIG, f"A group holds at most {ANY_MAX} conditions.")
+            nodes.append(tuple(_store_leaf(leaf, ops, max_in) for leaf in group))
+        else:
+            nodes.append((_store_leaf(item, ops, max_in),))
+    if sum(len(node) for node in nodes) > max_leaves:
+        raise QueryError(TOO_BIG, f"A query holds at most {max_leaves} conditions.")
+    return tuple(nodes)
 
 
 def page_bounds(offset: Any, limit: Any) -> tuple[int, int]:
@@ -400,6 +507,187 @@ def parse_query(fields: Sequence[FieldSpec], filter: Any, sort: Any = None) -> Q
     return Query(tuple(conditions), _sort(by_key, sort))
 
 
+# --- the aggregate (C2b) ----------------------------------------------------
+
+#: The groups of one aggregate. The groups past it fold into ``other``.
+MAX_GROUPS = 50
+#: The measures of one aggregate.
+MAX_MEASURES = 4
+#: The measures. ``count`` counts the records, and it reads no field.
+MEASURE_OPS: tuple[str, ...] = ("count", "sum", "average")
+#: The buckets of a date or a datetime group, in UTC. A group that names no
+#: bucket takes ``day``.
+BUCKETS: tuple[str, ...] = ("day", "month")
+#: The types that a group takes: each type of the op table except money. A
+#: money value has a currency, so it is not a key. A person (C8a) is not a key
+#: either: a count for each member would show the records of a row rule.
+GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money", "person"}
+#: The types of the field of each measure that reads one.
+MEASURE_TYPES: Mapping[str, frozenset[str]] = {
+    "sum": frozenset({"number", "money"}),
+    "average": frozenset({"number"}),
+}
+_MEASURE_TAKES = {"sum": "a number or a money field", "average": "a number field"}
+_TIME_TYPES = frozenset({"date", "datetime"})
+_GROUP_KEYS = frozenset({"field", "bucket"})
+_MEASURE_KEYS = frozenset({"op", "field"})
+_COUNT = {"op": "count"}
+
+
+@dataclass(frozen=True)
+class GroupBy:
+    """The group of an aggregate: one hot field. ``bucket`` is ``day`` or
+    ``month`` for a date or a datetime field, and None for each other type."""
+
+    field: FieldSpec
+    bucket: str | None = None
+
+
+@dataclass(frozen=True)
+class Measure:
+    """One measure of an aggregate. ``count`` has no field. ``sum`` and
+    ``average`` read one hot field."""
+
+    op: str
+    field: FieldSpec | None = None
+
+
+@dataclass(frozen=True)
+class Aggregate:
+    """A filter, a group and the measures, checked against the fields of one
+    object. With no group, the aggregate has one group: every record that
+    the filter keeps."""
+
+    conditions: tuple[Condition, ...] = ()
+    group: GroupBy | None = None
+    measures: tuple[Measure, ...] = (Measure("count"),)
+
+    def query(self) -> Query:
+        """The filter as a :class:`Query`, for the guard ``hot_or_small``."""
+        return Query(self.conditions)
+
+    def measure_fields(self) -> tuple[FieldSpec, ...]:
+        """The fields that the measures read, once each, in the order of the
+        measures."""
+        out: dict[str, FieldSpec] = {}
+        for measure in self.measures:
+            if measure.field is not None:
+                out.setdefault(measure.field.key, measure.field)
+        return tuple(out.values())
+
+    def hot_keys(self) -> tuple[str, ...]:
+        """The keys of the fields that this aggregate reads as hot."""
+        keys = set(self.query().hot_keys())
+        if self.group is not None:
+            keys.add(self.group.field.key)
+        keys.update(f.key for f in self.measure_fields())
+        return tuple(sorted(keys))
+
+
+def _check_group_shape(group_by: Any) -> Mapping[str, Any] | None:
+    if group_by is None:
+        return None
+    if not isinstance(group_by, Mapping) or "field" not in group_by \
+            or not set(group_by) <= _GROUP_KEYS:
+        raise QueryError(
+            VALUE_INVALID, 'A group is an object: {"field": <key>, "bucket": "day" or "month"}.')
+    if group_by.get("bucket") is not None and group_by["bucket"] not in BUCKETS:
+        key = _named(group_by["field"])
+        raise QueryError(VALUE_INVALID, f'Field `{key}`: the group `bucket` is "day" or "month".', key)
+    return group_by
+
+
+def _check_measures_shape(measures: Any) -> list[Mapping[str, Any]]:
+    if measures is None:
+        return [_COUNT]
+    if not _is_list(measures) or not measures:
+        raise QueryError(VALUE_INVALID, 'The measures are a list of 1 or more: {"op": "count"}, '
+                                        'or {"op": "sum" or "average", "field": <key>}.')
+    if len(measures) > MAX_MEASURES:
+        raise QueryError(TOO_BIG, f"An aggregate takes at most {MAX_MEASURES} measures.")
+    seen: set[tuple[str, str]] = set()
+    for item in measures:
+        if not isinstance(item, Mapping) or "op" not in item or not set(item) <= _MEASURE_KEYS:
+            raise QueryError(
+                VALUE_INVALID, "Each measure is an object with op and an optional field, and no other key.")
+        op = item["op"]
+        if op not in MEASURE_OPS:
+            raise QueryError(OP_NOT_ALLOWED, "The measure op is unknown. Use count, sum or average.")
+        if op == "count" and "field" in item:
+            raise QueryError(VALUE_INVALID, "`count` counts the records, and it takes no field.")
+        if op != "count" and "field" not in item:
+            raise QueryError(VALUE_INVALID, f"`{op}` needs a field.")
+        name = (op, _named(item.get("field", "")) if op != "count" else "")
+        if name in seen and name[1] != "?":
+            raise QueryError(VALUE_INVALID, "Each measure is in the list once.")
+        seen.add(name)
+    return list(measures)
+
+
+def check_aggregate_shape(filter: Any, group_by: Any = None, measures: Any = None) -> tuple[
+        list[Mapping[str, Any]], Mapping[str, Any] | None, list[Mapping[str, Any]]]:
+    """The conditions, the group and the measures of an aggregate, after a
+    check of the shape only. No measures means one ``count``.
+
+    It needs no fields, so a route can run it before it opens a session.
+    :func:`parse_aggregate` runs it first too. Raises :class:`QueryError`.
+    """
+    return check_shape(filter), _check_group_shape(group_by), _check_measures_shape(measures)
+
+
+def _group(by_key: Mapping[str, FieldSpec], raw: Mapping[str, Any] | None) -> GroupBy | None:
+    if raw is None:
+        return None
+    field = _field(by_key, raw["field"])
+    if field.type not in GROUP_TYPES or field.many:
+        raise QueryError(OP_NOT_ALLOWED, f"Field `{field.key}` is a {field.type} field, and it takes no group.",
+                         field.key)
+    if not field.hot:
+        raise QueryError(
+            NOT_INDEXED, f"Field `{field.key}` is not hot, so a query cannot group by it. Turn it hot.",
+            field.key)
+    bucket = raw.get("bucket")
+    if field.type in _TIME_TYPES:
+        return GroupBy(field, bucket or "day")
+    if bucket is not None:
+        raise QueryError(VALUE_INVALID, f"Field `{field.key}` is a {field.type} field. Only a date or a "
+                                        "datetime field takes a bucket.", field.key)
+    return GroupBy(field)
+
+
+def _measure(by_key: Mapping[str, FieldSpec], raw: Mapping[str, Any]) -> Measure:
+    op = str(raw["op"])
+    if op == "count":
+        return Measure(op)
+    field = _field(by_key, raw["field"])
+    if field.type not in MEASURE_TYPES[op] or field.many:
+        raise QueryError(OP_NOT_ALLOWED, f"Field `{field.key}` is a {field.type} field. `{op}` takes "
+                                         f"{_MEASURE_TAKES[op]}.", field.key)
+    if not field.hot:
+        raise QueryError(
+            NOT_INDEXED, f"Field `{field.key}` is not hot, so a query cannot take its {op}. Turn it hot.",
+            field.key)
+    return Measure(op, field)
+
+
+def parse_aggregate(fields: Sequence[FieldSpec], filter: Any, group_by: Any = None,
+                    measures: Any = None) -> Aggregate:
+    """The :class:`Aggregate` of *filter*, *group_by* and *measures*, against
+    the *fields* of one object.
+
+    *filter* has the grammar of :func:`parse_query`. *group_by* is None or
+    ``{"field": <key>, "bucket": "day" | "month"}``. *measures* is a list of
+    ``{"op": "count"}`` and ``{"op": "sum" | "average", "field": <key>}``, and
+    None means one count. Raises :class:`QueryError` on the first problem. The
+    ``hot_or_small`` rule and the currency of a money sum need a read, so the
+    store applies them.
+    """
+    items, group, wanted = check_aggregate_shape(filter, group_by, measures)
+    conditions = parse_query(fields, items).conditions
+    by_key = {f.key: f for f in fields}
+    return Aggregate(conditions, _group(by_key, group), tuple(_measure(by_key, m) for m in wanted))
+
+
 # --- the input schema -------------------------------------------------------
 
 _LIST_INPUT_SCHEMA: dict[str, Any] = {
@@ -444,3 +732,42 @@ def list_input_schema() -> dict[str, Any]:
     """The JSON Schema of the input of a list: filter, sort, limit and offset.
     A new copy on each call, so a caller cannot change the shared one."""
     return copy.deepcopy(_LIST_INPUT_SCHEMA)
+
+
+_KEY_SCHEMA: dict[str, Any] = {"type": "string", "pattern": f"^{NAME_PATTERN}$"}
+
+_AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "filter": _LIST_INPUT_SCHEMA["properties"]["filter"],
+        "group_by": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["field"],
+                    "properties": {"field": _KEY_SCHEMA, "bucket": {"enum": list(BUCKETS)}},
+                },
+                {"type": "null"},
+            ],
+        },
+        "measures": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_MEASURES,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["op"],
+                "properties": {"op": {"enum": list(MEASURE_OPS)}, "field": _KEY_SCHEMA},
+            },
+        },
+    },
+}
+
+
+def aggregate_input_schema() -> dict[str, Any]:
+    """The JSON Schema of the input of an aggregate (C2b): filter, group_by
+    and measures. The action door reads it for object:<name>.aggregate (D4b). A new copy on each call."""
+    return copy.deepcopy(_AGGREGATE_INPUT_SCHEMA)

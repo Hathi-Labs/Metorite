@@ -16,6 +16,26 @@ export const WRITING_STEP = "Writing the reply";
 export const THINKING_STEP = "Thinking";
 
 /**
+ * CS-3b (`chat_failure_modes.md` §6 row CS-3): the fixed words for the server's phase of a run.
+ * ONE table. The server sends only the phase name, never words, so the client draws only a word
+ * from here. A name that is not a key is ignored.
+ */
+export const RUN_PHASE_WORDS = {
+  gathering: "Gathering what I need",
+  asking: "Asking the model",
+} as const;
+
+export type RunPhaseName = keyof typeof RUN_PHASE_WORDS;
+
+/** The words of a `run_phase` event value, or null when the value is not a known phase. */
+export function phaseWordOf(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const name = (value as { phase?: unknown }).phase;
+  if (typeof name !== "string" || !Object.prototype.hasOwnProperty.call(RUN_PHASE_WORDS, name)) return null;
+  return RUN_PHASE_WORDS[name as RunPhaseName];
+}
+
+/**
  * The step of a message, in words, from the one step vocabulary
  * (`lib/toolSteps.ts`): the running tool ("Asking Projects assistant"),
  * else the text ("Writing the reply"), else the reasoning ("Thinking").

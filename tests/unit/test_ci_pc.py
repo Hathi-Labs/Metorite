@@ -38,6 +38,8 @@ _CTX = {
     "needs.changes.outputs.files": "",
     "steps.pick.outputs.mode": "full",
     "steps.pick.outputs.paths": "",
+    "steps.pick.outputs.splits": "6",
+    "needs.changes.outputs.shards": "[1,2,3,4,5,6]",
     "github.event.pull_request.base.sha": "abc",
 }
 
@@ -210,6 +212,27 @@ def test_the_local_run_is_full_for_the_selection_jobs() -> None:
         assert 'export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"' in out
 
 
+def _ctx_keys(block: str) -> dict[str, str]:
+    return {k: "x" for k in re.findall(r'--ctx\s+"?([\w.]+)=', block)}
+
+
+def test_every_expression_of_the_shard_job_is_given_by_a_full_and_a_selected_run() -> None:
+    """Task 2198: CIV-17 added `steps.pick.outputs.splits` to pr-check, and the
+    local run died in 0 s on every shard, because run_suite.sh gave a value to
+    the full run only. Both contexts render the `test` job, so a new
+    `${{ ... }}` in it that a context lacks fails here, and not on a box."""
+    text = (_ROOT / "scripts" / "ci_pc" / "run_suite.sh").read_text(encoding="utf-8")
+    full = re.search(r"FULL_RUN=\((.*?)\)\nrm -rf junit", text, re.S)
+    selected = re.search(r"SHARD_CTX=\(--ctx(.*?)\)\nfi\n", text, re.S)
+    assert full and selected, "run_suite.sh no longer builds FULL_RUN and SHARD_CTX this way"
+    for name, block in (("full", full.group(1)), ("selected", "--ctx" + selected.group(1))):
+        ctx = {"matrix.shard": "1", **_ctx_keys(block)}
+        try:
+            steps.render("test", ctx, {})
+        except SystemExit as exc:
+            raise AssertionError(f"the {name} run lacks a value: {exc}") from exc
+
+
 # ── CIV-6: several runs at once on one lane (task 1634) ─────────────────────
 _CI_LOCAL = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
 _REMOTE = (_ROOT / "scripts/ci_pc/remote_run.sh").read_text(encoding="utf-8")
@@ -322,3 +345,82 @@ def test_one_backup_job_runs_at_a_time_on_the_daemon():
 def test_the_timed_frontend_tests_do_not_share_the_cpu_with_another_run():
     # bodyLook.test.ts asserts "under 100 ms". Two runs at once gave 110 ms.
     assert '[ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")' in _RUN_SUITE
+
+
+def _stop_harness(tmp_path: Path, stub_body: str, grace: int = 60) -> tuple[object, Path]:
+    """Run the block of remote_run.sh that starts the suite, with a stub suite.
+    The log records the order: stub events, `f-returned <rc>`, then the EXIT
+    trap (`worktree-removed`)."""
+    import subprocess
+
+    block = _REMOTE.split("  local suite_pid=", 1)[1].split("\n}\n", 1)[0]
+    stub = tmp_path / "scripts" / "ci_pc"
+    stub.mkdir(parents=True)
+    (stub / "run_suite.sh").write_text(stub_body, encoding="utf-8")
+    log = tmp_path / "log"
+    script = (
+        f'cd "{tmp_path}"; export LOG="{log}" CI_STOP_GRACE_S={grace};'
+        " CI_SHARDS_GRANTED=1; sel_args=(); fwd=()\n"
+        'f() {\n  local suite_pid=' + block + '\n}\n'
+        'trap "echo worktree-removed >> $LOG" EXIT\n'
+        'f; echo "f-returned $?" >> $LOG\n'
+    )
+    return subprocess.Popen(["bash", "-c", script], start_new_session=True), log
+
+
+def _wait_for(log: Path, text: str) -> None:
+    import time
+
+    for _ in range(100):
+        if log.exists() and text in log.read_text(encoding="utf-8"):
+            return
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP", "SIGINT"])
+def test_a_stop_signal_ends_the_suite_before_the_worktree_goes(tmp_path: Path, sig: str) -> None:
+    """CIV-6b. A dropped client sends HUP, INT or TERM to ci_remote_run. The
+    suite must be stopped and reaped BEFORE the EXIT trap removes the worktree,
+    or the job containers lose the folder they run in."""
+    import signal
+
+    proc, log = _stop_harness(
+        tmp_path,
+        'trap "echo suite-stopped >> $LOG; exit 7" TERM\n'
+        "echo suite-started >> $LOG\n"
+        "while true; do sleep 0.1; done\n",
+    )
+    _wait_for(log, "suite-started")
+    proc.send_signal(getattr(signal, sig))
+    proc.wait(timeout=30)
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines == ["suite-started", "suite-stopped", "f-returned", "7", "worktree-removed"]
+
+
+def test_a_suite_that_ignores_term_is_killed_after_the_grace_period(tmp_path: Path) -> None:
+    """CIV-6b review. The wait is bounded: TERM, then KILL after the grace."""
+    import signal
+    import time
+
+    proc, log = _stop_harness(
+        tmp_path,
+        'trap "" TERM\necho suite-started >> $LOG\nwhile true; do sleep 0.1; done\n',
+        grace=2,
+    )
+    _wait_for(log, "suite-started")
+    start = time.monotonic()
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=30)
+    assert time.monotonic() - start < 20
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines[0] == "suite-started" and lines[-1] == "worktree-removed"
+    assert "f-returned" in lines
+
+
+def test_a_signal_before_the_launch_still_stops_the_suite(tmp_path: Path) -> None:
+    """CIV-6b review. The trap is installed before the suite starts, so a
+    signal in that gap does not meet the default action (the shell dying and
+    the worktree going under a live suite)."""
+    block = _REMOTE.split("  local suite_pid=", 1)[1]
+    assert block.index("trap '") < block.index("setsid bash scripts/ci_pc/run_suite.sh")
+    assert '[ "$stopping" = 1 ] && kill -TERM' in block  # the signal that came first

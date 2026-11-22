@@ -6,8 +6,9 @@ Mem0's ``user_id`` field which we repurpose as a scope key):
 - **user**  — ``user_id = "<email>"``          — facts about one human. Private to them.
 - **agent** — ``user_id = "agent:<name>"``      — facts an agent learns, shared across
               EVERY user who talks to that agent (cross-user agent memory).
-- **org**   — ``user_id = "org:global"``        — organisation-wide shared memory every
-              agent can read and write.
+- **org**   — ``user_id = "org:<organization id>"`` — the memory of one organization
+              that every agent of it can read and write (KG-9). The old
+              ``org:global`` key held every organization at once.
 
 We key scopes through ``user_id`` (not Mem0's ``agent_id``) because Mem0's
 search/get_all reliably filter on ``user_id`` and do NOT filter on ``agent_id`` —
@@ -40,6 +41,8 @@ from acb_common.dsn import parse_postgres_dsn
 from acb_memory.compartments import (
     AGENT_SCOPE_PREFIX,
     ORG_SCOPE_KEY,
+    ORG_SCOPE_PREFIX,
+    org_scope_key,
     PREFS_SCOPE_PREFIX,
     ROOM_SCOPE_PREFIX,
     scope_key,
@@ -47,6 +50,7 @@ from acb_memory.compartments import (
 )
 
 from ._gateway_env import gateway_only_env
+from .tenant_guard import memory_tenancy_ok
 
 _log = get_logger("acb_memory.mem0")
 
@@ -59,6 +63,7 @@ _log = get_logger("acb_memory.mem0")
 __all__ = [
     "AGENT_SCOPE_PREFIX",
     "ORG_SCOPE_KEY",
+    "ORG_SCOPE_PREFIX",
     "PREFS_SCOPE_PREFIX",
     "ROOM_SCOPE_PREFIX",
     "MemoryClient",
@@ -66,6 +71,8 @@ __all__ = [
     "get_memory_client",
     "get_memory_context",
     "get_scoped_context",
+    "org_scope",
+    "org_scope_key",
     "scope_key",
     "scope_kind",
 ]
@@ -204,6 +211,8 @@ class MemoryClient:
 
         Returns [] on any error (graceful degradation).
         """
+        if not await memory_tenancy_ok():
+            return []
         client = self._get_client()
         if client is None:
             return []
@@ -243,6 +252,8 @@ class MemoryClient:
         from acb_common.setup_markers import redact_tree
 
         messages = redact_tree(messages)
+        if not messages or not await memory_tenancy_ok():
+            return
         client = self._get_client()
         if client is None or not messages:
             return
@@ -257,6 +268,8 @@ class MemoryClient:
 
     async def get_all(self, user_id: str) -> list[dict]:
         """Return all stored memories for *user_id* (for the UI memory panel)."""
+        if not await memory_tenancy_ok():
+            return []
         client = self._get_client()
         if client is None:
             return []
@@ -272,6 +285,35 @@ class MemoryClient:
         except Exception as exc:  # noqa: BLE001
             _log.debug("mem0.get_all_error", error=str(exc)[:100])
             return []
+
+    async def scope_ids(self, user_id: str) -> set[str]:
+        """The memory ids of one scope, for a delete only.
+
+        KG-9 review. The tenant guard does not gate this read, as it does not
+        gate a delete. A refused memory layer must still forget what a member
+        asks it to forget, and the delete route needs these ids to check that
+        the memory is IN the scope. It gives ids only, never memory text.
+        Like ``delete_scope``, it refuses a blank scope and the wildcard.
+        Returns an empty set on a Mem0 error.
+        """
+        scope = user_id.strip() if isinstance(user_id, str) else ""
+        if not scope or scope == "*":
+            return set()
+        client = self._get_client()
+        if client is None:
+            return set()
+        try:
+            def _sync() -> set[str]:
+                # The same read as ``get_all``, so the route sees the rows
+                # that it saw before KG-9.
+                page = client.get_all(filters={"user_id": scope})
+                rows = page.get("results", []) if isinstance(page, dict) else list(page or [])
+                return {str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")}
+
+            return await asyncio.to_thread(_sync)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("mem0.scope_ids_error", error=str(exc)[:100])
+            return set()
 
     async def delete(self, memory_id: str) -> None:
         """Delete a single memory by ID."""
@@ -401,6 +443,23 @@ async def add_memories_background(
 # ---------------------------------------------------------------------------
 # Scoped helpers (agent + org memory)
 # ---------------------------------------------------------------------------
+
+
+def org_scope(organization_id: str | None = None) -> str:
+    """The org compartment of this run: ``org:<organization id>``, or ``""``.
+
+    KG-9 step 2. With no *organization_id*, the tenant that this context bound
+    (``acb_common.db.current_tenant``) names the org. The request middleware
+    and the job runner bind it from the session or the job record, never from
+    request input. With no tenant the answer is ``""``, and every helper below
+    skips an empty scope. It never falls back to one shared key.
+    """
+    if not organization_id:
+        from acb_common.db import current_tenant
+
+        organization_id = current_tenant()
+    return org_scope_key(organization_id)
+
 #
 # These are thin, self-labelling wrappers over search/add so the gateway and the
 # memory tools read clearly. A scope is just a distinct Mem0 user_id value (see

@@ -1479,7 +1479,7 @@ def inventory(project: Project, skip: tuple[str, ...]) -> tuple[dict[str, Action
 class Decision:
     #: ``covered``, ``exempt`` or ``debt``.
     state: str
-    #: ``table``, ``projects manifest`` or ``knowledge manifest``.
+    #: ``table``, ``projects manifest``, ``knowledge manifest`` or ``crm manifest``.
     source: str
     #: The tool, the kind and reason, or the wave.
     detail: str
@@ -1489,11 +1489,70 @@ def _concrete(path: str) -> str:
     return path.replace("{}", "_")
 
 
+#: The record kinds of the CRM. A UI path writes them as one ``{}``.
+CRM_KINDS = ("leads", "deals", "contacts", "organizations")
+
+
+def crm_rows(verb: str, gateway: str):
+    """The rows of the CRM manifest that one UI gateway path reaches.
+
+    ``{}`` in the UI path stands for an id, or for a record kind in the
+    first place after ``/crm`` and in the name of an export file. A path that
+    names no row exactly may be the start of a longer route whose rest is ids
+    only: the Field Studio writes ``/crm/fields`` and the gateway serves
+    ``/crm/fields/{entity}/{key}``. An exact match wins over that fallback.
+    """
+    from acb_common.app_manifests.crm import CRM
+
+    ui = gateway.strip("/").split("/")
+
+    def seg_ok(want: str, have: str) -> bool:
+        if have.startswith("{"):
+            return True
+        if want == "{}":
+            return have in CRM_KINDS or (have.endswith(".csv") and have[:-4] in CRM_KINDS)
+        return want == have
+
+    exact, longer = [], []
+    for row in CRM.routes:
+        if row.method != verb:
+            continue
+        segs = row.path.strip("/").split("/")
+        head = segs[: len(ui)]
+        if len(head) < len(ui) or not all(seg_ok(w, h) for w, h in zip(ui, head, strict=True)):
+            continue
+        rest = segs[len(ui) :]
+        if not rest:
+            exact.append(row)
+        elif all(x.startswith("{") for x in rest):
+            longer.append(row)
+    return exact or longer
+
+
+def _crm_decision(act: Action) -> Decision:
+    """The decision of the CRM manifest. A row with a built tool covers the
+    action. The planned count of the manifest keeps the other rows honest."""
+    rows = [row for gw in act.gateway or () for row in crm_rows(act.verb, gw)]
+    if not rows:
+        return Decision("unrouted", "crm manifest", f"no row for {act.verb} {act.gateway}")
+    registered = registered_tools()
+    for row in rows:
+        built = [t for t in (row.tool, *row.also) if t and t in registered]
+        if built:
+            return Decision("covered", "crm manifest", built[0])
+    if all(row.cls == "X" for row in rows):
+        return Decision("exempt", "crm manifest", f"class X: {rows[0].reason}")
+    planned = next((row.planned for row in rows if row.planned), "?")
+    return Decision("debt", "crm manifest", f"planned in {planned}")
+
+
 def derived(act: Action) -> Decision | None:
-    """The decision that the Projects or the Knowledge manifest gives."""
+    """The decision that the Projects, the Knowledge or the CRM manifest gives."""
     if not act.gateway:
         return None
     gw = act.gateway[0]
+    if gw == "/crm" or gw.startswith("/crm/"):
+        return _crm_decision(act)
     if gw.startswith("/projects/"):
         import skill_projects
         from skill_projects import manifest as pm

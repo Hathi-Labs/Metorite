@@ -9,7 +9,8 @@ Usage:
 
 Pre-requisites:
     - Gateway running at GATEWAY_URL (default http://127.0.0.1:8000)
-    - GATEWAY_INTERNAL_TOKEN set in .env (or defaults to LITELLM_MASTER_KEY)
+    - GATEWAY_INTERNAL_TOKEN set in .env. The LLM key is not service
+      identity, so there is no fallback to LITELLM_MASTER_KEY (WS-24b).
     - Postgres accessible (chat session scoping tests write to DB)
 
 What it tests:
@@ -33,11 +34,7 @@ import httpx
 # ═══════════════════════════════════════════════════════════════════════════
 
 GATEWAY_URL = os.environ.get("GATEWAY_BASE_URL", "http://127.0.0.1:8000")
-INTERNAL_TOKEN = (
-    os.environ.get("GATEWAY_INTERNAL_TOKEN")
-    or os.environ.get("LITELLM_MASTER_KEY")
-    or "sk-local-dev-change-me"
-)
+INTERNAL_TOKEN = os.environ.get("GATEWAY_INTERNAL_TOKEN", "")
 
 USER_A_EMAIL = "alice@fracktal.in"
 USER_A_ROLE = "employee"

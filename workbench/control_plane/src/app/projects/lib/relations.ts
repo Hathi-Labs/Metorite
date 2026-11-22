@@ -146,6 +146,16 @@ export function progressLabel(progress: { done: number; total: number }): string
   return `${progress.done} of ${progress.total}`;
 }
 
+/**
+ * ORC-3 — the other tasks a relations block lists: the subtasks and the
+ * links. ⚠️ Not `blocked_by` as well. The gateway builds it from the
+ * incoming `blocks` rows of `links` (`routes/projects/relations.py`), so a
+ * blocker is in both, and the block draws it once.
+ */
+export function relatedCount(data: Pick<Relations, "subtasks" | "links">): number {
+  return data.subtasks.length + data.links.length;
+}
+
 /** 0–100 for a bar. `0` when there is nothing, rather than NaN. */
 export function progressPercent(progress: { done: number; total: number }): number {
   if (progress.total <= 0) return 0;

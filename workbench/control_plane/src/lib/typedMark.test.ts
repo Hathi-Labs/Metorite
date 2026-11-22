@@ -109,8 +109,9 @@ describe("each send path of the chat", () => {
     const calls = callsOf(chat, "submitText");
     const marked = calls.filter((c) => c.includes("typed"));
     expect(marked).toEqual([
-      "autoSend.text, askTyped ? { typed: true } : undefined",
-      "input, typed ? { typed: true } : undefined",
+      // STU-B2c-2c: the ask also passes `onKept`, which carries no mark.
+      "autoSend.text, askTyped ? { typed: true, onKept } : { onKept }",
+      "withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined",
     ]);
     // Every other call names its words only: no second argument.
     for (const call of calls.filter((c) => !c.includes("typed"))) {

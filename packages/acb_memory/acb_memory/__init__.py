@@ -22,8 +22,11 @@ from acb_memory.mem0_client import (
     get_scoped_all,
     AGENT_SCOPE_PREFIX,
     ORG_SCOPE_KEY,
+    ORG_SCOPE_PREFIX,
     PREFS_SCOPE_PREFIX,
     ROOM_SCOPE_PREFIX,
+    org_scope,
+    org_scope_key,
     scope_kind,
 )
 from acb_memory.graphiti_client import (
@@ -31,6 +34,11 @@ from acb_memory.graphiti_client import (
     get_graphiti_client,
     search_entity_timeline,
     add_episode,
+)
+from acb_memory.tenant_guard import (
+    MemoryTenancyRefused,
+    check_memory_tenancy,
+    memory_tenancy_ok,
 )
 from acb_memory.session_cache import (
     get_session_memory,
@@ -61,6 +69,9 @@ __all__ = [
     "get_scoped_all",
     "AGENT_SCOPE_PREFIX",
     "ORG_SCOPE_KEY",
+    "ORG_SCOPE_PREFIX",
+    "org_scope",
+    "org_scope_key",
     "PREFS_SCOPE_PREFIX",
     "ROOM_SCOPE_PREFIX",
     "scope_kind",
@@ -71,6 +82,10 @@ __all__ = [
     "get_graphiti_client",
     "search_entity_timeline",
     "add_episode",
+    # KG-9: the memory layer refuses to start at two organizations.
+    "MemoryTenancyRefused",
+    "check_memory_tenancy",
+    "memory_tenancy_ok",
     "get_session_memory",
     "invalidate_session_memory",
     "put_file",

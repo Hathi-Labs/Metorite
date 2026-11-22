@@ -142,6 +142,9 @@ export const MY_TASKS_CHIPS = [
   { id: "waiting", label: "Waiting" },
   { id: "someday", label: "Someday" },
   { id: "done", label: "Done" },
+  // ARC-1 (2026-11-09): the tasks I filed, across projects. This chip reads
+  // its own rows (`myArchive.archiveQuery`) and filters nothing on the client.
+  { id: "archive", label: "Archive" },
 ] as const;
 
 export type MyTasksChip = (typeof MY_TASKS_CHIPS)[number]["id"];
@@ -214,6 +217,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
       return effective === "SOMEDAY";
     case "done":
       return effective === "DONE";
+    case "archive":
+      return Boolean(row.archived_at);
     case "today":
       return isInToday(
         {
@@ -246,7 +251,8 @@ export function chipCount(
   summary: Pick<NodeSummary, "by_disposition"> | null | undefined,
   chip: MyTasksChip,
 ): number | null {
-  if (chip === "all") return null;
+  // All and Archive have no server count here: the Archive view counts its own rows.
+  if (chip === "all" || chip === "archive") return null;
   const value = summary?.by_disposition?.[chip];
   return typeof value === "number" ? value : null;
 }
@@ -292,15 +298,6 @@ export function withoutMyTasks(search: string): string {
   if (params.get("app") === "my-tasks") params.delete("app");
   const qs = params.toString();
   return qs ? `/projects?${qs}` : "/projects";
-}
-
-/**
- * What the phone's "My tasks" tab does (`phoneTabs.ts`). Away from My tasks
- * it opens My tasks. On My tasks it opens the Projects sheet, so the tree
- * stays one tap away.
- */
-export function phoneMyTasksTap(app: string | null | undefined): "open" | "sheet" {
-  return app === "my-tasks" ? "sheet" : "open";
 }
 
 // ── The board ───────────────────────────────────────────────────────────────

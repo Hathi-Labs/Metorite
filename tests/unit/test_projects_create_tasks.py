@@ -54,6 +54,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -328,7 +329,7 @@ async def test_zero_ticked_rows_write_nothing(monkeypatch) -> None:
     answer_rows(monkeypatch, set())
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
-    assert out == W.CANCELLED and writes(calls) == []
+    assert out == card_outcome_text(CARD_DECLINED) and writes(calls) == []
 
 
 async def test_a_forged_row_id_is_refused_and_nothing_is_written(monkeypatch) -> None:
@@ -350,14 +351,14 @@ async def test_a_door_that_answers_a_bool_writes_nothing(monkeypatch) -> None:
 
     monkeypatch.setattr(ask_tools, "request_confirmation", yes)
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.create_tasks(UUID, THREE) == W.CANCELLED
+    assert await skill_projects.create_tasks(UUID, THREE) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
 async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.create_tasks(UUID, THREE) == W.CANCELLED
+    assert await skill_projects.create_tasks(UUID, THREE) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -403,7 +404,7 @@ def test_the_row_keys_are_create_tasks_arguments() -> None:
     The mutation: a new create_task argument with no decision here fails.
     """
     params = set(inspect.signature(skill_projects.create_task).parameters)
-    decided = set(F.ROW_KEYS) | set(F.REPEAT_KEYS) | {"project_id", "importance"}
+    decided = set(F.ROW_KEYS) | set(F.REPEAT_KEYS) | {"project_id", "importance", "files"}
     assert params == decided, f"undecided: {sorted(params ^ decided)}"
     assert set(inspect.signature(skill_projects.create_tasks).parameters) == {
         "project_id",

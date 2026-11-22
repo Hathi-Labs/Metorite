@@ -1,7 +1,11 @@
 """The one writer of ``reach_outbox`` and ``reach_signal_log`` (WS-59 RE-1a).
 
 Spec: ``project-docs/specs/proactive_reach.md`` §6 and §7. Migration
-``266_reach_outbox.sql``.
+``266_reach_outbox.sql``. Migration ``350_reach_signal_log_rating.sql`` adds
+the rule and the rating of one alert (``core_brief.md`` §6, BR-5 slice
+2b-1): :func:`log` writes ``rule_id`` and :func:`rate_alert` writes
+``feedback``. ``tests/unit/test_reach_exceptions_feedback_r8.py`` runs that
+SQL on a real Postgres.
 
 Each function opens ``tenant_session(org)`` with the org the caller resolved,
 so RLS binds every statement (R5). The organization column takes its value
@@ -23,6 +27,12 @@ later tick claims it again once the claim is old, so delivery is at least
 once. The WhatsApp reads count ``channel = 'whatsapp'`` only, so a push row
 never counts in the WhatsApp cap. ``tests/unit/test_reach_push.py`` runs this
 SQL on a real Postgres.
+
+**The sent rows** (WS-BRIEF BR-7b-1, ``core_brief.md`` §8). The close-out
+lists each row that went to the member today as an act. :func:`sent_rows` is
+that read, on every channel. It opens its own ``tenant_session(org)`` and
+filters on the member. ``tests/unit/test_audit_acts_read_r8.py`` runs it on
+a real Postgres.
 """
 
 from __future__ import annotations
@@ -49,9 +59,27 @@ _ANY_LOG_SQL = (
 
 _LOG_SQL = (
     "INSERT INTO reach_signal_log (organization_id, member_email, signal_id, "
-    f"fingerprint, outcome, outbox_id) VALUES ({_BOUND_ORG}, :m, :s, :f, :o, "
-    "CAST(:ob AS uuid)) "
+    f"fingerprint, outcome, outbox_id, rule_id) VALUES ({_BOUND_ORG}, :m, :s, :f, :o, "
+    "CAST(:ob AS uuid), :r) "
     "ON CONFLICT (organization_id, member_email, signal_id, fingerprint) DO NOTHING"
+)
+
+#: The rating of one alert (BR-5 slice 2b-1, migration 350). It changes the
+#: NEWEST log row of the member's card and rule that Reach SENT, in the bound
+#: tenant, and no other row. A row with another outcome (``capped``,
+#: ``quiet``, ``deferred``, ``skipped``) sent no message, so the member never
+#: saw it and cannot rate it. The member predicate compares the address with
+#: no case, as each other read of the member does, and keeps member B's row
+#: out. The tenant predicate sits beside RLS. A second rating overwrites the
+#: first.
+_RATE_SQL = (
+    "UPDATE reach_signal_log SET feedback = :fb, feedback_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(member_email) = lower(:m) "
+    "AND signal_id = :s AND rule_id = :r AND outcome = 'sent' "
+    "AND fingerprint = (SELECT fingerprint FROM reach_signal_log "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(member_email) = lower(:m) "
+    "AND signal_id = :s AND rule_id = :r AND outcome = 'sent' "
+    "ORDER BY created_at DESC, fingerprint DESC LIMIT 1)"
 )
 
 _PLAN_SQL = (
@@ -181,6 +209,17 @@ _FULL_DUE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND dedupe_key = :key)"
 )
 
+#: The rows that went to one member in a window, on every channel (BR-7b-1,
+#: ``core_brief.md`` §8). A read: the close-out lists them as acts.
+_SENT_ROWS_SQL = (
+    "SELECT id::text, channel, kind, signal_ids, sent_at FROM reach_outbox "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND state = 'sent' AND sent_at >= :since AND sent_at < :until "
+    "ORDER BY sent_at, id LIMIT :n"
+)
+#: The most rows that :func:`sent_rows` gives.
+SENT_ROWS_MAX = 50
+
 
 async def logged_pairs(org: str, member: str) -> set[tuple[str, str]]:
     """Every ``(signal_id, fingerprint)`` Reach logged for *member*."""
@@ -205,23 +244,89 @@ async def muted_rules(org: str, member: str) -> frozenset[str]:
         return frozenset()
 
 
+async def block_notify(org: str, member: str) -> bool:
+    """True when *member* turned on ``block_notify`` in ``my_day_prefs``
+    (BR-5 slice 2b-2, Q8). The session opens here, as for :func:`muted_rules`.
+    A read error is logged and counts as off. Off is the state before the
+    setting, so a fault never sends an alert that the member did not ask
+    for."""
+    from acb_common import get_logger
+
+    from gateway.routes.shell.prefs import block_notify as read
+
+    try:
+        async with tenant_session(org) as db:
+            return await read(db, member)
+    except Exception as exc:
+        get_logger(__name__).warning("reach.block_notify_failed",
+                                     error_class=type(exc).__name__)
+        return False
+
+
 async def has_log(org: str, member: str) -> bool:
     """True when Reach logged any card for *member*. False is the first run."""
     async with tenant_session(org) as db:
         return bool((await db.execute(text(_ANY_LOG_SQL), {"m": member})).scalar())
 
 
-async def log(org: str, member: str, pairs: Iterable[tuple[str, str]], outcome: str,
+async def log(org: str, member: str,
+              pairs: Iterable[tuple[str, str] | tuple[str, str, str | None]], outcome: str,
               outbox_id: str | None = None) -> int:
-    """Log *pairs* with *outcome*. A pair already logged keeps its row."""
-    params = [{"m": member, "s": s, "f": f, "o": outcome, "ob": outbox_id}
-              for s, f in pairs]
+    """Log *pairs* with *outcome*. A pair already logged keeps its row.
+
+    An item is a ``(signal_id, fingerprint)`` pair, or ``plan.entry`` of a
+    card: the pair and the id of the rule that let it in (BR-5 slice 2b-1).
+    The id goes to ``rule_id``, so one card under one rule is one row.
+
+    Any other shape raises ValueError before any SQL runs: a string, a
+    tuple of one item or of four, or a part that is not a string. The rule
+    id may be None."""
+    params = []
+    for item in pairs:
+        if not isinstance(item, tuple) or len(item) not in (2, 3):
+            raise ValueError("a log item is a (signal_id, fingerprint[, rule_id]) tuple")
+        signal_id, fingerprint = item[0], item[1]
+        rule_id = item[2] if len(item) == 3 else None
+        if not isinstance(signal_id, str) or not isinstance(fingerprint, str):
+            raise ValueError("a log item needs a str signal_id and fingerprint")
+        if rule_id is not None and not isinstance(rule_id, str):
+            raise ValueError("the rule_id of a log item is a str or None")
+        params.append({"m": member, "s": signal_id, "f": fingerprint, "o": outcome,
+                       "ob": outbox_id, "r": rule_id})
     if not params:
         return 0
     async with tenant_session(org) as db:
         for p in params:
             await db.execute(text(_LOG_SQL), p)
     return len(params)
+
+
+async def rate_alert(org: str, member: str, signal_id: str, rule_id: str,
+                     feedback: str) -> bool:
+    """Store *member*'s rating of one alert: the card *signal_id* under the
+    rule *rule_id* (BR-5 slice 2b-1, ``core_brief.md`` §6).
+
+    The caller resolves *org* and *member* from the session, never from the
+    request (R5). *feedback* is one of ``exceptions.FEEDBACK``, and *rule_id*
+    is a row of ``exceptions.RULES``. Anything else raises ValueError before
+    any SQL runs. The rating lands on the newest log row of that card and
+    rule whose outcome is ``sent``, under any spelling of *member*. A second
+    rating replaces the first. Answers True when a row took it, and False
+    when Reach sent no such alert to the member.
+
+    A rating only stores. It mutes no rule and changes no budget."""
+    from gateway.reach import exceptions
+
+    if feedback not in exceptions.FEEDBACK:
+        raise ValueError(f"feedback must be one of {exceptions.FEEDBACK}")
+    if rule_id not in {r.id for r in exceptions.RULES}:
+        raise ValueError("unknown rule")
+    if not signal_id or not member:
+        raise ValueError("a rating needs a card and a member")
+    async with tenant_session(org) as db:
+        result: Any = await db.execute(text(_RATE_SQL), {
+            "fb": feedback, "m": member, "s": signal_id, "r": rule_id})
+    return bool(getattr(result, "rowcount", 0))
 
 
 async def plan(org: str, member: str, *, kind: str, signal_ids: list[str],
@@ -268,6 +373,32 @@ async def brief_planned(org: str, member: str, local_date: date, key: str) -> bo
     async with tenant_session(org) as db:
         return bool((await db.execute(text(_BRIEF_SQL),
                                       {"m": member, "d": local_date, "key": key})).scalar())
+
+
+@dataclass(frozen=True)
+class SentRow:
+    """One row that Reach sent to a member (BR-7b-1)."""
+
+    id: str
+    channel: str
+    kind: str
+    signal_ids: tuple[str, ...]
+    sent_at: datetime
+
+
+async def sent_rows(org: str, member: str, since: datetime, until: datetime,
+                    *, limit: int = SENT_ROWS_MAX) -> list[SentRow]:
+    """The rows in state ``sent`` that went to *member* from *since* up to
+    *until*, the oldest first, :data:`SENT_ROWS_MAX` at most (BR-7b-1,
+    ``core_brief.md`` §8). The caller takes *org* and *member* from its run,
+    never from request input. A read: it changes no row."""
+    n = max(1, min(int(limit), SENT_ROWS_MAX))
+    async with tenant_session(org) as db:
+        rows = (await db.execute(text(_SENT_ROWS_SQL), {
+            "m": member, "since": since, "until": until, "n": n})).all()
+    return [SentRow(id=str(r[0]), channel=str(r[1]), kind=str(r[2]),
+                    signal_ids=tuple(str(s) for s in (r[3] or ())), sent_at=r[4])
+            for r in rows]
 
 
 async def full_brief_due(org: str, member: str, local_date: date, key: str) -> bool:

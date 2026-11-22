@@ -11,6 +11,16 @@ proposals the broker is holding for a human and lets an operator approve
 
 Every endpoint is gated on ``require_internal_auth`` (the queue payloads carry
 outward-write bodies — CRM/email content — so it is never anonymous-reachable).
+
+⚠️ **Only an admin or a manager reaches this router** (the `admin:members:read` holders) (AP-BUG-2, task 1896). The
+``feature:approvals`` gate alone let every member read the whole queue of the
+tenant, with the payloads of other members: migration 207 grants ``feature:*``
+to ``member`` and ``manager`` in every org. ``pending_actions`` has no
+requester column, so a "my rows only" read cannot exist. So the router also
+demands ``ADMIN_PERMISSION`` (``routes/shell/intent.py``), the same test the
+needs provider ``_approvals`` applies and ``GET /auth/me`` reports as
+``is_admin``. Any other member gets 403 on the list, on approve and on reject.
+Fence: ``tests/unit/test_actions_pending_admin_r8.py``.
 Approve/reject go through ``action_broker.approve``/``reject``, which fail
 CLOSED: a missing or non-pending row is never run, and a handler error marks the
 row ``failed``, not ``applied``. Real handlers ARE registered (six sites as of
@@ -24,15 +34,22 @@ gated action loses its handler again.
 """
 from __future__ import annotations
 
-from acb_auth import UserContext, get_current_user, require_feature_router, require_internal_auth
+from acb_auth import (
+    UserContext,
+    get_current_user,
+    require_feature_router,
+    require_internal_auth,
+    require_permission,
+)
 from acb_common import get_logger
 from fastapi import APIRouter, Depends
+from gateway.routes.shell.intent import ADMIN_PERMISSION
 
 _log = get_logger("gateway.actions")
 
 router = APIRouter(
     prefix="/actions", tags=["actions"],
-    dependencies=[require_feature_router("approvals")],
+    dependencies=[require_feature_router("approvals"), require_permission(ADMIN_PERMISSION)],
 )
 
 

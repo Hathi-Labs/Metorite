@@ -103,11 +103,13 @@
  * WS-27bd recorded for the email `ContextMenu`. Do not add a sixth consumer.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import { Dialog } from "@base-ui/react/dialog";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { useFloor } from "@/lib/floorContext";
 
 /**
  * Reading width. The names are the Tailwind max-widths the six converted
@@ -365,6 +367,27 @@ export default function Modal({
     }
   }
 
+  /**
+   * The phone's bottom bar counts as an outside press (MOB-9, task 2002).
+   *
+   * The bar paints above every overlay, and the scrim ends at its top edge. A
+   * tap on a tab is then a press outside the dialog, but the substrate does
+   * not dismiss on it: it treats the bar, inside the app root that it marked
+   * inert, as part of the page behind the scrim. Measured at 390 px: the tab
+   * opened its sheet and the dialog stayed under it. So a click on the bar
+   * closes the dialog, and the tab then does its own job. Fence:
+   * `e2e/phone-bar-always.spec.ts`.
+   */
+  useCloseOnBarTap(onClose, open);
+
+  /**
+   * The floor view of a Studio app (STU-D23a-2, `lib/floorContext.ts`). The portal puts this
+   * dialog outside the root of the floor view, so its fields would keep the desktop size. Inside
+   * the floor view, the popup takes the same attribute as that root, and each control in it takes
+   * its touch size. With no floor view, the popup has no attribute and its markup does not change.
+   */
+  const floor = useFloor();
+
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {
     if (finalFocus === false) return false;
@@ -414,6 +437,7 @@ export default function Modal({
             // `data-base-ui-inert` marker rather than a real `inert` attribute
             // (see this file's header).
             aria-modal="true"
+            data-floor={floor ? "" : undefined}
             initialFocus={initialFocus}
             finalFocus={returnFocus}
             className={`flex ${

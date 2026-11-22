@@ -8,13 +8,19 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { APP_REQUESTS_KEY, requestKey } from "@/app/integrations/lib/appRequests";
 import { LIVE_PANES } from "@/lib/nav";
 import { PLACEMENT } from "@/lib/chatPlacement";
+import { clearAll, peek, put } from "@/lib/dataCache";
+import { sourceKey } from "@/lib/studio/dataDoor";
+import { createRealDoor, isLiveDoorKey } from "@/lib/studio/realDoor";
+import { STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
 
 import {
   APPS_WITHOUT_WRITE_TOOLS,
   APPS_WITH_WRITE_TOOLS,
   ASSISTANT_WROTE_EVENT,
+  STUDIO_RECORD_WRITES,
   appsForWrite,
   eventNamesApp,
   noteToolEnd,
@@ -159,12 +165,20 @@ describe("wireLiveRefresh and the assistant event", () => {
 
 describe("the Studio pack (D179)", () => {
   it("a studio write tool names the studio app, and a studio read tool names none", () => {
-    for (const w of ["studio_save", "studio_publish", "studio_skill_save", "studio_skill_state"]) {
+    for (const w of ["studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+      // STU-A5c-2: a chat delete takes an app out of the library, so the library re-reads.
+      "studio_delete_package",
+      // STU-K1d: a chat create from a template adds an app to the library, so the library re-reads.
+      "studio_create_from_template",
+      // STU-B2c-2b: a resend after the approval writes a record, so an open app re-reads.
+      "studio_record_create", "studio_record_update", "studio_record_delete",
+      // STB-6b: a publish, a roll back, a pause or a turn on changes a workflow of the library.
+      "studio_workflow_publish", "studio_workflow_live"]) {
       expect(appsForWrite(w), w).toEqual(["studio"]);
     }
     for (const rd of ["studio_draft", "studio_validate", "studio_patch", "studio_outline", "studio_plan",
       "studio_describe", "studio_list_actions", "studio_package_get", "studio_record_list",
-      "studio_skill_list", "studio_interview"]) {
+      "studio_skill_list", "studio_interview", "studio_workflow_read"]) {
       expect(appsForWrite(rd), rd).toEqual([]);
     }
   });
@@ -220,5 +234,90 @@ describe("every live app with write tools is wired (the fence for #124)", () => 
 
   it("the old path stays: Projects still hears a receipt card", () => {
     expect(read("lib/liveRefresh.ts")).toContain("PROJECTS_CHANGED_EVENT");
+  });
+});
+
+describe("a record write of Mira reads the approval cards again (STU-B2c-2c)", () => {
+  // The re-review's P3: after a saved resend, the card still showed
+  // "Approved" and "Tell the assistant" until the window took focus. The
+  // write seam now drops the cached request reads, so each card reads its
+  // request again. Mutation: drop the invalidate in announceAssistantWrite ->
+  // the first case goes red.
+  const RID = "5b1e3c2a-7d4f-4a6b-9c8d-0e1f2a3b4c5d";
+  const seed = () => {
+    clearAll();
+    put(requestKey(RID), { request_id: RID, state: "approved" });
+    put(APP_REQUESTS_KEY, { rows: [], more: 0 });
+  };
+
+  it("names the three record writes that the card draws", () => {
+    expect([...STUDIO_RECORD_WRITES].sort()).toEqual([...STUDIO_CARD_TOOLS].sort());
+    expect(requestKey(RID).startsWith(APP_REQUESTS_KEY)).toBe(true);
+  });
+
+  it("a saved resend drops the read of each request and of the list", () => {
+    for (const tool of STUDIO_CARD_TOOLS) {
+      seed();
+      noteToolStart(`w-${tool}`, tool);
+      expect(noteToolEnd(`w-${tool}`, undefined, true)).toEqual(["studio"]);
+      expect(peek(requestKey(RID)), tool).toBeUndefined();
+      expect(peek(APP_REQUESTS_KEY), tool).toBeUndefined();
+    }
+    clearAll();
+  });
+
+  it("a read, another studio write and a failed call keep the reads", () => {
+    for (const [tool, ok] of [["studio_record_list", true], ["studio_save", true],
+      ["studio_record_create", false]] as const) {
+      seed();
+      noteToolStart(`r-${tool}`, tool);
+      noteToolEnd(`r-${tool}`, undefined, ok);
+      expect(peek(requestKey(RID)), tool).toBeDefined();
+    }
+    clearAll();
+  });
+});
+
+describe("a record write of Mira reads the records again (STU-F5a)", () => {
+  // The review's P1: a records card in the chat kept its old rows after Mira
+  // wrote a record in the same chat. The write seam now drops the reads of
+  // every live door. Mutation: drop `invalidate(isLiveDoorKey)` in
+  // announceAssistantWrite -> "a saved record write drops ..." goes red.
+  const PKG = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+  const door = createRealDoor({ packageId: PKG, actions: [{ id: "find", uses: "object:visit.list" }] });
+  const LIVE = sourceKey(door, { action: "object:visit.list", args: { limit: 25 } });
+  const OTHER = "studio:records-card:pkg:" + PKG;
+  const seed = () => {
+    clearAll();
+    put(LIVE, [{ id: "a", title: "Old" }]);
+    put(OTHER, { id: PKG });
+  };
+
+  it("names the key of a live door, and no other key", () => {
+    expect(isLiveDoorKey(LIVE)).toBe(true);
+    expect(isLiveDoorKey(OTHER)).toBe(false);
+    expect(isLiveDoorKey("studio:sample:draft:object:visit.list:{}")).toBe(false);
+  });
+
+  it("a saved record write drops the reads of each live door, and keeps the package read", () => {
+    for (const tool of STUDIO_CARD_TOOLS) {
+      seed();
+      noteToolStart(`l-${tool}`, tool);
+      noteToolEnd(`l-${tool}`, undefined, true);
+      expect(peek(LIVE), tool).toBeUndefined();
+      expect(peek(OTHER), tool).toBeDefined();
+    }
+    clearAll();
+  });
+
+  it("a read, another studio write and a failed call keep the rows", () => {
+    for (const [tool, ok] of [["studio_record_list", true], ["studio_save", true],
+      ["studio_record_update", false]] as const) {
+      seed();
+      noteToolStart(`k-${tool}`, tool);
+      noteToolEnd(`k-${tool}`, undefined, ok);
+      expect(peek(LIVE), tool).toBeDefined();
+    }
+    clearAll();
   });
 });

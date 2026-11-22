@@ -22,9 +22,11 @@
  */
 
 import type { ProcessPastEstimate, ProcessPastStatus } from "./api";
-import { autoDraftRepliesOn } from "./assistantSettings";
+import { autoDraftRepliesOn, autoRunChoiceBody } from "./assistantSettings";
 import { atStorageLimit } from "./storage";
-import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
+import type {
+  AssistantSettings, AssistantSettingsSave, AutomationRule, EmailAccount, RuleCopyResult,
+} from "./types";
 import { shortDate } from "./utils";
 
 // `shortDate` moved to `utils.ts` with EM-T6e, so `storage.ts` reads it with
@@ -360,11 +362,11 @@ export const RULES_STEP_COPY = {
   draftNote: "Metorite writes a draft for mail that needs a reply. It sends nothing.",
   draftNeedsReplyRule: 'Reply drafts need the "Needs Reply" rule. Turn it on in AI Settings.',
   draftReadFailed: "Metorite could not read the drafting setting.",
-  // WS-17 EM-G11c2 (G2, §12.3.13.7): the member's Auto-run choice. A new
-  // Gmail mailbox reads OFF, so its rules sort no new mail until the member
-  // turns this on.
+  // WS-17 EM-G11c2 (G2, §12.3.13.7): the member's Auto-run choice. With no
+  // stored choice the switch starts ON (task 2267). OFF is the member's own
+  // choice, so the body says the rules sort no new mail.
   autoRunLabel: "Run my rules on new mail",
-  autoRunOffBody: 'Your rules sort new mail only when "Run my rules on new mail" is on.',
+  autoRunOffBody: 'Your rules sort no new mail while "Run my rules on new mail" is off.',
   autoRunReadFailed: "Metorite could not read the Auto-run setting.",
   noneAdded: "Your recommended rules are there already, and they are off. Turn on a rule in AI Settings.",
   insights: "See insights",
@@ -616,7 +618,7 @@ export interface RulesStepApi {
   listRules(accountId: string): Promise<ReadonlyArray<RuleShape>>;
   installPresetRules(accountId: string): Promise<{ installed: string[] }>;
   getAssistantSettings(accountId: string): Promise<AssistantSettings>;
-  saveAssistantSettings(settings: AssistantSettings): Promise<AssistantSettings>;
+  saveAssistantSettings(settings: AssistantSettingsSave): Promise<AssistantSettings>;
   /** The PATCH of item 11. It returns the server's copy of the account. */
   finishOnboarding(accountId: string): Promise<EmailAccount>;
   /** "Copy the rules of <label>" (EM-T8f-2, D-EM-24): `POST /email/rules/copy`.
@@ -668,18 +670,44 @@ export async function setDraftReplies(api: RulesStepApi, accountId: string, on: 
 }
 
 /**
+ * What the Auto-run switch draws. `unsaved` marks the default: the mailbox
+ * has no stored choice, so the switch starts ON and nothing is saved yet. Only
+ * the member's Done (`saveAutoRunDefault`) or a move of the switch saves.
+ */
+export type AutoRunSwitch = DraftSwitch | { state: "ready"; on: true; unsaved: true };
+
+/**
  * Reads the stored Auto-run choice for the rules step (WS-17 EM-G11c2, G2,
- * `email_app_master_plan.md` §12.3.13.7). The server owns the default:
- * `rules.auto_run_on` answers OFF for a Gmail mailbox with no settings row,
- * and ON for Outlook. The switch draws that answer, and a failed read is
+ * `email_app_master_plan.md` §12.3.13.7). A stored choice shows as it is.
+ * With NO stored choice (`auto_run_chosen === false`) the switch starts ON
+ * (owner decision, 2026-11-08, task 2267), and this read saves nothing. A
+ * server that sends no `auto_run_chosen` is read as before. A failed read is
  * `failed`, never a guess.
  */
-export async function readAutoRunSwitch(api: RulesStepApi, accountId: string): Promise<DraftSwitch> {
+export async function readAutoRunSwitch(api: RulesStepApi, accountId: string): Promise<AutoRunSwitch> {
   try {
-    return { state: "ready", on: (await api.getAssistantSettings(accountId)).auto_run === true };
+    const s = await api.getAssistantSettings(accountId);
+    if (s.auto_run_chosen === false) return { state: "ready", on: true, unsaved: true };
+    return { state: "ready", on: s.auto_run === true };
   } catch {
     return { state: "failed" };
   }
+}
+
+/**
+ * What Done saves for the Auto-run switch. Only a switch that shows the ON
+ * default and was never moved saves `auto_run = true`. A stored value, or a
+ * switch the member moved (it saved then), saves nothing here. Returns true
+ * when it saved.
+ */
+export async function saveAutoRunDefault(
+  api: RulesStepApi,
+  accountId: string,
+  sw: AutoRunSwitch,
+): Promise<boolean> {
+  if (sw.state !== "ready" || !("unsaved" in sw)) return false;
+  await setAutoRun(api, accountId, true);
+  return true;
 }
 
 /**
@@ -714,9 +742,16 @@ export function settingsSaver(): SettingsSaver {
 
 /**
  * The Auto-run switch of the rules step (G2). It writes the settings row with
- * the member's choice: `auto_run` changes and every other field stays.
+ * the member's choice: `auto_run` changes and every other field stays. Its
+ * callers are the member's own acts only: the switch, Done
+ * (`saveAutoRunDefault`) and the notice's "Turn on". So it sends the marker
+ * of an explicit choice, and the server stamps it (task 2305).
  */
-export async function setAutoRun(api: RulesStepApi, accountId: string, on: boolean): Promise<void> {
+export async function setAutoRun(
+  api: Pick<RulesStepApi, "getAssistantSettings" | "saveAssistantSettings">,
+  accountId: string,
+  on: boolean,
+): Promise<void> {
   const current = await api.getAssistantSettings(accountId);
-  await api.saveAssistantSettings({ ...current, auto_run: on });
+  await api.saveAssistantSettings(autoRunChoiceBody(current, on));
 }

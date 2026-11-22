@@ -23,8 +23,23 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
-import { uploadNote } from "@/lib/chatUpload";
+import VoiceInputButton, { type VoiceControls } from "@/components/VoiceInputButton";
+import { useVoiceAvailability } from "@/hooks/useVoiceDictation";
+import { insertAtCaret, type VoicePhase } from "@/lib/voiceDictation";
+import { wordsOfMessage } from "@/lib/chatUpload";
+import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { useChatAttachments } from "@/hooks/useChatAttachments";
+import {
+  canSend as canSendMessage,
+  composeMessage,
+  editStart,
+  hasFailed,
+  hasFiles,
+  isUploading,
+  readyFiles,
+} from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
+import DecisionChips from "@/components/chat/DecisionChips";
 import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
@@ -52,24 +67,28 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import ContinueOffer from "@/components/ContinueOffer";
+import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
+  CONFIRMATION_NOT_DONE,
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   NO_EDITS,
   confirmationReducer,
   formEditsReducer,
   liveCards,
-  liveEdits,
+  closedEdits,
+  heldKeys,
   receiptLabel,
   settleAnswer,
+  type FormEdit,
   type FormEdits,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
-import type { NewMailEdits } from "@/lib/replyCard";
 import {
   UNCHANGED_CLOSE_MS,
   changingLine,
@@ -88,6 +107,8 @@ import {
 } from "@/lib/archiveUndo";
 import type { UndoEntry } from "@/lib/undo";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
+import { refreshLiveRuns } from "@/lib/liveRuns";
+import { goesOnInParkedReply, receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
@@ -108,7 +129,7 @@ import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
 import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
-import { dispatchRun, getCardLog, getSessionState, noteCardAnswered } from "@/lib/chatStore";
+import { dispatchRun, getCardLog, getFormEdits, getSessionState, keepFormEdits, noteCardAnswered } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
@@ -126,6 +147,7 @@ import {
   enterSends, touchKeyboard,
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
+import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
@@ -143,6 +165,9 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
+import { offerSolo, promptBefore } from "@/lib/studio/skillOffer";
+import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
   composerModelPlan,
@@ -161,7 +186,9 @@ import {
 // Always includes the tiers (always accessible) and Gemini models (default provider).
 // Provider-specific models for other providers are added dynamically after fetch.
 const MODELS_FALLBACK: UnifiedModel[] = [
-  { id: "auto",              label: "auto (SDK picks)",     runtime: "copilot", group: "GitHub Copilot SDK" },
+  // "copilot" is the name of the agent-executor mode (the MAF tool path), not the SDK.
+  // The name retires with WS-43q (task 2285).
+  { id: "auto",              label: "Auto (the assistant picks)", runtime: "copilot", group: "Assistant" },
   { id: "tier-fast",     label: "Tier 1 (fast / cheap)", runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-balanced", label: "Tier 2 (balanced)",     runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-powerful", label: "Tier 3 (powerful)",     runtime: "litellm", group: "LiteLLM — Tiers" },
@@ -362,10 +389,12 @@ interface AgentChatProps {
    * Words to SEND once, as the member's turn (D99: the shell's chat bar).
    * Unlike `pendingInput`, the member already pressed Enter in the bar. It
    * waits until the history has loaded, sends each `seq` once, and then
-   * calls `onAutoSendConsumed`.
+   * calls `onAutoSendConsumed` with `sent`, or with `kept` when the chat
+   * refused the send and the words wait in the composer. A steer that the
+   * server refuses later calls it again with `kept` (STU-B2c-2c).
    */
   autoSend?: { seq: number; text: string; typed?: boolean } | null;
-  onAutoSendConsumed?: (seq: number) => void;
+  onAutoSendConsumed?: (seq: number, outcome: AskOutcome) => void;
   /**
    * D99: the one assistant's name, "Metorite". The member talks to one
    * assistant and never picks an agent, so with this set the chat shows the
@@ -380,6 +409,13 @@ interface AgentChatProps {
    * on purpose omits it, and its refusal shows as an error.
    */
   onSessionRefused?: (pendingText: string) => boolean;
+  /**
+   * The shell opens the fresh chat that the pill "Continue in a fresh chat"
+   * made (`lib/chatContinue.ts`, `one_assistant_context.md` §9 WT-2). Pass it
+   * only from the shell's dock. A host that omits it draws no pill. The new
+   * chat gets `text` in its composer, and nothing is sent.
+   */
+  onContinueHeld?: (opened: ContinueOpened) => void;
 }
 
 /** The `answer` of a resolved card that closed with no answer. */
@@ -387,6 +423,15 @@ const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELL
 
 /** The one line a member reads when compaction fails. Nothing was removed. */
 const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
+
+/** RESUME-3a: where the "Approved" line of a card that another device
+ *  approved draws: under the last message before the reply that goes on.
+ *  RESUME-3b: in case A the reply that goes on is the parked one, so the
+ *  line draws under it. */
+function lineAnchorBeforeRun(threadId: string): string | null {
+  const st = getSessionState(threadId);
+  return receiptAnchorBeforeRun(st.messages, st.run.messageId, goesOnInParkedReply(st.run));
+}
 
 export default function AgentChat({
   agentName,
@@ -421,6 +466,7 @@ export default function AgentChat({
   onAutoSendConsumed,
   assistantName,
   onSessionRefused,
+  onContinueHeld,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -897,6 +943,50 @@ export default function AgentChat({
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Task 2867 (owner, 2026-11-11): on a phone, a focus() on the box opens the
+  // keyboard. A press in the composer notes whether the box had focus, and
+  // only then may the box take it back (`lib/composerFocus.ts`).
+  const pressFocusRef = useRef(false);
+  const focusAfterPress = useCallback(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    const hadFocus = pressFocusRef.current || boxHadFocus(box);
+    pressFocusRef.current = false;
+    if (refocusAfterPress({ touch: touchKeyboard(), hadFocus })) box.focus();
+  }, []);
+  const focusQuietly = useCallback(() => {
+    const box = inputRef.current;
+    if (box && refocusQuietly({ touch: touchKeyboard() })) box.focus();
+  }, []);
+  // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
+  // whether it shows. The transcript goes in at the caret, and the member
+  // sends it. Enter and Escape in the box stop or cancel a recording.
+  const voiceAvailability = useVoiceAvailability();
+  const voiceRef = useRef<VoiceControls>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const putDictation = useCallback((text: string) => {
+    const el = inputRef.current;
+    const prev = el?.value ?? "";
+    const next = insertAtCaret(prev, el?.selectionStart ?? prev.length, el?.selectionEnd ?? prev.length, text);
+    // D-PZ-37: the member spoke these words and did not type them. A program
+    // put them in the box, so a send of the box carries no typed mark.
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput(next.value);
+    setComposerNotice(null);
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      // Task 2867: dictation never opens the phone's keyboard.
+      focusQuietly();
+      box.setSelectionRange(next.caret, next.caret);
+    });
+  }, [setInput, setComposerNotice, focusQuietly]);
+  // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
+  const att = useChatAttachments(sessionId);
+  const attRef = useRef(att);
+  attRef.current = att;
+  const [dragOver, setDragOver] = useState(false);
+  const hasReadyFiles = readyFiles(att.items).length > 0;
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
   // It grows with the message up to a cap, and goes back to one line when the
@@ -944,10 +1034,13 @@ export default function AgentChat({
   useEffect(() => {
     restoreCappedRef.current = (text: string, typed: boolean) => {
       boxMarkRef.current = filled(boxMarkRef.current, typed);
-      setInput((prev) => mergeCappedText(prev, text));
-      inputRef.current?.focus();
+      // The words go in the box and the files come back as chips, never the note.
+      const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+      setInput((prev) => mergeCappedText(prev, back.words));
+      if (back.items.length) attRef.current.restore(back.items);
+      focusQuietly();
     };
-  }, []);
+  }, [focusQuietly]);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [statuses, setStatuses] = useState<IntegrationStatus[]>(externalStatuses ?? []);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
@@ -1095,6 +1188,14 @@ export default function AgentChat({
   );
   // §18.11: the steer reads the queue's cards, and marks what it carried.
   useEffect(() => { cardsRef.current = confirmations.cards; }, [confirmations.cards]);
+  // RESUME-3a: the request ids of the cards that waited parked in this chat.
+  // Only an answer to one of them, from another tab or device, adds a line.
+  const parkedCardsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { parkedCardsRef.current = new Set(); }, [sessionId]);
+  useEffect(() => {
+    if (run.phase !== "parked") return;
+    for (const c of confirmations.cards) if (c.requestId) parkedCardsRef.current.add(c.requestId);
+  }, [run.phase, confirmations.cards]);
   useEffect(() => {
     markSentRef.current = (key, version) => dispatchConfirmation({ type: "memberVersion", key, version });
   }, []);
@@ -1103,15 +1204,37 @@ export default function AgentChat({
   // Fix round 5: the member's edits of each new-mail form, by key. The CHAT
   // holds them, and not the queue, because the queue mounts again on each new
   // message and when its last card leaves. A ref: the form reads them once,
-  // when it mounts. `liveEdits` drops the entry of a card that closed for good.
-  const formEditsRef = useRef<FormEdits>(NO_EDITS);
-  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+  // when it mounts.
+  // Task 1893: the edits of each THREAD also live in `chatStore`, beside the card log. A chat switch
+  // and a new mount of this component (another chat, the Email pane, a rail, the dock) read them back,
+  // so the card that the log redraws keeps an untick. `clearCardLog` (a new run, the end of one) clears
+  // them with the log. The ref is read DURING render on a switch, because a form reads its edits once,
+  // when it mounts, and that can be in the same commit.
+  const formEditsRef = useRef<FormEdits>(getFormEdits(sessionId) ?? NO_EDITS);
+  const editsThreadRef = useRef(sessionId);
+  const heldRef = useRef<ReadonlySet<string>>(new Set());
+  if (editsThreadRef.current !== sessionId) {
+    editsThreadRef.current = sessionId;
+    formEditsRef.current = getFormEdits(sessionId) ?? NO_EDITS;
+    heldRef.current = new Set();
+  }
+  const onFormEdits = useCallback((key: string, value: FormEdit) => {
     formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
-  }, []);
+    keepFormEdits(sessionId, formEditsRef.current);
+  }, [sessionId]);
   const savedFormEdits = useCallback((key: string) => formEditsRef.current.get(key), []);
   useEffect(() => {
-    formEditsRef.current = liveEdits(formEditsRef.current, confirmations);
-  }, [confirmations]);
+    // Only a card that LEFT the queue in this thread loses its edits: an answer, a slot that a draft
+    // took, a slot that ended. The reset of a chat switch is not that: it empties the queue, and the
+    // card log then redraws the card. `heldRef` starts empty on a switch, so nothing counts as left.
+    const now = heldKeys(confirmations);
+    const next = closedEdits(formEditsRef.current, heldRef.current, now);
+    heldRef.current = now;
+    if (next !== formEditsRef.current) {
+      formEditsRef.current = next;
+      keepFormEdits(sessionId, next);
+    }
+  }, [confirmations, sessionId]);
   const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
     if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
     else cardDraftsRef.current.delete(key);
@@ -1189,15 +1312,26 @@ export default function AgentChat({
       }
       // The server closed a card: answered, timed out or cancelled. A replay
       // carries this too, so an answered card never comes back.
+      // Task 3827: the card was approved, and the tool then refused the write
+      // (the object changed after the card). Its line must not read "Approved".
+      if (name === CONFIRMATION_NOT_DONE && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "notDone", requestId: String(rid) });
+      }
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         const answer = (value as Record<string, unknown>).answer;
         // The closing answer goes with it: a new-mail card that a chat
         // message closed (REVISED) stays as the slot of its new draft (§18.11).
         if (rid) {
+          // RESUME-3a: a card that waited parked here, and that another tab or
+          // device approved, leaves with "Approved". Its line draws under the
+          // last message before the reply that goes on now.
+          const elsewhere = parkedCardsRef.current.has(String(rid));
           dispatchConfirmation({
             type: "resolved", requestId: String(rid),
             ...(typeof answer === "string" ? { answer } : {}),
+            ...(elsewhere ? { elsewhere: true, afterId: lineAnchorBeforeRun(sessionId) } : {}),
           });
         }
         // An answer from anywhere (another tab, another member of a room)
@@ -1413,6 +1547,51 @@ export default function AgentChat({
     return () => { stale = true; };
   }, [sessionId, threadNeedsInput, pendingAskTick]);
 
+  // RESUME-3a step 7: the server stopped listing a parked thread. Another tab
+  // or device answered its card, or the card closed. Once the run rests, ask
+  // the server ONCE for what still waits, and settle each card that shows as
+  // waiting and is not on the list. A continuation that runs first closes the
+  // card itself, with "Approved", through its `confirmation_resolved`.
+  const parkedWaitRef = useRef(false);
+  const askCheckDueRef = useRef(false);
+  const runRests = !isLivePhase(run.phase) && run.phase !== "parked";
+  useEffect(() => {
+    parkedWaitRef.current = false;
+    askCheckDueRef.current = false;
+  }, [sessionId]);
+  useEffect(() => {
+    if (threadNeedsInput) {
+      if (run.phase === "parked") parkedWaitRef.current = true;
+      return;
+    }
+    if (parkedWaitRef.current) {
+      parkedWaitRef.current = false;
+      askCheckDueRef.current = true;
+    }
+    if (!askCheckDueRef.current || !runRests || !sessionId) return;
+    askCheckDueRef.current = false;
+    const forSession = sessionId;
+    const waiting = waitingCardIds(
+      confirmations.cards,
+      [
+        elicitation && elicitation.answered === undefined && !elicitation.declined ? elicitation.requestId : null,
+        userInput && userInput.answered === undefined && !userInput.declined ? userInput.requestId : null,
+      ],
+      redrawnRef.current.waiting,
+    );
+    if (waiting.size === 0) return;
+    void fetchPendingAsksOrNull(forSession).then((asks) => {
+      if (sessionIdRef.current !== forSession) return;
+      for (const id of cardsToSettle(asks, waiting)) {
+        redrawnRef.current.waiting.delete(id);
+        dispatchConfirmation({ type: "resolved", requestId: id });
+        setElicitation((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+        setUserInput((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the cards are read at the check, not watched
+  }, [sessionId, threadNeedsInput, run.phase, runRests]);
+
   // HITL cards are per-session component state — clear them on a session
   // switch so a question raised in session A never renders in (or gets its
   // answer routed from) session B.  The event subscriber above already
@@ -1459,7 +1638,19 @@ export default function AgentChat({
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason, resumed }) => {
+        // RESUME-3a: the late Approve started a continuation run. The run
+        // state of its thread hears it, and the run list is asked at once, so
+        // the attach starts. No envelope goes and no notice draws.
+        if (resumed) {
+          dispatchRun(forSession, {
+            type: "resumed", at: Date.now(), runId: resumed.runId,
+            ...(resumed.messageId ? { messageId: resumed.messageId } : {}),
+            // RESUME-3b: case A goes on in the parked reply, under its run id.
+            ...(resumed.sameReply ? { sameReply: true } : {}),
+          });
+          refreshLiveRuns();
+        }
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {
@@ -1617,7 +1808,7 @@ export default function AgentChat({
     ).length;
     if (counted === 0) return;
     onActivityRef.current({
-      firstUserMessage: firstUser?.content,
+      firstUserMessage: firstUser ? wordsOfMessage(firstUser.content) : undefined,
       lastPreview: lastAssistant?.content,
       messageCount: counted,
     });
@@ -1809,15 +2000,19 @@ export default function AgentChat({
     () => (messages.length > renderLimit ? messages.slice(-renderLimit) : messages),
     [messages, renderLimit],
   );
+  // WT-2: the newest settled turn that the server marked as held.
+  const continueOfferId = useMemo(() => newestOfferId(visibleMessages), [visibleMessages]);
 
   // A steer the server refused gives its words back, and says why. Text the
   // member typed since then keeps its place (`mergeCappedText`).
   const giveBack = useCallback((text: string, notice: string, typed: boolean) => {
     boxMarkRef.current = filled(boxMarkRef.current, typed);
-    setInput((prev) => mergeCappedText(prev, text));
+    const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+    setInput((prev) => mergeCappedText(prev, back.words));
+    if (back.items.length) attRef.current.restore(back.items);
     setComposerNotice(notice);
-    inputRef.current?.focus();
-  }, []);
+    focusQuietly();
+  }, [focusQuietly]);
 
   // §18.10 (owner, 2026-11-03): a chip of a new-mail card puts its words in
   // the box and focuses it. It sends nothing. A program put the words there,
@@ -1840,7 +2035,9 @@ export default function AgentChat({
    * prompt call this with no mark (`lib/typedMark.test.ts`).
    */
   const submitText = useCallback(
-    (text: string, opts?: { typed?: boolean }): boolean => {
+    // `opts.onKept` (STU-B2c-2c): a steer that the server refuses later gives
+    // the words back to the box, and this tells the sender so.
+    (text: string, opts?: { typed?: boolean; onKept?: () => void }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
@@ -1860,6 +2057,7 @@ export default function AgentChat({
       }
       void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
         if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
+        if (out.kind === "refused") opts?.onKept?.();
       });
       return true;
     },
@@ -1880,11 +2078,16 @@ export default function AgentChat({
     // D-PZ-37: the Ask field is one box with the composer, so its typed
     // words carry the mark. A start pill of the field sends none.
     const askTyped = autoSend.typed === true;
-    if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {
+    // STU-B2c-2c: the sender learns what became of the words. A card says
+    // "Sent to the chat" only after a send, never while they wait in the box.
+    const seq = autoSend.seq;
+    const onKept = () => onAutoSendConsumed?.(seq, "kept");
+    const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });
+    if (!sent) {
       boxMarkRef.current = filled(boxMarkRef.current, askTyped);
       setInput((prev) => mergeCappedText(prev, autoSend.text));
     }
-    onAutoSendConsumed?.(autoSend.seq);
+    onAutoSendConsumed?.(seq, sent ? "sent" : "kept");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
 
@@ -1897,14 +2100,24 @@ export default function AgentChat({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || loadingHistory) return;
+    if (loadingHistory || !canSendMessage(input, att.items)) return;
     // `answerTyped` is defined below, where the question state is read. A
     // submit runs after the render, so it is in scope.
     // WS-63 D-PZ-37: the ONE send that sets the typed mark, unless words
     // that the member did not type sit in the box (`boxMarkRef`).
     const typed = composerTyped(boxMarkRef.current);
-    if (answerTyped(input) || submitText(input, typed ? { typed: true } : undefined)) setInput("");
-    inputRef.current?.focus();
+    // A message with files is the member's words, then the note that names the
+    // files (`composeMessage`). It never answers a question card.
+    const withFiles = att.items.length > 0;
+    const sent =
+      (!withFiles && answerTyped(input)) ||
+      submitText(withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined);
+    if (sent) {
+      setInput("");
+      att.clear();
+    }
+    // Task 2867: a closed phone keyboard stays closed after Send.
+    focusAfterPress();
   };
 
   // Collapse the auto-grown textarea back to one line whenever the input is
@@ -1921,6 +2134,18 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // VOX-1: while the mic records, Enter stops it and Escape cancels it.
+    // Neither sends: the transcript goes in the box first.
+    if (voicePhase === "recording" && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      voiceRef.current?.stop();
+      return;
+    }
+    if ((voicePhase === "recording" || voicePhase === "asking") && e.key === "Escape") {
+      e.preventDefault();
+      voiceRef.current?.cancel();
+      return;
+    }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
     if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
@@ -1930,7 +2155,7 @@ export default function AgentChat({
     }
     // Esc stops a live run, only from an empty box: with text, Esc keeps its
     // usual meaning and the words stay (owner, 2026-10-12).
-    if (e.key === "Escape" && primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() }) === "stop") {
+    if (e.key === "Escape" && primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles }) === "stop") {
       e.preventDefault();
       handleStop();
     }
@@ -2332,8 +2557,14 @@ export default function AgentChat({
   // The room: read here, before the card answers below, which count only
   // the viewer's own turns (review of #942). The room layer is further down.
   const viewerEmail = memoryUserId ?? "";
-  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
+  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom, error: roomError } =
     useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // STU-F6a: the skill offer needs proof of a chat of one member. The dock
+  // form reads no room (`compact`), and a failed read falls back to a room
+  // of one, so both count as "could be shared" (`provenSolo`). With the flag
+  // off the value stays false, so no bubble draws again when the room answers.
+  const skillOfferShown = useSkillOfferOn();
+  const soloForOffer = offerSolo(skillOfferShown, { enabled: !compact, room, error: roomError });
   // The member's own assistant, not a room: the push prompt asks only here (OB-8).
   const ownAssistantChat = isOrchestrator && !isRoom;
   // A blocking generative-UI card whose answer went as a new message after a
@@ -2431,7 +2662,9 @@ export default function AgentChat({
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;
   // Stop while a run is live and the box is empty, else Send (lib/chatSteer.ts).
-  const primary = primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() });
+  const primary = primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles });
+  const uploadingFiles = isUploading(att.items);
+  const failedFiles = hasFailed(att.items);
   // The box's bar always holds Attach and the one primary control. These
   // controls join it only when the agent has them (owner, 2026-10-12).
   const hasComposerControls =
@@ -2642,6 +2875,11 @@ export default function AgentChat({
                   entityPills={currentAgentName === PROJECTS_AGENT}
                   // Bare `#171` task links, for the task agents (2026-10-13).
                   taskRefAgent={currentAgentName}
+                  // The skill offer of the turn (STU-F6a): its prompt, and
+                  // whether the chat is solo. `skillOffer.ts` decides.
+                  skillOfferOf={msg.role === "assistant"
+                    ? { prompt: promptBefore(visibleMessages, i), solo: soloForOffer }
+                    : undefined}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account
@@ -2657,6 +2895,11 @@ export default function AgentChat({
                   onUndo={undoReject}
                   onUndoArchive={undoArchive}
                 />
+                {/* WT-2: the server marked this held turn, and the shell can open
+                    the fresh chat. Under the newest marked turn only. */}
+                {onContinueHeld && msg.id === continueOfferId && (
+                  <ContinueOffer sessionId={sessionId} onOpened={onContinueHeld} />
+                )}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -2786,7 +3029,7 @@ export default function AgentChat({
               icon={composerExpanded ? "Minimize2" : "Maximize2"}
               onClick={() => {
                 setComposerExpanded((v) => !v);
-                inputRef.current?.focus();
+                focusAfterPress();
               }}
               aria-label={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
               title={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
@@ -2848,12 +3091,15 @@ export default function AgentChat({
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
           {aboveComposer}
+          {/* HRD-12b: the decisions this chat keeps, each with an Undo. The server
+              says nothing while CHAT_CONSTRAINTS is off, so nothing draws. */}
+          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={focusQuietly} />
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}
             streaming={isLoading}
             visible={visible}
-            onClosed={() => inputRef.current?.focus()}
+            onClosed={focusQuietly}
           />
           {/* The message box (owner, 2026-10-12: "it looks quite untidy").
               The message takes the whole width, with no gutter. One bar inside
@@ -2869,13 +3115,35 @@ export default function AgentChat({
           <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[24px]">
             <div className="glass:glass-glow-ring" />
           </div>
-          <div data-guide="chat.message-field" data-chat-composer onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
-            "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+          <div data-guide="chat.message-field" data-chat-composer data-drop={dragOver ? "over" : undefined}
+            onDragOver={(e) => { if (canSend && hasFiles(e.dataTransfer?.types)) { e.preventDefault(); setDragOver(true); } }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false); }}
+            onDrop={(e) => {
+              setDragOver(false);
+              if (!canSend || !hasFiles(e.dataTransfer?.types)) return;
+              e.preventDefault();
+              att.add(Array.from(e.dataTransfer.files));
+              focusAfterPress();
+            }}
+            // Task 2867: a press anywhere in the composer notes whether the
+            // box had focus, before the press can move it.
+            onPointerDownCapture={() => { pressFocusRef.current = boxHadFocus(inputRef.current); }}
+            onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
+            dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); focusAfterPress(); }} onRetry={att.retry} />
             <textarea ref={inputRef} value={input}
               onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
+              onPaste={(e) => {
+                // A pasted image goes the same way as an attach. Pasted text
+                // stays text: a copy from a page can carry a picture as well.
+                const cd = e.clipboardData;
+                if (!cd || !hasFiles(cd.types) || cd.getData("text/plain")) return;
+                e.preventDefault();
+                att.add(Array.from(cd.files), { pasted: true });
+              }}
               onKeyDown={handleKeyDown} rows={1}
               disabled={loadingHistory}
               aria-label={`Message ${currentAgentLabel}`}
@@ -2898,15 +3166,13 @@ export default function AgentChat({
                 into a staircase (visual review, 2026-10-12, 390 px). */}
             <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
-                onUploadComplete={(files) => {
-                  // The note names read_attachment, the one reader of an
-                  // upload (lib/chatUpload.ts). It named a read_file tool
-                  // that does not exist until 2026-10-09.
-                  const ctx = uploadNote(files);
-                  setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
-                  inputRef.current?.focus();
-                }}
+                onPick={(files) => { att.add(files); focusAfterPress(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
+              {voiceAvailability.shown && (
+                <VoiceInputButton ref={voiceRef} availability={voiceAvailability}
+                  onText={putDictation} onNotice={setComposerNotice} onPhase={setVoicePhase}
+                  className={`shrink-0 flex ${tap} items-center justify-center`} />
+              )}
             {hasComposerControls && !phoneChrome && (
             <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
@@ -3138,10 +3404,18 @@ export default function AgentChat({
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
                 // A Stop waits for the server's answer (UXD-4).
-                loading={primary === "stop" && stopping}
-                label={primary === "stop" && stopping ? "Stopping the reply" : undefined}
-                title={primary === "stop" && stopping ? "Stopping…" : undefined}
-                disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}
+                loading={primary === "stop" ? stopping : uploadingFiles}
+                label={primary === "stop" ? (stopping ? "Stopping the reply" : undefined) : uploadingFiles ? "Uploading…" : undefined}
+                title={
+                  primary === "stop"
+                    ? stopping ? "Stopping…" : undefined
+                    : uploadingFiles
+                      ? "Uploading…"
+                      : failedFiles
+                        ? "Retry or remove the file that failed, then send."
+                        : undefined
+                }
+                disabled={primary === "send" ? !canSendMessage(input, att.items) || loadingHistory : stopping}
                 large={phoneChrome}
               />
             </div>

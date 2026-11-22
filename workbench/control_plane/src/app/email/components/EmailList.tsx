@@ -1,5 +1,7 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useClampedMenu } from "@/lib/menuClamp";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -7,6 +9,7 @@ import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
 import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
+import { UnreadBar, UnreadLabel, ReadToggle, readTone, rowButtonClass } from "./UnreadMark";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
@@ -383,11 +386,14 @@ export function EmailList({
         </div>
       ) : (
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border flex-shrink-0 overflow-x-auto scrollbar-hide">
-          {/* Compose — always available, even with nothing selected */}
-          <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
-            <AppIcon name="Pencil" size={12} />
-            <span className="text-[10px] font-medium">New</span>
-          </Button>
+          {/* Compose — always available, even with nothing selected. On a
+              phone the bar's Write tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
+              <AppIcon name="Pencil" size={12} />
+              <span className="text-[10px] font-medium">New</span>
+            </Button>
+          )}
 
           {selectedEmail ? (
             <>
@@ -505,11 +511,12 @@ export function EmailList({
           <>
             {emails.map((email) => {
               const isSel = selected.has(email.id);
+              const tone = readTone(email.isRead, selectedId === email.id);
               return (
               <div
                 key={email.id}
                 data-email-row={email.id}
-                className={`group flex items-stretch border-b border-border ${
+                className={`group relative flex items-stretch border-b border-border ${
                   isSel ? "bg-primary/5" : ""
                 }`}
               >
@@ -536,23 +543,13 @@ export function EmailList({
                 onTouchMove={cancelLongPress}
                 onTouchEnd={cancelLongPress}
                 onTouchCancel={cancelLongPress}
-                className={`flex-1 min-w-0 text-left pr-3 pl-1 py-3 transition-colors flex flex-col gap-1 select-none ${
-                  selectedId === email.id
-                    ? "bg-primary/10 border-l-2 border-l-primary"
-                    : "hover:bg-secondary/50"
-                }`}
+                className={rowButtonClass(selectedId === email.id)}
               >
+                <UnreadLabel isRead={email.isRead} />
                 {/* Sender + indicators + time */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    {!email.isRead && (
-                      <div className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0 mt-0.5" />
-                    )}
-                    <span
-                      className={`text-xs truncate ${
-                        email.isRead ? "text-foreground/70" : "text-foreground font-medium"
-                      }`}
-                    >
+                    <span className={`text-xs truncate ${tone.sender}`}>
                       {email.from.name}
                     </span>
                     {(() => {
@@ -582,7 +579,7 @@ export function EmailList({
                     {email.isStarred && (
                       <AppIcon name="Star" size={10} className="text-warning fill-warning" />
                     )}
-                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    <span className={`text-[10px] whitespace-nowrap ${tone.time}`}>
                       {timeLabel(email.receivedAt)}
                     </span>
                   </div>
@@ -590,9 +587,7 @@ export function EmailList({
 
                 {/* Subject */}
                 <div
-                  className={`text-xs truncate ${
-                    email.isRead ? "text-foreground/60" : "text-foreground"
-                  }`}
+                  className={`text-xs truncate ${tone.subject}`}
                 >
                   {email.subject}
                 </div>
@@ -666,6 +661,8 @@ export function EmailList({
                   </div>
                 )}
               </button>
+              <UnreadBar isRead={email.isRead} />
+              <ReadToggle email={email} update={updateEmail} />
               </div>
               );
             })}
@@ -799,6 +796,8 @@ function ContextMenu({
   onFix: () => void;
 }) {
   const { email, bulk, count = 1 } = ctx;
+  // The foot of the menu stays above the phone's bar (MOB-9 fix round).
+  const { ref: menuRef, pos: menuPos, maxHeight: menuMax } = useClampedMenu(ctx.x, ctx.y);
   const hasCategories = bulk || (email.categories?.length ?? 0) > 0;
   const run = (fn: () => void) => {
     fn();
@@ -810,6 +809,8 @@ function ContextMenu({
   const moveTargets = folders.filter(
     (f) => isRealFolder(f.key) && (bulk || f.key !== email.folder)
   );
+  // A bar tap closes the menu (MOB-9).
+  useCloseOnBarTap(onClose);
   // Open submenu flyouts to the LEFT when the menu sits near the right edge.
   const flipLeft =
     typeof window !== "undefined" && ctx.x > window.innerWidth - 460;
@@ -826,8 +827,9 @@ function ContextMenu({
         }}
       />
       <div
+        ref={menuRef}
         className="fixed z-[81] w-52 bg-popover border border-border rounded-lg shadow-xl py-1 text-xs"
-        style={{ left: ctx.x, top: ctx.y }}
+        style={{ left: menuPos.x, top: menuPos.y, ...(menuMax ? { maxHeight: menuMax, overflowY: "auto" as const } : {}) }}
       >
         {bulk ? (
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border mb-1">

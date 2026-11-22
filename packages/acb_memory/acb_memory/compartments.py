@@ -33,9 +33,16 @@ from dataclasses import dataclass
 #: other kind carries a prefix and the three can never collide in the shared
 #: Mem0 collection.
 AGENT_SCOPE_PREFIX = "agent:"
-ORG_SCOPE_KEY = "org:global"
 ROOM_SCOPE_PREFIX = "room:"
 PREFS_SCOPE_PREFIX = "prefs:"
+#: KG-9 step 2: the org compartment is ``org:<organization id>``. The org id
+#: comes from the bound tenant of the caller, never from request input.
+ORG_SCOPE_PREFIX = "org:"
+#: The OLD org key, one value for every organization. Nothing writes it after
+#: KG-9. It stays for the memory API and for the clearance fingerprint, which
+#: must not change (see ``Clearance.fingerprint``). Rows under it are not
+#: moved. The memory tenant guard keeps Mem0 off while two orgs exist.
+ORG_SCOPE_KEY = "org:global"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +72,14 @@ class Clearance:
         after somebody is invited in. The cache would quietly undo the rule the
         read path enforces, which is the failure §3.5 warned about.
         """
-        material = "|".join((*sorted(self.read), ">", self.write))
+        # KG-9: the org compartment enters the hash as the old ``org:global``.
+        # A thread belongs to one tenant, so the org id adds nothing to a key
+        # that is per thread. And the hash stays byte-identical to the one
+        # from before KG-9, so no saved session and no cached block goes stale.
+        # A clearance with no org id hashes the same way: the org slot is a
+        # rule of the shape, not a fact of the tenant.
+        read = [s for s in self.read if scope_kind(s) != "org"]
+        material = "|".join((*sorted((*read, ORG_SCOPE_KEY)), ">", self.write))
         return hashlib.sha256(material.encode()).hexdigest()[:12]
 
 
@@ -76,6 +90,7 @@ def scope_key(
     org: bool = False,
     room: str | None = None,
     prefs: bool = False,
+    organization_id: str | None = None,
 ) -> str:
     """Build the Mem0 partition value for one compartment.
 
@@ -85,7 +100,7 @@ def scope_key(
         scope_key(user="a@b.com", prefs=True) → "prefs:a@b.com"   how they like to work
         scope_key(room="thread-abc")          → "room:thread-abc" facts this room established
         scope_key(agent="sales")              → "agent:sales"     the agent's tradecraft
-        scope_key(org=True)                   → "org:global"      company facts
+        scope_key(org=True, organization_id=X) → "org:X"          company facts
 
     ``prefs`` and ``user`` are the same person split in two, and that split is
     what makes a shared room usable at all: in a room nobody's ``user:``
@@ -93,9 +108,13 @@ def scope_key(
     The agent still writes the way you like without exposing one thing you told
     it in private. Preferences are self-descriptive and you are in the room;
     episodic facts are neither.
+
+    KG-9: ``org=True`` with no ``organization_id`` gives ``""``, the empty
+    scope, which every reader and writer skips. It never falls back to one
+    shared org key. The caller passes the bound tenant, never request input.
     """
     if org:
-        return ORG_SCOPE_KEY
+        return org_scope_key(organization_id)
     if room:
         return f"{ROOM_SCOPE_PREFIX}{room}"
     if agent:
@@ -103,6 +122,12 @@ def scope_key(
     if prefs:
         return f"{PREFS_SCOPE_PREFIX}{user}" if user else ""
     return user or ""
+
+
+def org_scope_key(organization_id: str | None) -> str:
+    """The org compartment of one organization, or ``""`` with no org id."""
+    org = str(organization_id or "").strip().lower()
+    return f"{ORG_SCOPE_PREFIX}{org}" if org else ""
 
 
 def scope_kind(scope: str) -> str:
@@ -114,8 +139,9 @@ def scope_kind(scope: str) -> str:
     scope = (scope or "").strip()
     if not scope:
         return "unknown"
-    if scope == ORG_SCOPE_KEY:
-        return "org"
+    if scope.startswith(ORG_SCOPE_PREFIX):
+        rest = scope[len(ORG_SCOPE_PREFIX):]
+        return "org" if rest and "@" not in rest else "unknown"
     if scope.startswith(PREFS_SCOPE_PREFIX):
         return "prefs" if len(scope) > len(PREFS_SCOPE_PREFIX) else "unknown"
     if scope.startswith(ROOM_SCOPE_PREFIX):
@@ -133,6 +159,7 @@ def resolve_clearance(
     agent_name: str,
     thread_id: str | None,
     shared: bool,
+    organization_id: str | None = None,
 ) -> Clearance:
     """The compartments this run reads, and the one it writes.
 
@@ -150,6 +177,10 @@ def resolve_clearance(
       carry in because they are in the room and the facts describe them.
     * agent and org — never one person's, so they cross unchanged.
 
+    KG-9: the org compartment is ``org:<organization_id>``. With no
+    ``organization_id`` the run reads no org compartment. It never reads one
+    key that every organization shares.
+
     What is absent is the point: no ``<actor>`` user compartment, in a room, for
     anyone. Not the owner's, not the typer's. The agent does not *decline* to
     use those facts — ``search()`` is never called with the scope key, so there
@@ -158,7 +189,7 @@ def resolve_clearance(
     """
     actor = (actor or "").strip()
     agent_scope = scope_key(agent=agent_name) if agent_name else ""
-    org_scope = scope_key(org=True)
+    org_scope = scope_key(org=True, organization_id=organization_id)
 
     if not shared:
         read = [s for s in (actor, agent_scope, org_scope) if s]

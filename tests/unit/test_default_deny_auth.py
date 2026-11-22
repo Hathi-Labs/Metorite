@@ -183,6 +183,26 @@ def test_public_routes_all_exist_and_are_deliberate() -> None:
     assert not missing, f"PUBLIC_ROUTES entries match no live route: {missing}"
 
 
+def test_the_signature_image_is_the_one_public_email_read() -> None:
+    """WS-17 SG-1 (D-EM-68). A mail reader fetches a signature logo with no
+    session, so the route is public BY TEMPLATE, and the template is the one
+    that FastAPI registers. Only its GET is served, and the upload and the
+    retire stay behind the guard. Beside the Graph webhook, it is the only
+    public route under ``/email``."""
+    from gateway.routes.email.signature_images import PUBLIC_ROUTE
+
+    main = _main()
+    assert PUBLIC_ROUTE == "/email/signature-image/{org}/{token}.{ext}"
+    assert PUBLIC_ROUTE in main.PUBLIC_ROUTES
+    served = [r for r in served_routes(main.app.routes)
+              if getattr(r, "path", "") == PUBLIC_ROUTE]
+    assert served and all(set(r.methods) <= {"GET", "HEAD"} for r in served)
+    assert {p for p in main.PUBLIC_ROUTES if p.startswith("/email/")} == {
+        "/email/webhook/microsoft", PUBLIC_ROUTE}
+    assert "/email/signature/images" not in main.PUBLIC_ROUTES
+    assert "/email/signature/images/{image_id}" not in main.PUBLIC_ROUTES
+
+
 @pytest.mark.parametrize(
     "path",
     [

@@ -82,10 +82,11 @@ describe("projectsPhoneTabs", () => {
       ["Search", "projects-search"],
     ]);
   });
-  it("flag on: My tasks, Capture, Search (Menu and Ask are the shell's)", () => {
-    // WS-64 OP-11: the "My work" tab became "My tasks". The event id stays.
+  it("flag on: Projects, Capture, Search (Menu and Ask are the shell's)", () => {
+    // MOB-10 (task 2003): the first tab opens the Projects sheet at once, so a
+    // phone reaches the whole company. My tasks is a row in that sheet.
     expect(projectsPhoneTabs(true).map((t) => [t.label, t.event])).toEqual([
-      ["My tasks", "projects-mywork"],
+      ["Projects", "projects-tree"],
       ["Capture", "projects-capture"],
       ["Search", "projects-search"],
     ]);
@@ -99,12 +100,19 @@ describe("projectsPhoneTabs", () => {
       }
     }
     const shell = fs.readFileSync(path.join(root, "components", "AppShell.tsx"), "utf-8");
-    expect(shell).toContain("projectsPhoneTabs(myWorkEnabled())");
+    // MOB-12: the registry reads `projectsPhoneTabs`, and the shell draws the registry.
+    const registry = fs.readFileSync(path.join(root, "lib", "shell", "phoneBar.ts"), "utf-8");
+    expect(registry).toContain("projectsBarTabs(myWorkEnabled())");
+    expect(shell).toContain("phoneBarFor(pathname)");
     expect(shell).not.toContain("projectsMenuEvent");
-    // OP-11: "My tasks" opens the My tasks space. A second tap there opens
-    // the Projects sheet, the one the "Projects" tab opens.
-    expect(page).toMatch(/tab === "projects-mywork"\) \{[^}]*phoneMyTasksTap\(/);
-    expect(page).toMatch(/phoneMyTasksTap\([\s\S]{0,400}setSheet\(\(s\) => \(s === "tree"/);
+    // MOB-10: no tab sends the old "My tasks" event, so the page has no handler for it.
+    expect(page).not.toContain("projects-mywork");
+    expect(page).not.toContain("phoneMyTasksTap");
+    // Each Projects tab closes the page's other overlays first, so two never stack.
+    const handler = page.slice(page.indexOf('tab === "projects-tree"'), page.indexOf('window.addEventListener("cc-mobile-nav"'));
+    expect(handler).toMatch(/setSearching\(false\)[\s\S]*closeQuickCapture\(\)[\s\S]*setSheet\(\(s\) => \(s === which/);
+    expect(handler).toMatch(/projects-capture[\s\S]*setSheet\(null\)[\s\S]*setSearching\(false\)[\s\S]*openQuickCapture/);
+    expect(handler).toMatch(/projects-search[\s\S]*setSheet\(null\)[\s\S]*closeQuickCapture\(\)[\s\S]*setSearching\(true\)/);
   });
   it("the /tasks page redirects through the one function", () => {
     const root = path.resolve(__dirname, "..", "..", "..");

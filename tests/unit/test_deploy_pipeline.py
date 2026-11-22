@@ -19,7 +19,6 @@ until the deploy it was supposed to catch.
 from __future__ import annotations
 
 import ast
-import io
 import json
 import os
 import re
@@ -40,7 +39,7 @@ WORKFLOW = (
 
 @pytest.fixture(scope="module")
 def raw() -> str:
-    return io.open(WORKFLOW, encoding="utf-8").read()
+    return open(WORKFLOW, encoding="utf-8").read()
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +64,7 @@ def test_the_file_holds_no_control_bytes(raw: str) -> None:
     same "nothing happened looks like nothing to do" failure the `paths-ignore`
     comment in this workflow already records once.
     """
-    body = io.open(WORKFLOW, "rb").read()
+    body = open(WORKFLOW, "rb").read()
     bad = [i for i, c in enumerate(body) if c < 9 or 13 < c < 32]
     assert not bad, (
         f"control byte(s) at offset(s) {bad[:5]} — the workflow will not parse, "
@@ -342,8 +341,9 @@ def test_a_job_tests_the_tip_exactly_when_it_is_in_the_batch_group(
 ) -> None:
     """A batch job tests the tip, so a fold cannot leave the tip untested.
 
-    Every job outside the batch group tests GITHUB_SHA. The release ships
-    GITHUB_SHA, so its gate must test that commit and no other.
+    Every job outside the batch group keeps its checkout. A release checks
+    out the release commit (CIV-30, test_green_pointer.py), so its gate tests
+    the commit that it ships and no other.
     """
     github = {"event_name": event, "run_attempt": attempt, "run_id": _RUN_ID}
     in_batch = _gh_eval(parsed["jobs"]["test"]["concurrency"]["group"], github) == "main-full-suite"
@@ -363,10 +363,11 @@ def test_a_push_batch_tests_the_tip_and_a_release_tests_its_own_commit(parsed: d
     # A half-moved tree must fail the job, never test in silence.
     assert "continue-on-error" not in tip
     assert TIP_FETCH in tip["run"] and TIP_CHECKOUT in tip["run"]
-    # The checkout itself takes GITHUB_SHA. That is the release path.
-    assert steps[0]["uses"].startswith("actions/checkout@") and not steps[0].get("with"), (
-        "the checkout must take GITHUB_SHA, with no `ref:`. The release ships that commit."
-    )
+    # CIV-30: a release checks out the release commit, and a push keeps the
+    # default checkout (GITHUB_SHA on local `main`), which the tip step moves.
+    assert steps[0]["uses"].startswith("actions/checkout@") and steps[0].get("with") == {
+        "ref": "${{ github.event_name != 'push' && needs.release-commit.outputs.sha || '' }}",
+    }, "the checkout takes the release commit on a release, and the default on a push"
     assert names[1] == TIP_STEP, "the tip step comes straight after the checkout"
     assert names.index(TIP_STEP) < names.index(RANGE_STEP) < names.index("Sync deps") < names.index(
         "Run unit tests"), "move the tree first, then name it, then install and test it"
@@ -811,11 +812,12 @@ def test_the_r8_gate_runs_on_a_release_and_never_on_a_push(
 def test_the_r8_jobs_read_the_planned_conditions(parsed: dict) -> None:
     jobs = parsed["jobs"]
     assert jobs[R8_SUITE]["if"] == f"${{{{ {R8_RELEASE} }}}}"
-    assert jobs[R8_SUITE]["needs"] == "lint"
+    # CIV-30: each shard checks out the release commit.
+    assert jobs[R8_SUITE]["needs"] == ["lint", "release-commit"]
     # `always()`: a failed or skipped shard must turn the gate red. A gate
     # that skipped would read as a pass.
     assert jobs[R8_GATE]["if"] == f"${{{{ always() && ({R8_RELEASE}) }}}}"
-    assert jobs[R8_GATE]["needs"] == R8_SUITE
+    assert jobs[R8_GATE]["needs"] == [R8_SUITE, "release-commit"]
 
 
 def test_the_r8_jobs_join_no_group(parsed: dict) -> None:
@@ -840,11 +842,20 @@ def test_the_release_needs_the_r8_gate_with_the_one_way_past(parsed: dict) -> No
 
 def test_the_r8_shards_have_pr_checks_two_databases(parsed: dict, pr_check: dict) -> None:
     services = parsed["jobs"][R8_SUITE]["services"]
-    assert services == pr_check["jobs"]["test"]["services"], (
-        "the R8 shards must start exactly pr-check's two Postgres services"
-    )
+    # CIV-23: pr-check publishes to a host port Docker picks (four box runners
+    # share one daemon), and a step writes the DSNs. Every other key matches.
+    pr_services = {
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")}
+        for k, svc in pr_check["jobs"]["test"]["services"].items()
+    }
+    assert {
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")} for k, svc in services.items()
+    } == pr_services, "the R8 shards must start exactly pr-check's two Postgres services"
+    assert all(
+        s["ports"] == [5432] for s in pr_check["jobs"]["test"]["services"].values()
+    ), "pr-check publishes to a host port that Docker picks"
     assert services["platform-postgres"]["image"] == "postgres:16"
-    assert services["platform-postgres"]["ports"] == ["5433:5432"]
+    assert services["platform-postgres"]["ports"] == ["5433:5432"]  # r8-suite keeps fixed ports
     # The stock image has no pgvector, and 01_schema.sql cannot build there.
     assert services["tenant-postgres"]["image"] == "pgvector/pgvector:pg16"
     assert services["tenant-postgres"]["ports"] == ["5434:5432"]
@@ -889,7 +900,9 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
     assert "--reruns 1" in run
     assert " -x " not in f" {run} ", "no -x: one run must report every failure"
     pr_run = _job_step(pr_check, "test", "Run unit tests (this shard)")["run"]
-    assert "--splits 6" in pr_run and "--splitting-algorithm duration_based_chunks" in pr_run
+    # CIV-17: pr-check sizes the split to the selection. A full run is 6.
+    assert "--splits ${{ steps.pick.outputs.splits }}" in pr_run
+    assert "--splitting-algorithm duration_based_chunks" in pr_run
     keep = _job_step(parsed, R8_SUITE, "Keep this shard's report")
     assert keep["if"] == "always()", "a red shard keeps its report too"
     assert keep["with"]["name"] == "r8-junit-shard-${{ matrix.shard }}"
@@ -899,7 +912,7 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
 def test_a_hung_r8_shard_cannot_hold_the_release_for_hours(parsed: dict) -> None:
     """A shard took about 20 min in the measurement. 60 min is three times
     that. A hung shard ends red in one hour, and a re-run gets the
-    release out the same night."""
+    release out inside the same slot window."""
     assert parsed["jobs"][R8_SUITE].get("timeout-minutes") == 60
 
 
@@ -910,25 +923,37 @@ def test_the_r8_gate_reads_every_shard_and_runs_the_guard(parsed: dict) -> None:
     assert len(downloads) == 1
     assert downloads[0]["with"] == {"pattern": "r8-junit-shard-*", "path": "junit", "merge-multiple": True}
     guard = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
-    assert guard.lstrip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")
+    # CIV-30: the step first reads the release commit's tests/fences.json.
+    # test_green_pointer.py fences that part.
+    starts = [ln for ln in guard.splitlines()
+              if ln.strip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")]
+    # Two commands: the fences read, and the bootstrap read of an old release.
+    assert len(starts) == 2, "the fences read and the bootstrap read"
 
 
-def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> None:
-    """Each R8 suite checks for its own name in pr-check.yml only. So a list
-    here that drifts from pr-check's would go unseen. Add a new R8 suite to
-    both files."""
-    ours = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
-    theirs = _guard_args(_job_step(pr_check, "unit-tests", R8_GUARD)["run"])
+def _r8_fences() -> dict[str, list[str]]:
+    """The guard's lists: the `r8` key of tests/fences.json (CIV-33c-2)."""
+    import json
+
+    return json.loads((_ROOT / "tests" / "fences.json").read_text(encoding="utf-8"))["r8"]
+
+
+def test_both_workflows_read_the_same_guard_lists(parsed: dict, pr_check: dict) -> None:
+    """CIV-33c-2. The lists are the `r8` key of tests/fences.json. Neither
+    workflow carries a list, so the two cannot drift. pr-check reads the file
+    of its own checkout. deploy.yml reads the file of the release commit."""
+    ours = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
+    theirs = _job_step(pr_check, "unit-tests", R8_GUARD)["run"]
     for flag in ("--disarmed", "--never-skip", "--must-run"):
-        missing = sorted(set(theirs.get(flag, [])) - set(ours.get(flag, [])))
-        extra = sorted(set(ours.get(flag, [])) - set(theirs.get(flag, [])))
-        assert ours.get(flag) == theirs.get(flag), (
-            f"deploy.yml's {flag} list is not pr-check's: missing {missing}, extra {extra}. "
-            "Copy pr-check's list."
-        )
-    assert len(ours["--must-run"]) > 50
+        assert flag not in ours and flag not in theirs, f"{flag}: the list belongs in tests/fences.json"
+    assert _guard_args(theirs)["--lists-from-fences"] == ["tests/fences.json"]
+    assert "--lists-from-fences" in ours and "release_fences.json" in ours
+    r8 = _r8_fences()
+    assert len(r8["must_run"]) > 50
+    assert r8["never_skip"] and r8["disarmed"]
     # A release runs every R8 suite. A filter (CIV-3) belongs to pr-check.
-    assert set(ours) == {"--junit", "--disarmed", "--never-skip", "--must-run"}
+    assert "--only-selected" not in ours
+    assert "--only-selected" in theirs
 
 
 def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
@@ -938,8 +963,8 @@ def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
 
     GUARD_ALSO holds the guard's files that need no database. It holds no
     other file, so it never turns into a second list of R8 suites."""
-    guard = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
-    named = set(guard["--must-run"]) | set(guard["--never-skip"])
+    guard = _r8_fences()
+    named = set(guard["must_run"]) | set(guard["never_skip"])
     also = _guard_also(parsed)
     missing = sorted(named - set(r8_gate_files) - set(also))
     assert not missing, f"the guard names these, and no R8 shard runs them: {missing}"
@@ -1009,6 +1034,77 @@ def test_the_r8_step_gives_pytest_the_list_the_guard_files_and_the_split(
     assert "-x" not in rest
 
 
+# ── CIV-4c: every R8 skip of the `test` job is in the --r8 list ─────────────
+#
+# The `test` job has no database, so each R8 suite skips there. The R8 gate
+# runs the `--r8` list. A file that skips for an R8 reason and is not in the
+# list runs nowhere. The step reads the job's report and fails on such a file.
+
+UNIT_RUN = "Run unit tests"
+R8_COVER = "Every R8 skip is in the release gate's R8 list"
+#: The pytest command of the `test` job before CIV-4c. No flag may go.
+UNIT_FLAGS = "uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)"
+
+
+def test_the_unit_run_keeps_its_flags_and_writes_a_report(parsed: dict) -> None:
+    run = " ".join(_named_step(parsed, UNIT_RUN)["run"].split())
+    assert run.startswith(UNIT_FLAGS), "the unit run keeps -x, -v, --reruns 1 and the fence ignore"
+    assert "--junitxml=junit/test.xml" in run and "-o junit_family=xunit1" in run
+
+
+def test_the_r8_cover_step_runs_after_the_unit_run_and_only_on_its_success(parsed: dict) -> None:
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    assert names.index(UNIT_RUN) + 1 == names.index(R8_COVER), "straight after the unit run"
+    step = _named_step(parsed, R8_COVER)
+    # No `if:`: the default is success(), so a red unit run is never hidden.
+    assert "if" not in step and "continue-on-error" not in step
+    run = step["run"]
+    assert "set -euo pipefail" in run
+    assert "python3 scripts/affected_tests.py --r8 > r8_files.txt" in run
+    assert "if ! grep -q . r8_files.txt; then" in run, "an empty list stops the step"
+    assert "python3 scripts/ci_unit_guard.py r8-covered --junit junit --list r8_files.txt" in run
+
+
+def test_the_r8_cover_step_leaves_the_jobs_and_the_gate_alone(parsed: dict) -> None:
+    jobs = parsed["jobs"]
+    assert jobs["test"]["needs"] == ["lint", "release-commit"]
+    assert jobs["test"]["if"] == "${{ !inputs.skip_tests }}"
+    for job in (R8_SUITE, R8_GATE):
+        text = str(jobs[job])
+        assert "r8-covered" not in text, f"{job} keeps its own design"
+
+
+@needs_bash
+@pytest.mark.parametrize(("listed", "code", "guard_ran"), [("", 1, False), ("tests/unit/test_a.py", 0, True)])
+def test_an_empty_r8_list_stops_the_cover_step(
+    parsed: dict, tmp_path: Path, listed: str, code: int, guard_ran: bool,
+) -> None:
+    """A lone newline is an empty list too. The guard must not start."""
+    log = tmp_path / "guard.log"
+    shims = (
+        "python3() {\n"
+        '  if [ "$1 $2" = "scripts/affected_tests.py --r8" ]; then printf \'%s\\n\' $R8_LIST; return 0; fi\n'
+        '  printf \'%s\\n\' "$@" > "$GUARD_LOG"\n'
+        "}\n"
+    )
+    env = {**os.environ, "R8_LIST": listed, "GUARD_LOG": log.as_posix()}
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-c", shims + _named_step(parsed, R8_COVER)["run"]],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    assert done.returncode == code, done.stdout + done.stderr
+    assert log.exists() is guard_ran
+    if guard_ran:
+        assert log.read_text(encoding="utf-8").split()[:2] == ["scripts/ci_unit_guard.py", "r8-covered"]
+
+
+def test_pr_check_has_no_copy_of_the_r8_cover_step(pr_check: dict) -> None:
+    """pr-check's guard already fails on any R8 skip, because its shards have
+    both databases. A selection run also skips files by design."""
+    assert "r8-covered" not in str(pr_check)
+
+
 # ── Verify by evidence, never by a green tick ───────────────────────────────
 
 def test_the_deploy_is_verified_by_the_SERVING_COMMIT(raw: str) -> None:
@@ -1024,9 +1120,9 @@ def test_the_deploy_is_verified_by_the_SERVING_COMMIT(raw: str) -> None:
         "a successful deploy from a timeout-killed one that left the OLD build "
         "running and healthy."
     )
-    assert "GITHUB_SHA" in deploy_step, (
-        "verify() must compare the serving SHA against THIS RUN's commit — "
-        "reading /version without comparing it proves nothing"
+    assert "RELEASE_SHA" in deploy_step, (
+        "verify() must compare the serving SHA against THIS RUN's release "
+        "commit (CIV-30) — reading /version without comparing it proves nothing"
     )
 
 
@@ -1035,7 +1131,7 @@ def test_a_wrong_commit_fails_rather_than_warns(raw: str) -> None:
     verify = raw[raw.index("verify() {"):raw.index("hand_off_to_pull_path() {")]
     ok_line = [
         line for line in verify.splitlines()
-        if 'got_sha" = "$GITHUB_SHA' in line
+        if 'got_sha" = "$RELEASE_SHA' in line
     ]
     assert ok_line, (
         "verify()'s success condition must include the SHA equality test — if "
@@ -1072,7 +1168,7 @@ def test_the_version_endpoint_the_pipeline_depends_on_still_exists() -> None:
         Path(__file__).resolve().parents[2]
         / "apps" / "services" / "gateway" / "gateway" / "main.py"
     )
-    body = io.open(main, encoding="utf-8").read()
+    body = open(main, encoding="utf-8").read()
     assert '"/version"' in body or "'/version'" in body, (
         "GET /version is gone, and deploy.yml's verify() depends on it. "
         "Removing it makes every deploy fail verification."
@@ -1150,3 +1246,27 @@ class TestTheApplyMustReachItsEnd:
         wf = WORKFLOW.read_text(encoding="utf-8")
         assert "verifying by health regardless" not in wf, (
             "that line WAS the bug: it announced the failure and continued")
+
+
+UNIT_UPLOAD = "Keep the unit report for the bisect poller"
+
+
+def test_the_unit_report_is_kept_for_the_bisect_poller_and_can_never_fail_the_gate(parsed: dict) -> None:
+    """CIV-5b. The poller (scripts/home_server/bisect_poll.sh) reads the artifact
+    `unit-junit` of a RED batch run, so the upload runs `always()`. It must
+    never turn the release gate red itself, so it carries continue-on-error."""
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    assert names.index(UNIT_UPLOAD) > names.index(R8_COVER), "after the R8 cover step"
+    step = _named_step(parsed, UNIT_UPLOAD)
+    assert step["if"] == "always()"
+    assert step["continue-on-error"] is True
+    assert step["uses"].startswith("actions/upload-artifact@")
+    assert step["with"]["name"] == "unit-junit"
+    assert step["with"]["path"] == "junit/test.xml"
+    # The R8 cover step is still the check that gates: no `if:` there.
+    assert "if" not in _named_step(parsed, R8_COVER)
+    # The poller's default artifact name, when the poller is in the tree.
+    poll = Path(__file__).resolve().parents[2] / "scripts/home_server/bisect_poll.sh"
+    if poll.is_file():
+        assert "unit-junit" in poll.read_text(encoding="utf-8")

@@ -24,6 +24,7 @@ import json
 from typing import Any
 
 from acb_auth import UserContext
+from acb_skills import safe_open
 from action_broker import AuthorityTier, propose, submit
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -35,16 +36,16 @@ from gateway.routes.apps._common import (
     app_workspace,
     can_edit,
     check_bundle_size,
+    clean_app_rel,
     get_app_or_404,
     iso,
     manifest_scopes,
     parse_db_manifest,
     publish_app_activity,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_author,
     require_app_user,
-    resolve_app_file,
     router,
     scope_set_hash,
 )
@@ -106,12 +107,17 @@ def _read_entry_bundle(row: Any) -> tuple[bytes, dict[str, Any]]:
         or parse_db_manifest(row.manifest)
     )
     entry = str(manifest.get("entry") or "index.html")
-    entry_path = resolve_app_file(workspace, entry)
-    if not entry_path.is_file():
+    rel = clean_app_rel(entry)
+    try:
+        # The safe opener refuses a link at any depth (WS-43h review P0).
+        data = safe_open.read_bytes(workspace, rel)
+    except (OSError, ValueError):
+        data = None
+    if data is None:
         raise HTTPException(
             status_code=422, detail=f"Entry file missing: {entry}",
         )
-    return check_bundle_size(entry_path.read_bytes()), manifest
+    return check_bundle_size(data), manifest
 
 
 @router.post("/{slug}/publish")
@@ -221,7 +227,7 @@ async def publish_app(
     # (best-effort — the version row above is already committed).
     await sync_workspace_best_effort(row)
     review = "pending" if needs_review else "auto"
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="publish",
         app_version=version,
         detail={"notes": body.notes.strip()[:500],
@@ -261,7 +267,7 @@ async def rollback_app(
             ),
             {"version": body.version, "id": str(row.id)},
         )
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="rollback",
         app_version=body.version, detail={"to_version": body.version},
     )
@@ -347,7 +353,7 @@ async def get_app_bundle(
         if vrow is None:
             raise HTTPException(status_code=404, detail="Version not found")
     if track:
-        await record_app_audit(
+        await record_app_audit_bound(
             app_id=str(row.id), user_email=_uid(user), kind="open",
             app_version=vrow.version, detail={"requested": version},
         )

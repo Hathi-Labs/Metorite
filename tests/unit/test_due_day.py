@@ -126,10 +126,14 @@ class TestOneDefinition:
 
         Three more hold a value named ``due`` that is no due date of a member:
         the review date of a Knowledge page (``kb_index``, ``retrieval``), and
-        the importer's estimate of when a closed task finished (``layout``)."""
+        the importer's estimate of when a closed task finished (``layout``).
+        One more is an input check, not a lateness rule: ``ask_life`` in
+        ``decisions.py`` refuses a person ask whose own due date is in the
+        past (WS-AP AP-8a, ``waiting_on_me.md`` §7.2). It marks no task late."""
         kept = {"routes/projects/item_lens.py": 2, "routes/projects/core.py": 1,
                 "routes/projects/due_day.py": 1, "kb_index/query.py": 1,
-                "retrieval/sources.py": 1, "routes/projects/importer/layout.py": 1}
+                "retrieval/sources.py": 1, "routes/projects/importer/layout.py": 1,
+                "routes/projects/decisions.py": 1}
         found: dict[str, int] = {}
         for path in _GATEWAY.rglob("*.py"):
             hits = len(_CLOCK_COMPARE.findall(path.read_text(encoding="utf-8")))

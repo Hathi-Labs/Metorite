@@ -1,0 +1,13 @@
+# The weekly delivery review starts here, Monday 07:00 UTC (CIV-10).
+# NOT installed. The owner installs it, see the service file.
+# Persistent=true: when the box was down at 07:00, the timer fires at the
+# next start.
+[Unit]
+Description=Metorite weekly delivery review, Monday 07:00 UTC (CIV-10)
+
+[Timer]
+OnCalendar=Mon *-*-* 07:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

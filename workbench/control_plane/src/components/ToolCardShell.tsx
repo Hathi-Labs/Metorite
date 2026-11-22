@@ -3,6 +3,7 @@
 import Button from "@/components/ui/Button";
 import {
   CARD_FRAME_CLASS,
+  CardDismissGutterContext,
   CollapsibleCard,
   CollapsibleCardBody,
   CollapsibleCardHeader,
@@ -113,7 +114,7 @@ export function DismissableCard({
           <Icon name="X" size={12} />
         </Button>
       </div>
-      {children}
+      <CardDismissGutterContext.Provider value>{children}</CardDismissGutterContext.Provider>
     </div>
   );
 }

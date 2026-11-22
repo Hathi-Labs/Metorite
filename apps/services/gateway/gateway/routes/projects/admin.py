@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -78,6 +79,13 @@ class StatusIn(BaseModel):
     color: str | None = None
     position: int | None = None
     category: str | None = None
+    #: PST-4. A place in the stage of the lane, never a sort key. ``slot`` is
+    #: 1-based inside the stage group. ``after`` names a lane of the same
+    #: stage. The server renumbers the group (:func:`stage_placement`). The
+    #: old ``position`` keeps working, so this is additive. Not a column:
+    #: both are removed before the row is written.
+    slot: int | None = None
+    after: str | None = None
     #: ⚠️ ``is_default`` is GONE from a status (owner directive 2026-09-06).
     #: The first open lane in stage order is where work starts — see
     #: ``core.load_default_status`` for why the flag was the wrong answer.
@@ -157,6 +165,136 @@ async def _clear_other_defaults(
 
 # ── Statuses ────────────────────────────────────────────────────────────────
 
+#: Gap between two lanes after a renumber, so a later hand edit has room.
+_SLOT_STEP = 10
+
+
+def status_set_guard_allowed(organization_id: str | None) -> bool:
+    """True when ``STATUS_SET_GUARD_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-42 PST-4, ``projects_settings.md`` §7.1).
+
+    The ONE reader of the flag. It sets ``guard_on`` on the status-set read,
+    and the chat tools read that and never the setting. The org comes from
+    the session, never from request input (R5). It reads ``get_settings()``
+    on each call, so a flag reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "status_set_guard_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def _one_placement(values: dict[str, Any], slot: Any, after: Any) -> None:
+    """Refuse a body that places a lane two ways."""
+    if (slot is not None or after) and values.get("position") is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Send a slot, a lane name in 'after', or a position, not more than one.",
+        )
+
+
+def _slot_refusal(stage: str, size: int, names: list[str], why: str) -> HTTPException:
+    """The 422 for a bad ``slot`` or ``after``: what happened, the range, the
+    lanes in order, and the next step."""
+    others = f" The other lanes of this stage, in order: {', '.join(names)}." if names else ""
+    return HTTPException(
+        status_code=422,
+        detail=(
+            f"{why} The {stage.replace('_', ' ')} stage has {size} place"
+            f"{'' if size == 1 else 's'} for this lane.{others} "
+            f"Use a slot from 1 to {size}, or name a lane of this stage in "
+            "'after'."
+        ),
+    )
+
+
+def stage_placement(
+    others: list[tuple[str, str]],
+    stage: str,
+    *,
+    slot: int | None,
+    after: str | None,
+) -> int:
+    """Where a lane goes inside its stage group, as a 0-based index into
+    ``others``. ``others`` is the stage group in order, without the lane.
+
+    ``slot`` is 1-based. The lane then stands at that place, so slot 1 is first
+    and the last slot is the group size, which is ``len(others) + 1``. ``after``
+    names a lane of the same stage, and the lane goes right behind it. A slot
+    outside ``1..len(others) + 1`` is refused with the allowed range. A lane
+    never leaves its stage, so the order rule (stage, then position, then
+    name) holds after the renumber.
+    """
+    size = len(others) + 1
+    names = [name for _id, name in others]
+    if slot is not None and after:
+        raise HTTPException(
+            status_code=422,
+            detail="Send a slot or a lane name in 'after', not both.",
+        )
+    if after:
+        wanted = after.strip().lower()
+        hit = next(
+            (i for i, (_id, name) in enumerate(others) if name.strip().lower() == wanted),
+            None,
+        )
+        if hit is None:
+            raise _slot_refusal(
+                stage, size, names,
+                f"No lane named '{after.strip()}' is in the {stage.replace('_', ' ')} stage.",
+            )
+        return hit + 1
+    assert slot is not None
+    if slot < 1 or slot > size:
+        raise _slot_refusal(stage, size, names, f"Slot {slot} is outside the stage.")
+    return slot - 1
+
+
+async def _renumber_stage(
+    db: Any, owner: str, stage: str, keep_id: str | None,
+    *, slot: int | None, after: str | None,
+) -> int:
+    """Place a lane in its stage group and return its new ``position``.
+
+    Locks the whole set first (D79), reads the stage group in the one order
+    (:func:`core.status_order_sql`), and renumbers the lanes of THIS stage
+    only: 10, 20, 30. Other stages keep their positions. The lane being
+    placed (``keep_id``, or a new one) takes the gap.
+    """
+    await _lock_status_sets(db, [owner])
+    rows = (await db.execute(
+        text(
+            "SELECT id, name, position FROM pm_task_statuses "
+            " WHERE project_id = CAST(:owner AS uuid) AND category = :stage "
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"owner": owner, "stage": stage},
+    )).fetchall()
+    others = [(str(r.id), str(r.name)) for r in rows if str(r.id) != str(keep_id)]
+    own_name = next(
+        (str(r.name).strip().lower() for r in rows if str(r.id) == str(keep_id)), "",
+    )
+    if after and own_name and after.strip().lower() == own_name:
+        raise HTTPException(
+            status_code=422, detail="A lane cannot go after itself. Name another lane.",
+        )
+    at = stage_placement(others, stage, slot=slot, after=after)
+    old = {str(r.id): int(r.position or 0) for r in rows}
+    for i, (lane_id, _name) in enumerate(others):
+        new = (i + (2 if i >= at else 1)) * _SLOT_STEP
+        if old.get(lane_id) != new:
+            await db.execute(
+                text(
+                    "UPDATE pm_task_statuses SET position = :p, updated_at = now() "
+                    " WHERE id = CAST(:id AS uuid)"
+                ),
+                {"p": new, "id": lane_id},
+            )
+    return (at + 1) * _SLOT_STEP
+
+
 @router.get("/nodes/{project_id}/statuses")
 async def list_statuses(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -205,15 +343,21 @@ async def create_status(
 ) -> dict:
     assert_can_manage_settings(user)
     values = hue_values(clean_payload(payload))
+    slot, after = values.pop("slot", None), values.pop("after", None)
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A status needs a name.")
     category = values.get("category") or "todo"
     validate_choice(category, STATUS_CATEGORIES, "status category")
+    _one_placement(values, slot, after)
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         root = await _status_owner_for(db, vis, project_id)
+        if slot is not None or after:
+            values["position"] = await _renumber_stage(
+                db, root, category, None, slot=slot, after=after,
+            )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_task_statuses "
@@ -238,11 +382,20 @@ async def patch_status(
 ) -> dict:
     assert_can_manage_settings(user)
     values = hue_values(clean_payload(payload))
+    slot, after = values.pop("slot", None), values.pop("after", None)
     validate_choice(values.get("category"), STATUS_CATEGORIES, "status category")
+    _one_placement(values, slot, after)
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_statuses", status_id, "Status")
         vis = await resolve_visibility(db, user)
         await load_visible_project(db, vis, str(existing.project_id))
+        if slot is not None or after:
+            # The lane keeps its stage unless the same body moves it.
+            stage = str(values.get("category") or existing.category)
+            values["position"] = await _renumber_stage(
+                db, str(existing.project_id), stage, str(existing.id),
+                slot=slot, after=after,
+            )
         if not values:
             return row_to_dict(existing, StatusModel)
         # D79: the last Done status cannot leave the Done category. Asked
@@ -802,6 +955,11 @@ async def describe_status_set(
             # it — an absent option reads as a missing feature.
             "can_inherit": node.parent_project_id is not None,
             "has_dormant_set": bool(dormant),
+            # PST-4. True when STATUS_SET_GUARD_ORGS holds the caller's org.
+            # The chat tools read this and never the setting (§9.4).
+            "guard_on": status_set_guard_allowed(
+                getattr(user, "organization_id", None)
+            ),
             # The write's own predicate (`core.can_manage_settings`), and the
             # write's own words when it says no. A chat tool reads both before
             # its card and quotes them (owner directive 2026-10-07).

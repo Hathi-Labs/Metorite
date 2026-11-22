@@ -860,6 +860,7 @@ def test_every_stream_path_settles_a_push_request(
         assert payload["run_id"] == run_id and payload["repo"] == f"{OWNER}/{REPO}"
         assert payload["branch"] == "main" and payload["shas"] == ["a" * 40]
         assert "member" in payload and payload["reviewed_by"] == "chat:autopush"
+        assert payload["policy"] == "chat:autopush"  # BR-7b-1, core_brief.md §8.2
         assert pushed_rows[0].organization_id == "org-h363-stream"
     else:
         assert pushes == [], "a non-reviewer reached the push"

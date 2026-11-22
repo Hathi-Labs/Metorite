@@ -25,6 +25,8 @@ const LOOK: Record<ConfirmationReceipt["kind"], { icon: string; tone: string }> 
   rejected: { icon: "X", tone: "text-muted-foreground" },
   refused: { icon: "AlertCircle", tone: "text-destructive" },
   closed: { icon: "Info", tone: "text-muted-foreground" },
+  // Nothing was written, and no error: the member needs to look again.
+  notDone: { icon: "AlertCircle", tone: "text-warning" },
 };
 
 export default function ConfirmationReceipts({

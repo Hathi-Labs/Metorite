@@ -40,11 +40,14 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
@@ -79,6 +82,7 @@ import {
   interpretSeatAction,
 } from "@/app/settings/billing/lib/manage";
 import SeatsTab from "./SeatsTab";
+import { orgTabFromSearch } from "./lib/orgTab";
 import type {
   AccessRequest,
   Member,
@@ -135,12 +139,16 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
+  // WS-CO CO-11: the member's own row on a chat, the pin today.
+  chat_member_rows: "personal chat setting",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
   // WS-CRM CRM-M1: a Change history row that only the member reads.
   crm_private_changes: "private CRM change record",
+  // Task 1570 (D175.5): a CRM saved view that only the member reads.
+  crm_private_views: "private CRM saved view",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.
@@ -164,6 +172,8 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_proposals: "proposed Knowledge edit",
   // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
   agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -240,8 +250,41 @@ export default function OrganizationAdmin() {
    */
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState("members");
+  // PAR-1: a link may name the tab (`?tab=seats`). The tab is read after the first
+  // paint, so the server and the client draw the same first tab, and it is read again
+  // each time the query changes: the chat moves a page that is already open with
+  // `router.push`, which keeps this component mounted.
+  const search = useSearchParams()?.toString() ?? "";
+  useEffect(() => {
+    const named = orgTabFromSearch(search);
+    if (named) setTab(named);
+  }, [search]);
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
+  // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
+  // the other tabs in its strip, and the top Invite tool leaves. Invite hides
+  // where the page hides it: above the branding, seats and email forms.
+  const { isMobile } = useViewMode();
+  const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
+  usePhoneBar({
+    active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
+    counts: { "org-requests": queueError ? 0 : requests.length },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "org-members") setTab("members");
+      else if (t === "org-requests") setTab("requests");
+      else if (t === "org-invite") setInviting(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
   /**
    * The person an off-boarding is being confirmed for. Removal drops every
    * role assignment and is not a toggle — Activate does not undo it — so it
@@ -497,7 +540,7 @@ export default function OrganizationAdmin() {
              no sense above the branding form, and an Invite button that is
              always there is one an admin eventually clicks on the wrong
              screen. */
-          tab === "branding" || tab === "seats" || tab === "email" ? null : (
+          !rosterTab ? null : (
             <>
               <Button
                 variant="ghost"
@@ -519,9 +562,25 @@ export default function OrganizationAdmin() {
               >
                 Roles
               </Link>
-              <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
-                Invite
-              </Button>
+              {/* SW-31b: the written rules for agents (Settings → Agents). */}
+              <Link
+                href="/settings/agents"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Agents
+              </Link>
+              {/* PKG-17c-2: the org default of the Home layout. */}
+              <Link
+                href="/settings/layout"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Home layout
+              </Link>
+              {!isMobile && (
+                <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                  Invite
+                </Button>
+              )}
             </>
           )
         }
@@ -567,7 +626,7 @@ export default function OrganizationAdmin() {
             icon: "Mail",
             note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
           },
-        ]}
+        ].filter((t) => !(isMobile && (t.id === "members" || t.id === "requests")))}
       />
 
       {tab === "members" && (

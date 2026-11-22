@@ -19,7 +19,7 @@ import base64
 
 import pytest
 from fastapi import HTTPException
-from gateway.image_probe import ImageInfo, UnsupportedImage, probe_image
+from acb_common.image_probe import ImageInfo, UnsupportedImage, probe_image
 from gateway.routes import settings as st
 
 # ── Builders: minimal but structurally real files ───────────────────────────

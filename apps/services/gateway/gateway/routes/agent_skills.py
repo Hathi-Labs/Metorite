@@ -92,16 +92,17 @@ def _known_agent_names() -> set[str] | None:
 
 def _record_change(actor: str | None, action: str, target: str,
                    **payload: Any) -> None:
-    """Append to the audit log, best-effort (admin/_common convention)."""
-    try:
-        from acb_audit import AuditEvent, record  # noqa: PLC0415
-        record(AuditEvent(
-            actor=f"user:{actor}" if actor else "system:internal",
-            action=action, target=target, payload=payload,
-        ))
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("agent_skills_audit_failed", action=action,
-                     error=str(exc))
+    """Append to the audit log, best-effort, through the ONE admin writer.
+
+    ``admin._common.record_admin_change`` stamps the bound tenant and skips
+    a tenant-less event with ``ACB_GRAPH_TENANT_BIND`` on (task 2221). So the
+    row lands in the admin's org, never under the operator org. A failed
+    audit still never fails the toggle. Fence:
+    ``tests/unit/test_agent_skills_audit_org_r8.py`` (R8).
+    """
+    from gateway.routes.admin._common import record_admin_change
+
+    record_admin_change(actor, action, target, **payload)
 
 
 def _iso(value: Any) -> str:

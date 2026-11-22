@@ -51,6 +51,10 @@ export default function ChatSendButton({
       variant="primary"
       size="none"
       radius="keep"
+      // Task 2867: a press keeps the focus where it was. With the box focused,
+      // a phone's keyboard does not close and open again on Send. A keyboard
+      // press (Enter, Space) is not a mouse-down, so it is not touched.
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       disabled={disabled}
       loading={loading}

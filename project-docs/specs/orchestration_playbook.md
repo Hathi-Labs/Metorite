@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). Nothing is built.** The decision is **D186** in `work_plan.md` §3. This spec was planned in task 1906 (SW-P10). Its slices are PB-1 to PB-10. Each has a task in Backlog under epic 321.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-8, the KIT-6 tooling, KIT-4a and the UI half KIT-4b, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -14,6 +14,7 @@
 - **The know-how lives in six places.** MCP prompts, MCP resources, short tips in tool results, guidance layers, setup tools and an orchestration doctor. Chat reaches the same six (§5).
 - **The default layer is neutral.** HathiLabs rules are the HathiLabs layer in the HathiLabs organization, never the product default (§4).
 - **One agent is the default.** The setup tools propose one lane first. A second lane needs a named bottleneck (§3).
+- **Plan by the gratification ladder.** A plan is a set of rungs, and each rung ends in a demo that a person sees and uses. The nearest rung goes first (§6d).
 - **A fact that spreads needs a source and an age.** One false fact at the hub reaches every agent (§3).
 
 ---
@@ -79,7 +80,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 | # | Place | What it holds | Mechanism |
 |---|---|---|---|
 | 1 | **MCP prompts** (slash commands) | `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet`, `run_retro`, and the session commands of SW-82 | `prompts/list` (EA3-39) |
-| 2 | **MCP resources** | `metorite://playbook/index`, `.../pattern/{slug}`, `.../brief-contract`, `.../gates`, `.../failures`, `.../cost-model`, `.../lane-templates`, `.../kit/{file}`. Each has a version | SW-34a |
+| 2 | **MCP resources** | One resource for each topic: `metorite://playbook/{slug}`, such as `metorite://playbook/brief-contract` and `metorite://playbook/patterns/one-agent-first`. The slug is the path of the topic in `acb_playbook`. Each has a version | SW-34a, PB-3b |
 | 3 | **Tips in results** | At most 2 short lines in the result of `claim_task`, `my_work` and `delegate_task`. Example on `claim_task`: "Write a brief before you delegate." Each line names a playbook topic and shows once for each run | SW-56 |
 | 4 | **Guidance layers** | The Metorite default, then the organization, the space and the project | SW-31 |
 | 5 | **Setup tools** | `propose_agent_setup` reads the organization and proposes lanes, leads, gates and budgets on a card. `get_starter_kit` returns the kit files | New tools (PB-6) |
@@ -110,6 +111,154 @@ Files live in one shared package, `packages/acb_playbook/`, as Markdown with a h
 
 ---
 
+## 6a. The agent kit
+
+The kit is the static part of the playbook. It is a set of files that a member puts in a repository or a home folder. With these files, an agent of any client knows how to work with Metorite. KIT-0 is this contract (task 2548).
+
+**One core, many packs.** The core is one neutral `AGENTS.md` of at most 150 lines, plus one skill folder. Each client gets a thin pack of the files it needs. Each file of a pack points to the core and holds no second copy of it. Fence: the line count and the pointer test of KIT-1.
+
+**The file map.** KIT-0 checked each cell against the official vendor docs on 2026-11-11, and each cell names its source. The vendors change these names often, so KIT-5 re-checks them.
+
+| Client | Instruction files | Connect step |
+|---|---|---|
+| Claude Code | `CLAUDE.md`. Claude Code also reads `AGENTS.md` when no `CLAUDE.md` exists (v2.1.277 or later). A `CLAUDE.md` can import it. Source: `https://code.claude.com/docs/en/memory`. The pack of skills, plugin and hooks is SW-82 (task 1927). A plugin has an optional manifest `.claude-plugin/plugin.json` (only `name` is required). Every other part sits at the plugin root: `skills/<name>/SKILL.md`, `agents/*.md`, `hooks/hooks.json` (with a top-level `hooks` key) and `.mcp.json`. A `CLAUDE.md` at the plugin root is not loaded. Source: `https://code.claude.com/docs/en/plugins-reference` | MCP connection with OAuth (MCP-G17). SW-82 owns the steps |
+| OpenAI Codex | `AGENTS.md` in the project, and in `~/.codex` for the global level. `AGENTS.override.md` wins in each directory. The limit is `project_doc_max_bytes`, 32 KiB by default. Source: `https://developers.openai.com/codex/guides/agents-md`. Custom prompts in `~/.codex/prompts/` are deprecated and local only, so the kit ships a skill and no prompt file. Source: `https://developers.openai.com/codex/custom-prompts` | Add a table `[mcp_servers.<name>]` with `url` in `~/.codex/config.toml`, or in `.codex/config.toml` of a trusted project. Then run `codex mcp login <name>`. Source: `https://developers.openai.com/codex/mcp` |
+| GitHub Copilot | `.github/copilot-instructions.md` for the repository. `AGENTS.md` anywhere in the repository (the nearest file wins). Path files `.github/instructions/NAME.instructions.md`. Source: `https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions` | VS Code: `.vscode/mcp.json` with a top-level `servers` key, and an entry with `"type": "http"` and `url`. A secret goes through `inputs`, never in the file. Source: `https://code.visualstudio.com/docs/agents/reference/mcp-configuration`. Coding agent on GitHub.com: the repository setting Copilot, MCP servers, holds one JSON with a top-level `mcpServers` key. Each server needs `type` and `tools`, and a remote one needs `url`. A secret name must start with `COPILOT_MCP_`. The agent reads `.github/copilot-instructions.md`. The docs imply `AGENTS.md` and do not name the coding agent, so the pack also ships `.github/copilot-instructions.md`. Source: `https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/extend-coding-agent-with-mcp` |
+| Gemini CLI | `GEMINI.md` in `~/.gemini` and in the workspace. The setting `context.fileName` adds `AGENTS.md` to the list of names. Source: `https://geminicli.com/docs/cli/gemini-md/` | The object `mcpServers` in `settings.json` (`~/.gemini/settings.json` or `.gemini/settings.json`). A remote entry uses `httpUrl` or `url`, with an optional `oauth` object. Source: `https://geminicli.com/docs/tools/mcp-server/` |
+| Google Antigravity | `AGENTS.md` or `GEMINI.md` in the workspace (no frontmatter). `~/.gemini/AGENTS.md` for the global level. Rule files in `.agents/rules/*.md` need a `trigger` frontmatter, or Antigravity drops them without a notice, so the kit uses none. Skills in `.agents/skills/<name>/SKILL.md`. Source: `https://antigravity.google/docs/rules` | `.agents/mcp_config.json` in a workspace, or `~/.gemini/config/mcp_config.json`. A remote entry is `{"mcpServers": {NAME: {"serverUrl": URL}}}` over Streamable HTTP. It does not take `httpUrl`, which Gemini CLI uses. Source: `https://antigravity.google/docs/mcp` |
+
+**Three layers.** The kit is static, neutral and versioned. The MCP holds the live text: prompts, `read_playbook` and resources. Company guidance (SW-31) holds the rules of one organization. The kit never copies the MCP text (PB-10).
+
+**No secret.** The kit holds no secret. A client connects with OAuth or with the box token (MCP-G17). Fence: `test_playbook_org_neutral.py` (extended by KIT-1) and the secret scan of KIT-3.
+
+**The version.** Each kit file holds a `kit_version`, and the MCP reports the same value. A change to a kit file raises it. A client that reads an old value gets a notice from the doctor (KIT-5). Fence: `tests/unit/test_kit_version.py` (new, KIT-5).
+
+**The protocol that the core teaches.** It has at most 12 lines:
+
+1. Call `my_work` first, then `claim_task`.
+2. Call `get_task_context`, and call `get_plan` for the order of the slices.
+3. Work in a worktree and on a branch. Put the task short id in the branch name.
+4. Post activity at least once a minute.
+5. At a wait, park the run. Never sleep.
+6. End with one disposition: review or done, a question, or a release.
+7. The verifier is never the implementer.
+8. A sub-agent never posts to Metorite. The coordinator posts for it.
+
+Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks each tool name against the allowlist.
+
+**The conformance matrix.** KIT-6 scores a recorded run of a client against the protocol. The script is `scripts/kit_conformance.py`. Its test is `tests/unit/test_kit_conformance.py`. Each row holds the client, its version, the kit version, the date and the score. A step that passed before and now fails blocks the release, but a live run is advisory (R7).
+
+| Client | Client version | Kit version | Date | Score |
+|---|---|---|---|---|
+| Claude Code | not run | not run | not run | not run |
+| OpenAI Codex | not run | not run | not run | not run |
+| GitHub Copilot editor | not run | not run | not run | not run |
+| GitHub Copilot coding agent | not run | not run | not run | not run |
+| Gemini CLI | not run | not run | not run | not run |
+| Google Antigravity | not run | not run | not run | not run |
+
+**Scenario 1, one agent.** A fresh agent has only the kit. It reads `my_work` and `get_plan`, claims a slice and works in a worktree. It posts activity each minute and parks at a wait. It ends with one disposition and calls `finish_agent_run`. The seven steps are `connect_reads`, `claims_slice`, `worktree`, `heartbeat`, `parks_at_wait`, `one_disposition` and `finishes_run`.
+
+**Scenario 2, a coordinator.** A coordinator starts two sub-agents under one parent run. It adds three steps: `two_subagents`, `subagents_silent` and `coordinator_posts`. A sub-agent must not post. Only the coordinator posts.
+
+**Who starts a run.** Claude Code, Codex and Gemini CLI can run in a script. A person starts a run of the Copilot editor, the Copilot coding agent and Antigravity. The transcript comes from the activity of the run on Metorite and from the shell log. The script reads it as lines of JSON, and its header holds the scenario. No live client run is done yet.
+
+---
+
+## 6b. Delegating a sub-project, and hand-offs
+
+**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work up the ladder of that project, rung by rung (§6d, D211). This section is the contract between two people and their agents.
+
+**What each project carries.** The description of a project holds a delegation brief. The brief has these lines:
+- The owner slot.
+- The entry point: the first ready slice of the lowest open rung.
+- The ladder: each rung, its demo task and its state (§6d).
+- The hand-ins: work that this project needs from others.
+- The hand-outs: work that others need from this project.
+- The first command to run: `my_work`, then `claim_task`.
+
+The brief holds no secret. The program plan (task 2546) holds the order of the projects.
+
+**The hand-off form.** When task A in project P gives work that task B in project Q needs, both tasks hold one comment that starts with `Hand-off:`. The comment names the other task number, the other project, the direction (`gives` or `needs`) and the reason in one sentence. A `blocks` link joins A to B. The person who owns Q reads the comment in `my_work` or in the plan of project Q. An agent never starts B while A is open. It posts a question on B instead.
+
+**Who writes a hand-off.** The agent that finds the dependency writes both comments and the link. Another project owner needs no permission to read the comment. A change to the other project's own task goes through a comment, and the owner of that project makes the change.
+
+**Fence.** Advisory until KIT-5. The doctor of KIT-5 lists each `blocks` link that crosses a project and has no `Hand-off:` comment on both ends (test `tests/unit/test_handoff_comments.py`, new).
+
+---
+
+## 6c. The learning loop
+
+**Owner directive, 2026-11-10.** Metorite holds the plan and the orchestration. It also holds the harness of every agent that connects. Each week it reviews the agent sessions and the plan, learns from them, and changes the harness. Any organization can run the loop on its own data. Epic task 2624.
+
+**The weekly cycle has five stages.**
+1. **Collect.** Signals come from agent runs, task events, pull requests and CI, the tool failure log and MCP refusals. A signal holds ids and counts and never task text.
+2. **Analyze.** Each failed or stopped run gets one cause code. The registry has about 12 codes, among them `spec_gap`, `stale_anchor`, `wrong_seam`, `tool_gap`, `rate_limit`, `env_flake`, `scope_creep`, `verify_miss`, `owner_wait`, `merge_conflict`, `plan_drift` and `unknown`.
+3. **Recalibrate.** A read-only health report of the board lists duplicates, stale tasks, "done" tasks with no proof, slices with no estimate, link or epic, and estimate against actual. It proposes. A member approves a list in chat. A bulk tool applies it.
+4. **Learn.** A finding becomes a lesson: pattern, cause code, evidence links, fix and its kind, metric and baseline, status. An approved lesson changes the guidance, a kit file, a hook, an agent definition, a fence test, a spec or the code. The kit version rises with each change to a kit file.
+5. **Measure.** The next reviews compare the metric over 4 weeks before and 4 weeks after. The verdict is helped, no effect, worse, or too early.
+
+**The rules.**
+- The loop proposes and a member approves. It never merges and never approves its own request.
+- Data is tenant-scoped (R5). The loop reads only the repositories an org connected.
+- Model calls go through the router. Sorting uses the decide tier.
+- The default layer holds no HathiLabs text (PB-4).
+- The loop ships dark behind `LEARNING_ORGS`.
+- Fences: `tests/unit/test_learn_signals_r8.py`, `test_cause_codes.py`, `test_lessons_lifecycle.py`, `test_lesson_promotion.py`, `test_learning_org_neutral.py` (all new, named by their slices). Until then the rules are advisory.
+
+**The settings (LL-12).** The Projects app holds these as switches, per organization and per space: on or off, the day (default Monday), the time and zone (default 07:00 of the org zone), the sources, the recipients, and the limit of fix tasks (default 5). The chat changes them with the same result. The scheduler reads them and hard-codes nothing.
+
+**The guide (LL-13).** One guide teaches the best workflow to people and to agents. The member guide and the help chapters show it in the app. A chapter of the playbook serves it through `read_playbook` for agents. The neutral `AGENTS.md` of the kit points to it and holds no copy (PB-10). The guide explains each setting, the first week (connect, import the board, set the weekly time, run one review by hand, approve the first lesson), and what an agent never does.
+
+**Until LL-3 ships,** a person runs the review by hand each Monday, with the pattern of the replan of 2026-11-09 and 2026-11-10.
+
+---
+
+## 6d. The gratification ladder — the default way to plan
+
+**Owner directive, 2026-11-11 (D211).** Plan in stages that each give a visible win. Show a quick win first, as a minimum viable product, and grow from there. This is the default of the Metorite project system and of every harness that connects to it. So it is part of the neutral layer (§4), and not a HathiLabs rule. Any plan that a person or an agent makes in Metorite follows it.
+
+**The rules.**
+
+1. **A plan is a ladder of rungs.** Each rung ends in a demo: a person sees and uses the result on production. A flag that is on for one pilot organization is enough.
+2. **Rung 1 is the smallest path that works end to end.** It goes thin through every layer. It is never one finished layer. A manual step or a seeded example is fine when it shows the result sooner.
+3. **Start from what is live.** The first rungs make a live feature better, easier to reach or more complete. A new area starts after that.
+4. **Order the rungs by visible value for the effort.** Bring a hard unknown forward, but only inside a slice that a person can see.
+5. **A foundation rides with the rung that needs it.** A store change, a refactor or a hardening slice joins the first rung whose demo uses it. No rung ships only plumbing.
+6. **Rung 0 outranks the ladder.** A security leak, data loss, a broken live feature or an owner gate with a date goes first. Keep rung 0 small.
+7. **Size.** Rung 1 fits in one week of the team's capacity, at most. A later rung fits in one or two weeks.
+8. **Plan the near rungs in detail and the far rungs in one line.** Cut rungs 1 to 3 into slices. Give each later rung one line. After each demo, plan the next rungs again with what the demo taught.
+
+**On the board.**
+
+- **The demo task.** Each rung has one task, with the title `<area> · Rung N demo · <what a person can do>` and the tag `Demo`. Its description holds the demo script: what to open, what to click and what to see. Each slice of the rung blocks it. The demo task of rung N blocks the demo task of rung N+1.
+- **The rung tag.** Each slice of a rung has the tag `Rung N`. Rung 0 work has the tag `Rung 0` and no demo task. A slice with no rung tag is Later.
+- **The order.** Take a ready slice of the lowest open rung first. Inside a rung, take the least slack to that rung's demo, then the priority. The critical path runs to the next demo, not to the end of the epic.
+- **The delegation brief** (§6b) names the ladder: each rung, its demo task and its state. The entry point is the first ready slice of the lowest open rung.
+- **Done.** A rung is done when the owner of the project sees the demo and says so on the demo task. For a small rung, the captures are enough.
+
+**Other ways of planning.** The ladder is the default, not the only way (D211 point 9). It is one block of the work-style catalogue of `project_management_app.md` §13.1.
+- The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung.
+- The ladder is off by default in Plan-driven. That style plans by milestones, phase gates and the critical path to the end date.
+- A project owner can turn the ladder off or on for one project. An org admin sets the default for new projects (LAD-5).
+- A person can ask for another way at any time, in the app or in chat. The agent then plans in that way, says what changes, and does not add rungs.
+- Where the ladder is off, the order of work is the order of the style. For a plan-driven project, that is the least slack on the critical path (D195.6).
+
+**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds seven slices.
+
+- LAD-0 (task 2941) records that the ladder is the default and that other ways stay open.
+- LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-1b (task 2943) teaches the other ways in the same pages.
+- LAD-5 (task 2942) adds the switch for each project and the org default.
+- LAD-2 makes the Projects planning AI draft the rungs first, where the ladder is on.
+- LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view.
+- LAD-4 makes `my_work` take the nearest rung first, where the ladder is on.
+
+Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
+
+**Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5. It checks words, so it cannot catch a page that contradicts the rule. The reviewer of a playbook change reads the pages against this section.
+
+---
+
 ## 7. The slices
 
 Each names its scope, its done-when, its fence (R7), its risk tier and its gate. All are AGENT-SAFE and ship dark behind `PLAYBOOK_ORGS`, unless they say more. A migration makes a slice HIGH.
@@ -133,7 +282,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-3 · The resources and `read_playbook`
 
 - **Metorite task.** 1949.
-- **Scope.** The `metorite://playbook/...` resources of §5 beside the three resources of SW-34a. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
+- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-34a.
@@ -141,15 +290,15 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-4 · Tips in the results
 
 - **Metorite task.** 1950.
-- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps no state, so the gateway stores which tips a run has seen in a column `pm_agent_runs.tips_seen` (migration, expand only). They are separate from the safety lines.
+- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps one `SET NX` key in the tenant Redis wrapper for each connection, run and tip, so "once" needs no migration. **Changed on 2026-11-07 (PB-4 build):** the first text said a gateway column `pm_agent_runs.tips_seen`. A tip is a hint and grants nothing. A lost key shows a tip again, and a store outage shows none. So the state does not belong on the lease table. The tips show only while the runs flag is on and the organization is on `playbook_orgs`. The first tips are `brief` (a task with little text, until SW-70 gives the task a brief) and `stalled` (a quiet run in `my_work`). They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
+- **Risk.** STANDARD (no migration, see above). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
 
 #### PB-5 · The default layer, and the neutral fence
 
 - **Metorite task.** 1951.
-- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. It widens the neutral test to the product strings and defaults, and adds the drift test of §4.
+- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. It widens the neutral test to the product strings and defaults, and adds the drift test of §4. **As built (2026-11-07):** the gateway adds one block of level `default` at the end of the guidance answer, built from the playbook topic `default-guidance` (its version is the topic's version), for an organization on `playbook_orgs` and on `AGENT_GUIDANCE_ORGS`. It is the farthest block, so the cap drops it first. No route writes it and the history never lists it. The edge accepts the level `default` and the source kind `default`. The PB-1 drift test already exists (`test_playbook_org_neutral.py`), and PB-5 widens the scan to the instructions, the `work_on_task` messages, every tool description, the default block, and (when they exist) the protocol lines and tips. **Not built:** the setting that switches tips off for one organization. The allowlist `playbook_orgs` is the switch for now, and the per-organization policy key waits for SW-94.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
 - **Fence.** `test_playbook_org_neutral.py` (extended), `test_agent_guidance_r8.py`.
 - **Risk.** HIGH (a channel that reaches every agent, tenancy). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-31.
@@ -195,6 +344,132 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 - **Verify.** `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_guidance_r8.py` and a read of the live guidance after the write.
 - **Risk.** LOW. **Gate.** OWNER-GATE, because the write changes the guidance of a live organization, and the owner does it. **Depends on.** SW-31.
 
+#### KIT-0 · The kit contract
+
+- **Metorite task.** 2548.
+- **Scope.** §6a: one core, many packs, the file map, the three layers, the version rule and the protocol. The slice rows below. The verified and unverified facts of the file map.
+- **Done when.** Each "Verify at build" cell has a source or stays marked. `ste-lint` passes on this file.
+- **Fence.** `node .claude/hooks/ste-lint.mjs project-docs/specs/orchestration_playbook.md`. Advisory for the vendor facts, which change (R7).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** PB-1.
+
+#### KIT-1 · The core
+
+- **Metorite task.** 2549.
+- **Scope.** One neutral `AGENTS.md` of at most 150 lines, and one skill folder, in `packages/acb_playbook/kit/`. It holds the protocol of §6a and a `kit_version`. It adds `kit_version` to the neutral-layer fence.
+- **Done when.** The core is at most 150 lines and holds all eight protocol items. A HathiLabs token in it fails the test.
+- **Fence.** `tests/unit/test_kit_core.py` (new), `test_playbook_org_neutral.py` (extended).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-0, PB-1.
+
+#### KIT-2b · The Codex pack
+
+- **Metorite task.** 2550.
+- **Scope.** The files for Codex from the file map, and the `config.toml` block with the `codex mcp login` step. Each file points to the core.
+- **Done when.** A fixture check shows that each file exists, points to the core and holds no secret.
+- **Fence.** `tests/unit/test_kit_packs.py` (new).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1.
+
+#### KIT-2c · The Copilot pack
+
+- **Metorite task.** 2551.
+- **Scope.** `.github/copilot-instructions.md`, the `AGENTS.md` use, and the `.vscode/mcp.json` example. The settings of the coding agent follow the check at build.
+- **Done when.** The same fixture check as KIT-2b passes for the Copilot files.
+- **Fence.** `tests/unit/test_kit_packs.py` (new).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1.
+
+#### KIT-2d · The Antigravity and Gemini pack
+
+- **Metorite task.** 2552.
+- **Scope.** `GEMINI.md`, the `context.fileName` setting, and the `mcpServers` block for Gemini CLI. The Antigravity files follow the check at build.
+- **Done when.** The same fixture check as KIT-2b passes for these files.
+- **Fence.** `tests/unit/test_kit_packs.py` (new).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1.
+
+The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this contract.
+
+#### KIT-3 · The `metorite-guard` check
+
+- **Metorite task.** 2553.
+- **Scope.** The command `metorite-guard`. It checks that the session holds a task, that the branch name and the pull request body name the task, and that the turn ends with one disposition. A harness runs it from its own hook, from a git hook or from CI. It reads the connection config of the kit and holds no secret. The kit build also scans each kit file for a secret and for a copy of MCP text.
+- **Done when.** A fixture with each failure prints one sentence for it. A fixture file with a token fails the kit scan. A clean kit passes.
+- **Fence.** `tests/unit/test_kit_guard.py` (new).
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-1, SW-57 (task 1889).
+
+#### KIT-4 · The download
+
+- **Metorite task.** 2554.
+- **Scope.** A route that serves the pack of one client as a zip. It reads the `kit/` files and adds no content. The route is dark behind `PLAYBOOK_ORGS`.
+- **Built (KIT-4a).** The backend half: `GET /agent-kit` and `GET /agent-kit/{client}.zip` in `routes/agent_kit.py`, and `acb_playbook/kit_zip.py`. The Integrations control is KIT-4b. Tests: `test_kit_zip.py`, `test_kit_download_route.py`. The R8 file named below is not yet written.
+- **Built (KIT-4b).** The UI half: the "Download the agent kit" section of the Connect card on Integrations, AI agents (`AgentKitDownload.tsx`, `lib/agentKit.ts`), and two BFF relays, `/api/agent-kit` and `/api/agent-kit/<client>.zip`. It draws nothing while the gateway answers 404. The owner approved the preview (D145) on 2026-11-11. Test: `agentKit.test.ts`.
+- **Done when.** A listed organization gets the zip. An unlisted organization gets 404. The zip holds the same `kit_version` as the MCP.
+- **Fence.** `tests/unit/test_kit_download_r8.py` (new), `test_tenant_coverage.py`.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE dark. **Depends on.** KIT-1, KIT-2b, KIT-2c, KIT-2d, KIT-6, SW-82.
+
+#### KIT-5 · Versions and the doctor
+
+- **Metorite task.** 2555. It extends PB-7 (task 1953).
+- **Scope.** The `kit_version` fence of §6a, and a doctor check that flags a stale kit.
+- **Done when.** A change to a kit file with no version change fails the test. A stale kit raises one doctor row.
+- **Fence.** `tests/unit/test_kit_version.py` (new), `test_agent_doctor_r8.py` (extended).
+- **Built (KIT-5a, 2026-11-12).** The MCP serves `kit_version` and the version of each client in the `read_playbook` index and in the resource `metorite://playbook/kit-version`. The core has the section "Keep the kit current". `test_kit_version.py` pins a digest of every shipped file to its version. **Not built:** the doctor row, because PB-7 (task 1953) does not exist yet.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-4, PB-7.
+
+#### KIT-6 · The conformance matrix
+
+- **Metorite task.** 2556. It extends MCP-G23 (task 2523).
+- **Scope.** The scenarios, the scoring script and the matrix of §6a. Live runs are advisory (R7).
+- **Built (adapter, 2026-11-12).** `scripts/kit_claude_adapter.py` turns the stream of `claude -p --output-format stream-json --verbose` into a transcript for `kit_conformance.py`. Test: `tests/unit/test_kit_claude_adapter.py`. Other clients need an adapter of their own.
+- **Done when.** Each client of the file map has one row with a date and a result.
+- **Fence.** The suite of MCP-G23 (`tests/unit/test_mcp_client_conformance.py`), extended. A live client run is advisory (R7).
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
+
+#### KIT-7 · The company layer
+
+- **Metorite task.** 2557. It uses SW-31 (task 1048) and PB-5 (task 1951).
+- **Scope.** The path from a kit file to the organization guidance. It uses the default layer of PB-5.
+- **Done when.** An agent that reads the kit gets the organization guidance from `get_task_context`, and not from a kit copy.
+- **Fence.** `test_agent_guidance_r8.py`, `test_playbook_org_neutral.py`.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1, SW-31, PB-5.
+
+#### KIT-8 · The docs page
+
+- **Metorite task.** 2558.
+- **Scope.** One page that tells a member how to connect each client. It repeats no kit text and links to the download.
+- **Done when.** The page lists each client of the file map with its connect step.
+- **Built (2026-11-11).** `docs/use_metorite_from_your_coding_agent.md`, the index `docs/llms.txt` and `tests/unit/test_kit_docs_page.py`. The test pins the six headings, the hosts, the MCP address, the tool names and the setup text. No live run on a real client has been done.
+- **Fence.** Advisory (R7). A person reads the page against the file map.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
+
+#### KIT-9 · Orchestration recipes and lane templates
+
+- **Metorite task.** 2559. It uses PB-9 (task 1955).
+- **Scope.** The patterns of §3 as recipes, and the lane templates of PB-9, as kit files.
+- **Done when.** Each recipe names its pattern and each template holds a `version`.
+- **Fence.** `tests/unit/test_playbook_content.py`, `test_agent_lanes_r8.py` (extended).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** KIT-1, PB-9.
+
+---
+
+## 7a. The learning loop slices (WS-LL, epic task 2624)
+
+| Slice | Task | Scope | Risk | Depends on |
+|---|---|---|---|---|
+| LL-0 | 2625 | This section and §6c (docs) | LOW | none |
+| LL-1 | 2626 | Signal store, tenant-scoped (`learn_signals`, `learn_weeks`) | HIGH (migration) | LL-0, SC-9 (2576) |
+| LL-2 | 2627 | Cause codes and the sorter | STANDARD | LL-1, LL-8 |
+| LL-3 | 2628 | The weekly review run | STANDARD | LL-2, LL-12 |
+| LL-4 | 2629 | The board health report (read-only) | STANDARD | none |
+| LL-5 | 2630 | The lessons register | STANDARD | LL-3 |
+| LL-6 | 2631 | Harness promotion to pull requests | HIGH | LL-5 |
+| LL-7 | 2632 | Effect measurement | STANDARD | LL-6, LL-1 |
+| LL-8 | 2634 | The run reflection field | STANDARD | LL-0, MCP-G28 (2541) |
+| LL-9 | 2635 | A My Day card and a chat answer | STANDARD | LL-3, LL-5 |
+| LL-10 | 2636 | Connected repositories | HIGH | LL-1, LL-6 |
+| LL-11 | 2637 | The offer to every organization | STANDARD | LL-9, LL-10 |
+| LL-12 | 2638 | Weekly review settings in Projects | STANDARD | none |
+| LL-13 | 2639 | The best-workflow guide | LOW | LL-0, LL-12 |
+
+Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names its test in its task (R7).
+
 ---
 
 ## 8. Verify commands
@@ -204,12 +479,17 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 | PB-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py` |
 | PB-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | PB-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py` |
-| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
+| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_claim.py tests/unit/test_mcp_edge_prompts.py` |
 | PB-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_org_neutral.py tests/unit/test_agent_guidance_r8.py` |
 | PB-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_setup_proposal_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | PB-7 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_doctor_r8.py tests/unit/test_needs_attention_r8.py` |
 | PB-8 | `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_chat_coverage.py` |
 | PB-9 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_lanes_r8.py` |
+| KIT-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_kit_core.py tests/unit/test_playbook_org_neutral.py` (new file first) |
+| KIT-2b to KIT-2d | `uv run pytest -q -p no:cacheprovider tests/unit/test_kit_packs.py` (new) |
+| KIT-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_kit_guard.py` (new) |
+| KIT-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_kit_download_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
+| KIT-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_kit_version.py tests/unit/test_agent_doctor_r8.py` (new file first) |
 | PB-0 (this file) | `node .claude/hooks/ste-lint.mjs project-docs/specs/orchestration_playbook.md` and `uv run pytest -q -p no:cacheprovider tests/unit/test_doc_names_resolve.py tests/unit/test_index_completeness.py` |
 
 ---
@@ -226,3 +506,5 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 ## Changelog
 
 - **2026-11-06.** Written for PB-0 (task 1906), after the owner's second direction. Records D186.
+- **2026-11-09.** Replan (task 2518). Adds §6a, the agent kit, and the slices KIT-0 to KIT-9 (epic 2547). Section 6a lists the sources of the vendor facts.
+- **2026-11-11.** KIT-0 (task 2548). The five open cells of the file map in §6a are settled from official docs, with a source for each.

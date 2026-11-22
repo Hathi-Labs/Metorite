@@ -111,6 +111,14 @@ clean after each restore.
 * M32, the old draft_changed text of the save: ``draft_changed_texts_name_a
   _recovery``.
 * M33, the draft save names ``$.based_on``: 4 red in ``test_studio_package_routes.py``.
+
+PKG-12 (``package_host.md`` §6.2 step 1). The publish sends ``origin`` =
+``chat``, and the fake reads it with the real ``packages._origin``. The tool
+takes no org, member or date argument
+(``test_the_publish_tool_takes_no_org_member_or_date``).
+
+* M34, send no origin with the publish: ``name_the_hash_that_they_checked``.
+* M35, add an ``ends_at`` argument to ``studio_publish``: ``takes_no_org_member_or_date``.
 """
 from __future__ import annotations
 
@@ -134,6 +142,16 @@ from gateway.studio import packages_store as store
 
 from tests.unit.test_studio_builder_tools import CLASSES, MEMBER, ROWS
 from tests.unit.test_studio_skill_tools import Card, Mark
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
 
 ORG = str(uuid.uuid4())
 BEN = "ben@acme.test"
@@ -278,6 +296,7 @@ class Gateway:
             raise HTTPException(422, {"message": "The release notes are text.", "errors": [
                 {"path": "$.notes", "message": "The release notes are text."}]})
         expected = packages._based_on(sent.get("based_on"))
+        packages._origin(sent.get("origin"))  # the real parse (PKG-12)
         with packages._store_errors():
             store._notes(notes)
             store._expect(p["manifest"], expected)
@@ -324,7 +343,7 @@ class Redis:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
-        self.ttl: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
         self.fault: set[str] = set()
 
     def _check(self, op: str) -> None:
@@ -334,8 +353,13 @@ class Redis:
     async def setex(self, k: Any, seconds: int, value: str) -> bool:
         self._check("set")
         self.data[k.value] = value
-        self.ttl[k.value] = seconds
+        self.ttls[k.value] = seconds
         return True
+
+    async def ttl(self, k: Any) -> int:
+        """The seconds left of a key, as Redis gives them: -2 when it is gone."""
+        self._check("get")
+        return self.ttls.get(k.value, -2)
 
     async def get(self, k: Any) -> Any:
         self._check("get")
@@ -461,7 +485,7 @@ async def test_only_approved_writes_the_record(gw, card, redis, answer, open_, d
     assert out["decision"] == decision
     if decision == "approved":
         # Verifier P3 1: the value of the TTL, not the constant that sets it.
-        assert len(redis.data) == 1 and list(redis.ttl.values()) == [7200]
+        assert len(redis.data) == 1 and list(redis.ttls.values()) == [7200]
         assert "note" not in out
     else:
         assert redis.records() == {}
@@ -724,7 +748,20 @@ async def test_the_publish_and_the_save_name_the_hash_that_they_checked(gw) -> N
     await _plan(other)
     assert (await st.studio_publish(pid))["ok"]
     body = next(b for verb, p, b, _h in gw.calls if verb == "POST" and p.endswith("/versions"))
-    assert body == {"notes": "", "based_on": st.manifest_hash(other)}
+    assert body == {"notes": "", "based_on": st.manifest_hash(other), "origin": "chat"}
+    assert packages._origin(body["origin"]) == packages.ORIGIN_CHAT
+
+
+def test_the_publish_tool_takes_no_org_member_or_date() -> None:
+    """PKG-12 (R5). The route reads the org and the member from the session
+    and the end date from the server clock. So the model can name only the
+    package and the notes. Mutation M35 -> red."""
+    params = inspect.signature(st.studio_publish).parameters
+    assert list(params) == ["package_id", "notes"]
+    words = ("org", "tenant", "member", "email", "user", "owner", "date", "ends", "time",
+             "days", "origin")
+    for name in params:
+        assert not any(w in name.lower() for w in words), name
 
 
 async def test_a_draft_that_changes_between_the_read_and_the_publish_is_not_published(
@@ -836,13 +873,112 @@ async def test_a_save_equal_to_the_stored_draft_writes_nothing(gw) -> None:
     assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 1
 
 
-async def test_a_save_that_changes_the_manifest_id_shows_the_route_text(gw) -> None:
-    saved = await _save(_visit())
-    out = await st.studio_save(_visit("other-id"), saved["package_id"], saved["based_on"])
+async def test_a_save_that_changes_the_id_of_a_published_package_shows_the_route_text(gw) -> None:
+    _m, pid = await _built()
+    assert (await st.studio_publish(pid))["ok"]
+    out = await st.studio_save(_visit("other-id"), pid, st.manifest_hash(gw.packages[pid]["manifest"]))
     assert out["ok"] is False and out["status"] == 422
     assert out["errors"] == [{"path": "$", "message": store.ID_FIXED},
                              {"path": "$.id", "message": store.ID_FIXED}]
-    assert ("PUT", "/studio/packages/{}/draft") not in gw.writes()
+    assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 0
+
+
+async def test_a_save_into_an_unpublished_draft_keeps_the_id_of_the_draft(gw) -> None:
+    """STU-FIX: the "New app" button made the draft with its own id. A save with
+    another id sets the id of the draft, and the draft keeps one id."""
+    saved = await _save(_visit("new-app-nufdl"))
+    out = await st.studio_save(_visit("event-inquiry-tracker", name="Event tracker"), saved["package_id"],
+                               saved["based_on"])
+    assert out["ok"], out
+    assert out["manifest_id"] == "new-app-nufdl" and "new-app-nufdl" in out["note"]
+    assert gw.packages[saved["package_id"]]["manifest"]["id"] == "new-app-nufdl"
+    assert gw.writes().count(("PUT", "/studio/packages/{}/draft")) == 1
+
+
+async def test_one_plan_card_covers_a_build_into_a_draft_with_another_id(gw, card, redis) -> None:
+    """STU-FIX: plan (id A), save into draft (id B), publish. One card, one publish."""
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    assert len(redis.records()) == 1
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "publish now" in out["note"], out
+    assert len(redis.records()) == 1  # the approval moved, and no copy stays
+    pub = await st.studio_publish(saved["package_id"])
+    assert pub["ok"] and pub["version"] == 1, pub
+    assert len(card.shown) == 1, "one approval card for one app"
+
+
+def _record_of(redis, mid: str) -> tuple[str, dict[str, Any]]:
+    k = next(k for k in redis.records() if k.endswith(st._app_part({"id": mid})))
+    return k, json.loads(redis.data[k])
+
+
+async def test_a_moved_approval_keeps_the_old_time_and_a_life_no_longer(gw, redis) -> None:
+    """STU-FIX round 2: a move never makes an approval last longer."""
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    old_key, old = _record_of(redis, "event-inquiry-tracker")
+    redis.ttls[old_key] = 600  # 10 minutes are left of the 2 hours
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "publish now" in out["note"], out
+    new_key, new = _record_of(redis, "new-app-nufdl")
+    assert new["at"] == old["at"], "the move keeps the time of the approval"
+    assert redis.ttls[new_key] == 600 <= st.PLAN_TTL_SECONDS
+    assert old_key not in redis.data
+
+
+async def test_a_withdraw_before_the_move_leaves_no_approval(gw, redis, card) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    assert await st._withdraw_plan(planned)  # the member stopped a later card
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"] and "publish now" not in out["note"]
+    assert redis.records() == {}
+    assert (await st.studio_publish(saved["package_id"]))["ok"] is False
+
+
+async def test_an_expired_approval_is_not_moved(gw, redis) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    planned = _visit("event-inquiry-tracker", name="Event tracker")
+    await _plan(planned)
+    old_key, _ = _record_of(redis, "event-inquiry-tracker")
+    redis.ttls[old_key] = -2
+    out = await st.studio_save(planned, saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"] and "publish now" not in out["note"]
+
+
+async def test_a_new_app_id_skips_an_id_that_the_member_holds(gw) -> None:
+    await _save(_visit("event-inquiry-tracker"))
+    await _save(_visit("event-inquiry-tracker-2"))
+    out = await st.studio_draft("Event inquiry tracker for a stall")
+    assert out["manifest"]["id"] == "event-inquiry-tracker-3"
+
+
+async def test_a_new_app_id_ends_in_a_random_tail_when_the_tries_run_out(gw) -> None:
+    await _save(_visit("lead-tracker"))
+    for n in range(2, st._ID_TRIES + 1):
+        await _save(_visit(f"lead-tracker-{n}"))
+    mid = (await st.studio_draft("Lead tracker"))["manifest"]["id"]
+    assert re.fullmatch(r"lead-tracker-[0-9a-f]{4}", mid), mid
+
+
+async def test_a_kannada_brief_gives_app_and_a_random_tail(gw) -> None:
+    out = await st.studio_draft("ನನಗೆ ಒಂದು ಅಪ್ಲಿಕೇಶನ್ ಬೇಕು")
+    assert out["ok"], out
+    assert re.fullmatch(r"app-[0-9a-f]{4}", out["manifest"]["id"]), out["manifest"]["id"]
+
+
+async def test_a_save_that_adopts_an_id_keeps_no_approval_the_member_never_gave(gw, card, redis) -> None:
+    saved = await _save(_visit("new-app-nufdl"))
+    out = await st.studio_save(_visit("event-inquiry-tracker", name="Event tracker"),
+                               saved["package_id"], saved["based_on"])
+    assert out["ok"] and "studio_plan" in out["note"]
+    assert redis.records() == {}
+    refused = await st.studio_publish(saved["package_id"])
+    assert refused["ok"] is False and _msg(refused) == st._NO_PLAN
 
 
 # -- 7. The cap, and no stored text -------------------------------------------------
@@ -1141,13 +1277,20 @@ def test_no_package_tool_takes_an_identity_or_confirm_argument() -> None:
               "member_email", "user", "user_email", "email", "actor", "as_user", "owner",
               "owner_email", "visibility", "confirm", "confirmed", "approve", "approved", "force",
               "plan", "approval"}
-    assert [fn.__name__ for fn in st.STUDIO_PACKAGE_TOOLS] == ["studio_save", "studio_publish"]
+    assert [fn.__name__ for fn in st.STUDIO_PACKAGE_TOOLS] == [
+        "studio_save", "studio_publish", "studio_delete_package", "studio_template_list",
+        "studio_create_from_template"]
+    # A5c-2: the delete takes the package id only. The route decides the admin path.
+    assert list(inspect.signature(st.studio_delete_package).parameters) == ["package_id"]
+    banned |= {"as_admin", "admin", "token", "records"}
     for fn in (*st.STUDIO_PACKAGE_TOOLS, st.studio_list_actions):
         params = set(inspect.signature(fn).parameters)
         assert not params & banned, (fn.__name__, params)
         assert inspect.iscoroutinefunction(fn)
     for fn in st.STUDIO_PACKAGE_TOOLS:
-        assert fn.__tool_risk__["read_only"] is False and fn.__tool_risk__["open_world"] is False
+        # STU-K1d: the list of the ready apps is the one read tool of the family.
+        assert fn.__tool_risk__["read_only"] is (fn is st.studio_template_list)
+        assert fn.__tool_risk__["open_world"] is False
 
 
 async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw) -> None:
@@ -1155,7 +1298,7 @@ async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw)
     await st.studio_publish(pid)
     assert gw.calls
     for _m2, _p, body, headers in gw.calls:
-        assert headers["X-User-Email"] == MEMBER and headers["Authorization"].startswith("Bearer ")
+        assert headers["X-User-Email"] == MEMBER and headers["Authorization"] == f"Bearer {_INTERNAL}"
         text = json.dumps(body)
         assert MEMBER not in text
         assert not any(f'"{k}"' in text for k in ("organization_id", "owner_email", "visibility"))
@@ -1198,7 +1341,8 @@ def test_each_copy_of_the_route_matches_the_route() -> None:
     text = Path(objects_store.__file__).read_text(encoding="utf-8")
     block = text.split("#: The kinds of a sync problem.", 1)[1].split("\n\n", 1)[0]
     kinds = set(re.findall(r'^[A-Z_]+ = "([a-z_]+)"$', block, re.MULTILINE))
-    assert len(kinds) == 7, "non-vacuity: the block holds the seven kinds"
+    # C8a adds `access_refused`.
+    assert len(kinds) == 8, "non-vacuity: the block holds the eight kinds"
     assert set(st._FIX_LINES) == set(st._KIND_WORDS) == kinds
 
 
@@ -1293,3 +1437,518 @@ async def test_every_result_stays_under_the_cap(gw) -> None:
     outs.append(await st.studio_publish(pid))
     for out in outs:
         assert len(json.dumps(out, ensure_ascii=False)) < st.MAX_MANIFEST_CHARS
+
+
+# -- 13. The Studio IDE binds the chat to one package (STU-G3a) ---------------------
+
+
+async def test_a_chat_bound_by_page_facts_saves_to_that_package_with_the_hash_of_the_facts(gw) -> None:
+    """STU-G3a fix 1, fence C. The IDE puts the package id, the draft and ``based_on`` (the
+    ``manifest_hash`` of the GET answer) in the page facts. The agent saves with that hash. The
+    save goes to package X by one PUT, and no POST makes a new package.
+
+    Mutation 1: make ``_save_draft`` POST a new package when it finds a package id. "no create" turns red.
+    Mutation 2: skip the based_on compare. The stale test below turns red.
+    """
+    x = await _save(_visit())
+    other = await _save(_visit("other-app"))
+    x_id = x["package_id"]
+    gw.calls.clear()
+    from_facts = st.manifest_hash(gw.packages[x_id]["manifest"])
+    changed = _visit(name="Renamed by Mira")
+    out = await st.studio_save(changed, x_id, from_facts)
+    assert out["ok"] and out["package_id"] == x_id
+    assert gw.packages[x_id]["manifest"] == changed
+    assert gw.packages[other["package_id"]]["manifest"] != changed
+    assert gw.writes() == [("PUT", "/studio/packages/{}/draft")]
+    assert not [1 for m, p, *_ in gw.calls if m == "POST"], "no create"
+
+
+async def test_a_stale_hash_from_the_page_facts_is_refused_and_writes_nothing(gw) -> None:
+    """STU-G3a fix 1. The page facts hold the hash of an older draft (Mira or the member changed
+    the draft since). The save fails closed, names the recovery, and writes nothing."""
+    x = await _save(_visit())
+    x_id = x["package_id"]
+    old_hash = st.manifest_hash(gw.packages[x_id]["manifest"])
+    newer = _visit(name="Newer")
+    assert (await st.studio_save(newer, x_id, old_hash))["ok"]
+    gw.calls.clear()
+    before = copy.deepcopy(gw.packages[x_id]["manifest"])
+    out = await st.studio_save(_visit(name="Late change"), x_id, old_hash)
+    assert out["ok"] is False and _msg(out) == st._PKG_STALE
+    assert "apply the change again" in st._PKG_STALE and "page facts" in st._PKG_STALE
+    assert gw.writes() == []
+    assert gw.packages[x_id]["manifest"] == before
+
+
+# -- 14. The delete of a package (STU-A5c-2) -------------------------------------------
+#
+# ``studio_delete_package`` over the two delete routes of A5c-1. The fake serves
+# them with the REAL preview shape (``packages._preview_out``), the REAL token
+# (``store.confirm_token``) and the REAL parse of the token (``packages._confirm``).
+# Each DELETE call removes ``chunk`` records, and a call that leaves records
+# answers 202 with a new token, as the route does.
+#
+# The mutations (R7). Each ran alone on 2026-11-11, and each test named went red:
+#
+# * D1, show the card only in a held chat (``if await _must_ask():`` around the
+#   card): ``always_shows_one_card_with_the_counts[False]``.
+# * D2, delete on revised, stopped or no_card: ``deletes_nothing_without_approved``
+#   (3 cases).
+# * D3, skip the second read: ``reads_the_preview_twice_then_deletes``,
+#   ``change_under_the_card_deletes_nothing``.
+# * D4, no bound on the 202 loop (``while True``): ``202_loop_has_a_bound``.
+# * D5, send the first token on each call of the loop:
+#   ``follows_each_202_with_its_new_token``.
+
+
+class DeleteGateway(Gateway):
+    """The delete routes of A5c-1, in memory, behind the real shapes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: dict[str, int] = {}
+        self.chunk = 500
+        self.admins: set[str] = set()
+        self.active: set[str] = set()
+        self.answers: list[tuple[int, Any]] = []  # canned DELETE answers, in order
+
+    def seed_app(self, records: int = 10, owner: str = MEMBER,
+                 tables: tuple[str, ...] = ("visit",), name: str = "Install visits") -> str:
+        pid = self.seed(_visit(name=name), owner)
+        self.records[pid] = records
+        self.tables[pid] = list(tables)
+        return pid
+
+    def preview(self, pid: str) -> store.DeletePreview:
+        objs = tuple(objects_store.ObjectCount(
+            name=n, fields=3, records=self.records[pid] if i == 0 else 0, capped=False)
+            for i, n in enumerate(self.tables[pid]))
+        p = self.packages[pid]
+        return store.DeletePreview(
+            id=pid, name=str(p["manifest"]["name"]), slug=f"visits-{pid[:8]}", objects=objs,
+            versions=1, installs=1, other_member_installs=0,
+            confirm=store.confirm_token(pid, objs, 1, 1, 0))
+
+    def deletes(self) -> list[Any]:
+        return [b for m, _p, b, _h in self.calls if m == "DELETE"]
+
+    def _serve(self, method: str, path: str, body: Any, member: str,
+               args: dict[str, str]) -> httpx.Response:
+        parts = path.strip("/").split("/")
+        delete = method == "DELETE" and len(parts) == 3
+        preview = method == "GET" and parts[3:] == ["delete-preview"]
+        if not (delete or preview):
+            return super()._serve(method, path, body, member, args)
+        pid = packages._package_id(parts[2])
+        p = self.packages.get(pid)
+        if p is None or (p["owner"] != member and member not in self.admins):
+            raise HTTPException(404, "Not found")
+        if p["owner"] != member and p["owner"] in self.active:
+            raise HTTPException(403, {"code": packages.OWNER_ACTIVE,
+                                      "message": store.OWNER_ACTIVE_TEXT, "records_removed": 0})
+        if preview:
+            return self._r(200, packages._preview_out(self.preview(pid)))
+        raw = b"" if body is None else json.dumps(body).encode("utf-8")
+        token = packages._confirm(packages._parse_json(raw, empty_ok=True))
+        if self.answers:
+            status, data = self.answers.pop(0)
+            return self._r(status, data)
+        now = self.preview(pid)
+        if token != now.confirm:
+            raise HTTPException(409, {"code": packages.COUNTS_CHANGED,
+                                      "message": store.COUNTS_CHANGED_TEXT, "records_removed": 0,
+                                      "preview": packages._preview_out(now)})
+        take = min(self.chunk, self.records[pid])
+        self.records[pid] -= take
+        if take < self.chunk:
+            del self.packages[pid]
+            return self._r(200, {"deleted": True, "package_id": pid, "records_removed": take})
+        left = self.preview(pid)
+        return self._r(202, {"deleted": False, "package_id": pid,
+                             "remaining": self.records[pid], "remaining_capped": False,
+                             "records_removed": take, "confirm": left.confirm})
+
+
+@pytest.fixture
+def dgw(monkeypatch, mark, card, redis, who):
+    gateway = DeleteGateway()
+    monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
+    return gateway
+
+
+def _verbs(gw: Gateway) -> list[tuple[str, str]]:
+    return [(m, re.sub(r"[0-9a-f-]{36}", "{}", p)) for m, p, _b, _h in gw.calls]
+
+
+_PREVIEW = ("GET", "/studio/packages/{}/delete-preview")
+_DELETE = ("DELETE", "/studio/packages/{}")
+
+
+@pytest.mark.parametrize("held_chat", [False, True])
+async def test_the_delete_always_shows_one_card_with_the_counts(
+        dgw, mark, card, held_chat: bool) -> None:
+    """Criterion: the card always shows, in a clear chat too, and the delete
+    comes only after it."""
+    mark.held = held_chat
+    pid = dgw.seed_app(records=10)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"] and out["decision"] == "approved", out
+    assert out["records_removed"] == 10 and pid not in dgw.packages
+    [shown] = card.shown
+    assert shown["title"] == "Delete the app «Install visits»?"
+    assert shown["detail"] == "10 records go for good. Nothing can bring them back."
+    context = str(shown["context"])
+    assert context.startswith(st._DEL_NOTE)
+    for line in ("App: «Install visits»", "- «visit»: 10 records, 3 fields",
+                 "Records: 10 records in 1 table", "Versions: 1",
+                 "Installs: 1, and 0 of them reach other members"):
+        assert line in context, line
+    assert shown["non_interactive_default"] == "deny" and shown["responder"] == MEMBER
+
+
+async def test_the_tool_reads_the_preview_twice_then_deletes(dgw, card) -> None:
+    pid = dgw.seed_app(records=10)
+    token = dgw.preview(pid).confirm
+    await st.studio_delete_package(pid)
+    assert _verbs(dgw) == [_PREVIEW, _PREVIEW, _DELETE]
+    assert dgw.deletes() == [{"confirm": token}]
+
+
+@pytest.mark.parametrize("answer,open_,decision", [
+    (ask_tools.REVISED, True, "revised"), (False, True, "stopped"), (False, False, "no_card")])
+async def test_the_delete_deletes_nothing_without_approved(
+        dgw, card, answer: Any, open_: bool, decision: str) -> None:
+    """Criterion: a run with no card deletes nothing, and so do a stop and a
+    revise. Reject deletes nothing."""
+    card.answer, card.open = answer, open_
+    pid = dgw.seed_app(records=10)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["decision"] == decision
+    assert _msg(out).startswith("Nothing was deleted.")
+    assert dgw.deletes() == [] and dgw.records[pid] == 10 and pid in dgw.packages
+    assert _verbs(dgw) == [_PREVIEW]
+    if decision == "no_card":
+        assert "App: «Install visits»" in out["context"]
+
+
+async def test_a_change_under_the_card_deletes_nothing(dgw, card) -> None:
+    """Criterion: the tool reads the preview a second time, and a count that
+    moved while the card was open sends no DELETE."""
+    pid = dgw.seed_app(records=10)
+
+    def grow() -> None:
+        dgw.records[pid] += 1
+
+    card.between = grow
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._DEL_MOVED and out["decision"] == "approved"
+    assert dgw.deletes() == [] and dgw.records[pid] == 11
+
+
+async def test_the_delete_follows_each_202_with_its_new_token(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    first = dgw.preview(pid).confirm
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"] and out["records_removed"] == 1200
+    tokens = [b["confirm"] for b in dgw.deletes()]
+    assert len(tokens) == 3 and tokens[0] == first and len(set(tokens)) == 3
+    assert len(card.shown) == 1
+
+
+async def test_a_503_after_a_202_keeps_the_true_total(dgw, card) -> None:
+    """A5c-2 fix round 1: a 503 of a later call names the records that the call
+    removed before it, so the total of the result counts them."""
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(202, {"deleted": False, "package_id": pid, "remaining": 700,
+                          "remaining_capped": False, "records_removed": 500,
+                          "confirm": "b" * 64}),
+                   (503, {"detail": {"code": "store_busy", "message": "busy",
+                                     "records_removed": 300}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._DEL_BUSY
+    assert out["records_removed"] == 800
+
+
+async def test_the_202_loop_has_a_bound(dgw, card) -> None:
+    """Criterion: the loop stops after ``MAX_DELETE_CALLS`` calls, and the
+    result says what is left. The next call shows a new card."""
+    dgw.chunk = 1
+    pid = dgw.seed_app(records=1000)
+    out = await st.studio_delete_package(pid)
+    assert len(dgw.deletes()) == st.MAX_DELETE_CALLS
+    assert out["ok"] is False and out["status"] == 202
+    assert out["records_removed"] == st.MAX_DELETE_CALLS
+    assert out["remaining"] == 1000 - st.MAX_DELETE_CALLS
+    assert str(1000 - st.MAX_DELETE_CALLS) in _msg(out) and pid in dgw.packages
+
+
+def test_the_bound_of_the_loop_ends_under_the_tool_limit_of_the_run() -> None:
+    """Each call ends before the client timeout of ``_send``. The loop ends
+    within 3 minutes, under the 300 s tool limit of the run watchdog."""
+    from tests.unit.test_studio_package_delete import _client_timeout
+
+    assert st.MAX_DELETE_CALLS * _client_timeout() <= 180 < 300
+
+
+async def test_a_409_during_the_delete_stops_the_loop(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(202, {"deleted": False, "package_id": pid, "remaining": 700,
+                          "remaining_capped": False, "records_removed": 500,
+                          "confirm": "b" * 64}),
+                   (409, {"detail": {"code": packages.COUNTS_CHANGED, "records_removed": 0,
+                                     "message": "changed"}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 409 and out["code"] == "counts_changed"
+    assert _msg(out) == st._DEL_CHANGED and out["records_removed"] == 500
+    assert len(dgw.deletes()) == 2
+
+
+async def test_an_owner_who_is_active_again_stops_the_loop(dgw, card) -> None:
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(403, {"detail": {"code": packages.OWNER_ACTIVE, "records_removed": 500,
+                                     "message": store.OWNER_ACTIVE_TEXT}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["code"] == "owner_active" and out["records_removed"] == 500
+    assert _msg(out) == st._DEL_OWNER_BACK
+
+
+@pytest.mark.parametrize("status,want", [(503, "_DEL_BUSY"), (404, "_DEL_GONE")])
+async def test_a_busy_or_gone_package_stops_the_loop(dgw, card, status: int, want: str) -> None:
+    pid = dgw.seed_app(records=10)
+    dgw.answers = [(status, {"detail": {"code": "store_busy", "message": "busy"}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == status and _msg(out) == getattr(st, want)
+    assert len(dgw.deletes()) == 1
+
+
+async def test_a_network_miss_on_the_delete_says_it_may_have_removed_records(dgw, card) -> None:
+    pid = dgw.seed_app(records=10)
+    dgw.error, dgw.error_verb = httpx.ConnectError("down"), "DELETE"
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._DEL_MAYBE and out["decision"] == "approved"
+
+
+async def test_an_admin_gets_the_owner_active_answer_and_no_card(dgw, card) -> None:
+    pid = dgw.seed_app(owner=BEN)
+    dgw.admins, dgw.active = {MEMBER}, {BEN}
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 403 and out["code"] == "owner_active"
+    assert _msg(out) == st._DEL_OWNER_ACTIVE
+    assert card.shown == [] and dgw.deletes() == []
+
+
+async def test_an_admin_deletes_the_app_of_a_member_who_left_with_the_same_calls(
+        dgw, card) -> None:
+    """The route decides the admin path from the session. The tool sends the
+    same calls, with no identity in a body."""
+    pid = dgw.seed_app(owner=BEN, records=10)
+    dgw.admins = {MEMBER}
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] and out["deleted"]
+    assert _verbs(dgw) == [_PREVIEW, _PREVIEW, _DELETE]
+    assert [set(b) for b in dgw.deletes()] == [{"confirm"}]
+
+
+async def test_a_package_that_is_not_yours_shows_no_card(dgw, card) -> None:
+    pid = dgw.seed_app(owner=BEN)
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._DEL_NOT_FOUND
+    assert card.shown == [] and dgw.deletes() == []
+
+
+@pytest.mark.parametrize("bad", ["", "nope", "../x", None, 7])
+async def test_a_bad_id_of_a_delete_is_refused_before_a_call(dgw, card, bad: Any) -> None:
+    out = await st.studio_delete_package(bad)
+    assert out["ok"] is False and dgw.calls == [] and card.shown == []
+
+
+async def test_a_preview_in_a_shape_that_the_tool_cannot_read_shows_no_card(
+        dgw, card, monkeypatch) -> None:
+    pid = dgw.seed_app()
+    monkeypatch.setattr(packages, "_preview_out", lambda found: {"package": {}, "confirm": "x"})
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and _msg(out) == st._PKG_SHAPE and card.shown == []
+
+
+async def test_the_card_fences_each_name_and_counts_the_tables_that_it_does_not_name(
+        dgw, card) -> None:
+    tables = tuple(f"t{i}" for i in range(15))
+    pid = dgw.seed_app(records=3, tables=tables, name="Visits​ «x» app")
+    await st.studio_delete_package(pid)
+    context = str(card.shown[0]["context"])
+    assert "App: «Visits x app»" in context and "​" not in context
+    assert context.count("\n- «t") == st.MAX_DELETE_CARD_TABLES
+    assert "and 5 more tables" in context
+    assert "Records: 3 records in 15 tables" in context
+
+
+def test_the_delete_tool_copies_match_the_route() -> None:
+    assert st._COUNTS_CHANGED == packages.COUNTS_CHANGED
+    assert st._OWNER_ACTIVE == packages.OWNER_ACTIVE
+    risk = st.studio_delete_package.__tool_risk__
+    assert risk["read_only"] is False and risk["open_world"] is False
+
+
+# -- 15. The ready apps (STU-K1d) ------------------------------------------------------
+#
+# ``studio_template_list`` and ``studio_create_from_template`` over the two template
+# routes of STU-K1a. The fake serves the list from the REAL registry
+# (``acb_common.studio_templates``) and the create with the answers of
+# ``create_from_template``. It checks each verb and path against the REAL router.
+#
+# The mutation (R7), run alone on 2026-11-13: take the card step (``_card`` and
+# ``_decide``) out of ``studio_create_from_template`` and send the POST at once.
+# ``test_a_create_without_approved_sends_no_post`` goes red in all 3 cases, and
+# ``test_the_create_always_shows_one_card_then_one_post`` goes red in both.
+
+from acb_common import studio_templates  # noqa: E402
+
+_TPL_POST = ("POST", "/studio/packages/from-template")
+_TPL_GET = ("GET", "/studio/templates")
+
+
+class TemplateGateway(Gateway):
+    """The template routes of STU-K1a, in memory."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.off = False  # Studio is off for the org: both routes answer 404
+        self.sent: list[Any] = []  # the body of each POST
+
+    def _serve(self, method: str, path: str, body: Any, member: str,
+               args: dict[str, str]) -> httpx.Response:
+        if path == "/studio/templates":
+            if self.off:
+                raise HTTPException(404, "Not found")
+            return self._r(200, {"templates": [dict(t) for t in studio_templates.list_templates()]})
+        if path == "/studio/packages/from-template":
+            self.sent.append(body)
+            if self.off:
+                raise HTTPException(404, "Not found")
+            if self.status:
+                raise HTTPException(*self.status)
+            manifest = studio_templates.get_template(body.get("template"))
+            if manifest is None:
+                raise HTTPException(422, {"message": "unknown_template", "errors": []})
+            for k, p in self.packages.items():
+                if p["owner"] == member and p["manifest"].get("id") == manifest["id"]:
+                    raise HTTPException(409, {"code": packages.PACKAGE_EXISTS, "package_id": k,
+                                              "message": "You have a package with this manifest id."})
+            pid = self.seed(manifest, member)
+            self.packages[pid].update(live_version=1, status="live")
+            return self._r(201, {"package": self._out(self.packages[pid]),
+                                 "version": {"version": 1, "sha256": "x", "notes": ""}})
+        return super()._serve(method, path, body, member, args)
+
+    def posts(self) -> list[tuple[str, str]]:
+        return [c for c in _verbs(self) if c[0] == "POST"]
+
+
+@pytest.fixture
+def tgw(monkeypatch, mark, card, redis, who):
+    gateway = TemplateGateway()
+    monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
+    return gateway
+
+
+def _first_template() -> dict[str, str]:
+    return dict(studio_templates.list_templates()[0])
+
+
+async def test_the_template_list_gives_each_ready_app(tgw) -> None:
+    out = await st.studio_template_list()
+    assert out["ok"] is True and _verbs(tgw) == [_TPL_GET]
+    first = _first_template()
+    row = out["templates"][0]
+    assert row["id"] == first["id"] and first["name"] in row["name"]
+    assert first["purpose"] in row["purpose"]
+    assert out["total"] == len(studio_templates.TEMPLATE_IDS)
+
+
+async def test_the_template_list_says_that_studio_is_off_with_one_sentence(tgw) -> None:
+    tgw.off = True
+    out = await st.studio_template_list()
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+
+
+@pytest.mark.parametrize("held_chat", [False, True])
+async def test_the_create_always_shows_one_card_then_one_post(
+        tgw, card, mark, held_chat: bool) -> None:
+    mark.held = held_chat
+    first = _first_template()
+    out = await st.studio_create_from_template(first["id"])
+    assert out["ok"] is True and out["decision"] == "approved", out
+    assert first["name"] in out["name"] and out["version"] == 1
+    assert out["package_id"] in tgw.packages
+    [shown] = card.shown
+    assert shown["title"] == f"Create the app «{first['name']}»?"
+    assert f"App: «{first['name']}»" in str(shown["context"])
+    assert shown["non_interactive_default"] == "deny" and shown["responder"] == MEMBER
+    assert tgw.posts() == [_TPL_POST] and tgw.sent == [{"template": first["id"]}]
+
+
+@pytest.mark.parametrize("answer,open_,decision", [
+    (ask_tools.REVISED, True, "revised"), (False, True, "stopped"), (False, False, "no_card")])
+async def test_a_create_without_approved_sends_no_post(
+        tgw, card, answer: Any, open_: bool, decision: str) -> None:
+    card.answer, card.open = answer, open_
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["decision"] == decision
+    assert _msg(out).startswith("Nothing was created.")
+    assert tgw.posts() == [] and tgw.sent == [] and tgw.packages == {}
+    assert len(card.shown) == 1
+
+
+async def test_a_create_for_an_app_that_the_member_has_is_a_plain_answer(tgw, card) -> None:
+    first = _first_template()
+    done = await st.studio_create_from_template(first["id"])
+    again = await st.studio_create_from_template(first["id"])
+    assert again["ok"] is False and again["status"] == 409 and again["code"] == "package_exists"
+    assert done["package_id"] in _msg(again) and first["id"] in _msg(again)
+    assert again["package_id"] == done["package_id"]
+    assert len(tgw.posts()) == 2 and len(tgw.packages) == 1
+    assert len(card.shown) == 2  # one card for each call, and no second card for the 409
+
+
+@pytest.mark.parametrize("bad", [None, 7, "", "Hiring", "a b", "x" * 80, ["hiring"], "../x"])
+async def test_a_template_id_of_a_bad_shape_is_refused_before_a_card_or_a_call(
+        tgw, card, bad: Any) -> None:
+    out = await st.studio_create_from_template(bad)
+    assert out["ok"] is False and _msg(out) == st._TPL_NO_ID
+    assert tgw.calls == [] and card.shown == []
+
+
+async def test_an_unknown_template_id_shows_no_card_and_sends_no_post(tgw, card) -> None:
+    out = await st.studio_create_from_template("no-such-app")
+    assert out["ok"] is False and _msg(out) == st._TPL_UNKNOWN
+    assert tgw.posts() == [] and card.shown == []
+
+
+async def test_a_create_says_that_studio_is_off_and_shows_no_card(tgw, card) -> None:
+    tgw.off = True
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+    assert tgw.posts() == [] and card.shown == []
+
+
+async def test_a_post_that_answers_404_after_the_card_says_that_studio_is_off(tgw, card) -> None:
+    tgw.status = (404, "Not found")  # a canned answer for the POST only
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 404 and _msg(out) == st._TPL_OFF
+    assert out["decision"] == "approved"
+
+
+async def test_a_catalog_that_is_down_is_a_refusal_with_a_retry_note(tgw) -> None:
+    tgw.status = (503, {"code": "catalog_unavailable", "message": "The catalog is down."})
+    out = await st.studio_create_from_template(_first_template()["id"])
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._TPL_PART
+
+
+def test_the_template_tools_take_the_template_id_only_and_copy_the_route() -> None:
+    assert list(inspect.signature(st.studio_template_list).parameters) == []
+    assert list(inspect.signature(st.studio_create_from_template).parameters) == ["template"]
+    assert st.studio_template_list.__tool_risk__["read_only"] is True
+    assert st.studio_create_from_template.__tool_risk__["read_only"] is False
+    for tid in studio_templates.TEMPLATE_IDS:
+        assert re.fullmatch(st._TEMPLATE_ID, tid), tid

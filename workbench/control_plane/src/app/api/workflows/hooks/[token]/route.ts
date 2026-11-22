@@ -23,6 +23,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,6 +41,8 @@ export async function POST(
   ctx: { params: Promise<{ token: string }> }
 ): Promise<NextResponse> {
   const { token } = await ctx.params;
+  const refused = refuseUnsafePath([token]);
+  if (refused) return refused;
   // Raw bytes, never parsed: signature verification is byte-exact.
   const body = await req.arrayBuffer();
 

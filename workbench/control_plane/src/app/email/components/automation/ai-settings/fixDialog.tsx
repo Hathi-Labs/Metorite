@@ -12,6 +12,7 @@ import { listRules, runRuleOnMessage, submitRuleFeedback } from "../../../lib/ap
 import type { AutomationRule, RunMessageResult } from "../../../lib/types";
 import { useEmailStore } from "../../../lib/emailStore";
 import { Modal } from "../ui";
+import { currentMatchChip } from "./actionFormat";
 import { INPUT_CLS } from "./common";
 
 type Expected = "none" | "new" | { id: string; name: string };
@@ -51,11 +52,21 @@ export function FixDialog({
 }: {
   accountId: string;
   email: { subject: string; from: string };
-  current: { matched: boolean; ruleName: string | null; ruleId?: string | null };
+  current: {
+    matched: boolean;
+    ruleName: string | null;
+    ruleId?: string | null;
+    mailGone?: boolean;
+  };
   messageId?: string | null;
   onReran?: () => void;
   onClose: () => void;
 }) {
+  const chip = currentMatchChip(
+    current.matched,
+    current.ruleName,
+    current.mailGone === true,
+  );
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [expected, setExpected] = useState<Expected | null>(null);
   const [explanation, setExplanation] = useState("");
@@ -244,13 +255,9 @@ export function FixDialog({
       <div>
         <div className="text-[11px] text-muted-foreground mb-1">Matched:</div>
         <span
-          className={`inline-block text-[10px] px-1.5 py-0.5 rounded-md ${
-            current.matched
-              ? "bg-emerald-500/15 text-emerald-400"
-              : "bg-red-500/15 text-red-400"
-          }`}
+          className={`inline-block text-[10px] px-1.5 py-0.5 rounded-md ${chip.cls}`}
         >
-          {current.matched ? current.ruleName || "Matched" : "No match found"}
+          {chip.label}
         </span>
       </div>
 
@@ -405,7 +412,12 @@ export function FixButton({
 }: {
   accountId: string;
   email: { subject: string; from: string };
-  current: { matched: boolean; ruleName: string | null; ruleId?: string | null };
+  current: {
+    matched: boolean;
+    ruleName: string | null;
+    ruleId?: string | null;
+    mailGone?: boolean;
+  };
   messageId?: string | null;
   onReran?: () => void;
 }) {

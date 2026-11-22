@@ -346,18 +346,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcparchive"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -912,13 +903,19 @@ class TestTheApproval:
         assert len([a for a in _run_activities(runs, run_id) if a.type == "prompt"]) == 1
 
     async def test_g9_an_archived_task_gets_no_second_activity_row(self, runs, events):
+        """M14. H-409 item 1 (task 748) changed the second half on purpose:
+        the archive by hand ends the open run, so the archive request closes
+        with it, and a later approve finds no request (409). A second archive
+        by hand still writes no second ``system`` row."""
         task, run_id, _ = await _requested(runs, "g9")
         by_hand = await _person(runs, MEMBER, "POST", f"/projects/tasks/{task}/archive")
         assert by_hand.status_code == 200, by_hand.text
         assert _system_rows(runs, task) == 1
+        again = await _person(runs, MEMBER, "POST", f"/projects/tasks/{task}/archive")
+        assert again.status_code == 200, again.text
+        assert _system_rows(runs, task) == 1
         r = await _answer(runs, run_id)
-        assert r.status_code == 200, r.text
-        assert r.json()["archived"] is True
+        assert r.status_code == 409, r.text
         assert _system_rows(runs, task) == 1
         assert _archived_events(events, task) == 1
 

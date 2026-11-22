@@ -143,6 +143,7 @@ from acb_common.assistant_profile import (
     FACT_KINDS,
     FACT_MAX,
     INTERVIEW_STATES,
+    LANGUAGE_NAMES,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -167,8 +168,9 @@ from acb_common.assistant_profile import (
     writes_open,
 )
 from acb_common.paging import paged
+from acb_common.settings import internal_auth_headers
 
-from acb_skills.company_search_tools import _gateway_url, _internal_token
+from acb_skills.company_search_tools import _gateway_url
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (the ``company_search_tools`` convention).
@@ -181,13 +183,30 @@ SHARED_ROOM = "A shared room cannot look up a colleague. Ask in your own chat."
 #: What the model reads when the gateway refuses the member.
 CLOSED = "The colleague lookup is not open to you."
 
-#: No tier matched.
-NOBODY = "Nobody matches. Ask for the full name or the address."
+#: No tier matched. ``{where}`` names only the places that the tool
+#: searched (CT-1 verify): the mail tier needs ``feature:email``, and the
+#: directory needs ``feature:people``.
+NOBODY = "Nobody matches in {where}. Ask for the full name or the address."
 
-#: The member lacks ``feature:people``, so only their aliases were searched.
+#: The places, by (the directory was searched, the mail was searched).
+WHERE = {
+    (True, True): "the members, the People directory or your mail",
+    (True, False): "the members or the People directory",
+    (False, True): "your saved aliases or your mail",
+    (False, False): "your saved aliases",
+}
+
+#: The first line of an answer from the member's mail (CT-1). These people
+#: are not members. The model asks, and never acts on one without a yes.
+MAIL = ("No member and no People row matches «{asked}». These people are from "
+        "your mail, not a member of Metorite. Ask the member whether one is the "
+        "person they mean, and never act on one without a yes:")
+
+#: The member lacks ``feature:people``, so the directory was not searched.
+#: It says nothing about the mail, which has its own feature (CT-1).
 NO_DIRECTORY = (
-    "Only your saved aliases were searched, because the People directory "
-    "is not open to you. Ask for the full address."
+    "The People directory is not open to you, so it was not searched. "
+    "Ask for the full address."
 )
 
 #: The words of each source in the answer.
@@ -230,7 +249,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -283,6 +302,13 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
 #: speaks to the model, so the model offers the alias in its own words.
 ALIAS_HINT = "After the member picks one, offer to save it as a name with profile_alias."
 
+#: The first line of a near answer (HRD-18a, ``chat_failure_modes.md`` F1).
+#: No name equals the input, and ``acb_common.name_match`` calls these near.
+#: The model asks, even for one name, because a near spelling is no match.
+NEAR = ("Nobody is named «{asked}». Near spellings, not matches. Ask the member "
+        "whether one of them is the person they mean, and never act on one "
+        "without a yes:")
+
 #: The route read only the first rows of a large directory (PZ-5 verify, P2),
 #: so a person may be missing. One match is then not proof of one person.
 TRUNCATED = ("The directory is large, and only part of it was searched. "
@@ -299,11 +325,34 @@ def format_answer(body: Any, asked: str) -> str:
     total = max(int(body.get("total") or 0), len(people))
     lines = [HEADER]
     if not people:
-        lines.append(NOBODY)
+        where = WHERE[(body.get("directory") is not False,
+                       body.get("mail_searched") is True)]
+        lines.append(NOBODY.format(where=where))
         if body.get("directory") is False:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
+        return "\n".join(lines)
+    if body.get("mail") is True:
+        lines.append(MAIL.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}> (from your mail, not a member of Metorite)"
+                  for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        if body.get("directory") is False:
+            lines.append(NO_DIRECTORY)
+        return "\n".join(lines)
+    if body.get("near") is True:
+        # HRD-18a: one near name asks too. It is never a "Match:".
+        lines.append(NEAR.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}>" for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        lines.append(ALIAS_HINT)
         return "\n".join(lines)
     if total == 1 and len(people) == 1:
         source = SOURCES.get(str(body.get("source") or ""), "people")
@@ -329,8 +378,10 @@ async def resolve_person(name: str) -> str:
 
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
-    in the People directory and the members together. One match: act on it. Several: ask the
-    member which one, and never guess. None: ask for the full name or the
+    in the People directory and the members together, and last in the
+    member's mail. One match: act on it. Several: ask the
+    member which one, and never guess. Near spellings only: ask the member to
+    confirm one, even when there is one. None: ask for the full name or the
     address.
 
     Args:
@@ -454,6 +505,24 @@ def _run_org() -> str:
         return ""
 
 
+def _forms_offer(area: str, profile: dict[str, Any]) -> str:
+    """The PZ-40 offer for the name question, or ``""``. It comes only for the
+    area ``name``, only where ``ADDRESS_FORMS_ORGS`` is on for the run's org,
+    and it reads the language that the profile stores, never a guess."""
+    if area != "name":
+        return ""
+    try:
+        from acb_common import honorifics
+        from acb_common.assistant_profile import address_forms_for
+
+        if not address_forms_for(_run_org()):
+            return ""
+        style = profile.get("style") if isinstance(profile.get("style"), dict) else {}
+        return " " + honorifics.offer_line(style.get("language"))
+    except Exception:
+        return ""
+
+
 def _card_channel() -> bool:
     """True when a card may ground a value or carry an offer (PZ-32).
 
@@ -524,6 +593,8 @@ ASK_ADDRESS = "It holds an address, a link or a number."
 ASK_SENSITIVE = ("It is sensitive: health, religion, caste, politics, sexuality "
                  "or money.")
 ASK_REPLACES = "It replaces a fact that you saved."
+ASK_CELEBRATIONS = "It is a birthday, a festival or a work anniversary that you ask me to greet."
+CELEBRATIONS_OFF = "Celebrations are not on for your organization. Nothing saved."
 CONFIRM_CHECK = "Check it before you approve."
 CONFIRM_DETAIL = f"{ASK_ADDRESS} {CONFIRM_CHECK}"
 
@@ -650,7 +721,7 @@ async def _write_gate() -> dict[str, str]:
     if await session_is_marked():
         raise _Refused(MARKED, "marked")
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         "X-Profile-Via": _channel(),
@@ -1172,8 +1243,43 @@ def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[A
     return [n for n in notes if isinstance(n, str) and n not in held]
 
 
+#: The member's own name of each language, for the order about the answer
+#: language (task 3131). The English name and the tag come from
+#: ``LANGUAGE_NAMES``.
+_NATIVE_NAMES: dict[str, tuple[str, ...]] = {
+    "hi": ("हिंदी", "हिन्दी"), "kn": ("ಕನ್ನಡ",), "ta": ("தமிழ்",), "te": ("తెలుగు",),
+    "mr": ("मराठी",), "bn": ("বাংলা",), "gu": ("ગુજરાતી",), "ml": ("മലയാളം",),
+}
+#: Words that make a sentence an order about answers or replies.
+_ORDER_WORDS = ("answer", "reply", "replies", "respond", "response", "जवाब", "उत्तर",
+                "ಉತ್ತರ", "பதில்", "సమాధానం", "উত্তর", "જવાબ", "ഉത്തരം")
+#: The refusal of a language mark that the member's words do not hold.
+LANGUAGE_FIXED_REFUSED = (
+    "The language mark is not saved. The member must say in this message which "
+    "language the answers use. Nothing is saved for the mark.")
+
+
+def _language_order_typed(language: str) -> bool:
+    """True when the member's typed words of this turn name *language* and
+    hold an order word about answers or replies. The words come from
+    :func:`_member_words`, the one typed-words source."""
+    words = unicodedata.normalize("NFC", _member_words()).casefold()
+    if not words.strip():
+        return False
+    tag = language.strip()
+    base = tag.lower().split("-")[0]
+    names: set[str] = set()  # never a bare tag: "hi", "as" and "or" are words
+    english = LANGUAGE_NAMES.get(base)
+    if english:
+        names.add(english.casefold())
+    names.update(n.casefold() for n in _NATIVE_NAMES.get(base, ()))
+    tokens = set(re.findall(r"[\w-]+", words))
+    named = any(n in tokens or (not n.isascii() and n in words) for n in names)
+    return named and any(w.casefold() in words for w in _ORDER_WORDS)
+
+
 @_write_tool
-async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
+async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
     """Set how to address the member, or how to answer them.
 
@@ -1181,7 +1287,8 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     to call them, how formal to be, how to greet (key ``address``: name,
     formality casual|neutral|formal, greeting none|brief|warm), or how long
     and in which language to answer (key ``style``: length
-    short|default|detailed, language as a BCP 47 tag, notes as up to 5
+    short|default|detailed, language as a BCP 47 tag, language_fixed true
+    when the member orders the answer language, notes as up to 5
     lines). Give only the fields that change. A field set to null clears it.
     A name or a note must be in the member's own words of this message. A
     name that is not may ask the member to approve it on a card. A note
@@ -1189,19 +1296,30 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     first. It answers the interview areas name (address name or formality),
     language (style language) and detail.
 
+    Key ``celebrations`` (only where it is on): birthday as
+    {"month": 3, "day": 12} with no year, festivals as a list of ids,
+    work_anniversary true or false. Never guess a festival, a religion or a
+    community. It always asks the member first.
+
     Args:
-        key: address or style.
+        key: address, style or celebrations.
         value: The fields that change, for example {"length": "short"}.
         sensitive: True for a note about health, religion, caste, politics,
             sexuality or money. The member approves it first.
     """
-    if key not in ("address", "style"):
-        raise _Refused("The key is address or style. Nothing saved.")
+    if key not in ("address", "style", "celebrations"):
+        raise _Refused("The key is address, style or celebrations. Nothing saved.")
     if not isinstance(value, dict) or not value:
         raise _Refused("Give at least one field to change. Nothing saved.")
     headers = await _write_gate()
     profile = await _profile(headers)
     prior = profile.get(key) if isinstance(profile.get(key), dict) else {}
+    if key == "style" and value.get("language_fixed") is True and not _confirming():
+        # Task 3131: the mark is an order of the member, so their own typed
+        # words of this turn must hold it. A mail or a page cannot set it.
+        language = value.get("language") or prior.get("language") or ""
+        if not language or not _language_order_typed(str(language)):
+            raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.
@@ -1210,6 +1328,18 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]
+    if key == "celebrations":
+        from acb_common.celebrations import celebrations_for, is_clear
+
+        clearing = is_clear(merged)
+        # PZ-43: with the flag off the member can still CLEAR a saved value
+        # (§7 rule 2), and can set nothing.
+        if not clearing and not celebrations_for(_run_org()):
+            raise _Refused(CELEBRATIONS_OFF)
+        if not clearing:
+            # A birthday and a festival pick are personal data (D-PZ-41).
+            # The member says yes on a card that shows the exact value.
+            reasons.append(ASK_CELEBRATIONS)
     if reasons or _confirming():
         await _cards(f"{key}: {json.dumps(merged, ensure_ascii=False, sort_keys=True)}",
                      reasons, second=ASK_NOT_TYPED in reasons)
@@ -1455,7 +1585,8 @@ async def profile_interview(action: str, area: str = "") -> str:
         if not open_:
             return NO_OPEN_AREA
         return "\n".join([INTERVIEW_HEADER, *(
-            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»" for a in open_)])
+            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»"
+            f"{_forms_offer(a, profile)}" for a in open_)])
     status, data = await _send(headers, "POST", f"/interview/{area_id}", {"state": act})
     if status == 422 and act == "asked":
         raise _Refused(NO_SITTING_TEXT)

@@ -223,6 +223,15 @@ describe("the resolved event is kept off the message and out of the panel", () =
   });
 });
 
+describe("the not-done event is kept off the message and out of the panel (task 3827)", () => {
+  // Mutation caught: the event lands on message.customEvents and draws a
+  // raw "Interactive view" fold under every refused approve.
+  it("both client lists name confirmation_not_done", () => {
+    expect(read("hooks/useAgentChat.ts")).toMatch(/HITL_CONTROL_EVENTS[\s\S]*?"confirmation_not_done"[\s\S]*?\]\)/);
+    expect(read("components/GenerativeUIPanel.tsx")).toMatch(/PANEL_HIDDEN_EVENTS[\s\S]*?"confirmation_not_done"[\s\S]*?\]\)/);
+  });
+});
+
 describe("the card under the member's eye stays put", () => {
   // Mutation caught: a pager that holds only a numeric index. A restore puts
   // a card first, and a different card slides under the cursor.

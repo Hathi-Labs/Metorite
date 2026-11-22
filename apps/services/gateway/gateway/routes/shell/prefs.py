@@ -7,8 +7,13 @@ any other key is a 422:
 =================  ==========================================================
 Key                Value
 =================  ==========================================================
-``mutes``          A list of feed kinds, 20 at most (§6.6). MD-9 reads it
-                   first. A mute changes the feed only, never the bell.
+``mutes``          A list of feed kinds, 20 at most (§6.6). The feed reads it
+                   for an org in ``MY_DAY_LEARN_ORGS`` (LOOP-4a,
+                   ``state.learned``). A mute never changes the bell, and a
+                   needs card goes to Later at worst. The reach loop, the
+                   briefs and the chat brief read the same feed, so a muted
+                   kind leaves them too. A muted needs card in Later is no
+                   interrupt and is in no brief. LOOP-5 owns the rest.
 ``open_in_app``    A list of feed kinds, 20 at most (§11.2 rule 4). MD-8
                    reads it.
 ``corrections``    The member's lines for ``decide``, newest first: 10 at
@@ -18,6 +23,10 @@ Key                Value
                    ``reach.exceptions.RULES`` each (BR-5, ``core_brief.md``
                    §6). A muted rule matches nothing. Reach reads it through
                    :func:`muted_rules`. A mute never changes the feed.
+``block_notify``   A boolean (BR-5 slice 2b-2, ``core_brief.md`` §9 Q8 "One
+                   setting"). True marks every ``block_soon`` card with
+                   ``notify_me``, so exception rule 3 may fire. Reach reads
+                   it through :func:`block_notify`. It never changes the feed.
 =================  ==========================================================
 
 A kind is a row of ``feed_rank.BASE``, the one table of the feed's kinds.
@@ -67,9 +76,9 @@ logger = logging.getLogger(__name__)
 #: The keys of ``my_day_prefs``: three of §16 MD-2d, and ``hide_push_details``
 #: (WS-66 RE-9a), a boolean.
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
-                              "push_prompt", "rule_mutes")
+                              "push_prompt", "rule_mutes", "block_notify")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
-MAX_KINDS = 30
+MAX_KINDS = 32
 #: The most lines that ``corrections`` takes.
 MAX_CORRECTIONS = 10
 #: The longest correction line.
@@ -87,9 +96,10 @@ def feed_kinds() -> frozenset[str]:
     added ``kb_gap``, 25 after WS-61 KB-9b added ``doc_needs_review``
     and ``doc_shared_with_me``, 26 after KB-9b slice 2 added
     ``source_sync_failed``, and 29 after WS-66 RM-2 added the three
-    reminder kinds, and 30 after WS-ALN ALN-2b added ``decision``, which is
-    ``MAX_KINDS``
-    (§5.9 item 10.6: a ticket that adds a kind raises the cap)."""
+    reminder kinds, 30 after WS-ALN ALN-2b added ``decision``, and 31 after
+    WS-55 EA-18c added ``agent_questions``, and 32 after AO-2 added
+    ``provider_alert``, which is ``MAX_KINDS`` (§5.9 item 10.6: a ticket
+    that adds a kind raises the cap)."""
     return frozenset(feed_rank.BASE)
 
 
@@ -201,7 +211,7 @@ def _rule_mutes(value: Any) -> list[str]:
 
 _CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections,
           "hide_push_details": _flag, "push_prompt": _push_prompt,
-          "rule_mutes": _rule_mutes}
+          "rule_mutes": _rule_mutes, "block_notify": _flag}
 
 
 class PrefPut(BaseModel):
@@ -210,7 +220,7 @@ class PrefPut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: Literal["mutes", "open_in_app", "corrections", "hide_push_details", "push_prompt",
-                 "rule_mutes"]
+                 "rule_mutes", "block_notify"]
     value: Any
 
     @model_validator(mode="after")
@@ -243,8 +253,9 @@ def stored_prefs(raw: Any) -> dict[str, Any]:
     if isinstance(v, list):
         ids = rule_ids()
         out["rule_mutes"] = _unique([x for x in v if isinstance(x, str) and x in ids])
-    if isinstance(raw.get("hide_push_details"), bool):
-        out["hide_push_details"] = raw["hide_push_details"]
+    for key in ("hide_push_details", "block_notify"):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
     if isinstance(raw.get("push_prompt"), dict):
         # A stored object that fails the check drops from the answer, as a
         # stale kind does. The member sees the sheet again.
@@ -349,6 +360,35 @@ async def muted_rules(db: Any, member: str) -> frozenset[str]:
     rows = (await db.execute(text(_MUTED_ANY_CASE_SQL.format(org=_BOUND_ORG)),
                              {"uid": member})).all()
     return frozenset(str(r[0]) for r in rows) & rule_ids()
+
+
+#: The ``block_notify`` switch over EVERY spelling of the address in the
+#: BOUND tenant (BR-5 slice 2b-2). It FAILS CLOSED, unlike
+#: ``_HIDE_ANY_CASE_SQL``: ``true`` here SENDS an interrupt, so a union of
+#: ``true`` would keep the switch on after the member turned it off under
+#: another spelling. ``bool_and`` runs over the rows that hold the key only.
+#: The switch is on when each such row holds JSON ``true``. One row with any
+#: other value turns it off. No row with the key is off.
+_BLOCK_NOTIFY_ANY_CASE_SQL = (
+    "SELECT COALESCE(bool_and("
+    "my_day_prefs -> 'block_notify' = CAST('true' AS jsonb)) "
+    "FILTER (WHERE my_day_prefs -> 'block_notify' IS NOT NULL), false) "
+    "FROM user_settings "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
+)
+
+
+async def block_notify(db: Any, member: str) -> bool:
+    """True when *member* asked to be told before each block starts
+    (``block_notify``). Each spelling of the address that holds the key must
+    hold ``true``, so one ``false`` under any spelling is off. Read on *db*, a
+    session that the caller bound to the tenant. A read error raises: the
+    caller logs it and counts the setting as off."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    return bool((await db.execute(text(_BLOCK_NOTIFY_ANY_CASE_SQL.format(org=_BOUND_ORG)),
+                                  {"uid": member})).scalar())
 
 
 async def _read(db: Any, uid: str) -> Any:

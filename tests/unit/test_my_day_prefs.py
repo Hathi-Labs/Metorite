@@ -113,7 +113,8 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details", "push_prompt", "rule_mutes")
+                                   "hide_push_details", "push_prompt", "rule_mutes",
+                                   "block_notify")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -216,7 +217,8 @@ class TestTheLimits:
         # added `kb_gap`, 25 since WS-61 KB-9b added `doc_needs_review`
         # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
         # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
-        assert prefs.MAX_KINDS == 30 == len(prefs.feed_kinds())
+        # 32 since AO-2 added `provider_alert`.
+        assert prefs.MAX_KINDS == 32 == len(prefs.feed_kinds())
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})
