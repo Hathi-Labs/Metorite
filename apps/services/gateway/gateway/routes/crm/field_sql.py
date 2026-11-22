@@ -1088,7 +1088,7 @@ def check_split(scope: FieldScope, names: str | None) -> list[FieldRef]:
     ones. A key may be a sum of fields (CRM-Q33), as ``field`` takes."""
     keys = [k.strip() for k in str(names or "").split(SPLIT_JOIN)]
     if (any(not k for k in keys) or not SPLIT_MIN <= len(keys) <= SPLIT_MAX
-            or len(set(keys)) != len(keys)):
+            or len({_real_key(scope, k) for k in keys}) != len(keys)):
         raise _refuse(
             f"'fields' names {SPLIT_MIN} to {SPLIT_MAX} distinct number fields, with a "
             "comma between them. For one field, give field=<key>.",
@@ -1336,6 +1336,15 @@ def _one_value_words(scope: FieldScope, key: str, native: bool = False) -> str:
     return f"To match one value, give {scope.filter_word(key)}=<value>."
 
 
+def _real_key(scope: FieldScope, key: str) -> str:
+    """Task 3864: the key of the field that *key* names, by key or by ONE
+    label. A key word, a sum and an unknown name come back as they are."""
+    if key in scope.fields or key in KEY_WORDS:
+        return key
+    found = scope._by_label(key) if scope.column == MODULE_COLUMN else None
+    return found.key if found is not None else key
+
+
 async def admit_text_numbers(
     db: Any, scope: FieldScope, keys: Sequence[str],
     measured: Collection[str] | None = None,
@@ -1363,6 +1372,13 @@ async def admit_text_numbers(
     the ``eq`` leaf, not ``field.<key>``."""
     if scope.column != MODULE_COLUMN:
         return scope, {}
+    # Task 3864: a measure written as a LABEL reads the field of that label,
+    # so the text-number pass sees the real key before `check_measure` does.
+    real = {k: _real_key(scope, k) for k in keys}
+    keys = list(dict.fromkeys(real.values()))
+    if measured is not None:
+        measured = {real.get(k, _real_key(scope, k)) for k in measured}
+    queried = {real.get(k, _real_key(scope, k)) for k in queried}
     texts = [
         k for k in keys
         if k not in KEY_WORDS and (ref := scope.fields.get(k)) is not None

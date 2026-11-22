@@ -803,15 +803,6 @@ def _fold_name(text: Any) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
 
 
-def _module_word(entity: str, refusal: GatewayRefusal) -> str:
-    """The word of a record type that may name a module, or the *refusal* of
-    the core types when its text cannot be a module name (it would walk a path)."""
-    word = str(entity or "").strip()
-    if not word or not _MODULE_TEXT.match(word):
-        raise refusal
-    return word
-
-
 def _not_a_module(refusal: GatewayRefusal, exc: GatewayRefusal) -> GatewayRefusal:
     """Task 3864: the refusal for a word that no ONE module owns. It keeps
     the words of the core types, then the route's own: the close module
@@ -1139,7 +1130,10 @@ async def _list_as_module(
     gateway resolves the word as a module (``modules.resolve_module``, the
     one resolver). ONE module serves it, and the first line says which. Else
     the refusal stands, with the route's close module names."""
-    mod = _module_word(entity, refusal)
+    try:
+        mod = _module_name(entity)  # strips 'module:' once, checks the rule
+    except GatewayRefusal:
+        raise refusal from None
     given = sorted(k for k, v in unused.items() if v not in (None, "", {}))
     if given:
         # A filter is never dropped in silence.
@@ -1198,7 +1192,10 @@ async def crm_get_record(entity: str, record_id: str) -> str:
         slug = _entity_slug(entity)
     except GatewayRefusal as refusal:
         # Task 3864: a module named by its name or label serves the read.
-        mod = _module_word(entity, refusal)
+        try:
+            mod = _module_name(entity)  # strips 'module:' once, checks the rule
+        except GatewayRefusal:
+            raise refusal from None
         try:
             return (f"{entity!r} is not a core record type, so this is the module {mod}.\n"
                     + await _module_record_answer(mod, _record_uuid(record_id), 1))
@@ -1297,23 +1294,57 @@ SCAN_HINT = ("Give a key to crm_aggregate with entity 'module:<api_name>', in fi
              "group_field or field_filters.")
 
 
+_SCAN_WORD = re.compile(r"[a-z0-9]+")
+_SCAN_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+#: The shortest word that matches as the start of a longer one (the gateway's
+#: ``fields.PREFIX_MIN``).
+_SCAN_PREFIX_MIN = 3
+
+
+def _scan_words(text: Any) -> list[str]:
+    """The lower-case words of *text*: split at a space, ``_``, ``-`` and a
+    change to upper case. The same rule as the gateway's ``terms.words``."""
+    return _SCAN_WORD.findall(_SCAN_CAMEL.sub(" ", str(text or "")).lower())
+
+
+def _scan_match(wanted: list[str], label: Any, key: Any) -> bool:
+    """True when each word of *wanted* is a word of the label or key, or one
+    starts the other and the shorter has 3 letters or more (the gateway's
+    ``fields.field_matches``)."""
+    found = [*_scan_words(label), *_scan_words(key)]
+
+    def hit(word: str) -> bool:
+        for w in found:
+            short, long = sorted((w, word), key=len)
+            if w == word or (len(short) >= _SCAN_PREFIX_MIN and long.startswith(short)):
+                return True
+        return False
+
+    return bool(wanted) and all(hit(w) for w in wanted)
+
+
 async def _field_scan(query: str) -> str:
     """The fields of every mirrored module and core type whose key or label
-    holds *query* (case-insensitive), one line each: ``module · key (label,
-    type)``. It reads ``GET /crm/modules`` and ``GET /crm/fields/{entity}``,
-    as the member, so the tenant session and the grants are the route's. It
-    serves an org with the field search off. A read that fails drops its
-    module and the answer says so."""
+    holds each word of *query* (:func:`_scan_match`), one line each: ``module
+    · key (label, type)``. It reads ``GET /crm/modules`` and ``GET
+    /crm/fields/{entity}``, as the member, so the tenant session and the
+    grants are the route's. It serves an org with the field search off. A
+    read that fails drops its part, and the answer says so. A scan reads at
+    most :data:`SCAN_MODULES` modules, and the answer says when it read fewer."""
     import asyncio
 
-    needle = query.casefold()
+    wanted = list(dict.fromkeys(_scan_words(query)))
+    failed: list[str] = []
     try:
         mods = await _get("/crm/modules") or []
     except (_GatewayError, _Refused, httpx.HTTPError, TimeoutError):
         mods = []
+        failed.append("the module list")
     names = [str(m.get("api_name")) for m in mods
              if isinstance(m, dict) and _MODULE_NAME.match(str(m.get("api_name") or ""))]
     slugs = [*ENTITY_LABELS, *(MODULE_PREFIX + n for n in names[:SCAN_MODULES])]
+    cut = (f"Read {SCAN_MODULES} of {len(names)} modules. Give entity "
+           "'module:<api_name>' for the rest." if len(names) > SCAN_MODULES else "")
     gate = asyncio.Semaphore(6)
 
     async def read(slug: str) -> tuple[str, list[Any] | None]:
@@ -1324,28 +1355,27 @@ async def _field_scan(query: str) -> str:
                 return slug, None
 
     hits: list[str] = []
-    failed: list[str] = []
     for slug, defs in await asyncio.gather(*(read(s) for s in slugs)):
         if defs is None:
             failed.append(slug)
             continue
         for d in defs:
             if (not isinstance(d, dict) or d.get("is_system") or d.get("retired")
-                    or (needle not in str(d.get("key") or "").casefold()
-                        and needle not in str(d.get("label") or "").casefold())):
+                    or not _scan_match(wanted, d.get("label"), d.get("key"))):
                 continue
             where = slug[len(MODULE_PREFIX):] if slug.startswith(MODULE_PREFIX) else slug
             hits.append(f"- {where} · {d.get('key')} ({d.get('label')}, {d.get('type')})")
+    tail = ([f"Not read: {', '.join(failed)}."] if failed else []) + ([cut] if cut else [])
     if not hits:
-        return (f"No field of any module matches '{query}'. Try other words, or call "
-                "crm_list_modules and then crm_list_fields with entity 'module:<api_name>'."
-                + (f" Not read: {', '.join(failed)}." if failed else ""))
+        return " ".join([
+            f"No field of any module matches '{query}'. Try other words, or call "
+            "crm_list_modules and then crm_list_fields with entity 'module:<api_name>'.",
+            *tail])
     lines = [f"Fields that match '{query}' ({len(hits)}), as module · key (label, type):",
              *hits[:SCAN_LINES]]
     if len(hits) > SCAN_LINES:
         lines.append(f"{len(hits) - SCAN_LINES} more. Give more words to narrow it.")
-    if failed:
-        lines.append(f"Not read: {', '.join(failed)}.")
+    lines.extend(tail)
     lines.append(SCAN_HINT)
     return "\n".join(lines)
 

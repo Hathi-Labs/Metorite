@@ -347,3 +347,127 @@ def test_an_aggregate_on_a_label_says_which_module_served(monkeypatch) -> None:
     fake_gateway(T, monkeypatch, answer, client_class=_Routed)
     out = asyncio.run(T.crm_aggregate("module:Collection"))
     assert "Used module Payment_Received for 'Collection'." in out
+
+
+# ── fix round: scan words, notes, module: prefix, label of a text number ────
+
+
+def _scan_gateway(monkeypatch, mods, defs) -> None:
+    def answer(call: dict) -> Any:
+        path = call["path"]
+        if path == T.FIELDS_SEARCH_PATH:
+            return (404, {"detail": fields._find_off().detail})
+        if path == "/crm/modules":
+            return mods
+        return defs.get(path, [])
+
+    fake_gateway(T, monkeypatch, answer, client_class=_Routed)
+
+
+_RENT = [{"key": "Rent_Basic_Amount", "label": "Rent Basic", "type": "currency"},
+         {"key": "CapexAmount", "label": "Capex Total", "type": "currency"}]
+
+
+@pytest.mark.parametrize("query", ["Rent_Basic_Amount", "rent basic", "capex amount", "CAPEX"])
+def test_the_scan_matches_words_not_one_raw_substring(monkeypatch, query) -> None:
+    _scan_gateway(monkeypatch, _MODULES[:1], {"/crm/fields/module:Invoices": _RENT})
+    assert "- Invoices · " in asyncio.run(T.crm_list_fields(query=query))
+
+
+def test_the_scan_needs_every_word(monkeypatch) -> None:
+    _scan_gateway(monkeypatch, _MODULES[:1], {"/crm/fields/module:Invoices": _RENT})
+    assert "No field of any module matches" in asyncio.run(
+        T.crm_list_fields(query="rent zebra"))
+
+
+def test_a_failed_module_list_is_named_in_both_answers(monkeypatch) -> None:
+    def answer(call: dict) -> Any:
+        if call["path"] == T.FIELDS_SEARCH_PATH:
+            return (404, {"detail": fields._find_off().detail})
+        if call["path"] == "/crm/modules":
+            return (500, {"detail": "boom"})
+        return [{"key": "cf_capex", "label": "Capex", "type": "text"}] if (
+            call["path"] == "/crm/fields/deals") else []
+
+    fake_gateway(T, monkeypatch, answer, client_class=_Routed)
+    hit = asyncio.run(T.crm_list_fields(query="capex"))
+    miss = asyncio.run(T.crm_list_fields(query="zebra"))
+    assert "Not read: the module list." in hit and "Not read: the module list." in miss
+
+
+def test_a_http_error_drops_one_part_and_names_it(monkeypatch) -> None:
+    import httpx
+
+    class Boom(_Routed):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            if url.endswith("/crm/fields/leads"):
+                raise httpx.ConnectError("down")
+            return await super().request(method, url, **kwargs)
+
+    def answer(call: dict) -> Any:
+        if call["path"] == T.FIELDS_SEARCH_PATH:
+            return (404, {"detail": fields._find_off().detail})
+        return [] if call["path"] == "/crm/modules" else [
+            {"key": "cf_capex", "label": "Capex", "type": "text"}]
+
+    fake_gateway(T, monkeypatch, answer, client_class=Boom)
+    out = asyncio.run(T.crm_list_fields(query="capex"))
+    assert "Not read: leads." in out and "- deals · cf_capex" in out
+
+
+def test_a_cut_module_list_says_how_many_were_read(monkeypatch) -> None:
+    many = [{"api_name": f"M{i}", "label": f"M{i}"} for i in range(T.SCAN_MODULES + 5)]
+    _scan_gateway(monkeypatch, many, {})
+    miss = asyncio.run(T.crm_list_fields(query="zebra"))
+    assert f"Read {T.SCAN_MODULES} of {T.SCAN_MODULES + 5} modules" in miss
+    _scan_gateway(monkeypatch, many, {"/crm/fields/module:M0": _RENT})
+    assert f"Read {T.SCAN_MODULES} of {T.SCAN_MODULES + 5} modules" in asyncio.run(
+        T.crm_list_fields(query="capex"))
+
+
+def test_the_module_prefix_is_a_module_word_for_a_record_tool(monkeypatch) -> None:
+    calls = _gateway(monkeypatch)
+    out = asyncio.run(T.crm_list_records("module:Invoices"))
+    assert "INV-1" in out and any(c["path"].startswith("/crm/modules/Invoices") for c in calls)
+    served: list[str] = []
+
+    async def fake(mod: str, record: str, page: int) -> str:
+        served.append(mod)
+        return "RECORD"
+
+    monkeypatch.setattr(T, "_module_record_answer", fake)
+    asyncio.run(T.crm_get_record("module:Invoices", "0f8fad5b-d9cb-469f-a165-70867728950e"))
+    assert served == ["Invoices"]
+    assert asyncio.run(T.crm_list_records("module:../x")).startswith(
+        "Refused: Unknown CRM record type")
+
+
+def test_a_label_of_a_text_number_field_is_admitted_and_summed() -> None:
+    ref = field_sql.FieldRef
+    scope = field_sql.FieldScope(column="fields", owner="module:Payment_Made", fields={
+        "Rent": ref(key="Rent", type="text", label="Rent Basic Amount"),
+        "Total": ref(key="Total", type="currency", label="Total")})
+
+    class DB:
+        async def execute(self, *a: Any, **k: Any) -> Any:
+            class R:
+                def fetchall(self) -> list:
+                    return [(0, 10, 0, 0, None, None)]
+            return R()
+
+    import gateway.routes.crm.core as core
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(core, "current_tenant", lambda: "00000000-0000-0000-0000-000000000001")
+    try:
+        keys = field_sql.text_number_keys("sum", "Rent Basic Amount", None, [])
+        s2, counts = asyncio.run(field_sql.admit_text_numbers(DB(), scope, keys, measured=keys))
+    finally:
+        monkey.undo()
+    got = field_sql.check_measure(s2, "Rent Basic Amount")
+    assert got.key == "Rent" and got.text_number and "Rent" in counts
+
+
+def test_a_split_of_one_field_by_key_and_label_is_not_distinct() -> None:
+    with pytest.raises(HTTPException):
+        field_sql.check_split(_scope(), "Rent,Rent Basic Amount")
