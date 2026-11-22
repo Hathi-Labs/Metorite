@@ -140,7 +140,7 @@ Two facts are not in the repo. The production flag values are not in the repo. S
 Two Metorite tasks come before the slices that name them. Neither is a slice of this spec.
 
 - **#1443, nine small defects from the 2026-11-02 audit.** Risk tier STANDARD. Item 1 comes first. The items are in §6.1. CRM-M3 and CRM-M5 wait for items 1, 5, 6 and 7. CRM-M7 waits for items 2, 3 and 4.
-- **#1444, an outside MCP result carries no untrusted mark before it reaches a write.** Risk tier HIGH, "Verify first". **CRM-M9 cannot start until #1444 is closed.** The audit found no untrusted mark in `apps/services/orchestrator/orchestrator/_maf_mcp.py`. With packs off, a result reaches `crm-assistant` as text. The confirm card is then the only guard between third-party text and a CRM write. Its fence is a test that an instruction inside an MCP result cannot cause a write without its card.
+- **#1444, an outside MCP result carries no untrusted mark before it reaches a write.** Risk tier HIGH, "Verify first". **CRM-M9 cannot start until #1444 is closed.** The audit found no untrusted mark in `apps/services/orchestrator/orchestrator/_maf_mcp.py`. With packs off, a result reaches `crm-assistant` as text. The confirm card is then the only guard between third-party text and a CRM write. Its fence is a test that an instruction inside an MCP result cannot cause a write without its card. **BUILT, 2026-11-21:** each MCP result of a native MAF run (`_maf_mcp.py`) reaches the model inside the one untrusted frame (`chat_connected_systems.md` §3.5). Fence: `test_mcp_result_untrusted_frame.py`, which holds the write-card test.
 
 ### 6.1 The nine defects
 
