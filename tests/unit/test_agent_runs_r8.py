@@ -2046,7 +2046,7 @@ class TestChildRunsBesideTheRunRoutes:
         own (§3.12.7 rule 8: a person steers the parent). Each route loads a
         task run, so a child id is 404, as an unknown id is."""
         async with _session(w.p) as call:
-            rid, child = await self._parent_and_child(w, call)
+            _rid, child = await self._parent_and_child(w, call)
             answers = [
                 await _act(call, w.agent_a, child, type="thought", body="hi"),
                 await _act(call, w.a, child, type="prompt", body="stop"),
