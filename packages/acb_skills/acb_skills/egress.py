@@ -133,6 +133,7 @@ __all__ = [
     "mark_untrusted_answer",
     "mark_untrusted_session",
     "marked_sessions",
+    "mcp_mail_precedence_on",
     "no_egress_for_this_run",
     "offer_continue",
     "read_untrusted_answer",
@@ -1877,6 +1878,29 @@ def held_card_writes_on(org: object = None) -> bool:
         except Exception:
             return False
     return str(org or "").strip().lower() in entries
+
+
+def mcp_mail_precedence_on(org: object) -> bool:
+    """True when ``MCP_MAIL_PRECEDENCE_ORGS`` names organization *org* (CSY-4).
+
+    A comma list of organization ids, or ``*`` for each one. Empty, the
+    default, means off. *org* is the bound tenant of the run, never a request
+    field (R5). No org reads as off. It fails closed: a fault of the settings
+    read reads as off, and off is the choice of main. A non-empty value is
+    owner-only (``work_plan.md`` §6 D4). Spec: ``chat_connected_systems.md``
+    §3.4. Fence: ``tests/unit/test_pack_choose_server_words.py``.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "mcp_mail_precedence_orgs", "") or "")
+    except Exception:
+        return False
+    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    want = str(org or "").strip().lower()
+    if not entries or not want:
+        return False
+    return "*" in entries or want in entries
 
 
 async def chat_is_held(ctx: Mapping[str, Any] | None = None) -> bool:
