@@ -267,14 +267,15 @@ const ASYNC_CASES = [
     } finally { edge.server.close() }
   }],
 
-  ['live: the tasks that this member\'s sessions hold are named', async () => {
+  ['live: the tasks that a quiet session of this member held are named', async () => {
     const edge = await fakeEdge(goodEdge(ROWS))
     try {
       const r = await runLive(edge)
       const none = await fakeEdge(goodEdge([{ task_number: 9, reason: 'assigned', title: 'x' }]))
       const r2 = await runLive(none)
       none.server.close()
-      return r.context.includes('Held by your sessions: #41.') && r2.context.includes('Your sessions hold no task.')
+      // With no such row, the hook says nothing: my_work cannot prove that no task is held.
+      return r.context.includes('Held by a quiet session of yours: #41.') && !/Held by|hold no task/.test(r2.context)
     } finally { edge.server.close() }
   }],
 

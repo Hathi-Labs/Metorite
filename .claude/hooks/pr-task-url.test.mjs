@@ -59,6 +59,30 @@ const CASES = [
   ['--body-file with a set variable is expanded', () => silent(
     run('gh pr create --body-file "$PRDIR/with.md"', { env: { PRDIR: dir } }))],
 
+  // A command that only NAMES gh pr create is not one. In block mode it would stop
+  // an agent from committing a message that mentions it.
+  ['a commit message that names gh pr create is silent, even in block mode', () => silent(run(
+    'git commit -m "the hook reminds a gh pr create with no task URL"', { env: { TASK_URL_BLOCK: '1' } }))],
+  ['an echo that names it is silent', () => silent(run('echo "run gh pr create later"', { env: { TASK_URL_BLOCK: '1' } }))],
+  ['a heredoc that names it is silent', () => silent(run(
+    'cat <<EOF > notes.md\nthen run gh pr create\nEOF', { env: { TASK_URL_BLOCK: '1' } }))],
+  ['gh pr create --help and --web open nothing, so they are silent', () =>
+    silent(run('gh pr create --help', { env: { TASK_URL_BLOCK: '1' } }))
+    && silent(run('gh pr create --web --title x', { env: { TASK_URL_BLOCK: '1' } }))],
+  ['VAR=value before the command still counts', () => warned(run('GH_TOKEN=x gh pr create --title t --body b'))],
+
+  // A -F of another command must not become the body file, and a device or a
+  // pipe must not stall the call.
+  ['a -F of an earlier command is not the body file', () => warned(run('git log -F foo; gh pr create --body x'))],
+  ['--body-file /dev/stdin is silent, since the hook cannot see it', () =>
+    silent(run('echo body | gh pr create --body-file /dev/stdin', { env: { TASK_URL_BLOCK: '1' } }))],
+  ['--body-file /dev/zero does not hang', () => {
+    const t0 = Date.now()
+    const r = run('gh pr create --body-file /dev/zero')
+    return silent(r) && Date.now() - t0 < 5000
+  }],
+  ['a directory as body file is silent', () => silent(run('gh pr create --body-file .'))],
+
   // The hook cannot prove an absence it cannot see.
   ['a body file that cannot be read → silent, never a false alarm', () => silent(run('gh pr create --body-file nope.md'))],
   ['--body-file - (stdin) → silent', () => silent(run('gh pr create --body-file -'))],

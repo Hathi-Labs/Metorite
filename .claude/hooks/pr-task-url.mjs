@@ -27,13 +27,19 @@
  * not run. The line is in the pull request that added this file.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 const TASK_URL = /app\.metorite\.com\/projects\?task=[0-9a-f-]{8,}/i
-// `gh pr create` as a command: at the start, or after a separator or a bracket.
-const PR_CREATE = /(?:^|[\s;&|(])gh\s+pr\s+create(?=\s|$)/
-const BODY_FILE = /(?:--body-file|-F)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/
+// `gh pr create` as a COMMAND: at the start of the text, or of a segment (after
+// `;`, `&`, `|`, a newline or a bracket), with optional VAR=value words before it.
+// It runs on the command with quoted text and heredocs blanked (see `blank`), so
+// a commit message or an echo that only names the command does not match.
+const PR_CREATE = /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*gh\s+pr\s+create(?=\s|$)/
+const BODY_FILE = /(?:^|\s)(?:--body-file|-F)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/
+// Calls that open nothing: help, and the browser form.
+const NO_PR = /(?:^|\s)(?:--help|-h|--web|-w)(?=\s|$)/
+const MAX_BODY_BYTES = 1_000_000
 
 const REMINDER =
   'This pull request has no Metorite task URL in its body (CLAUDE.md §4, step 4). ' +
@@ -43,6 +49,17 @@ const REMINDER =
 
 function done() {
   process.exit(0)
+}
+
+/**
+ * The command with the text of quotes and heredocs blanked, and the same length,
+ * so an index in one is an index in the other.
+ */
+function blank(command) {
+  const fill = (m) => m[0] + ' '.repeat(Math.max(0, m.length - 2)) + m[m.length - 1]
+  return command
+    .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s|$)/g, (m) => ' '.repeat(m.length))
+    .replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, fill)
 }
 
 /** Replace $NAME and ${NAME} that are set. An unset one stays, and the read fails. */
@@ -56,8 +73,14 @@ function readBodyFile(command, cwd) {
   if (!m) return undefined // no body file named
   const named = expand(m[1] || m[2] || m[3] || '')
   if (!named || named === '-' || /\$/.test(named)) return null
+  // A pipe, a device or a huge file must never stall the call: only a plain,
+  // small file is read. /dev/stdin is the hook's own input, already read.
+  if (/^\/(?:dev|proc)\//.test(named)) return null
   try {
-    return readFileSync(path.resolve(cwd || process.cwd(), named), 'utf-8')
+    const file = path.resolve(cwd || process.cwd(), named)
+    const st = statSync(file)
+    if (!st.isFile() || st.size > MAX_BODY_BYTES) return null
+    return readFileSync(file, 'utf-8')
   } catch {
     return null
   }
@@ -78,11 +101,19 @@ try {
 }
 
 const command = input?.tool_input?.command
-if (typeof command !== 'string' || !PR_CREATE.test(command)) done()
+const blanked = typeof command === 'string' ? blank(command) : ''
+const found = PR_CREATE.exec(blanked)
+if (!found) done()
 
 try {
+  // The one call: from `gh` to the next separator. Its flags are read from the
+  // real text, because a body-file path may be quoted.
+  const start = found.index + found[0].search(/gh\s+pr\s+create/)
+  const stop = blanked.slice(start).search(/[;&|\n]/)
+  const call = command.slice(start, stop === -1 ? undefined : start + stop)
+  if (NO_PR.test(blank(call))) done()
   if (TASK_URL.test(command)) done()
-  const file = readBodyFile(command, input.cwd)
+  const file = readBodyFile(call, input.cwd)
   if (file === null) done() // named, and unreadable: the hook cannot see the body
   if (typeof file === 'string' && TASK_URL.test(file)) done()
 } catch {
