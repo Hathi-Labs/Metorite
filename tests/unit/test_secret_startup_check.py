@@ -136,15 +136,20 @@ def test_a_summary_line_is_always_logged():
 
 
 def test_shadow_never_raises_on_a_bug_of_the_check(monkeypatch):
+    """The failed line names the error type only. Its text can hold a value."""
     from acb_auth import secret_check
 
+    leaked = GOOD["acb_master_key"]
+
     def boom(*_a, **_k):
-        raise KeyError("a bug")
+        raise KeyError(leaked)
 
     monkeypatch.setattr(secret_check, "unusable_secrets", boom)
     with structlog.testing.capture_logs() as logs:
         assert secret_check.check_startup_secrets("gateway", _settings()) == []
-    assert _events(logs, "secrets.startup_check_failed")
+    failed = _events(logs, "secrets.startup_check_failed")
+    assert [e["error"] for e in failed] == ["KeyError"]
+    assert leaked not in repr(logs)
 
 
 def test_a_settings_load_that_fails_never_stops_the_unit(monkeypatch):
@@ -186,13 +191,20 @@ def test_enforce_starts_when_every_secret_is_usable():
 def test_enforce_fails_closed_on_a_bug_of_the_check(monkeypatch):
     from acb_auth import secret_check
 
+    leaked = GOOD["acb_master_key"]
+
     def boom(*_a, **_k):
-        raise KeyError("a bug")
+        raise KeyError(leaked)
 
     monkeypatch.setattr(secret_check, "unusable_secrets", boom)
-    with pytest.raises(secret_check.SecretsUnusable):
+    with (structlog.testing.capture_logs() as logs,
+          pytest.raises(secret_check.SecretsUnusable) as caught):
         secret_check.check_startup_secrets(
             "gateway", _settings(secret_startup_check="enforce"))
+    # The refusal hides the bug's text: no cause, and the context is suppressed.
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+    assert leaked not in repr(logs) + str(caught.value) + repr(caught.value.args)
 
 
 # ── Dev never refuses ─────────────────────────────────────────────────────────
