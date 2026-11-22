@@ -99,7 +99,10 @@ def test_the_scan_is_capped_with_a_more_line(monkeypatch) -> None:
     fake_gateway(T, monkeypatch, answer, client_class=_Routed)
     out = asyncio.run(T.crm_list_fields(query="capex"))
     assert len([ln for ln in out.splitlines() if ln.startswith("- ")]) == T.SCAN_LINES
-    assert "15 more." in out
+    assert "Showing 1-40 of 55" in out and "page=2" in out
+    page2 = asyncio.run(T.crm_list_fields(query="capex", page=2))
+    assert len([ln for ln in page2.splitlines() if ln.startswith("- ")]) == 15
+    assert "This is the last page" in page2
 
 
 def test_a_scan_with_no_hit_says_so(monkeypatch) -> None:
@@ -415,14 +418,12 @@ def test_a_http_error_drops_one_part_and_names_it(monkeypatch) -> None:
     assert "Not read: leads." in out and "- deals · cf_capex" in out
 
 
-def test_a_cut_module_list_says_how_many_were_read(monkeypatch) -> None:
-    many = [{"api_name": f"M{i}", "label": f"M{i}"} for i in range(T.SCAN_MODULES + 5)]
-    _scan_gateway(monkeypatch, many, {})
-    miss = asyncio.run(T.crm_list_fields(query="zebra"))
-    assert f"Read {T.SCAN_MODULES} of {T.SCAN_MODULES + 5} modules" in miss
-    _scan_gateway(monkeypatch, many, {"/crm/fields/module:M0": _RENT})
-    assert f"Read {T.SCAN_MODULES} of {T.SCAN_MODULES + 5} modules" in asyncio.run(
-        T.crm_list_fields(query="capex"))
+def test_a_long_module_list_is_read_whole(monkeypatch) -> None:
+    """No module is left unread, so a field of the 65th module is found."""
+    many = [{"api_name": f"M{i}", "label": f"M{i}"} for i in range(65)]
+    _scan_gateway(monkeypatch, many, {"/crm/fields/module:M64": _RENT})
+    out = asyncio.run(T.crm_list_fields(query="capex"))
+    assert "- M64 · CapexAmount" in out and "Read 60" not in out
 
 
 def test_the_module_prefix_is_a_module_word_for_a_record_tool(monkeypatch) -> None:

@@ -1241,7 +1241,7 @@ async def crm_list_fields(entity: str = "", page: int = 1, query: str | None = N
             return found
         if not str(entity or "").strip():
             # Task 3864: the field search is off for this org, so scan.
-            return await _field_scan(wanted)
+            return await _field_scan(wanted, page)
     elif not str(entity or "").strip():
         raise GatewayRefusal(
             "crm_list_fields needs an entity or a query. Give entity "
@@ -1285,9 +1285,8 @@ async def crm_list_fields(entity: str = "", page: int = 1, query: str | None = N
     return "\n".join(lines)
 
 
-#: Task 3864: the most hit lines, and the most modules, of a field scan.
+#: Task 3864: the hit lines of one page of a field scan.
 SCAN_LINES = 40
-SCAN_MODULES = 60
 #: The last line of a scan. It names no filter word: the words of a filter
 #: (``.has``, ``.in``) belong to an org with the module search on.
 SCAN_HINT = ("Give a key to crm_aggregate with entity 'module:<api_name>', in field, "
@@ -1323,14 +1322,14 @@ def _scan_match(wanted: list[str], label: Any, key: Any) -> bool:
     return bool(wanted) and all(hit(w) for w in wanted)
 
 
-async def _field_scan(query: str) -> str:
+async def _field_scan(query: str, page: int | None = 1) -> str:
     """The fields of every mirrored module and core type whose key or label
     holds each word of *query* (:func:`_scan_match`), one line each: ``module
     · key (label, type)``. It reads ``GET /crm/modules`` and ``GET
     /crm/fields/{entity}``, as the member, so the tenant session and the
     grants are the route's. It serves an org with the field search off. A
-    read that fails drops its part, and the answer says so. A scan reads at
-    most :data:`SCAN_MODULES` modules, and the answer says when it read fewer."""
+    read that fails drops its part, and the answer says so. The hit lines
+    come :data:`SCAN_LINES` to a page, with the total and the next page."""
     import asyncio
 
     wanted = list(dict.fromkeys(_scan_words(query)))
@@ -1348,9 +1347,10 @@ async def _field_scan(query: str) -> str:
         failed.append("the module list")
     names = [str(m.get("api_name")) for m in mods
              if isinstance(m, dict) and _MODULE_NAME.match(str(m.get("api_name") or ""))]
-    slugs = [*ENTITY_LABELS, *(MODULE_PREFIX + n for n in names[:SCAN_MODULES])]
-    cut = (f"Read {SCAN_MODULES} of {len(names)} modules. Give entity "
-           "'module:<api_name>' for the rest." if len(names) > SCAN_MODULES else "")
+    # Every module is read: a read budget that left some unread would lose
+    # fields, and the paging fence allows no such cut. The gate bounds the
+    # reads in flight, and the deadline of the tool call bounds the time.
+    slugs = [*ENTITY_LABELS, *(MODULE_PREFIX + n for n in names)]
     gate = asyncio.Semaphore(6)
 
     async def read(slug: str) -> tuple[str, list[Any] | None]:
@@ -1371,16 +1371,18 @@ async def _field_scan(query: str) -> str:
                 continue
             where = slug[len(MODULE_PREFIX):] if slug.startswith(MODULE_PREFIX) else slug
             hits.append(f"- {where} · {d.get('key')} ({d.get('label')}, {d.get('type')})")
-    tail = ([f"Not read: {', '.join(failed)}."] if failed else []) + ([cut] if cut else [])
+    tail = [f"Not read: {', '.join(failed)}."] if failed else []
     if not hits:
         return " ".join([
             f"No field of any module matches '{query}'. Try other words, or call "
             "crm_list_modules and then crm_list_fields with entity 'module:<api_name>'.",
             *tail])
+    shown = paged(hits, (_page(page) - 1) * SCAN_LINES, SCAN_LINES, default=SCAN_LINES,
+                  maximum=SCAN_LINES, noun="fields", page_size=SCAN_LINES)
     lines = [f"Fields that match '{query}' ({len(hits)}), as module · key (label, type):",
-             *hits[:SCAN_LINES]]
-    if len(hits) > SCAN_LINES:
-        lines.append(f"{len(hits) - SCAN_LINES} more. Give more words to narrow it.")
+             *shown.items]
+    if shown.line:
+        lines.append(shown.line)
     lines.extend(tail)
     lines.append(SCAN_HINT)
     return "\n".join(lines)
