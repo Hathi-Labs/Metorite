@@ -104,6 +104,7 @@
       "tests/unit/test_psycopg_seam.py",
       "tests/unit/test_pull_retries_failed_apply.py",
       "tests/unit/test_sandbox_broker_seam.py",
+      "tests/unit/test_secret_startup_check.py",
       "tests/unit/test_semantic_shape_only.py",
       "tests/unit/test_sent_record.py",
       "tests/unit/test_service_identity_and_webhook_auth.py",
