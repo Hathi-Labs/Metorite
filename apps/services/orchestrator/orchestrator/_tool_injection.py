@@ -5777,6 +5777,7 @@ async def _inject_mcp_servers(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                on_needs_signin=_mark_needs_signin_for(str(org)),
                 failures=failures,
             )
             # CSY-10: only a server that attached (after the grant check and
@@ -5996,6 +5997,19 @@ def _mark_unauthorized_for(org: str) -> Any:
             org, str(server.name), dict(server.headers),
             refreshed=getattr(server, "oauth_refreshed", False) is True,
         )
+
+    return _mark
+
+
+def _mark_needs_signin_for(org: str) -> Any:
+    """Task 3866: the callback for a 401 or 403 with an OAuth challenge on the
+    connect of a row with no sign-in. It marks the row of *org*, the run
+    binding, never request input (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_needs_signin(org, str(server.name))
 
     return _mark
 

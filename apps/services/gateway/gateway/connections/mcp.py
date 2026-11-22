@@ -399,6 +399,9 @@ REFRESH_SLOTS_PER_ORG = 1
 REFRESH_BACKOFF_S = 60.0
 #: IN-8b: the ``last_error`` of a row whose refreshed token got a 401.
 UNAUTHORIZED = "unauthorized"
+#: The ``last_error`` of a row with no sign-in whose server answered a connect
+#: with an OAuth challenge (task 3866). The console offers Connect for it.
+NEEDS_SIGNIN = "needs_signin"
 
 #: One semaphore for each event loop: an ``asyncio.Semaphore`` binds to the
 #: loop that first waits on it.
@@ -723,6 +726,31 @@ async def mark_unauthorized(
     else:
         _log.info("mcp.oauth_token_ended", name=name)
     return outcome
+
+
+async def mark_needs_signin(org: str, name: str) -> str:
+    """A 401 or 403 with an OAuth challenge on the connect of a row with no
+    sign-in (task 3866, §3.6.7).
+
+    The row was added by URL, so it holds no OAuth tokens and shows
+    ``connected``. Under the row lock, a row that is not OAuth and is still
+    ``connected`` gets ``needs_reconnect`` with :data:`NEEDS_SIGNIN`, through
+    the same store helper as :func:`mark_unauthorized`. Any other row stays
+    (:data:`MARK_UNCHANGED`). *org* is the run binding.
+    """
+    if not NAME_RE.match(name or ""):
+        return MARK_UNCHANGED
+    org = _org(org)
+    async with tenant_session(org) as db:
+        locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if locked is None:
+            return MARK_UNCHANGED
+        conn, _credential = locked
+        if _is_oauth(conn) or conn.status != store.STATUS_CONNECTED:
+            return MARK_UNCHANGED
+        await store.mark_needs_reconnect(db, org, conn.id, NEEDS_SIGNIN)
+    _log.warning("mcp.needs_signin", name=name, code=NEEDS_SIGNIN)
+    return MARK_NEEDS_RECONNECT
 
 
 #: The answers of :func:`oauth_test_header`.
