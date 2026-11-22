@@ -223,9 +223,12 @@ def world(promoted):  # noqa: F811
     ns.bob = b._principal(BOB, ns.b)
     from acb_auth import UserContext, UserRole, build_access
 
+    # H-409 item 2 (task 748): the admin of a release is the holder of
+    # `admin:members:manage` (owner, Q5). A read permission does not give it.
     ns.carol_admin = UserContext(
         email=CAROL, role=UserRole.EMPLOYEE, organization_id=ns.a,
-        access=build_access(["feature:projects", "data:org:read", "admin:members:read"]))
+        access=build_access(["feature:projects", "data:org:read", "admin:members:read",
+                             "admin:members:manage"]))
     return ns
 
 
@@ -245,11 +248,11 @@ def w(world, monkeypatch):
 def _project(w: Any, *, parent: dict | None = None, grant: str | None = None,
              org: str | None = None, owner: str = ALICE) -> dict[str, Any]:
     """A project with the lanes of every category the kinds read: `todo` and
-    `done` from the shared seed, and `backlog` and `cancelled` here."""
+    `done` from the shared seed, and `backlog`, `in_progress` and `cancelled` here."""
     proj = b.project(w.p, org or w.a, owner, parent=parent, grant=grant)
     if parent is None:
         with w.p.admin_engine.begin() as c:
-            for pos, category in ((5, "backlog"), (90, "cancelled")):
+            for pos, category in ((5, "backlog"), (50, "in_progress"), (90, "cancelled")):
                 sid = str(uuid.uuid4())
                 c.execute(text(
                     "INSERT INTO pm_task_statuses (id, organization_id, project_id, name,"
@@ -503,6 +506,116 @@ def _snapshot(w: Any) -> tuple[Any, ...]:
     strands = tuple((r.id, r.cleared_at, r.recovered_at) for r in _rows(
         w.p, "SELECT id, cleared_at, recovered_at FROM pm_agent_run_strands ORDER BY id"))
     return counts, runs, strands
+
+
+def _parent(w: Any, child: str, parent: str) -> None:
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid)"
+                       " WHERE id = CAST(:c AS uuid)"), {"p": parent, "c": child})
+
+
+@_DB_GATE
+class TestTheBlockedGrouping:
+    """Tasks 2545 and 2817: one row for each blocked task, with all its parked
+    blockers. A link counts only when the blocked task is active or a sibling
+    of the blocker is in progress. A done sibling does not count."""
+
+    def _plan(self, w: Any, proj: dict, *, blockers: int, blocked: int,
+              category: str) -> tuple[str, list[str], list[str]]:
+        """Each blocked task has a link from every blocker."""
+        epic = _task(w, proj, category="backlog", title="Epic")
+        parked = []
+        for _ in range(blockers):
+            blocker = _task(w, proj, category="backlog")
+            _parent(w, blocker, epic)
+            parked.append(blocker)
+        tasks = [_task(w, proj, category=category) for _ in range(blocked)]
+        for t in tasks:
+            for p_ in parked:
+                _link(w, p_, t)
+        return epic, parked, tasks
+
+    async def test_g1_a_backlog_plan_raises_nothing_until_a_slice_starts(self, w):
+        proj = _project(w)
+        epic, parked, tasks = self._plan(w, proj, blockers=4, blocked=5,
+                                         category="backlog")
+        assert (await _list(w, w.alice, proj))["rows"] == []
+        done = _task(w, proj, category="done")
+        _parent(w, done, epic)
+        body = await _list(w, w.alice, proj)
+        assert body["rows"] == [] and body["counts"]["blocked"] == 0
+        started = _task(w, proj, category="in_progress")
+        _parent(w, started, epic)
+        body = await _list(w, w.alice, proj)
+        assert len(body["rows"]) == 5
+        assert body["counts"]["blocked"] == 5 and body["total"] == 5
+        assert {r["task_id"] for r in body["rows"]} == set(tasks)
+        for row in body["rows"]:
+            assert row["blocker_count"] == 4
+            assert {x["id"] for x in row["blockers"]} == set(parked)
+
+    async def test_g2_active_blocked_tasks_group_by_blocked_task(self, w):
+        proj = _project(w)
+        _, _parked, tasks = self._plan(w, proj, blockers=3, blocked=7, category="todo")
+        body = await _list(w, w.alice, proj)
+        assert len(body["rows"]) == 7 and body["counts"]["blocked"] == 7
+        assert len(body["rows"]) == body["listed"] == body["total"]
+        assert {r["task_id"] for r in body["rows"]} == set(tasks)
+
+    async def test_g2b_a_todo_task_with_two_parked_blockers_gives_one_row(self, w):
+        proj = _project(w)
+        blocked = _task(w, proj, category="todo", assignee=ERIN)
+        first = _task(w, proj, category="backlog", title="First")
+        second = _task(w, proj, category="backlog", title="Second")
+        _link(w, first, blocked)
+        _link(w, second, blocked)
+        body = await _list(w, w.alice, proj)
+        [row] = body["rows"]
+        assert row["task_id"] == blocked and row["blocker_count"] == 2
+        assert {x["id"] for x in row["blockers"]} == {first, second}
+        assert {x["title"] for x in row["blockers"]} == {"First", "Second"}
+        assert row["blocker_id"] == row["blockers"][0]["id"]
+        assert body["counts"]["blocked"] == body["total"] == len(body["rows"]) == 1
+
+    async def test_g3_a_blocker_a_member_starts_leaves_the_list(self, w):
+        proj = _project(w)
+        _, parked, _tasks = self._plan(w, proj, blockers=3, blocked=2, category="todo")
+        [r0, r1] = (await _list(w, w.alice, proj))["rows"]
+        assert r0["blocker_count"] == r1["blocker_count"] == 3
+        b.run(w.p, w.a, parked[0], ALICE, "in_progress")
+        _move(w, parked[1], proj, "in_progress")
+        body = await _list(w, w.alice, proj)
+        assert len(body["rows"]) == 2
+        for row in body["rows"]:
+            assert row["blocker_count"] == 1
+            assert [x["id"] for x in row["blockers"]] == [parked[2]]
+
+    async def test_g4_a_blocked_in_progress_task_still_raises_a_row(self, w):
+        proj = _project(w)
+        blocker = _task(w, proj, category="backlog")
+        blocked = _task(w, proj, category="in_progress", assignee=ERIN)
+        idle = _task(w, proj, category="backlog")
+        _link(w, blocker, idle)
+        _link(w, blocker, blocked)
+        body = await _list(w, w.alice, proj)
+        [row] = body["rows"]
+        assert (row["task_id"], row["blocker_id"]) == (blocked, blocker)
+        assert row["blocker_count"] == 1 and row["owner"] == ERIN
+        assert (await _list(w, w.erin, proj, mine=True))["counts"]["blocked"] == 1
+        assert (await _list(w, w.dave, proj, mine=True))["counts"]["blocked"] == 0
+
+    async def test_g5_yours_is_the_assignee_of_the_blocked_task(self, w):
+        proj = _project(w)
+        mine = _task(w, proj, category="todo", assignee=ERIN)
+        other = _task(w, proj, category="todo", assignee=DAVE)
+        blocker = _task(w, proj, category="backlog")
+        _link(w, blocker, mine)
+        _link(w, blocker, other)
+        body = await _list(w, w.erin, proj)
+        assert {r["task_id"]: r["yours"] for r in body["rows"]} == {mine: True, other: False}
+        only = await _list(w, w.erin, proj, mine=True)
+        assert [r["task_id"] for r in only["rows"]] == [mine]
+        assert only["counts"]["blocked"] == 1 == only["total"]
 
 
 @_DB_GATE

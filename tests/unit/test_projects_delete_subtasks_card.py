@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import skill_projects
-from skill_projects import writes as W
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 from tests.unit import test_projects_agent_writes as tw
 from tests.unit._projects_agent_fakes import (
@@ -30,7 +30,10 @@ SUB_A, SUB_A1, SUB_B = tw.SUB_A, tw.SUB_A1, tw.SUB_B
 def _delete_gateway(call: dict) -> Any:
     """The fake gateway, with a delete that reports what the core would."""
     if call["method"] == "DELETE" and call["path"].startswith("/projects/tasks/"):
-        sent = call["params"].get("delete_subtask_ids") or []
+        params = call["params"] or {}
+        sent = params.get("delete_subtask_ids") or []
+        if params.get("delete_all_subtasks"):
+            sent = [SUB_A, SUB_B, SUB_A1]
         return {
             "deleted": LIVE,
             "cascaded": {
@@ -71,9 +74,9 @@ async def test_all_pre_ticks_every_visible_subtask(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, _delete_gateway)
     out = await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
     assert all(r["checked"] for r in asked[0]["rows"])
-    assert sorted(_task_delete(calls)["params"]["delete_subtask_ids"]) == sorted(
-        [SUB_A, SUB_B, SUB_A1]
-    )
+    # ARC-2b: "all" sends the flag, so a subtask of an archived project is kept
+    # and not named in a list that the server would refuse.
+    assert _task_delete(calls)["params"] == {"delete_all_subtasks": "true"}
     assert "3 subtasks deleted too" in out
 
 
@@ -98,7 +101,7 @@ async def test_clearing_the_task_row_cancels_and_writes_nothing(monkeypatch) -> 
     answer_rows(monkeypatch, frozenset({SUB_A}))
     calls = fake_gateway(monkeypatch, _delete_gateway)
     out = await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -141,7 +144,7 @@ async def test_a_wide_tree_draws_no_boxes_and_refuses_a_list(monkeypatch) -> Non
     assert "too many for tick boxes" in out and asked == [] and writes(calls) == []
     await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
     assert asked[0].get("rows") is None
-    assert len(_task_delete(calls)["params"]["delete_subtask_ids"]) == 100
+    assert _task_delete(calls)["params"] == {"delete_all_subtasks": "true"}
 
 
 def _uid(n: int) -> str:

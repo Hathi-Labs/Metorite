@@ -71,6 +71,7 @@ from typing import Any
 from acb_auth import UserContext
 from gateway import decide_features as df
 from gateway.routes.shell import feed, feed_rank, needs
+from gateway.routes.shell.state import _BOUND_ORG
 
 logger = logging.getLogger(__name__)
 
@@ -578,18 +579,35 @@ async def read_context(user: UserContext, now: datetime, day: Any) -> MemberCont
         day_hours=hours, habits=habits)
 
 
+#: The window of the counts (§7: "over 30 days").
+HABITS_DAYS = 30
+
+#: The ONE read of the card counts of a kind (``proactive_loop.md`` §7.1 rule
+#: 5). The shadow state reads it, and so does the learned ``affinity`` of the
+#: feed (``state.learned``, LOOP-4a). P2 of §7.2 there: an act counts by
+#: ``acted_at`` and a "Not useful" by ``not_useful_at``, each inside the
+#: window. No count reads ``updated_at``, because a later sighting moves it,
+#: and an old "Not useful" outlives that sighting (``my_day_feed.md`` §13.1).
+#: A card counts as shown when the member saw it or touched it inside the
+#: window: the newest of ``last_seen_at``, ``acted_at`` and
+#: ``not_useful_at`` (``GREATEST`` skips a NULL). So ``acted`` and
+#: ``not_useful`` never pass ``shown``. ``kind`` is the main kind of the card
+#: (§13.1). The org predicate sits beside RLS, as in ``state.py`` (R5).
 _HABITS_SQL = (
     "SELECT kind, count(*) AS shown, "
-    "count(*) FILTER (WHERE acted_at IS NOT NULL) AS acted, "
-    "count(*) FILTER (WHERE not_useful_at IS NOT NULL) AS not_useful "
-    "FROM my_day_card_state WHERE member_email = :m "
-    "AND updated_at >= now() - interval '30 days' GROUP BY kind"
+    f"count(*) FILTER (WHERE acted_at >= now() - interval '{HABITS_DAYS} days') AS acted, "
+    f"count(*) FILTER (WHERE not_useful_at >= now() - interval '{HABITS_DAYS} days') "
+    "AS not_useful "
+    f"FROM my_day_card_state WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND GREATEST(last_seen_at, acted_at, not_useful_at) "
+    f">= now() - interval '{HABITS_DAYS} days' GROUP BY kind"
 )
 
 
 async def _habits(db: Any, member: str) -> dict[str, dict[str, int]]:
     """For each kind, the cards shown, acted on and marked "Not useful" over
-    30 days (§10.4). Counts only."""
+    30 days (§10.4, ``proactive_loop.md`` §7.2 P2), in the bound org. Counts
+    only. *db* is a session that the caller bound to the tenant."""
     from sqlalchemy import text
 
     rows = (await db.execute(text(_HABITS_SQL), {"m": member})).all()

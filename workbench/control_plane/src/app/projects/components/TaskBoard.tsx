@@ -37,6 +37,7 @@
  * many are subtasks. A drag moves only the card dragged: a parent's status
  * never follows its subtask (`board.optimisticDrop`, fenced).
  */
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
@@ -674,6 +675,8 @@ export function TaskBoard({
    * end of that column". `buildColumnDropUpdate` builds the patch rather than an
    * inline `{ status_id }`, so the menu and the drag write the same shape.
    */
+  // CC-4: the board card menu starts focus through the one start door.
+  const startFocus = useStartFocus();
   const menuActions: TaskMenuActions = {
     open: (task) => onSelect(task),
     copyLink: (task) => {
@@ -698,6 +701,7 @@ export function TaskBoard({
     mergeInto: (task) => onMergeTask?.(task.id),
     askAgent: (task) => onAskAgent?.(task.id),
     makeEpic: (task) => void makeEpic(task),
+    focus: (task) => void startFocus(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -741,6 +745,8 @@ export function TaskBoard({
     // An archived task takes no new run, and the gateway refuses it, so the
     // entry drops rather than offering a click that ends in an error.
     canAskAgent: Boolean(onAskAgent) && !task.archived_at,
+    // An open task takes a session. An archived or finished one does not.
+    canFocus: !task.archived_at && !task.completed_at,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
@@ -898,8 +904,11 @@ export function TaskBoard({
     // EA-13g: one look for each run state. `globals.css` draws the edge.
     const agentLook = agentCardLook(task.agent_state, {
       clientVia: task.agent_client_via,
+      // SW-7b: the label of the agent session, beside the client name.
+      agentLabel: task.agent_label,
       memberEmail: task.agent_member_email,
       note: task.agent_note,
+      waiting: task.agent_waiting,
       viewerEmail: me,
       labels: personLabels,
     });
@@ -1077,6 +1086,7 @@ export function TaskBoard({
               clientVia={task.agent_client_via}
               memberEmail={task.agent_member_email}
               note={task.agent_note}
+              waiting={task.agent_waiting}
               viewerEmail={me}
               labels={personLabels}
             />

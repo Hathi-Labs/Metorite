@@ -34,6 +34,15 @@ is not a pass.
 4. ``GET /shell/manifest`` shows the entry to the owner, and to no other
    member of the org or of another org.
 
+**Acceptance (PKG-12, §6.2 step 1).**
+
+5. A first publish with ``origin`` = ``chat`` writes the private install with
+   ``ends_at`` 30 days after the publish. A publish from the IDE (no origin,
+   or ``ide``) writes NULL. A second publish, from chat or from the IDE,
+   keeps the date that the install holds. A bad origin is 422 and writes
+   nothing. ``GET /shell/manifest`` shows the install to its owner after the
+   publish, so ``/apps/<package id>`` opens with no chat run.
+
 **R7: red first, then mutate.** Each mutation ran on 2026-11-07, and the
 build report holds the counts.
 
@@ -42,6 +51,10 @@ build report holds the counts.
 * M2. ``studio_app.keep_private_install``: skip ``set_version`` and always
   call ``install``. 3 tests go red with 409 ``already_installed``: the
   second publish, two publishes at once, and the paused install.
+* M3 (PKG-12). ``packages._keep_install``: give no end date for chat. The
+  chat tests of section 7 go red.
+* M4 (PKG-12). ``studio_app.keep_private_install``: pass *ends_at* to
+  ``set_version`` as a new end date. The tests of a second publish go red.
 """
 
 from __future__ import annotations
@@ -50,6 +63,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -143,8 +157,10 @@ async def _new(org: str, email: str, manifest: dict[str, Any]) -> str:
     return str(got["package"]["id"])
 
 
-async def _publish(org: str, email: str, pid: str) -> tuple[int, Any]:
-    return await _call("publish", org, email, pid, payload={})
+async def _publish(org: str, email: str, pid: str,
+                   origin: str | None = None) -> tuple[int, Any]:
+    payload: dict[str, Any] = {} if origin is None else {"origin": origin}
+    return await _call("publish", org, email, pid, payload=payload)
 
 
 def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
@@ -505,3 +521,99 @@ def test_r8_a_job_that_a_system_job_holds_refuses_the_publish_and_writes_nothing
     assert _versions(world, pid) == [1]
     assert _installs(world, pid) == [before]
     assert _claims(world, before["id"]) == claims_before
+
+
+# ── 7. The end date of an app made in chat (PKG-12) ────────────────────────
+
+#: The slack of "about 30 days": the time of one publish call and the clock.
+_SLACK = timedelta(minutes=5)
+
+
+def _about_30_days(ends_at: Any, before: datetime, after: datetime) -> bool:
+    return (ends_at is not None
+            and before + store.CHAT_ENDS - _SLACK <= ends_at <= after + store.CHAT_ENDS + _SLACK)
+
+
+def test_r8_a_chat_publish_writes_an_end_date_30_days_out(world) -> None:
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(_mid()))
+        return pid, await _publish(world.a, ANA, pid, "chat")
+
+    before = datetime.now(UTC)
+    pid, (status, got) = _run(world, go)
+    after = datetime.now(UTC)
+    assert status == 200, got
+    assert set(got) == _ANSWER_KEYS
+    [row] = _installs(world, pid)
+    assert (row["kind"], row["subject"], row["by"], row["state"]) == (
+        "private", ANA_LOW, ANA_LOW, "active")
+    assert _about_30_days(row["ends_at"], before, after), row["ends_at"]
+    # The owner sees the entry after the chat run ends: the resolve reads the row.
+    mine = _view(world, ANA, world.a)
+    assert f"/apps/{pid}" in mine.nav
+    assert f"/apps/{pid}" not in _view(world, BEN, world.a).nav
+
+
+def test_r8_an_ide_publish_writes_no_end_date(world) -> None:
+    for origin in (None, "ide"):
+        async def go(origin: str | None = origin) -> tuple[str, tuple[int, Any]]:
+            pid = await _new(world.a, ANA, _manifest(_mid()))
+            return pid, await _publish(world.a, ANA, pid, origin)
+
+        pid, (status, got) = _run(world, go)
+        assert status == 200, got
+        [row] = _installs(world, pid)
+        assert row["ends_at"] is None, origin
+
+
+def test_r8_a_second_publish_keeps_the_end_date_of_the_install(world) -> None:
+    """A chat app keeps its first date after a later chat or IDE publish. An
+    IDE app keeps NULL after a later chat publish."""
+    mid, ide_mid = _mid(), _mid()
+
+    async def go() -> tuple[str, str, list[tuple[int, Any]]]:
+        pid = await _new(world.a, ANA, _manifest(mid))
+        first = await _publish(world.a, ANA, pid, "chat")
+        ide = await _new(world.a, ANA, _manifest(ide_mid))
+        return pid, ide, [first, await _publish(world.a, ANA, ide)]
+
+    pid, ide, got = _run(world, go)
+    assert [s for s, _ in got] == [200, 200], got
+    [row] = _installs(world, pid)
+    first_end = row["ends_at"]
+    assert first_end is not None
+    for origin in ("chat", None, "chat"):
+        status, out = _run(world, lambda o=origin: _publish(world.a, ANA, pid, o))
+        assert status == 200, out
+        status, out = _run(world, lambda o=origin: _publish(world.a, ANA, ide, o))
+        assert status == 200, out
+    [row] = _installs(world, pid)
+    assert (row["version"], row["ends_at"]) == (4, first_end)
+    [ide_row] = _installs(world, ide)
+    assert (ide_row["version"], ide_row["ends_at"]) == (4, None)
+
+
+def test_r8_a_bad_origin_is_422_and_writes_nothing(world) -> None:
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(_mid()))
+        return pid, await _call("publish", world.a, ANA, pid,
+                                payload={"origin": "mcp", "ends_at": "2099-01-01T00:00:00Z"})
+
+    pid, (status, got) = _run(world, go)
+    assert status == 422, got
+    assert got["errors"] == [{"path": "$.origin", "message": packages.BAD_ORIGIN}]
+    assert _versions(world, pid) == [] and _installs(world, pid) == []
+
+
+def test_r8_a_date_in_the_body_changes_nothing(world) -> None:
+    """R5: the route reads no ``ends_at``, org or member from the body."""
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(_mid()))
+        return pid, await _call("publish", world.a, ANA, pid, payload={
+            "origin": "ide", "ends_at": "2026-11-12T00:00:00Z", "owner_email": BEN,
+            "organization_id": world.b})
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    [row] = _installs(world, pid)
+    assert (row["org"], row["by"], row["ends_at"]) == (world.a, ANA_LOW, None)

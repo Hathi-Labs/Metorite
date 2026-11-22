@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_common import get_logger, get_settings
 from ingestion.queue import STREAM_GMAIL, enqueue
 
@@ -36,6 +36,22 @@ EVENT_HISTORY_UPDATED = "historyUpdated"
 
 #: Source string used for the bus + the sink registry.
 SOURCE = "gmail"
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a row with no org and the bind is on.
+
+    Task 2221 slice 2. The receiver checks one shared bearer token for the whole
+    deployment. That proves the push came from Pub/Sub, but it names no
+    org, and no code here maps the mailbox address to an org. The row names the mailbox
+    of one tenant. So with no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, and it never lands under the
+    operator org. A payload field never gives the org (R5). With the bind
+    off, the row stays as before. Fence:
+    ``tests/unit/test_audit_tick_writers_org_r8.py`` (R8).
+    """
+    if not refuse_tenantless(event):
+        record(event)
 
 
 def _verify_bearer(authorization: str | None) -> bool:
@@ -84,7 +100,7 @@ async def receive(
     email_address = notification.get("emailAddress")
     history_id = notification.get("historyId")
     _log.info("gmail.webhook", email=email_address, history_id=history_id)
-    record(
+    _audit(
         AuditEvent(
             actor="webhook:gmail",
             action="received",

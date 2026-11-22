@@ -27,12 +27,13 @@ on that skip.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -228,9 +229,7 @@ def test_a_run_with_no_org_holds_no_tool(monkeypatch) -> None:
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
     """An R8 suite that CI does not list skips in silence when the database
     gate is disarmed. ``deploy.yml`` copies the list of ``pr-check.yml``."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_crm_pipelines_native\.py \\?$", workflow, re.M), name
+    assert "tests/unit/test_crm_pipelines_native.py" in r8_lists.must_run()
 
 
 # ── The database tests ──────────────────────────────────────────────────────

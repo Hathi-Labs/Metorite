@@ -81,6 +81,7 @@ async def execute_workflow(
     precomputed: dict[str, Any] | None = None,
     resolved_approvals: set[str] | None = None,
     elapsed_waits: set[str] | None = None,
+    done_human_steps: dict[str, str] | None = None,
 ) -> RunOutcome:
     """Execute one compiled workflow version against a trigger payload.
 
@@ -91,11 +92,15 @@ async def execute_workflow(
     other approval node PAUSES its branch (outcome status ``paused``).
     *elapsed_waits* is the same idea for wait nodes whose deadline has
     passed: named waits run through, unnamed long waits pause the branch.
+    *done_human_steps* maps a human step node (STU-E4) to the id of its done
+    task: a named step runs through with that task id in its output, and any
+    other human step pauses its branch.
     """
     emit = emit or _noop_emit
     precomputed = precomputed or {}
     resolved_approvals = resolved_approvals or set()
     elapsed_waits = elapsed_waits or set()
+    done_human_steps = done_human_steps or {}
     paused_nodes: list[str] = []
     wait_until: dict[str, float] = {}
     blocks: list[dict[str, Any]] = list(serialized.get("blocks") or [])
@@ -141,7 +146,8 @@ async def execute_workflow(
             # Gate nodes halt their branch: an approval waits for a human, a
             # long wait waits for its deadline. Nothing downstream runs.
             gate = _gate_pause(
-                ntype, node_id, block, state, resolved_approvals, elapsed_waits
+                ntype, node_id, block, state, resolved_approvals, elapsed_waits,
+                set(done_human_steps),
             )
             if gate is not None:
                 paused_nodes.append(node_id)
@@ -176,6 +182,8 @@ async def execute_workflow(
                 raise _NodeFailure(node_id, message[:500]) from exc
 
             duration_ms = int((time.monotonic() - started) * 1000)
+            if ntype == "human_step" and node_id in done_human_steps:
+                output = {**output, "task_id": done_human_steps[node_id]}
             state[node_id] = output
             node_results[node_id] = {
                 "status": "ok",
@@ -261,16 +269,21 @@ def _gate_pause(
     state: dict[str, Any],
     resolved_approvals: set[str],
     elapsed_waits: set[str],
+    done_human_steps: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Extra node-result fields when this gate node must PAUSE, else ``None``.
 
     Approval (spec F11) → ``{}``: a human resumes it from the approvals inbox.
     Long wait (spec F3) → ``{"resume_at": epoch}``: the schedule scanner does.
+    Human step (STU-E4) → ``{"human_step": True}``: the task scan resumes it
+    when its task is done.
     A gate already cleared for this pass — and every non-gate node type —
     returns ``None`` and runs normally.
     """
     if ntype == "approval":
         return None if node_id in resolved_approvals else {}
+    if ntype == "human_step":
+        return None if node_id in (done_human_steps or set()) else {"human_step": True}
     if ntype == "wait" and node_id not in elapsed_waits:
         deadline = _long_wait_deadline(block.get("config") or {}, state)
         if deadline is not None:

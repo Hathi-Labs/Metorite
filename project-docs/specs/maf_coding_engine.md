@@ -7,7 +7,8 @@
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
-and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
+and a guard always refuses its Copilot CLI shell. D129 extends the block to
+personal agents (task 808, built 2026-11-21). WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
@@ -28,7 +29,8 @@ spec only.**
 builds a MAF harness agent on the one factory of `code_task`. Every other
 org keeps the Copilot agent until WS-43j. The block of WS-43h records what is
 true. On 2026-11-08 the owner told the team in chat to finish the removal,
-because Metorite will not use the Copilot SDK.
+because Metorite will not use the Copilot SDK. Task 2464 is built
+(2026-11-09): the T2 build refuses an import of a file outside the app dir.
 
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
@@ -569,6 +571,8 @@ for one organization. An empty value turns every target off.
 8. **Caps and eviction.**
    - At most `sandbox_max_per_org` containers live for one organization
      (default 2). That is the organization's fair share.
+   - A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`
+     (SBX-15).
    - At most `sandbox_max_total` containers live on the box (default 4).
    - An organization at its share stops its own oldest idle container first.
    - At the box cap, the broker stops the oldest idle container of ANY
@@ -1054,8 +1058,9 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** A shared agent runs no shell on the host. D85 has two halves,
-and each half has its own flag and its own way out:
+**The rule.** An agent that a member reaches runs no shell on the host
+(D85, D129). D85 has two halves, and each half has its own flag and its own
+way out:
 
 | Half | What it blocks | Flag in the run | What lifts it |
 |---|---|---|---|
@@ -1072,15 +1077,16 @@ the host. The verifier set this rule in fix round 1.
 **Who is in scope.** `_tool_injection._d85_leaves_alone` answers it for both
 halves:
 
-- A `personal` agent is out of scope. The owner left personal agents out
-  (H-225).
+- D129 extends D85 to personal agents (task 808, 2026-11-21). A `personal`
+  agent is in scope for both halves. Fence:
+  `test_shared_agent_shell_tools.py` (sections 2 and 7j).
 - The root `metorite` dev agent is out of scope (`_D85_OWNER_PENDING`). It
   edits platform code and runs the tests through its CLI shell. The owner
   decided on 2026-10-03 that only an admin of the first-party organization may
   run it, through any path. `executor._assert_may_run_agent` enforces that at
   every run boundary (§15.4), and that is what makes the exemption safe.
 - Every other agent is in scope: `shared` (the default when a config has no
-  `sharing` block), `team`, a config that does not parse, and
+  `sharing` block), `team`, `personal`, a config that does not parse, and
   `agent_config=None`.
 
 **The tool half.** `_withheld_shell_tools(agent_name, agent_config)`.
@@ -1169,8 +1175,8 @@ reason codes.
   block, so it is shared. Its own tools run their scripts through Python
   `subprocess`. The SDK sends those calls as `custom-tool`, and the guard
   passes them on, so they still work.
-- email-assistant and whatsapp-assistant are personal, and they keep their
-  tools.
+- email-assistant and whatsapp-assistant are personal. Since D129 they get
+  no shell tool, and a delegation to them gets none either.
 
 **`_sandbox_covers` asks `sandbox_broker.lifts_shell_block`.** WS-43d
 pointed it there after the merge of PR #598, so it never asks `covers()`
@@ -1207,9 +1213,6 @@ owner kept delegation (§16.3).
   not describe the coding skill.
 - The skills catalog (`GET /integrations/skills`) resolves a scope with no
   withheld names, so it still shows the coding family for apis-config.
-- Personal agents (H-225). A shared agent can still delegate to one with
-  `call_agent`, and the personal agent keeps its shell tools. That run works
-  in the dir of the acting member, and H-225 closes it.
 - A tool that an agent ships itself under one of these names. The seam
   controls injected tools only, and no in-repo agent ships one.
 
@@ -2738,11 +2741,34 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   also after a command that raised, or a stop (review round 2).
 - **The host T2 build (review round 2, option b).** It refuses a dir that a
   container mounts now, or ever mounted, for good, and a dir that holds a
-  link. The safer choice: esbuild follows a relative import out of the app
-  dir with no link at all (`import x from "../other-app/src/data.json"`),
-  and a container wrote the source. So after a flip off of `app_builder`,
-  an app that the MAF engine edited has no build path, and its error text
-  says that an admin must turn the builder back on.
+  link. The safer choice: a container wrote the source. So after a flip off
+  of `app_builder`, an app that the MAF engine edited has no build path. Its
+  error text says that an admin must turn the builder back on.
+- **The import fence (task 2464, 2026-11-09).** esbuild followed a relative
+  import into an app of another org, with no link.
+  An example is `import x from "../other-app/src/data.json"`.
+  Now `build_t2.mjs` refuses it, on the host and in the container, in both
+  dependency modes. The real path of each file that esbuild loads must stay
+  in the app dir, the vendor cache or the one `@cc/ui` file. The template and
+  `dist/` must be real paths in the app dir, and the build reads no tsconfig.
+  `install_t2_deps.mjs` refuses a dependency that npm takes from disk. The
+  host route runs the `build_t2.mjs` of the deployed source tree, the one
+  that the broker copies. It no longer runs the agent clone cache, because
+  the clone refreshes only when the agent loads. Fence:
+  `test_app_builder_t2_containment.py`. Its build tests are `sandbox_docker`,
+  so the "Sandbox Docker tests" job runs them with production's vendor
+  versions, and it fails on a skip. Review round 3 added four rules. The
+  build refuses a glob import (a path built with `+` or `${}`) before
+  esbuild parses the file. It refuses a bare name with a `.` or `..` part.
+  A refusal of a file outside every root names no path. The host route
+  builds inside `delivery_guard`, and it kills node at the timeout. Review
+  round 4 added three more. The check also reads esbuild's transform of
+  each file. onLoad gives esbuild the checked bytes, so esbuild never reads
+  an app file itself. An import that does not resolve and one that leads
+  out read the same. Before esbuild runs, the build refuses a package.json
+  whose path field leads out of the app dir. The flag
+  `CUSTOM_APPS_HOST_BUILD` keeps the host route
+  off by default.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).
@@ -4313,8 +4339,9 @@ text, and it holds the host shell tools.
 1. `sandbox_broker.py`: the target `email` in `MAF_CODING_TARGETS`,
    `target_for_agent`, the `covers()` branch, `lifts_shell_block` and the
    mounts of §16.4.
-2. `_tool_injection.py`: the email rule of `_withheld_shell_tools`, and
-   `target_binds_no_egress` in `_run_covered` (§16.4).
+2. `_tool_injection.py`: `target_binds_no_egress` in `_run_covered` (§16.4).
+   Since D129 `_withheld_shell_tools` needs no email rule. `lifts_shell_block`
+   answers `False` for `email` (item 1).
 3. `apps/agents/agent-email-assistant/config.json`: the six tool names join
    `tool_scope`.
 4. `apps/agents/agent-email-assistant/instructions.md`: a short section that
@@ -4330,7 +4357,8 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 
 1. With `MAF_CODING_SCOPE=email:<org A>`, a run of org A holds the six tools.
    It holds no `code_task`, `run_script` or `install_dependency`.
-2. A run of org B holds no data tool, and it keeps its shell tools.
+2. A run of org B holds no data tool. Since D129 it holds no shell tool
+   either.
 3. With the scope empty, an email run has the same tools and the same
    instructions as today.
 4. A covered email run binds `no_egress=False`, and it keeps `send_email`,
@@ -4345,15 +4373,15 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 9. Two members of one organization run email-assistant with one session id.
    Neither container sees the staged bytes of the other.
 
-**Fences (R7).** WS43-F29 (new). WS43-F23 gains the email case of the shell
-rule. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
+**Fences (R7).** WS43-F29 (new). WS43-F23 gains the case that a cover of the
+`email` target lifts no shell tool. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
 the `email` target.
 
 **R8.** None. The slice touches no Postgres.
 
 **Mutations.**
 
-- M1 drops the email rule of `_withheld_shell_tools`, and done-when 1 fails.
+- M1 makes `lifts_shell_block` answer `True` for `email`, and done-when 1 fails.
 - M2 makes `target_binds_no_egress` true for `email`, and done-when 4 fails.
 - M3 mounts `/workspace` read-write for `email`, and WS43-F2 fails.
 - M4 adds the hand-off line in an uncovered run, and done-when 8 fails.
@@ -4516,11 +4544,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4532,8 +4562,11 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-218.** The loader writes the GitHub token into each clone's remote URL
   (`loader.py:78`). The mutation container mounts the clone and has a network,
   so code in it can read the token (§15.3).
-- **H-211's root half** closes with WS-43m. Its external half and H-212 close
-  with the change in the sales-assistant repo (WS43-G11).
+- **H-211's root half** closed with task 560 (2026-11-21). The root factory
+  sets no permission handler, and
+  `tests/unit/test_no_first_party_approve_all.py` fails if one comes back.
+  Its external half and H-212 close with the change in the sales-assistant
+  repo (WS43-G11).
 
 ## 15. D84 — the GitHub Copilot SDK leaves the platform
 
@@ -4635,10 +4668,17 @@ H-218 is fixed.
 
 ### 15.4 The root `metorite` agent
 
-Today it is a `GitHubCopilotAgent` with `approve_all` (root
-`agents.py:102-122`), and its working dir is the platform checkout. So the
-model can run any shell command and write any file there, in every
-permission mode (H-211).
+Today it is a `GitHubCopilotAgent` (root `agents.py`). Until task 560
+(2026-11-21) its factory set `approve_all`, so the model could run any shell
+command and write any file, in every permission mode (H-211). Now the
+executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
+keeps its shell. The denylist and the workspace bounds of
+`permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 
@@ -4977,6 +5017,21 @@ table. WS-43t2 adds it to the source scan of
 - **A delegated run** (`call_agent`, `delegate_to_agent`, a MAF sub-agent)
   neither loads nor saves a session. The parent's session holds the
   delegation call and its result.
+- ⚠️ **As built (RESUME-4a-1, 2026-11-16).** A continuation run on the note
+  path (`chat_run_continuity.md` §4.12.4) neither loads nor saves a session
+  (`_native_session_skip` gives `resume_note`). Its reply has no user row
+  before it, so the next load would be a `hit` that lacks the reply. So
+  `executor._resume_prologue` first calls
+  `native_session_store.mark_stale` for each session of the thread. The bound
+  values are the org of the run binding and the caller's thread. There is no
+  agent key, because the rows of every agent in the thread feed the next turn.
+  The mark is ONE bound UPDATE that writes `STALE_DIGEST` over
+  `transcript_digest`, and it makes no row. The next load then gives
+  `digest_drop` with the reason `resume_stale`, and the run uses the text
+  history. The rules of §15.9.4 and §15.9.5 for a normal run do not change.
+  RESUME-4b brings the full amendment. Fences:
+  `tests/unit/test_resume_continuation.py`,
+  `tests/unit/test_resume_native_stale_r8.py`.
 
 #### 15.9.6 The bounds and the compaction
 
@@ -5550,17 +5605,16 @@ email-assistant.
 3. The run holds no host shell tool (the next rule).
 
 **A covered email run holds no host shell tool.** email-assistant is
-`personal` (`config.json`), so D85 leaves it alone today
-(`_d85_leaves_alone`, H-225). The core floor gives it `code_task` and
-`run_script`, and they run on the host.
+`personal` (`config.json`). Since D129 the D85 seam withholds `code_task`,
+`run_script` and `install_dependency` from it, as from a shared agent.
 
-- `_withheld_shell_tools` withholds `code_task`, `run_script` and
-  `install_dependency` from a run of an agent and org that the `email` target
-  names. It checks this before the rule for a personal agent.
+- `_withheld_shell_tools` needs no rule for the `email` target.
+  `lifts_shell_block` answers `False` for it, so a cover keeps the three
+  tools withheld.
 - `_host_shell_withheld` (§16.3 condition 3) then holds for the `email`
   target too.
-- An email run of an organization outside the scope keeps its tools, as
-  today.
+- An email run of an organization outside the scope holds no shell tool
+  either (D129).
 
 **The mounts.** The `email` target takes the mounts of the `projects` target
 (`projects_mounts`, §16.3). That is `/workspace` read-only, the run data, the

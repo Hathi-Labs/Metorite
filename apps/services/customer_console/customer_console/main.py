@@ -61,7 +61,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as day_time
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Annotated, Any, Literal, NoReturn
 from zoneinfo import ZoneInfo
 
@@ -117,6 +117,7 @@ from customer_console.auth import (
     ProvisionCaller,
     ResolveCaller,
     SeatAdminCaller,
+    ServeReadCaller,
     ServingCaller,
     SignedWebhook,
     StaffIdentity,
@@ -128,7 +129,6 @@ from customer_console.credits import (
     LEDGER_REASON_PURCHASE,
     LEDGER_REASONS,
     OverdraftPolicy,
-    RunCeiling,
     TokenUsage,
     UnpricedModel,
     UsagePartitionError,
@@ -139,6 +139,7 @@ from customer_console.credits import (
     floor_charge,
     quantize_credits,
     rate_call,
+    run_ceiling_for,
 )
 from customer_console.db import get_engine
 from customer_console.decide import (
@@ -173,6 +174,7 @@ from customer_console.lifecycle import (
     assert_transition,
     capabilities_of,
 )
+from customer_console.prompt_cache import prompt_cache_for_step
 from customer_console.reasoning import (
     messages_for_step,
     publish_reasoning_alias,
@@ -180,7 +182,6 @@ from customer_console.reasoning import (
     sampling_params_for,
 )
 from customer_console.router import (
-    SSE_DONE,
     ExtractedUsage,
     ResolvedTier,
     TierUnknown,
@@ -1654,13 +1655,21 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
     # runaway loop, and only that run is stopped — a second run for the same
     # organization is unaffected, because the ceiling is a tripwire on one
     # loop, not a budget on the customer.
+    #
+    # AUTO-8b-2b: `X-CC-Run-Ceiling` can only LOWER the tripwire.
+    # `run_ceiling_for` takes the min, and the auth arms refused a bad value
+    # with 400 before this ran. The sum keys on the org of the credential, so
+    # a header lowers the ceiling of the caller's own run and no other.
     if caller.run_id:
         spent = store.run_spend(conn, org_id=caller.organization_id, run_id=caller.run_id)
-        ceiling = RunCeiling()
+        ceiling = run_ceiling_for(caller.run_ceiling)
         if not decide_run_ceiling(spent, ceiling=ceiling).allowed:
             _log.warning(
                 "router.run_ceiling_tripped",
-                extra={"cc_run_id": caller.run_id},
+                extra={
+                    "cc_run_id": caller.run_id,
+                    "cc_ceiling_credits": str(ceiling.max_credits),
+                },
             )
             return HTTPException(
                 status_code=403,
@@ -2986,6 +2995,13 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
+        # 🔴 Refuse a bad pair BEFORE the database opens (the order before
+        # MS-1). A 400 needs no connection, and main's push unit job runs
+        # with no Console database (task 2511). `_write_capability` runs the
+        # same checks again for the health-fix path, so the two cannot drift.
+        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
+        catalog.check_model_for_invocation(req.model, invocation, task=req.task)
+        catalog.check_streams(req.task, req.streams)
         with get_engine().begin() as conn:
             return _write_capability(
                 conn,
@@ -4384,6 +4400,42 @@ def provider_health(staff: Operator) -> dict[str, Any]:
     balance is theirs to watch.
     """
     return _provider_health_body()
+
+
+@app.post("/registry/providers/health")
+def provider_health_for_box(caller: ServeReadCaller) -> dict[str, Any]:
+    """One alert word per vendor, for the box that serves AI (AO-2).
+
+    Spec: ``customer_console.md`` §6A.17b. The gateway reads this door through
+    ``acb_auth.console_resolve.provider_health_on_console`` and tells the
+    admins of the operator org when a vendor runs out.
+
+    **Why the box asks.** Every arrow between the two planes runs from the box
+    to the Console (``placed_orgs`` above says why). So the box reads, and this
+    service calls no box.
+
+    **Deployment key only, capability ``serve``.** The operator arm is refused:
+    the operator reads ``GET /providers/health``, which shows more.
+
+    🔴 **A closed set of keys** (``provider_balance.alert_rows``): the vendor
+    id, its display name, one word of ``ALERT_SIGNALS`` and the days left. No
+    reason, no probe error and no balance. So no text that a vendor wrote can
+    reach the box, a bell or a push.
+
+    It reads only. It flushes no refusal and logs no transition, and it is not
+    audited: a box that reads on a timer is not an event.
+    """
+    if caller is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this door answers a box that serves AI; an operator reads "
+                "GET /providers/health"
+            ),
+        )
+    with get_engine().begin() as conn:
+        report = provider_balance.health_report(conn)
+    return {"providers": provider_balance.alert_rows(report)}
 
 
 @app.post("/providers/health/check")
@@ -8717,7 +8769,9 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     `/v1/chat/completions`, `/v1/audio/transcriptions`,
     `/v1/images/generations`, `/v1/audio/speech` and `/v1/decide` — so a
     second endpoint cannot grow a second opinion about what a vendor 500
-    means. A native handler raises an error that carries `status_code`, so
+    means. ⚠️ One arm is apart since AO-3: a chat STREAM that no step opens
+    answers 503 `unavailable` (:func:`_stream_unavailable`), whatever the
+    vendor status was. A native handler raises an error that carries `status_code`, so
     a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
@@ -9022,14 +9076,14 @@ def _open_stream_or_release(
     org_id: str,
     request_id: str,
     watch: tuple[Any, Any] = (None, None),
-) -> tuple[list[Any], Any, ResolvedTier] | None:
-    """Open the stream, or give the call's hold back. ``None`` = every step failed.
+) -> tuple[list[Any], Any, ResolvedTier] | router_mod.UpstreamFailed:
+    """Open the stream, or give the call's hold back. A failure is RETURNED.
 
     🔴 **Every way the stream fails to open returns the hold (2026-09-28).**
     No body generator runs after a failed open, so nothing else would settle
-    it. A vendor refusal answers ``None`` and the route sends the closed-stream
-    sentinel. Any other error (an anyio error, a bug building the call) also
-    returns the hold, then propagates unchanged.
+    it. A vendor refusal returns the ``UpstreamFailed`` and the route answers
+    :func:`_stream_failure` (AO-3). Any other error (an anyio error, a bug
+    building the call) also returns the hold, then propagates unchanged.
 
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
     """
@@ -9038,7 +9092,7 @@ def _open_stream_or_release(
     except router_mod.UpstreamFailed as failed:
         _log_refusal("router.stream_open_failed", failed)
         _release_call_hold(org_id, request_id)
-        return None
+        return failed
     except BaseException:
         _release_call_hold(org_id, request_id)
         raise
@@ -9072,24 +9126,48 @@ def _open_stream_chain(
     )
 
 
-async def _stream_closed() -> AsyncIterator[bytes]:
-    """Every step refused before a frame existed. Close cleanly, meter nothing.
+#: The reason of a stream that no step could open (AO-3). OUR word, never the
+#: vendor's. A spend refusal keeps its own reasons and statuses.
+STREAM_UNAVAILABLE = "unavailable"
 
-    A client that never sees the sentinel waits for its own timeout, so it
-    gets the sentinel and nothing else.
 
-    ⚠️ **The 200 here is a CHOICE now, and it was a constraint before.** While
-    the open lived inside the body generator the status line had already gone
-    out, and a 502 could not be expressed at all. The walk moved into the
-    route, so that 502 became reachable — and this slice still does not raise
-    it, because changing what a streaming caller is answered WITH is not a
-    failover change. ``test_a_stream_that_never_starts_writes_no_usage_row``
-    pins the 200 and the sentinel.
+def _stream_failure(failed: router_mod.UpstreamFailed) -> HTTPException:
+    """The answer for a stream that no step opened.
+
+    🔴 **A terminal vendor status is NOT an outage (AO-3 fix round).** A 400,
+    404, 413 or 422 means the request itself is wrong, such as a context
+    overflow or an image that is too large. ``walk_chain`` stops on it at
+    once. The chat must not say "try again in a few minutes", because each
+    retry fails the same way. So it takes :func:`_upstream_refusal`, as the
+    buffered path does, and the chat shows ``model_refused``. A billing 400
+    is lifted to 402 by ``router.effective_status`` and stays an outage. Fence:
+    ``test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503``.
+    """
+    if failed.status in router_mod.TERMINAL_STATUSES:
+        return _upstream_refusal(failed)
+    return _stream_unavailable()
+
+
+def _stream_unavailable() -> HTTPException:
+    """Every step refused before a frame existed. Say so with a status.
+
+    🔴 **A 503, not a 200 with a lone ``[DONE]`` (AO-3, 2026-11-17).** The
+    Anthropic account ran out of credits on production, and every chat turn
+    got the old sentinel. The gateway relayed it, and the agent read an empty
+    stream as a finished turn. The member saw an empty reply. The walk runs
+    before the response starts, so a status is still possible here.
+
+    The body is ``{"detail": {"reason": "unavailable"}}``. It holds no vendor
+    text, because a vendor message can quote the request. The gateway reads
+    the 5xx class (``ConsoleRouterUnavailable``), and the chat shows the
+    ``ai_unavailable`` card.
 
     ⚠️ **No usage row, and no refusal row either.** The wall was the vendor's,
-    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1).
+    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1). So this
+    is raised directly, never through ``_raise_spend_refusal``. Fence:
+    ``test_a_stream_that_never_starts_writes_no_usage_row``.
     """
-    yield SSE_DONE
+    return HTTPException(status_code=503, detail={"reason": STREAM_UNAVAILABLE})
 
 
 async def _streamed_completion(
@@ -9391,6 +9469,11 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         passthrough["messages"] = messages_for_step(
             passthrough["messages"], step.model,
         )
+        # Task 2875: an Anthropic step caches only what its request marks, and
+        # only this step knows its model. The marks go on the stable system
+        # block and the last tool, behind CUSTOMER_CONSOLE_PROMPT_CACHE (off:
+        # the same dict comes back). Per step, because a chain may mix vendors.
+        passthrough = prompt_cache_for_step(passthrough, step.model)
         # Task 1128: a thinking parameter reaches only a step whose model
         # takes it. litellm here runs with no `drop_params`, so a step that
         # refuses `thinking` would answer 400 for the whole request.
@@ -9487,15 +9570,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             org_id=org_id, request_id=request_id,
             watch=_chain_watch(credentials),
         )
-        if opened is None:
-            # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
-            # raises. `_stream_closed` holds the reason this stayed a 200 once
-            # the walk moved out of the body generator and made a 502
-            # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
+        if isinstance(opened, router_mod.UpstreamFailed):
+            # 🔴 AO-3: a 503 with the reason `unavailable`, before any frame.
+            # `_stream_unavailable` holds why it is no longer a 200 with a
+            # lone sentinel. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            return StreamingResponse(
-                _stream_closed(), media_type="text/event-stream", headers=headers
-            )
+            # A terminal status keeps its 400 class (`_stream_failure`).
+            raise _stream_failure(opened)
         head, source, resolved = opened
 
         return StreamingResponse(
@@ -12222,6 +12303,71 @@ def usage_members_for_member(
             conn, req, caller, permits=_can_use_ai
         )
     return _member_spend_view(org_id)
+
+
+# ── AUTO-8b-2d · the spend of ONE run, for the headless turn's meter ────────
+#
+# The headless turn (`gateway/jobs/headless_turn.py`) reads the credits of the
+# run of each round before the call and after it, and the change is the cost
+# of the round (`proactive_agent.md` §4.4). This door is the one reader. It is
+# the sum that the Router's own `RunCeiling` reads (`store.run_spend`), so the
+# meter and the ceiling see one number.
+#
+# The org comes from the deployment key and the acting member, the way the
+# Router metered the call on the deployment arm (R11). The body can never name
+# an org: `org_slug` is 400 (`_admin_scheme_for_deployment`), and any other
+# field is 422. An unknown run reads "0.0000". The door writes nothing.
+#
+# ⚠️ Not a browser door. The gateway calls it from the job worker only
+# (`console_resolve.run_spend_on_console`), so it is not in
+# `BILLING_READ_DOORS` and has no `/billing/*` route.
+
+
+class RunSpendRequest(AdminSchemeRequest):
+    """The body of the run spend read: the acting member and the run id.
+
+    ``extra: forbid``. ``run_id`` must be a UUID, so a bad id is 422. The
+    door sums the run id in its canonical form (lower case, with hyphens),
+    the form ``str(uuid.uuid4())`` gives the turn.
+    """
+
+    run_id: uuid.UUID
+
+    model_config = {"extra": "forbid"}
+
+
+class RunSpendView(BaseModel):
+    """The credits of one run in the actor's org, as a string with 4 places."""
+
+    credits: str
+
+
+def _four_places(amount: Decimal) -> str:
+    """*amount* as a string with exactly 4 places, never in E notation.
+
+    ``usage_event.billed_credits`` is ``NUMERIC(14, 4)``, so the sum has 4
+    places already. A sum with more places rounds UP, so a reader of money
+    never sees less than was spent.
+    """
+    return format(amount.quantize(Decimal("0.0001"), rounding=ROUND_CEILING), "f")
+
+
+@app.post("/registry/usage/run")
+def usage_run_for_member(
+    req: RunSpendRequest, caller: BillingReadCaller
+) -> RunSpendView:
+    """The credits that run ``run_id`` spent in the actor's org (AUTO-8b-2d).
+
+    The same gate as the other spend doors: ``billing_read``, the operator arm
+    refused, the org derived from placement and membership, and ``can_use_ai``.
+    Read-only: it sums ``usage_event`` and writes no row.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(
+            conn, req, caller, permits=_can_use_ai
+        )
+        spent = store.run_spend(conn, org_id=org_id, run_id=str(req.run_id))
+    return RunSpendView(credits=_four_places(spent))
 
 
 @app.get("/admin/usage/breakdown")

@@ -25,7 +25,6 @@ The migration is found by CONTENT, never by number (R1).
 from __future__ import annotations
 
 import hashlib
-import re
 import secrets
 import uuid
 from base64 import b64encode
@@ -44,6 +43,7 @@ from gateway.routes.email.automation import assistant as assistant_mod
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _seed_account
 from tests.unit.test_email_signature_images import needs_child
@@ -107,9 +107,7 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     database gate is disarmed. Match the argument line, not a mention. The
     release gate in deploy.yml holds a copy of the list."""
     for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(
-            r"^\s+tests/unit/test_email_signature_images_r8\.py \\?$", workflow, re.M), name
+        assert "tests/unit/test_email_signature_images_r8.py" in r8_lists.must_run(), name
 
 
 @_DB_GATE

@@ -351,7 +351,8 @@ def test_the_state_counts_read_the_pill_query() -> None:
         "agent_state_sql" in inspect.getsource(filters._state_exists))
     assert filters.agent_state_sql(
         "r.task_id = ANY(CAST(:ids AS uuid[]))") == filters._AGENT_STATE_SQL
-    assert filters.WORKING_STATES == ("working", "answered", "stale")
+    # Task 1045a: a `waiting` run still holds its task, so it counts as working.
+    assert filters.WORKING_STATES == ("working", "answered", "stale", "waiting")
 
 
 def test_the_batched_flag_is_the_one_predicate() -> None:

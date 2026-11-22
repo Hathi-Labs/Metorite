@@ -50,6 +50,11 @@ when it ends. The cost of a round is known only at its end, so the cost cap
 stops the NEXT round, and the last round can go past the cap. A blocked or
 final goal takes no round: the store raises :class:`GoalStateError`.
 
+**The mark of a call** (WS-AUTO AUTO-8b-2a). The headless turn writes the
+id of its job in ``job_id`` with :func:`update_goal` before each call.
+``record_round(..., clear_job_id=True)`` clears it in the write of the round.
+So a goal that still holds a mark had a call whose round has no record.
+
 **Block codes.** :data:`BLOCK_CODES` is the closed set, with one sentence
 for the member for each code. The CHECK ``goal_records_block_code`` holds the
 same set. A goal is ``blocked`` if and only if it has a code.
@@ -166,10 +171,13 @@ _UPDATE_SQL = (
     f"RETURNING {_COLUMNS}"
 )
 
-#: One round, with the same compare-and-set.
+#: One round, with the same compare-and-set. ``:clear`` clears ``job_id`` in
+#: the same write (WS-AUTO AUTO-8b-2a), so a round and the end of its mark
+#: land together or not at all.
 _ROUND_SQL = (
     "UPDATE goal_records SET round_count = :rounds, cost_used_credits = :used, "
     "state = :state, block_code = :block, "
+    "job_id = CASE WHEN :clear THEN NULL ELSE job_id END, "
     "version = version + 1, updated_at = now() "
     f"{_WHERE_GOAL} AND version = :v AND state = 'active' "
     f"RETURNING {_COLUMNS}"
@@ -478,13 +486,19 @@ async def update_goal(db: Any, member: str, goal_id: str, expected_version: int,
 
 
 async def record_round(db: Any, member: str, goal_id: str, expected_version: int,
-                       cost_credits: int | float | Decimal) -> Goal | None:
+                       cost_credits: int | float | Decimal, *,
+                       clear_job_id: bool = False) -> Goal | None:
     """Add one round and its cost to the active goal *goal_id* of *member*.
 
     When the round reaches the round cap or the cost cap, the same write
     moves the goal to ``blocked`` with ``cap_reached``. The caller reads
     ``block_code`` of the goal that this call answers, and starts no round
     on a goal that is not active.
+
+    *clear_job_id* True sets ``job_id`` to NULL in the SAME UPDATE (WS-AUTO
+    AUTO-8b-2a). The headless turn writes its mark in ``job_id`` before a
+    call, so the record of the round and the end of the mark are one write.
+    The default keeps ``job_id``.
 
     Answers the new goal, or None when the member cannot see the goal. Raises
     :class:`StaleGoal` when the goal is not at *expected_version*, and
@@ -494,6 +508,8 @@ async def record_round(db: Any, member: str, goal_id: str, expected_version: int
     gid = _uuid(goal_id, "goal_id")
     expected = _version(expected_version)
     cost = _credits(cost_credits, "cost_credits", allow_zero=True)
+    if not isinstance(clear_job_id, bool):
+        raise GoalStoreError("clear_job_id must be True or False")
     goal = await _read_for_write(db, m, gid, expected)
     if goal is None:
         return None
@@ -504,7 +520,8 @@ async def record_round(db: Any, member: str, goal_id: str, expected_version: int
     block = cap_block(rounds, goal.round_cap, used, goal.cost_cap_credits)
     row = (await db.execute(text(_ROUND_SQL), {
         "m": m, "id": gid, "v": expected, "rounds": rounds, "used": used,
-        "state": "active" if block is None else "blocked", "block": block})).first()
+        "state": "active" if block is None else "blocked", "block": block,
+        "clear": clear_job_id})).first()
     if row is None:
         raise StaleGoal(None)
     return _goal(row)

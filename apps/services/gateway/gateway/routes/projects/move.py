@@ -58,7 +58,8 @@ from gateway.routes.projects.core import (
     actor,
     assert_holds_tasks,
     assert_move_keeps_privacy,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     emit,
     from_jsonb,
     load_visible_project,
@@ -72,6 +73,7 @@ from gateway.routes.projects.core import (
     router,
     status_order_sql,
     status_owner_id,
+    transient_as_409,
     update_row,
     vocabulary_scope,
 )
@@ -296,7 +298,7 @@ async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
     assert_holds_tasks(dest, then="Move into")
-    assert_not_archived(dest, then="Move into")
+    assert_project_open_for_writes(dest)
     return dest
 
 
@@ -389,6 +391,10 @@ async def _plan(
     than two that drift apart.
     """
     tasks = await _selection(db, vis, payload.task_ids)
+    # ARC-2b: a move OUT of an archived project is refused (409). The
+    # destination check is in `_destination`. The preview refuses too.
+    for task in tasks:
+        await assert_task_project_open(db, task)
     source_project_id = shared_source(tasks)          # D-PM-30
     dest = await _destination(db, vis, payload.destination_project_id)
     dest_id = str(dest.id)
@@ -744,6 +750,7 @@ AGENT_MOVE_NEEDS_DROPS = (
 
 
 @router.post("/tasks/move")
+@transient_as_409
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
 ) -> dict:

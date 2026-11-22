@@ -60,6 +60,8 @@ export interface ViewTabsProps {
   /** False while nothing is filtered, regrouped or reshaped: nothing to save. */
   canAddView: boolean;
   addViewHint?: string;
+  /** SW-112: canvases withheld from the row. A dark canvas is absent, not greyed. */
+  hiddenModes?: readonly ViewMode[];
   /** Classes for the outer box, so the page can move the row below the title in a narrow pane. */
   className?: string;
 }
@@ -129,6 +131,7 @@ export function ViewTabs({
   onDeleteView,
   canAddView,
   addViewHint,
+  hiddenModes,
   className = "",
 }: ViewTabsProps) {
   const box = useRef<HTMLDivElement | null>(null);
@@ -164,9 +167,12 @@ export function ViewTabs({
     return () => window.removeEventListener("resize", measure);
   }, [measure]);
 
-  // The node's own canvases, in the order of `VIEW_MODES`. A string key, so a
-  // fresh array with the same canvases does not lay the row out again.
-  const offeredKey = (canvases ?? canvasesFor(VIEW_MODES, false).map((m) => m.id)).join("|");
+  // The node's own canvases, in the order of `VIEW_MODES`, less a dark one
+  // (SW-112). A string key, so a fresh array with the same canvases does not
+  // lay the row out again.
+  const offeredKey = (canvases ?? canvasesFor(VIEW_MODES, false).map((m) => m.id))
+    .filter((id) => !hiddenModes?.includes(id))
+    .join("|");
   const canvasOptions = useMemo(() => {
     const offered = new Set(offeredKey.split("|"));
     return VIEW_MODES.filter((entry) => offered.has(entry.id)).map((entry) => ({

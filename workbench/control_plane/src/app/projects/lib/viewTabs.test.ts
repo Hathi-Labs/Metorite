@@ -22,7 +22,7 @@ import {
 } from "./viewTabs";
 
 const label = (id: string) => id.charAt(0).toUpperCase() + id.slice(1);
-/** The six canvases of a Flow node: every canvas but the Backlog (SP-3a). */
+/** The seven canvases of a Flow node: every canvas but the Backlog (SP-3a). */
 const CANVASES: TabSpec[] = canvasesFor(VIEW_MODES, false).map((m) => ({
   id: m.id,
   label: label(m.id),
@@ -49,11 +49,11 @@ describe("view tab row", () => {
   it("drops the labels before it folds a tab", () => {
     const wide = foldTabs({ tabs: CANVASES, active: ["list"], available: 10_000, iconOnly: false });
     expect(wide.folded).toEqual([]);
-    // Too narrow for six labels, wide enough for six icons and "+ View".
+    // Too narrow for seven labels, wide enough for seven icons and "+ View".
     const narrow = layoutTabs({
       tabs: CANVASES,
       active: ["list"],
-      available: 6 * 30 + 5 * 4 + 4 + ADD_WIDTH + 4,
+      available: CANVASES.length * 30 + (CANVASES.length - 1) * 4 + 4 + ADD_WIDTH + 4,
       viewport: 1440,
     });
     expect(narrow.iconOnly).toBe(true);
@@ -65,12 +65,12 @@ describe("view tab row", () => {
     const out = layoutTabs({ tabs, active: ["board"], available: 700, viewport: 1024 });
     expect(out.iconOnly).toBe(true);
     expect(out.folded.length).toBeGreaterThan(0);
-    expect(out.visible.slice(0, 6)).toEqual(CANVASES.map((c) => c.id));
+    expect(out.visible.slice(0, CANVASES.length)).toEqual(CANVASES.map((c) => c.id));
     expect([...out.visible, ...out.folded].sort()).toEqual(tabs.map((t) => t.id).sort());
     expect(out.folded).toEqual(tabs.map((t) => t.id).filter((id) => out.folded.includes(id)));
   });
 
-  it("keeps all six canvases while any saved view shows", () => {
+  it("keeps all canvases while any saved view shows", () => {
     const tabs = [...CANVASES, ...views(8)];
     for (const available of [400, 450, 520, 600, 700, 900, 1100]) {
       const out = layoutTabs({ tabs, active: ["board"], available, viewport: 1024 });
@@ -83,7 +83,7 @@ describe("view tab row", () => {
   it("folds the saved views first, last first", () => {
     const tabs = [...CANVASES, ...views(8)];
     const out = layoutTabs({ tabs, active: ["board"], available: 560, viewport: 1024 });
-    expect(out.visible.slice(0, 6)).toEqual(CANVASES.map((c) => c.id));
+    expect(out.visible.slice(0, CANVASES.length)).toEqual(CANVASES.map((c) => c.id));
     expect(out.folded.length).toBeGreaterThan(0);
     expect(out.folded.every((id) => id.startsWith("v"))).toBe(true);
     // The first views stay, the last ones go.
@@ -98,10 +98,10 @@ describe("view tab row", () => {
     expect(out.visible).toContain("v7");
   });
 
-  it("folds canvases only when even the six icons do not fit", () => {
+  it("folds canvases only when even the seven icons do not fit", () => {
     const tabs = [...CANVASES, ...views(2)];
-    // Six icons, five gaps, the margin, "+ View" and "More": the least that holds all six.
-    const least = 6 * 30 + 5 * 4 + 4 + ICON_ACTION + ICON_ACTION + 4;
+    // Seven icons, six gaps, the margin, "+ View" and "More": the least that holds all seven.
+    const least = CANVASES.length * 30 + (CANVASES.length - 1) * 4 + 4 + ICON_ACTION + ICON_ACTION + 4;
     const fits = layoutTabs({ tabs, active: ["board"], available: least, viewport: 1024 });
     expect(CANVASES.every((c) => fits.visible.includes(c.id))).toBe(true);
     expect(fits.folded.every((id) => id.startsWith("v"))).toBe(true);
@@ -139,7 +139,7 @@ describe("view tab row", () => {
     expect(canvasTitle("Board", undefined)).toBe("Board");
     expect(viewTabIcon("board")).toBe("Kanban");
     expect(viewTabIcon("list")).toBe("List");
-    expect(VIEW_MODES.map((m) => m.key)).toEqual(["o", "b", "l", "t", "c", "m", "k"]);
+    expect(VIEW_MODES.map((m) => m.key)).toEqual(["o", "b", "l", "t", "c", "m", "k", "a"]);
   });
 });
 
@@ -161,20 +161,21 @@ describe("the Backlog canvas in the tab row", () => {
   });
 
   it("is one more canvas for a Sprints node, and none for any other node", () => {
-    expect(ids(false)).toEqual(["overview", "board", "list", "table", "calendar", "timeline"]);
-    expect(ids(true)).toEqual([...ids(false), BACKLOG_CANVAS]);
+    expect(ids(false)).toEqual(["overview", "board", "list", "table", "calendar", "timeline", "agents"]);
+    // The Backlog sits after the Timeline. The Agents map stays last (SW-112).
+    expect(ids(true)).toEqual(["overview", "board", "list", "table", "calendar", "timeline", BACKLOG_CANVAS, "agents"]);
     expect(ids(false)).not.toContain(BACKLOG_CANVAS);
   });
 
   it("folds like any other canvas when the node offers it", () => {
-    const seven = canvasesFor(VIEW_MODES, true).map((m) => ({
+    const eight = canvasesFor(VIEW_MODES, true).map((m) => ({
       id: m.id,
       label: label(m.id),
       kind: "canvas" as const,
     }));
-    const out = layoutTabs({ tabs: [...seven, ...views(2)], active: ["backlog"], available: 10_000, viewport: 1440 });
+    const out = layoutTabs({ tabs: [...eight, ...views(2)], active: ["backlog"], available: 10_000, viewport: 1440 });
     expect(out.visible).toContain(BACKLOG_CANVAS);
-    const narrow = foldTabs({ tabs: seven, active: [BACKLOG_CANVAS], available: 10, iconOnly: true });
+    const narrow = foldTabs({ tabs: eight, active: [BACKLOG_CANVAS], available: 10, iconOnly: true });
     expect(narrow.visible).toEqual([BACKLOG_CANVAS]);
   });
 

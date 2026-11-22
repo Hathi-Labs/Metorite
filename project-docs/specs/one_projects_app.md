@@ -1,6 +1,6 @@
 # One Projects app — My Tasks becomes a view, and the phone shows the work
 
-**Status: ACTIVE, 2026-10-23. ARC-1 is BUILT 2026-11-09 (task 1545, no migration): the Archive chip of My tasks lists the member's archived tasks across projects, and Restore works for one task or many (§9b.4). PJP-14 is BUILT 2026-11-04 (task 1605, no migration): a ready agent task is not New (D170 amendment, §4.2). INB-1 is BUILT 2026-11-03 (D170, task 1522, no migration): the task inbox holds only captures, and assigned untriaged work shows in My tasks as New. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
+**Status: ACTIVE, 2026-10-23. ARC-1 is BUILT 2026-11-09 (task 1545, no migration): the Archive chip of My tasks lists the member's archived tasks across projects, and Restore works for one task or many (§9b.4). MOB-2 is BUILT 2026-11-07 (task 1537, no migration): the List draws a phone row at 390 px and 360 px, behind the compact-chrome flag (§9b.4). PJP-14 is BUILT 2026-11-04 (task 1605, no migration): a ready agent task is not New (D170 amendment, §4.2). INB-1 is BUILT 2026-11-03 (D170, task 1522, no migration): the task inbox holds only captures, and assigned untriaged work shows in My tasks as New. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
 **WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is IN PROGRESS. Its server half is BUILT 2026-10-27, with no migration: one "mine" (`core.mine_clause`), `scope=mine` on the list and the calendar, `GET /projects/my/summary`, `subject=me` on Analytics, and the MCP edge fixes of audit P1-3 and P1-4 (§9 OP-11, "The server half"). Its UI half is BUILT 2026-10-27 on branch `ws64-op11-my-tasks-ui`, with fix round 1, behind the My work flag: the My tasks roll-up space with the project tabs, the chips, a board by stage, a project chip on each row, and the old list ids as aliases (§9 OP-11, "The UI half"). The Timeline tab is not built.
 
@@ -365,7 +365,7 @@ authority: the route still checks the member's own access.
 | Agent runs | `waiting_agent_requests` (BUILT, OP-6e). The other `PLANNED` tools wait for EA-12e | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
-| Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
+| Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact`, `POST /tasks/{id}/agent-delete` and `POST /nodes/{id}/sequences/{name}/reserve` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`). So is the reserve door (SW-27a): an agent reserves a number, and SW-27b gives it the MCP tool |
 
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 29
 routes that stay class X. OP-11 added `GET /projects/my/summary` to the
@@ -397,10 +397,10 @@ list of pending OP-6 routes is empty since OP-6d. A second list names a route wh
 | Id | Decision | Default |
 |---|---|---|
 | **D-OP-1** | My Tasks stops being an app. Projects holds it as the My work section. The store of D53 does not change | Accept (owner directive) |
-| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders. Amended 2026-10-30 (OP-12b): the PERSONAL heading IS the space and the root draws as no row. "Personal" is the display name everywhere, whatever the stored name. Each sidebar count is open tasks | Accept. Owner, 2026-10-30, verbatim: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" |
+| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders. Amended 2026-10-30 (OP-12b): the PERSONAL heading IS the space and the root draws as no row. "Personal" is the display name everywhere, whatever the stored name. Each sidebar count is open tasks. **Amended by the owner, 2026-11-18 (§9d, MW-3):** the display name is "Personal space", and the company tree is "Org spaces" | Accept. Owner, 2026-10-30, verbatim: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" |
 | **D-OP-3** | The name of the section is **My work** | Accept. Other names: "My tasks", "Me" |
 | **D-OP-4** | `feature:tasks` gates My work and Personal. `feature:projects` gates the company tree | Accept |
-| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** |
+| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** **Amended by the owner, 2026-11-18 (§9d, MW-4):** "My tasks" returns to Personal Center as a link into Projects. It opens the same app, and `/tasks` still redirects |
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
@@ -1464,7 +1464,7 @@ compact density and a changed accent, at 1440, 1024, 768 and 390 px.
 
 ## 9b. The phone, the inbox, Undo, select many and the archive (2026-11-03)
 
-**Status:** 📋 SPEC. MOB-1 and INB-1 are in build. Decisions: D170 and D171. Metorite: epic 1500 (the phone), tasks 1521 (MOB-1), 1522 (INB-1) and 1523 (this section).
+**Status:** 📋 SPEC. MOB-2 is BUILT 2026-11-07 (`listPhoneRow.ts`, `TaskList.tsx`, fences `listPhoneRow.test.ts` and `e2e/projects-list-phone.spec.ts`). MOB-1 and INB-1 are in build. Decisions: D170 and D171. Metorite: epic 1500 (the phone), tasks 1521 (MOB-1), 1522 (INB-1) and 1523 (this section).
 
 ### 9b.1 The owner's asks
 
@@ -1541,7 +1541,7 @@ Each fence is advisory until its slice builds.
 
 ### 9b.6 An archived project opens read-only (2026-11-09)
 
-**Status:** ARC-2a BUILT 2026-11-09. ARC-2b and ARC-2c are 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
+**Status:** ARC-2a BUILT 2026-11-09. ARC-2b BUILT 2026-11-22 (PR pending). ARC-2c is 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
 
 On 2026-11-08 the owner asked whether the archive design was settled. A review found that an archived project opened from the rail's Archived section gave no sign that it was archived. Its board also kept every edit control. The rail itself drew a filed project twice (ARC-BUG-1, task 2325, merged 69c40d08e).
 
@@ -1554,8 +1554,11 @@ On 2026-11-08 the owner asked whether the archive design was settled. A review f
    - A row that was filed with an ancestor (`archived_root_id` is not its own id) says "Archived with <ancestor name> on <date>."
    - The bar holds one Restore button. Restore runs the unarchive of `archived_root_id`, the same act as Unarchive on the rail menu. The whole filed branch returns.
 2. **Read-only on the server.** A task write into a project with `archived_at` answers 409: "This project is archived. Restore it to change its work."
-   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. A bulk act follows the bulk refusal rule that exists. It names each refused task.
-   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it.
+   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. The server also refuses a task delete, an agent delete, a move OUT of an archived project, a Check result and an epic contract save. A bulk act follows the bulk refusal rule that exists. It names each refused task.
+   - The overlay exception: NEXT, INBOX or WAITING on a closed task reopens it (D77). The reopen changes the status, so the server refuses it. The bulk overlay act names the task as failed.
+   - Subtasks: a parent in a live project can hold a subtask in an archived project. Complete and archive with the subtasks skip that subtask, as they skip a hidden one. Delete all keeps it, and it moves up with the other kept subtasks. The server refuses a delete that names it.
+   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it. The member's own overlay, watch, asks, cycles, tag, field and status registry edits, and the importer stay open. An overlay write that reopens nothing stays open.
+   - Allowed: the purge of a task in the member's own personal tree (`DELETE /projects/my/tasks/{id}`). It ends the member's own TRASH, and no other member is on the task. It is the member's own data, not team work.
    - Chat and MCP reach the same routes. So they show the same words, and no tool needs its own check.
 3. **Read-only in the app.** The views of an archived project draw no write control. That means no New task, no quick add, no drag, no inline edit and no bulk bar. The task panel shows its fields as text. Filters, views, search and export stay. ARC-2c builds after ARC-2b, so a control that the app misses still meets the server's refusal.
 4. **What does not change.** Archive still stamps projects and never tasks. Reports and automation still skip archived work. The rail keeps one Archived section (task 2325).
@@ -1594,6 +1597,116 @@ Each slice except TC-1 ships behind `NEXT_PUBLIC_TASK_CARD_V2`. None needs a mig
 - TC-3: a source scan that no surface draws a second task card.
 
 Each fence is advisory until its slice builds.
+
+## 9d. Personal work: Done in the inbox, a task with no project, the two space names, and My tasks in the sidebar (2026-11-18)
+
+**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. The owner accepted the recommendations of §9d.5 the same day. Verified against `origin/main` at `f4c6ff08f`. Metorite: spec task 3759, slices MW-1 to MW-4 are tasks 3753 to 3756, and the demo is task 3757.
+
+### 9d.1 The owner's asks
+
+The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+In my task inbox, I might want to close a task directly in the task inbox in
+case I've already done it without clarifying, so that capability should be
+there.
+
+My tasks should be able to just hold tasks without the need to be in a
+particular personal or company project.
+
+Instead of personal, call it personal space. Which, when hovered, you can
+specify that these are the personal spaces that are visible only to you and
+separate from the organization, which can house personal projects. Similarly,
+the other spaces, instead of spaces, you call it Org Spaces. And simply tells
+the user that this is the space for company organization, which is shared with
+everybody in the company.
+
+Just check out whether the specs for being able to change the visibility and
+create teams and groups that will have different kinds of visibility for the
+projects have been factored in. This will eventually be built out later.
+
+On the left sidebar inside personal center. I want my tasks to also appear.
+Basically, that's just the projects app, but the view with my tasks. [...] it
+opens the same app, basically.
+```
+
+The owner also asked for a brainstorm about Calendar and the chat. The reply to the owner holds it, and it points at the slices that exist (§9d.6).
+
+### 9d.2 What the code does on 2026-11-18
+
+- **The inbox has no Done.** An inbox row offers Edit, Snooze, Someday, Reference and Clarify (`app/tasks/components/InboxCard.tsx:313-350`). The row menu offers Move to project and Delete, or Not mine and Open on board (`app/tasks/lib/inbox.ts:96-140`). No row closes a task. The server already has the close: `POST /projects/tasks/{id}/complete` (`gateway/routes/projects/personal.py:2729`), whose docstring says "Tick a task off from my inbox". The store calls it for a DONE disposition (`app/tasks/lib/taskStore.ts:1134`). No spec forbids a close from the inbox. D170 says only that the inbox holds captures.
+- **Every task has a project.** `pm_tasks.project_id` is `NOT NULL` (`infra/postgres/146_projects.sql:192`). A personal task is a private task in the member's personal project (D53.3). `ensure_personal_project` makes that root once for each member (`personal.py:481`).
+- **A quick add in My tasks goes to the inbox.** It files the task to the personal root (`app/projects/lib/myTasks.ts:516`), where it reads as INBOX (`MyTasksSpace.tsx:24`). So a task added under Today or Next does not show in Today or Next. Only the Board view offers a quick add (`MyTasksSpace.tsx:757`).
+- **The two section names.** "Personal" is `PERSONAL_SECTION_LABEL` (`app/projects/lib/personalTree.ts:20`). Its hint "Private to you" (`:23`) shows through a native `title` (`page.tsx:738-741`). "Spaces" is `SPACES_SECTION_LABEL` (`app/projects/lib/projectApps.ts:211`), drawn at `page.tsx:857` with no tip.
+- **An org space is not always open to everyone.** Visibility is a set of grants in `pm_project_grants` (D-PM-3). A new space gets an `org` grant, so everyone in the company sees it. Its lead or a settings admin can remove `org` and grant a team (`group:<slug>`) or one person (D12, D-OP-11).
+- **My Tasks left the sidebar on 2026-10-25** (D-OP-1, D-OP-5). The `/tasks` pane is `preview` (`lib/nav.ts:201-212`), and `/tasks` redirects to `/projects?app=my-tasks&chip=today` (`lib/tasksRedirect.ts`). The shell marks an entry active by its path only (`lib/shell/shellNav.ts:394-397`). So an entry whose address holds `?app=my-tasks` never shows active.
+
+**The visibility check (the owner's fourth ask).**
+
+| Part | State | Where |
+|---|---|---|
+| Grants on a space or a project: everyone, a team, or one person | BUILT on the server | `GET`, `POST` and `DELETE /projects/nodes/{id}/grants` (`routes/projects/tree.py`), D12, D-PM-3 |
+| Change access from the chat | BUILT, with an approve card | `grant_access` and `revoke_access` (OP-6b) |
+| Teams | BUILT. A team is a group, and an admin makes it | `/settings/groups` ("Teams"), `routes/admin/groups.py` |
+| A team view, a team chip, and sharing a space with a team | PLANNED, not built | `project_management_app.md` §14.9, T-1 to T-7 (tasks 2532 to 2538), flag `TEAMS_ORGS` |
+| A screen in Projects that shows and changes who can see a space or a project | NOT SPECIFIED until this section | The app reads the grants (`app/projects/lib/api.ts:2490`, `page.tsx:1693`) and writes none. §14.9 now holds it as T-8, Later |
+| A personal space shared with anyone | Refused by design | D-OP-2, D-OP-15. "Move to a project" is the way to share |
+
+### 9d.3 The design
+
+1. **Done in the inbox.** Each inbox row, card and table, gets one Done act beside Clarify. It closes the task through the store's DONE path, so the request is `POST /projects/tasks/{id}/complete`. A parent with open subtasks asks first (D-PM-38). The act shows a toast with Undo, and Undo puts the task back in the inbox. Clarify stays the main act of a row. A close is not a clarify, and D170 does not change.
+2. **A task with no project, in the member's eyes.** D53.3 does not change: the personal root holds the task. The change is what the member sees and where the task lands.
+   - A quick add in My tasks takes the chip on screen. Today gives Next with a start date of today. Next, Waiting and Someday give that disposition. All and New give Next.
+   - The task never lands in the inbox. Only Capture and the inbox's own add make a capture (D170).
+   - The List view gets the same add row as the Board.
+   - A task in the personal root shows no project chip on its row. The task panel shows "No project", with "Move to a project" (D53.4).
+   - If the create route takes no disposition, the slice adds one optional field to it. No migration.
+3. **The two names, with tips.** The name and the tip come from the two constants of §9d.2. So every place that reads them changes at once.
+   - "Personal" becomes **"Personal space"**. Tip: "Only you can see this space. It is separate from your company's spaces. Keep your personal projects and tasks here."
+   - "Spaces" becomes **"Org spaces"**. Tip, accepted (Q-MW-1): "Your company's shared spaces. A new space is open to everyone in the company. Its lead can limit it to a team." The owner's words were "shared with everybody in the company". That is false for a space that its lead limited, so the owner accepted this text.
+   - Each tip uses `InfoTip`, so it opens on hover, on keyboard focus and on a tap. The native `title` at `page.tsx:738-741` goes (rule 12 of the UI contract).
+   - This amends the display name of D-OP-2. The stored name does not change.
+4. **My tasks in the sidebar.** "My tasks" returns to Personal Center as a link into Projects. It opens the same app, in the My tasks view. It is not a second app.
+   - Flip the `/tasks` pane (`lib/nav.ts:201`) to `live`, with the label "My tasks". Keep its manifest and its gate, `feature:tasks` (D-OP-4).
+   - While the My work flag is on, the entry links straight to `/projects?app=my-tasks`. So the click makes no redirect hop. A member with `feature:tasks` and no `feature:projects` keeps `/tasks`.
+   - The shell's active rule gets one case. On `/projects` with `app=my-tasks` or `app=my-inbox`, "My tasks" is active and "Projects" is not.
+   - The live set grows by one, in three files at once: `lib/nav.ts`, `launch_surface.md` §2 and `lib/nav.test.ts` (`LIVE_SET`).
+   - This amends D-OP-5, by the owner, 2026-11-18.
+
+### 9d.4 The slices
+
+One rung (D211). Its demo is task 3757, on production. The owner closes a capture from the inbox and adds a task under Today with no project. Then the owner reads both tips and opens My tasks from the sidebar.
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| MW-1 | 3753 | Done on each inbox row, card and table, with Undo (§9d.3 item 1) | One tap closes a capture. The count drops at once. Undo puts it back in the inbox. A parent with open subtasks asks first | LOW. UI gate |
+| MW-2 | 3754 | A quick add in My tasks takes the chip on screen, in the Board and the List. A task in the personal root shows "No project" (§9d.3 item 2) | On each chip, the new task shows in that chip at once, and never in the inbox. Its row has no project chip. "Move to a project" moves it | STANDARD. UI gate |
+| MW-3 | 3755 | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Q-MW-1 answered |
+| MW-4 | 3756 | "My tasks" in Personal Center, linked into Projects, with the active rule (§9d.3 item 4) | One click opens My tasks in Projects. The entry shows active there, and "Projects" does not. The three files agree | STANDARD. UI gate |
+| T-8 | 3758 | The access panel of a space or a project. Owned by `project_management_app.md` §14.9 | Later. Not on this rung | — |
+
+MW-1, MW-2 and MW-3 touch different files, so they can run at once. MW-4 touches the shell, so it runs alone. Each UI slice states its interaction in one sentence and puts its captures on the "Visual review:" line (rule 14). This adds no new flag. Each change sits inside My work, behind the My work flag.
+
+### 9d.5 Questions for the owner
+
+**The owner answered on 2026-11-18, in chat: "go ahead with your recommendations".** So Q-MW-1 to Q-MW-3 are ACCEPTED as recommended, and MW-3 no longer waits.
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q-MW-1 | The tip of "Org spaces" | The accurate text of §9d.3 item 3: a new space is open to everyone, and its lead can limit it to a team |
+| Q-MW-2 | A task with no project | The member sees "No project", and the personal root holds the task. The store and D53.3 do not change |
+| Q-MW-3 | A quick add under All or New | It makes a Next task. It never makes a capture |
+
+### 9d.6 Fences
+
+- MW-1: a vitest that the Done act calls the DONE path and that Undo restores the inbox row. `tests/unit/test_chat_parity.py` stays green, because the request already exists.
+- MW-2: a vitest of the chip-to-disposition rule. An R8 test that the create route stores the disposition that it takes.
+- MW-3: a vitest that each name and tip comes from its one constant, and that the rail draws no native `title`.
+- MW-4: `lib/nav.test.ts` (`LIVE_SET`), and a vitest of the active rule for `app=my-tasks`.
+
+Each fence is advisory until its slice builds.
+
+**The brainstorm, by its owners.** The chat that changes the calendar is CE-7b (`calendar_events_reminders.md`). A capture with a time is CC-1, task 1968 (`my_day_command_centre.md`). A drag from a list onto the day is CC-6, task 1974. Chat parity for the day is CC-10, task 1978. This section adds no slice for them.
 
 ## 10. Verification
 

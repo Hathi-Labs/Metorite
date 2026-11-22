@@ -282,6 +282,9 @@ const SEAM: {
       "app/projects/components/SpaceSummary.tsx":
         "the same 'Direct work' row, in the space table of Reports' " +
         "Overview (WS-27bn R5f). A project fact, not a subtask",
+      "components/studio/StudioTree.tsx":
+        "the 'Move under' button on a record row (STU-D18-2b). The glyph " +
+        "is an action, not a parent crumb. A Studio record is not a subtask",
     },
   },
   {
@@ -313,6 +316,12 @@ const SEAM: {
     what: "the subtask tree",
     home: "lib/taskTree.ts",
     declaration: /(?:^|\n)\s*(?:export\s+)?function\s+treeRows\b/,
+    except: {
+      "lib/studio/treeModel.ts":
+        "the Studio record tree: a different input shape (records with a " +
+        "parent ref, not tasks), lazy expand over up to 2,000 records. " +
+        "Not the task tree",
+    },
   },
 ];
 

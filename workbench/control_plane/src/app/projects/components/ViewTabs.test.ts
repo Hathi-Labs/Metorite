@@ -51,7 +51,7 @@ describe("the view tab row", () => {
   // A Flow node: every canvas but the Backlog (WS-39 SP-3a).
   const FLOW = canvasesFor(VIEW_MODES, false);
 
-  it("draws the six canvases first, then the saved views, then + View", () => {
+  it("draws the seven canvases first, then the saved views, then + View", () => {
     const order = [...FLOW.map((m) => m.id[0].toUpperCase() + m.id.slice(1)), "My open bugs", "Sprint", "View"];
     let at = -1;
     for (const label of order) {
@@ -158,5 +158,32 @@ describe("the View sheet", () => {
     const src = (rel: string) => readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
     expect(src("page.tsx")).toMatch(/compactChrome \? \(\s*\/\/[^\n]*\n[^\n]*\n\s*<ViewTabs/);
     expect(src("components/ViewSheet.tsx")).toContain("tabs={phone}");
+  });
+});
+
+describe("a dark canvas (SW-112)", () => {
+  const draw = (hiddenModes: readonly ("agents")[]) =>
+    renderToStaticMarkup(
+      createElement(ViewTabs, {
+        canvas: "board",
+        onCanvas: noop,
+        views,
+        activeViewId: null,
+        onView: noop,
+        onAddView: noop,
+        onDeleteView: noop,
+        canAddView: true,
+        hiddenModes,
+      })
+    );
+
+  it("is absent from the row while the map is dark", () => {
+    expect(draw(["agents"])).not.toContain("Agents</button>");
+    expect(draw(["agents"])).toContain("Timeline</button>");
+  });
+
+  it("is drawn last of the canvases when the map answers", () => {
+    const html = draw([]);
+    expect(html.indexOf("Agents</button>")).toBeGreaterThan(html.indexOf("Timeline</button>"));
   });
 });

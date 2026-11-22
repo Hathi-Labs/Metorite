@@ -35,11 +35,11 @@ function Drawn({ o }: { o: DraftObject }) {
   const list = useMemo(() => ({ action: `object:${o.name}.list`, args: { limit: 100 } }), [o.name]);
   const computed = useMemo(() => computedKeys(o.rules), [o.rules]);
   const table = useMemo(
-    () => tableBlock(tableFields(o.fields), list, o.label ?? o.name, { editable: false, computed: [...computed] }),
+    () => tableBlock(tableFields(o.fields), list, o.label ?? o.name, { editable: true, computed: [...computed] }),
     [o, list, computed],
   );
   const board = useMemo(
-    () => objectBoardBlock({ name: o.name, label: o.label }, o.fields, computed, list, false),
+    () => objectBoardBlock({ name: o.name, label: o.label }, o.fields, computed, list, true),
     [o, computed, list],
   );
   return (
