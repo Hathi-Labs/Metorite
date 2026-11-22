@@ -471,3 +471,65 @@ def test_a_label_of_a_text_number_field_is_admitted_and_summed() -> None:
 def test_a_split_of_one_field_by_key_and_label_is_not_distinct() -> None:
     with pytest.raises(HTTPException):
         field_sql.check_split(_scope(), "Rent,Rent Basic Amount")
+
+
+# ── fix round 3 ──────────────────────────────────────────────────────────────
+
+
+def test_crm_off_is_not_a_partial_scan(monkeypatch) -> None:
+    """A bare 404 on every route is the kill switch: say so, as with an entity."""
+    def answer(call: dict) -> Any:
+        return (404, {"detail": "Not Found"})
+
+    fake_gateway(T, monkeypatch, answer, client_class=_Routed)
+    scan = asyncio.run(T.crm_list_fields(query="capex"))
+    with_entity = asyncio.run(T.crm_list_fields("deals"))
+    assert "The CRM is off" in scan and "The CRM is off" in with_entity
+    assert "No field of any module" not in scan
+
+
+@pytest.mark.parametrize("query", [
+    "%", "₹", "नाम", "  ", "__"])
+def test_a_query_with_no_word_reads_nothing(monkeypatch, query) -> None:
+    calls = _gateway(monkeypatch)
+    out = asyncio.run(T.crm_list_fields(query=query))
+    if query.strip():
+        assert out.startswith("Refused:") and "one word or more" in out
+        assert [c["path"] for c in calls] == [T.FIELDS_SEARCH_PATH]
+
+
+@pytest.mark.parametrize(("q", "label", "key"), [
+    ("unit price", "Unit Price", "Unit_Price"), ("price unit", "Unit Price", "Unit_Price"),
+    ("prices", "Unit Price", "Unit_Price"), ("pri", "Unit Price", "Unit_Price"),
+    ("pr", "Unit Price", "Unit_Price"), ("unit cost", "Unit Price", "Unit_Price"),
+    ("install date", "Commissioned On", "InstallDate"), ("deals", "Deal Name", "Deal_Name"),
+    ("GST", "GST Number", "cf_gst_no"), ("id", "Ident", "cf_x"),
+    ("Rent_Basic_Amount", "Rent Basic", "RentBasicAmount"), ("capex amount", "Capex", "CapexAmt"),
+    ("price", "Unit Prices", "x"), ("", "Unit Price", "Unit_Price"),
+])
+def test_the_scan_matcher_equals_the_gateway_matcher(q, label, key) -> None:
+    """The scan mirrors ``fields.field_matches``. A change to one without the
+    other turns this red, so an org with the search on and one with it off
+    never match differently."""
+    from gateway.crm_sync.terms import words as gateway_words
+
+    assert T._scan_words(q) == gateway_words(q)
+    assert T._scan_words(label) == gateway_words(label)
+    assert T._scan_words(key) == gateway_words(key)
+    wanted = list(dict.fromkeys(gateway_words(q)))
+    assert T._scan_match(wanted, label, key) is fields.field_matches(wanted, label, key)
+
+
+def test_prefix_min_is_the_same_in_both() -> None:
+    assert T._SCAN_PREFIX_MIN == fields.PREFIX_MIN
+
+
+def test_a_sum_key_is_not_read_as_a_label() -> None:
+    ref = field_sql.FieldRef
+    scope = field_sql.FieldScope(column="fields", owner="module:M", fields={
+        "IP": ref(key="IP", type="currency", label="IP"),
+        "Rent": ref(key="Rent", type="currency", label="Rent"),
+        "EB_Total_Amount": ref(key="EB_Total_Amount", type="currency", label="EB Total"),
+        "Note": ref(key="Note", type="text", label="IP + Rent + EB Total Amount")})
+    assert field_sql._real_key(scope, "IP+Rent+EB_Total_Amount") == "IP+Rent+EB_Total_Amount"
+    assert field_sql._real_key(scope, "IP + Rent + EB Total Amount") == "Note"

@@ -1334,10 +1334,16 @@ async def _field_scan(query: str) -> str:
     import asyncio
 
     wanted = list(dict.fromkeys(_scan_words(query)))
+    if not wanted:
+        # The words of the gateway: a query with no letter or digit has none.
+        raise GatewayRefusal(
+            "Give query one word or more of the label or the key of a field.")
     failed: list[str] = []
     try:
         mods = await _get("/crm/modules") or []
-    except (_GatewayError, _Refused, httpx.HTTPError, TimeoutError):
+    except _Refused:
+        raise  # CRM off or closed is no partial read: say so, as with an entity
+    except (_GatewayError, httpx.HTTPError, TimeoutError):
         mods = []
         failed.append("the module list")
     names = [str(m.get("api_name")) for m in mods

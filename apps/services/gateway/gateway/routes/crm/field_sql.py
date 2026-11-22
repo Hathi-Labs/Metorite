@@ -1341,6 +1341,9 @@ def _real_key(scope: FieldScope, key: str) -> str:
     label. A key word, a sum and an unknown name come back as they are."""
     if key in scope.fields or key in KEY_WORDS:
         return key
+    # The order of :meth:`FieldScope.ref`: a sum of fields comes before a label.
+    if scope.column == MODULE_COLUMN and scope._sum_of(key) is not None:
+        return key
     found = scope._by_label(key) if scope.column == MODULE_COLUMN else None
     return found.key if found is not None else key
 
