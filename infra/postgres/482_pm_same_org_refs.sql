@@ -1,5 +1,5 @@
 -- ============================================================================
--- 476_pm_same_org_refs.sql — a pm_* key that names a row of another tenant
+-- 482_pm_same_org_refs.sql — a pm_* key that names a row of another tenant
 -- is refused, for the 21 keys that had no org guard (Metorite task 3846).
 --
 -- What: one new check-only function `pm_same_org_ref(ref_table, ref_column)`
@@ -45,6 +45,9 @@
 --   * `organization_id` of each pm_* table. It names the org itself.
 --   * The 29 attachments of `pm_organization_from_parent` (161, 402 and 471).
 --     One of them, `pm_epic_contracts.task_id`, also has its own guard (402).
+--   * The four keys of SW-27a (477): `pm_project_sequences.project_id`, and
+--     `pm_sequence_reservations.sequence_id`, `.task_id` and `.run_id`. 477
+--     attaches `pm_organization_from_parent` to each of them.
 --   * The keys that already have a named same-org guard: `pm_cycles.project_id`
 --     and `pm_cycle_tasks.task_id` (372), `pm_project_authorities.project_id`
 --     and `.page_id` (339), `pm_project_updates.project_id` (383), and
@@ -150,7 +153,9 @@
 --
 -- The number is taken at build time (R1). The lane booked 472 on the home
 -- box on 2026-11-21. SW-107 merged its own 472 first, so this file collided
--- with it. The orchestrator renumbered this file to 476 on 2026-11-22. Check
+-- with it. The orchestrator renumbered this file to 476 on 2026-11-22. Then
+-- SW-27a (PR 2763, task 861) merged 477 first, so the file became 482 on
+-- 2026-11-22. The home box ledger books 482 for task 3846 (PR 2737). Check
 -- it again at merge.
 --
 -- Depends on: 161_projects_tenancy.sql, 471 (the rule), 255, 267, 305, 340,

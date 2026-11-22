@@ -396,7 +396,7 @@ class TestTheDispatcherOnARealDatabase:
         """Postgres checks a foreign key with no row security, so the key
         alone lets a raw write in the tenant of org A name a run of org B,
         which RLS hides from it. The gateway's read in the caller's session
-        is the first guard. Task 3846 (migration 476, ``pm_same_org_ref``)
+        is the first guard. Task 3846 (migration 482, ``pm_same_org_ref``)
         added the second: the database now refuses that raw write with
         23503. A NULL still passes."""
         async with _session(w.p) as call:

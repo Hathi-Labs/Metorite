@@ -3,7 +3,8 @@
 Migration: the file that adds ``pm_same_org_ref()`` and its 21 attachments.
 This file finds it by its CONTENT, never by number (R1). The lane booked 472
 at build time. SW-107 merged its own 472 first, so the file became 476 on
-2026-11-22.
+2026-11-22. SW-27a (PR 2763) then merged 477 first, so the file became 482
+on the same day.
 
 **The gap.** A foreign key check ignores RLS. 471 closed the gap for the 29
 attachments of ``pm_organization_from_parent()``. Nineteen more pm_* keys had
@@ -18,7 +19,7 @@ no task, so its probe row is ``kind = 'child'`` with no task and no app.
 
 * For EACH attachment of ``pm_same_org_ref``: an INSERT bound to org A that
   names the row of org B is refused with SQLSTATE 23503 and the message of
-  the 476 body. A bypass role then finds no such row. One probe names org A
+  the 482 body. A bypass role then finds no such row. One probe names org A
   explicitly, as the app writes it. One names no org, so the org comes from
   the 161 trigger or from the DEFAULT. That second probe pins the name order:
   the check runs after the 161 trigger fills the org.
@@ -35,7 +36,7 @@ no task, so its probe row is ``kind = 'child'`` with no task and no app.
   ``pm_agent_policies`` are left out: their own guard refuses each UPDATE.
 * A row that already links two orgs: an UPDATE of another column works, and
   ``SET <key> = <key>`` works (the rule of 471). An UPDATE that changes the org
-  gets 23503 from the 476 body, not 42501 from RLS.
+  gets 23503 from the 482 body, not 42501 from RLS.
 * Eleven deletes over the 21 keys still work: each ``ON DELETE SET NULL`` and
   ``CASCADE`` of a guarded key, and the delete of the org.
 * A child run (SW-39) that names a parent run of the other org is refused, as
@@ -362,7 +363,7 @@ class TestTheMigration:
 
     def test_each_statement_runs_in_its_own_transaction(self) -> None:
         """No deadlock at deploy: the file holds the lock of one table at a
-        time. 21 blocks: the function, then one block for each attachment."""
+        time. 22 blocks: the function, then one block for each attachment."""
         blocks = _sql_blocks()
         assert len(blocks) == 1 + len(PROBES), len(blocks)
         assert "CREATE OR REPLACE FUNCTION pm_same_org_ref()" in blocks[0]
@@ -373,7 +374,7 @@ class TestTheMigration:
             assert block.startswith(
                 "SET LOCAL lock_timeout = '5s';\nCREATE OR REPLACE TRIGGER "), block
 
-    def test_the_database_runs_the_476_body(self, world) -> None:
+    def test_the_database_runs_the_482_body(self, world) -> None:
         promoted_, _eng, _a, _b = world
         with promoted_.admin_engine.connect() as c:
             src = c.execute(text(
@@ -634,7 +635,7 @@ class TestTheChildRun:
 
     def test_a_child_under_a_parent_of_another_org_is_refused(self, world) -> None:
         """As the app role bound to org A, and as the admin, which reads the
-        run of org B. Each gets 23503 from the 476 body."""
+        run of org B. Each gets 23503 from the 482 body."""
         promoted_, eng, _a, b = world
         args = {"org": promoted_.org_a, "p": b[_RUN], "me": _ME}
         errors = []
@@ -696,7 +697,7 @@ class TestTheChildRun:
 @pytest.fixture
 def straddling(world):
     """Two rows of org A that already name a row of org B: the shape the gap
-    left before 476. No write can make them now, so the admin writes them with
+    left before 482. No write can make them now, so the admin writes them with
     the triggers off (``session_replication_role = replica``). A task whose
     type is of org B, and a ref whose task is of org B."""
     promoted_, _eng, a, b = world
@@ -746,7 +747,7 @@ class TestTheStraddlingRow:
         assert _as_a(world, "UPDATE pm_tasks SET type_id = type_id WHERE id = :t",
                      {"t": tid}) == 1
 
-    def test_a_change_of_org_with_a_hidden_row_gets_the_476_refusal(
+    def test_a_change_of_org_with_a_hidden_row_gets_the_482_refusal(
             self, world, straddling) -> None:
         """Without the org clause the guard returns in silence, and RLS WITH
         CHECK refuses the row with 42501. The clause gives 23503 first."""
