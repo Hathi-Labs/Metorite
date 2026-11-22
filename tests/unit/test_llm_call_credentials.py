@@ -18,36 +18,53 @@ How the leak happened with real entry points:
 3. A call for the second organization sends the first organization's key.
 
 The Settings save door (``POST /settings/llm/key``, BYOK only) wrote
-``os.environ`` too. A second organization that saved its own key overwrote
-the env value that litellm reads for every caller.
+``os.environ`` and the ONE env file of the box. systemd loads that file into
+every process at the next start, so a saved key reached every organization.
+
+The rule now (``key_store.ProviderKeyStore.provider_key``):
+
+* **BYOK off** (``settings.byok_enabled``, the default): every direct call
+  sends the operator's platform env key, and no row is read. That is what
+  production did before task 625.
+* **BYOK on**: the stored key of the bound organization wins, else the
+  platform key. With no bound organization, the sole organization's key, or
+  none once a second one exists. Never another organization's row.
+* **The save** writes the store of the caller's organization, and awaits it.
+  It never writes ``os.environ`` or the env file.
 
 What this file holds (R7):
 
-* ``TestTwoOrganizations``: each direct call carries the key of the bound
-  organization, and ``os.environ`` and the litellm globals hold no provider
-  key after the load.
-* ``TestNoTenant``: a call with no bound organization never gets a tenant
-  key once two organizations exist. It gets the named platform key or none.
-* ``TestTheSaveDoor``: a BYOK save writes the store of its own organization,
-  and never ``os.environ``.
-* ``TestNoProcessGlobalProviderKeyWrite``: a source fence over ``apps/``,
-  ``packages/`` and ``scripts/``. Each ``os.environ`` write site is named
-  with its reason, so a new one fails. No module sets a ``litellm`` key
-  attribute.
+* ``TestByokOffIsTodaysBehaviour``: each direct site sends the platform key
+  with BYOK off, also when the org holds a row, and reads no row.
+* ``TestEveryDirectSiteCarriesItsOwnKey``: with BYOK on, each direct site
+  sends org A's key, then org B's, then A's, in one process. The platform
+  env key is set to a third value, so an env fallback fails.
+* ``TestTheUntenantedSites``: the ``/v1`` door and the prewarm bind no
+  tenant. One org gives the sole org's key, two give the platform key.
+* ``TestTheSaveDoor``: the save writes only the caller's store, awaits it,
+  answers 503 when it does not land, and refuses ``github`` and ``vllm``.
+* ``TestNoProcessGlobalProviderKeyWrite`` and ``TestEveryLitellmCallNamesItsKey``:
+  source fences over ``apps/``, ``packages/`` and ``scripts/``, aware of
+  import aliases. A self-test holds each shape.
 
-Mutations this file catches:
+Mutations this file catches (each one red):
 
-* Restore ``os.environ[env_var] = key`` in ``key_store.py``: the fence and
-  ``test_the_load_leaves_no_provider_key_in_the_process`` fail.
-* Drop the per-call ``api_key`` from ``client.complete``: the two-org tests
-  fail.
+* m1. Restore ``os.environ[env_var] = key`` in ``key_store.py``.
+* m2. Drop the per-call ``api_key`` from ``client.complete``.
+* m3. Read the stored row with BYOK off (drop the ``byok_reads_store`` gate).
+* m4. Restore the env file write in ``set_provider_key``.
+* m5. ``live._issue_live_token`` reads the env keys, not ``_stt_keys()``.
+* m6. ``AssemblyAISTT.transcribe`` uses ``api_key()``, not ``resolve_api_key()``.
+* m7. The ``/v1`` door drops ``call_credentials``, or reads the env key.
+* m8. The prewarm drops ``call_credentials``, or reads the env key.
 """
 from __future__ import annotations
 
 import ast
 import base64
 import os
-import re
+import sys
+import types
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -65,8 +82,10 @@ _KEY_B = "sk-test-org-b-0002"
 _PLATFORM = "sk-test-platform-0003"
 _DG_A, _DG_B = "dg-test-org-a-0004", "dg-test-org-b-0005"
 _AAI_A, _AAI_B = "aai-test-org-a-0006", "aai-test-org-b-0007"
+_ANT_A, _ANT_B = "ant-test-org-a-0008", "ant-test-org-b-0009"
 
 _MODEL = "deepseek/deepseek-chat"
+_ANT_MODEL = "anthropic/claude-sonnet-4-5"
 _ENV = "DEEPSEEK_API_KEY"
 _ATTR = "deepseek_api_key"
 
@@ -88,6 +107,8 @@ class _TwoOrgStore(ProviderKeyStore):
 
     ``sole`` is the organization that ``_resolve_org(None)`` answers while
     ``org_count`` is 1. At 2 it answers nothing, as the real SQL does.
+    ``executed`` counts every statement, so a test can prove that a call read
+    no row. ``fail_put`` makes the INSERT raise, as a store outage does.
     """
 
     def __init__(self, rows: dict[tuple[str, str], str], *, sole: str) -> None:
@@ -98,11 +119,14 @@ class _TwoOrgStore(ProviderKeyStore):
         self.rows = rows
         self.sole = sole
         self.org_count = 1
+        self.executed = 0
+        self.fail_put = False
 
     def _enc(self, plain: str) -> str:
         return base64.urlsafe_b64encode(self._f.encrypt(plain.encode())).decode("ascii")
 
     async def _execute(self, sql: str, **params: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+        self.executed += 1
         norm = " ".join(sql.split())
         if norm.startswith("SELECT id FROM organization"):
             return [{"id": self.sole}] if self.org_count == 1 else []
@@ -115,9 +139,20 @@ class _TwoOrgStore(ProviderKeyStore):
                 for (o, p), v in self.rows.items() if o == params["org_id"]
             ]
         if norm.startswith("INSERT INTO provider_keys"):
-            self.rows[(params["org_id"], params["provider"])] = "stored"
+            if self.fail_put:
+                raise ConnectionError("connection refused (postgresql://u:secret@db)")
+            plain = self._f.decrypt(base64.urlsafe_b64decode(params["encrypted"])).decode()
+            self.rows[(params["org_id"], params["provider"])] = plain
             return []
         raise AssertionError(f"unexpected SQL: {norm[:80]}")
+
+
+def _set_byok(monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
+    """Set the flag in the env. The env wins over any env file of the box."""
+    from acb_common.settings import get_settings
+
+    monkeypatch.setenv("BYOK_ENABLED", "true" if on else "false")
+    get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -125,6 +160,7 @@ def clean_process(monkeypatch: pytest.MonkeyPatch):
     """No provider key in ``os.environ`` or in litellm, before and after."""
     import acb_llm.client as client
     import litellm
+    from acb_common.settings import get_settings
 
     for env in _PROVIDER_ENV_VARS:
         monkeypatch.delenv(env, raising=False)
@@ -136,6 +172,25 @@ def clean_process(monkeypatch: pytest.MonkeyPatch):
     # A leaked write must not reach the next test.
     os.environ.clear()
     os.environ.update(saved)
+    get_settings.cache_clear()
+
+
+@pytest.fixture()
+def byok_on(monkeypatch: pytest.MonkeyPatch, clean_process) -> None:
+    _set_byok(monkeypatch, True)
+
+
+@pytest.fixture()
+def byok_off(monkeypatch: pytest.MonkeyPatch, clean_process) -> None:
+    _set_byok(monkeypatch, False)
+
+
+@pytest.fixture()
+def platform(monkeypatch: pytest.MonkeyPatch, clean_process) -> str:
+    """The operator's env key for every provider: a THIRD value, not A or B."""
+    for env in _PROVIDER_ENV_VARS:
+        monkeypatch.setenv(env, _PLATFORM)
+    return _PLATFORM
 
 
 @pytest.fixture()
@@ -147,6 +202,7 @@ def store(monkeypatch: pytest.MonkeyPatch, clean_process) -> _TwoOrgStore:
             (_ORG_A, "deepseek"): _KEY_A, (_ORG_B, "deepseek"): _KEY_B,
             (_ORG_A, "deepgram"): _DG_A, (_ORG_B, "deepgram"): _DG_B,
             (_ORG_A, "assemblyai"): _AAI_A, (_ORG_B, "assemblyai"): _AAI_B,
+            (_ORG_A, "anthropic"): _ANT_A, (_ORG_B, "anthropic"): _ANT_B,
         },
         sole=_ORG_B,
     )
@@ -211,7 +267,7 @@ async def _start_with_one_org_then_add_a_second(store: _TwoOrgStore) -> None:
 
 
 class TestTwoOrganizations:
-    async def test_a_call_for_org_a_sends_org_a_key(self, store, calls) -> None:
+    async def test_a_call_for_org_a_sends_org_a_key(self, store, calls, byok_on) -> None:
         await _start_with_one_org_then_add_a_second(store)
         await _complete_as(_ORG_A)
         assert _sent_key(calls[-1]) == _KEY_A, (
@@ -219,14 +275,18 @@ class TestTwoOrganizations:
             "globals that the startup latch filled still answer it"
         )
 
-    async def test_each_call_carries_its_own_key_in_one_process(self, store, calls) -> None:
+    async def test_each_call_carries_its_own_key_in_one_process(
+        self, store, calls, byok_on, platform,
+    ) -> None:
         await _start_with_one_org_then_add_a_second(store)
         await _complete_as(_ORG_A)
         await _complete_as(_ORG_B)
         await _complete_as(_ORG_A)
         assert [c.get("api_key") for c in calls] == [_KEY_A, _KEY_B, _KEY_A]
 
-    async def test_the_load_leaves_no_provider_key_in_the_process(self, store, calls) -> None:
+    async def test_the_load_leaves_no_provider_key_in_the_process(
+        self, store, calls, byok_on,
+    ) -> None:
         import litellm
 
         await _start_with_one_org_then_add_a_second(store)
@@ -238,7 +298,7 @@ class TestTwoOrganizations:
 
 
 class TestNoTenant:
-    async def test_no_tenant_key_reaches_an_untenanted_call(self, store, calls) -> None:
+    async def test_no_tenant_key_reaches_an_untenanted_call(self, store, calls, byok_on) -> None:
         await _start_with_one_org_then_add_a_second(store)
         await _complete_as(None)
         assert _sent_key(calls[-1]) is None, (
@@ -246,86 +306,103 @@ class TestNoTenant:
         )
 
     async def test_an_untenanted_call_sends_the_named_platform_key(
-        self, store, calls, monkeypatch,
+        self, store, calls, byok_on, platform,
     ) -> None:
         await _start_with_one_org_then_add_a_second(store)
-        monkeypatch.setenv(_ENV, _PLATFORM)
         await _complete_as(None)
         assert calls[-1].get("api_key") == _PLATFORM
 
-    async def test_org_key_wins_over_the_platform_key(self, store, calls, monkeypatch) -> None:
+    async def test_org_key_wins_over_the_platform_key(
+        self, store, calls, byok_on, platform,
+    ) -> None:
         await _start_with_one_org_then_add_a_second(store)
-        monkeypatch.setenv(_ENV, _PLATFORM)
         await _complete_as(_ORG_A)
         assert calls[-1].get("api_key") == _KEY_A
 
 
-class TestTheSaveDoor:
-    async def test_a_byok_save_never_writes_the_process_env(
-        self, store, calls, monkeypatch, tmp_path,
-    ) -> None:
-        import asyncio
-
-        from acb_common.db import bind_tenant, release_tenant
-        from acb_common.settings import get_settings
-        from gateway.routes import settings as settings_routes
-
-        env_file = tmp_path / ".env"
-        env_file.write_bytes(b"")
-        monkeypatch.setattr(settings_routes, "_env_file_path", lambda: env_file)
-        monkeypatch.setenv("BYOK_ENABLED", "true")
-        get_settings.cache_clear()
-        store.org_count = 2
-        store.rows.pop((_ORG_B, "deepseek"))
-
-        class _User:
-            email = "admin@org-b.test"
-
-        token = bind_tenant(_ORG_B)
-        try:
-            req = settings_routes.ProviderKeyRequest(provider="deepseek", api_key=_KEY_B)
-            await settings_routes.set_provider_key(req, _user=_User())  # type: ignore[arg-type]
-            await asyncio.sleep(0)  # the scheduled store write
-        finally:
-            release_tenant(token)
-            get_settings.cache_clear()
-
-        assert os.environ.get(_ENV) is None, "the save door wrote os.environ"
-        assert (_ORG_B, "deepseek") in store.rows, "the save missed org B's store"
-        await _complete_as(_ORG_A)
-        assert _sent_key(calls[-1]) == _KEY_A
-
-
-# ── Every direct site, as org A and then as org B ───────────────────────────
+# ── Every direct site ───────────────────────────────────────────────────────
 
 
 class _Captured(Exception):
-    """The fake litellm call raises this after it records its kwargs."""
+    """A fake call raises this after it records the key it was given."""
+
+
+class _Recorder:
+    """The key that each faked outbound call carried, in order."""
+
+    def __init__(self) -> None:
+        self.keys: list[str | None] = []
 
 
 @pytest.fixture()
-def capture(monkeypatch: pytest.MonkeyPatch, store: _TwoOrgStore) -> list[dict[str, Any]]:
-    """Each litellm verb records its kwargs and raises. Two orgs exist."""
+def rec(monkeypatch: pytest.MonkeyPatch, store: _TwoOrgStore) -> _Recorder:
+    """Each outbound door of a direct site records its key and stops.
+
+    litellm verbs, the AssemblyAI HTTP client and the two live-token mints.
+    No call leaves the process. Two orgs exist unless a test says otherwise.
+    """
     import acb_llm.client as client
     import acb_llm.context as context
     import acb_llm.routed as routed
+    import httpx
     import litellm
+    from gateway.routes import v1_compat
+    from gateway.routes.notes import live
 
-    seen: list[dict[str, Any]] = []
+    r = _Recorder()
 
-    async def fake(**kw: Any) -> Any:
-        seen.append(kw)
+    async def fake_litellm(**kw: Any) -> Any:
+        r.keys.append(kw.get("api_key"))
         raise _Captured()
 
+    class _FakeHttpx:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeHttpx:
+            return self
+
+        async def __aexit__(self, *_a: Any) -> bool:
+            return False
+
+        async def post(self, _url: str, **kw: Any) -> Any:
+            r.keys.append(kw.get("headers", {}).get("authorization"))
+            raise _Captured()
+
+        get = post
+
+    async def fake_mint(api_key: str) -> str:
+        r.keys.append(api_key)
+        return "short-lived-token"
+
     monkeypatch.setattr(routed, "routing_is_on", lambda: False)
-    monkeypatch.setattr(client, "acompletion", fake)
-    monkeypatch.setattr(litellm, "acompletion", fake)
-    monkeypatch.setattr(litellm, "atranscription", fake)
+    monkeypatch.setattr(client, "acompletion", fake_litellm)
+    monkeypatch.setattr(litellm, "acompletion", fake_litellm)
+    monkeypatch.setattr(litellm, "atranscription", fake_litellm)
     monkeypatch.setattr(client, "_emit_usage", lambda *_a, **_k: None)
     monkeypatch.setattr(context, "resolve_underlying_model", lambda m: m)
-    monkeypatch.setitem(client._TIER_MODEL, "tier1", _MODEL)
+    # tier1 for the completion sites, and one Anthropic tier for the prewarm.
+    monkeypatch.setattr(client, "_TIER_MODEL", {"tier1": _MODEL, "tier3": _ANT_MODEL})
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpx)
+    monkeypatch.setattr(live, "_mint_assemblyai_token", fake_mint)
+    monkeypatch.setattr(live, "_mint_ephemeral_key", fake_mint)
+    monkeypatch.setattr(live, "_configured_stt_model", lambda: "")
+    monkeypatch.setattr(v1_compat, "_router_should_serve", lambda _body: False)
+    monkeypatch.setattr(v1_compat, "_refuse_unrouted", lambda: None)
+    monkeypatch.setenv("PROMPT_CACHE_PREWARM", "1")
+    fake_agents = types.ModuleType("orchestrator.agents")
+    fake_agents.build_orchestrator_agent = lambda **_k: types.SimpleNamespace(  # type: ignore[attr-defined]
+        default_options={"instructions": "stable prefix " * 60},
+    )
+    monkeypatch.setitem(sys.modules, "orchestrator.agents", fake_agents)
     store.org_count = 2
-    return seen
+    return r
+
+
+async def _site_complete() -> None:
+    from acb_llm.client import LLMTier, complete
+
+    await complete(tier=LLMTier.TIER_1, messages=[{"role": "user", "content": "hi"}])
 
 
 async def _site_complete_with_tools() -> None:
@@ -363,38 +440,123 @@ async def _site_litellm_stt() -> None:
     )
 
 
-_SITES = {
+async def _site_assemblyai_transcribe() -> None:
+    """LIVE: Note Taker batch transcripts and WhatsApp voice notes."""
+    from acb_stt.assemblyai_provider import AssemblyAISTT
+    from acb_stt.types import AudioInput, SttOptions
+
+    await AssemblyAISTT("assemblyai/universal-3-pro").transcribe(
+        AudioInput(data=b"\x00" * 16), SttOptions(),
+    )
+
+
+async def _site_live_token_assemblyai() -> None:
+    """LIVE: the live-caption token, AssemblyAI arm."""
+    from gateway.routes.notes import live
+
+    await live._issue_live_token()
+
+
+async def _site_live_token_deepgram() -> None:
+    """LIVE: the live-caption token, Deepgram arm (the tier names Deepgram)."""
+    from gateway.routes.notes import live
+
+    original = live._configured_stt_model
+    live._configured_stt_model = lambda: "deepgram/nova-3"  # type: ignore[assignment]
+    try:
+        await live._issue_live_token()
+    finally:
+        live._configured_stt_model = original  # type: ignore[assignment]
+
+
+class _FakeRequest:
+    """The two things ``_handle_chat_completions`` reads off a Request."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self._body = body
+        self.headers: dict[str, str] = {}
+
+    async def json(self) -> dict[str, Any]:
+        return self._body
+
+
+async def _site_v1_door() -> None:
+    from gateway.routes import v1_compat
+
+    await v1_compat._handle_chat_completions(  # type: ignore[arg-type]
+        _FakeRequest({"model": _MODEL, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+
+
+async def _site_prewarm() -> None:
+    from gateway import main as gateway_main
+
+    await gateway_main._prewarm_prompt_cache()
+
+
+#: name → (driver, org A's key, org B's key). Each site binds the caller's org.
+_BOUND_SITES = {
+    "complete": (_site_complete, _KEY_A, _KEY_B),
     "complete_with_tools": (_site_complete_with_tools, _KEY_A, _KEY_B),
     "acompletion_with_fallback": (_site_acompletion_with_fallback, _KEY_A, _KEY_B),
     "acompletion_stream_text": (_site_acompletion_stream_text, _KEY_A, _KEY_B),
     "litellm_stt": (_site_litellm_stt, _DG_A, _DG_B),
+    "assemblyai_transcribe": (_site_assemblyai_transcribe, _AAI_A, _AAI_B),
+    "live_token_assemblyai": (_site_live_token_assemblyai, _AAI_A, _AAI_B),
+    "live_token_deepgram": (_site_live_token_deepgram, _DG_A, _DG_B),
+}
+
+#: H4 sites. They bind no tenant: name → (driver, the sole org B's key).
+_UNBOUND_SITES = {
+    "v1_door": (_site_v1_door, _KEY_B),
+    "prewarm": (_site_prewarm, _ANT_B),
 }
 
 
-async def _as(org: str, site: Any) -> None:
-    from acb_common.db import bind_tenant, release_tenant
+async def _run(rec: _Recorder, site: Any, org: str | None) -> list[str | None]:
+    """Run *site* once, bound to *org*. Answer the keys its calls carried."""
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
 
-    token = bind_tenant(org)
+    before = len(rec.keys)
+    token = bind_tenant(org) if org else clear_tenant()
     try:
         await site()
-    except Exception:  # the fake raises once it has the kwargs
+    except Exception:  # the fakes raise once they hold the key
         pass
     finally:
         release_tenant(token)
+    return rec.keys[before:]
+
+
+async def _warm_latch() -> None:
+    """Run the once-per-process seed now, so a later count sees calls only."""
+    from acb_llm.client import _ensure_keys_loaded
+
+    await _ensure_keys_loaded()
 
 
 class TestEveryDirectSiteCarriesItsOwnKey:
-    """A then B in one process, at each direct site besides ``complete``."""
+    """BYOK on: A, then B, then A, in one process, at each direct site."""
 
-    @pytest.mark.parametrize("name", sorted(_SITES))
-    async def test_the_site_sends_the_bound_org_key(self, name, capture) -> None:
-        site, key_a, key_b = _SITES[name]
-        await _as(_ORG_A, site)
-        await _as(_ORG_B, site)
-        await _as(_ORG_A, site)
-        assert [c.get("api_key") for c in capture] == [key_a, key_b, key_a], name
+    @pytest.mark.parametrize("name", sorted(_BOUND_SITES))
+    async def test_the_site_sends_the_bound_org_key(
+        self, name, rec, byok_on, platform,
+    ) -> None:
+        site, key_a, key_b = _BOUND_SITES[name]
+        got = [
+            await _run(rec, site, _ORG_A),
+            await _run(rec, site, _ORG_B),
+            await _run(rec, site, _ORG_A),
+        ]
+        assert got == [[key_a], [key_b], [key_a]], (
+            f"{name}: the call did not carry the bound org's key. It sent "
+            f"{got}. The platform env key is {platform!r}, so that value means "
+            "the site fell back to the env, and None means it sent no key."
+        )
 
-    async def test_the_assemblyai_provider_resolves_the_bound_org_key(self, store) -> None:
+    async def test_the_assemblyai_provider_resolves_the_bound_org_key(
+        self, store, byok_on,
+    ) -> None:
         from acb_common.db import bind_tenant, release_tenant
         from acb_stt.assemblyai_provider import resolve_api_key
 
@@ -408,39 +570,239 @@ class TestEveryDirectSiteCarriesItsOwnKey:
                 release_tenant(token)
         assert got == [_AAI_A, _AAI_B]
 
-    async def test_the_live_token_resolves_the_bound_org_keys(self, store) -> None:
-        from acb_common.db import bind_tenant, release_tenant
-        from gateway.routes.notes import live
-
-        store.org_count = 2
-        got = []
-        for org in (_ORG_A, _ORG_B):
-            token = bind_tenant(org)
-            try:
-                got.append(await live._stt_keys())
-            finally:
-                release_tenant(token)
-        assert got == [(_AAI_A, _DG_A), (_AAI_B, _DG_B)]
-
-    async def test_a_caller_api_key_of_none_is_not_doubled(self, store) -> None:
+    async def test_a_caller_api_key_of_none_is_not_doubled(self, store, byok_on) -> None:
         from acb_llm.client import call_credentials
 
         assert await call_credentials(_MODEL, {"api_key": None}) == {}
         assert await call_credentials(_MODEL, {"api_base": "http://local"}) == {}
 
 
-# ── The fence ───────────────────────────────────────────────────────────────
+class TestTheUntenantedSites:
+    """The ``/v1`` door and the prewarm bind no tenant (H4)."""
+
+    @pytest.mark.parametrize("name", sorted(_UNBOUND_SITES))
+    async def test_one_org_sends_the_sole_org_key(
+        self, name, rec, store, byok_on, platform,
+    ) -> None:
+        site, sole_key = _UNBOUND_SITES[name]
+        store.org_count = 1
+        got = await _run(rec, site, None)
+        assert got == [sole_key], f"{name} sent {got}"
+
+    @pytest.mark.parametrize("name", sorted(_UNBOUND_SITES))
+    async def test_two_orgs_send_the_platform_key_never_a_tenant_key(
+        self, name, rec, store, byok_on, platform,
+    ) -> None:
+        site, _ = _UNBOUND_SITES[name]
+        store.org_count = 2
+        got = await _run(rec, site, None)
+        assert got == [_PLATFORM], f"{name} sent {got}"
+
+
+class TestByokOffIsTodaysBehaviour:
+    """BYOK off (the default): the platform key, at every site, and no row read.
+
+    Production runs with BYOK off. Old ``llm`` rows there are copies of
+    operator keys (migration 158, the first-boot seed). With BYOK off none of
+    them may reach a call.
+    """
+
+    @pytest.mark.parametrize("name", sorted(_BOUND_SITES))
+    async def test_a_bound_site_sends_the_platform_key(
+        self, name, rec, store, byok_off, platform,
+    ) -> None:
+        site, _, _ = _BOUND_SITES[name]
+        await _warm_latch()
+        store.executed = 0
+        got = await _run(rec, site, _ORG_A)
+        assert got == [_PLATFORM], (
+            f"{name} sent {got} with BYOK off. Org A holds a row, and production "
+            "sends the platform key."
+        )
+        assert store.executed == 0, f"{name} read the store with BYOK off"
+
+    @pytest.mark.parametrize("name", sorted(_UNBOUND_SITES))
+    async def test_an_unbound_site_sends_the_platform_key(
+        self, name, rec, store, byok_off, platform,
+    ) -> None:
+        site, _ = _UNBOUND_SITES[name]
+        store.org_count = 1  # the sole org holds a row, and it must not win
+        await _warm_latch()
+        store.executed = 0
+        got = await _run(rec, site, None)
+        assert got == [_PLATFORM], f"{name} sent {got} with BYOK off"
+        assert store.executed == 0, f"{name} read the store with BYOK off"
+
+    async def test_no_platform_key_means_no_key(self, rec, store, byok_off) -> None:
+        site, _, _ = _BOUND_SITES["complete"]
+        got = await _run(rec, site, _ORG_A)
+        assert got == [None]
+
+    async def test_the_live_token_without_a_platform_key_is_503(
+        self, rec, store, byok_off,
+    ) -> None:
+        from fastapi import HTTPException
+        from gateway.routes.notes import live
+
+        with pytest.raises(HTTPException) as caught:
+            await live._issue_live_token()
+        assert caught.value.status_code == 503
+        assert rec.keys == []
+
+
+# ── The save door ───────────────────────────────────────────────────────────
+
+
+class _User:
+    email = "admin@org-b.test"
+
+
+async def _save_as(org: str, provider: str, key: str) -> dict[str, str]:
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes import settings as settings_routes
+
+    token = bind_tenant(org)
+    try:
+        req = settings_routes.ProviderKeyRequest(provider=provider, api_key=key)
+        return await settings_routes.set_provider_key(req, _user=_User())  # type: ignore[arg-type]
+    finally:
+        release_tenant(token)
+
+
+@pytest.fixture()
+def env_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    from gateway.routes import settings as settings_routes
+
+    path = tmp_path / ".env"
+    path.write_bytes(b"OTHER=1\n")
+    monkeypatch.setattr(settings_routes, "_env_file_path", lambda: path)
+    return path
+
+
+class TestTheSaveDoor:
+    async def test_a_byok_save_writes_only_the_callers_store(
+        self, store, calls, env_file, byok_on,
+    ) -> None:
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        before = env_file.read_bytes()
+
+        out = await _save_as(_ORG_B, "deepseek", "sk-test-saved-by-b")
+
+        assert out["ok"] == "true"
+        assert env_file.read_bytes() == before, "the save wrote the env file"
+        assert os.environ.get(_ENV) is None, "the save wrote os.environ"
+        assert store.rows[(_ORG_B, "deepseek")] == "sk-test-saved-by-b"
+        assert store.rows[(_ORG_A, "deepseek")] == _KEY_A
+        await _complete_as(_ORG_A)
+        await _complete_as(_ORG_B)
+        assert [c.get("api_key") for c in calls] == [_KEY_A, "sk-test-saved-by-b"]
+
+    async def test_a_save_that_did_not_land_is_never_a_200(
+        self, store, env_file, byok_on,
+    ) -> None:
+        from fastapi import HTTPException
+
+        store.org_count = 2
+        store.fail_put = True
+        with pytest.raises(HTTPException) as caught:
+            await _save_as(_ORG_B, "deepseek", "sk-test-saved-by-b")
+        assert caught.value.status_code == 503
+        detail = str(caught.value.detail)
+        assert "no key changed" in detail and "Try again" in detail
+        assert "secret" not in detail and "postgresql" not in detail
+        assert "sk-test-saved-by-b" not in detail
+
+    @pytest.mark.parametrize("provider", ["github", "vllm"])
+    async def test_a_provider_the_store_cannot_send_is_refused(
+        self, provider, store, env_file, byok_on,
+    ) -> None:
+        from fastapi import HTTPException
+
+        before = env_file.read_bytes()
+        rows = dict(store.rows)
+        value = "http://evil.example/v1" if provider == "vllm" else "ghp_test0001"
+        with pytest.raises(HTTPException) as caught:
+            await _save_as(_ORG_B, provider, value)
+        assert caught.value.status_code == 403
+        assert env_file.read_bytes() == before
+        assert store.rows == rows
+
+    @pytest.mark.parametrize("env_var", _PROVIDER_ENV_VARS)
+    def test_the_env_file_writer_refuses_every_provider_key(self, env_var, env_file) -> None:
+        from acb_common import env_guard
+        from gateway.routes import settings as settings_routes
+
+        before = env_file.read_bytes()
+        with pytest.raises(env_guard.EnvWriteRefused) as caught:
+            settings_routes._write_env_key(env_var, "sk-test-0001")
+        assert caught.value.platform is True
+        assert env_file.read_bytes() == before
+
+
+class TestTheModelsPageReadsTheCallersStore:
+    @pytest.fixture()
+    def no_settings_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Settings with BYOK on and no provider field, whatever the env file holds."""
+        from gateway.routes import settings as settings_routes
+
+        stub = types.SimpleNamespace(byok_enabled=True)
+        monkeypatch.setattr(settings_routes, "get_settings", lambda: stub)
+
+    async def _as(self, org: str, coro_fn: Any) -> Any:
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant(org)
+        try:
+            return await coro_fn()
+        finally:
+            release_tenant(token)
+
+    async def test_the_badge_reads_only_the_callers_rows(
+        self, store, byok_on, no_settings_keys,
+    ) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        keyed_a = await self._as(_ORG_A, st._caller_keyed_providers)
+        keyed_b = await self._as(_ORG_B, st._caller_keyed_providers)
+        assert st._is_provider_configured("deepseek", keyed_a) is True
+        assert st._is_provider_configured("deepseek", keyed_b) is False, (
+            "org B's Models page read another organization's saved key"
+        )
+
+    async def test_the_refresh_key_is_the_callers(
+        self, store, byok_on, no_settings_keys,
+    ) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        store.rows.pop((_ORG_B, "deepseek"))
+        assert await self._as(_ORG_A, lambda: st._caller_api_key("deepseek")) == _KEY_A
+        assert await self._as(_ORG_B, lambda: st._caller_api_key("deepseek")) is None
+
+    async def test_byok_off_reads_no_row(self, store, byok_off) -> None:
+        from gateway.routes import settings as st
+
+        store.org_count = 2
+        assert await self._as(_ORG_A, st._caller_keyed_providers) == frozenset()
+        assert store.executed == 0
+
+
+# ── The fences ──────────────────────────────────────────────────────────────
 #
 # A write of a provider key into the env is often dynamic
 # (``os.environ[env_var] = key``), so a scan for literal key names misses it.
-# The fence is a ratchet over EVERY ``os.environ`` write site instead. Each one
-# is named here with its reason, so a new site fails until a reviewer reads it.
+# The fence is a ratchet over EVERY env write site instead. Each one is named
+# here with its reason, so a new site fails until a reviewer reads it. The scan
+# reads the imports of each module, so an alias does not hide a write.
 
 _SCANNED = ("apps", "packages", "scripts")
 _SKIP_DIRS = frozenset({"tests", "node_modules", ".venv", "__pycache__"})
 
-#: (file, function) → the count of ``os.environ`` writes there, and why none of
-#: them is a provider key. EXACT: a new site fails, and so does a removed one.
+#: (file, function) → the count of env writes there, and why none of them is
+#: a provider key. EXACT: a new site fails, and so does a removed one.
 _ENV_WRITE_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("apps/services/gateway/gateway/flag_reload.py", "reload_flags"): (
         1, "re-reads the operator's env file for the `*_ORGS` and `*_MODES` "
@@ -465,9 +827,9 @@ _ENV_WRITE_SITES: dict[tuple[str, str], tuple[int, str]] = {
 }
 
 
-def _files() -> list[Path]:
+def _files(trees: tuple[str, ...] = _SCANNED) -> list[Path]:
     out: list[Path] = []
-    for tree in _SCANNED:
+    for tree in trees:
         for here, dirs, names in os.walk(ROOT / tree):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
             out.extend(Path(here) / n for n in names if n.endswith(".py"))
@@ -479,63 +841,128 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def _is_os_environ(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Attribute) and node.attr == "environ"
-        and isinstance(node.value, ast.Name) and node.value.id == "os"
-    )
+#: The litellm call verbs. A ``Router`` holds keys in its model list, so it is
+#: a verb too: each one outside the Console Router is a finding.
+_LITELLM_VERBS = frozenset({
+    "completion", "acompletion", "atranscription", "transcription",
+    "embedding", "aembedding", "aresponses", "responses",
+    "atext_completion", "text_completion", "image_generation",
+    "aimage_generation", "speech", "aspeech", "Router",
+})
+#: A bare call of one of these names counts even with no litellm import in the
+#: module, because the name is litellm's own and a re-export can carry it.
+_ASYNC_VERBS = frozenset(v for v in _LITELLM_VERBS if v.startswith("a"))
 
 
-def _is_litellm(node: ast.AST) -> bool:
-    return isinstance(node, ast.Name) and node.id in {"litellm", "_litellm"}
+class _Aliases:
+    """The local names that a module binds to ``os``, ``environ`` and litellm."""
+
+    def __init__(self, tree: ast.AST) -> None:
+        self.os: set[str] = {"os"}
+        self.environ: set[str] = set()
+        self.putenv: set[str] = set()
+        self.litellm: set[str] = {"litellm"}
+        self.verbs: dict[str, str] = {}  # a local name → the litellm verb
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    top = a.name.split(".", 1)[0]
+                    if a.name == "os" and a.asname:
+                        self.os.add(a.asname)
+                    if a.name == "litellm" and a.asname:
+                        self.litellm.add(a.asname)
+                    if top == "litellm" and not a.asname:
+                        self.litellm.add("litellm")
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                for a in node.names:
+                    local = a.asname or a.name
+                    if node.module == "os" and a.name == "environ":
+                        self.environ.add(local)
+                    if node.module == "os" and a.name == "putenv":
+                        self.putenv.add(local)
+                    if node.module == "litellm" and a.name in _LITELLM_VERBS:
+                        self.verbs[local] = a.name
+
+    def is_environ(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in self.environ
+        return (
+            isinstance(node, ast.Attribute) and node.attr == "environ"
+            and isinstance(node.value, ast.Name) and node.value.id in self.os
+        )
+
+    def is_litellm(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Name) and node.id in self.litellm
 
 
-def _is_env_write(node: ast.AST) -> bool:
-    """``os.environ[x] = v``, ``os.environ.update/setdefault`` or ``os.putenv``."""
-    if isinstance(node, ast.Assign | ast.AugAssign):
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        return any(isinstance(t, ast.Subscript) and _is_os_environ(t.value) for t in targets)
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        f = node.func
-        if f.attr in {"update", "setdefault", "__setitem__"} and _is_os_environ(f.value):
+def _is_env_write(node: ast.AST, al: _Aliases) -> bool:
+    """One env write: a subscript or ``|=`` on ``environ``, a mutating method,
+    or ``putenv``, through any alias."""
+    targets: list[ast.AST] = []
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+        targets = [node.target]
+    for t in targets:
+        if al.is_environ(t):  # `os.environ |= d`, or a rebind
             return True
-        return f.attr == "putenv" and isinstance(f.value, ast.Name) and f.value.id == "os"
+        if isinstance(t, ast.Subscript) and al.is_environ(t.value):
+            return True
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Attribute):
+            if f.attr in {"update", "setdefault", "__setitem__", "__ior__"} and al.is_environ(f.value):
+                return True
+            if f.attr == "putenv" and isinstance(f.value, ast.Name) and f.value.id in al.os:
+                return True
+        if isinstance(f, ast.Name) and f.id in al.putenv:
+            return True
     return False
 
 
-def _env_write_sites(tree: ast.AST) -> dict[str, int]:
-    """The innermost function name (or ``<module>``) → its count of env writes."""
+def _owners(tree: ast.AST) -> dict[int, str]:
+    """``id(node)`` → the name of its innermost function."""
     owner: dict[int, str] = {}
     for fn in ast.walk(tree):  # outer functions come first, so inner ones win
         if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
             for node in ast.walk(fn):
                 owner[id(node)] = fn.name
+    return owner
+
+
+def _env_write_sites(tree: ast.AST) -> dict[str, int]:
+    """The innermost function name (or ``<module>``) → its count of env writes."""
+    al = _Aliases(tree)
+    owner = _owners(tree)
     counts: dict[str, int] = {}
     for node in ast.walk(tree):
-        if _is_env_write(node):
+        if _is_env_write(node, al):
             name = owner.get(id(node), "<module>")
             counts[name] = counts.get(name, 0) + 1
     return counts
 
 
+def _is_key_attr(attr: str) -> bool:
+    return "key" in attr.lower()
+
+
 def _litellm_key_writes(tree: ast.AST) -> list[int]:
-    """``litellm.<x>api_key = v`` and ``setattr(litellm, ...)`` anywhere."""
+    """``<litellm alias>.<x>key = v`` (any assign form) and ``setattr(<alias>, ...)``."""
+    al = _Aliases(tree)
     hits: list[int] = []
     for node in ast.walk(tree):
+        targets: list[ast.AST] = []
         if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if (isinstance(t, ast.Attribute) and _is_litellm(t.value)
-                        and "api_key" in t.attr):
-                    hits.append(node.lineno)
+            targets = list(node.targets)
+        elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+            targets = [node.target]
+        for t in targets:
+            if isinstance(t, ast.Attribute) and al.is_litellm(t.value) and _is_key_attr(t.attr):
+                hits.append(node.lineno)
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "setattr" and node.args
-                and _is_litellm(node.args[0])):
+                and node.func.id == "setattr" and node.args and al.is_litellm(node.args[0])):
             hits.append(node.lineno)
     return sorted(set(hits))
-
-
-#: A text hint of a litellm key write, so only those files are parsed for it.
-_LITELLM_WRITE_HINT = re.compile(r"_?litellm\.\w*api_key\s*=(?!=)|setattr\(\s*_?litellm\b")
 
 
 @cache
@@ -544,9 +971,9 @@ def _scan() -> tuple[dict[tuple[str, str], int], dict[str, list[int]]]:
     lit: dict[str, list[int]] = {}
     for path in _files():
         source = _read(path)
-        # Cheap text filters first. The parse below decides.
-        has_env = "os.environ" in source or "os.putenv" in source
-        has_lit = _LITELLM_WRITE_HINT.search(source) is not None
+        # Cheap text filters first. They name no alias, so no alias escapes.
+        has_env = "environ" in source or "putenv" in source
+        has_lit = "litellm" in source
         if not (has_env or has_lit):
             continue
         tree = ast.parse(source)
@@ -597,91 +1024,158 @@ class TestNoProcessGlobalProviderKeyWrite:
             "        setattr(_litellm, litellm_attr, key)",
             "        os.environ[env_var] = key",
         ])
-        assert _LITELLM_WRITE_HINT.search(source), "the text filter skips the file"
         tree = ast.parse(source)
         assert _env_write_sites(tree) == {"configure_litellm": 1}
         assert _litellm_key_writes(tree) == [7]
 
+    @pytest.mark.parametrize("source", [
+        pytest.param("from os import environ\ndef f(k, v):\n    environ[k] = v", id="from-os-import-environ"),
+        pytest.param("from os import environ as e\ndef f(d):\n    e.update(d)", id="environ-alias-update"),
+        pytest.param("import os as o\ndef f(k, v):\n    o.environ[k] = v", id="import-os-as"),
+        pytest.param("import os\ndef f(d):\n    os.environ |= d", id="ior"),
+        pytest.param("import os\ndef f(d):\n    os.environ.update(d)", id="update"),
+        pytest.param("import os\ndef f(k, v):\n    os.environ.setdefault(k, v)", id="setdefault"),
+        pytest.param("import os\ndef f(k, v):\n    os.environ.__setitem__(k, v)", id="setitem"),
+        pytest.param("import os\ndef f(k, v):\n    os.putenv(k, v)", id="putenv"),
+        pytest.param("from os import putenv\ndef f(k, v):\n    putenv(k, v)", id="from-os-import-putenv"),
+        pytest.param("import os.path\ndef f(k, v):\n    os.environ[k] = v", id="import-os-path"),
+    ])
+    def test_the_env_scan_sees_each_shape(self, source: str) -> None:
+        assert "environ" in source or "putenv" in source, "the text filter skips it"
+        assert _env_write_sites(ast.parse(source)) == {"f": 1}
+
+    @pytest.mark.parametrize("source", [
+        pytest.param("import os\ndef f(k):\n    return os.environ.get(k)", id="a-read"),
+        pytest.param("environ = {}\ndef f(k, v):\n    environ[k] = v", id="a-local-dict"),
+    ])
+    def test_the_env_scan_ignores_a_read(self, source: str) -> None:
+        assert _env_write_sites(ast.parse(source)) == {}
+
+    @pytest.mark.parametrize("source", [
+        pytest.param("import litellm as ll\nll.api_key = 'x'", id="alias-api-key"),
+        pytest.param("import litellm\nlitellm.deepgram_api_key = 'x'", id="provider-api-key"),
+        pytest.param("import litellm\nlitellm.anthropic_key = 'x'", id="any-key-attr"),
+        pytest.param("import litellm\nlitellm.openai_key += 'x'", id="augassign"),
+        pytest.param("import litellm\nsetattr(litellm, 'api_key', 'x')", id="setattr"),
+        pytest.param("import litellm as _l\ndef f(a, k):\n    setattr(_l, a, k)", id="setattr-alias"),
+    ])
+    def test_the_litellm_global_scan_sees_each_shape(self, source: str) -> None:
+        assert "litellm" in source, "the text filter skips it"
+        assert len(_litellm_key_writes(ast.parse(source))) == 1
+
+    @pytest.mark.parametrize("source", [
+        pytest.param("import litellm\nlitellm.drop_params = True", id="drop-params"),
+        pytest.param("import litellm\nlitellm.suppress_debug_info = True", id="debug-info"),
+        pytest.param("import litellm\nk = litellm.api_key", id="a-read"),
+    ])
+    def test_the_litellm_global_scan_ignores_a_setting(self, source: str) -> None:
+        assert _litellm_key_writes(ast.parse(source)) == []
+
 
 # ── Each litellm call names its own key ─────────────────────────────────────
 
-_VERB_TREES = ("apps", "packages")
+_VERB_TREES = ("apps", "packages", "scripts")
 #: The Router passes ``call_kwargs["api_key"]`` itself (D58.1). It is the model.
 _VERB_EXEMPT = ("apps/services/customer_console/",)
-_LITELLM_VERBS = frozenset({
-    "acompletion", "completion", "atranscription", "transcription",
-    "aembedding", "embedding", "aspeech", "speech",
-    "aimage_generation", "image_generation",
-})
-#: A call is keyed when an enclosing function names one of these.
-_KEY_SOURCES = frozenset({"call_credentials", "caller_provider_key"})
+#: The functions whose dict answer a call merges as its credentials.
+_CRED_FUNCS = frozenset({"call_credentials"})
 
 
-def _verb_name(call: ast.Call) -> str | None:
-    f = call.func
-    if isinstance(f, ast.Name) and f.id.startswith("a") and f.id in _LITELLM_VERBS:
-        return f.id  # a bare name: only the async verbs, which `from litellm` binds
-    if isinstance(f, ast.Attribute) and _is_litellm(f.value) and f.attr in _LITELLM_VERBS:
+def _func_name(f: ast.AST) -> str | None:
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute):
         return f.attr
     return None
 
 
-def _names_a_key_source(fn: ast.AST) -> bool:
+def _is_cred_call(node: ast.AST | None) -> bool:
+    if isinstance(node, ast.Await):
+        node = node.value
+    return isinstance(node, ast.Call) and _func_name(node.func) in _CRED_FUNCS
+
+
+def _verb_name(call: ast.Call, al: _Aliases) -> str | None:
+    f = call.func
+    if isinstance(f, ast.Name):
+        if f.id in al.verbs:
+            return al.verbs[f.id]
+        if f.id in _ASYNC_VERBS:
+            return f.id
+    if isinstance(f, ast.Attribute) and al.is_litellm(f.value) and f.attr in _LITELLM_VERBS:
+        return f.attr
+    return None
+
+
+def _cred_names(fn: ast.AST) -> set[str]:
+    """The dicts in *fn* that hold the answer of ``call_credentials``.
+
+    ``creds = await call_credentials(...)`` names ``creds``, and
+    ``extra.update(await call_credentials(...))`` names ``extra``.
+    """
+    names: set[str] = set()
     for n in ast.walk(fn):
-        if isinstance(n, ast.Name) and n.id in _KEY_SOURCES:
-            return True
-        if isinstance(n, ast.Attribute) and n.attr in _KEY_SOURCES:
-            return True
-    return False
+        if isinstance(n, ast.Assign) and _is_cred_call(n.value):
+            names.update(t.id for t in n.targets if isinstance(t, ast.Name))
+        if isinstance(n, ast.AnnAssign) and _is_cred_call(n.value) and isinstance(n.target, ast.Name):
+            names.add(n.target.id)
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "update" and isinstance(n.func.value, ast.Name)
+                and n.args and _is_cred_call(n.args[0])):
+            names.add(n.func.value.id)
+    return names
 
 
 def _unkeyed_verb_calls(tree: ast.AST) -> list[int]:
-    """Lines of a litellm verb call with no ``api_key=`` and no key source.
+    """Lines of a litellm verb call that merges no key into the call itself.
 
-    A call is keyed when it passes ``api_key=`` itself, or when a function
-    that encloses it calls ``call_credentials`` or ``caller_provider_key``.
+    A call is keyed when it passes ``api_key=`` (not ``None``) itself, or when
+    it spreads ``**X`` where X is ``call_credentials(...)``, or a name that an
+    enclosing function assigned from it or ``.update``-d with it. A function
+    that calls ``call_credentials`` and drops the answer is NOT keyed.
     """
+    al = _Aliases(tree)
     parent: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parent[id(child)] = node
     hits: list[int] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _verb_name(node) is None:
+        if not isinstance(node, ast.Call) or _verb_name(node, al) is None:
             continue
-        if any(k.arg == "api_key" for k in node.keywords):
+        if any(
+            k.arg == "api_key" and not (isinstance(k.value, ast.Constant) and k.value.value is None)
+            for k in node.keywords
+        ):
             continue
+        spread = [k.value for k in node.keywords if k.arg is None]
+        if any(_is_cred_call(v) for v in spread):
+            continue
+        names: set[str] = set()
         cur: ast.AST = node
-        keyed = False
         while id(cur) in parent:
             cur = parent[id(cur)]
-            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef) and _names_a_key_source(cur):
-                keyed = True
-                break
-        if not keyed:
-            hits.append(node.lineno)
+            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef):
+                names |= _cred_names(cur)
+        if any(isinstance(v, ast.Name) and v.id in names for v in spread):
+            continue
+        hits.append(node.lineno)
     return hits
 
 
 @cache
 def _verb_scan() -> dict[str, list[int]]:
     found: dict[str, list[int]] = {}
-    for tree_name in _VERB_TREES:
-        for here, dirs, names in os.walk(ROOT / tree_name):
-            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
-            for n in names:
-                if not n.endswith(".py"):
-                    continue
-                path = Path(here) / n
-                rel = path.relative_to(ROOT).as_posix()
-                if rel.startswith(_VERB_EXEMPT):
-                    continue
-                source = _read(path)
-                if not any(v in source for v in _LITELLM_VERBS):
-                    continue
-                lines = _unkeyed_verb_calls(ast.parse(source))
-                if lines:
-                    found[rel] = lines
+    for path in _files(_VERB_TREES):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith(_VERB_EXEMPT):
+            continue
+        source = _read(path)
+        if "litellm" not in source and not any(v in source for v in _ASYNC_VERBS):
+            continue
+        lines = _unkeyed_verb_calls(ast.parse(source))
+        if lines:
+            found[rel] = lines
     return found
 
 
@@ -695,15 +1189,59 @@ class TestEveryLitellmCallNamesItsKey:
             "call, or pass api_key= yourself (D58.2)."
         )
 
-    def test_the_scan_sees_an_unkeyed_call(self) -> None:
-        source = "\n".join([
-            "from litellm import acompletion",
-            "async def f(model):",
-            "    return await acompletion(model=model, messages=[])",
-            "async def g(model):",
-            "    creds = await call_credentials(model)",
-            "    return await acompletion(model=model, messages=[], **creds)",
-            "async def h(model):",
-            "    return await acompletion(model=model, messages=[], api_key='k')",
-        ])
-        assert _unkeyed_verb_calls(ast.parse(source)) == [3]
+    @pytest.mark.parametrize("verb", sorted(_LITELLM_VERBS))
+    def test_each_verb_is_seen_through_litellm_and_an_alias(self, verb: str) -> None:
+        for source in (
+            f"import litellm\nasync def f(m):\n    return litellm.{verb}(model=m)",
+            f"import litellm as ll\nasync def f(m):\n    return ll.{verb}(model=m)",
+            f"from litellm import {verb} as x\nasync def f(m):\n    return x(model=m)",
+            f"from litellm import {verb}\nasync def f(m):\n    return {verb}(model=m)",
+        ):
+            assert _unkeyed_verb_calls(ast.parse(source)) == [3], source
+
+    @pytest.mark.parametrize("source", [
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m):\n"
+            "    await call_credentials(m)\n    return await acompletion(model=m)",
+            id="answer-dropped"),
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m):\n"
+            "    creds = await call_credentials(m)\n    return await acompletion(model=m)",
+            id="answer-not-merged"),
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m, extra):\n"
+            "    creds = await call_credentials(m)\n    return await acompletion(model=m, **extra)",
+            id="another-dict-merged"),
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m):\n"
+            "    return await acompletion(model=m, api_key=None)",
+            id="api-key-none"),
+    ])
+    def test_a_call_that_does_not_merge_its_key_is_seen(self, source: str) -> None:
+        assert len(_unkeyed_verb_calls(ast.parse(source))) == 1
+
+    @pytest.mark.parametrize("source", [
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m):\n"
+            "    creds = await call_credentials(m)\n    return await acompletion(model=m, **creds)",
+            id="spread-name"),
+        pytest.param(
+            "from litellm import acompletion\nasync def f(m):\n"
+            "    return await acompletion(model=m, **(await call_credentials(m)))",
+            id="spread-inline"),
+        pytest.param(
+            "import litellm\nasync def f(m, extra):\n"
+            "    extra.update(await call_credentials(m, extra))\n"
+            "    return await litellm.atranscription(model=m, **extra)",
+            id="update-then-spread"),
+        pytest.param(
+            "from litellm import acompletion\nasync def outer(m):\n    common = {'model': m}\n"
+            "    common.update(await call_credentials(m, common))\n"
+            "    async def gen():\n        return await acompletion(**common)\n    return gen",
+            id="nested-function"),
+        pytest.param(
+            "import litellm\nasync def f(m, k):\n    return await litellm.aembedding(model=m, api_key=k)",
+            id="api-key-kwarg"),
+    ])
+    def test_a_keyed_call_passes(self, source: str) -> None:
+        assert _unkeyed_verb_calls(ast.parse(source)) == []

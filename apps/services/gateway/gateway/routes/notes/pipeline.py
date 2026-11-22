@@ -40,9 +40,12 @@ async def run_transcription(
     try:
         # H4: background job — `run_transcription` runs as a spawned asyncio
         # task (upload/complete/retranscribe handlers and the meeting-bot
-        # ingest all `_spawn` it) with no ambient tenant. Every `_get_db`
-        # block in this function stays unbound until H4 derives the tenant
-        # from the meeting row / threads it through the task arguments.
+        # ingest all `_spawn` it). `asyncio.create_task` copies the context,
+        # so a task that a member's request spawned (the three browser
+        # handlers) DOES see that member's bound tenant. The meeting-bot
+        # ingest runs from a poller and binds none. Every `_get_db` block in
+        # this function stays unbound until H4 derives the tenant from the
+        # meeting row / threads it through the task arguments.
         async with await _get_db() as db:
             rec = (
                 await db.execute(

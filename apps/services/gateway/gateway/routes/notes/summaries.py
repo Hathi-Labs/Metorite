@@ -429,8 +429,9 @@ async def enqueue_summary(meeting_id: str, triggered_by: str) -> str:
     question rather than inherit somebody else's authority.
     """
     # H4: shared entry point also called from the background transcription
-    # pipeline (`pipeline.run_transcription`) — no ambient tenant there;
-    # derive it from the meeting row.
+    # pipeline (`pipeline.run_transcription`). A browser upload's task sees
+    # the member's bound tenant (`create_task` copies the context). The
+    # meeting-bot ingest's task has none. Derive it from the meeting row.
     async with await _get_db() as db:
         row = (
             await db.execute(

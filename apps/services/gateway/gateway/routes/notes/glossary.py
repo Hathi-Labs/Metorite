@@ -105,8 +105,10 @@ async def glossary_prompt(user_id: str) -> str:
         return ""
     try:
         # H4: called from the background transcription pipeline
-        # (`pipeline.run_transcription`, a spawned task) — no ambient tenant;
-        # derive it from the meeting row's owner.
+        # (`pipeline.run_transcription`, a spawned task). A browser upload's
+        # task sees the member's bound tenant (`create_task` copies the
+        # context). The meeting-bot ingest's task has none. Derive it from
+        # the meeting row's owner.
         async with await _get_db() as db:
             rows = (
                 await db.execute(

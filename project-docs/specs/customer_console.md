@@ -8140,7 +8140,7 @@ and D56 is what turns it into design.
 | `client.py` `_TIER_ALIAS_MAP` (`:86`) | — | **REFACTOR to a cache**, exactly as D32.7 and CP-5 already specify: the Router publishes tier capabilities, this becomes a cache of that, not truth |
 | `context.py` · `guardrails.py` · `prompt_cache.py` · `message_compress.py` · `tool_output.py` | — | **UNTOUCHED** — request-shaping, not model administration |
 
-🆕 **2026-11-22 (task 625):** task 625 removed `configure_litellm` from `key_store.py`. Each direct call takes its key per call (D58.2), so no stored key is a process global now. §6 (f) stays open for the `/v1` door (task 569).
+🆕 **2026-11-22 (task 625):** task 625 removed `configure_litellm` from `key_store.py`. Each direct call takes its key per call (D58.2), so no stored key is a process global now. With BYOK off, each call sends the platform key. With BYOK on, the bound organization's stored key wins. The env file never holds an organization's key. §6 (f) stays open for the `/v1` door (task 569).
 
 #### (d) The tenant database
 
@@ -11774,8 +11774,9 @@ production traffic on stops being the one that cannot name its tenant.** Recorde
 the two statements are not read as contradicting each other.
 
 🆕 **2026-11-22 (task 625):** task 625 removed `configure_litellm`, and the local path
-takes its key per call (D58.2). §6 (f) stays open, because the `/v1` door still binds no
-tenant (task 569).
+takes its key per call (D58.2). With BYOK off, that key is the platform key. With BYOK
+on, it is the bound organization's stored key. §6 (f) stays open, because the `/v1` door
+still binds no tenant (task 569).
 
 ### 6B.7 Failure semantics — decided now (D57.7)
 

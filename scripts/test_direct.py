@@ -24,5 +24,7 @@ resp = litellm.completion(
     model="deepseek/deepseek-chat",
     messages=[{"role": "user", "content": "Say hello in exactly 3 words"}],
     max_tokens=20,
+    # D58.2 (task 625): name the key per call, never through a litellm global.
+    api_key=os.environ["DEEPSEEK_API_KEY"],
 )
 print(resp.choices[0].message.content)

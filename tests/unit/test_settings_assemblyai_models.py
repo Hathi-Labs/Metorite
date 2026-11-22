@@ -101,17 +101,13 @@ def test_every_catalogued_stt_provider_is_registered_everywhere() -> None:
             assert st._provider_from_model(mid) == provider, f"{mid} misroutes"
 
 
-def test_a_configured_key_is_reported_as_configured(monkeypatch, tmp_path) -> None:
-    env_file = tmp_path / ".env"
-    monkeypatch.setattr(st, "_env_file_path", lambda: env_file)
+def test_a_configured_key_is_reported_as_configured(monkeypatch) -> None:
     monkeypatch.setenv("ASSEMBLYAI_API_KEY", "sk-test")
     assert st._is_provider_configured("assemblyai") is True
     monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
     monkeypatch.setattr(st, "get_settings", lambda: type("S", (), {})())
     assert st._is_provider_configured("assemblyai") is False
-    # Task 625 (D58.2): a save writes the env file and no longer os.environ,
-    # so a saved key in the file still reads as configured before a restart.
-    env_file.write_text("ASSEMBLYAI_API_KEY=sk-test\n", encoding="utf-8")
-    assert st._is_provider_configured("assemblyai") is True
-    env_file.write_text("ASSEMBLYAI_API_KEY=\n", encoding="utf-8")
-    assert st._is_provider_configured("assemblyai") is False
+    # Task 625 (D58.2): a BYOK save writes the caller's store only. The page
+    # passes the providers that the caller's own org holds, never another's.
+    assert st._is_provider_configured("assemblyai", frozenset({"assemblyai"})) is True
+    assert st._is_provider_configured("assemblyai", frozenset({"deepgram"})) is False

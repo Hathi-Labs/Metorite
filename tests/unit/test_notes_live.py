@@ -1,21 +1,33 @@
 """Tests for the live-transcription token endpoint — the pure, testable parts:
-key lookup, provider selection, model resolution, and the config guard. Minting
-a real token needs a real key and isn't exercised here."""
+provider selection, model resolution, and the config guard. Minting a real
+token needs a real key and isn't exercised here.
+
+The key of each token comes from the key store seam
+(``acb_llm.key_store.caller_provider_key``, D58.2). Its two-org proof lives
+in ``test_llm_call_credentials.py``. Here an autouse stub answers no key, so
+no test opens a database, and each mint raises, so none reaches a real
+speech-to-text endpoint.
+"""
 from __future__ import annotations
 
 import pytest
 from gateway.routes.notes import live
 
 
-def test_keys_read_env(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPGRAM_API_KEY", "  dg-secret  ")
-    monkeypatch.setenv("ASSEMBLYAI_API_KEY", "  aai-secret  ")
-    assert live._deepgram_key() == "dg-secret"
-    assert live._assemblyai_key() == "aai-secret"
-    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
-    monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
-    assert live._deepgram_key() == ""
-    assert live._assemblyai_key() == ""
+@pytest.fixture(autouse=True)
+def _no_store_and_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No key store, and no outbound call (task 625, verifier F7)."""
+    import acb_llm.key_store as key_store
+
+    async def no_key(_provider: str) -> str:
+        return ""
+
+    async def no_mint(_api_key: str) -> str:
+        raise AssertionError("a test reached a real speech-to-text mint")
+
+    monkeypatch.setattr(key_store, "caller_provider_key", no_key)
+    monkeypatch.setattr(live, "_mint_assemblyai_token", no_mint)
+    monkeypatch.setattr(live, "_mint_ephemeral_key", no_mint)
 
 
 # ── provider selection ───────────────────────────────────────────────────────

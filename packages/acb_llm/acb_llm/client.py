@@ -340,11 +340,14 @@ async def call_credentials(
     The caller merges the answer into its own ``acompletion`` or
     ``atranscription`` kwargs.
 
-    * The organization is the one bound to this context
-      (``acb_common.db.current_tenant()``), never one from request input
-      (R5). With no bound organization, the key store answers the sole
-      organization's key, or none once a second one exists, and then the
-      named platform key (:meth:`ProviderKeyStore.provider_key`).
+    * With BYOK off (``settings.byok_enabled``, the default) the key is
+      the operator's PLATFORM key from the env, for every call, as before
+      task 625. No row is read.
+    * With BYOK on, the stored key of the organization bound to this context
+      (``acb_common.db.current_tenant()``) wins, never one from request input
+      (R5). With no bound organization, the store answers the sole
+      organization's key, or none once a second one exists. Then the named
+      platform key (:meth:`ProviderKeyStore.provider_key`).
     * ``{}`` when the call already names its own ``api_key`` or ``api_base``.
       A stored key never goes to a host that the caller chose.
     * ``{}`` for a provider that the store does not hold (ollama, a local
@@ -352,7 +355,7 @@ async def call_credentials(
       the operator sets.
     * ``{}`` when no key exists. litellm reads the provider env var then, and
       that var holds the same platform value or nothing, because no code path
-      writes a stored key into the env.
+      writes a stored key into the env or into the env file.
 
     Fence: ``tests/unit/test_llm_call_credentials.py``.
     """

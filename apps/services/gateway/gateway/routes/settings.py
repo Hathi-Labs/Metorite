@@ -16,6 +16,7 @@ import yaml
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
 from acb_common.env_guard import EnvWriteRefused, check_env_write
+from acb_llm.key_store import PROVIDER_ENV_VARS as _STORE_PROVIDERS
 from acb_llm.model_limits import FALLBACK_CONTEXT_WINDOWS, MODEL_CAPABILITIES
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import current_tenant
@@ -214,13 +215,19 @@ def _write_env_key(var: str, value: str) -> None:
     env_file.write_bytes(("\n".join(new_lines) + "\n").encode("utf-8"))
 
 
-def _refuse_unsafe_env_write(var: str, value: str, *, actor: str | None) -> None:
+def _refuse_unsafe_env_write(
+    var: str, value: str, *, actor: str | None,
+    owned: frozenset[str] | None = None,
+) -> None:
     """Layers A (400) and B (403) for a Models route, before any write.
 
+    ``owned`` is the set of platform names that this route may write, and
+    ``None`` means ``_MODELS_PAGE_ENV_KEYS``. A key save passes
+    ``_KEY_SAVE_ENV_VARS``, and it then writes the store only.
     The detail names the key and a character code, never the value.
     """
     try:
-        check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS)
+        check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS if owned is None else owned)
     except EnvWriteRefused as exc:
         _log.warning(
             "settings.env_write_refused", key=exc.key, reason=exc.reason,
@@ -244,63 +251,6 @@ def _recreate_litellm_bg() -> None:
 _restart_litellm_bg = _recreate_litellm_bg
 
 
-def _inject_env_into_litellm(env_var: str, value: str) -> None:
-    """Write a new provider key to the encrypted key store of the caller's org.
-
-    D58.2 (task 625, H-43). This once ALSO wrote ``os.environ[env_var]``.
-    That value is process-wide: litellm reads it for every caller that sends
-    no ``api_key``, so a second organization saving its own key overwrote the
-    first's for everyone. Each direct model call now takes its key per call
-    from the store of its own organization (``acb_llm.client.call_credentials``),
-    so the store write is the whole save. The name stays, so the callers and
-    the tests that name it keep working.
-    """
-    _sync_key_to_store(env_var, value)
-
-
-def _sync_key_to_store(env_var: str, value: str) -> None:
-    """Write a provider key to the encrypted Postgres key store.
-
-    Maps env var name (e.g. GEMINI_API_KEY) → provider slug (e.g. gemini)
-    using the reverse of _PROVIDER_ENV_MAP.
-
-    MT-1j slice 5: the write is scoped to the caller's organization. Read the
-    binding HERE, on the request's own context, and pass it explicitly — never
-    from inside the scheduled coroutine. ``ensure_future`` does copy the
-    context, but the value this write owns must not depend on that: the tenant
-    is resolved at the call site or it is ``None``, and ``put`` then raises the
-    moment a second organization exists rather than writing an ownerless
-    credential (``key_store.put``'s docstring, MT-0d). Before this, org #2's
-    admin saving a provider key hit exactly that raise and lost it silently to
-    the ``except`` below.
-    """
-    import asyncio as _asyncio
-
-    # Reverse _PROVIDER_ENV_MAP: "GEMINI_API_KEY" → "gemini", etc.
-    _env_to_provider: dict[str, str] = {
-        v: k for k, v in _PROVIDER_ENV_MAP.items() if v
-    }
-    provider = _env_to_provider.get(env_var)
-    if not provider:
-        return
-    org = current_tenant()
-    try:
-        from acb_llm.key_store import get_key_store
-        store = get_key_store()
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an async context — schedule and forget
-            _asyncio.ensure_future(
-                store.put(provider, value.strip(), organization_id=org)
-            )
-        else:
-            loop.run_until_complete(
-                store.put(provider, value.strip(), organization_id=org)
-            )
-    except Exception:
-        pass  # best-effort — key will be re-seeded from .env on restart
-
-
 # ---------------------------------------------------------------------------
 # Provider detection helpers
 # ---------------------------------------------------------------------------
@@ -321,19 +271,26 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
     "vllm":        "VLLM_BASE_URL",
 }
 
-#: The platform keys that the Models routes own (``acb_common.env_guard``,
-#: layer B, ``owned``). They are the one legitimate writer of these names, and
-#: layer A still applies to every value.
+#: The platform names that the Models routes may write to the ENV FILE
+#: (``acb_common.env_guard``, layer B, ``owned``). Layer A still applies to
+#: every value. Only ``COPILOT_CHAT_MODEL``, a model name.
 #:
-#: * ``COPILOT_CHAT_MODEL``, a model name.
-#: * The LLM and speech provider keys of ``_PROVIDER_ENV_MAP``. The deny list
-#:   holds them, so no Integrations route writes them (round 1, 2026-10-05).
-#:   ``POST /settings/llm/key`` writes them only while BYOK is on.
-#:
-#: ``VLLM_BASE_URL`` is NOT here. It is a URL, and a vLLM client sends its key
-#: to the host it names, so ``POST /settings/llm/key`` refuses it.
-_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"}) | frozenset(
-    v for v in _PROVIDER_ENV_MAP.values() if v and v != "VLLM_BASE_URL"
+#: 🔒 D58.2 (task 625): NO provider key is here. The box has ONE env file, and
+#: systemd loads it into every process at the next start, so a key written
+#: there reaches every organization. ``_write_env_key`` therefore refuses each
+#: provider key as a platform name. A BYOK key save goes to the store of the
+#: caller's organization only. Fences: ``test_integrations_env_hardening.py``
+#: (the pinned set) and ``test_llm_call_credentials.py`` (``TestTheSaveDoor``).
+_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"})
+
+#: The env names of the provider keys that ``POST /settings/llm/key`` saves.
+#: The save checks each value with layers A and B against this set, and then
+#: writes the key store, never a file or the env. A provider that the store
+#: cannot send per call (``acb_llm.key_store.PROVIDER_ENV_VARS``) is not here.
+#: ``github`` runs on the operator's ``GITHUB_TOKEN``, and ``VLLM_BASE_URL`` is
+#: a URL that a vLLM client sends its key to. The save refuses both (403).
+_KEY_SAVE_ENV_VARS: frozenset[str] = frozenset(
+    v for k, v in _PROVIDER_ENV_MAP.items() if v and k in _STORE_PROVIDERS
 )
 
 _PROVIDER_LABELS: dict[str, str] = {
@@ -549,39 +506,75 @@ def _provider_from_entry(entry: dict[str, Any]) -> str:
     return _provider_from_model(model)
 
 
-def _is_provider_configured(provider: str) -> bool:
+def _is_provider_configured(provider: str, keyed: frozenset[str] = frozenset()) -> bool:
+    """Whether a call of the CALLER's organization has a key for *provider*.
+
+    Two sources, and only these two (D58.2, task 625):
+
+    * the operator's PLATFORM key: ``os.environ``, then Settings (which reads
+      the env file of the box, where only the operator writes a provider key);
+    * ``keyed``: the slugs that the caller's own organization holds in the
+      store, from :func:`_caller_keyed_providers`. Empty with BYOK off.
+
+    It never reads another organization's saved key.
+    """
     env_var = _PROVIDER_ENV_MAP.get(provider, "")
     if not env_var:
         return provider == "ollama"  # local — assume available
+    if provider in keyed:
+        return True
     # Check os.environ first (Docker / CI), then Settings (pydantic-settings loads .env)
     val = os.environ.get(env_var, "").strip()
     if not val:
         try:
             val = (getattr(get_settings(), env_var.lower(), "") or "").strip()
-        except Exception:
-            pass
-    return bool(val) or _env_file_names(env_var)
+        except Exception:  # a settings read must not break the page
+            val = ""
+    return bool(val)
 
 
-def _env_file_names(env_var: str) -> bool:
-    """Whether the env file holds a non-empty ``env_var`` line. Never raises.
+async def _caller_keyed_providers() -> frozenset[str]:
+    """The provider slugs that the caller's organization holds in the store.
 
-    D58.2 (task 625): a save no longer writes ``os.environ``. Settings has no
-    field for some provider keys (Deepgram, AssemblyAI), so this read keeps a
-    saved key reading as configured before the next restart. It reads a
-    presence, never returns the value.
+    ``acb_llm.key_store.caller_stored_providers``: the bound tenant, never
+    request input, and the empty set with BYOK off. Never raises, because a
+    settings read must never break the page.
     """
     try:
-        path = _env_file_path()
-        if not path.exists():
-            return False
-        prefix = f"{env_var}="
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith(prefix) and line[len(prefix):].strip():
-                return True
-    except Exception:  # a presence check, best-effort
-        return False
-    return False
+        from acb_llm.key_store import caller_stored_providers
+
+        return await caller_stored_providers()
+    except Exception:
+        return frozenset()
+
+
+async def _caller_api_key(provider: str) -> str | None:
+    """The key that a call of the caller's organization sends to *provider*.
+
+    A store provider asks ``acb_llm.key_store.caller_provider_key``: the
+    caller's stored key while BYOK is on, else the platform key. Any other
+    provider (``github``, ``vllm``) and a miss read the platform env, then
+    Settings. Never another organization's key. ``None`` when there is none.
+    """
+    if provider in _STORE_PROVIDERS:
+        try:
+            from acb_llm.key_store import caller_provider_key
+
+            key = (await caller_provider_key(provider)).strip()
+            if key:
+                return key
+        except Exception:  # the platform read below still answers
+            pass
+    env_var = _PROVIDER_ENV_MAP.get(provider, "")
+    if not env_var:
+        return None
+    key = os.environ.get(env_var, "").strip()
+    if not key:
+        try:
+            key = (getattr(get_settings(), env_var.lower(), "") or "").strip()
+        except Exception:
+            key = ""
+    return key or None
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +645,7 @@ async def get_llm_config(_user: UserContext = Depends(get_current_user)) -> LLMC
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     model_list: list[dict] = cfg.get("model_list", [])
+    keyed = await _caller_keyed_providers()
 
     tiers: list[TierInfo] = []
     for entry in model_list:
@@ -672,7 +666,7 @@ async def get_llm_config(_user: UserContext = Depends(get_current_user)) -> LLMC
             description=meta["description"],
             model=model,
             provider=provider,
-            provider_configured=_is_provider_configured(provider),
+            provider_configured=_is_provider_configured(provider, keyed),
         ))
 
     providers: list[ProviderInfo] = []
@@ -680,7 +674,7 @@ async def get_llm_config(_user: UserContext = Depends(get_current_user)) -> LLMC
         providers.append(ProviderInfo(
             id=pid,
             label=label,
-            configured=_is_provider_configured(pid),
+            configured=_is_provider_configured(pid, keyed),
             env_var=_PROVIDER_ENV_MAP.get(pid, ""),
             models=_PROVIDER_MODELS.get(pid, []),
         ))
@@ -789,7 +783,9 @@ async def update_tier(
         description=meta["description"],
         model=display_model,
         provider=provider,
-        provider_configured=_is_provider_configured(provider),
+        provider_configured=_is_provider_configured(
+            provider, await _caller_keyed_providers(),
+        ),
     )
 
 
@@ -903,7 +899,7 @@ def refuse_if_byok_disabled() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST /settings/llm/key  — write a provider API key to infra/.env + restart
+# POST /settings/llm/key  — save a provider API key to the caller org store
 # ---------------------------------------------------------------------------
 
 class ProviderKeyRequest(BaseModel):
@@ -920,28 +916,49 @@ async def set_provider_key(
     env_var = _PROVIDER_ENV_MAP.get(req.provider)
     if not env_var:
         raise HTTPException(status_code=400, detail=f"No env var for provider: {req.provider}")
-    if not req.api_key.strip():
+    key = req.api_key.strip()
+    if not key:
         raise HTTPException(status_code=400, detail="api_key cannot be empty")
-    # Layers A and B (acb_common.env_guard), before the file, os.environ and
-    # the store. VLLM_BASE_URL is a URL, so it is refused here with 403.
-    _refuse_unsafe_env_write(env_var, req.api_key.strip(), actor=_user.email)
+    # Layers A and B (acb_common.env_guard), before the store write. A provider
+    # that the store cannot send per call is refused here (403). For vllm,
+    # layer B refuses VLLM_BASE_URL, a URL. github runs on the operator's
+    # GITHUB_TOKEN, and a stored row of it would reach no call, so a 200 here
+    # would say a key was saved when nothing changed.
+    _refuse_unsafe_env_write(env_var, key, actor=_user.email, owned=_KEY_SAVE_ENV_VARS)
+    if req.provider not in _STORE_PROVIDERS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{_PROVIDER_LABELS.get(req.provider, req.provider)} runs on a key "
+                "that the operator sets on this deployment. The Models page "
+                "cannot save it."
+            ),
+        )
+    # D58.2 (task 625): the store of the caller's organization is the WHOLE
+    # save. No env file write: systemd loads that one file into every process
+    # at the next start, so a key there would reach every organization. No
+    # `os.environ` write: litellm reads it for every caller. The next direct
+    # call of THIS organization sends the key (`key_store.provider_key`).
+    # The write is awaited. A save that did not land never answers 200.
     try:
-        _write_env_key(env_var, req.api_key.strip())
-        # D58.2 (task 625): no `os.environ` write. The env holds the operator's
-        # platform keys only; litellm reads it for every caller. The env file
-        # write above makes `_is_provider_configured` answer True at once.
-        # Bust the settings LRU cache so get_settings() also picks up the new value.
-        try:
-            from acb_common.settings import get_settings as _gs
-            _gs.cache_clear()
-        except Exception:
-            pass
+        from acb_llm.key_store import get_key_store
+
+        await get_key_store().put(req.provider, key, organization_id=current_tenant())
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to write env: {exc}") from exc
+        # The type only. The text of a store error can hold a DSN.
+        _log.warning(
+            "settings.llm.key_save_failed", provider=req.provider,
+            error_type=type(exc).__name__, actor=_user.email,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Could not save the {_PROVIDER_LABELS.get(req.provider, req.provider)} "
+                "key. The key store did not answer, so no key changed. "
+                "Try again in a minute."
+            ),
+        ) from None
     _log.info("settings.llm.key_updated", provider=req.provider, actor=_user.email)
-    # The key of the caller's organization, in the store. The next direct call
-    # of that organization sends it (no restart needed).
-    _inject_env_into_litellm(env_var, req.api_key.strip())
     return {"ok": "true", "env_var": env_var, "provider": req.provider}
 
 
@@ -1740,18 +1757,9 @@ async def refresh_provider_models(
     results: list[RefreshResult] = []
 
     for provider in to_refresh:
-        # Resolve API key from env
-        env_var = _PROVIDER_ENV_MAP.get(provider, "")
-        api_key: str | None = None
-        if env_var:
-            api_key = os.environ.get(env_var, "").strip() or None
-            if not api_key:
-                try:
-                    api_key = (
-                        getattr(get_settings(), env_var.lower(), "") or ""
-                    ).strip() or None
-                except Exception:
-                    pass
+        # D58.2 (task 625): the key that a call of the CALLER's organization
+        # sends. Never another organization's saved key.
+        api_key = await _caller_api_key(provider)
 
         # Skip providers that need a key but don't have one (except openrouter)
         if provider != "openrouter" and provider not in ("ollama", "vllm") and not api_key:

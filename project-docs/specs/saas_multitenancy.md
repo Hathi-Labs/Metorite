@@ -3342,9 +3342,11 @@ ratchet's cadence; each PR banks its progress.
 > | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. |
 >
 > 🆕 **2026-11-22 (task 625, D58.2):** the latch now only seeds the store on first boot, and
-> task 625 removed `configure_litellm`. Each direct call takes the key of its bound
-> organization per call (`acb_llm.client.call_credentials`). Task 625 also removed the
-> `os.environ` half of `_inject_env_into_litellm`.
+> task 625 removed `configure_litellm`. Each direct call takes its key per call
+> (`acb_llm.client.call_credentials`). With BYOK off (the default), that is the platform
+> key, and no row is read. With BYOK on, the bound organization's stored key wins. Task
+> 625 also removed `_inject_env_into_litellm`. A BYOK save writes only the caller's store,
+> and never `os.environ` or the env file.
 >
 > **What a real fix needs:** a **tenant-scoped API key** (`user_management_contract.md`
 > R11's second admitted identity source) plus per-request provider credentials instead of

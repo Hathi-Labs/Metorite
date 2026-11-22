@@ -1308,9 +1308,7 @@ def models_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 async def _set_key(provider: str, api_key: str) -> dict[str, str]:
     req = settings_routes.ProviderKeyRequest(provider=provider, api_key=api_key)
-    out = await settings_routes.set_provider_key(req, _user=USER)
-    await asyncio.sleep(0)  # let the scheduled store write run
-    return out
+    return await settings_routes.set_provider_key(req, _user=USER)
 
 
 async def _set_model(model: str) -> dict[str, str]:
@@ -1327,11 +1325,18 @@ MODELS_BAD_VALUES = [
     pytest.param(OVER_CAP, id="over-cap"),
 ]
 
-#: Pinned: what the Models routes own of the deny list.
-MODELS_OWNED_PINNED = frozenset({
-    "COPILOT_CHAT_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-    "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "GITHUB_TOKEN", "GROQ_API_KEY",
-    "MISTRAL_API_KEY", "TOGETHER_API_KEY", "DEEPGRAM_API_KEY", "ASSEMBLYAI_API_KEY",
+#: Pinned: what the Models routes may write to the env file, of the deny list.
+#: Task 625 (D58.2): no provider key. The box has one env file, and every
+#: process loads it at the next start, so a key there reaches every org.
+MODELS_OWNED_PINNED = frozenset({"COPILOT_CHAT_MODEL"})
+
+#: Pinned: the provider keys that a BYOK save checks and then writes to the
+#: caller's key store only. `GITHUB_TOKEN` is not here: the store cannot send
+#: it per call, so the save refuses it.
+KEY_SAVE_PINNED = frozenset({
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY",
+    "DEEPGRAM_API_KEY", "ASSEMBLYAI_API_KEY",
 })
 
 
@@ -1364,26 +1369,55 @@ class TestTheModelsRoutesUseTheSameGuard:
         assert models_env_file.read_bytes() == ENV_BEFORE + b"COPILOT_CHAT_MODEL=claude-sonnet-4-5\n"
 
     @pytest.mark.parametrize("provider", sorted(
-        p for p, v in settings_routes._PROVIDER_ENV_MAP.items() if v and v != "VLLM_BASE_URL"
+        p for p, v in settings_routes._PROVIDER_ENV_MAP.items() if v in KEY_SAVE_PINNED
     ))
     async def test_every_provider_key_still_saves(self, provider, models_env_file, store, byok_on):
         env_var = settings_routes._PROVIDER_ENV_MAP[provider]
         out = await _set_key(provider, "sk-proj-AbC123_xyz")
         assert out["env_var"] == env_var
-        assert models_env_file.read_bytes() == ENV_BEFORE + f"{env_var}=sk-proj-AbC123_xyz\n".encode()
-        # Task 625 (D58.2): the save goes to the caller's store, never to the
-        # process env that litellm reads for every caller.
+        # Task 625 (D58.2): the save goes to the caller's store only. Never to
+        # the process env that litellm reads for every caller, and never to
+        # the env file that every process loads at the next start.
+        assert models_env_file.read_bytes() == ENV_BEFORE
         assert os.environ.get(env_var) != "sk-proj-AbC123_xyz"
-        assert (provider, "sk-proj-AbC123_xyz") in store.puts
-        # The env file write keeps the key reading as configured at once.
-        assert settings_routes._is_provider_configured(provider)
+        assert store.puts == [(provider, "sk-proj-AbC123_xyz")]
+
+    async def test_the_key_route_refuses_github(self, models_env_file, store, byok_on):
+        # The store cannot send a GitHub token per call, so a save there would
+        # answer 200 and change nothing. It is the operator's GITHUB_TOKEN.
+        before = _snapshot(models_env_file)
+        await _expect(403, _set_key("github", "ghp_AbC123xyz"))
+        _assert_untouched(models_env_file, before)
+        assert store.puts == []
+
+    async def test_a_failed_store_write_answers_503(self, models_env_file, byok_on, monkeypatch):
+        import acb_llm.key_store as key_store_module
+
+        failing = FakeStore(fail=True)
+        monkeypatch.setattr(key_store_module, "get_key_store", lambda: failing)
+        before = _snapshot(models_env_file)
+        await _expect(503, _set_key("openai", "sk-proj-AbC123_xyz"))
+        _assert_untouched(models_env_file, before)
 
     def test_the_models_routes_own_exactly_their_pinned_set(self):
         # Growing this set lets a route write a platform key, so it is pinned.
         assert settings_routes._MODELS_PAGE_ENV_KEYS == MODELS_OWNED_PINNED
+        assert settings_routes._KEY_SAVE_ENV_VARS == KEY_SAVE_PINNED
         assert "VLLM_BASE_URL" not in settings_routes._MODELS_PAGE_ENV_KEYS
-        urls = [k for k in MODELS_OWNED_PINNED if k.endswith(("_URL", "_BASE", "_HOST"))]
+        assert "VLLM_BASE_URL" not in settings_routes._KEY_SAVE_ENV_VARS
+        urls = [
+            k for k in MODELS_OWNED_PINNED | KEY_SAVE_PINNED
+            if k.endswith(("_URL", "_BASE", "_HOST"))
+        ]
         assert urls == []
+
+    @pytest.mark.parametrize("env_var", sorted(KEY_SAVE_PINNED))
+    def test_write_env_key_refuses_every_provider_key(self, env_var, models_env_file):
+        # Task 625 (D58.2): the env file never holds an organization's key.
+        with pytest.raises(env_guard.EnvWriteRefused) as caught:
+            settings_routes._write_env_key(env_var, "sk-1")
+        assert caught.value.platform is True
+        assert models_env_file.read_bytes() == ENV_BEFORE
 
     def test_owned_is_an_exact_name_exemption(self):
         owned = settings_routes._MODELS_PAGE_ENV_KEYS
@@ -1398,7 +1432,7 @@ class TestTheModelsRoutesUseTheSameGuard:
     @pytest.mark.parametrize("value", MODELS_BAD_VALUES)
     def test_write_env_key_itself_refuses(self, value, models_env_file):
         with pytest.raises(env_guard.EnvWriteRefused) as caught:
-            settings_routes._write_env_key("OPENAI_API_KEY", value)
+            settings_routes._write_env_key("COPILOT_CHAT_MODEL", value)
         assert caught.value.platform is False
         assert models_env_file.read_bytes() == ENV_BEFORE
 
@@ -1413,16 +1447,14 @@ class TestTheModelsRoutesUseTheSameGuard:
     def test_write_env_key_never_splits_an_old_line(self, separator, models_env_file):
         old = f"OLD=a{separator}DATABASE_URL=evil\nOTHER=1\n".encode()
         models_env_file.write_bytes(old)
-        settings_routes._write_env_key("OPENAI_API_KEY", "sk-1")
-        assert models_env_file.read_bytes() == old + b"OPENAI_API_KEY=sk-1\n"
+        settings_routes._write_env_key("COPILOT_CHAT_MODEL", "gpt-4o")
+        assert models_env_file.read_bytes() == old + b"COPILOT_CHAT_MODEL=gpt-4o\n"
 
     def test_write_env_key_still_replaces_and_appends(self, models_env_file):
-        models_env_file.write_bytes(b"A=1\nCOPILOT_CHAT_MODEL=gpt-4o\n\n# note")
+        models_env_file.write_bytes(b"A=1\n\n# note")
+        settings_routes._write_env_key("COPILOT_CHAT_MODEL", "gpt-4o")
         settings_routes._write_env_key("COPILOT_CHAT_MODEL", "o3-mini")
-        settings_routes._write_env_key("OPENAI_API_KEY", "sk-1")
-        assert models_env_file.read_bytes() == (
-            b"A=1\nCOPILOT_CHAT_MODEL=o3-mini\n\n# note\nOPENAI_API_KEY=sk-1\n"
-        )
+        assert models_env_file.read_bytes() == b"A=1\n\n# note\nCOPILOT_CHAT_MODEL=o3-mini\n"
 
 
 # ── Round 2: a custom service id may not be a built-in one ──────────────────

@@ -73,8 +73,10 @@ def api_key() -> str:
 async def resolve_api_key() -> str:
     """The key of ONE transcription, for the organization bound to the call.
 
-    D58.2 (task 625): the key store seam answers the org's stored key, and
-    else the platform key (``ProviderKeyStore.provider_key``). The key travels
+    D58.2 (task 625): the key store seam decides
+    (``ProviderKeyStore.provider_key``). With BYOK off (the default) it is the
+    operator's platform key, as before task 625. With BYOK on, the stored key
+    of the bound organization wins, and else the platform key. The key travels
     as an argument, never on the provider object, because one provider object
     serves every organization. Without the key store package, the platform key.
     """

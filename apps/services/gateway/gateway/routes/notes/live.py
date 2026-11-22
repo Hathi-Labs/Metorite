@@ -40,28 +40,16 @@ _AAI_STREAM = "https://streaming.assemblyai.com/v3"
 _TOKEN_TTL_S = 60  # short — the browser refreshes if a recording runs long
 
 
-def _deepgram_key() -> str:
-    """The operator's PLATFORM Deepgram key from the env, or ``""``.
-
-    D58.2 (task 625): no code path copies a stored key into ``os.environ`` any
-    more, so the env holds only what the operator set on the box. A live token
-    takes the key of the bound organization first (:func:`_stt_keys`)."""
-    return os.environ.get("DEEPGRAM_API_KEY", "").strip()
-
-
-def _assemblyai_key() -> str:
-    """The operator's PLATFORM AssemblyAI key from the env, or ``""``."""
-    return os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
-
-
 async def _stt_keys() -> tuple[str, str]:
-    """``(assemblyai, deepgram)`` keys for the organization bound to this call.
+    """``(assemblyai, deepgram)`` keys for one live token.
 
-    The key store seam answers the org's stored key, and else the platform
-    key (``ProviderKeyStore.provider_key``). The browser route binds the
-    member's org (``get_current_user``). The bot route binds none, so the
-    store answers the sole organization, or nothing once a second one exists,
-    and then the platform key. Never another organization's key.
+    D58.2 (task 625). The key store seam decides (``key_store.provider_key``).
+    With BYOK off (the default) both are the operator's PLATFORM keys from the
+    env, as before task 625. With BYOK on, the stored key of the bound
+    organization wins, and the platform key answers when it holds none. The
+    browser route binds the member's org (``get_current_user``). The bot route
+    binds none, so with BYOK on the store answers the sole organization's key,
+    or nothing once a second one exists. Never another organization's key.
     """
     from acb_llm.key_store import caller_provider_key
 

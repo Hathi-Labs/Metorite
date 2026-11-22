@@ -485,44 +485,88 @@ class ProviderKeyStore:
         """The key of ONE direct model call to *provider*, or ``""``.
 
         D58.2 (task 625, H-43). A direct litellm call passes this value as
-        ``api_key``. Nothing copies it into ``os.environ`` or into a litellm
-        module attribute, so no other caller in the process can send it.
+        ``api_key``. Nothing copies it into ``os.environ``, into a litellm
+        module attribute or into the env file, so no other caller in the
+        process, and no other organization after a restart, can send it.
 
         The order:
 
-        1. The stored key of *organization_id*. ``None`` resolves to the sole
-           organization, and to nothing once a second one exists
-           (:meth:`_resolve_org`). A caller with no organization therefore
-           never gets a tenant key on a pooled box.
+        1. ONLY while BYOK is on (``settings.byok_enabled``,
+           :func:`byok_reads_store`): the stored key of *organization_id*.
+           ``None`` resolves to the sole organization, and to nothing once a
+           second one exists (:meth:`_resolve_org`). A caller with no
+           organization therefore never gets a tenant key on a pooled box.
         2. Else the PLATFORM key: the env var of :data:`PROVIDER_ENV_VARS`,
            which only the operator sets on the box (:func:`platform_key`).
 
+        ⚠️ With BYOK off (the default) this reads NO row and opens no
+        connection. Every call sends the platform key, exactly as production
+        did before task 625. The reason: old rows are copies of operator keys
+        (migration 158 gave them to the org with slug ``default``, and the
+        first-boot seed copies the env). A stale row must not win for live
+        speech-to-text while no member can see or delete it.
+
         A stored value that fails layer A (``acb_common.env_guard``) is not
         sent, because a control character in a header is an injection. A store
-        that does not answer falls back to the platform key, as the old loader
-        did. The key name is logged, never the value.
+        that does not answer falls back to the platform key. The key name is
+        logged, never the value.
 
         Fence: ``tests/unit/test_llm_call_credentials.py``.
         """
         if provider not in PROVIDER_ENV_VARS:
             return ""
         key = ""
-        try:
-            key = (await self.get(provider, organization_id=organization_id)).strip()
-        except Exception as exc:  # the platform key still answers
-            _log.warning(
-                "key_store.provider_key_unavailable",
-                provider=provider, error=str(exc)[:160],
-            )
+        if byok_reads_store():
+            try:
+                key = (await self.get(provider, organization_id=organization_id)).strip()
+            except Exception as exc:  # the platform key still answers
+                _log.warning(
+                    "key_store.provider_key_unavailable",
+                    provider=provider, error_type=type(exc).__name__,
+                )
         if key and value_problem(key):
             _log.warning("key_store.provider_key_refused", provider=provider)
             key = ""
         return key or platform_key(provider)
 
+    async def stored_providers(self, *, organization_id: str | None) -> frozenset[str]:
+        """The slugs of :data:`PROVIDER_ENV_VARS` that *organization_id* holds.
+
+        The same BYOK gate as :meth:`provider_key`: with BYOK off it reads no
+        row and answers the empty set. One query, for the Models page badge.
+        It never answers a value, and never another organization's row.
+        """
+        if not byok_reads_store():
+            return frozenset()
+        try:
+            rows = await self.get_by_type("llm", organization_id=organization_id)
+        except Exception as exc:
+            _log.warning("key_store.stored_providers_unavailable", error_type=type(exc).__name__)
+            return frozenset()
+        return frozenset(
+            p for p, v in rows.items()
+            if p in PROVIDER_ENV_VARS and v.strip() and not value_problem(v.strip())
+        )
+
+
+def byok_reads_store() -> bool:
+    """Whether a direct call may send an organization's STORED provider key.
+
+    D58.2 (task 625). True only while ``settings.byok_enabled`` is on. The
+    flag is the operator's, set on one deployment (``customer_console.md``
+    §5.1). A settings read that fails answers False, so the call sends the
+    platform key, as production does with BYOK off. Never raises.
+    """
+    try:
+        return bool(get_settings().byok_enabled)
+    except Exception:
+        return False
+
 
 #: Store slug → the env var of the PLATFORM key of that provider. The one
 #: provider table of the key store. The env value is the operator's (the env
-#: file of the box). No code path copies a stored key into it (D58.2).
+#: file of the box). No code path copies a stored key into the env or into
+#: the env file (D58.2).
 PROVIDER_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -585,8 +629,20 @@ async def caller_provider_key(provider: str) -> str:
     (``gateway.routes.notes.live``) and the AssemblyAI provider. The
     organization is ``acb_common.db.current_tenant()``, which the auth
     dependency or a job binds. It never comes from request input (R5, R11).
+    With BYOK off it is the platform key, always.
     See :meth:`ProviderKeyStore.provider_key` for the order.
     """
     from acb_common.db import current_tenant
 
     return await get_key_store().provider_key(provider, organization_id=current_tenant())
+
+
+async def caller_stored_providers() -> frozenset[str]:
+    """The provider slugs that the bound organization holds in the store.
+
+    D58.2 (task 625). For the Models page, so a badge reads the caller's own
+    store and never another organization's. Empty with BYOK off.
+    """
+    from acb_common.db import current_tenant
+
+    return await get_key_store().stored_providers(organization_id=current_tenant())

@@ -385,8 +385,9 @@ async def apply_live_names(meeting_id: str, segments: list) -> dict[str, str]:
         from gateway.routes.notes.speaker_id import merge_inferred
 
         # H4: called from the background transcription pipeline
-        # (`pipeline.run_transcription`) — no ambient tenant; derive it from
-        # the meeting row.
+        # (`pipeline.run_transcription`). A browser upload's task sees the
+        # member's bound tenant (`create_task` copies the context). The
+        # meeting-bot ingest's task has none. Derive it from the meeting row.
         async with await _get_db() as db:
             row = (
                 await db.execute(

@@ -182,8 +182,9 @@ async def infer_speaker_names(
     Returns the full merged map. Never raises: on any problem the existing map
     is returned unchanged."""
     # H4: shared helper also consumed by the background transcription pipeline
-    # (`pipeline.run_transcription`, a spawned task) — no ambient tenant
-    # there; derive it from the meeting row.
+    # (`pipeline.run_transcription`, a spawned task). A browser upload's task
+    # sees the member's bound tenant (`create_task` copies the context). The
+    # meeting-bot ingest's task has none. Derive it from the meeting row.
     try:
         async with await _get_db() as db:
             m = (

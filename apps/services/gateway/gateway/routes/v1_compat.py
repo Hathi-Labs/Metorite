@@ -999,9 +999,10 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # D58.2 (task 625): the provider key travels per call, never through a
     # process global. `call_credentials` adds nothing when the caller named
     # its own endpoint, so a stored key never goes to a host the caller chose.
-    # H4: this door binds no tenant (`require_llm_api_auth`), so the key store
-    # answers the sole organization's key, none once a second one exists, and
-    # then the operator's platform key. Never an org from a header or the body.
+    # H4: this door binds no tenant (`require_llm_api_auth`). With BYOK off
+    # the key is the operator's platform key. With BYOK on the store answers
+    # the sole organization's key, none once a second one exists, and then
+    # the platform key. Never an org from a header or the body.
     from acb_llm.client import call_credentials
 
     common.update(await call_credentials(model, common))

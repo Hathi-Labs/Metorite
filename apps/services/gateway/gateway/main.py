@@ -944,9 +944,10 @@ async def _prewarm_prompt_cache() -> None:
             warmed.add(model)
             ensure_model_registered(model)
             try:
-                # D58.2: no tenant is bound at startup, so `call_credentials`
-                # answers the sole organization's key, or the operator's
-                # platform key. Never a key a process global holds.
+                # D58.2: no tenant is bound at startup. With BYOK off
+                # `call_credentials` answers the operator's platform key. With
+                # BYOK on, the sole organization's stored key, and else the
+                # platform key. Never a key that a process global holds.
                 await acompletion(
                     model=model,
                     messages=[
