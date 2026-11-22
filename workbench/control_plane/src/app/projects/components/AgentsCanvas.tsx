@@ -43,7 +43,7 @@ export function AgentsCanvas({
     );
   }
   return (
-    <section aria-label="Agents on this project" data-agents-canvas="" className="flex min-h-0 flex-1 flex-col">
+    <section aria-label="Agents on this project" data-agents-canvas="" className="flex h-full min-h-0 flex-1 flex-col">
       <AgentMapView
         read={read}
         showQuiet={showQuiet}

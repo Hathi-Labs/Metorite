@@ -5353,7 +5353,7 @@ function ProjectsWorkspace() {
       ) : null}
 
       {/* The Agents canvas fills the pane, so its host is a flex column with a definite height. Other canvases stay block. */}
-      <div className={`min-h-0 flex-1 overflow-auto${agentsCanvas ? " flex flex-col" : ""}`}>
+      <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={canvasKey} layout={canvasLabel}>
           {!selected ? (
             renderState(
