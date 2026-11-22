@@ -2,7 +2,7 @@
 
 Migration: the file that adds ``notes_same_org_ref()`` and its 10
 attachments. This file finds it by its CONTENT, never by number (R1). It was
-473 at build time.
+473 at build time and became 479 (R1) when main reached 474 first.
 
 **The gap.** The notes child tables reference ``meeting`` (or each other)
 with a plain foreign key, and a foreign key check ignores RLS. So a session
