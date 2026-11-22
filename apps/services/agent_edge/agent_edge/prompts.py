@@ -401,7 +401,7 @@ def _queued_text() -> str:
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
         " Then call claim_task with the task_id and the version of the row."
-        + _LINK_HINT +
+        + _LINK_HINT + _PLACE_HINT +
         " When claim_task returns a warning about open subtasks, claim a"
         " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
@@ -436,6 +436,15 @@ _LINK_HINT = (
     " pass it as external_link.")
 
 
+#: SW-105. One sentence at the claim step: the name, the place and the model of
+#: the session. The map shows what the agent reports (agent_coordination.md
+#: 3.12). Fence: ``test_mcp_edge_prompts.py``.
+_PLACE_HINT = (
+    " Pass your session name as agent_label, the name of your machine as host,"
+    " its kind as host_kind (computer, server or cloud) and your model as"
+    " model. Pass a value only when you know it.")
+
+
 def _context_step(*, start_run: bool) -> str:
     """Step 4 of the protocol: the context after the claim, then a run only
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
@@ -461,6 +470,7 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " machine or another terminal. Stop, and tell me. Do not work on a held"
         " task.",
         "Call claim_task with that version as expected_version." + _LINK_HINT
+        + _PLACE_HINT
         + " When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",

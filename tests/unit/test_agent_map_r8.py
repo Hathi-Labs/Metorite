@@ -22,6 +22,13 @@ R7, the mutations (each turns a test here red, see the SW-102 report):
   and lead count tests.
 * **M6** the route takes ``show_quiet: bool`` again, so FastAPI checks it
   before the flags -> the flag-off malformed test (a 422 echoes the input).
+
+SW-107 adds the lines of who dispatched whom (§3.12.3, §3.12.4 rule 1):
+
+* **M8** ``_MAP_LINES_SQL`` joins ``pm_agent_runs`` for the dispatcher, not
+  ``seen`` -> the member and lead line tests (a hidden dispatcher shows).
+* **M9** the read drops ``d.node_id <> live.node_id`` -> the admin line test
+  (a node draws a line to itself).
 """
 
 from __future__ import annotations
@@ -160,6 +167,12 @@ def _label(p: Any, rid: str, *, label: str | None, key: str | None, conn: str | 
             {"l": label, "k": key, "c": conn, "w": waiting, "r": rid})
 
 
+def _dispatch(p: Any, rid: str, boss: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_agent_runs SET dispatched_by_run_id = CAST(:d AS uuid)"
+                       " WHERE id = CAST(:r AS uuid)"), {"d": boss, "r": rid})
+
+
 @pytest.fixture(scope="module")
 def world(promoted):  # noqa: F811 — a fixture
     p = promoted
@@ -249,6 +262,21 @@ def _seed(w: Any) -> None:
                   "awaiting", via=VIA_B)
     _label(p, w.r_b, label=LABEL_1, key=key(), conn=conn_b)
 
+    # SW-107: who dispatched whom. An ended run of the orchestrator session,
+    # on a task that only the admin sees. Its line outlives it.
+    w.r_orch_old = b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), OTHER_A,
+                         "completed", via=VIA)
+    _label(p, w.r_orch_old, label="orchestrator", key=key(), conn=conn)
+    for lane, boss in ((w.r_own, w.r_wait),        # orchestrator -> worker-1
+                       (w.r_sub, w.r_private),     # hidden -> the unnamed node
+                       (w.r_mine, w.r_orch_old),   # an ended run, the same node
+                       (w.r_led_quiet, w.r_led),   # worker-1 -> led-sleeper
+                       (w.r_led, w.r_own),         # one node: no line
+                       # The member sees the node of worker-1 (r_own), but
+                       # not this run of it: the member gets no line.
+                       (w.r_mine_quiet, w.r_led)):
+        _dispatch(p, lane, boss)
+
 
 @pytest.fixture
 def w(world, monkeypatch):
@@ -301,13 +329,14 @@ class TestTheMap:
                                   w.r_mine, w.r_private}
         # The three quiet runs count, and the ended run does not.
         assert body["count"] == 10
-        assert body["lines"] == [] and body["truncated"] is False
+        assert len(body["lines"]) == 5 and body["truncated"] is False
         assert _people(body) == {OTHER_A, MEMBER_A}
         from gateway.routes.projects import agent_summary as m
 
         assert tuple(body) == m.MAP_KEYS
         assert all(tuple(s) == m.MAP_SESSION_KEYS for s in body["sessions"])
         assert all(tuple(r) == m.MAP_RUN_KEYS for r in body["runs"])
+        assert all(tuple(x) == m.MAP_LINE_KEYS for x in body["lines"])
 
     async def test_one_name_of_one_connection_is_one_node(self, w):
         _, body, _ = await _get(w, w.admin_a)
@@ -423,6 +452,67 @@ class TestTheMap:
         _, hostile, _ = await _get(
             w, w.admin_b, MAP + f"&organization_id={w.p.org_a}&me={MEMBER_A}")
         assert _run_ids(hostile) == _run_ids(plain) == {w.r_b}
+
+
+def _node_of(body: dict[str, Any], run_id: str) -> str:
+    return next(r["session_id"] for r in body["runs"] if r["run_id"] == run_id)
+
+
+def _lines(body: dict[str, Any]) -> set[tuple[str, str]]:
+    return {(x["from"], x["to"]) for x in body["lines"]}
+
+
+@_DB_GATE
+class TestTheLines:
+    """SW-107. A line joins two session nodes, when the viewer sees both runs."""
+
+    async def test_the_admin_sees_each_line_between_session_nodes(self, w):
+        _, body, _ = await _get(w, w.admin_a, MAP + "&show_quiet=true")
+        node = {rid: _node_of(body, rid) for rid in (
+            w.r_own, w.r_wait, w.r_sub, w.r_private, w.r_mine, w.r_led_quiet, w.r_led,
+            w.r_mine_quiet)}
+        assert _lines(body) == {
+            (node[w.r_wait], node[w.r_own]),
+            (node[w.r_private], node[w.r_sub]),
+            # The ended run of the orchestrator: its session node keeps the line.
+            (node[w.r_wait], node[w.r_mine]),
+            (node[w.r_led], node[w.r_led_quiet]),
+            (node[w.r_led], node[w.r_mine_quiet]),
+        }
+        # worker-1 dispatched by worker-1 is one node, so no line.
+        assert node[w.r_led] == node[w.r_own]
+        ids = set(_sessions(body))
+        assert all(a in ids and b_ in ids for a, b_ in _lines(body))
+
+    async def test_a_folded_run_keeps_its_line_on_its_node(self, w):
+        """The quiet run folds into its node, and the line joins the nodes."""
+        _, folded, _ = await _get(w, w.admin_a)
+        _, opened, _ = await _get(w, w.admin_a, MAP + "&show_quiet=true")
+        assert _lines(folded) == _lines(opened)
+
+    async def test_a_member_gets_no_line_and_no_node_of_a_hidden_dispatcher(self, w):
+        _, body, raw = await _get(w, w.member_a, MAP + "&show_quiet=true")
+        assert _run_ids(body) >= {w.r_own, w.r_mine, w.r_mine_quiet}
+        # The node of worker-1 is on the map, through r_own. The run of it
+        # that dispatched r_mine_quiet is not, so that line drops too.
+        assert body["lines"] == []
+        names = {s["name"] for s in body["sessions"]}
+        assert "orchestrator" not in names and "orchestrator" not in raw
+        assert w.r_wait not in raw and w.r_orch_old not in raw
+
+    async def test_a_lead_sees_a_line_only_between_runs_they_see(self, w):
+        _, body, raw = await _get(w, w.lead_a, MAP + "&show_quiet=true")
+        assert _lines(body) == {(_node_of(body, w.r_led), _node_of(body, w.r_led_quiet))}
+        # The dispatcher of the sub-project run is on a private project.
+        assert "hidden" not in raw and w.r_private not in raw
+
+    async def test_another_org_sees_no_line_of_org_a(self, w):
+        _, body, _ = await _get(w, w.admin_b, MAP + "&show_quiet=true")
+        assert body["lines"] == []
+
+    async def test_the_scope_keeps_a_line_only_when_both_runs_are_in_it(self, w):
+        _, body, _ = await _get(w, w.admin_a, MAP + f"&project_id={w.led['id']}&show_quiet=true")
+        assert _lines(body) == {(_node_of(body, w.r_led), _node_of(body, w.r_led_quiet))}
 
 
 @_DB_GATE
