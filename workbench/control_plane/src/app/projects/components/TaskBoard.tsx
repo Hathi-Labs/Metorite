@@ -42,7 +42,7 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
-import { agentCardLook } from "../lib/agentCardLook";
+import { agentCardLook, splitPlanProgress } from "../lib/agentCardLook";
 import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
@@ -910,6 +910,7 @@ export function TaskBoard({
       memberEmail: task.agent_member_email,
       note: task.agent_note,
       waiting: task.agent_waiting,
+      plan: task.agent_plan,
       viewerEmail: me,
       labels: personLabels,
     });
@@ -1102,7 +1103,18 @@ export function TaskBoard({
             {agentLook.edge === "live" ? (
               <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
             ) : null}
-            <span className="truncate">{agentLook.line}</span>
+            {/* SW-32: the count "3 of 7" never truncates, the step does. */}
+            {(() => {
+              const split = splitPlanProgress(agentLook.line, task.agent_plan);
+              return split ? (
+                <>
+                  <span className="truncate">{split.head}</span>
+                  <span className="shrink-0 whitespace-nowrap">{split.tail}</span>
+                </>
+              ) : (
+                <span className="truncate">{agentLook.line}</span>
+              );
+            })()}
           </p>
         ) : null}
         {/* SW-5: who holds the task, and since when. */}
