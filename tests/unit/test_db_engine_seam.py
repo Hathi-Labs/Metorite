@@ -478,7 +478,12 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: (-2). The hook door finds the org through `service._organization_ids`,
 #: which is already a discovery site, so it adds no new one. Measured: 58.
 #: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
-H2_BASELINE_ELSEWHERE = 58
+#: 58 → 55: H2 (task 566, 2026-11-22). `routes/agent_skills.py` held three
+#: unbound sites (a helper and two request handlers). The handlers run in a
+#: member's request, so they now open the ambient `tenant_session()`. The
+#: file has no `get_db()` left. `test_agent_skills_per_org_r8.py` fences it
+#: under FORCE RLS with two orgs.
+H2_BASELINE_ELSEWHERE = 55
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

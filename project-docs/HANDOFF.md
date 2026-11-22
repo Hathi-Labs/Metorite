@@ -455,12 +455,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-06 · WS-46 P6 review round 2
 
-### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
-- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
-  → no hit means open.
-- **Added:** 2026-10-06 · the EM-T11 session
-
 ### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
 - **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
@@ -532,29 +526,11 @@ line — never reclaim a number by deleting the other entry.
   document of an assigned task's run a home (rule 8). So this id now holds
   the count.
 
-### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
-- **Metorite:** #689. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these three searches.
-  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
-     A hit means step 1 is open.
-  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
-     A hit means step 2 is open.
-  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
-     No hit means step 3 is open, unless the run doors insert the row
-     before the run (the second form of Do 3).
-- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Added:** 2026-10-03 · PR #584 fix round 1
-
-### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
-- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open.
-- **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
 - **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
@@ -682,7 +658,7 @@ line — never reclaim a number by deleting the other entry.
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
-  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -cx customer_console.dump`.
   A zero means no backup on the box holds the Console database, and this is
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
@@ -1420,20 +1396,10 @@ line — never reclaim a number by deleting the other entry.
   not merged.
 - **Part 5 (task 1719, H-201d):** the expand half of the `agent_avatars` key.
   Migration 354 adds the unique index on `(organization_id, agent_name)`, and
-  `_save_avatar` names it. Built 2026-11-07 on branch `h201d-mt-66c5a664`,
-  not merged. H-443 carries the contract half.
+  `_save_avatar` names it. Merged 2026-11-07. Migration 474 drops the old key
+  (the contract, built 2026-11-22). It merges only after the production ledger
+  holds 354 from an earlier release.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
-
-### H-443 · H-201d contract: drop the old agent_avatars primary key one release after the expand migration ships · [AGENT]
-- **Metorite:** #1719. Do it only when the migration ledger of production
-  holds `354_agent_avatars_key_per_tenant.sql` from an EARLIER release. In the same
-  release as 354, the old gateway's `ON CONFLICT (agent_name)` fails on each
-  save until the restart. The contract file drops `agent_avatars_pkey` and
-  flips the two cross-org pins in `test_agent_avatars_key_per_tenant_r8.py`
-  and `test_h201_readers_under_rls.py`.
-- **Check:** `grep -lnE "DROP CONSTRAINT (IF EXISTS )?agent_avatars_pkey" infra/postgres/*.sql`
-  → no hit means the contract is still open.
-- **Added:** 2026-11-07 · the H-201d expand session (task 1719)
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).

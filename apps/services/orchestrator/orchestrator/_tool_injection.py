@@ -26,7 +26,7 @@ import functools
 import os
 import threading
 import weakref
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from acb_common import get_logger
@@ -219,7 +219,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
 
 #: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
 #: agent (repo-root ``agents.py``). It edits platform code and runs the tests
-#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: through its Copilot CLI shell, under the B6 handler of the run's mode (its
+#: factory sets no handler since task 560, H-211). Its root
 #: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
 #: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
 #: admin of the first-party organization may run it, through any path, and it
@@ -5360,6 +5361,20 @@ async def _mcp_may_attach(
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
         return True
+    return next(_attachable_server_names(rows, agent_name, is_authorized), None) is not None
+
+
+def _attachable_server_names(
+    rows: Iterable[Any], agent_name: str, is_authorized: Any,
+) -> Iterator[str]:
+    """The name of each registry row (``enabled_meta``) that the injection
+    would try to attach to *agent_name*: enabled, in scope, an HTTP transport
+    with a url, and allowed by the run's grant. THE one row rule of the
+    lookahead (:func:`_mcp_may_attach`, OA-7i) and of the held-back servers
+    of HRD-1d (:func:`_note_withheld_servers`). It is lazy, so the lookahead
+    stops at the first row, as before."""
+    from orchestrator import _maf_mcp
+
     for srv in rows:
         if not srv.enabled or not _in_scope(list(srv.agent_scope), agent_name):
             continue
@@ -5367,8 +5382,7 @@ async def _mcp_may_attach(
             continue
         if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
             continue
-        return True
-    return False
+        yield str(srv.name)
 
 
 async def _pack_available(
@@ -5742,6 +5756,10 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # HRD-1d: the model can still call a tool of such a server from the
+        # history of the chat. Its answer then says why the tool did not run.
+        await _note_withheld_servers(
+            agent, agent_name, organization_id=organization_id, is_authorized=is_authorized)
         # CSY-5: the model learns WHY the system is off (reason `mail`).
         await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
@@ -5770,6 +5788,9 @@ async def _inject_mcp_servers(
     servers = [srv for srv in stored if _keep_mcp_server(srv, agent_name)]
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
+        attached: Any = []
+        reasons: dict[str, str] = {}
+        tools: Any = getattr(agent, "mcp_tools", None)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
             failures: dict[str, str] = {}
@@ -5777,6 +5798,7 @@ async def _inject_mcp_servers(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                on_needs_signin=_mark_needs_signin_for(str(org)),
                 failures=failures,
             )
             # CSY-10: only a server that attached (after the grant check and
@@ -5784,12 +5806,64 @@ async def _inject_mcp_servers(
             _note_mcp_labels(servers, attached, reserved)
             tools = getattr(agent, "mcp_tools", None)
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
-            _note_mcp_briefs(servers, attached, tools, reasons)
+        # Task 3866: a row in needs_reconnect is not read for a run, so it is
+        # named from a metadata read. Its tools never attach.
+        held_names = {str(srv.name) for srv in servers}
+        # A row that this read held was named by the connect (``failures``).
+        parked = [p for p in await _reconnect_rows(str(org), agent_name, is_authorized)
+                  if str(p.name) not in held_names]
+        for srv in parked:
+            reasons.setdefault(str(srv.name), "reconnect")
+        if maf_servers or parked:
+            _note_mcp_briefs([*servers, *parked], attached, tools, reasons)
             await _count_left_out(str(org), reasons)
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+async def _note_withheld_servers(
+    agent: Any, agent_name: str, *, organization_id: str | None, is_authorized: Any,
+) -> None:
+    """HRD-1d (task 3719): tell the unknown-tool answer of this run which MCP
+    servers the run held back, because it holds a pack that reads mail from
+    outside senders (OA-7b).
+
+    The servers are the ones that the injection would try without that pack:
+    the same org, flag and native check as :func:`_inject_mcp_servers`, then
+    :func:`_attachable_server_names`, the one row rule. The org is the run's
+    server-side stamp, never a tool argument or the member's text. The read
+    is ``enabled_meta``: no header and no OAuth refresh. The value goes to
+    ``unknown_tool.note_withheld`` as the tool-name prefix of each server
+    (``_maf_mcp.tool_prefix``).
+
+    It reads only when the view holds a chat provider
+    (``unknown_tool.reads_withheld``), so a step and a later agent of the run
+    read nothing. Never raises. A fault leaves no value, and the answer stays
+    the answer of HRD-1c."""
+    try:
+        from acb_skills import unknown_tool
+
+        from orchestrator import _maf_mcp
+
+        if not unknown_tool.reads_withheld(agent):
+            return
+        org = organization_id or _run_org_or_none()
+        if not org or not _maf_mcp.is_native_maf_agent(agent):
+            return
+        if not _maf_mcp.maf_mcp_org_allowed(org):
+            return  # the flag is off for this org: read nothing
+        from gateway.connections import mcp as mcp_registry
+
+        rows = await mcp_registry.enabled_meta(str(org))
+        names = list(_attachable_server_names(rows, agent_name, is_authorized))
+        if unknown_tool.note_withheld(
+                agent, [_maf_mcp.tool_prefix(n) for n in names],
+                reason=unknown_tool.WITHHELD_MAIL_REASON):
+            _log.info("mcp.withheld_noted", agent=agent_name, servers=len(names))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.withheld_unavailable", error=type(exc).__name__)
 
 
 #: Tools of the platform that no MCP server may take the look of.
@@ -5849,6 +5923,33 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
         await _count_left_out(str(org), {n: "mail" for n, _ in notes})
     except Exception as exc:
         _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _reconnect_rows(org: str, agent_name: str, is_authorized: Any) -> list[Any]:
+    """Task 3866, CSY-5: the servers of *org* in ``needs_reconnect`` that this
+    run may name, as metadata only. The same scope and grant checks as
+    :func:`_note_mail_skipped`. Only an org with ``CONNECTED_SYSTEMS_ORGS``
+    on. Never attached. A fault gives none and never blocks the run."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return []
+        from gateway.connections import mcp as mcp_registry
+
+        out = []
+        for srv in await mcp_registry.needs_reconnect_meta(org):
+            if not _keep_mcp_server(srv, agent_name):
+                continue
+            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+                continue
+            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
+                continue
+            out.append(srv)
+        return out
+    except Exception as exc:  # the class only
+        _log.warning("mcp.reconnect_notes_unavailable", error=type(exc).__name__)
+        return []
 
 
 async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
@@ -5996,6 +6097,19 @@ def _mark_unauthorized_for(org: str) -> Any:
             org, str(server.name), dict(server.headers),
             refreshed=getattr(server, "oauth_refreshed", False) is True,
         )
+
+    return _mark
+
+
+def _mark_needs_signin_for(org: str) -> Any:
+    """Task 3866: the callback for a 401 or 403 with an OAuth challenge on the
+    connect of a row with no sign-in. It marks the row of *org*, the run
+    binding, never request input (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_needs_signin(org, str(server.name), str(server.url))
 
     return _mark
 

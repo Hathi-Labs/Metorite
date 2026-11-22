@@ -1079,27 +1079,27 @@ def test_avatars_read_and_write_in_the_members_tenant(graph_as_app):  # noqa: F8
 
 
 @_DB_GATE
-def test_an_avatar_name_that_another_org_holds_cannot_be_saved(graph_as_app):  # noqa: F811
-    """Pins the current behaviour. In the expand phase of H-201d (migration
-    354), ``agent_avatars`` keeps its old key, ``agent_name`` alone. Org B's
-    upsert of a name that org A holds does not match A's row on the new
-    index, so it inserts, and the old key refuses it. The PUT is 500 and A's
-    row does not change. The contract release drops the old key, and this
-    test changes with it. ``test_agent_avatars_key_per_tenant_r8.py`` pins
-    both states."""
-    from fastapi import HTTPException
+def test_an_avatar_name_that_another_org_holds_can_be_saved(graph_as_app):  # noqa: F811
+    """H-201d contract (migration 474): ``agent_avatars`` has no key on
+    ``agent_name`` alone. Org B saves a name that org A holds, and the two rows
+    stay apart. ``test_agent_avatars_key_per_tenant_r8.py`` pins the schema."""
     from gateway.routes.observability import AvatarPut, put_avatar
 
     a, b = graph_as_app.org_a, graph_as_app.org_b
     shared = f"h201-av-{_tag()}"
     _seed_avatar(graph_as_app, a, shared, "red")
-
-    with pytest.raises(HTTPException) as err:
+    try:
         asyncio.run(put_avatar(shared, AvatarPut(config={"colour": "blue"}),
                                writer=_user(_CAROL, b)))
-    assert err.value.status_code == 500, "H-201d: the old key is still agent_name"
-    row = _avatar_row(graph_as_app, shared)
-    assert row.org == a and row.config == {"colour": "red"}
+        with graph_as_app.admin_engine.connect() as c:
+            rows = {r.org: r.config for r in c.execute(text(
+                "SELECT organization_id::text AS org, config FROM agent_avatars "
+                "WHERE agent_name = :n"), {"n": shared}).all()}
+        assert rows == {a: {"colour": "red"}, b: {"colour": "blue"}}
+    finally:
+        with graph_as_app.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM agent_avatars WHERE agent_name = :n"),
+                      {"n": shared})
 
 
 @pytest.fixture
