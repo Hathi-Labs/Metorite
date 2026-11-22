@@ -778,38 +778,29 @@ async def write_artifact(
 ) -> dict:
     """Write a file to the agent's workspace and surface it in the UI file browser.
 
-    Call this any time you generate a document, report, script, spreadsheet,
-    PDF, image, or any other file that the operator should be able to view or
-    download from the Control Plane.
+    Call this for any file you make (a document, report, script, sheet, PDF
+    or image) that the operator can view or download.
 
-    Files are automatically placed in ``outputs/`` unless you specify
-    ``inputs/`` (user-provided files) or ``agent-data/`` (reference data).
-    In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
-    own folders, so the returned ``path`` shows where the file went.
+    Files go in ``outputs/`` unless you specify ``inputs/`` (user-provided
+    files) or ``agent-data/`` (reference data). In a chat of a shared agent,
+    ``outputs/`` and ``inputs/`` are that chat's own folders, so the returned
+    ``path`` shows where the file went.
 
     The chat shows a card that opens and downloads the file. Name the file in
     your reply, and do not paste ``download_url``.
 
     Args:
-        path:     Relative file path, e.g. ``"summary.md"`` or
-                  ``"reports/q2_summary.md"``.  If the path does not start
-                  with ``inputs/``, ``outputs/``, or ``agent-data/``, it is
-                  automatically placed in ``outputs/``.
-                  Parent directories are created automatically.
-        content:  File content — either a ``str`` (written with *encoding*)
-                  or ``bytes`` (written as-is; set *encoding* to ``None``).
-        encoding: Text encoding for ``str`` content.  Default ``"utf-8"``.
-                  Pass ``None`` when *content* is already ``bytes``.
-        overwrite: By default (``False``) an existing file is **never**
-                  clobbered — the new file is written to a uniquified name
-                  (``report (1).md``) so originals/user uploads are preserved.
-                  Set ``True`` to deliberately replace the file in place.
+        path: Relative file path, e.g. ``"reports/q2.md"``. Parent folders
+              are created.
+        content: A ``str`` (written with *encoding*) or ``bytes`` (set
+              *encoding* to ``None``).
+        encoding: Text encoding for ``str`` content. Default ``"utf-8"``.
+        overwrite: ``False`` (the default) never replaces a file: the new
+              file takes a new name (``report (1).md``). ``True`` replaces it.
 
     Returns:
-        ``{"path": str, "size": int, "sha256": str, "download_url": str}``
-
-        ``path`` is the file *actually* written (which may be a uniquified
-        name if a file already existed and ``overwrite`` is off).
+        ``{"path", "size", "sha256", "download_url"}``. ``path`` is the file
+        actually written.
     """
     import asyncio
 
@@ -1302,8 +1293,10 @@ async def _notify(
     try:
         import httpx
 
+        # An empty token sends no Authorization header: ``Bearer `` is an
+        # illegal header value, and the gateway answers 401 (WS-24c).
         headers = {
-            "Authorization": f"Bearer {gateway_token}",
+            **({"Authorization": f"Bearer {gateway_token}"} if gateway_token else {}),
             "Content-Type": "application/json",
         }
 
@@ -1350,7 +1343,7 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
     "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
     "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
     "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
-    "planCard", "chart", "report", "reminderCard",
+    "planCard", "chart", "report", "reminderCard", "buddyHello",
 })
 
 #: The renderer drops a node deeper than this (``Node``'s depth guard).
@@ -1406,6 +1399,17 @@ def genui_refusal(spec: dict) -> str | None:
                 f"{', '.join(sorted(GENUI_NODE_TYPES))}. For a hierarchy, use "
                 "a markdown node with a nested list."
             )
+        # `source` binds a node to a Studio page's data door (STU-D1). Chat
+        # has no door, so a binding would do nothing there. A string `source`
+        # is a harmless caption and passes.
+        node_props = node.get("props")
+        node_source = node_props.get("source") if isinstance(node_props, dict) else None
+        if (
+            isinstance(node_source, dict)
+            and isinstance(node_source.get("action"), str)
+            and node_source["action"].strip()
+        ):
+            return f"{where}.props.source: source works on a Studio page only. Remove it."
         if kind == "template":
             props = node.get("props")
             name = props.get("name") if isinstance(props, dict) else None
@@ -1580,6 +1584,7 @@ GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "chart": "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
     "report": "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
     "reminderCard": "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    "buddyHello": "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
 })
 
 #: The templates that collect the member's input. Each one pairs with
@@ -1785,7 +1790,7 @@ async def emit_generative_ui(ui: str) -> dict:
        statDashboard, barChart, sparkTrend, comparison, progressTracker,
        recipeCard, flightStatus, trainStatus, formCard, optionPicker,
        timeline, taskBoard, dataGrid, reportCard, planCard, chart, report,
-       reminderCard. To get
+       reminderCard, buddyHello. To get
        the data shape of a template, call with its name and no ``data``. Nothing is
        drawn. An empty or unknown name returns the shape of each template.
 

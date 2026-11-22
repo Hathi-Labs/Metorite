@@ -1,5 +1,17 @@
 import { useEffect, useState } from "react";
 
+import { phoneBarTop } from "@/components/ui/AnchoredPanel";
+
+/**
+ * MOB-9 (task 2002): the phone's bottom bar paints above the overlay, so the
+ * height stops at the bar's top edge. With the keyboard up, the visual
+ * viewport ends above the bar and nothing is taken off.
+ */
+export function heightAboveBar(vv: { height: number; offsetTop: number }, barTop: number | null): number {
+  if (barTop === null) return vv.height;
+  return Math.max(0, vv.height - Math.max(0, vv.offsetTop + vv.height - barTop));
+}
+
 /**
  * Track the mobile **visual viewport** so bottom-sheets can stay above the
  * on-screen keyboard. When the keyboard opens it shrinks the visual viewport
@@ -17,7 +29,7 @@ export function useVisualViewport(): { height: number; top: number } | null {
   useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : null;
     if (!vv) return;
-    const update = () => setVp({ height: vv.height, top: vv.offsetTop });
+    const update = () => setVp({ height: heightAboveBar(vv, phoneBarTop()), top: vv.offsetTop });
     const raf = requestAnimationFrame(update); // initial read, off the effect tick
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);

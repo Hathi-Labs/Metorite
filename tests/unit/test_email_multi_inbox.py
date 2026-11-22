@@ -422,6 +422,10 @@ def chat(monkeypatch):
     monkeypatch.setattr(agents, "_get", fake_get)
     monkeypatch.setattr(agents, "_post", fake_post)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", confirm)
+    # §18.10: these tests read the plain send card. A run that cannot draw the
+    # card to edit keeps it (WhatsApp, no channel). test_email_new_mail_card.py
+    # holds the edit card of a new mail.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     # A live chat: a "no" is a refusal (EM-G11c1 answers a run with no card
     # channel with the Chat-app text).
     monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
@@ -473,7 +477,8 @@ async def test_a_declined_card_sends_nothing(chat) -> None:
     chat.answer = False
     out = await agents.send_email("box-b", body="Hi", to=["kim@contoso.test"],
                                   subject="S")
-    assert "Send cancelled" in out
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:") and "The email was not sent." in out
     assert chat.posts == []
 
 

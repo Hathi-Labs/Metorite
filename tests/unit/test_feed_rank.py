@@ -7,8 +7,11 @@ the order fails here first:
 * **The table.** Each base, and the rule that the five needs kinds start
   above every other kind, in the needs feed's own order.
 * **Each term.** Urgency, the old-path weight from the ONE server matrix
-  (``acb_common.priority``), affinity at 0 until MD-9, and fatigue (MD-2a):
-  -8 for each visit of the day, to -24.
+  (``acb_common.priority``), the affinity formula of LOOP-4a
+  (``proactive_loop.md`` §7.2 P1), and fatigue (MD-2a): -8 for each visit of
+  the day, to -24.
+* **One reader of the card counts** (``proactive_loop.md`` §7.1 rule 5,
+  §11.1): one module groups ``my_day_card_state`` by kind.
 * **The group table** of §4.3, row by row.
 * **Rule 1** (the group comes first) and **rule 3** (15 cards for each app,
   and an approval yields).
@@ -22,7 +25,10 @@ the client's, in MD-1b. Neither is tested here, on purpose.
 
 from __future__ import annotations
 
+import ast
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -41,8 +47,11 @@ class TestTheTable:
         assert feed_rank.BASE == {
             # WS-66 RM-2b: the five needs bases rose by 3, to make room for the
             # three reminder kinds above `agent_asks`.
+            # AO-2: the AI vendor alert, above `overdue` as in KIND_ORDER.
+            "provider_alert": 66,
             "overdue": 63, "approval": 59, "due_today": 55, "notification": 51,
-            "needs_reply": 47, "agent_asks": 43, "promise_due": 42,
+            "needs_reply": 47, "agent_asks": 43, "decision": 43,
+            "agent_questions": 43, "promise_due": 42,
             "crm_followup_due": 41, "block_overlap": 40, "absent_on_due": 39,
             "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
             "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
@@ -79,8 +88,18 @@ class TestTheTable:
         assert min(needs) > max(others)
 
     def test_the_needs_kinds_keep_the_needs_feeds_own_order(self):
+        """RX-7: the needs list puts the two fired reminder kinds FIRST, so
+        the bell's cut cannot drop them. The My Day rank keeps them below the
+        five others (the test above), so they are the one named exception.
+        Mutation: move `needs_reply` ahead of `overdue` in `KIND_ORDER`, and
+        this fails."""
+        def kept(kinds):
+            return [k for k in kinds if k not in ("reminder_due", "reminder_check")]
+
         by_base = sorted(KIND_ORDER, key=lambda k: -feed_rank.BASE[k])
-        assert by_base == sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)
+        assert kept(by_base) == kept(sorted(KIND_ORDER, key=KIND_ORDER.__getitem__))
+        first = sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)[:2]
+        assert first == ["reminder_due", "reminder_check"]
 
     def test_an_unknown_kind_raises(self):
         # An MD-9 kind, which no slice has added yet.
@@ -146,10 +165,118 @@ class TestWeight:
         assert feed_rank.weight({"priority": "critical"}) == 24
 
 
-class TestTheOtherTerms:
-    def test_affinity_is_zero_until_md9(self):
-        assert feed_rank.affinity({"priority": "critical"}) == 0
+class TestTheAffinityFormula:
+    """LOOP-4a, ``proactive_loop.md`` §7.2 P1: ``trunc((acted - not_useful)
+    / shown * 20)``, held between -20 and +20, and 0 below 5 shown.
 
+    Mutations, each killed here: a floor in place of the truncation (7, 0, 1
+    gives -3), a round (7, 1, 0 gives 3), no clamp (5, 9, 0 gives 36), the
+    floor of 5 moved to 3 (3, 0, 3 gives -20), a count that reads a string or
+    a float, and the term of before, always 0."""
+
+    @pytest.mark.parametrize(("shown", "acted", "not_useful", "term"), [
+        (5, 0, 3, -12),    # the pin: five shown, three "Not useful"
+        (3, 0, 3, 0),      # the pin: fewer than 5 shown gives 0
+        (4, 4, 0, 0),
+        (0, 0, 0, 0),
+        (5, 5, 0, 20),
+        (5, 0, 5, -20),
+        (7, 0, 1, -2),     # -2.857 truncates toward 0
+        (7, 1, 0, 2),      # 2.857 truncates toward 0
+        (10, 3, 1, 4),
+        (10, 1, 1, 0),
+        (5, 9, 0, 20),     # held at +20
+        (5, 0, 9, -20),    # held at -20
+    ])
+    def test_the_table(self, shown, acted, not_useful, term):
+        counts = {"shown": shown, "acted": acted, "not_useful": not_useful}
+        assert feed_rank.affinity(counts) == term
+
+    @pytest.mark.parametrize("counts", [None, {}, {"shown": "9", "not_useful": 9},
+                                        {"shown": 9.0, "not_useful": 9},
+                                        {"shown": 9, "not_useful": "9"},
+                                        {"shown": 9, "not_useful": True}])
+    def test_no_counts_or_bad_counts_give_0(self, counts):
+        assert feed_rank.affinity(counts) == 0
+
+    def test_the_score_holds_no_affinity_term(self):
+        # The state join adds the member's term (`state.join`). The score of
+        # a card with no state stays base + urgency + weight.
+        assert feed_rank.score("stale_next", {}, None, NOW) == feed_rank.BASE["stale_next"]
+
+
+#: The repository root, and the code roots that the scan reads.
+REPO = Path(__file__).resolve().parents[2]
+SCAN_ROOTS = ("apps", "packages")
+#: The one module that may group ``my_day_card_state`` by kind.
+COUNT_READER = "apps/services/gateway/gateway/routes/shell/feed_decide.py"
+_GROUP_BY_KIND = re.compile(r"\bgroup\s+by\s+(?:[\w.]+\s*,\s*)*(?:\w+\.)?kind\b",
+                            re.IGNORECASE)
+
+
+def _strings(source: str) -> list[str]:
+    """Each string literal of a module, with each f-string joined over its
+    constant parts. Adjacent literals are one node already."""
+    out: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            out.append("".join(v.value for v in node.values
+                               if isinstance(v, ast.Constant) and isinstance(v.value, str)))
+    return out
+
+
+def count_readers(root: Path) -> list[str]:
+    """The modules under *root* with a SQL text that names
+    ``my_day_card_state`` and groups by ``kind``."""
+    hits: set[str] = set()
+    for top in SCAN_ROOTS:
+        for path in (root / top).rglob("*.py"):
+            if any(part in ("node_modules", ".venv", "tests") for part in path.parts):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "my_day_card_state" not in text:
+                continue
+            if any("my_day_card_state" in s and _GROUP_BY_KIND.search(s)
+                   for s in _strings(text)):
+                hits.add(path.relative_to(root).as_posix())
+    return sorted(hits)
+
+
+class TestOneReaderOfTheCounts:
+    """LOOP-4a, ``proactive_loop.md`` §7.1 rule 5 and §11.1: one read counts
+    the cards of a kind, ``feed_decide._habits``. The learned affinity and the
+    shadow state both read it.
+
+    Mutation: add a second SQL text that groups ``my_day_card_state`` by kind
+    to any module under ``apps/`` or ``packages/``. ``test_one_module`` then
+    names it and fails. ``test_the_scan_can_fail`` plants one to prove it."""
+
+    def test_one_module_groups_the_card_state_by_kind(self):
+        assert count_readers(REPO) == [COUNT_READER]
+
+    def test_the_one_reader_is_the_habits_read(self):
+        from gateway.routes.shell import feed_decide
+
+        assert "my_day_card_state" in feed_decide._HABITS_SQL
+        assert _GROUP_BY_KIND.search(feed_decide._HABITS_SQL)
+
+    def test_the_scan_can_fail(self, tmp_path):
+        planted = tmp_path / "apps" / "svc" / "second.py"
+        planted.parent.mkdir(parents=True)
+        planted.write_text(
+            '_SQL = (\n    "SELECT s.kind, count(*) FROM my_day_card_state s "\n'
+            '    f"WHERE organization_id = {ORG} GROUP BY state, s.kind"\n)\n',
+            encoding="utf-8")
+        quiet = tmp_path / "packages" / "lib" / "other.py"
+        quiet.parent.mkdir(parents=True)
+        quiet.write_text('_SQL = "SELECT count(*) FROM my_day_card_state GROUP BY mode"\n',
+                         encoding="utf-8")
+        assert count_readers(tmp_path) == ["apps/svc/second.py"]
+
+
+class TestTheOtherTerms:
     @pytest.mark.parametrize(("visits", "points"),
                              [(0, 0), (1, 8), (2, 16), (3, 24), (4, 24), (9, 24), (-1, 0)])
     def test_fatigue_is_8_for_each_visit_to_24(self, visits, points):
@@ -165,7 +292,8 @@ class TestTheOtherTerms:
 class TestTheGroupTable:
     @pytest.mark.parametrize(("kind", "facts", "group"), [
         ("overdue", {}, "needs_you"),
-        ("due_today", {"due_at": (NOW + timedelta(minutes=90)).isoformat()}, "now"),
+        # RX-5: a due date is a day, so no hour moves a task into Now.
+        ("due_today", {"due_at": (NOW + timedelta(minutes=90)).isoformat()}, "needs_you"),
         ("due_today", {"due_at": (NOW + timedelta(hours=5)).isoformat()}, "needs_you"),
         ("notification", {"notification": "assigned"}, "needs_you"),
         ("notification", {"notification": "mention"}, "needs_you"),
@@ -198,6 +326,8 @@ class TestTheGroupTable:
         ("deal_close_passed", {}, "needs_you"),
         ("colleague_out", {}, "fyi"),
         ("agent_asks", {}, "needs_you"),
+        ("decision", {}, "needs_you"),
+        ("agent_questions", {}, "needs_you"),
         ("digest_ready", {}, "fyi"),
         # WS-53 CRM-Q32-4: needs you while a question about money is open.
         ("crm_open_questions", {"money": True}, "needs_you"),
@@ -296,9 +426,9 @@ def _seed() -> list[Signal]:
         _signal("tasks:crit", "overdue", "tasks", at=NOW - 2 * hour, urgent=NOW - 2 * hour,
                 facts={"due_at": (NOW - 2 * hour).isoformat(), "days_late": 0,
                        "priority": "critical"}),
-        _signal("tasks:soon", "due_today", "tasks", at=NOW + hour, urgent=NOW + hour,
+        _signal("tasks:soon", "due_today", "tasks", at=NOW + hour,
                 facts={"due_at": (NOW + hour).isoformat(), "priority": "important"}),
-        _signal("tasks:eve", "due_today", "tasks", at=NOW + 8 * hour, urgent=NOW + 8 * hour,
+        _signal("tasks:eve", "due_today", "tasks", at=NOW + 8 * hour,
                 facts={"due_at": (NOW + 8 * hour).isoformat(), "priority": "urgent"}),
         _signal("tasks:blk", "block_soon", "calendar", at=NOW + 0.25 * hour,
                 urgent=NOW + 0.25 * hour,
@@ -323,11 +453,11 @@ class TestTheFixedSeed:
         cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
         got = [(c["signal_id"], c["group"], c["score"]) for c in feed_rank.order(cards, 40)]
         assert got == [
-            ("tasks:soon", "now", 55 + 40 + 12),
             ("tasks:blk", "now", 36 + 40),
             ("tasks:crit", "needs_you", 63 + 60 + 24),
             ("tasks:old", "needs_you", 63 + 66 + 0),
             ("tasks:eve", "needs_you", 55 + 0 + 18),
+            ("tasks:soon", "needs_you", 55 + 0 + 12),
             ("tasks:ask", "needs_you", 51),
             ("tasks:wk", "needs_you", 40),
             ("tasks:note", "fyi", 51),
@@ -335,11 +465,11 @@ class TestTheFixedSeed:
 
     def test_a_seen_card_moves_only_behind_the_new_cards_of_its_group(self):
         # MD-2a, §6.8 item 6: inside a group a new card sorts before a seen
-        # one. That rule alone changes the seed: `tasks:soon` drops behind
-        # `tasks:blk` in Now, and nothing else moves.
+        # one. That rule alone changes the seed: `tasks:crit` drops behind the
+        # new cards of Needs you, and nothing else moves.
         cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
         for c in cards:
-            c["state"] = "seen" if c["signal_id"] == "tasks:soon" else "new"
+            c["state"] = "seen" if c["signal_id"] == "tasks:crit" else "new"
         got = [c["signal_id"] for c in feed_rank.order(cards, 40)]
-        assert got == ["tasks:blk", "tasks:soon", "tasks:crit", "tasks:old", "tasks:eve",
-                       "tasks:ask", "tasks:wk", "tasks:note"]
+        assert got == ["tasks:blk", "tasks:old", "tasks:eve", "tasks:soon", "tasks:ask",
+                       "tasks:wk", "tasks:crit", "tasks:note"]

@@ -63,6 +63,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.notifications import notifiable, notify
@@ -481,6 +482,7 @@ async def _act_on_one(
 
 
 @router.post("/tasks/bulk")
+@transient_as_409
 async def bulk_edit(
     payload: BulkIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -557,6 +559,13 @@ async def bulk_edit(
     archived_by_cascade = 0
 
     async with _tenant_session() as db:
+        # RX-5. A date with no time is local noon of the member who writes,
+        # once for the selection (`personal.stored_due`). `apply_task_patch`
+        # also serves a workflow, which has no member, so the seam is here.
+        if patch.get("due_at"):
+            from gateway.routes.projects.personal import stored_due
+
+            patch["due_at"] = await stored_due(db, who.lower(), patch["due_at"])
         vis = await resolve_visibility(db, user)
         # WS-64 OP-8 (D-OP-12). The lead set is read once for the selection,
         # and not at all for an admin, who may delete each task.

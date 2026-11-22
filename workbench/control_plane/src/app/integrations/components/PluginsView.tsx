@@ -2,6 +2,7 @@
 
 /** The Plugins view (moved from the old Plugins tab, no behaviour change). */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -175,6 +176,8 @@ function InstallPluginModal({ onClose, onInstalled }: { onClose: () => void; onI
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // A bar tap closes the window (MOB-9).
+  useCloseOnBarTap(onClose);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 

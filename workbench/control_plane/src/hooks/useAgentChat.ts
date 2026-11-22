@@ -37,22 +37,23 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
-import { stepOfMessage } from "@/lib/runStep";
+import { foldFailedTurns, isFailedTurn } from "@/lib/chatRunFailed";
+import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
-import { planReplay, rejectFor } from "@/lib/runReplay";
+import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
+import { REPLAY_OPEN, RUN_RESUMED_FRAME, attachPickOf, replayEndAfter, type ReplayEnd } from "@/lib/chatResume";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { noteToolEnd, noteToolStart } from "@/lib/assistantWrites";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
-import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
+import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, PROGRESS_EVENT, RUN_PHASE_EVENT, withCustomEvent, withProgressNotice, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import {
   RUN_CAP_NOTICE_ID,
   settleFailedTurn,
-  type RunCappedHandler,
   type SessionRefusedHandler,
 } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
@@ -69,6 +70,7 @@ import {
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 import { surfaceField } from "@/lib/shell/surface";
+import { typedField } from "@/lib/typedMark";
 import {
   cancelFollowUp, followUpDue, owedAfterSteer, scheduleFollowUpRetry, sendSteer,
   settleFollowUpAnswer, type SteerOutcome,
@@ -77,6 +79,7 @@ import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
+import type { CardDraft } from "@/lib/redraftCard";
 import { isQuietArtifact } from "@/lib/artifactCards";
 import { cancelRun, stopConfirmed, stopFailed, stopStarted } from "@/lib/chatStop";
 
@@ -103,6 +106,9 @@ const HITL_CONTROL_EVENTS = new Set([
   // A card the server closed (`lib/confirmationQueue.ts`). It drives the
   // queue, and is no data to draw.
   "confirmation_resolved",
+  // A refused approve (task 3827). It turns a receipt line into "Not done",
+  // and is no data to draw.
+  "confirmation_not_done",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
@@ -114,6 +120,12 @@ const HITL_CONTROL_EVENTS = new Set([
  * in the transcript. The replay loop never emits it: a refresh moves no page.
  */
 const NAVIGATE_EVENT = "navigate";
+
+/**
+ * The server named a guide (WS-OB GD-4). Like `navigate`, the live loop emits
+ * `onGuide` and the event draws nothing in the transcript.
+ */
+const GUIDE_EVENT = "guide";
 
 /** Tell the run state that a tool began or ended, so a Stop can say how many
  *  changes the run made (`lib/runStatus.ts`, UXD-4b). */
@@ -230,8 +242,16 @@ interface UseAgentChatOptions {
    * The run cap refused the send (WS-51 D-3, 429 `too_many_runs`). The turn
    * has left the thread, and the surface puts these words back in its
    * composer. Nothing is held, and nothing sends again by itself.
+   * `typed` is the typed mark of that send (WS-63 D-PZ-37), so the box
+   * keeps the mark only for words that the member typed.
    */
-  onRunCapped?: RunCappedHandler;
+  onRunCapped?: (pendingText: string, typed: boolean) => void;
+  /**
+   * §18.11: the member's version of EACH open new-mail card, edited or not
+   * (`lib/redraftCard.ts`). Each steer asks it once, and carries the answer
+   * as `cardDraft`. A send that starts a run never carries it.
+   */
+  cardDraft?: () => CardDraft[];
 }
 
 interface UseAgentChatReturn {
@@ -246,8 +266,10 @@ interface UseAgentChatReturn {
   /** Send words into the live run (owner, 2026-10-12, `lib/chatSteer.ts`).
    *  It never stops the run and never opens a second stream. A refusal
    *  resolves with the notice, and the caller puts the words back. */
-  /** `opts.cardAnswer`: a card answer's resend steers with its display. */
-  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null }) => Promise<SteerOutcome>;
+  /** `opts.cardAnswer`: a card answer's resend steers with its display.
+   *  `opts.typed`: the member typed the words in the message box, so the
+   *  steer carries the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean }) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
    *  for the old run to stop before it starts the new one. It resolves with
@@ -289,9 +311,12 @@ export function useAgentChat({
   onArtifact,
   onSessionRefused,
   onRunCapped,
+  cardDraft,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const cardDraftRef = useRef(cardDraft);
+  useEffect(() => { cardDraftRef.current = cardDraft; }, [cardDraft]);
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
@@ -427,18 +452,20 @@ export function useAgentChat({
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
           // A card answer keeps its answered card while it waits.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only, for the skill offer (STU-F6a).
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // A held send has not reached the server either, so it carries the
           // same mark: a later run-cap refusal must leave no row (review of
           // #821). The retry spreads the bubble, so the mark travels with it.
           ...(modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
-        holdForUpdate(threadId, text, { resume: opts?.resume });
+        holdForUpdate(threadId, text, { resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
       if (plan === "requeue") {
-        holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
+        holdForUpdate(threadId, text, { front: true, resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
@@ -461,6 +488,9 @@ export function useAgentChat({
           // envelope the model reads, and the bubble draws this marker. It
           // persists in `custom_events`, so a reload draws it too.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only (never saved), for the skill offer
+          // (STU-F6a, `lib/studio/skillOffer.ts`). A card answer is never typed.
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.
@@ -471,7 +501,7 @@ export function useAgentChat({
       const assistantId = adopt?.assistantId ?? nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
-        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true, firstLine: true,
         // Who this turn is from: the agent it was sent to (S9 fix round 3).
         ...agentAuthor(agentNameRef.current),
       };
@@ -534,6 +564,8 @@ export function useAgentChat({
       // gateway steered the words into a run already going.
       let streamRead = false;
       let sawDone = false;
+      // The `done` was a park (RESUME-3a): the run waits on its card.
+      let sawPark = false;
       let runFailed = false;
       let steeredLive = false;
       // The server answered with anything but the run cap, so the chat may
@@ -575,6 +607,8 @@ export function useAgentChat({
         const active = activeContextSlice(prior);
         const history = active
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
+          // A saved failure row holds no words (AO-3b).
+          .filter((m) => !isFailedTurn(m))
           .map((m) => ({ role: m.role, content: m.content }));
 
         // A steer that started a new run has its response already: follow
@@ -618,6 +652,10 @@ export function useAgentChat({
             // The answered card of a card answer, for the turn the gateway
             // saves at run start. It never reaches the model.
             ...cardAnswerField(userMsg),
+            // WS-63 D-PZ-37: the ONE typed mark. Only the composer's send
+            // sets it. A pill, a choice, a card action, a feed starter and
+            // the Fix prompt send none (`lib/typedMark.ts`).
+            ...typedField(opts?.typed),
           }),
         });
         gotResponse = true;
@@ -776,6 +814,14 @@ export function useAgentChat({
                 sawDone = true;
                 clearCardLog(threadId);
                 upd((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park settles the reply, and its card stays on
+                // screen. A remount takes the card from the pending asks only.
+                // A slot of a redraft still ends (C3).
+                if (evt.parked === true) {
+                  sawPark = true;
+                  emitAgentEvent("onRunRested", { threadId });
+                  break;
+                }
                 emitAgentEvent("onRunFinalized", { runId: String(evt.run_id ?? ""), threadId });
                 break;
               case "state":
@@ -812,13 +858,35 @@ export function useAgentChat({
                     threadId,
                   });
                 }
+                if (evtName === GUIDE_EVENT) {
+                  const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
+                  emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
+                }
+                // CS-3b: the phase of the run shows as fixed words, until the
+                // first real step. An unknown name draws nothing. Never kept.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    upd((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
+                }
+                // HRD-6: the line of a slow step shows under that step. Live
+                // loop ONLY, and never kept on the message's custom events.
+                if (evtName === PROGRESS_EVENT) {
+                  upd((m) => withProgressNotice(m, evt.value ?? evt.data));
+                  break;
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                // CS-3a: the phase of the run is never kept either.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== RUN_PHASE_EVENT && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -878,7 +946,7 @@ export function useAgentChat({
           }));
           if (followUp) { heldAgain = true; return; }
           holdForUpdate(threadId, userMsg.content, {
-            userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
+            userMsgId: userMsg.id, front: !!held, resume: opts?.resume, typed: opts?.typed,
           });
           heldAgain = true;
           settleSend("held");
@@ -939,7 +1007,10 @@ export function useAgentChat({
           onSessionRefused: onSessionRefusedRef.current,
           // A card answer's words are the envelope the model reads: they
           // never go back to the composer. Its card stays open instead.
-          onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,
+          // The words go back with their typed mark (D-PZ-37).
+          onRunCapped: opts?.cardAnswer || !onRunCappedRef.current
+            ? undefined
+            : (words: string) => onRunCappedRef.current?.(words, opts?.typed === true),
         });
         capped = outcome === "capped";
         settleSend("refused");
@@ -968,7 +1039,7 @@ export function useAgentChat({
           // while it ran. `finishing` asks the server (`lib/runStatus.ts`).
           const at = Date.now();
           if (runFailed) dispatchRun(threadId, { type: "failed", at });
-          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true });
+          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true, ...(sawPark ? { parked: true } : {}) });
           else if (streamRead || steeredLive) dispatchRun(threadId, { type: "stream_end", at, terminal: false });
           else dispatchRun(threadId, { type: "abandon", at });
         }
@@ -989,11 +1060,13 @@ export function useAgentChat({
   // going. If the run had ended, the server starts a new one, and this
   // follows its stream as a normal turn, in place of the steer's bubble.
   const steerMessage = useCallback(async (
-    content: string, opts?: { cardAnswer?: CardAnswer | null },
+    content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean },
   ): Promise<SteerOutcome> => {
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
     const card = opts?.cardAnswer ?? null;
+    // §18.11 step 1: the member's own version of an open new-mail card.
+    const draft = cardDraftRef.current?.() ?? [];
     const out = await sendSteer({
       threadId,
       text: content,
@@ -1016,12 +1089,17 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
+        ...(draft.length ? { cardDraft: draft } : {}),
+        // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
+        // does. Only the composer sets it (`lib/typedMark.ts`).
+        ...typedField(opts?.typed),
       }),
     });
     if (out.kind === "started") {
       void sendMessage(content, {
         heldId: out.bubbleId,
         adopt: { response: out.response, controller: out.controller, assistantId: replyId },
+        ...typedField(opts?.typed),
       });
     }
     return out;
@@ -1080,10 +1158,10 @@ export function useAgentChat({
     // is a NEW run (another tab, a phone, a room member): the run state
     // holds no message for it, and a finished reply is never its target
     // (review of #1171, P1).
-    const last = st0.messages[st0.messages.length - 1];
-    const known = st0.run.messageId
-      ? st0.messages.find((m) => m.id === st0.run.messageId && m.role === "assistant")
-      : undefined;
+    // RESUME-3d: a live continuation that the list names with its reply row
+    // replays into that row, with no read of the saved rows
+    // (`attachPickOf`).
+    const pick = attachPickOf(st0.run, st0.messages, isInterruptedReply);
     // The server named ANOTHER run than the one this chat streamed (its
     // identity differs, re-review of #1171). A reply still marked streaming
     // is the old run's: it settles, and the new run never replays into it.
@@ -1096,8 +1174,8 @@ export function useAgentChat({
           : m)),
       }));
     }
-    let target = known ?? (!stale && isInterruptedReply(last) ? last : undefined);
-    if (!target) {
+    let target = pick.target ?? undefined;
+    if (pick.readSaved) {
       // The server saved the run's rows under THEIR ids: the member's turn
       // at run start (WS-51 S4), and the reply at each checkpoint of
       // `api/agent/chat/route.ts`. A run started elsewhere draws its prompt
@@ -1125,7 +1203,10 @@ export function useAgentChat({
       dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
       return;
     }
-    const lastId = target?.id ?? nanoid();
+    // RESUME-3a (C2): a continuation whose reply row the server named replays
+    // into that row, so the fold at its end draws no second bubble. The 200
+    // names it (RESUME-3a), or the list does (RESUME-3d).
+    const lastId = replayIdOf(target, pick.resumeId, nanoid);
     const lastContent = target?.content || "";
     const placeholder = !target;
     // No thinking flag yet: the status row says the run works, and the
@@ -1150,7 +1231,12 @@ export function useAgentChat({
     dispatchRun(threadId, { type: "attach", at: Date.now(), messageId: lastId });
 
     let reconToken: string | null = null;
-    let terminal = false;
+    // How the replay ends: `terminal` after a `done`, `parked` when that
+    // `done` was a park (RESUME-3a). RESUME-3b: a `run_resumed` opens it
+    // again, so only the last `done` after it ends the replay.
+    let end: ReplayEnd = REPLAY_OPEN;
+    // RESUME-2d: the server kept this run from this reader (`withheld`).
+    let withheldEnd = false;
     let streamed = false;
     try {
       const curState = getSessionState(threadId);
@@ -1205,6 +1291,10 @@ export function useAgentChat({
         progressLines: [],
         customEvents: [],
         isThinkingActive: true,
+        // CS-1: a run that this tab joins again has no first line, even in the tab that sent it.
+        firstLine: undefined,
+        // CS-3b: nor a phase. A joined run has none until a new one arrives.
+        phaseWord: undefined,
         streaming: true,
       } : null;
       const hasBody = (m: ChatMessage | null | undefined) =>
@@ -1272,6 +1362,9 @@ export function useAgentChat({
         for await (const evt of readSSEEvents(
           res.body, threadId, () => !!reconToken && ownsStream(threadId, lastId, reconToken),
         )) {
+            // RESUME-3b: the end of the replay is the last `done` after the
+            // last `run_resumed` (`lib/chatResume.ts`). Every frame passes.
+            end = replayEndAfter(end, evt);
             switch (evt.type) {
               // Common message-state events — same handling as the live loop
               // (see applyStreamEvent).  A replayed stream never carries todos,
@@ -1315,20 +1408,46 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
+                // HRD-6: this loop replays the run, then follows it LIVE. The
+                // replay brings each line and its clear in order, so the end
+                // state is the true one: a line that still runs shows, and a
+                // line that ended or went to a card is gone. Never saved.
+                if (evtName === PROGRESS_EVENT) {
+                  updLast((m) => withProgressNotice(m, evt.value ?? evt.data));
+                }
+                // CS-3b: a run phase that arrives on a joined run shows as fixed words, and
+                // only until the first real event. The replay never keeps it on the message.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    updLast((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
+                }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
-                // and it draws nothing either.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                // and it draws nothing either. CS-3a: nor does a run phase.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== RUN_PHASE_EVENT && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
               }
               case "done":
-                terminal = true;
                 clearCardLog(threadId);
                 // Restore a trailing answer folded into the timeline (turn ended
                 // on a tool call) and mark the message settled — the shared
                 // reducer does the un-fold + streaming:false in one update.
                 updLast((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park, as in the live loop. The card stays, and
+                // a slot of a redraft ends (C3).
+                if (end.parked) emitAgentEvent("onRunRested", { threadId });
+                withheldEnd = evt.withheld === true;
+                break;
+              case RUN_RESUMED_FRAME:
+                // RESUME-3b, case A: the parked run goes on in this reply, so
+                // the reply streams again after a `done` in the middle.
+                updLast((m) => ({ ...m, streaming: true, isThinkingActive: true }));
                 break;
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
@@ -1356,7 +1475,7 @@ export function useAgentChat({
         if (shadow && hasBody(shadow)) commit();
         else shadow = null;
       }
-      if (!terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
+      if (!end.terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
       else updLast((m) => applyStreamEvent(m, { type: "done" }, fold));
     } catch {
       // Reconnect failed (network error, timeout, etc.) — polling handles it.
@@ -1381,14 +1500,18 @@ export function useAgentChat({
         setSessionState(threadId, (prev) => ({
           ...prev,
           // Nothing came back: polling fills the reply from the saved row.
-          recovering: !recovered,
-          runStatus: recovered ? "idle" : "recovering",
+          // A withheld run is not this reader's: nothing to recover.
+          recovering: !recovered && !withheldEnd,
+          runStatus: recovered || withheldEnd ? "idle" : "recovering",
         }));
         // The run state hears how the stream ended. With no terminal event
         // the server answers whether the run goes on.
         // No stream: the next attach waits longer (`attach_failed`), so a run
         // that cannot replay is never asked in a loop.
-        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal });
+        // RESUME-2d: a withheld end is no "Done". The chat rests and does not
+        // attach to that run again while the server lists it.
+        if (streamed && withheldEnd) dispatchRun(threadId, { type: "attach_withheld", at: Date.now() });
+        else if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal: end.terminal, ...(end.terminal && end.parked ? { parked: true } : {}) });
         else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }
@@ -1486,6 +1609,7 @@ export function useAgentChat({
   }, [threadId]);
 
   const runPhase = sessionState.run.phase;
+  const restBlind = sessionState.run.restBlind;
   // A remount's "checking" was seen, so the cards on screen came from the log.
   const wasCheckingRef = useRef(false);
   const checkingNow = sessionState.run.checking;
@@ -1514,7 +1638,7 @@ export function useAgentChat({
     // more: the run is finalized here, as its `done` would have done. A cut
     // stream with NO remount keeps its card, so an answer still goes
     // (the restart path, `chat-card-restart.spec.ts`).
-    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    const resting = isRestingPhase(runPhase);
     if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
     if (resting && wasCheckingRef.current) {
       wasCheckingRef.current = false;
@@ -1528,7 +1652,12 @@ export function useAgentChat({
     // rest then redraws no stale card. The card on screen now stays: a cut
     // stream's answer still goes by the restart path.
     if (resting) clearCardLog(threadId);
-  }, [runPhase, threadId]);
+    // §18.11 step 7: a slot of a redraft ends with ANY end of a run. A Stop, a
+    // failed model call and an end on the attach stream emit no
+    // `onRunFinalized`, and the slot would then spin with no button. A rest
+    // that only the settle of `FINISH_MAX_MS` made waits for a server list.
+    if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });
+  }, [runPhase, restBlind, threadId]);
   // A new run (another run key) has none of the old run's cards.
   const runKeyNow = sessionState.run.runKey;
   const runKeyRef = useRef<string | null>(runKeyNow);
@@ -1682,7 +1811,7 @@ export function useAgentChat({
         // Map remote format to ChatMessage.  Drop stale __ERROR__ system
         // messages persisted by older builds — transient errors must never
         // resurface via polling.
-        const remoteMsgs: ChatMessage[] = remote
+        const remoteMsgs: ChatMessage[] = foldFailedTurns(remote
           .filter((r) => !(r.role === "system" && (r.content ?? "").startsWith("__ERROR__")))
           .map((r) => ({
           id: r.id,
@@ -1718,7 +1847,7 @@ export function useAgentChat({
           authorKind: r.authorKind ?? undefined,
           redacted: r.redacted || undefined,
           redactedCaps: r.redactedCaps,
-        }));
+        })));
 
         // Content-aware merge.  Handles two recovery cases:
         //   (a) New messages appended on the server (count grew).

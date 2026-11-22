@@ -145,7 +145,11 @@ class TestTheSeams:
         main = pathlib.Path(chat_brief.__file__).resolve().parents[1] / "main.py"
         assert "from gateway.routes.chat_brief import router" in main.read_text(encoding="utf-8")
         routes = {r.path for r in chat_brief.router.routes}
-        assert routes == {"/chat/sessions/{session_id}/brief"}
+        # WS-BUD BUD-1: the hello shares this router and the brief's minter.
+        assert routes == {
+            "/chat/sessions/{session_id}/brief",
+            "/chat/sessions/{session_id}/buddy-hello",
+        }
         assert any(
             "require_feature" in repr(d.dependency) or "feature" in repr(d.dependency)
             for d in chat_brief.router.dependencies

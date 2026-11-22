@@ -67,8 +67,12 @@ import { fmtClock } from "@/app/tasks/lib/utils";
 import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 
 import {
+  AGENT_QUESTIONS_HREF,
+  AGENT_QUESTIONS_KIND,
+  AGENT_QUESTIONS_SIGNAL,
   CARRY_MS,
   FEED_CACHE,
+  FEED_KIND_LABELS,
   FEED_SHOWN,
   PENDING,
   type ActOverlay,
@@ -91,6 +95,7 @@ import {
   feedHiddenRows,
   feedKey,
   fetchFeed,
+  isAgentQuestionsCard,
   loadFeedPrefs,
   noteOk,
   needsRowFor,
@@ -112,6 +117,7 @@ import {
   cardMenuItems,
   feedActMover,
   joinFeedPoll,
+  phoneMenuItems,
   runFeedAct,
   watchOverlayEnds,
 } from "./FeedCard";
@@ -214,6 +220,8 @@ describe("1. the answer of §14.1a", () => {
       groups: [],
       handled: [],
       handled_ok: false,
+      reminders_ahead: [],
+      reminder_subjects: {},
       needs: null,
       sources: {},
       source_apps: {},
@@ -230,14 +238,15 @@ describe("1. the answer of §14.1a", () => {
   });
 
   it("shows a clock time or a day at the right, never a duration (visual review, item 4)", () => {
-    // The why line already says "Due in 1 h 5 min.", so the right-hand time
-    // says WHEN, through the clock Today draws (`fmtClock`): "17:00",
-    // "Yesterday", "Mon". Local times, so the test holds in any zone.
+    // The why line says how long, so the right-hand time says WHEN, through
+    // the clock Today draws (`fmtClock`): "17:00", "Yesterday", "Mon". Local
+    // times, so the test holds in any zone. A task due today has no hour, so
+    // it draws no clock (RX-5).
     const now = new Date(2026, 9, 14, 12, 0).getTime();
     const at = (d: Date) => ({ kind: "overdue", at: d.toISOString() });
     const today = new Date(2026, 9, 14, 17, 0);
     expect(cardTime(at(today), now)).toBe(fmtClock(today));
-    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe(fmtClock(today));
+    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe("");
     expect(cardTime(at(new Date(2026, 9, 13, 9, 0)), now)).toBe("Yesterday");
     expect(cardTime(at(new Date(2026, 9, 15, 9, 0)), now)).toBe("Tomorrow");
     const monday = new Date(2026, 9, 12, 9, 0);
@@ -256,6 +265,11 @@ describe("1. the answer of §14.1a", () => {
     expect(feedFailedLines({ calendar: "failed", email: "failed" })).toEqual([
       "Email did not answer, so its replies may be missing.",
       "Calendar did not answer, so its time blocks may be missing.",
+    ]);
+    // AO-2 review: the AI vendor alert source has no app of the client, and
+    // its failure still gets its line.
+    expect(feedFailedLines({ providers: "failed" } as Parameters<typeof feedFailedLines>[0])).toEqual([
+      "AI providers did not answer, so its AI vendor alerts may be missing.",
     ]);
   });
 
@@ -1213,6 +1227,8 @@ describe("9. the life of a card (MD-2b)", () => {
     groups: [],
     handled: [],
     handled_ok: false,
+    reminders_ahead: [],
+    reminder_subjects: {},
     needs: null,
     sources,
     capped,
@@ -1416,7 +1432,10 @@ describe("9. the life of a card (MD-2b)", () => {
     expect(src).toMatch(/const hidden = useMemo\(\(\) => menuHidden\(menuOverlay, fetchedAt\)/);
     // The column drops a hidden card by its signal id, before the groups:
     // `columnView` takes the menu overlay as `hidden` (section 10 drives it).
-    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: feed\.hidden \}\)/);
+    // RX-3: the reminder cards join the set, so the band draws them. The set
+    // still starts from `feed.hidden` and never from `needsActs`.
+    expect(src).toMatch(/\.\.\.feed\.hidden,/);
+    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: apart \}\)/);
   });
 });
 
@@ -1561,5 +1580,135 @@ describe("10. fix round 1 (MD-2b)", () => {
     expect(view(answer, start, 2, new Set(["tasks:n1"])).fresh).toBe(1);
     // A card that a menu act hid is not drawn.
     expect(ids(view(answer, start, 3, new Set(["tasks:a"])))).toEqual([]);
+  });
+});
+
+describe("a feed row on a phone (task 1898)", () => {
+  // Owner, 2026-11-06: on a phone the acts took the row, and a title kept
+  // one to twelve letters. Below `sm` the text takes the row. CSS picks the
+  // form, so both are in the markup, and these tests read the classes that
+  // pick. `e2e/my-day-feed.spec.ts` measures the drawn row.
+  const STATE = { state: "seen", updated: false, still_open: false, visits: 1, state_fp: "a41f09c2" };
+  const row = (c: Card, onMenu?: () => void) =>
+    renderToStaticMarkup(createElement(FeedCard, { card: c, nowMs: null, onAct: () => {}, onMenu, layout: "row" }));
+  const labels = (items: ReturnType<typeof phoneMenuItems>) =>
+    items.map((i) => (i.kind === "sep" ? "—" : i.label));
+
+  it("draws one quick act and the ··· below sm, and the row's acts from sm", () => {
+    const html = row(card("tasks:p1", "needs_you", STATE), () => {});
+    expect(/<div class="([^"]*)" data-feed-phone-acts="">/.exec(html)?.[1]).toContain("sm:hidden");
+    expect(html).toMatch(/<button(?=[^>]*data-feed-quick-act="")(?=[^>]*data-row-act="")(?=[^>]*aria-label="Done: Card tasks:p1")/);
+    expect(html).toMatch(/<button(?=[^>]*data-feed-phone-menu="")(?=[^>]*aria-label="More for Card tasks:p1")/);
+    // The acts of the row hide below sm, and the desktop menu too.
+    expect(html).toContain('class="hidden shrink-0 items-center gap-1 sm:flex"');
+    expect(html).toContain('class="hidden shrink-0 sm:flex"');
+    // Two lines for the title on a phone, with no rounded corner to cut it.
+    expect(html).toContain("max-sm:line-clamp-2");
+    expect(html).toContain("max-sm:[--button-radius:0px]");
+  });
+
+  it("draws no quick act when the first act is a link, and keeps the ··· for the links", () => {
+    const html = row(
+      card("tasks:p2", "now", {
+        ...STATE,
+        acts: [{ id: "open-day", label: "Open the day", class: "A", way: "open", href: "/calendar" }],
+      }),
+    );
+    expect(html).not.toContain("data-feed-quick-act");
+    expect(html).toContain("data-feed-phone-menu");
+  });
+
+  it("draws no phone controls for a card with no act and no menu", () => {
+    const html = row(card("email:p3", "needs_you", { acts: [] }));
+    expect(html).not.toContain("data-feed-phone-acts");
+  });
+
+  it("lists the acts that the row does not draw, then the card's own menu", () => {
+    const c = card("tasks:p1", "needs_you", STATE);
+    const acted: string[] = [];
+    const went: string[] = [];
+    const items = phoneMenuItems(c, c.acts.slice(1), (a) => acted.push(a.id), (h) => went.push(h), () => {});
+    expect(labels(items)).toEqual([
+      "Open the day",
+      "—",
+      "Snooze",
+      "Later today",
+      "Tomorrow",
+      "Next week",
+      "Until it changes",
+      "—",
+      "Dismiss",
+      "Not useful",
+    ]);
+    const first = items[0];
+    if (first.kind === "item") first.onSelect();
+    expect(went).toEqual(["/calendar"]);
+    // With no card menu, the acts alone. A tap act runs the act.
+    const taps = phoneMenuItems(c, c.acts, (a) => acted.push(a.id), (h) => went.push(h));
+    expect(labels(taps)).toEqual(["Done", "Open the day"]);
+    if (taps[0].kind === "item") taps[0].onSelect();
+    expect(acted).toEqual(["done"]);
+  });
+
+  it("puts the filter chips on one line that scrolls below sm", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).toMatch(/data-feed-filter=""\s+className="[^"]*overflow-x-auto[^"]*sm:flex-wrap/);
+  });
+});
+
+// ── The agent questions card (WS-55 EA-18c, external_agent_access.md §12.8) ──
+
+describe("the agent_questions card kind", () => {
+  const WIRE = {
+    signal_id: AGENT_QUESTIONS_SIGNAL,
+    app: "projects",
+    kind: AGENT_QUESTIONS_KIND,
+    folded: [],
+    group: "needs_you",
+    score: 43,
+    title: "3 agent questions wait for you",
+    why: "Metorite \u203a AI Studio: Which branch? Options: main, dev. 2 more questions wait.",
+    at: "2026-11-11T08:00:00+00:00",
+    href: AGENT_QUESTIONS_HREF,
+    acts: [{ id: "answer", label: "Answer", class: "A", way: "open", href: AGENT_QUESTIONS_HREF }],
+  };
+
+  it("reads as a card of the Projects app in the group Needs you", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    expect(card.kind).toBe("agent_questions");
+    expect(isAgentQuestionsCard(card)).toBe(true);
+    expect(card.app).toBe("projects");
+    expect(card.group).toBe("needs_you");
+    expect(card.why).toContain("Metorite \u203a AI Studio: Which branch?");
+  });
+
+  it("opens the list in Projects with the one Answer act, a link of the app", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    expect(card.acts).toHaveLength(1);
+    expect(card.acts[0]).toMatchObject({ id: "answer", way: "open", href: "/projects?app=questions" });
+    expect(card.href).toBe("/projects?app=questions");
+  });
+
+  it("names its state and its source line", () => {
+    expect(FEED_KIND_LABELS.agent_questions).toBe("Waiting for your answer");
+    expect(sourceLine({ app: "projects", kind: "agent_questions" })).toBe(
+      "Projects \u00b7 Waiting for your answer",
+    );
+  });
+
+  it("is not the chat's card: a different kind from agent_asks", () => {
+    expect(isAgentQuestionsCard({ kind: "agent_asks" })).toBe(false);
+    expect(FEED_KIND_LABELS.agent_asks).toBe(FEED_KIND_LABELS.agent_questions);
+    expect(AGENT_QUESTIONS_KIND).not.toBe("agent_asks");
+  });
+
+  it("draws in the column with the title, the why line and the Answer act", () => {
+    const [card] = readFeedAnswer({ cards: [WIRE] }).cards;
+    const html = renderToStaticMarkup(
+      createElement(FeedCard, { card, nowMs: null, onAct: () => {}, layout: "row" }),
+    );
+    expect(html).toContain("3 agent questions wait for you");
+    expect(html).toContain("Which branch?");
+    expect(html).toContain("Answer");
   });
 });

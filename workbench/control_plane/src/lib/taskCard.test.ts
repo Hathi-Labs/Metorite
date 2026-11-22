@@ -26,6 +26,8 @@ import {
   avatarStack,
   chipKind,
   durationLabel,
+  dueDays,
+  dueLabel,
   initials,
   isOverdue,
   parentCrumb,
@@ -35,18 +37,75 @@ import {
 
 const NOW = Date.parse("2026-08-07T12:00:00Z");
 const hours = (n: number) => new Date(NOW + n * 3_600_000).toISOString();
+/** A local time, so each case holds in any zone: day 7 is today. */
+const local = (day: number, hour = 12, minute = 0) => new Date(2026, 7, day, hour, minute);
+const at = (day: number, hour = 12, minute = 0) => local(day, hour, minute).toISOString();
+
+// ── dueDays and dueLabel ────────────────────────────────────────────────────
+
+describe("dueDays", () => {
+  const evening = local(7, 18).getTime();
+
+  it("counts local days, and never reads the hour", () => {
+    expect(dueDays(at(7, 0, 1), evening)).toBe(0);
+    expect(dueDays(at(7, 23, 59), evening)).toBe(0);
+    expect(dueDays(at(8, 0, 1), evening)).toBe(1);
+    expect(dueDays(at(6, 23, 59), evening)).toBe(-1);
+    expect(dueDays(at(1), evening)).toBe(-6);
+  });
+
+  it("is null with no date", () => {
+    expect(dueDays(null, evening)).toBeNull();
+    expect(dueDays("not a date", evening)).toBeNull();
+  });
+});
+
+describe("dueLabel", () => {
+  const evening = local(7, 18).getTime();
+
+  it("says the day, with no clock", () => {
+    expect(dueLabel(at(7, 12), evening)).toBe("today");
+    expect(dueLabel(at(8, 12), evening)).toBe("tomorrow");
+    expect(dueLabel(at(6, 12), evening)).toBe("yesterday");
+    expect(dueLabel(at(5, 12), evening)).toBe("2d ago");
+    expect(dueLabel(at(10, 12), evening)).toBe("in 3d");
+  });
+
+  it("reads as relativeTime past a week", () => {
+    expect(dueLabel(at(28, 12), evening)).toBe(relativeTime(at(28, 12), evening));
+  });
+
+  it("is empty with no date", () => {
+    expect(dueLabel(null, evening)).toBe("");
+  });
+});
 
 // ── isOverdue ───────────────────────────────────────────────────────────────
 
 describe("isOverdue", () => {
-  it("is true for a past due date on open work", () => {
-    expect(isOverdue(hours(-3), null, NOW)).toBe(true);
+  const evening = local(7, 18).getTime();
+
+  it("is true for a past due day on open work", () => {
+    expect(isOverdue(at(6), null, evening)).toBe(true);
+  });
+
+  it("is false for a task due today, after its hour (RX-5)", () => {
+    // ⚠️ A due date is a day. The UI stores local noon and a chat date stored
+    // midnight, so the hour of the row says nothing. This replaces D-PM-22.
+    expect(isOverdue(at(7, 12), null, evening)).toBe(false);
+    expect(isOverdue(at(7, 0, 0), null, evening)).toBe(false);
+  });
+
+  it("turns at my midnight, the rule of due_day.is_overdue", () => {
+    const due = at(7, 12);
+    expect(isOverdue(due, null, local(7, 23, 59).getTime())).toBe(false);
+    expect(isOverdue(due, null, local(8, 0, 1).getTime())).toBe(true);
   });
 
   it("is false once the task is finished", () => {
     // ⚠️ The rule the whole signal rests on. Without it every closed task with
     // a past due date is permanently red.
-    expect(isOverdue(hours(-3), hours(-1), NOW)).toBe(false);
+    expect(isOverdue(at(1), at(2), evening)).toBe(false);
   });
 
   it("is false for a future due date", () => {
@@ -176,7 +235,7 @@ describe("taskMeta", () => {
   it("marks an overdue task with a different icon, not only a colour", () => {
     // A tone alone excludes anyone who cannot see the difference between
     // muted and destructive.
-    const late = taskMeta({ dueAt: hours(-4) }, NOW)[0];
+    const late = taskMeta({ dueAt: hours(-30) }, NOW)[0];
     const soon = taskMeta({ dueAt: hours(4) }, NOW)[0];
     expect([late.icon, late.tone]).toEqual(["AlertTriangle", "danger"]);
     expect([soon.icon, soon.tone]).toEqual(["Clock", "muted"]);
@@ -184,11 +243,23 @@ describe("taskMeta", () => {
 
   it("stops calling a finished task overdue", () => {
     const chip = taskMeta(
-      { dueAt: hours(-4), completedAt: hours(-1) },
+      { dueAt: hours(-30), completedAt: hours(-1) },
       NOW,
     )[0];
     expect(chip.tone).toBe("muted");
     expect(chip.icon).toBe("Clock");
+  });
+
+  it("draws a task due today as today, not as late, after its hour (RX-5)", () => {
+    const evening = local(7, 18).getTime();
+    const chip = taskMeta({ dueAt: at(7, 12) }, evening)[0];
+    expect([chip.label, chip.tone, chip.icon, chip.title]).toEqual([
+      "today", "muted", "Clock", "Due today",
+    ]);
+    const late = taskMeta({ dueAt: at(6, 12) }, evening)[0];
+    expect([late.label, late.tone, late.title]).toEqual([
+      "yesterday", "danger", "Overdue — was due yesterday",
+    ]);
   });
 
   it("counts only OPEN blockers, which is the number it was handed", () => {

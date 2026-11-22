@@ -30,13 +30,21 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
-import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
+import { unfenced } from "@/lib/fencedText";
+import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
+import { isNewMail, isNewMailEdits, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
+import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
  *  `tests/unit/test_chat_hardening.py` checks the two agree. */
 export const CONFIRMATION_RESOLVED = "confirmation_resolved";
+
+/** The event of an approved card that did nothing (task 3827). The server owns
+ *  the name (`CONFIRMATION_NOT_DONE` in `ask_tools.py`). */
+export const CONFIRMATION_NOT_DONE = "confirmation_not_done";
 
 /**
  * One checkbox of a card with rows (WS-46 P13 one-card). The tool offers the
@@ -72,6 +80,46 @@ export interface PendingConfirmation {
    * form the card could not read: it then offers Discard only.
    */
   reply?: ReplyForm | null;
+  /**
+   * EAC-2 (`projects_ai_chat.md` §32): the edit form of a `create_task` card
+   * (`lib/taskEditCard.ts`). Only a form the client can read is kept, so a card
+   * with no `edit`, and one with an unknown shape, is the card of before.
+   */
+  edit?: TaskEditForm;
+  /**
+   * §18.11: the slot of a new-mail card that a chat message closed as
+   * REVISED. "updating" waits for the new draft, and "unchanged" says that
+   * the run ended with none. A slot has no buttons and answers nothing.
+   */
+  redraft?: "updating" | "unchanged";
+  /**
+   * P3: a new-mail card arrived after this slot, so the run did draw a draft
+   * and "The draft did not change." would be false. The run's end closes
+   * such a slot with no line.
+   */
+  newerCard?: true;
+  /**
+   * §18.11: the member's version that a chat message carried for this card
+   * (`lib/redraftCard.ts`). The card that revises it reads it for its
+   * "Changed:" line.
+   */
+  sent?: SentVersion;
+  /**
+   * §18.11: the member's last version of the card that this card revises:
+   * the version a chat message carried, else that card's own text. The
+   * client computes the "Changed:" line from it, never from the model.
+   */
+  before?: { subject: string; body: string; people?: PeopleBefore };
+}
+
+/** The answer of a card that a chat message closed. The server owns it
+ *  (`REVISED_ANSWER` in `ask_tools.py`), and
+ *  `tests/unit/test_email_redraft_snapshot.py` holds the two in step. */
+export const REVISED_ANSWER = "REVISED";
+
+/** The cards that wait on the member: every card but a slot of a redraft. */
+export function liveCards<T extends Pick<PendingConfirmation, "redraft">>(cards: readonly T[]): T[] {
+  return cards.filter((c) => c.redraft === undefined);
 }
 
 /**
@@ -158,6 +206,73 @@ export function withTicked(
 
 /** The member's ticks of every card with rows, by card key. */
 export type RowTicks = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * The member's edits of each form, by card key: a new-mail form (`NewMailEdits`)
+ * or a task card (`TaskCardEdits`, EAC-2). The queue holds them as it holds
+ * `RowTicks`, because a change of tab unmounts the form. Without them, an
+ * untick came back ticked and Send went to that person.
+ *
+ * A reader of one kind asks its guard (`isNewMailEdits`, `isTaskCardEdits`),
+ * and never casts. `redraftCard.ts` reads the `NewMailEdits` kind only.
+ */
+export type FormEdit = NewMailEdits | TaskCardEdits;
+export type FormEdits = ReadonlyMap<string, FormEdit>;
+
+export const NO_EDITS: FormEdits = new Map();
+
+/** The keys of the cards that the queue holds: a card on screen, a slot, or a card whose answer is in flight. */
+export function heldKeys(state: Pick<ConfirmationQueueState, "cards" | "answering">): ReadonlySet<string> {
+  return new Set([...state.cards.map((c) => c.key), ...state.answering]);
+}
+
+/**
+ * The kept edits without those of the cards that LEFT the queue between two states: an answered card,
+ * a slot that a draft took or that ended, a `reset`. The same map comes back when no card left.
+ *
+ * Task 1893. This was `liveEdits`, which dropped each entry whose card was not in the queue NOW. A chat
+ * switch resets the queue, so it dropped every edit, and the card then came back from the card log with
+ * the server's form: an untick came back ticked. A card that was never in the queue before (the redraw of
+ * a switch) has no `before` entry, so it never counts as having left. The CHAT must not call this for
+ * the reset of a switch: it holds the edits of each thread in `chatStore`, and a switch only changes
+ * which thread's map it reads.
+ */
+export function closedEdits(edits: FormEdits, before: ReadonlySet<string>, now: ReadonlySet<string>): FormEdits {
+  let out: Map<string, FormEdit> | null = null;
+  for (const key of edits.keys()) {
+    if (!before.has(key) || now.has(key)) continue;
+    out ??= new Map(edits);
+    out.delete(key);
+  }
+  return out ?? edits;
+}
+
+/** Keep the edits of one form. The same values change nothing. */
+export function formEditsReducer(edits: FormEdits, action: { key: string; value: FormEdit }): FormEdits {
+  const was = edits.get(action.key);
+  const now = action.value;
+  if (was && sameEdits(was, now)) return edits;
+  return new Map(edits).set(action.key, now);
+}
+
+/** True when two kept edits of one card are the same values. A new mail and a task card are never the same. */
+function sameEdits(was: FormEdit, now: FormEdit): boolean {
+  if (isNewMailEdits(was) && isNewMailEdits(now)) {
+    return was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks;
+  }
+  if (isTaskCardEdits(was) && isTaskCardEdits(now)) return isUnchanged(was, now);
+  return false;
+}
+
+/** The kept edits as new-mail edits, or undefined for none and for another kind. */
+export function asNewMailEdits(e: FormEdit | undefined): NewMailEdits | undefined {
+  return isNewMailEdits(e) ? e : undefined;
+}
+
+/** The kept edits as task-card edits, or undefined for none and for another kind. */
+export function asTaskEdits(e: FormEdit | undefined): TaskCardEdits | undefined {
+  return isTaskCardEdits(e) ? e : undefined;
+}
 
 export const NO_TICKS: RowTicks = {};
 
@@ -254,7 +369,7 @@ export interface ConfirmationReceipt {
   key: string;
   /** The card's summary, or its title. */
   label: string;
-  kind: "applying" | "approved" | "rejected" | "refused" | "closed";
+  kind: "applying" | "approved" | "rejected" | "refused" | "closed" | "notDone";
   /** What the member answered. "applying" becomes this once the server took it. */
   intent: "approved" | "rejected";
   /** Why a refused answer did not land. */
@@ -277,6 +392,13 @@ export interface ConfirmationQueueState {
   errors: ReadonlyMap<string, string>;
   /** One line for each answered card, oldest first (UXD-3). */
   receipts: readonly ConfirmationReceipt[];
+  /**
+   * §18.11 fix round 6: the new-mail cards that a chat message closed while
+   * they had no slot here, as when a Send was in flight. The member did not
+   * answer them in this tab. A `reopened` ask for one shows it again as a new
+   * card, so the tool never waits on a card that nobody sees.
+   */
+  reopenable?: ReadonlySet<string>;
 }
 
 export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
@@ -285,9 +407,21 @@ export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
   answering: new Set(),
   errors: new Map(),
   receipts: [],
+  reopenable: new Set(),
 };
 
 /** The line of a receipt, in plain words. */
+/**
+ * The words of a receipt: the card's detail, else its title. A fenced card
+ * marks the member's own values with «marks», which the card draws as
+ * values. The receipt line is plain text, so the marks go (owner report,
+ * 2026-11-02: "Approved · «Video and Marketing»").
+ */
+export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">): string {
+  const text = card.detail || card.title;
+  return card.fenced ? unfenced(text) : text;
+}
+
 export function receiptText(r: ConfirmationReceipt): string {
   switch (r.kind) {
     case "applying":
@@ -302,6 +436,9 @@ export function receiptText(r: ConfirmationReceipt): string {
       return `Not applied · ${r.label}${r.reason ? `. ${r.reason}` : ""}`;
     case "closed":
       return `Closed · ${r.label}. The assistant has moved on. Its reply says what happened.`;
+    case "notDone":
+      // Task 3827: the card was approved, and the tool refused the write.
+      return `Not done · ${r.label}. ${CARD_OUTCOME_MEMBER_LINES["changed since"]}`;
   }
 }
 
@@ -327,7 +464,23 @@ function settleReceipt(
 
 export type ConfirmationAction =
   | { type: "requested"; value: unknown }
-  | { type: "resolved"; requestId: string }
+  /** The server closed a card. `answer` is the closing answer of
+   *  `confirmation_resolved`: a new-mail card closed as REVISED stays as a
+   *  slot (§18.11). */
+  | {
+      type: "resolved"; requestId: string; answer?: string;
+      /** RESUME-3a: the card waited parked here, so an answer from another
+       *  tab or device can close it. An Approve then leaves "Approved". */
+      elsewhere?: boolean;
+      /** The message the line of that Approve draws under. */
+      afterId?: string | null;
+    }
+  /** §18.11: a chat message carried this version of the card. */
+  | { type: "memberVersion"; key: string; version: SentVersion }
+  /** §18.11: the slots that read "The draft did not change." close. */
+  | { type: "closeUnchanged" }
+  /** §18.11: the run rests, by any end. Only a slot moves, and a card stays. */
+  | { type: "runRested" }
   /** An answer is in flight. With `label`, a receipt line says so (UXD-3). */
   | {
       type: "answering";
@@ -341,6 +494,10 @@ export type ConfirmationAction =
   /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
   | { type: "released"; key: string }
   | { type: "answered"; key: string }
+  /** Task 3827: the tool refused the approved card because the object changed
+   *  after it. `confirmation_not_done` carries the card's `request_id`, so the
+   *  line of that card alone reads "Not done". No receipt of that key: no change. */
+  | { type: "notDone"; requestId: string }
   /** The POST got a 4xx. The card stays gone until a replay shows it again.
    *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
   | { type: "dropped"; key: string; reason?: string }
@@ -369,13 +526,69 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
     ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
+    // EAC-2: a form the client cannot read is no form, and the card is the card of before.
+    ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
   };
+}
+
+/** An answer that approves: a plain `APPROVE`, or an Approve of rows. */
+function isApproveAnswer(answer: string | undefined): boolean {
+  return answer === "APPROVE" || (!!answer && answer.startsWith(ROWS_ANSWER_PREFIX));
+}
+
+function taskEditOf(raw: unknown): TaskEditForm | undefined {
+  return (raw === undefined ? null : taskEditFromEvent(raw)) ?? undefined;
 }
 
 function withAdded(set: ReadonlySet<string>, key: string): Set<string> {
   const next = new Set(set);
   next.add(key);
   return next;
+}
+
+/**
+ * The new card that takes the slot of the card it revises (§18.11 step 7).
+ * `before` is the client's own copy of the member's last version, its text
+ * and the people it left ticked, for the "Changed:" line.
+ *
+ * The client never changes the new card's ticks (fix round 2). The GATEWAY
+ * starts each person the member unticked still unticked (rule 7), so the
+ * ticks are the same with a slot, with no slot, after a remount and on a
+ * replay.
+ */
+function redrafted(card: PendingConfirmation, old: PendingConfirmation): PendingConfirmation {
+  const oldForm = old.reply && isNewMail(old.reply) ? old.reply : null;
+  const text = old.sent ?? (old.reply ? { subject: old.reply.subject, body: old.reply.body } : undefined);
+  let people: PeopleBefore | undefined;
+  if (oldForm) {
+    const named = !!old.sent && !!(old.sent.to || old.sent.cc || old.sent.bcc);
+    people = { ticked: named && old.sent ? tickedOfSent(old.sent) : startTicks(oldForm).reply_all };
+  }
+  return {
+    ...card,
+    ...(text ? { before: { subject: text.subject, body: text.body, ...(people ? { people } : {}) } } : {}),
+  };
+}
+
+/**
+ * P3: every other slot that waits sees a new-mail card to its own people
+ * arrive after it. Fix round 4: a card to OTHER people is no new draft of
+ * the slot's card. That slot must read its end line, or the member's card
+ * goes with no word (`endSlot`).
+ */
+function noteNewer(cards: PendingConfirmation[], at: number, card: PendingConfirmation): PendingConfirmation[] {
+  if (!card.reply || !isNewMail(card.reply)) return cards;
+  return cards.map((c, i) => (i !== at && c.redraft === "updating" && !c.newerCard && sharesTo(c.reply, card.reply) ? { ...c, newerCard: true as const } : c));
+}
+
+/**
+ * What the end of a run does to one card that is a slot (§18.11 step 7). A
+ * slot with a newer draft closes with no line, and any other slot says that
+ * the draft did not change. Any other card stays.
+ */
+function endSlot(c: PendingConfirmation): PendingConfirmation[] {
+  if (c.redraft !== "updating") return [c];
+  return c.newerCard ? [] : [{ ...c, redraft: "unchanged" as const }];
 }
 
 function withRemoved(set: ReadonlySet<string>, key: string): Set<string> {
@@ -392,27 +605,113 @@ export function confirmationReducer(
     case "requested": {
       const card = cardFromEvent(action.value);
       if (!card) return state;
+      // §18.11 fix round 5: the SAME card, shown again because the revise of a
+      // chat message did not run. It takes its slot back, in place, and the
+      // chat keeps the member's edits by its key. Only a slot reopens. A live
+      // card of that key reads it as a replay, below, and keeps its `before`.
+      const reopened = !!(card.reply && isNewMail(card.reply) && card.reply.reopened);
+      const was = state.cards.findIndex((c) => c.key === card.key && c.redraft !== undefined);
+      if (was >= 0 && reopened) {
+        const slot = state.cards[was];
+        const cards = state.cards.slice();
+        cards[was] = { ...card, ...(slot.sent ? { sent: slot.sent } : {}) };
+        return { ...state, cards, resolved: withRemoved(state.resolved, card.key) };
+      }
+      // Fix round 6: no card of that key is here, because the card closed
+      // while a Send was in flight. The member did not answer it in this tab,
+      // so it shows again as a new card. A card that the member answered
+      // stays closed.
+      if (reopened && state.reopenable?.has(card.key) && !state.cards.some((c) => c.key === card.key)) {
+        return {
+          ...state,
+          cards: [...state.cards, card],
+          resolved: withRemoved(state.resolved, card.key),
+          answering: withRemoved(state.answering, card.key),
+          reopenable: withRemoved(state.reopenable, card.key),
+          receipts: settleReceipt(state.receipts, card.key, (r) =>
+            r.kind === "applying" || r.kind === "closed" ? null : r),
+        };
+      }
       if (state.resolved.has(card.key) || state.answering.has(card.key)) return state;
       const at = state.cards.findIndex((c) => c.key === card.key);
       if (at >= 0) {
-        // The same card again (a replay). Keep its place in the queue.
+        // The same card again (a replay). Keep its place in the queue, and
+        // what the client knows of it (§18.11).
+        const prev = state.cards[at];
         const cards = state.cards.slice();
-        cards[at] = card;
+        cards[at] = { ...card, ...(prev.before ? { before: prev.before } : {}), ...(prev.sent ? { sent: prev.sent } : {}) };
         return { ...state, cards };
       }
-      return { ...state, cards: [...state.cards, card] };
+      // §18.11 step 7: the new draft takes the slot of the card it revises,
+      // in the same tab. The server names that card (`revises`), and the
+      // client's own copy of the member's last version is its `before`.
+      const revises = card.reply?.revises;
+      const slot = revises ? state.cards.findIndex((c) => c.key === revises && c.redraft !== undefined) : -1;
+      if (slot >= 0) {
+        const old = state.cards[slot];
+        const cards = state.cards.slice();
+        cards[slot] = redrafted(card, old);
+        return { ...state, cards: noteNewer(cards, slot, card) };
+      }
+      // Fix round 2: a new mail that names no slot while a slot waits (one
+      // message revised two cards, so the gateway linked none) takes a slot
+      // that waits, in its tab. Fix round 3: only the slot of a card to the
+      // same people (`sharesTo`, the gateway's own rule). So a new mail to
+      // another person, in the same message, shows as its own card. The
+      // client cannot tell which of two such cards it replaces, so it shows
+      // no "Changed:" line. The ticks are the server's in each case.
+      const free = !revises && card.reply && isNewMail(card.reply)
+        ? state.cards.findIndex((c) => c.redraft === "updating" && sharesTo(c.reply, card.reply))
+        : -1;
+      if (free >= 0) {
+        const cards = state.cards.slice();
+        cards[free] = card;
+        return { ...state, cards: noteNewer(cards, free, card) };
+      }
+      return { ...state, cards: noteNewer([...state.cards, card], state.cards.length, card) };
     }
     case "resolved": {
       const key = action.requestId;
       if (!key) return state;
+      const shown = state.cards.find((c) => c.key === key);
+      if (action.answer === REVISED_ANSWER && shown?.requestId && isNewMail(shown.reply)) {
+        // §18.11 step 7: a chat message closed a new-mail card. Its slot
+        // stays, with no buttons, until the new draft takes it. A card of
+        // any other kind closes as before.
+        return {
+          ...state,
+          cards: state.cards.map((c) => (c.key === key ? { ...c, redraft: "updating" as const } : c)),
+          resolved: withAdded(state.resolved, key),
+          answering: withRemoved(state.answering, key),
+          errors: withoutError(state.errors, key),
+        };
+      }
+      // RESUME-3a: another tab or device approved a parked card that shows
+      // here, and this tab did not answer it. The card leaves with the same
+      // line as an Approve of this tab (§4.12.4 item 5).
+      const approvedElsewhere = !!shown && action.elsewhere === true && isApproveAnswer(action.answer) &&
+        !state.answering.has(key) && !state.receipts.some((r) => r.key === key);
       return {
         ...state,
         cards: state.cards.filter((c) => c.key !== key),
         resolved: withAdded(state.resolved, key),
         answering: withRemoved(state.answering, key),
         errors: withoutError(state.errors, key),
+        ...(approvedElsewhere && shown
+          ? {
+              receipts: [...state.receipts, {
+                key, label: receiptLabel(shown), kind: "approved" as const, intent: "approved" as const,
+                afterId: action.afterId ?? null,
+              }],
+            }
+          : {}),
         // The server closed it. An answer in flight keeps "Applying" until
         // its own POST says what became of it: the close can be a timeout.
+        // Fix round 6: a chat message closed a card with no slot here, so a
+        // `reopened` ask for it may follow.
+        ...(action.answer === REVISED_ANSWER && !shown
+          ? { reopenable: withAdded(state.reopenable ?? new Set(), key) }
+          : {}),
       };
     }
     case "answering": {
@@ -448,7 +747,19 @@ export function confirmationReducer(
         ...state,
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
-        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent, undo: undefined })),
+        // A "Not done" line stays: the stream can beat this POST's answer.
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          (r.kind === "notDone" ? r : { ...r, kind: r.intent, undo: undefined })),
+        // The member answered it, so a `reopened` ask never shows it again.
+        ...(state.reopenable?.has(action.key) ? { reopenable: withRemoved(state.reopenable, action.key) } : {}),
+      };
+    case "notDone":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent === "approved" && (r.kind === "applying" || r.kind === "approved")
+            ? { ...r, kind: "notDone", undo: undefined }
+            : r),
       };
     case "dropped":
       return {
@@ -476,10 +787,27 @@ export function confirmationReducer(
     }
     case "dismiss":
       return { ...state, cards: state.cards.filter((c) => c.key !== action.key) };
+    case "memberVersion":
+      return {
+        ...state,
+        cards: state.cards.map((c) => (c.key === action.key ? { ...c, sent: action.version } : c)),
+      };
     case "runFinalized":
       // A finished run waits on nothing. A non-blocking card stays: its
-      // answer is a new chat message.
-      return { ...state, cards: state.cards.filter((c) => !c.requestId) };
+      // answer is a new chat message. A slot of a redraft that no new card
+      // took reads "The draft did not change." until `closeUnchanged`.
+      return {
+        ...state,
+        cards: state.cards.flatMap((c) => (c.redraft || !c.requestId ? endSlot(c) : [])),
+      };
+    case "runRested":
+      // A Stop, a failure or an end on the attach stream: the slot branch of
+      // `runFinalized` alone, so a blocking card stays as it is.
+      return state.cards.some((c) => c.redraft === "updating")
+        ? { ...state, cards: state.cards.flatMap(endSlot) }
+        : state;
+    case "closeUnchanged":
+      return { ...state, cards: state.cards.filter((c) => c.redraft !== "unchanged") };
     case "reset":
       return EMPTY_CONFIRMATIONS;
   }
@@ -495,7 +823,3 @@ export function settleAnswer(
   if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }
-
-// The stack of waiting cards lives in `lib/cardStack.ts`, shared with every
-// stack of cards in the chat. Re-exported here for the queue's callers.
-export { SWIPE_STEP_PX, stackBanner, stackDepth, swipeStep } from "./cardStack";

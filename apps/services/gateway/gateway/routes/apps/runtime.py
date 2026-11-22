@@ -26,13 +26,13 @@ from gateway.routes.apps._common import (
     _log,
     _tenant_session,
     _uid,
-    app_workspace,
+    app_workspace_or_none,
     get_app_or_404,
     iso,
     parse_db_manifest,
     publish_app_activity,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_user,
     require_app_viewer,
     resolve_ai_budget,
@@ -98,8 +98,12 @@ def _row_out(row: Any) -> StorageRow:
 
 
 def _effective_manifest(row: Any) -> dict[str, Any]:
+    """The workspace ``app.json``, else the stored manifest. A row with no
+    folder reads the stored manifest, never the working directory (WS-STU
+    A3). Fence: ``test_studio_packages_store.py``."""
+    workspace = app_workspace_or_none(row)
     return (
-        read_workspace_manifest(app_workspace(row))
+        (read_workspace_manifest(workspace) if workspace is not None else None)
         or parse_db_manifest(row.manifest)
     )
 
@@ -249,7 +253,7 @@ async def put_storage_row(
             {"app_id": str(row.id), "table": table, "key": key,
              "value": encoded, "scope": partition, "by": _uid(user)},
         )).fetchone()
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="storage",
         detail={"table": table, "key": key, "op": "put"},
     )
@@ -278,7 +282,7 @@ async def delete_storage_row(
         )
     deleted = bool(getattr(result, "rowcount", 0))
     if deleted:
-        await record_app_audit(
+        await record_app_audit_bound(
             app_id=str(row.id), user_email=_uid(user), kind="storage",
             detail={"table": table, "key": key, "op": "delete"},
         )
@@ -286,6 +290,9 @@ async def delete_storage_row(
 
 
 # ── AI (cc.ai.complete) ──────────────────────────────────────────────────────
+
+#: The 502 detail of a completion with no text (task 1128).
+EMPTY_AI_ANSWER = "The model returned no text. Try again."
 
 def _build_messages(body: AiCompleteRequest) -> list[dict[str, Any]]:
     if body.messages:
@@ -371,6 +378,10 @@ async def ai_complete(
             # source is the only way cost attribution (/observability/cost's
             # "by app" view) can tell one app's spend from another's.
             source=f"app:{slug}",
+            # Writing: thinking off, so the app's cap (at most
+            # MAX_AI_OUTPUT_TOKENS) holds the answer on any tier. The request
+            # has no field that asks for thinking (task 1128).
+            job="writing",
         )
     except Exception as exc:
         publish_app_activity(
@@ -387,13 +398,22 @@ async def ai_complete(
         content = ""
     tokens_in, tokens_out = _usage_from_response(resp)
     cost = _cost_from_response(used_model, resp)
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="ai",
         app_version=row.live_version,
         tokens_in=tokens_in, tokens_out=tokens_out,
         cost_usd=cost, model=used_model,
         detail={"surface": "app-runtime", "tier": tier},
     )
+    if not content.strip():
+        # The tokens are spent and recorded above, but there is no text. A
+        # 200 with "" reads as a real answer in the app (task 1128).
+        publish_app_activity(
+            slug, user=_uid(user), phase="end", run_id=run_id,
+            action="ai", status="error",
+        )
+        _log.warning("apps.ai_empty_answer", slug=slug, model=used_model)
+        raise HTTPException(status_code=502, detail=EMPTY_AI_ANSWER)
     publish_app_activity(
         slug, user=_uid(user), phase="end", run_id=run_id, action="ai",
         model=used_model, tokens=tokens_in + tokens_out,

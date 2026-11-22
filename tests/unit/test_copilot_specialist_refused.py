@@ -281,7 +281,11 @@ def test_the_orchestrator_offers_no_copilot_agent_but_app_builder(monkeypatch) -
     ])
     copilot = {e["name"] for e in agent_routes._AGENT_REGISTRY
                if loader.is_copilot_runtime_label(e.get("agent_runtime"))}
-    assert {"task-manager", "app-builder"} <= copilot, "the fixture assumes both are held"
+    # WS-43h set app-builder's label to "maf". Its factory still builds the
+    # Copilot agent for an org outside `app_builder:<org>`, so the allow list
+    # keeps it until WS-43j, and the test below still offers it.
+    assert "task-manager" in copilot, "the fixture assumes task-manager is held"
+    assert "app-builder" not in copilot
     refused = (copilot | {"acme-copilot-agent"}) - loader.COPILOT_SPECIALIST_ALLOWED
 
     tools = {t.name for t in _load_specialist_agents_as_tools()}

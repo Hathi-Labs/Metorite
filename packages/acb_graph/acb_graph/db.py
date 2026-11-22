@@ -36,7 +36,7 @@ def tenant_bind_enabled() -> bool:
     This is the ONE reader of ``ACB_GRAPH_TENANT_BIND`` — later slices convert
     more ``acb_graph`` paths behind the same flag; do not add a second reader.
     The env idiom matches ``acb_auth.access.identity_cutover_enabled`` /
-    ``acb_auth.deps._refuse_llm_key_identity``. FLIPPING it on a live box is
+    ``acb_auth.deps._trust_unverified_sso_headers``. FLIPPING it on a live box is
     OWNER-GATE (it presumes H3 phase-4 promotion); building the branch DARK is
     agent-safe.
     """

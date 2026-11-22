@@ -9,6 +9,7 @@
  *
  * | state            | edge        | line                              |
  * | working/answered | live        | "<client> · <agent_note>"         |
+ * | waiting          | steady      | "Waiting on CI · about 25 min"    |
  * | queued           | steady      | none (the pill says "Queued for") |
  * | awaiting         | warning     | "Needs you: <question>"           |
  * | stale (idle)     | breathing   | the agent's last note, else none  |
@@ -18,9 +19,32 @@
  * No edge is dashed (EA-13h, owner 2026-10-30). "live" travels round the card.
  * "breathing" glows slowly and means idle. "steady" is still. The pill already
  * says "idle" or "Queued for", so the stale and queued lines never repeat it.
+ *
+ * SW-7b: `<client>` carries the label of the agent session when it has one,
+ * "Claude Code (backend-worker-3)" (`withAgentLabel`).
+ *
+ * Task 1045a: "waiting" is still too, because motion means working (EA-13g).
+ * The agent said that it waits on CI, a review, a deploy, a person or
+ * another agent, and for about how long. The pill already names the client, and a
+ * card at 1440 cuts a line that names it twice, so the line leaves it out.
  */
 
-import { type AgentPillFacts, agentPillText, asAgentState, clientName } from "./agentRuns";
+import {
+  NOT_REPORTED,
+  type Place,
+  hostKindIcon,
+  hostKindWord,
+  placeKind,
+  placeText,
+} from "./agentPlace";
+import {
+  type AgentPillFacts,
+  agentPillText,
+  asAgentState,
+  clientName,
+  withAgentLabel,
+  waitingText,
+} from "./agentRuns";
 
 export type AgentEdge = "live" | "steady" | "warning" | "breathing" | "destructive";
 
@@ -37,7 +61,8 @@ export function agentCardLook(
 ): AgentCardLook {
   const known = asAgentState(state);
   if (!known) return NO_AGENT_LOOK;
-  const client = clientName(facts.clientVia);
+  // SW-7b: "Claude Code (backend-worker-3)" when the session has a label.
+  const client = withAgentLabel(clientName(facts.clientVia), facts.agentLabel);
   const note = facts.note?.trim() || null;
   switch (known) {
     case "working":
@@ -50,6 +75,10 @@ export function agentCardLook(
             ? `${client} working`
             : agentPillText(known, facts).text,
       };
+    case "waiting": {
+      const wait = waitingText(facts.waiting, facts.nowMs);
+      return { edge: "steady", line: wait.charAt(0).toUpperCase() + wait.slice(1) };
+    }
     case "queued":
       return { edge: "steady", line: null };
     case "awaiting":
@@ -65,4 +94,52 @@ export function agentCardLook(
       // "stopping" keeps the card as it is. The pill says "Stopping".
       return NO_AGENT_LOOK;
   }
+}
+
+/* ── The place line of the run panel (WS-MCP SW-106) ─────────────────────── */
+
+/** What the run panel and the card say about where the session runs. */
+export interface AgentPlaceLook {
+  /** The icon of the kind of machine. */
+  icon: string;
+  /** "Machine: VJ laptop (Computer) · Model: Sonnet 5.5". */
+  line: string;
+  /** The same facts in two parts, for a tip. */
+  machine: string;
+  model: string;
+  /** True when the session sent no machine, no kind and no model. */
+  none: boolean;
+}
+
+/** The facts of a run that carry its place. Each value is untrusted text. */
+export interface AgentPlaceFacts {
+  agent_host?: unknown;
+  agent_host_kind?: unknown;
+  agent_model?: unknown;
+}
+
+/**
+ * One line for the run panel: the machine with its kind, then the model. A
+ * value that the agent did not send reads "Not reported". The line never
+ * holds a network address. The run read gives no box proof, so the line makes
+ * no "checked" claim. The Map does (`host_source` of the map read).
+ */
+export function agentPlaceLine(facts: AgentPlaceFacts): AgentPlaceLook {
+  const place: Place = {
+    host: placeText(facts.agent_host),
+    kind: placeKind(facts.agent_host_kind),
+    source: null,
+    model: placeText(facts.agent_model),
+  };
+  const name = place.host ?? NOT_REPORTED;
+  const kind = place.kind ? ` (${hostKindWord(place.kind)})` : "";
+  const machine = `${name}${kind}`;
+  const model = place.model ?? NOT_REPORTED;
+  return {
+    icon: hostKindIcon(place.kind),
+    machine,
+    model,
+    line: `Machine: ${machine} \u00b7 Model: ${model}`,
+    none: !place.host && !place.kind && !place.model,
+  };
 }

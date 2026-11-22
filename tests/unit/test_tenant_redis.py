@@ -575,6 +575,47 @@ def test_mget_stays_inside_the_r5c_ratchet() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5c-1. delete_unless (RESUME-2a follow-up, P2-1): ONE compare-and-delete
+# ---------------------------------------------------------------------------
+#
+# The command runs a FIXED Lua script. A caller gives the key and the value
+# only, so no caller can send a script that names a key of another tenant.
+
+class _EvalRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> int:
+        self.calls.append((script, numkeys, *keys_and_args))
+        return 1
+
+
+async def test_delete_unless_sends_the_fixed_script_and_one_prefixed_key() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        assert await client.delete_unless(client.key("chat-late-offer", "a@x.test", "t1", "d"),
+                                          "SPENT") == 1
+    assert fake.calls == [(tr._DELETE_UNLESS_LUA, 1,
+                           f"{KEY_ROOT}:{ORG_A}:chat-late-offer:a@x.test:t1:d", "SPENT")]
+    assert "KEYS[1]" in tr._DELETE_UNLESS_LUA and "KEYS[2]" not in tr._DELETE_UNLESS_LUA
+    params = list(inspect.signature(TenantRedis.delete_unless).parameters)
+    assert params == ["self", "k", "value"], "a caller gives no script and no second key"
+
+
+async def test_delete_unless_refuses_a_raw_string_and_another_tenant() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.delete_unless("cc:chat-late-offer:t1", "x")  # type: ignore[arg-type]
+    with organization_scope(ORG_A):
+        stolen = key("chat-late-offer", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.delete_unless(stolen, "x")
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
 # 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
 # ---------------------------------------------------------------------------
 #
@@ -663,9 +704,16 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
         "the wrapper itself — the one place redis-py is reached",
 
     # ── MT-1e follow-up: convert these to acb_common.tenant_redis ──
+    # H-201c moved cc:activity and cc:activity:live onto the wrapper, and
+    # H-201e moved the per-tenant cost rollup (cc:<org>:cost:<day>). What
+    # remains is the short-lived clients of the no-loop paths, which the
+    # wrapper wraps but which still open through redis-py. The pooled client
+    # writes ONE deployment-level key by design: cc:_unattributed:cost:<day>,
+    # the priced calls with no tenant. No tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: cc:activity, cc:activity:live:{run_id}, cc:cost:{day}; pooled "
-        "client at :66 plus two one-shot clients at :226/:317",
+        "FOLLOW-UP: the one-shot no-loop clients at :330/:433 (wrapped in "
+        "TenantRedis). The pooled client at :103-116 writes only the "
+        "deployment-level cc:_unattributed:cost:<day> hash (H-201e)",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: cc:stream, cc:active, cc:runactor, cc:runsource, cc:runfloor, "
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
@@ -768,8 +816,13 @@ def test_allowlist_entries_say_why() -> None:
 # so they get their own ratchet and their own follow-up entries.
 
 _ALLOWED_CC_LITERALS: dict[str, str] = {
+    # H-201e: the tenant cost rollup is cc:<org>:cost:<day> now. The one
+    # literal left is the deployment-level hash of the priced calls with no
+    # tenant. It has no tenant by definition, and no tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: ACTIVITY_STREAM / LIVE_PREFIX / COST_PREFIX (:45-47)",
+        "DEPLOYMENT-LEVEL: UNATTRIBUTED_COST_PREFIX (:81), the "
+        "cc:_unattributed:cost:<day> hash of priced calls with no tenant. "
+        "The '_' lead is not a legal org id, so no tenant key can equal it",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: seven PREFIX constants (:53, :54, :65, :71, :76, :557, :558)",
     "apps/services/orchestrator/orchestrator/steer.py":

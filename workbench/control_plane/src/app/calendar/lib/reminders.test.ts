@@ -332,7 +332,7 @@ describe("a reminder takes no capacity and no lane", () => {
   it("only task items reach the block, lane and stat functions", () => {
     // Every call takes `items` (or the `blocks` of `items`) and nothing else.
     // A spread, a cast or a reminder list in the first argument fails here.
-    for (const rel of ["../CalendarView.tsx", "../components/TimeGrid.tsx", "../components/MonthGrid.tsx"]) {
+    for (const rel of ["../CalendarView.tsx", "../components/TimeGrid.tsx", "./gridAdapter.ts"]) {
       const src = read(rel);
       for (const arg of firstArgs(src, "blocksForDay")) expect(arg, `${rel} blocksForDay`).toBe("items");
       for (const arg of firstArgs(src, "deadlinesForDay")) expect(arg, `${rel} deadlinesForDay`).toBe("items");
@@ -521,6 +521,24 @@ describe("the panel", () => {
     // The desktop panel keeps its small actions.
     const desk = doneButtons(renderToStaticMarkup(createElement(RemindersPanel, props)));
     for (const b of desk) expect(b).not.toMatch(/\bp-1\.5\b/);
+  });
+
+  it("marks the row that /calendar?reminder=<id> names, and opens the whole list when the cap hides it (RX-2)", () => {
+    const marked = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "f" }));
+    // "f" is the sixth row: the cap hides it, so the list opens in full.
+    expect(doneButtons(marked)).toHaveLength(6);
+    expect(marked).toContain('data-marked=""');
+    expect(marked.match(/data-marked=""/g)).toHaveLength(1);
+    expect(marked).toContain('aria-current="true"');
+    // A row that is shown keeps the cap, and an id that is not in the list marks nothing.
+    const first = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "b" }));
+    expect(doneButtons(first)).toHaveLength(PANEL_ROWS);
+    expect(first.match(/data-marked=""/g)).toHaveLength(1);
+    const none = renderToStaticMarkup(createElement(RemindersPanel, { ...props, marked: "zzz" }));
+    expect(none).not.toContain("data-marked");
+    expect(doneButtons(none)).toHaveLength(PANEL_ROWS);
+    // The phone sheet marks the row too.
+    expect(renderToStaticMarkup(createElement(RemindersSheetBody, { ...props, marked: "f" }))).toContain('data-marked=""');
   });
 
   it("puts the whole title of a row in its tip", () => {

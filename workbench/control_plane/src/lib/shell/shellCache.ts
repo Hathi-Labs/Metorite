@@ -23,8 +23,12 @@
  * - ⚠️ **It never opens the first sign-in question.** A cached "never asked"
  *   may be out of date, so only the server's own answer opens it
  *   (`useShellPrefs().fresh`).
+ * - **The org default has a copy too** (PKG-17b), under
+ *   `cc-shell-org-layout:<email>|<organizationId>`, with the same rules. A
+ *   404 or an empty answer writes a "no default" marker, and never clears
+ *   the key. `orgLayout.ts` reads and writes it.
  *
- * Fence: `shellCache.test.ts`.
+ * Fence: `shellCache.test.ts` and `orgLayout.test.ts`.
  */
 import { EMPTY_SHELL, type StoredShell } from "./presets";
 
@@ -36,13 +40,24 @@ export function shellCacheKey(scope: string | null | undefined): string | null {
   return `${SHELL_CACHE_PREFIX}${scope}`;
 }
 
+/** The keys of a layout. Any other key of an answer is not the layout's. */
+const LAYOUT_KEYS = Object.keys(EMPTY_SHELL) as (keyof StoredShell)[];
+
 /**
  * A body is a layout only when it says whether the member was asked. Any
  * other body is not an answer, so it must never read as "never asked".
+ *
+ * ⚠️ It keeps the layout's own keys only. The answer also carries `guide`
+ * (GD-5a), a fact of the server, and a layout save sends the layout back.
+ * The gateway refuses an unknown key (`ShellPrefs`, `extra="forbid"`), so a
+ * kept `guide` would fail every star save with a 422.
  */
 export function asLayout(body: unknown): StoredShell | null {
   if (!body || typeof body !== "object" || Array.isArray(body) || !("answered" in body)) return null;
-  return { ...EMPTY_SHELL, ...(body as Partial<StoredShell>) };
+  const from = body as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...EMPTY_SHELL };
+  for (const k of LAYOUT_KEYS) if (k in from) out[k] = from[k];
+  return out as unknown as StoredShell;
 }
 
 function storage(): Storage | null {
@@ -129,9 +144,57 @@ export function shellAccountPrefix(email: string): string {
   return `${SHELL_CACHE_PREFIX}${email}|`;
 }
 
-/** Remove the layouts of these emails, in every organization. Never throws. */
+/**
+ * Remove the layouts of these emails, in every organization. Never throws.
+ * It also removes the copies of the org default (PKG-17b), so the two copies
+ * share one sign-out rule.
+ */
 export function clearCachedLayouts(emails: readonly string[]): void {
   clearAccountKeys(SHELL_CACHE_PREFIX, emails);
+  clearAccountKeys(ORG_LAYOUT_PREFIX, emails);
+}
+
+// ── The org default's browser copy (PKG-17b, `package_host.md` §9.1) ───────
+// The same rules as the layout's copy above. One key per account, and only
+// an answer of the server is kept. `clearCachedLayouts` clears it on a
+// sign-out. The copy is raw JSON here. `orgLayout.ts` gives it its shape and
+// parses it, so a bad copy reads as no copy.
+
+/**
+ * The key prefix of the copy, `cc-shell-org-layout:<email>|<org>`.
+ * ⚠️ It keeps the shell prefix, as `NUDGE_PREFIX` does.
+ */
+export const ORG_LAYOUT_PREFIX = "cc-shell-org-layout:";
+
+/** The key of one account's copy, or null with no account to name. */
+export function orgLayoutCacheKey(scope: string | null | undefined): string | null {
+  if (!scope || !scope.includes("|")) return null;
+  return `${ORG_LAYOUT_PREFIX}${scope}`;
+}
+
+/** The account's stored copy, not yet parsed, or undefined. Never throws. */
+export function readCachedOrgLayoutRaw(scope: string | null | undefined): unknown {
+  const key = orgLayoutCacheKey(scope);
+  const store = storage();
+  if (!key || !store) return undefined;
+  try {
+    const raw = store.getItem(key);
+    return raw ? (JSON.parse(raw) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keep an org default that the server answered. Never throws. */
+export function writeCachedOrgLayout(scope: string | null | undefined, layout: unknown): void {
+  const key = orgLayoutCacheKey(scope);
+  const store = storage();
+  if (!key || !store) return;
+  try {
+    store.setItem(key, JSON.stringify(layout));
+  } catch {
+    /* storage full or off: the next visit reads the server, as before */
+  }
 }
 
 /**

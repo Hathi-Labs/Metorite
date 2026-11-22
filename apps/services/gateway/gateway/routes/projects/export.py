@@ -84,7 +84,6 @@ from gateway.csv_export import (
     csv_cell,
     csv_document,
 )
-from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.projects.core import (
     DIRECTIONS,
     TASK_SORTS,
@@ -92,6 +91,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     load_visible_project,
+    reader_day_start,
     resolve_visibility,
     root_project_id,
     router,
@@ -110,6 +110,7 @@ from gateway.routes.projects.filters import (
     normalise_view_config,
     split_csv,
 )
+from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.tasks.priority import task_level_label
 from sqlalchemy import text
 
@@ -321,6 +322,15 @@ async def export_tasks_csv(
     watching: bool = False,
     # D-PM-38. A view with subtasks hidden exports what it shows.
     top_level: bool = False,
+    # MCP-G19a. Parity with the list: an export of an audit set holds the
+    # same rows the audit read counted.
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
     # Task #986. Parity with the list: the board's agent filters. "waiting" is
     # the session's member (R11).
     agent_focus: str | None = None,
@@ -394,11 +404,15 @@ async def export_tasks_csv(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
             top_level=top_level,
+            has_parent=has_parent, is_epic=is_epic, assigned=assigned,
+            updated_before=updated_before, updated_after=updated_after,
+            created_after=created_after, title_prefix=title_prefix,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)

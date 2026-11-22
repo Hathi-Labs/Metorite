@@ -36,7 +36,12 @@ import { AgentPill } from "../components/AgentPill";
 import {
   AGENT_STATE_VALUES,
   ARCHIVE_CARD_TITLE,
+  ARE_YOU_SURE,
+  confirmLabels,
+  hasConfirmOption,
+  replacePayload,
   CLIENT_LABELS,
+  WAITING_ON_LABELS,
   activityAttribution,
   githubMergeReason,
   viaLabel,
@@ -45,6 +50,7 @@ import {
   type AgentRun,
   agentKindLabel,
   agentPillText,
+  answerHeldLine,
   answerPayload,
   answerTo,
   answeredLine,
@@ -66,6 +72,9 @@ import {
   runToShow,
   stopPayload,
   writeFailure,
+  withdrawPayload,
+  withdrawShown,
+  withdrawTarget,
 } from "./agentRuns";
 
 const ELICIT: AgentActivity = {
@@ -107,6 +116,23 @@ describe("the pill: state → text, by the table in §12.1", () => {
     expect(agentPillText("stale", facts).text).toBe("Claude Code idle");
     expect(agentPillText("stopping", facts).text).toBe("Stopping");
     expect(agentPillText("failed", facts).text).toBe("Agent failed");
+    // Task 1045a: the pill says that the agent waits, and the hover says on what.
+    const wait = {
+      ...facts,
+      waiting: { on: "review" as const, until: "2026-11-06T11:00:00Z" },
+      nowMs: Date.parse("2026-11-06T10:30:00Z"),
+    };
+    expect(agentPillText("waiting", wait)).toEqual({
+      text: "Claude Code waiting",
+      title: "Claude Code waiting on a review · about 30 min",
+    });
+    // Owner, 2026-11-07: the agent's own sub-agents are work, never a wait.
+    // `agent` is another (external) agent.
+    expect(Object.keys(WAITING_ON_LABELS)).toEqual(["ci", "review", "deploy", "member", "agent"]);
+    expect(WAITING_ON_LABELS.agent).toBe("another agent");
+    expect(
+      agentPillText("waiting", { ...wait, waiting: { on: "agent" as const } }).title,
+    ).toBe("Claude Code waiting on another agent");
   });
 
   it("shows the newest thought as the tooltip of working", () => {
@@ -168,6 +194,9 @@ describe("the pill: state → accent, through statusAccent.ts", () => {
     expect(AGENT_STATES.failed.hue).toBe("red"); // error
     expect(AGENT_STATES.stale).toMatchObject({ hue: "gray", muted: true });
     expect(AGENT_STATES.stopping).toMatchObject({ hue: "gray", muted: true });
+    // Task 1045a: neutral, as working is, with its own glyph.
+    expect(AGENT_STATES.waiting).toMatchObject({ hue: "gray", icon: "Hourglass" });
+    expect(AGENT_STATES.waiting.muted).toBeFalsy();
   });
 
   it("draws neutral as the chip, and muted as the faint pair", () => {
@@ -545,5 +574,137 @@ describe("the honest timeline (EA-13b)", () => {
     expect(githubMergeReason({ to: "Shipped", github: { repo: "o/r", number: 3 } })).toBe(
       "GitHub moved this to Shipped after o/r#3 merged",
     );
+  });
+});
+
+describe("SW-43 withdraw an answer", () => {
+  const answer: AgentActivity = {
+    id: "p9",
+    seq: 6,
+    type: "prompt",
+    content: { selected: ["pg"] },
+    actor: "vj@example.com",
+    in_reply_to: "a1",
+  };
+
+  it("does not read a withdrawn answer as an answer", () => {
+    // Mutation: answerTo ignores `withdrawn`, and the card stays collapsed.
+    const marked: AgentActivity = {
+      ...answer,
+      content: { selected: ["pg"], withdrawn: { by: "vj@example.com" } },
+    };
+    expect(answerTo([ELICIT, marked], ELICIT)).toBeNull();
+  });
+
+  it("does not read an answer that a later marker took back", () => {
+    // Mutation: answerTo ignores `withdraws`, and a client that loaded the
+    // answer before the withdraw still shows it as live.
+    const marker: AgentActivity = {
+      id: "p10",
+      seq: 7,
+      type: "prompt",
+      content: { body: "Withdrew the answer", withdraws: "p9" },
+      signal: "continue",
+      in_reply_to: null,
+    };
+    expect(answerTo([ELICIT, answer], ELICIT)).toBe(answer);
+    expect(answerTo([ELICIT, answer, marker], ELICIT)).toBeNull();
+  });
+
+  it("sends the answer id and a fresh key", () => {
+    expect(withdrawPayload("p9", "k1")).toEqual({ answer_id: "p9", idempotency_key: "k1" });
+    expect(withdrawPayload("p9").idempotency_key).not.toBe(withdrawPayload("p9").idempotency_key);
+  });
+
+  it("names the client that holds the answer", () => {
+    expect(answerHeldLine("Claude Code")).toBe(
+      "Claude Code has your answer. Reply below to change it.",
+    );
+  });
+});
+
+describe("SW-43 who sees the withdraw line", () => {
+  const run = {
+    id: "r1",
+    status: "in_progress",
+    answer: { id: "p9", seq: 6, changeable: true },
+  } as unknown as AgentRun;
+  const answer = { id: "p9", seq: 6, type: "prompt", content: {} } as AgentActivity;
+
+  it("hides it from a member who is not the run's member", () => {
+    // Mutation: drop the isMember test, and every viewer gets a button that 403s.
+    expect(withdrawShown(run, answer, false, true)).toBe(false);
+    expect(withdrawShown(run, answer, true, true)).toBe(true);
+  });
+
+  it("shows the held line only when a reply box shows", () => {
+    // Mutation: drop the canReply test, and a stopped run says "Reply below".
+    const held = { ...run, answer: { id: "p9", seq: 6, changeable: false } } as AgentRun;
+    expect(withdrawShown(held, answer, true, true)).toBe(true);
+    expect(withdrawShown(held, answer, true, false)).toBe(false);
+    expect(withdrawShown(run, answer, true, false)).toBe(true);
+  });
+
+  it("shows nothing with no live answer", () => {
+    expect(withdrawShown({ ...run, answer: null } as AgentRun, answer, true, true)).toBe(false);
+    expect(withdrawShown(run, null, true, true)).toBe(false);
+  });
+});
+
+describe("SW-43 the id to withdraw", () => {
+  it("is the id that the server names in run.answer", () => {
+    // Mutation: read the id from the local activity and a guess goes out.
+    expect(withdrawTarget({ answer: { id: "p9", seq: 1, changeable: true } } as AgentRun)).toBe("p9");
+    expect(withdrawTarget({ answer: null } as AgentRun)).toBeNull();
+    expect(withdrawTarget({} as AgentRun)).toBeNull();
+    expect(
+      withdrawTarget({ answer: { id: "local:k", seq: 1, changeable: true } } as AgentRun),
+    ).toBeNull();
+  });
+});
+
+describe("SW-43b confirm and replace", () => {
+  const COSTLY: AgentActivity = {
+    ...ELICIT,
+    id: "a9",
+    signal_metadata: {
+      options: [
+        { id: "go", label: "Restart it now", confirm: true },
+        { id: "no", label: "Not now" },
+      ],
+      allow_multiple: false,
+    },
+  };
+
+  it("asks only for an option that carries confirm", () => {
+    // Mutation: ignore `confirm` and a costly option goes out with no second step.
+    expect(confirmLabels(COSTLY, { Question: { selected: ["Restart it now"] } })).toEqual([
+      "Restart it now",
+    ]);
+    expect(confirmLabels(COSTLY, { Question: { selected: ["Not now"] } })).toEqual([]);
+    expect(ARE_YOU_SURE).toBe("Are you sure?");
+  });
+
+  it("builds the replace body from labels, with the key", () => {
+    expect(replacePayload("p9", COSTLY, { Question: { selected: ["Not now"] } }, "k1")).toEqual({
+      answer_id: "p9",
+      selected: ["no"],
+      idempotency_key: "k1",
+    });
+  });
+
+  it("sends a typed answer with no option, and nothing when both are empty", () => {
+    expect(replacePayload("p9", COSTLY, { Question: { freeform: "hi" } }, "k1")).toEqual({
+      answer_id: "p9",
+      body: "hi",
+      idempotency_key: "k1",
+    });
+    expect(replacePayload("p9", COSTLY, { Question: {} }, "k1")).toBeNull();
+  });
+
+  it("finds a costly option on the question", () => {
+    expect(hasConfirmOption(COSTLY)).toBe(true);
+    expect(hasConfirmOption(ELICIT)).toBe(false);
+    expect(hasConfirmOption(null)).toBe(false);
   });
 });

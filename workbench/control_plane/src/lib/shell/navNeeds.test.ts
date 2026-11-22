@@ -11,7 +11,8 @@
  *      0 or a stale one. An ok source with 0 shows nothing.
  *   3. One slot: a run badge wins it, else the needs count, else nothing.
  *      The count stays in the spoken name when the run badge wins.
- *   4. A hidden app's count adds to "Add apps" (`strayCount`).
+ *   4. "Add apps" carries no count (owner, 2026-11-01): My Day counts what
+ *      waits in a hidden app. It replaced the 2026-10-11 rule (`strayCount`).
  *   5. "99+" past 99, the bell's own cap (`bellBadge`).
  *   6. One feed, one poll: the sidebar reads the feed through `useNeedsYou`,
  *      and no file but `needs.ts` fetches `/api/shell/needs`.
@@ -50,10 +51,9 @@ import {
   needsKey,
   readFeed,
 } from "./needs";
-import { addAppsName, needsLabel, needsSuffix, needsText, rowMeta, rowName, strayNeedsLabel } from "./navNeeds";
+import { needsLabel, needsSuffix, needsText, rowMeta, rowName } from "./navNeeds";
 import { NAV_WAKE_MS } from "./useNavNeeds";
 import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
-import { strayCount } from "./shellNav";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 /** Source with comments removed, so prose about a fetch is not a fetch. */
@@ -214,20 +214,12 @@ describe("one slot, one rule", () => {
 
   it("each row sets that name, open, folded and on the phone", () => {
     const sidebar = code(read("../../components/Sidebar.tsx"));
-    expect(sidebar.match(/aria-label=\{name\}/g)?.length).toBe(3);
+    // Two: an app row open and folded. Add apps has no count, so no name.
+    expect(sidebar.match(/aria-label=\{name\}/g)?.length).toBe(2);
     expect(sidebar).toMatch(/const name = rowName\(\s*pane\.label,\s*needs,/);
     expect(code(read("../../components/AppShell.tsx"))).toMatch(/aria-label=\{rowName\(p\.label, appNeeds\[p\.href\], b\?\.label, floor\)\}/);
   });
 
-  it("names Add apps with the run badge's words and the needs, open and folded", () => {
-    expect(addAppsName(0)).toBe("Add apps");
-    expect(addAppsName(2, "1 assistant running")).toBe("Add apps, 1 assistant running, 2 need you in hidden apps");
-    expect(addAppsName(0, "1 assistant running")).toBe("Add apps, 1 assistant running");
-    expect(addAppsName(15, undefined, true)).toBe("Add apps, 15 or more need you in hidden apps");
-    const sidebar = code(read("../../components/Sidebar.tsx"));
-    expect(sidebar).toMatch(/const name = addAppsName\(needs, badge\?\.label, needsFloor\);/);
-    expect(sidebar).toMatch(/aria-label=\{name === "Add apps" \? undefined : name\}/);
-  });
 
   it("caps the number as the bell does, and says the real number", () => {
     expect(rowMeta(undefined, 99)).toMatchObject({ text: "99" });
@@ -239,18 +231,23 @@ describe("one slot, one rule", () => {
   });
 });
 
-describe("a hidden app's count goes to Add apps", () => {
-  it("adds the count of each app the sidebar does not show", () => {
-    const byHref = needsByHref({ tasks: 2, email: 3 });
-    const rail = new Set(["/email"]);
-    expect(strayCount(byHref, rail)).toBe(2);
-    expect(strayCount(byHref, new Set(["/email", "/projects"]))).toBe(0);
-    expect(strayNeedsLabel(2)).toBe("2 need you in hidden apps");
+describe("Add apps carries no count (owner, 2026-11-01)", () => {
+  // "Why does this have a number ... the home's approvals view would have
+  // this". Add apps is a door, not a place where things wait. My Day counts
+  // what waits in a hidden app, and a chat run that waits.
+  it("the sidebar's row takes no count, open or folded", () => {
+    const sidebar = code(read("../../components/Sidebar.tsx"));
+    const row = sidebar.slice(sidebar.indexOf("function AddAppsRow("), sidebar.indexOf("function AddAppsRow(") + 2000);
+    expect(row).toMatch(/function AddAppsRow\(\{ collapsed, onOpen \}: \{ collapsed: boolean; onOpen: \(\) => void \}\)/);
+    expect(row.slice(0, row.indexOf("\n}\n"))).not.toMatch(/NavBadge|NeedsDot|NeedsCount|rowMeta/);
+    expect(sidebar).toContain("<AddAppsRow collapsed={collapsed} onOpen={() => openLauncher(ADD_APPS_HINT)} />");
   });
 
-  it("the sidebar and the drawer both reuse that path", () => {
-    expect(code(read("../../components/Sidebar.tsx"))).toMatch(/strayCount\(appNeeds, railHrefs\)/);
-    expect(code(read("../../components/AppShell.tsx"))).toMatch(/strayCount\(appNeeds, drawerHrefs\)/);
+  it("the phone drawer's row takes none either", () => {
+    const shell = code(read("../../components/AppShell.tsx"));
+    const at = shell.indexOf('data-nav-add-apps=""');
+    expect(at).toBeGreaterThan(0);
+    expect(shell.slice(at, shell.indexOf("</button>", at))).not.toMatch(/NeedsCount|NavBadge|rowMeta/);
   });
 });
 

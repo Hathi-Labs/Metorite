@@ -64,6 +64,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
+import { cardOutcomeOf, memberLineOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -577,9 +578,9 @@ function useOpenEmail() {
 /** The frame of a receipt, and the tone of its icon. The same classes as the
  *  Tasks receipts (`TaskToolCards`), so the two apps draw one receipt. */
 export function receiptTone(failed: boolean, danger = false): { frame: string; icon: string } {
-  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5", icon: "text-destructive" };
-  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5", icon: "text-warning" };
-  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40", icon: "text-success" };
+  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5 glass:rounded-[16px] glass:p-3", icon: "text-destructive" };
+  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5 glass:rounded-[16px] glass:p-3", icon: "text-warning" };
+  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3", icon: "text-success" };
 }
 
 /** A small control in a dense card row. The shared `Button`, at the card's
@@ -725,7 +726,7 @@ function DraftResultCard({
   // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
     <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
-    <div data-email-card="draft" className={CARD_FRAME_CLASS}>
+    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3" : "glass:rounded-[16px] glass:p-3 glass:border-primary/35 glass:glass-raised"}`}>
       <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
       <RollupBody className="pt-1.5">
       <Textarea
@@ -1232,7 +1233,7 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
 
   return (
     <RollupCard id={`tool:${events[0].id}`} title={meta.label} icon={iconName} rows={rows.length} header="own">
-    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary">
         {actionable.length > 1 && (
           <BulkButtons
@@ -1372,7 +1373,7 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
       header="own"
       summary={groups.map((g) => g.title).join(", ")}
     >
-    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-primary" aside={`in ${groups.length} group${groups.length > 1 ? "s" : ""}`} />
       <RollupBody className="pt-2">
       <div className="space-y-1.5">
@@ -1411,7 +1412,7 @@ function GroupSection({
     (r) => !["archived", "read", "busy"].includes(statuses[r.id] ?? "idle"),
   );
   return (
-    <div className="rounded-md border border-border/70 bg-background/40">
+    <div className="rounded-md border border-border/70 bg-background/40 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
         <Button
           variant="text"
@@ -1708,7 +1709,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   if (!id) {
     return (
       <RollupCard id={`tool:${e.id}`} title={subject} icon="Mail" header="own">
-      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
         <CardHead tone="text-primary" aside={from || undefined} />
       </div>
       </RollupCard>
@@ -1716,7 +1717,7 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   }
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <EmailRow
         row={{ id, sender: from || "(unknown sender)", subject }}
         defaultOpen
@@ -2075,7 +2076,7 @@ function RulesOverviewCard({
         {rules.map((r) => (
           <div
             key={r.id}
-            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5"
+            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5 glass:rounded-[10px] glass:border-transparent glass:bg-secondary"
           >
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-[11px] font-medium text-foreground truncate flex-1 min-w-0">
@@ -2292,7 +2293,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
@@ -2302,6 +2303,19 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   // button whose body is the refusal.
   if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // HRD-7: a card outcome from the one table (`lib/cardOutcomes.ts`). Each
+  // keeps the chip that its text of before drew (D200).
+  const outcome = cardOutcomeOf(t);
+  // §18.11: a chat message closed the card, and the model writes the new
+  // draft. Nothing was sent, so the card never says "Email sent".
+  if (outcome === "closed by your message") return "revised";
+  // No card could show. Its text of before started "Nothing changed.".
+  if (outcome === "no card") return "unchanged";
+  // A parked card still waits for the member: never "Cancelled", never "sent".
+  if (outcome === "parked") return "question";
+  if (outcome !== null && NOT_DONE_AT_CARD.has(outcome)) return "cancelled";
+  // The texts of before HRD-7, which a stored chat still holds.
+  if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
@@ -2314,7 +2328,15 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   unchanged: { icon: "CircleSlash", label: "Nothing changed" },
   cancelled: { icon: "X", label: "Cancelled" },
   refused: { icon: "CircleSlash", label: "Not done" },
+  revised: { icon: "PencilLine", label: "Draft being changed" },
 };
+
+/** The words of a closed card that a chat message revised. The result itself
+ *  is the model's instruction, so the member never reads it. Fix round 6:
+ *  when the revise did not run, the same card comes back under it, so the
+ *  words name that case too. */
+export const REVISED_NOTE =
+  "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow, or the same card can come back.";
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];
@@ -2322,13 +2344,16 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
   // A question back to the member waits on the member: it never folds.
   return (
     <RollupCard id={`tool:${e.id}`} title={meta.label} icon={meta.icon} header="own" pending={kind === "question"}>
-    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <CardHead tone="text-muted-foreground" />
       <RollupBody>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
-          {result && (
+          {kind === "revised" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
+          ) : result && (
             <div className="mt-0.5">
-              <Readout result={result} />
+              {/* HRD-7: a card outcome shows its head only. Its next step is for the model. */}
+              <Readout result={memberLineOf(result)} />
             </div>
           )}
       </RollupBody>

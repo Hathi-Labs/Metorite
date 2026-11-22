@@ -296,3 +296,62 @@ def test_the_redelete_removes_a_late_fold(graph_as_app):
     assert "a2" in _ids(graph_as_app, sid)
     assert delete_rows(sid, plan.removed_ids, organization_id=a) == 1
     assert _ids(graph_as_app, sid) == ["u1", "a1"]
+
+
+# ---------------------------------------------------------------------------
+# Task 1653: an edit closes the cards of the replaced answer that still wait
+# ---------------------------------------------------------------------------
+
+def _ask_row(graph, org: str, sid: str, actor: str, state: str = "parked") -> str:
+    rid = uuid.uuid4().hex
+    with graph.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_pending_ask (organization_id, request_id, thread_id, "
+            "actor_email, kind, question, payload, state) VALUES "
+            "(CAST(:o AS uuid), :r, :t, :a, 'confirmation', 'Create 3 tasks?', "
+            "'{}'::jsonb, :s)"),
+            {"o": org, "r": rid, "t": sid, "a": actor.lower(), "s": state})
+    return rid
+
+
+def _ask_state(graph, rid: str) -> str:
+    with graph.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT state FROM chat_pending_ask WHERE request_id = :r"),
+            {"r": rid}).scalar_one()
+
+
+def test_an_edit_closes_the_waiting_card_of_the_replaced_answer(graph_as_app, monkeypatch):
+    """A parked card has no run to close it. The edit closes it in the same
+    transaction as the delete, so a late Approve cannot do the old write.
+    Only the editor's cards close, and an answered card stays answered."""
+    from acb_common import get_settings
+    from gateway.chat_supersede import supersede_rows
+
+    monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+    a = graph_as_app.org_a
+    sid = _seed(a)
+    mine_parked = _ask_row(graph_as_app, a, sid, _ALICE, "parked")
+    mine_open = _ask_row(graph_as_app, a, sid, _ALICE, "open")
+    bobs = _ask_row(graph_as_app, a, sid, _BOB, "parked")
+    other_thread = _ask_row(graph_as_app, a, _seed(a), _ALICE, "parked")
+
+    supersede_rows(sid, "u2", actor=_ALICE, organization_id=a)
+
+    assert _ask_state(graph_as_app, mine_parked) == "closed"
+    assert _ask_state(graph_as_app, mine_open) == "closed"
+    assert _ask_state(graph_as_app, bobs) == "parked"
+    assert _ask_state(graph_as_app, other_thread) == "parked"
+
+
+def test_a_refused_edit_leaves_the_waiting_card_open(graph_as_app, monkeypatch):
+    from acb_common import get_settings
+    from gateway.chat_supersede import SupersedeRefused, supersede_rows
+
+    monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+    a = graph_as_app.org_a
+    sid = _seed(a)
+    rid = _ask_row(graph_as_app, a, sid, _ALICE, "parked")
+    with pytest.raises(SupersedeRefused):
+        supersede_rows(sid, "u1", actor=_ALICE, organization_id=a)
+    assert _ask_state(graph_as_app, rid) == "parked"

@@ -41,7 +41,7 @@ from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -1343,11 +1343,10 @@ async def discover_api(
     The returned definition can be reviewed, then saved via
     POST /integrations/custom and credentials entered via
     POST /integrations/configure.
+
+    The model call goes through the Console (``acb_llm.client.complete``),
+    never to a vendor directly (task 2449 A6, D90 clause 3).
     """
-    import json as _json  # noqa: PLC0415
-
-    import litellm as _litellm  # noqa: PLC0415
-
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query cannot be empty")
 
@@ -1415,65 +1414,96 @@ Each item in the array must have EXACTLY these fields:
 - Return ONLY the JSON array, no markdown fences, no extra text"""
     )
 
-    # 3. Call LLM — try models in order of preference
-    _models = [
-        "deepseek/deepseek-chat",
-        "openai/gpt-4o-mini",
-        "gpt-4o-mini",
-        "anthropic/claude-haiku-20240307",
-    ]
-    last_err: Exception | None = None
-    for model in _models:
-        try:
-            resp = await _litellm.acompletion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=2400,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            # Strip markdown code fences if present
-            if "```" in content:
-                content = "\n".join(
-                    ln for ln in content.splitlines()
-                    if not ln.strip().startswith("```")
-                ).strip()
-            parsed = _json.loads(content)
-            # Accept both array and single-object responses
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-            if not isinstance(parsed, list) or not parsed:
-                raise ValueError("Expected a non-empty JSON array")
-            # Validate each item
-            results: list[dict[str, Any]] = []
-            for item in parsed:
-                if item.get("service_id") and item.get("label") and item.get("env_vars"):
-                    results.append(item)
-            if not results:
-                raise ValueError("No valid API definitions in response")
-            _log.info(
-                "integrations.discover",
-                query=query,
-                count=len(results),
-                service_ids=[r.get("service_id") for r in results],
-                model=model,
-                actor=user.email,
-            )
-            return {
-                "ok": True,
-                "results": results,
-                "query": query,
-                "web_enhanced": bool(web_context),
-                "model": model,
-            }
-        except (_json.JSONDecodeError, ValueError):
-            continue
-        except Exception as exc:
-            last_err = exc
-            continue
+    # 3. Call the model through the Console (task 2449 A6).
+    #
+    # 🔴 This was a direct `litellm.acompletion` loop over four hard-coded
+    # models. The tenant plane holds no provider key (owner rule, 2026-11-08),
+    # so all four failed, and the member read the vendor's raw 401: "x-api-key
+    # header is required". `complete` sends the TIER to the Console, which
+    # owns the keys, the failover across models and the bill.
+    from acb_llm.client import LLMTier, complete
+    from acb_llm.run_errors import classify_run_error, run_ref
 
-    err_detail = str(last_err) if last_err else "No LLM model available"
-    raise HTTPException(status_code=500, detail=f"Discovery failed: {err_detail}")
+    try:
+        content = await complete(
+            tier=LLMTier.TIER_2,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2400,
+            job="structured",
+        )
+    except Exception as exc:
+        # ⚠️ The vendor text goes to the log, never to the member. `ref` lets
+        # an operator find this line from what the member reads out.
+        ref = run_ref()
+        _log.warning(
+            "integrations.discover_failed",
+            ref=ref,
+            code=classify_run_error(exc),
+            error=str(exc)[:500],
+            query=query,
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not reach the AI model just now. "
+                f"Try again in a minute. Reference: {ref}."
+            ),
+        ) from exc
+
+    results = _discovered_definitions(content)
+    if not results:
+        _log.warning(
+            "integrations.discover_unreadable",
+            query=query,
+            answer_head=(content or "")[:200],
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI discovery could not make an API list for that name. "
+                "Try again, or type the product name, such as \"Salesforce CRM\"."
+            ),
+        )
+    _log.info(
+        "integrations.discover",
+        query=query,
+        count=len(results),
+        service_ids=[r.get("service_id") for r in results],
+        actor=user.email,
+    )
+    return {
+        "ok": True,
+        "results": results,
+        "query": query,
+        "web_enhanced": bool(web_context),
+    }
+
+
+def _discovered_definitions(content: str) -> list[dict[str, Any]]:
+    """The model's answer as a list of API definitions. Empty when unreadable.
+
+    The model may wrap the JSON in a markdown fence, and it may answer one
+    object in place of an array. An item without ``service_id``, ``label``
+    and ``env_vars`` is dropped.
+    """
+    body = "\n".join(
+        ln for ln in (content or "").splitlines() if not ln.strip().startswith("```")
+    ).strip()
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return []
+    return [
+        item for item in parsed
+        if isinstance(item, dict)
+        and item.get("service_id") and item.get("label") and item.get("env_vars")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1945,16 +1975,65 @@ class McpServerRequest(BaseModel):
     agent_scope: list[str] = ["*"]
     enabled: bool = True
     #: H-300: every tool of the server needs the member's card, whatever its
-    #: hints say. A new server is set to always confirm unless the admin
-    #: says no.
+    #: hints say. MCP-NC1 (task 3603): a new server is off unless the admin
+    #: turns it on, so a member's run calls each tool with no card. A body
+    #: with no key keeps the switch of a row that exists (``None``), so a
+    #: re-register never turns a stored ``true`` off.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
-    always_confirm: StrictBool = True
+    always_confirm: StrictBool | None = None
+    #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
+    #: the server waits for the card. Off for a new server. A register is a
+    #: full register, so a body with no key turns it off. Strict too.
+    read_only_key: StrictBool = False
 
 
-class McpAlwaysConfirmRequest(BaseModel):
-    """The body of ``PATCH /integrations/mcp/{name}`` (H-300)."""
+#: CSY-7: the longest description that the PATCH stores. The chat reads at
+#: most 400 characters of it (``chat_connected_systems.md`` §3.2).
+MCP_DESCRIPTION_MAX = 400
 
-    always_confirm: StrictBool
+
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2, CSY-7).
+
+    Either switch, the description, or any of them. A body with none is 422,
+    and so is a switch that is not a JSON boolean. A body with only
+    ``always_confirm`` is the H-300 body, and it behaves as it did. The
+    description is trimmed and holds 400 characters at most (the chat reads
+    it, ``chat_connected_systems.md`` §3.2). An empty one clears it."""
+
+    always_confirm: StrictBool | None = None
+    read_only_key: StrictBool | None = None
+    description: StrictStr | None = Field(default=None, max_length=MCP_DESCRIPTION_MAX)
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def _one_field_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None and self.description is None:
+            raise ValueError("Send always_confirm, read_only_key, description, or any of them.")
+        return self
+
+
+def _mcp_switch_refusal(exc: Exception) -> HTTPException:
+    """The 422 of a write that ``gateway.connections.mcp.McpSwitchRefused``
+    refuses (MCP-C2, item 32). The words name the reason, and no value."""
+    from gateway.connections import mcp as mcp_registry
+
+    words = {
+        mcp_registry.SWITCHES_BOTH_ON: (
+            "A server cannot be set to always confirm and to a read-only key at the "
+            "same time. Turn one switch off."),
+        mcp_registry.SWITCHES_OAUTH: (
+            "This server is connected over OAuth. It acts as the admin who connected "
+            "it, so the read-only key switch does not apply to it."),
+    }
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=words.get(getattr(exc, "reason", ""), "The switches of this server cannot change."),
+    )
 
 
 def audit_integration(
@@ -1993,6 +2072,8 @@ def mcp_out(server: Any) -> dict[str, Any]:
         "env_var_names": [], "header_names": list(server.header_names),
         "agent_scope": list(server.agent_scope), "enabled": server.enabled,
         "always_confirm": bool(server.always_confirm),
+        # MCP-C2: the one parse of the registry (``StoredServer``).
+        "read_only_key": bool(server.read_only_key),
         "created_at": str(server.created_at) if server.created_at else None,
         "updated_at": str(server.updated_at) if server.updated_at else None,
     }
@@ -2021,6 +2102,40 @@ async def list_mcp_servers(
         # The class of the error only: a DB message can echo a bound value.
         _log.warning("mcp.list_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP servers could not be read.") from exc
+
+@router.get(
+    "/mcp/{name}/use", summary="The chat use of one MCP server in the last 7 days",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def read_mcp_use(
+    name: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """CSY-8 (task 3408, spec ``chat_connected_systems.md`` §3.7): the use panel's counts.
+
+    The chat calls of each of the last 7 days (today and the 6 before, zero-filled),
+    the turns that left the server out by reason, and the last call. The org comes
+    from the session, and the server must be a server of that org, or it is 404
+    (never a count of another org). A Redis fault answers zeros with
+    ``available: false``. It returns names and counts only.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    try:
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        found = any(s.name == name for s in await mcp_registry.list_servers(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.use_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be read.") from exc
+    if not found:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    from acb_common import mcp_use  # noqa: PLC0415
+    from acb_skills import server_brief  # noqa: PLC0415
+
+    return await mcp_use.read_use(org, name, server_brief.REASONS)
+
 
 #: D85: an MCP server over stdio starts a process on the host.
 _MCP_STDIO_REFUSED = (
@@ -2087,8 +2202,11 @@ async def register_mcp_server(
             connected_by=user.email, label=req.label or req.name,
             description=req.description, transport=req.transport,
             agent_scope=req.agent_scope, enabled=req.enabled,
-            always_confirm=req.always_confirm,
+            always_confirm=req.always_confirm, read_only_key=req.read_only_key,
         )
+    except mcp_registry.McpSwitchRefused as exc:
+        # MCP-C2: both switches on, or the read-only key on an OAuth row.
+        raise _mcp_switch_refusal(exc) from None
     except mcp_registry.OAuthUrlChange:
         # WS-54 IN-8a (review of #931): the token of an OAuth server is for
         # its URL. A new URL is another server, so the admin disconnects it
@@ -2106,53 +2224,92 @@ async def register_mcp_server(
     # re-POST of one that exists, so it writes an audit event as the PATCH
     # does. The insert sets both stamps to one now(). An update keeps
     # ``created_at``. No header and no url go into the payload.
+    # MCP-C2: the event records both switches, because a re-POST with no
+    # ``read_only_key`` turns that switch off too. MCP-NC1 (F7): a body with
+    # no ``always_confirm`` keeps the stored switch, so the event records the
+    # switch as saved, never the body's ``None``.
     stamp = getattr(saved, "created_at", None)
     created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    always_saved = bool(getattr(saved, "always_confirm", req.always_confirm))
     audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
-                      always_confirm=req.always_confirm,
+                      always_confirm=always_saved, read_only_key=req.read_only_key,
                       outcome="created" if created else "updated")
     _log.info("mcp.registered", name=req.name, actor=user.email,
-              always_confirm=req.always_confirm)
+              always_confirm=always_saved, read_only_key=req.read_only_key)
     return {"ok": True, "name": req.name}
 
 
 @router.patch(
-    "/mcp/{name}", summary="Set the always-confirm switch of an MCP server",
+    "/mcp/{name}", summary="Set the always-confirm and read-only-key switches of an MCP server",
     dependencies=[_REQUIRE_MANAGE],
 )
-async def set_mcp_always_confirm(
+async def set_mcp_switches(
     name: str,
-    req: McpAlwaysConfirmRequest,
+    req: McpSwitchesRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Turn the "always confirm" switch of one server of the caller's org on or off.
+    """Turn a switch of one server of the caller's org on or off.
 
-    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31). With the switch on,
-    every tool of the server waits for the member's card, whatever hints the
-    server sends. The change goes through ``gateway.connections.mcp`` inside
-    ``tenant_session(org)``, so a name that another organization holds is
-    404, and its row stays. It changes the switch only: the headers, the URL
-    and the status stay. With no tenant bound, it is 404 and nothing is
-    written. Each change writes one audit event.
+    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31): with "always
+    confirm" on, every tool of the server waits for the member's card,
+    whatever hints the server sends. MCP-C2 (item 32): with the read-only
+    key on, no tool of the server waits for the card. The body names either
+    switch or both. The change goes through ``gateway.connections.mcp``
+    inside ``tenant_session(org)``, so a name that another organization holds
+    is 404, and its row stays. It changes the named switches only: the
+    headers, the URL and the status stay. With no tenant bound, it is 404 and
+    nothing is written.
+
+    The gateway checks the row as it would be AFTER the change. A change
+    that would leave both switches on is 422, and so is the read-only key
+    on an OAuth row. Each named switch writes one audit event:
+    ``integration.mcp.always_confirm`` and ``integration.mcp.read_only_key``.
+    The answer names the switches of the body, so a body with only
+    ``always_confirm`` gets the H-300 answer.
     """
     org = current_tenant()
     if not org:
         raise HTTPException(404, f"MCP server '{name}' not found.")
-    try:
-        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+    from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
 
-        server = await mcp_registry.set_always_confirm(org, name, req.always_confirm)
+    try:
+        server = await mcp_registry.set_switches(
+            org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+            description=req.description,
+        )
+    except mcp_registry.McpSwitchRefused as exc:
+        _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
+        raise _mcp_switch_refusal(exc) from None
     except Exception as exc:
         # The class of the error only: a DB message can echo a bound value.
         _log.warning("mcp.always_confirm_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP server could not be changed.") from exc
     if server is None:
         raise HTTPException(404, f"MCP server '{name}' not found.")
-    audit_integration(user, org, f"mcp:{server.name}", action="integration.mcp.always_confirm",
-                      always_confirm=server.always_confirm)
-    _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
-              always_confirm=server.always_confirm)
-    return {"ok": True, "name": server.name, "always_confirm": server.always_confirm}
+    out: dict[str, Any] = {"ok": True, "name": server.name}
+    if req.always_confirm is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.always_confirm",
+                          always_confirm=server.always_confirm)
+        _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
+                  always_confirm=server.always_confirm)
+        out["always_confirm"] = server.always_confirm
+    if req.read_only_key is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.read_only_key",
+                          read_only_key=server.read_only_key)
+        _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
+                  read_only_key=server.read_only_key)
+        out["read_only_key"] = server.read_only_key
+    if req.description is not None:
+        # The audit event holds the length, never the text.
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.description",
+                          description_length=len(server.description))
+        _log.info("mcp.description_set", name=server.name, actor=user.email,
+                  description_length=len(server.description))
+        out["description"] = server.description
+    return out
 
 
 @router.delete(
@@ -2272,10 +2429,17 @@ _PLUGIN_INSTALL_SQL = (
 async def list_plugins(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Return all installed plugins."""
+    """Return the plugins of the caller's organization.
+
+    H-201: ``plugins`` has FORCE RLS, so the read binds the tenant. With no
+    tenant the list is empty, and no unbound session opens.
+    """
+    org = current_tenant()
+    if not org:
+        return []
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             rows = s.execute(
                 text("SELECT id, name, label, description, manifest_url, openapi_url, "
                 "logo_url, auth_type, auth_config, manifest, openapi_spec, "
@@ -2439,11 +2603,15 @@ async def remove_plugin(
         pid = _uuid.UUID(plugin_id)
     except ValueError:
         raise HTTPException(422, "Invalid plugin ID format.") from None
+    # H-201: the delete binds the tenant. Another org's plugin is not visible,
+    # so it is 404. With no tenant it is 404 too, and nothing is deleted.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             result = s.execute(text("DELETE FROM plugins WHERE id = :id"), {"id": pid})
-            s.commit()
             if result.rowcount == 0:
                 raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
         _log.info("plugin.removed", id=plugin_id, actor=user.email)
@@ -2576,11 +2744,14 @@ async def github_account(
     """
     from gateway.connections import github_app
 
-    summary = await github_connection.account_summary(_github_org())
+    org = _github_org()
+    summary = await github_connection.account_summary(org)
     scopes: list[str] = summary["scopes"]
     try:
         # WS-54 GH-3: the card offers Connect GitHub only when the App can run.
-        app_available = github_app.app_enabled() and bool(github_app.slug())
+        # SW-53: and only when GITHUB_APP_ORGS holds this org, so an org off
+        # the list never sees a button that the connect route refuses.
+        app_available = github_app.github_app_org_allowed(org) and bool(github_app.slug())
     except github_app.GitHubAppNotConfigured:
         app_available = False
     return {

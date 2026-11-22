@@ -14,6 +14,9 @@
 //   * `email-dark-print`: every rule of a dark look is screen-only, so a print
 //     draws the original sheet.
 //   * `email-dark-no-content`: no text of the email reaches the CSS.
+//   * `email-frame-height`: a short mail shrinks its frame to the text, a
+//     repeat measure gives the same height, and a tall mail never clips
+//     (owner, 2026-11-06).
 //   * `email-light-version`: the stored list toggles, caps and survives junk.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,7 +24,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseColor, type Rgb } from "@/lib/theme/contrast";
 import { THEME } from "@/lib/theme/themes";
-import {
+import { frameContentHeight,
   BLOCKED_REMOTE_CSS, CLASSIFY_LIMIT, INVERT_FILTER, ISLAND_Z, LAYER_Z, OVERLAY_SPREAD_PX, REINVERT_CSS, bodyLookCss, bodyPalette, chooseBodyLook, classifyEmailHtml,
   cssColour, forceDarkMedia, frameColorScheme, invertBase, invertColour,
 } from "./bodyLook";
@@ -338,5 +341,21 @@ describe("email-dark-linear", () => {
       const html = fill(unit, MB2);
       expect(time(() => forceDarkMedia(html)), unit).toBeLessThan(100);
     }
+  });
+});
+
+describe("email-frame-height", () => {
+  it("shrinks a frame to a short mail, with no growth on the next measure", () => {
+    expect(frameContentHeight({ bodyScroll: 180, docScroll: 398, docClient: 398 })).toBe(180);
+    // The next measure sees the new frame, and gives the same height.
+    expect(frameContentHeight({ bodyScroll: 180, docScroll: 202, docClient: 202 })).toBe(180);
+  });
+
+  it("grows a frame to a tall mail", () => {
+    expect(frameContentHeight({ bodyScroll: 1500, docScroll: 1500, docClient: 398 })).toBe(1500);
+  });
+
+  it("counts content that sits outside the body", () => {
+    expect(frameContentHeight({ bodyScroll: 180, docScroll: 900, docClient: 398 })).toBe(900);
   });
 });

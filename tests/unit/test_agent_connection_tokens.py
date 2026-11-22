@@ -765,7 +765,9 @@ class TestIssueAndRevokeAreSerialized:
                     a, hash_token(issued.refresh_token), _CLIENT, _RESOURCE)
                 assert isinstance(rotated, IssuedTokens), rotated
                 revoke = asyncio.create_task(
-                    agent_tokens.revoke_connection(promoted.org_a, cid))
+                    agent_tokens.revoke_connection(
+                        promoted.org_a, cid,
+                        reason=agent_tokens.REVOKE_MEMBER))
                 await _wait_for_a_lock_wait(promoted)
                 assert not revoke.done(), "the revoke did not wait for the rotation"
                 await a.commit()
@@ -792,7 +794,9 @@ class TestIssueAndRevokeAreSerialized:
             cid, _code, issued = await _connect(promoted.org_a)
             params["connection_id"] = cid
             async with tenant_session(promoted.org_a) as b:
-                await b.execute(text(agent_tokens._REVOKE_CONNECTION_SQL), params)
+                await b.execute(
+                    text(agent_tokens._REVOKE_CONNECTION_SQL),
+                    {**params, "reason": agent_tokens.REVOKE_MEMBER})
                 rotation = asyncio.create_task(_rotate(issued.refresh_token))
                 await _wait_for_a_lock_wait(promoted)
                 assert not rotation.done(), "the rotation did not wait for the revoke"
@@ -863,7 +867,11 @@ class TestTheTenantBindIsLocal:
             pid, _ = await _residue()
             token = bind_tenant(promoted.org_a)
             try:
-                cid = await create_connection("bind@agenttok.test", _CLIENT)
+                # EA-17c-3 (rule 14): a refresh token needs `offline_access`
+                # on the connection too, so the grant holds it.
+                cid = await create_connection(
+                    "bind@agenttok.test", _CLIENT,
+                    scopes=["projects:read", "offline_access"])
             finally:
                 release_tenant(token)
             code = await _fresh_code(promoted.org_a, cid)

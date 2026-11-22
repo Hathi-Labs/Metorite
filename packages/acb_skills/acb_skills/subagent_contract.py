@@ -169,11 +169,13 @@ MEMBER_TOOLS = frozenset({"ask_questions", "ask_user", "request_confirmation", "
 #: platform tool for a call to an emitter, so a new display tool fails there.
 DISPLAY_TOOLS = frozenset({
     # the platform's card and its page move (WS-62 CF-3)
-    "emit_generative_ui", "show_in_app",
+    "emit_generative_ui", "show_in_app", "show_guide",
     # the Projects reads that draw a card (skill_projects.views)
     "render_board", "render_tasks", "render_timeline",
     # the Projects reads that move the member's page (skill_projects.nav)
     "open_in_app", "show_view",
+    # the Studio plan card (STU-G2): a read-only pack tool that awaits one card
+    "studio_plan",
 })
 
 #: Tools that add model calls of their own, and so break the 4-round cap of a

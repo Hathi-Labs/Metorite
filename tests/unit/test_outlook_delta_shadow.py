@@ -731,7 +731,7 @@ async def test_only_a_normal_cycle_sends_a_delta_request(
 
     async def _import(org, account_id, provider, row, *, floor, progress):
         imported.append(progress)
-        return 0, None, False
+        return 0, None, False, None
 
     monkeypatch.setattr(sched, "_import_in_batches", _import)
     run = await _cycle(monkeypatch, graph, None, deep=deep,

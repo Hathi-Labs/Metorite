@@ -137,6 +137,12 @@ interface ElicitationCardProps {
    * still reads "Answered".
    */
   title?: string;
+  /**
+   * The host bumps this after a failed send of THIS card's answer. The card
+   * then makes a new exit gate, so Submit works again. The typed text and the
+   * picks stay: the card does not remount.
+   */
+  retryToken?: number;
 }
 
 export default function ElicitationCard({
@@ -149,6 +155,7 @@ export default function ElicitationCard({
   id,
   hint = SUBMIT_HINT,
   title: openTitle,
+  retryToken = 0,
 }: ElicitationCardProps) {
   const [answers, setAnswers] = useState<ElicitationAnswers>({});
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
@@ -162,7 +169,7 @@ export default function ElicitationCard({
   const exit = useRef(cardExit());
   useEffect(() => {
     if (!closed) exit.current = cardExit();
-  }, [closed]);
+  }, [closed, retryToken]);
 
   const toggleOption = useCallback(
     (header: string, label: string, multi: boolean) => {
@@ -208,8 +215,8 @@ export default function ElicitationCard({
   // Glass only (GL-4): a card that wants an answer is tinted, and a settled
   // card is a plain surface. Each has a solid icon tile in a system colour.
   const glassFrame = !closed
-    ? "glass:glass-card-tile glass:rounded-[22px] glass:border-primary/20 glass:bg-primary/[0.05] glass:p-3"
-    : `glass:glass-card-tile glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 ${
+    ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-3"
+    : `glass:glass-card-tile glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 ${
         declined ? "glass:[--tile:var(--system-gray)]" : "glass:[--tile:var(--system-green)]"
       }`;
 

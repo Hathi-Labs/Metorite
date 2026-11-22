@@ -12,7 +12,7 @@ machine can check; the rest is here.
 
 ## 0. There is ONE look — read this first
 
-**Owner directive, 2026-08-31: the theming engine is retired.** Metorite
+**Owner directive, 2026-08-31: the theming engine is retired.** (Since 2026-10-31 the one look is glass. §0a says so.) Metorite
 shipped four switchable themes (RapidTool, Fluent, Material, Graphite) until
 that day. It now ships the Control Plane's original look, and every app and
 sub-app renders in it. `Fluent`, `Material`, `Graphite`, the `data-theme`
@@ -30,30 +30,27 @@ own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
 
-### 0a. The one exception: the glass trial (D143, 2026-10-31)
+### 0a. The one look is glass (D143, D149, 2026-10-31)
 
-The owner chose Aroh's design language, **glass**, as the next look. Until the
-owner approved production on 2026-10-31 (GL-9), the look above stays beside
-it as Classic, one switch away. `project-docs/specs/glass_look.md` owns the
-trial.
+The owner chose Aroh's design language, **glass**, as the look. On 2026-10-31
+the owner ended the trial: "We confirm that we want to be on the new UI ...
+We don't need to keep the switch." Glass is the only look, for every member,
+in every build. `project-docs/specs/glass_look.md` owns it.
 
-- Glass applies only under `<html data-look="glass">`. The build gate
-  `NEXT_PUBLIC_UI_LOOK=glass` lets the server render that attribute.
-  Production has the gate since 2026-10-31. A build with no gate renders
-  classic.
-- `globals.css` holds the glass token blocks after the classic `:root` and
-  `.light` blocks. Do not edit the classic values for glass.
-- A glass difference in a component goes behind the `glass:` variant. For
-  example, `rounded-lg glass:rounded-full`. Under classic it matches nothing.
+- The server renders `<html data-look="glass">` on every page. No gate, no
+  switch and no stored choice turns classic on. `NEXT_PUBLIC_UI_LOOK` is dead.
+- ⚠️ GL-Z1 is built, and GL-Z2 is next. Until GL-Z2, `globals.css` still holds
+  the classic `:root` and `.light` blocks, and the glass token blocks come after
+  them. Do not edit the classic values. Edit the glass blocks.
+- A glass difference in a component still goes behind the `glass:` variant, for
+  example `rounded-lg glass:rounded-full`. GL-Z2 folds each one into a plain
+  class. Write for glass, and do not write a classic fallback.
 - The glass materials (`glass-chrome`, `glass-menu`, `glass-surface`,
   `glass-press`, `glass-scroll-edge`) and the glass type styles
   (`text-subhead`, `text-body` and the others) go only behind `glass:`.
-- `src/lib/theme/glassLook.test.ts` fences all three rules, and it measures
-  the contrast of the glass pairs.
-- Settings → Appearance → Design switches one member between New and Classic.
-
-GL-Z ends the trial. Then glass becomes the `:root` and `.light` values, every
-`glass:` class becomes a plain class, and this section goes.
+- `src/lib/theme/glassLook.test.ts` fences the rules, and it measures the
+  contrast of the glass pairs.
+- Settings → Appearance holds no Design switch.
 
 **What a member may still change**, at Settings → Appearance — these adjust the
 one look, they do not replace it:
@@ -353,9 +350,10 @@ The rules for NEW motion:
 - **Use a token.** Do not write a new duration or a new curve.
 - **Move `transform` and `opacity`.** Do not animate `width`, `height`,
   `top` or `margin`. Each frame of those lays out the page again.
-  ⚠️ The side panels are the one exception. The sidebar fold and the
-  assistant's spacer animate `width` on purpose, so that the page beside them
-  moves with them. Do not copy that to a surface that does not push the page.
+  ⚠️ The side panels are the one exception. The sidebar fold, the
+  assistant's spacer and the frame of a docked side panel (`.side-panel`)
+  animate `width` on purpose, so that the page beside them moves with them. Do
+  not copy that to a surface that does not push the page.
 - **`tech-transition` moves every property.** Use it for a change of colour
   or opacity. For a new movement, name the property, as in
   `transition-transform`.
@@ -388,6 +386,38 @@ them.
 
 *These values come from a study of four outside design kits on 2026-10-14.
 The "Sources" table in §11 records what we took and what we did not.*
+
+### A side panel has one motion
+
+The owner chose one motion for every right-side panel (task 7, 2026-11-22).
+The assistant's side panel is the reference. A panel that docks at the right
+of a page opens and closes in `SidePanelMotion` (`src/components/ui/`). It
+takes the assistant's dock form on `--panel-duration` and `--panel-easing`.
+
+- The frame eases its width, and the page beside it moves with it.
+- The panel keeps its width and moves with the frame's left edge, so its
+  content does not reflow.
+- A close is the same motion back, on the same token, as the assistant's
+  close is. The panel stays on screen and inert until the motion ends.
+- With reduced motion, the panel shows and goes at once.
+
+Put it round the mount, as in `<SidePanelMotion docked>{taskPanel}</SidePanelMotion>`.
+A record card is a column only at its side stop. So `CardPanel` marks that
+stop with `data-side-docked`, and its host passes no `docked`.
+
+| Panel | Its motion |
+|---|---|
+| The assistant's side panel (`AssistantDock`) | The reference: its spacer and `usePanelPhase` |
+| The Projects task panel, docked | `SidePanelMotion docked` |
+| A record card at the side stop: the CRM records and the My Day panel | `SidePanelMotion`, with the mark of `CardPanel` |
+| A task panel or a record card over the page, or on a phone | None. It is a card or a sheet, not a side panel |
+| `TaskFocusModal`, and the docked detail of `/tasks` | Not changed. `/tasks` is a preview pane, and its detail reads its task from the store |
+| `Modal` at `placement="end"`: a connection, the activity panel and the bell | Not changed. A dialog takes the Grow motion of §4b |
+| `ArtifactSidebar` and `SidePanelEditor` | Not changed. Each one is a column of a chat surface, not a panel of a page. The files column of the assistant's full view still shows and goes at once |
+| The agent drawer of Observability | Not changed. It is a preview pane |
+
+**Fence.** `src/components/ui/SidePanelMotion.test.ts` holds the presence
+rule, the tokens and each docked panel's frame.
 
 ---
 
@@ -526,6 +556,11 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
   phone swipes it. `FilterPills` and the Email quick filters use it. Use it for
   any chip row that can outgrow its pane, and do not write a second one.
 * `PageHeader` — the page's title, subtitle and whole-surface actions.
+* A page grid inside an app follows its container width with `@container`
+  queries, as the Projects reports and `genUITemplates` do. The window width
+  does not show the shell rail or a side column.
+* A side column beside a page grid starts at `lg`, with a `Modal` sheet below.
+  The 260 px rail leaves too little room at `md`. `StudioPage` is the example.
 
 ```tsx
 import PageHeader from "@/components/PageHeader";
@@ -905,6 +940,9 @@ dependency and no second look. This changes the two-speed rule of
    `workbench/control_plane/src` without that line. Fence: the "Visual review
    line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
    required check. `tests/unit/test_fence_lists.py` keeps the step there.
+   The step reads the LIVE body (CIV-8). When the line is missing, edit the PR
+   body and run `gh run rerun <run id> --failed`. Do not push a commit for it.
+   A push starts a whole new run of about 17 jobs.
 4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
    the code for the rules that no test sees. For a UI diff it runs in build
    mode too. The full adversarial review still follows the tier of the slice

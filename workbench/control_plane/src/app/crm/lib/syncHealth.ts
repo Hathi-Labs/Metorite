@@ -156,11 +156,11 @@ export function errorSentence(code: string | null | undefined): string | null {
     case "transport":
       return "Zoho did not answer. The sync tries again soon.";
     case "not_configured":
-      return "Zoho sync is not set up on this server.";
+      return "Zoho sync is not set up for this account. Ask your admin.";
     case "mode_changed":
       return "The CRM no longer syncs from Zoho.";
     case "shutdown":
-      return "The server restarted during the run. The next run continues.";
+      return "The run paused for an update. The next run continues.";
     case "stale":
       return "A run stopped without an answer. The next run takes over.";
     case "disconnected":

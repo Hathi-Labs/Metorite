@@ -52,7 +52,7 @@ export default function MessageActionBar({
   };
 
   const btn =
-    "text-muted-foreground hover:text-foreground tech-transition px-1 py-0.5 rounded hover:bg-secondary text-[10px]";
+    "text-muted-foreground hover:text-foreground tech-transition px-1 py-0.5 rounded hover:bg-secondary text-[10px] glass:rounded-full glass:px-2 glass:py-1 glass:text-caption";
 
   return (
     <>

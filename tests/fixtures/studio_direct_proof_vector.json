@@ -1,0 +1,9 @@
+{
+  "note": "Read by tests/unit/test_studio_direct_proof.py and by src/lib/gateway.test.ts. Python and TypeScript must sign the same string.",
+  "key": "0123456789abcdef0123456789abcdef-studio-direct",
+  "email": "Ana@Example.test",
+  "method": "POST",
+  "path": "/studio/apps/6f1f7a3e-2b0f-4f43-a3a5-0d3f8f6f9c11/actions/add",
+  "now": 1790000000,
+  "header": "v1.1790000000.d651d6ac437cd551d81d6ec56a9c06891d0006e5ec905ab9f7767ecb267bc167"
+}

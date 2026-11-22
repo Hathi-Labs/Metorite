@@ -10,7 +10,9 @@
 #   bash scripts/dev_up.sh --stop           stop the gateway and the web app
 #   bash scripts/dev_up.sh --down           stop, then remove the containers and the data
 #   bash scripts/dev_up.sh --reset          --down, then a fresh start (the same data)
-#   bash scripts/dev_up.sh --refresh-flags  retired with the staging box (D144). Exits 2.
+#   bash scripts/dev_up.sh --refresh-flags  retired with the staging box (D144). Exits 2, unless DEV_UP_FLAGS_HOST names a host.
+#   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh   a per-org dark switch on, for a preview
+#   DEV_UP_TOOL_PACKS="studio" bash scripts/dev_up.sh    chat tool packs on, for every org of the stack
 #
 #   bash scripts/dev_up.sh --data prod --as <email>   production's copy (LD-8b)
 #     --data demo|prod  the data of the stack. demo is the default. A switch needs --reset.
@@ -142,15 +144,73 @@ flag_env() {
   for name in "${!out[@]}"; do printf '%s=%s\n' "$name" "${out[$name]}"; done | sort
 }
 
+# orgs_on: the per-org switches that DEV_UP_ORGS_ON names, on for every org of
+# THIS stack ("*"), so a dark feature behind a *_ORGS list can show in a local
+# preview (D145). A held switch and a name that is not *_ORGS stay out.
+#   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh
+orgs_on() {
+  local name
+  for name in ${DEV_UP_ORGS_ON:-}; do
+    if [[ ! "$name" =~ ^[A-Z0-9_]+_ORGS$ ]] || [[ "$name" =~ $HELD ]]; then
+      printf 'dev_up: DEV_UP_ORGS_ON skips %s (a *_ORGS name that is not held)\n' "$name" >&2
+      continue
+    fi
+    printf '%s=*\n' "$name"
+  done
+}
+
+# STUDIO_ORGS=* is the AI Studio skill switch (STU-F2b). It is not a name of the
+# SWITCH pattern, so production's flags cannot carry it. The stack on this PC holds
+# two made-up orgs, so a fixed line here flips no box. APP_REQUESTS_ORGS=* is the
+# same for the list "Waiting for you" of MCP-P1b-1, so the owner can preview it.
+# The direct-write key of AI Studio (STU-D2b). Both halves need the same key: the web app
+# signs the proof, and the gateway checks it. The key is NOT in this repo and NOT in the
+# flags file. The operator sets DEV_UP_STUDIO_DIRECT_KEY in the shell that starts the
+# stack (a value of 32 bytes or more, and not the gateway token). With no value, no
+# write is direct and the Studio blocks only read.
+studio_key_env() {
+  if [ -n "${DEV_UP_STUDIO_DIRECT_KEY:-}" ]; then
+    printf 'STUDIO_DIRECT_KEY=%s\n' "$DEV_UP_STUDIO_DIRECT_KEY"
+  fi
+}
+
+# GATEWAY_URL (task 2455): the skill tools of packages/acb_skills, the agents
+# in apps/agents and the skills in apps/skills call the gateway at GATEWAY_URL,
+# and they default to :8080. On a dev machine the local model router listens there, so each tool
+# call went to the router. The gateway of the stack names its own port.
+#
+# tool_packs_env (task 2455): the chat tool packs that DEV_UP_TOOL_PACKS names,
+# on for every org of THIS stack. TOOL_PACKS is not a name of the SWITCH
+# pattern, so production's flags cannot carry it, and on a box it is
+# owner-only (work_plan.md section 6 D4). This stack holds two made-up orgs, so
+# a line here turns on no pack on a box. Empty (the default) gives no pack.
+#   DEV_UP_TOOL_PACKS="studio" bash scripts/dev_up.sh
+tool_packs_env() {
+  local packs="${DEV_UP_TOOL_PACKS:-}"
+  packs="${packs// /}"
+  [ -n "$packs" ] || return 0
+  if [[ ! "$packs" =~ ^(\*|[a-z0-9_-]+(,[a-z0-9_-]+)*)$ ]]; then
+    printf 'dev_up: DEV_UP_TOOL_PACKS skips %s (a comma list of pack slugs, or *)\n' "$packs" >&2
+    return 0
+  fi
+  printf '%s\n' "TOOL_PACKS=$packs" "TOOL_PACKS_ORGS=*"
+}
+
 gateway_env() {
   base_env
   flag_env root
+  orgs_on
   printf '%s\n' \
     "ACB_ENV=dev" \
     "DATABASE_URL=postgresql+psycopg://acb_app:acb_app@127.0.0.1:$DB_PORT/acb_dev" \
     "REDIS_URL=redis://127.0.0.1:$REDIS_PORT/0" \
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
-    "EXECUTIVE_EMAILS=$ME"
+    "EXECUTIVE_EMAILS=$ME" \
+    "STUDIO_ORGS=*" \
+    "APP_REQUESTS_ORGS=*" \
+    "GATEWAY_URL=http://127.0.0.1:$GW_PORT"
+  tool_packs_env
+  studio_key_env
 }
 
 # DEV_SIGNED_IN_EMAIL: the member that src/lib/gateway.ts signs in as when the
@@ -164,6 +224,7 @@ web_env() {
     "EXECUTIVE_EMAILS=$ME" \
     "DEV_SIGNED_IN_EMAIL=$ME" \
     "NEXT_TELEMETRY_DISABLED=1"
+  studio_key_env
 }
 
 # The demo seed only. --data prod never calls it, because the seed does not run.

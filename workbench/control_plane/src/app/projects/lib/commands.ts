@@ -32,6 +32,7 @@ import { PANES } from "@/lib/nav";
 
 import { type PanelMode, narrowerPanel, widerPanel } from "./panelMode";
 import type { Hit } from "./search";
+import { SPACE_DEFAULT_STATUSES } from "./statusSetCopy";
 import { tasksLink } from "./tasksRedirect";
 
 /**
@@ -55,9 +56,52 @@ export const VIEW_MODES = [
   { id: "table", icon: "Table", key: "t" },
   { id: "calendar", icon: "Calendar", key: "c" },
   { id: "timeline", icon: "Milestone", key: "m" },
+  // SW-112: the agent map of the project's subtree. Last, and dark means
+  // absent: it is on offer only while the map read answers (`isModeOffered`).
+  { id: "agents", icon: "Network", key: "a" },
 ] as const;
 
 export type ViewMode = (typeof VIEW_MODES)[number]["id"];
+
+/** The canvases that draw only while a read answers. Dark means absent. */
+export const DARK_GATED_MODES: readonly ViewMode[] = ["agents"];
+
+/** The last answer of the map read that was not "loading". `null` until one settles. */
+export type SettledRead = "ready" | "dark" | "error" | null;
+
+/**
+ * Is the Agents canvas on offer? A ready read and a failed read offer it: a
+ * failure shows a message with a way to read again, and does not drop the tab.
+ * A read that loads keeps the offer only if the last settled read was ready,
+ * so a switch of project does not flash the tab. Dark (404, 401, 403) never offers it.
+ */
+export function agentsOffered(
+  read: "ready" | "loading" | "dark" | "error",
+  settled: SettledRead,
+): boolean {
+  if (read === "ready" || read === "error") return true;
+  return read === "loading" && settled === "ready";
+}
+
+/** The tab and the palette command: a gated canvas is on offer only while its read allows it. */
+export function isModeOffered(mode: ViewMode, agentsOn: boolean): boolean {
+  return mode === "agents" ? agentsOn : true;
+}
+
+/**
+ * The mode to draw. A chosen gated canvas stays while `agentsOffered` says so,
+ * so the skeleton or the error draws and no other canvas flashes. It falls
+ * back to `fallback` on a dark read. Never a blank pane.
+ */
+export function resolveMode(
+  mode: ViewMode,
+  agentsRead: "ready" | "loading" | "dark" | "error",
+  fallback: ViewMode,
+  settled: SettledRead = null,
+): ViewMode {
+  if (mode !== "agents") return mode;
+  return agentsOffered(agentsRead, settled) ? mode : fallback;
+}
 
 /**
  * Which grouping axes a canvas actually HONOURS.
@@ -77,6 +121,7 @@ export type ViewMode = (typeof VIEW_MODES)[number]["id"];
  * | table    | section headers + quick-add fill | —                |
  * | timeline | banded row sections              | —                |
  * | calendar | —                                | —                |
+ * | agents   | — (a map, not a task canvas)     | —                |
  * | overview | — (a roll-up, not a task canvas) | —                |
  *
  * ⚠️ These HIDE a control, they do not clear the value. Switching to
@@ -123,6 +168,13 @@ export interface CommandContext {
   panelMode: PanelMode;
   /** Desktop only — a phone reaches the tree through the drawer. */
   canToggleRail: boolean;
+  /**
+   * The canvases on offer. Absent = all. My tasks has no Timeline, so its
+   * context names the five it has and "Timeline view" is not offered there.
+   */
+  modes?: readonly ViewMode[];
+  /** SW-112: the agent map answers for this project, so "Agents view" is offered. Absent = dark. */
+  agentsOn?: boolean;
 }
 
 /** What a command is allowed to do. The page supplies every one of these. */
@@ -133,8 +185,11 @@ export interface CommandActions {
   clearFilters(): void;
   toggleRail(): void;
   manage(what: "fields" | "tags" | "statuses" | "lifecycle"): void;
-  /** WS-42 — open Projects settings, at the selected project's space. */
-  openSettings(): void;
+  /**
+   * WS-42 — open Projects settings, at the selected project's space. With a
+   * section (PST-1), it opens at that section.
+   */
+  openSettings(section?: "statuses"): void;
   showShortcuts(): void;
 }
 
@@ -171,7 +226,7 @@ const GO_KEYS: ReadonlyArray<{ href: string; key: string }> = [
   { href: "/email", key: "e" },
   { href: "/dashboard", key: "d" },
   { href: "/crm", key: "c" },
-  { href: "/workflows", key: "w" },
+  { href: "/studio", key: "w" },
   { href: "/memory", key: "m" },
 ];
 
@@ -209,7 +264,12 @@ function viewCommands(): Command[] {
     keywords: ["view", "canvas", "layout", entry.id],
     icon: entry.icon,
     sequence: ["v", entry.key],
-    when: (ctx: CommandContext) => ctx.hasProject,
+    // MOB-1 verify: My tasks names its tabs in `modes` and needs no project,
+    // so its view commands show with no project selected.
+    when: (ctx: CommandContext) =>
+      (ctx.hasProject || Boolean(ctx.modes)) &&
+      (!ctx.modes || ctx.modes.includes(entry.id)) &&
+      isModeOffered(entry.id, ctx.agentsOn === true),
     run: (actions: CommandActions) => actions.setMode(entry.id),
   }));
 }
@@ -282,16 +342,20 @@ const PROJECT_COMMANDS: Command[] = [
   },
   {
     id: "project.statuses",
-    label: "Statuses",
+    // PST-1 (D185, projects_settings.md §9.5): the entry carries the name of
+    // the settings section it opens, so the palette and the pane say the
+    // same thing. It opens the SPACE's set of the selected project. That
+    // section lists each project that keeps its own set, with a link to it,
+    // and the row menu still opens the Statuses of any one node.
+    label: SPACE_DEFAULT_STATUSES,
     section: "Project",
     // "Workflow" and "stage" are what people call this when they go looking
     // for it, and "category" is what the data calls the half that rolls up.
-    keywords: ["workflow", "stages", "lanes", "columns", "category"],
+    keywords: ["statuses", "default", "workflow", "stages", "lanes", "columns", "category"],
     icon: "Columns3",
-    // Any node, unlike the lifecycle policy: the gateway resolves the root, so
-    // a subproject opens its space's set rather than being refused.
+    // It needs a selected project to know which space to open.
     when: (ctx) => ctx.hasProject,
-    run: (actions) => actions.manage("statuses"),
+    run: (actions) => actions.openSettings("statuses"),
   },
   {
     id: "project.tags",

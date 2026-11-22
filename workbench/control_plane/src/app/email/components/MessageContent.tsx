@@ -8,7 +8,7 @@ import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtm
 import { useCachedResource } from "@/lib/useCachedResource";
 import { messageHtmlKey } from "../lib/api";
 import { HTML_HOLD_MS, openMessageHtml } from "../lib/htmlPrefetch";
-import { bodyLookCss, bodyPalette, chooseBodyLook, forceDarkMedia, frameColorScheme } from "../lib/bodyLook";
+import { bodyLookCss, bodyPalette, chooseBodyLook, forceDarkMedia, frameColorScheme, frameContentHeight } from "../lib/bodyLook";
 import { useMode } from "@/lib/theme/surfaces";
 import { imgSrcDirective, inlineImagePath, inlineImageUrl } from "../lib/inlineImages";
 
@@ -313,10 +313,11 @@ function HtmlFrame({
       try {
         const doc = iframe.contentDocument;
         if (doc?.body) {
-          const h = Math.max(
-            doc.body.scrollHeight,
-            doc.documentElement.scrollHeight
-          );
+          const h = frameContentHeight({
+            bodyScroll: doc.body.scrollHeight,
+            docScroll: doc.documentElement.scrollHeight,
+            docClient: doc.documentElement.clientHeight,
+          });
           if (h > 0) setHeight(h + 24);
           // Keep tracking growth as images/fonts settle in.
           if (!observer && typeof ResizeObserver !== "undefined") {
@@ -530,11 +531,16 @@ export function MessageContent({
   messageId = null,
 }: MessageContentProps) {
   return (
-    <LightVersionContext.Provider value={lightVersion}>
-      <InlineImageContext.Provider value={inlineImagePath(messageId)}>
-        <MessageBody html={html} text={text} remoteId={remoteId} />
-      </InlineImageContext.Provider>
-    </LightVersionContext.Provider>
+    // `select-text`: the email page root is `select-none` (it keeps stray
+    // selection out of the chrome). The body, quoted part included, must stay
+    // selectable (task 3392). An HTML body is an iframe and has its own document.
+    <div data-email-body="" className="select-text">
+      <LightVersionContext.Provider value={lightVersion}>
+        <InlineImageContext.Provider value={inlineImagePath(messageId)}>
+          <MessageBody html={html} text={text} remoteId={remoteId} />
+        </InlineImageContext.Provider>
+      </LightVersionContext.Provider>
+    </div>
   );
 }
 

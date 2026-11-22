@@ -8,6 +8,11 @@
 //   * `email-row-keys`: Up, Down, Home and End move and wrap.
 //   * `email-row-per-message`: each card of a thread and the single email get
 //     the same row, and each handler gets THAT message.
+//   * `email-reply-bar`: a single email and each open card draw Reply, Reply
+//     all and Forward below the body, each for its own message, and the message
+//     that the composer answers hides them (owner, 2026-11-06).
+//   * `email-files-above-body`: the file chips draw above the body in both
+//     views, with no heading and no divider (owner, 2026-11-06).
 //   * `email-capture-thread-message`: Add to My work opens for a message of a
 //     thread that is not a row of the list, in that message's mailbox.
 //   * `email-loading-per-message`: "Loading message…" belongs to one fetch of
@@ -23,6 +28,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   updateEmail: vi.fn(),
   updateEmailLabels: vi.fn(),
+  listEmails: vi.fn(),
 }));
 vi.mock("./api", async (importOriginal) => {
   const real = await importOriginal<typeof import("./api")>();
@@ -33,7 +39,8 @@ import { isKnownIcon } from "@/lib/icons";
 import { useEmailStore, withPatch } from "./emailStore";
 import type { Email } from "./types";
 import {
-  ICONS_MIN_PX, LABELS_MIN_PX, actionRowTier, lightToggleInRow, menuStep, messageMenuGroups,
+  ICONS_MIN_PX, LABELS_MIN_PX, REPLY_ACTIONS, actionRowTier, lightToggleInRow, menuStep,
+  messageMenuGroups, showsReplyBar,
   type MenuState,
 } from "./messageActions";
 
@@ -121,6 +128,59 @@ describe("email-row-keys", () => {
     expect(src).toContain('panelProps={{ role: "menu", "aria-label": "More actions", onKeyDown: onMenuKey }}');
     expect(src).toContain('aria-haspopup="menu"');
     expect(src).toContain("aria-expanded={open}");
+  });
+});
+
+describe("email-reply-bar", () => {
+  const detail = codeOnly(read("components/EmailDetail.tsx"));
+  const conversation = codeOnly(read("components/ConversationView.tsx"));
+
+  it("draws the three replies in the owner's order, in both rows", () => {
+    expect(REPLY_ACTIONS.map((a) => a.label)).toEqual(["Reply", "Reply all", "Forward"]);
+    expect(REPLY_ACTIONS.map((a) => a.mode)).toEqual(["reply", "reply-all", "forward"]);
+    for (const a of REPLY_ACTIONS) expect(isKnownIcon(a.icon)).toBe(true);
+    for (const a of REPLY_ACTIONS) expect(isKnownIcon(a.icon)).toBe(true);
+    const actions = codeOnly(read("components/MessageActions.tsx"));
+    expect(actions.split("REPLY_ACTIONS").length - 1).toBe(3); // The import and the two rows.
+  });
+
+  it("hides only on the message that the composer answers", () => {
+    expect(showsReplyBar("a", null, null)).toBe(true);
+    // A closed composer keeps its target id. The buttons come back.
+    expect(showsReplyBar("a", null, "a")).toBe(true);
+    for (const mode of ["reply", "reply-all", "forward"] as const) {
+      expect(showsReplyBar("a", mode, "a")).toBe(false);
+      expect(showsReplyBar("b", mode, "a")).toBe(true);
+    }
+  });
+
+  it("draws on the single email and on each open card, for that message", () => {
+    expect(detail).toContain("const replyBar = (m: Email) =>");
+    expect(detail).toContain("<MessageReplyBar message={m} onReply={(mode) => startReply(mode, m)} />");
+    expect(detail).toContain("{!loadingDetail && replyBar(view)}");
+    expect(detail).toContain("renderReplyBar={replyBar}");
+    expect(conversation).toContain("{renderReplyBar?.(view)}");
+  });
+});
+
+describe("email-files-above-body", () => {
+  const list = codeOnly(read("components/AttachmentList.tsx"));
+
+  it.each(["components/EmailDetail.tsx", "components/ConversationView.tsx"])(
+    "%s draws the chips before the body, with no divider",
+    (file) => {
+      const src = codeOnly(read(file));
+      const chips = src.indexOf("<AttachmentList");
+      expect(chips).toBeGreaterThan(-1);
+      expect(src.match(/<AttachmentList/g)).toHaveLength(1);
+      expect(chips).toBeLessThan(src.indexOf("<MessageContent"));
+      expect(src.slice(chips, src.indexOf("/>", chips))).not.toContain("border-t");
+    },
+  );
+
+  it("keeps a name for a screen reader, and no heading on the screen", () => {
+    expect(list).toContain("aria-label={`Attachments (${total})`}");
+    expect(list).not.toContain("Attachments ({total})");
   });
 });
 
@@ -242,6 +302,82 @@ describe("email-patch-per-message", () => {
     finish({ id: older.id });
     await write;
     expect(s().messagePatches).toEqual({});
+  });
+
+
+  // EM-RU2. Mutation caught: a refresh that landed before the PATCH did put
+  // the opened mail back to unread, until the next refresh.
+  describe("a list read while a write is pending", () => {
+    const unread = { ...older, isRead: false } as Email;
+    const server = () => ({ emails: [{ ...unread }], total: 1, hybrid: false });
+    const open = () => {
+      let finish: (v: unknown) => void = () => {};
+      let fail: (e: Error) => void = () => {};
+      api.updateEmail.mockImplementationOnce(
+        () => new Promise((ok, no) => { finish = ok; fail = no; }),
+      );
+      const write = s().updateEmail(unread.id, { isRead: true });
+      return { write, finish, fail };
+    };
+    const rowRead = () => s().emails.find((e) => e.id === unread.id)?.isRead;
+
+    beforeEach(() => {
+      api.listEmails.mockReset().mockImplementation(async () => server());
+      useEmailStore.setState({
+        emails: [unread], selectedAccountId: "box-a", accounts: [], emailsPage: 1,
+        emailsLoading: false, viewAll: false, selectedIds: new Set<string>(),
+      } as never);
+    });
+
+    it("keeps the row read after a softRefresh", async () => {
+      const w = open();
+      expect(rowRead()).toBe(true);
+      await s().softRefresh();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+    });
+
+    it("keeps the row read after fetchEmails and after a second refresh", async () => {
+      const w = open();
+      await s().fetchEmails();
+      expect(rowRead()).toBe(true);
+      await s().softRefresh();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+    });
+
+    it("keeps a patched row read when load-more brings it again", async () => {
+      useEmailStore.setState({ emailsTotal: 2 });
+      const w = open();
+      api.listEmails.mockImplementationOnce(async () => ({
+        emails: [{ ...unread, id: "other" }], total: 2, hybrid: false,
+      }));
+      await s().loadMoreEmails();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+    });
+
+    it("reverts the row when the write fails", async () => {
+      const w = open();
+      await s().softRefresh();
+      w.fail(new Error("Gateway error 502"));
+      await w.write;
+      expect(rowRead()).toBe(false);
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+    });
+
+    it("shows the server value once the write is confirmed", async () => {
+      const w = open();
+      w.finish({ id: unread.id });
+      await w.write;
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+      await s().softRefresh();
+      expect(rowRead()).toBe(false);
+    });
   });
 
   it("does not change the count of the list for a move of a thread message", async () => {

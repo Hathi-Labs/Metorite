@@ -171,9 +171,11 @@ async def _calendar(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # DONE blocks too, so a day whose plan is all done is not "no plan".
+    # Blocks only: no lens other than the Calendar reads calendar_entries
+    # (calendar_events_reminders.md §3.4), so the feed runs no entry query.
     week = await my_calendar(start=day0.isoformat(),
                              end=(day0 + timedelta(days=WEEK_DAYS)).isoformat(),
-                             include_done=True, user=user)
+                             include_done=True, user=user, with_entries=False)
     rows = list(getattr(week, "rows", None) or [])
     level = {str(r["id"]): task_cell(r) for r in rows}
 
@@ -909,7 +911,8 @@ async def _people(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # My open blocks of today, each with its assignees (`attach_assignees`).
-    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user)
+    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user,
+                            with_entries=False)
     me = str(user.email or "").strip().lower()
     # Each co-assignee once, with the first task, by the start of its block.
     shared: dict[str, str] = {}
@@ -1010,6 +1013,93 @@ async def _chat(user: UserContext) -> Found:
 register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KINDS,
                   needs=False, gated=True, permission="admin:members:read"))
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
+
+
+# ── Questions for me (WS-55 EA-18c, external_agent_access.md §12.8, feed only) ─
+#
+# `agent_questions`: the agent questions that wait on the member, as ONE card.
+# The source reads `agent_questions.read_mine`, which runs `read_questions` and
+# keeps the rows that carry a `why` (the "For me" scope). It writes no SQL.
+# The oldest 3 questions go on the card, and `total` is the count of the list,
+# so the card, the Projects sidebar badge and the Approvals tab say one number.
+#
+# Gated like the other feed-only sources (MD-3b): it runs only while
+# `MY_DAY_PROVIDERS` lists `agent_questions`, so the answer of the feed does not
+# change by one byte before the flip. The flag `AGENT_QUESTIONS_ORGS` gates it
+# inside too (`SourceAbsent`), as the route answers 404. Turn on both to show
+# the card. Its one act opens the list in Projects, where an answer runs the
+# same write as the list (D100, D101). The session is the Projects app's own:
+# `agent_questions.read_mine`. This file opens none.
+#
+# Fence: `tests/unit/test_feed_agent_questions.py` and its `_r8` twin.
+
+QUESTION_KINDS = frozenset({"agent_questions"})
+#: The questions on the card, oldest first.
+QUESTIONS_SHOWN = 3
+#: The longest question, and the longest option label, on the card.
+QUESTION_CLIP = 140
+OPTION_CLIP = 40
+OPTIONS_SHOWN = 4
+#: The link of the card: the Questions section of Projects (``?app=questions``).
+QUESTIONS_HREF = "/projects?app=questions"
+
+
+def _clip(value: Any, size: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= size else text[: size - 1].rstrip() + "\u2026"
+
+
+def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
+    """The facts of one question on the card, from a row of the list."""
+    q = row.get("question") or {}
+    path = " \u203a ".join(str(s.get("name") or "") for s in row.get("project_path") or []
+                           if s.get("name"))
+    return {
+        "activity_id": row["activity_id"], "task_id": row["task_id"],
+        "path": path or str(row.get("task_title") or ""),
+        "question": _clip(q.get("body"), QUESTION_CLIP),
+        "options": [_clip(o.get("label"), OPTION_CLIP) for o in (q.get("options") or [])
+                    if isinstance(o, dict) and o.get("label")][:OPTIONS_SHOWN],
+        "agent": row.get("agent_name"),
+    }
+
+
+def _agent_questions_signal(rows: list[dict[str, Any]], total: int,
+                            newest: Any = None) -> Signal:
+    """The one card of the member's questions: the 3 oldest *rows* of the list,
+    *total*, the whole "mine" count, and *newest*, the time of the newest
+    question of the whole list. ``waiting_since`` is that NEWEST time, as the
+    state fingerprint hashes it, so a new question brings a dismissed card back
+    (the rule of ``agent_asks``)."""
+    shown = [_question_fact(r) for r in rows]
+    title = ("An agent question waits for you" if total == 1
+             else f"{total} agent questions wait for you")
+    asked = _iso(rows[0].get("asked_at"))
+    since = _iso(newest) if newest else asked
+    return Signal(
+        signal_id="questions:mine", app="projects", kind="agent_questions",
+        entity={"type": "questions", "id": "mine", "label": title}, title=title,
+        facts={"total": total, "questions": shown, "waiting_since": since,
+               "request_ids": [q["activity_id"] for q in shown]},
+        href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
+        at=asked,
+    )
+
+
+async def _agent_questions(user: UserContext) -> Found:
+    from gateway.routes.projects import agent_questions as aq
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
+    # The Projects app's own read: its session, its tenant and its visibility.
+    rows, total_mine, newest = await aq.read_mine(user, QUESTIONS_SHOWN)
+    signals = [_agent_questions_signal(rows, total_mine, newest)] if rows else []
+    return Found([], total_mine, capped=False, signals=lambda: signals)
+
+
+register(Provider("agent_questions", ("projects",), _agent_questions, QUESTION_KINDS,
+                  needs=False, gated=True, app="projects"))
 
 
 # ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
@@ -1205,7 +1295,8 @@ def _names(titles: list[str]) -> str:
 #: line reads "Claude Code asked you a question on this task."
 _NOTE_WORDS = {"assigned": "gave you this task", "mention": "mentioned you on this task",
                "comment": "commented on this task", "nudge": "nudged you about this task",
-               "agent_question": "asked you a question on this task"}
+               "agent_question": "asked you a question on this task",
+               "decision": "asked you to decide on this task"}
 
 
 def _note_clause(facts: dict[str, Any], tz: ZoneInfo, today: date) -> tuple[str, str]:
@@ -1221,16 +1312,15 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
         today: date) -> tuple[str, str]:
     """``(why_key, why)``: the template of a kind, filled from ``facts``."""
     if kind == "overdue":
+        # A due date is a day, so no line names a clock (RX-5). A task is
+        # overdue from the day after its date, so a late task is a day late.
         late = int(facts.get("days_late") or 0)
-        if late >= 1:
-            return "days_late", (f"Due {_when(facts.get('due_at'), tz, today)}. "
-                                 f"{late} day{'' if late == 1 else 's'} late.")
-        return "late_today", f"Due at {_clock(facts.get('due_at'), tz)} today."
+        days = f" {late} day{'' if late == 1 else 's'} late." if late >= 1 else ""
+        when = _when(facts.get("due_at"), tz, today)
+        return "days_late", (f"Due {when}.{days}" if when else "Overdue.")
     if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        if due is not None and due - now <= feed_rank.SOON:
-            return "due_soon", f"Due in {_duration(math.ceil((due - now).total_seconds() / 60))}."
-        return "due_today", f"Due today at {_clock(due, tz)}."
+        # A sentence, as each why line is: a folded clause follows it.
+        return "due_today", f"Due {_when(facts.get('due_at'), tz, today) or 'today'}."
     if kind == "notification":
         return _note_clause(facts, tz, today)
     if kind == "approval":
@@ -1258,6 +1348,10 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
                            "and nothing is on the calendar.")
     if kind in needs.REMINDER_KINDS:
         return _reminder_line(kind, facts, tz, today)
+    if kind == "decision":
+        # WS-ALN ALN-2b. The question is the asker's own words, 140 characters
+        # at most, and the bell shows it too. The closing time is a fact.
+        return "decision", _decision_line(facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1344,6 +1438,13 @@ def _source_line(facts: dict[str, Any]) -> str:
     return "The last three syncs failed."
 
 
+def _provider_line(_facts: dict[str, Any]) -> str:
+    """The why line of ``provider_alert`` (AO-2). The source gives no feed
+    signal today, so no card uses it. A fixed sentence: never a word that a
+    vendor wrote."""
+    return "An AI vendor account needs a look. Open the provider page."
+
+
 def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     """The why line of ``doc_needs_review`` (KB-9b). It names the review date
     and nothing else: no person."""
@@ -1365,11 +1466,15 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
     "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
     "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # WS-55 EA-18c: the agent questions that wait on the member.
+    "agent_questions": ("agent_questions", lambda f, _tz, _today: _questions_card_line(f)),
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
     # KB-9b slice 2: a source that the member connected stopped syncing.
     "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
+    # AO-2: the AI vendor alert of the operator's admins.
+    "provider_alert": ("provider_alert", lambda f, _tz, _today: _provider_line(f)),
 }
 
 
@@ -1426,6 +1531,42 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     raise KeyError(kind)
 
 
+def _questions_card_line(facts: dict[str, Any]) -> str:
+    """The why line of ``agent_questions`` (WS-55 EA-18c): the project path,
+    the oldest question and its options, and how many more wait. The question
+    is the agent's own words, clipped. The card draws no other model text."""
+    shown = facts.get("questions") or []
+    if not shown:
+        return "An agent waits for your answer."
+    first = shown[0]
+    line = f"{first['path']}: {first['question']}" if first.get("question") else str(first["path"])
+    if first.get("options"):
+        line += " Options: " + ", ".join(first["options"]) + "."
+    more = int(facts.get("total") or len(shown)) - 1
+    if more > 0:
+        line += f" {more} more {'question waits' if more == 1 else 'questions wait'}."
+    return line
+
+
+def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date, *,
+                   folded: bool = False) -> str:
+    """The why line of a decision card, and its folded clause (WS-ALN ALN-2b).
+    Folded under its bell row, the row already names who asked."""
+    end = facts.get("expires_at")
+    more = int(facts.get("open") or 1) - 1
+    who = facts.get("who") or "Somebody"
+    if folded:
+        line = f"The question: {facts['question']}" if facts.get("question") else "It waits for you."
+    elif facts.get("question"):
+        line = f"{who} asks you to decide: {facts['question']}"
+    else:
+        line = f"{who} asks you to decide."
+    line += f" It closes {_when(end, tz, today)} at {_clock(end, tz)}." if _instant(end) else ""
+    if more > 0:
+        line += f" {more} more {'decision waits' if more == 1 else 'decisions wait'} on this task."
+    return line
+
+
 def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                    today: date) -> tuple[str, str]:
     """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
@@ -1459,6 +1600,8 @@ def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) 
         return "You promised this by mail."
     if kind == "colleague_out":
         return _colleague_line(facts)
+    if kind == "decision":
+        return _decision_line(facts, tz, today, folded=True)
     return ""
 
 
@@ -1543,7 +1686,12 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
 
     parts: dict[str, tuple[list[Signal], dict[str, Any]]] = {}
     for key, kinds in by_key.items():
-        ordered = sorted(kinds.values(), key=lambda s: (-feed_rank.base(s.kind), s.kind))
+        # A question that waits on the member by name LEADS its card (WS-ALN
+        # ALN-2b), though its base is below a notification's: the card then
+        # reads "Waiting for your decision" with the Answer act first. Its
+        # own bell row folds under it.
+        ordered = sorted(kinds.values(),
+                         key=lambda s: (s.kind != "decision", -feed_rank.base(s.kind), s.kind))
         facts = copy.deepcopy(ordered[0].facts)
         for signal in ordered[1:]:
             for name, value in signal.facts.items():
@@ -1574,7 +1722,9 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
         folded = [s.kind for s in rest]
         why_key, line = why(main.kind, facts, main.at, now, tz, today)
         clauses = [line]
-        clauses += [c for c in (_folded_clause(s.kind, s.facts, tz, today) for s in rest) if c]
+        clauses += [c for c in (_folded_clause(s.kind, s.facts, tz, today) for s in rest
+                                if not (main.kind == "decision"
+                                        and s.facts.get("notification") == "decision")) if c]
         if main.kind != "block_overlap" and facts.get("overlaps"):
             clauses.append(f"Its block overlaps {_names(facts['overlaps'])}.")
         card: dict[str, Any] = {"signal_id": key, "app": main.app}
@@ -1652,6 +1802,39 @@ class FeedRun:
     tz: ZoneInfo
     needs_view: dict[str, Any] | None = None
     closed: handled.HandledRun | None = None
+    #: The Reminders band's extra read (RX-3), for the read only: the
+    #: upcoming rows and the linked objects. None when it did not run.
+    band: dict[str, Any] | None = None
+    #: False when the band read failed, so the answer is served and not stored.
+    band_ok: bool = True
+
+
+async def _reminder_band(user: UserContext, signals: list[Signal],
+                         sources: dict[str, str], now: datetime) -> tuple[dict[str, Any], bool]:
+    """The Reminders band of My Day beyond the cards (RX-3): the scheduled
+    reminders of the rest of the member's day, and the linked object of each
+    reminder on the band. It reads only when the reminders source answered
+    ``ok``, so a flag off or a member without ``projects`` costs nothing.
+    The rows are never needs rows and never a card: they take no slot of
+    ``limit`` and raise no count. A failed read gives an empty band and
+    ``False``, so the cache does not store the answer."""
+    empty: dict[str, Any] = {"rows": [], "subjects": {}}
+    if sources.get("reminders") != "ok":
+        return empty, True
+    from gateway.routes.projects import reminders
+
+    fired = [
+        (s.entity["id"], str(s.facts["subject_kind"]), str(s.facts["subject_id"]))
+        for s in signals
+        if s.signal_id.startswith("reminders:")
+        and s.facts.get("subject_kind") and s.facts.get("subject_id")
+    ]
+    try:
+        return await reminders.my_day_band(user, now=now, subjects=fired), True
+    except Exception as exc:
+        logger.warning("shell.feed reminder band failed",
+                       extra={"error": type(exc).__name__})
+        return empty, False
 
 
 async def feed_cards(user: UserContext, now: datetime | None = None, *,
@@ -1706,15 +1889,18 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # (MD-2c), so the feed's worst case does not grow.
     cards = build_cards(signals, now, tz, today)
     closed: handled.HandledRun | None = None
+    band: dict[str, Any] | None = None
+    band_ok = True
     if read:
-        joined, closed = await asyncio.gather(
+        joined, closed, (band, band_ok) = await asyncio.gather(
             state.apply_state(user, cards, now),
             handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
+            _reminder_band(user, signals, sources, now),
         )
     else:
         joined = await state.apply_state(user, cards, now)
     return FeedRun(joined.cards, joined, signals, found, sources, capped, now, tz,
-                   needs_view, closed)
+                   needs_view, closed, band, band_ok)
 
 
 async def feed_answer(user: UserContext, size: int) -> cache.Computed:
@@ -1738,10 +1924,21 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
         "handled": closed.entries,
         "handled_ok": closed.ok,
     }
+    # RX-3: the Reminders band's extra rows, sent only when there are some, so
+    # an answer with none keeps its bytes. `reminders_ahead` is never a card,
+    # a group or a count. `reminder_subjects` names the linked object of each
+    # reminder on the band, by reminder id.
+    if (fr.band or {}).get("rows"):
+        body["reminders_ahead"] = fr.band["rows"]
+    if (fr.band or {}).get("subjects"):
+        body["reminder_subjects"] = fr.band["subjects"]
     # The next time edge (§8.4 item 2): what the clock changes, and when.
     edges = [*cache.signal_edges(fr.signals), *cache.day_edges(joined.day, tz, now)]
     edges += [e for e in (needs._instant(a.next_edge) for a in fr.found.values())
               if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
-    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok))
+    # LOOP-4a: a fault of the learned path sets `cacheable` False and leaves
+    # `ok` True, so the answer is served and not stored.
+    kept = joined.ok and joined.cacheable and fr.band_ok
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=kept))

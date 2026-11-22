@@ -49,11 +49,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common._log import get_logger
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 
 _log = get_logger("acb_common.tool_refusals")
 
 __all__ = [
     "DETAIL_MAX",
+    "FAILED",
+    "PROVIDER_DID_NOT_ANSWER",
     "REFUSED",
     "WRAPPED_ATTR",
     "GatewayRefusal",
@@ -65,10 +68,16 @@ __all__ = [
     "response_body",
     "route_template",
     "safe_detail",
+    "strip_kind_prefix",
 ]
 
 #: The first word of every refusal the model reads. The instructions name it.
 REFUSED = "Refused:"
+
+#: The first words of the text that stands for a pack tool that raised
+#: (``acb_skills.pack_tool_guard``, HRD-3). :func:`is_refusal` counts it too,
+#: so a chat card does not draw a failed write as done.
+FAILED = "The tool failed ("
 
 #: Marks a callable that :func:`refusals_as_text` made. Each fence reads it.
 WRAPPED_ATTR = "__refusals_as_text__"
@@ -76,6 +85,9 @@ WRAPPED_ATTR = "__refusals_as_text__"
 #: The longest gateway detail the model may read, unless a family asks for
 #: more. A 422 that lists ten fields still fits, and a long body is cut.
 DETAIL_MAX = 300
+
+#: The ``code`` of a 503 for a mail write that the provider did not answer.
+PROVIDER_DID_NOT_ANSWER = "provider_did_not_answer"
 
 
 class GatewayRefusal(RuntimeError):
@@ -91,7 +103,8 @@ class GatewayRefusal(RuntimeError):
     ``fixable`` is ``False`` for a refusal that no argument can fix. The
     model then reads a neutral "Next:" line, not "fix the argument".
     ``route`` is the template of the refused call (``/crm/deals/{id}``) for
-    the log line, never the concrete path."""
+    the log line, never the concrete path. ``code`` is the machine code of
+    the route's body, or "" (HRD-20: ``provider_did_not_answer``)."""
 
     def __init__(
         self,
@@ -102,13 +115,59 @@ class GatewayRefusal(RuntimeError):
         fields: tuple[str, ...] = (),
         fixable: bool = True,
         route: str = "",
+        code: str = "",
     ) -> None:
         super().__init__(message)
+        self.code = code
         self.status = status
         self.detail = detail
         self.fields = fields
         self.fixable = fixable
         self.route = route
+
+
+#: The kinds that ``search_company`` prints before a colon in a ``full_id``
+#: line (``task:<id>``). ``gateway/retrieval/sources.py`` makes them.
+SEARCH_KINDS = frozenset(
+    {"task", "email", "person", "lead", "deal", "contact", "company",
+     "artifact", "whatsapp", "page", "studio"}
+)
+
+
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def strip_id_label(value: Any) -> str:
+    """*value* without the ``id=`` label that the list tools print (task 3882).
+
+    It trims space and quotes, cuts one leading ``id=`` (any case, space
+    allowed), and trims again. It changes nothing else.
+    """
+    text = str(value if value is not None else "").strip().strip("\"'`").strip()
+    text = _ID_LABEL.sub("", text, count=1)
+    return text.strip().strip("\"'`").strip()
+
+
+def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") -> str:
+    """*value* without a known ``kind:`` prefix of the tool's own kind (HRD-2).
+
+    ``search_company`` prints ``full_id: task:<id>`` and the model copies the
+    whole line. A prefix that matches one of *own* is cut. A known prefix of
+    another kind is a refusal that names the kind and a read tool. Any other
+    text comes back as it is, trimmed, for the caller's own id check.
+    """
+    raw = str(value or "").strip()
+    head, sep, rest = raw.partition(":")
+    kind = head.strip().lower()
+    if not sep or kind not in SEARCH_KINDS:
+        return raw
+    if kind in own:
+        return rest.strip()
+    takes = f"a {' or '.join(own)} id" if own else "another kind of id"
+    raise GatewayRefusal(
+        f"{raw[:60]!r} is the id of a {kind}, and this tool takes {takes}. "
+        f"Get the right id from {read_tool}."
+    )
 
 
 def data(value: Any) -> str:
@@ -141,12 +200,9 @@ _LEAK_MARKERS = (
 )
 #: A URL or a DSN (``postgresql://user:pass@host/db``), in any scheme.
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
-#: A bearer value, and the key shapes the platform issues or holds.
-_SECRET = re.compile(
-    r"(?i)\bbearer\s+\S+"
-    r"|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abprs]|cc_live|cc_depl)[-_][A-Za-z0-9_\-]{6,}"
-    r"|\beyJ[\w-]+\.[\w-]+\.[\w-]+"
-)
+#: A bearer value, and the key shapes the platform issues or holds. The list
+#: lives in ``secret_shapes`` (task 1272), and this tuple only names the views.
+_SECRETS = (REDACTION_BEARER, *REDACTION_SHAPES)
 #: An email address. Only the acting member's own address stays.
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 #: An absolute path on a server, or on a Windows box.
@@ -219,7 +275,8 @@ def safe_detail(
     if any(marker in text.lower() for marker in _LEAK_MARKERS):
         return "", named
     text = _URL.sub("<link removed>", text)
-    text = _SECRET.sub("<secret removed>", text)
+    for _rx in _SECRETS:
+        text = _rx.sub("<secret removed>", text)
     own = member.strip().lower()
     text = _EMAIL.sub(
         lambda m: m.group(0) if own and m.group(0).lower() == own else "<address removed>",
@@ -342,7 +399,13 @@ def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
         nxt = _CLIENT_NEXT if getattr(exc, "fixable", True) else _FINAL_NEXT
         return f"{REFUSED} {_one_line(str(exc))}\nNext: {nxt}"
     table = _by_status(voice)
-    if status in table:
+    if status == 503 and getattr(exc, "code", "") == PROVIDER_DID_NOT_ANSWER:
+        # The mail provider, not Metorite, did not answer (HRD-20). The write
+        # may have landed, so the model must not claim a send or a save.
+        what = f"The mail provider did not answer ({status})."
+        nxt = ("The mail provider did not answer. Tell the member, and check "
+               "Sent or Drafts before you try again.")
+    elif status in table:
         what, nxt = table[status]
     elif status >= 500:
         what = f"The {voice.app} had an error ({status})."
@@ -376,11 +439,26 @@ def is_refusal(value: Any) -> bool:
     items that each carry ``text``.
     """
     if isinstance(value, str):
-        return value.lstrip().startswith(REFUSED)
+        return value.lstrip().startswith((REFUSED, FAILED))
     if isinstance(value, (list, tuple)) and value:
         first = getattr(value[0], "text", value[0])
-        return isinstance(first, str) and first.lstrip().startswith(REFUSED)
+        return isinstance(first, str) and first.lstrip().startswith((REFUSED, FAILED))
     return False
+
+
+def _record_auth_401(exc: GatewayRefusal, tool: str) -> None:
+    """The capture site C4 (``tool_failure_log.md`` §4.2): a 401 of the
+    gateway is our own service call that could not sign in. Every other
+    refusal is an answer (§4.1), or a 5xx that the gateway writes itself.
+    Hands ONE record to the one writer. Never raises, and changes no text."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="chat_tool", error_code="auth_401", tool=tool,
+            **failure_log.run_fields())
+    except Exception as err:  # the class only: the refusal text stays
+        _log.debug("tool_refusals.capture_failed", error_type=type(err).__name__)
 
 
 def refusals_as_text(
@@ -397,6 +475,9 @@ def refusals_as_text(
     The log line holds no detail and no message, because those can hold
     text that a member typed. A *fn* that is already wrapped comes back as
     it is.
+
+    A 401 also writes ONE failure record (TOF-2c, C4). The text does not
+    change.
     """
     if getattr(fn, WRAPPED_ATTR, False):
         return fn
@@ -413,6 +494,8 @@ def refusals_as_text(
                 status=getattr(exc, "status", None),
                 route=getattr(exc, "route", "") or "",
             )
+            if getattr(exc, "status", None) == 401:
+                _record_auth_401(exc, tool)  # C4 (TOF-2c)
             return refusal_text(exc, voice)
 
     setattr(wrapper, WRAPPED_ATTR, True)

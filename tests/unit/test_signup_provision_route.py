@@ -62,6 +62,7 @@ from fastapi.testclient import TestClient
 from gateway.routes import signup as route
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder as apply_console_ladder,
 )
@@ -99,9 +100,7 @@ class TestThisSuiteIsRegistered:
     it in BOTH the workflow and the spec verify block, in the same PR."""
 
     def test_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_signup_provision_route.py" in workflow
+        assert "tests/unit/test_signup_provision_route.py" in r8_lists.must_run()
 
     def test_named_in_the_owning_spec_verify_block(self):
         spec = (_ROOT / "project-docs/specs/customer_console.md").read_text(
@@ -1125,6 +1124,51 @@ class TestTheStepOneBackstopWritesNothing:
         with tenant_db.connect() as c:
             assert _org_count(c, newco) == 0           # rolled back
             assert _owner_emails(c, home) == {bob}     # still only his home
+
+
+@_TENANT_GATE
+class TestTheFounderResolvesFresh:
+    """OB-0b (owner report 2026-11-01, ``specs/onboarding.md`` §2 row 2).
+
+    The route's own auth check resolves the person BEFORE step 1, when they
+    have no ``app_user`` row, and ``resolve_access`` caches that refusal for
+    60 s. The founder's first ``/auth/me`` after the redirect then read the
+    stale refusal: no features, not an admin, and My Day said "Nothing is
+    enabled for your account yet".
+
+    Mutation, seen to fail first: delete the ``invalidate_access(email)`` call
+    in ``provision_signup``, and ``after.is_active`` is False.
+    """
+
+    async def test_the_owner_resolves_with_access_within_the_cache_ttl(
+        self, tenant_db, flag_on, monkeypatch
+    ):
+        from acb_auth.access import invalidate, resolve_access
+
+        monkeypatch.setattr(
+            route, "provision_org_on_console",
+            _areturn({"organization_id": "cid", "slug": "x"}),
+        )
+        slug = f"ob0b-{uuid.uuid4().hex[:8]}"
+        dana = f"dana-{uuid.uuid4().hex[:8]}@d.example"
+        invalidate(dana)
+
+        async with tenant_engine_scope(_TENANT_URL):
+            # What `get_current_user` does for the signup request itself.
+            before = await resolve_access(dana)
+            out = await route.provision_signup(
+                _Req({"slug": slug, "display_name": "Dana Co",
+                      "registered_state": STATE}),
+                _person(dana),
+            )
+            # The founder's next `/auth/me`, well inside the 60 s TTL.
+            after = await resolve_access(dana)
+
+        assert before.is_active is False
+        assert out["admit"] is True
+        assert after.is_active is True
+        assert "owner" in after.roles
+        assert after.has("feature:projects")
 
 
 @_TENANT_GATE

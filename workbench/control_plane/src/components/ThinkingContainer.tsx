@@ -31,7 +31,7 @@
 
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -42,8 +42,11 @@ import EntityPill from "@/components/ui/EntityPill";
 import { agentName } from "@/lib/agentName";
 import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { FIRST_STEP } from "@/lib/runStatus";
+import { WRITING_STEP } from "@/lib/runStep";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
+import { memberLineOf } from "@/lib/cardOutcomes";
 import { argFields, needsClamp } from "@/lib/toolArgs";
 import {
   COMMAND_CAP,
@@ -68,13 +71,32 @@ interface ThinkingContainerProps {
    *  segmentCutoff. Empty for id-less runtimes (which use the reasoning fold). */
   narrationSegments?: string[];
   isActive: boolean;
+  /** CS-1: the turn was just sent and nothing has come back. The header then says `FIRST_STEP`. */
+  firstLine?: boolean;
+  /** CS-3b: the fixed words of the server's phase. They take the place of `FIRST_STEP`, and a real step takes both over. */
+  phaseWord?: string;
+  /** CS-1: answer text has started, so the header never says that Mira still reads the message. */
+  answerStarted?: boolean;
   /**
    * The receipt of a read, drawn inside its step when the step is open
    * (§24 rule 2). Null for a step with none. `MessageBubble` supplies it
    * from the card files, so this component names no tool.
    */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
+  /**
+   * HRD-6: the line of a slow step ("This is a large read …"). It draws under
+   * the header, which names the running step, while the turn works. Open or
+   * closed, the member sees it.
+   */
+  notice?: string | null;
 }
+
+/**
+ * Whether a trail starts open. The product leaves it false: a trail starts
+ * closed, and only the member opens it (owner, 2026-11-03). A test of the
+ * open body wraps its tree in `true`.
+ */
+export const TrailStartsOpen = createContext(false);
 
 // ─── Step kinds ─────────────────────────────────────────────────────────────
 
@@ -395,7 +417,8 @@ export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
 
 /** Any other step expands into its arguments and its result. */
 function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; dur?: number }) {
-  const out = event.result ? capOutput(String(event.result), 2000) : null;
+  // HRD-7: a card outcome shows its head only. Its next step is for the model.
+  const out = event.result ? capOutput(memberLineOf(String(event.result)), 2000) : null;
   // Each key in product words (`fieldSpec`, the one map of a key to its
   // label), and each value in full. The keys that the row already shows are
   // left out.
@@ -483,10 +506,10 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   // One line, and an ellipsis where it stops: `truncate`,
                   // never a silent cut. The tooltip holds the rest.
                   <span
-                    title={capOutput(String(st.result)).text}
+                    title={capOutput(memberLineOf(String(st.result))).text}
                     className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
                   >
-                    {capOutput(String(st.result), 400).text}
+                    {capOutput(memberLineOf(String(st.result)), 400).text}
                   </span>
                 )}
               </li>
@@ -637,19 +660,24 @@ export default function ThinkingContainer({
   reasoningBlocks,
   narrationSegments,
   isActive,
+  firstLine,
+  phaseWord,
+  answerStarted,
   evidenceFor,
+  notice,
 }: ThinkingContainerProps) {
   const hasReasoning = !!(reasoningBlocks && reasoningBlocks.length > 0);
   const hasNarration = !!(narrationSegments && narrationSegments.length > 0);
   const hasTools = toolEvents.length > 0;
   const hasContent = hasTools || hasReasoning || hasNarration;
 
-  // Open from the first render when the turn is already working. A surface
-  // that mounts mid-run (a rail re-opened beside the board, a reconnect) then
-  // shows the trail at once, instead of a closed "Thinking…" until the next
-  // step lands.
-  const [expanded, setExpanded] = useState(() => isActive && hasContent);
-  const userToggledRef = useRef(false);
+  // Closed until the member opens it (owner, 2026-11-03: "only the user can
+  // opt to open it if he wants to know what is going on under the hood").
+  // While the turn works, the closed header names the newest step, and the
+  // bar under the thread says the turn is working. Nothing the member must
+  // act on draws only in here: a write's card and a question draw outside.
+  const startsOpen = useContext(TrailStartsOpen);
+  const [expanded, setExpanded] = useState(startsOpen);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Per-tool expansion override (user click).  Without an override, a tool
   // row is open while running (live output) and collapsed when done —
@@ -677,24 +705,8 @@ export default function ThinkingContainer({
     if (el) el.scrollTop = el.scrollHeight;
   }, [isActive, expanded, reasoningLen, narrationLen, toolEvents.length, progressLines.length]);
 
-  // Auto-expand while the agent is actively working so the user sees the
-  // thought process in real time (VS Code Copilot Chat style). Expands on:
-  // - First tool call or reasoning delta (content appears)
-  // - Active streaming with content (user sees live progress)
-  // Collapses after completion unless the user manually toggled.
-  useEffect(() => {
-    if (hasContent && isActive && !userToggledRef.current) {
-      setExpanded(true);
-    }
-  }, [hasContent, isActive]);
-
-  // Auto-collapse shortly after completion (unless the user manually expanded).
-  useEffect(() => {
-    if (isActive) return;
-    if (userToggledRef.current) return;
-    const t = setTimeout(() => setExpanded(false), 300);
-    return () => clearTimeout(t);
-  }, [isActive]);
+  // No auto-open while the turn works, and so no auto-close after it: the
+  // trail stays as the member left it.
 
   // The newest step, in words, for the header while the turn works.
   const lastLabel = useMemo(() => {
@@ -769,7 +781,7 @@ export default function ThinkingContainer({
     ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
       ?? lastLabel
-      ?? "Thinking…"
+      ?? (answerStarted ? WRITING_STEP : phaseWord ?? (firstLine ? FIRST_STEP : "Thinking…"))
     : summaryTitle;
 
   const totalMs = useMemo(() => {
@@ -785,11 +797,11 @@ export default function ThinkingContainer({
   }, [isActive, toolEvents]);
 
   return (
-    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden glass:rounded-[14px] glass:border-border glass:bg-transparent" data-trail="">
+    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden glass:rounded-[10px] glass:border-transparent glass:bg-secondary/50" data-trail="">
       {/* ── Header ─────────────────────────────────────────────────── */}
       <button
         type="button"
-        onClick={() => { userToggledRef.current = true; setExpanded((o) => !o); }}
+        onClick={() => setExpanded((o) => !o)}
         disabled={!hasContent}
         aria-expanded={hasContent ? expanded : undefined}
         data-trail-head=""
@@ -835,6 +847,23 @@ export default function ThinkingContainer({
         )}
         </span>
       </button>
+
+      {/* ── The line of a slow step (HRD-6) ────────────────────────────
+          Under the header, in the step column, so it reads as part of the
+          running step. One status region (M9), mounted with the trail and
+          empty until a line comes, so a screen reader says the line when it
+          comes. It goes when the step ends or the answer starts
+          (`chatStream.ts`). */}
+      <div role="status" aria-live="polite" data-trail-status="">
+        {isActive && notice && (
+          <div data-trail-notice="" className="flex min-w-0 pr-3 pb-2 -mt-1">
+            <span className={TRAIL_ICON_CELL} aria-hidden />
+            <span className="flex-1 min-w-0 text-[11px] text-muted-foreground leading-relaxed break-words glass:text-caption">
+              {notice}
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* ── Pre-content working indicator ──────────────────────────────
           The dead-air gap between "run started" and the first tool/reasoning

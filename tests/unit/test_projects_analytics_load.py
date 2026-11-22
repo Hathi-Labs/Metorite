@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from gateway.routes.projects import due_day
 from sqlalchemy import create_engine, text
 
 from tests.unit._tenant_ladder import apply_ladder
@@ -153,7 +155,8 @@ def _run(db, scope):
         " AND t.archived_at IS NULL"
         " AND s.category <> ALL(CAST(:closed AS text[]))"
     )
-    params = {"pid": scope["project"], "closed": ["done", "cancelled"]}
+    params = {"pid": scope["project"], "closed": ["done", "cancelled"],
+              "day_start": due_day.day_start("UTC", datetime.now(UTC))}
     with db.connect() as c:
         rows = c.execute(text(load_sql(where)), params).fetchall()
         total = c.execute(text(total_open_sql(where)), params).scalar()

@@ -14,6 +14,7 @@
 
 import { IDLE_RUN, reduceRun, type RunEvent, type RunStatus } from "@/lib/runStatus";
 import { CARD_ANSWERED, type CardLogEntry } from "@/lib/cardReplay";
+import type { FormEdits } from "@/lib/confirmationQueue";
 
 // ── ChatMessage type (co-located here to avoid circular imports) ────────────
 
@@ -29,10 +30,19 @@ export interface SubAgentTool {
   args?: Record<string, unknown>;
 }
 
+/** CSY-10: the connected MCP server of a tool. The server stamps it on the tool
+ *  start (`event_translator.function_call_events`). It holds no argument. */
+export interface McpStamp {
+  server: string;
+  label: string;
+}
+
 export interface ToolEvent {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** CSY-10: set when the tool belongs to a connected MCP server. */
+  mcp?: McpStamp;
   result?: string;
   status: ToolEventStatus;
   startedAt?: number;
@@ -67,7 +77,23 @@ export interface ChatMessage {
   streaming?: boolean;
   toolEvents?: ToolEvent[];
   progressLines?: string[];
+  /** HRD-6: the line of a slow step ("This is a large read …"), with the id
+   *  of the step it belongs to. The live loop sets it, and the end of that
+   *  step, answer text or the run's end takes it away. Never saved. */
+  progressNotice?: { text: string; toolId?: string };
   isThinkingActive?: boolean;
+  /**
+   * CS-1: true only on the placeholder that Send puts in the thread. The header of the thinking trail
+   * says "Reading your message" while this is true and nothing has arrived. A run that this tab joins
+   * again (attach) never has it, because the server may be far past reading by then. Never saved.
+   */
+  firstLine?: boolean;
+  /**
+   * CS-3b: the fixed words of the server's phase ("Gathering what I need") while the run has no real
+   * step. The header of the thinking trail says them in place of `firstLine`'s words. Live only: a
+   * re-attach clears it, a real step takes the header over, and no save names it. Never saved.
+   */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3a, message-id-native): one entry
@@ -90,6 +116,10 @@ export interface ChatMessage {
    *  `role: "user"` covers every human in the thread, not just the reader.
    *  Absent on pre-authorship rows, which render exactly as they always did. */
   authorKind?: "human" | "agent" | "system";
+  /** The member who started the run that wrote this agent turn, as the
+   *  server stored it. Absent on a live turn and on an older row. The
+   *  "used your profile" mark draws only for this member (PZ-20b). */
+  runMemberEmail?: string;
   /** The reader is not cleared to see this turn; `content` is a notice, not the
    *  original text. Render it as a boundary holding, never as an error. */
   redacted?: boolean;
@@ -112,6 +142,11 @@ export interface ChatMessage {
   /** The follow-up for this steer ran out of tries (`lib/chatSteer.ts`).
    *  The bubble says the words wait for the next reply. Never saved. */
   steerWaiting?: boolean;
+  /** WS-63 D-PZ-37: the member typed this message in the box, and the send
+   *  carried the typed mark (`lib/typedMark.ts`). Live only: the chat never
+   *  saves it, and a reload drops it. The skill offer reads it (STU-F6a,
+   *  `lib/studio/skillOffer.ts`), so a reloaded turn gets no offer. */
+  typed?: boolean;
 }
 
 // ── Session state ────────────────────────────────────────────────────────────
@@ -144,6 +179,9 @@ export interface SessionStreamState {
   pendingSends: string[];
   /** The held sends that are a Continue: they go out with `resume`. */
   pendingResume: string[];
+  /** The held sends that the member typed in the message box: they go out
+   *  with the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  pendingTyped?: string[];
   /** This tab steered the live run. Once the run ends, the chat asks the
    *  server once for a follow-up turn, which answers any steer the run never
    *  read (`lib/chatSteer.ts`). A Stop clears it. */
@@ -294,6 +332,25 @@ export function noteRunMoved(threadId: string, type: string): void {
 /** A new run, or the end of one: no card of it waits any more. */
 export function clearCardLog(threadId: string): void {
   _cardLog.delete(threadId);
+  _formEdits.delete(threadId);
+}
+
+// ── The member's edits of the waiting new-mail cards (task 1893) ─────────────
+
+/** The edits of each thread, by card key. The card log redraws a waiting card from the server's form, so
+ *  the edits live beside it and go with it: a chat switch and a new mount of the chat keep them, and a new
+ *  run or the end of one clears them (`clearCardLog`). Memory only: a page reload is out of scope. */
+const _formEdits = new Map<string, FormEdits>();
+
+/** The kept edits of one thread, or undefined when there are none. */
+export function getFormEdits(threadId: string): FormEdits | undefined {
+  return _formEdits.get(threadId);
+}
+
+/** Keep the edits of one thread. An empty map keeps nothing. */
+export function keepFormEdits(threadId: string, edits: FormEdits): void {
+  if (edits.size === 0) _formEdits.delete(threadId);
+  else _formEdits.set(threadId, edits);
 }
 
 /** The card events of the run in flight, oldest first. */

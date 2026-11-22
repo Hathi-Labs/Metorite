@@ -16,8 +16,8 @@ starts a brief run (§4.1 item 4).
 * **422** for a ``kind`` that is not ``brief`` or ``closeout``.
 * **404** with a plain detail when the member has no run to serve, or when
   the newest run is ``planned``, ``gathered``, ``phrasing``, ``empty`` or
-  ``failed``. ``kind=closeout`` answers this 404 until BR-2b writes a
-  close-out run.
+  ``failed``. ``kind=closeout`` serves the close-out run of BR-2b-1 the same
+  way, and answers this 404 when none exists.
 
 **A pure read** (``core_brief.md`` §5). The route writes nothing. It
 serves a ``ready`` run and a ``delivered`` run alike, and ``state`` in the
@@ -144,7 +144,7 @@ async def get_today(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """See the module docstring. 200 with the run and its claims, else 404.
-    ``kind=closeout`` answers 404 until BR-2b writes a close-out run."""
+    ``kind=closeout`` serves the close-out run (BR-2b-1)."""
     org = str(getattr(user, "organization_id", None) or "")
     member = (user.email or "").strip()
     if not org or not member or not flags.in_app(org):

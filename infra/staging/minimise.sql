@@ -23,7 +23,9 @@
 --   5. Blanks every credential, in the kept organizations too. Staging holds
 --      no production secret, so the ciphertext would only be dead weight.
 --      It also blanks each member's assistant profile (WS-63 PZ-9), and it
---      deletes every web push subscription (WS-66 RE-9b).
+--      deletes every web push subscription (WS-66 RE-9b). It blanks the
+--      plugin auth (in both columns that hold it) and the hashes of the
+--      WhatsApp link and reply codes. It closes each open WhatsApp act (LD-8c).
 --   6. Refuses when any credential-shaped column still holds a value. A new
 --      credential column fails the export until it is blanked here.
 --   7. Refuses when any JSON value looks like a live token (a bearer header,
@@ -55,11 +57,16 @@ DECLARE
   --   user_identity         filtered to the members of the kept organizations
   --   agent_client          emptied: OAuth client registrations of outside agents
   --   auth_email_otp_token  emptied: one-time sign-in codes
+  --   failure_fingerprints, failure_daily, failure_config  emptied: the cross-tenant
+  --                         tool failure counts and the internal org id (TOF-2b,
+  --                         tool_failure_log.md §5.2). Staging holds no count of
+  --                         another org.
   --   email_detached_purges emptied: purge records of deleted organizations,
   --                         with the email address of each mailbox owner
   global_ok text[] := ARRAY['organization', 'schema_migrations', 'feature_catalog',
                             'user_identity', 'agent_client', 'auth_email_otp_token',
-                            'email_detached_purges'];
+                            'email_detached_purges', 'failure_fingerprints',
+                            'failure_daily', 'failure_config'];
 BEGIN
   IF slugs IS NULL OR cardinality(slugs) = 0 OR slugs = ARRAY[''] THEN
     RAISE EXCEPTION 'keep_slugs is empty: refusing to export';
@@ -107,7 +114,8 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM public.app_user u WHERE lower(u.email) = lower(ui.email));
 
   -- 5. Credentials, in the kept organizations too.
-  TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges;
+  TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges,
+           public.failure_fingerprints, public.failure_daily, public.failure_config;
   DELETE FROM public.agent_token;
   DELETE FROM public.provider_keys;
   -- A push subscription is a device credential. Staging must not push to a real phone (WS-66 RE-9b).
@@ -125,10 +133,34 @@ BEGIN
   -- The member's own words to the assistant (WS-63 PZ-9, personalization.md
   -- §7 point 5). No copy of the profile leaves production.
   UPDATE public.user_settings           SET assistant_profile = NULL;
+  -- The auth of a plugin (14_plugins.sql). NOT NULL, so '{}' and not NULL.
+  -- The install route writes the same object twice: `auth_config` holds
+  -- manifest.auth, and `manifest` holds the whole manifest. So the `auth` key
+  -- goes from `manifest` too. Step 6 does not read `manifest`.
+  UPDATE public.plugins                 SET auth_config = '{}'::jsonb,
+                                            manifest = manifest - 'auth';
+  -- The hash of a WhatsApp link code (235). '' and not NULL: a pending row
+  -- must hold a hash (CHECK whatsapp_member_links_pending_has_code). The
+  -- lookup function refuses '', so no code matches it.
+  UPDATE public.whatsapp_member_links   SET code_hash = '' WHERE code_hash IS NOT NULL;
+  -- The hash of the reply code of an act (298). NULL and not '': its CHECK
+  -- takes NULL or 64 hex characters only. A NULL hash makes an email act one
+  -- that a plain Confirm answers, so each open act closes in the same
+  -- UPDATE. `expired` is a closed state of 242, and the Confirm path reads
+  -- only `pending`.
+  UPDATE public.whatsapp_pending_acts   SET confirm_code_hash = NULL,
+                                            state = CASE WHEN state IN ('pending', 'running')
+                                                         THEN 'expired' ELSE state END;
+  -- The summary of a chat is the member's own words, shortened (WS-63 PZ-35,
+  -- personalization.md §15.5). No copy of it leaves production.
+  UPDATE public.chat_session            SET member_summary = NULL;
 
   -- 6. Nothing credential-shaped is left. Counters (`*_tokens`, `token_cost`)
   --    are numbers, so the text and binary types alone are checked, by type
   --    OID: format_type would print `character varying(255)` and miss it.
+  --    `^auth$` is a whole name, so `author_email` and `auth_config` do not
+  --    match it. `token` is a part of a name, so `access_token`, `id_token`
+  --    and `bot_token` match it (LD-8c).
   FOR t IN
     SELECT c.relname, a.attname
       FROM pg_attribute a
@@ -138,7 +170,7 @@ BEGIN
        AND a.attnum > 0 AND NOT a.attisdropped
        AND a.atttypid IN ('text'::regtype, 'bytea'::regtype, 'jsonb'::regtype,
                           'json'::regtype, 'varchar'::regtype, 'bpchar'::regtype)
-       AND a.attname ~* '(secret|password|passwd|credential|private_key|api_?key|access_key|cookie|encrypted|cipher|refresh_token|verify_token|hook_token|token_hash|client_state|^token$|^headers$|env_vars|^env$)'
+       AND a.attname ~* '(secret|password|passwd|credential|private_key|encryption_key|api_?key|access_key|cookie|encrypted|cipher|token|client_state|^headers$|env_vars|^env$|p256dh|^auth$|code_hash)'
   LOOP
     -- Blank is '', an empty JSON object or array, or JSON null.
     EXECUTE format('SELECT count(*) FROM public.%I WHERE %I IS NOT NULL AND %I::text NOT IN (%L, %L, %L, %L)',

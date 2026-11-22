@@ -527,8 +527,13 @@ async def test_a_made_up_number_is_never_stored_and_three_tries_cap_the_week(dg8
         assert again.requests == 0
     # Item 11: 3 requests in the week, each ONE request of bounded size.
     assert len(dg8.model.calls) == 3
+    from gateway.crm_sync import digest
+
     for call in dg8.model.calls:
-        assert call["model"] == "tier-powerful" and call["max_tokens"] == 800
+        # The cap and the job follow the module's constants (task 1128).
+        assert call["model"] == "tier-powerful" == digest.TIER
+        assert call["max_tokens"] == digest.MAX_TOKENS
+        assert call["job"] == digest.JOB
         assert sum(len(m["content"]) for m in call["messages"]) <= 8000
     [row] = _row(dg8, a)
     assert row.tries == 3 and row.body is None and row.stored_at is None

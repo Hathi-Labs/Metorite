@@ -66,6 +66,12 @@ _MODULE_NOW_ALLOWED: dict[str, str] = {
     "test_projects_assignees.py::TODAY":
         "the dates sit 3, 10 and 20 days on, so each check holds when the "
         "code's today is a day either side of this one",
+    "test_projects_done_date.py::TASK":
+        "created 10 days back, and the checks use 3 days back, 30 days back and "
+        "1 day on: no CI run drifts 7 days to move a check across the creation",
+    "test_reminders_r8.py::SNOOZE_TO":
+        "2 days on, and the rule is after now and within 366 days: no CI run "
+        "drifts 2 days or 364 days",
     "test_shell_needs_r8.py::NOW":
         "#951: the R8 seeds read this one instant, and an autouse fixture "
         "freezes the feed's _now and the lens read's today to it",

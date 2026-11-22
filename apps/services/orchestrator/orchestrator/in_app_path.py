@@ -14,12 +14,16 @@ before the client hears of it.
    slash, a backslash, a control mark or another percent is refused (review
    of #1197, P0): ``router.push`` resolves ``/projects/../crm`` to ``/crm``.
 2. :func:`pane_of` finds the pane the path belongs to. ``PANES`` is the
-   allowlist: the LIVE panes of ``launch_surface.md`` §2, as ``nav.ts`` marks
-   them, without the admin pages. A first segment that is not a pane is
-   refused, so ``/connect``, ``/signup``, ``/settings`` and a Center (D49)
-   never open. ``test_show_in_app.py`` holds the list equal to ``nav.ts``.
+   allowlist: every LIVE pane of ``launch_surface.md`` §2, as ``nav.ts`` marks
+   them, the Admin section too (PAR-1, ``chat_parity.md`` §6). A first
+   segment that is not a pane is refused, so ``/connect``, ``/signup``,
+   ``/settings`` and a Center (D49) never open. ``test_show_in_app.py`` holds
+   the list equal to ``nav.ts``.
 3. :func:`member_features` says which features the member holds, and a path
-   to a pane the member does not hold is refused.
+   to a pane the member does not hold is refused. A pane that ``nav.ts`` marks
+   ``adminOnly`` opens only for an admin of the org. The right is the one
+   admin page right (``guide_tools.member_is_admin``), read for
+   the VERIFIED run member and never from a tool argument.
 
 The member comes from the run binding, never from the tool's arguments.
 """
@@ -35,6 +39,15 @@ _OFF_PATH_MARKS = re.compile(r"[\\\x00-\x1f\x7f]")
 
 #: First segments that are never a page, on either side of the twin.
 _NEVER_A_PAGE = frozenset({"api", "_next"})
+
+#: The one page move of a turn (``show_in_app``, ``show_guide``) is a mark on
+#: the run's queue, ``_show_in_app_done``. It reads MOVE_PENDING while the call
+#: that took it checks the member's right, and True when the page moved. A
+#: refusal sets it back to False. Fence: ``tests/unit/test_guide_tools.py``.
+MOVE_PENDING = "pending"
+#: The answer of a call that meets a MOVE_PENDING mark. The page has not moved
+#: yet, and it may not move, so the answer must not say that it moved.
+MOVE_PENDING_ERROR = "Another page move runs in this reply. Call again only if it failed."
 
 
 def path_segments(pathname: str) -> list[str] | None:
@@ -96,12 +109,18 @@ class Pane:
     href: str
     #: The feature slug, or None for a pane every member holds.
     feature: str | None
+    #: True for a pane that ``nav.ts`` marks ``adminOnly``: only an admin of the org
+    #: opens it (PAR-1).
+    admin: bool = False
+    #: The name that the refusal of an admin pane gives to the member.
+    label: str = ""
 
 
 #: The allowlist: the LIVE panes of ``launch_surface.md`` §2 (``launch:
-#: "live"`` in ``nav.ts``), with the feature each one needs. The admin pages
-#: (``/settings/…``) are left out on purpose, and so is every preview pane.
-#: The order does not matter: :func:`pane_of` takes the longest match.
+#: "live"`` in ``nav.ts``), with the feature each one needs, the Admin section
+#: too (PAR-1). A preview pane is left out. An ``adminOnly`` pane carries
+#: ``admin=True``. The order does not matter: :func:`pane_of` takes the longest
+#: match.
 PANES: tuple[Pane, ...] = (
     Pane("/", None),
     Pane("/calendar", "tasks"),
@@ -114,8 +133,15 @@ PANES: tuple[Pane, ...] = (
     Pane("/people", "people"),
     Pane("/knowledge", "knowledge"),
     Pane("/chat", "chat"),
+    # Live since 2026-11-05 (D179). Gated on `workflows` until slice J1-1 moves it.
+    Pane("/studio", "studio"),
     Pane("/approvals", "approvals"),
     Pane("/integrations", None),
+    # PAR-1: the Admin pages of the sidebar. Appearance is a personal preference,
+    # so every member opens it. Organisation (members, roles, seats and brand)
+    # is for an admin of the org.
+    Pane("/settings/organization", None, admin=True, label="Organisation"),
+    Pane("/settings/appearance", None, label="Appearance"),
 )
 
 
@@ -139,6 +165,13 @@ def pane_of(path: str) -> Pane | None:
         if inside and (best is None or len(pane.href) > len(best.href)):
             best = pane
     return best
+
+
+#: A first segment that is no pane, and the pane that took its place. It adds
+#: no page to the allowlist: it only names the way on in the refusal.
+#: ``/tasks`` is a redirect into Projects (WS-64 OP-4), and ``nav.ts`` marks it
+#: ``preview``. Fence: ``test_show_in_app.py``.
+_MOVED = {"tasks": "/projects"}
 
 
 def chat_first_tools_enabled() -> bool:
@@ -182,17 +215,26 @@ async def member_features() -> frozenset[str] | None:
     return frozenset(access.allowed_features())
 
 
-def refusal(path: str, features: frozenset[str] | None) -> str | None:
+def refusal(path: str, features: frozenset[str] | None, admin: bool = False) -> str | None:
     """Why *path* may not open for a member with *features*, or None.
 
     The shape comes first, then the pane, then the member's hold on it. A
-    member nobody can name (``features`` is None) holds nothing.
+    member nobody can name (``features`` is None) holds nothing. An admin pane
+    opens only when *admin* is true, and the caller reads it for the verified
+    run member (``guide_tools.member_is_admin``), never from an argument.
     """
     if not is_in_app_path(path):
         return "not a path inside this app"
     pane = pane_of(path)
     if pane is None:
+        moved = _MOVED.get((path_segments(urlsplit(path).path) or [""])[0])
+        if moved:
+            # Task 3865: the model asked for /tasks in production. It is a
+            # redirect into Projects, and a preview pane, so it is no pane.
+            return f"no page of this app at that path. Open {moved} instead."
         return "no page of this app at that path"
+    if pane.admin and not (admin and features is not None):
+        return f"Only an admin of your organization opens {pane.label or pane.href}."
     if pane.feature is None:
         return None
     if features is None or pane.feature not in features:

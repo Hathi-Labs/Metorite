@@ -11,6 +11,8 @@
  * have a test of their own (`forward.test.ts`).
  */
 
+import { withoutBidi } from "@/lib/bidi";
+
 import type { Attachment, EmailAccount } from "./types";
 
 /** One file of the email, as the forward compose shows it: a chip. */
@@ -29,17 +31,15 @@ export function forwardFilesOf(attachments: readonly Attachment[] | undefined): 
     .map((a) => ({ id: a.id, filename: a.filename || "file", sizeBytes: a.sizeBytes || 0, checked: true }));
 }
 
-/** Each bidi control: the marks, the embeddings, the overrides, the isolates. */
-const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
-
 /**
  * A file name as the chip shows it. A sender chooses the name, and a
  * right-to-left override can make "invoice<RLO>fdp.exe" read as
  * "invoiceexe.pdf". So each bidi control goes, in the text and in the
  * `title` (review round 1). The chip also draws the name inside `<bdi>`.
+ * The rule is `lib/bidi.ts`, which the app request card reads too.
  */
 export function visibleFileName(name: string): string {
-  return name.replace(BIDI_CONTROLS, "");
+  return withoutBidi(name);
 }
 
 /** "29 KB", "2.0 MB": the size on a chip. "" when the size is not known. */

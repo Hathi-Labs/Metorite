@@ -1,0 +1,195 @@
+[
+  {
+    "id": "crm.add-lead",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "Add a lead",
+    "asks": [
+      "add a lead",
+      "how do I add a lead",
+      "create a new lead",
+      "new lead",
+      "add a prospect"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=leads",
+        "say": "Open the Leads tab of the CRM."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.new",
+        "say": "Press New. A form for the lead opens."
+      },
+      {
+        "kind": "say",
+        "say": "Fill in the name and any detail you know, then save."
+      }
+    ],
+    "do_tool": "create_lead"
+  },
+  {
+    "id": "crm.add-deal",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "Add a deal",
+    "asks": [
+      "add a deal",
+      "how do I add a deal",
+      "create a new deal",
+      "new deal",
+      "add an opportunity"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=deals",
+        "say": "Open the Deals tab of the CRM."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.new",
+        "say": "Press New. A form for the deal opens."
+      },
+      {
+        "kind": "say",
+        "say": "Fill in the deal name, the company and the amount, then save."
+      }
+    ],
+    "do_tool": null
+  },
+  {
+    "id": "crm.move-deal-stage",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "Move a deal to another stage",
+    "asks": [
+      "move a deal",
+      "change the stage of a deal",
+      "move a deal to the next stage",
+      "how do I move a deal",
+      "update the deal stage"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=deals",
+        "say": "Open the Deals tab. It shows the board by default."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.stage-column",
+        "say": "Each column is one stage. The cards in it are the deals at that stage."
+      },
+      {
+        "kind": "say",
+        "say": "Drag a card to the column of the new stage and let go."
+      }
+    ],
+    "do_tool": null
+  },
+  {
+    "id": "crm.find-contact",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "Find a contact",
+    "asks": [
+      "find a contact",
+      "search for a contact",
+      "look up a contact",
+      "where is a contact",
+      "find a person in the CRM"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=contacts",
+        "say": "Open the Contacts tab of the CRM."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.search",
+        "say": "Type a name here. The list narrows as you type."
+      },
+      {
+        "kind": "say",
+        "say": "Click a name in the list to open that contact."
+      }
+    ],
+    "do_tool": null
+  },
+  {
+    "id": "crm.log-note",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "Log a note on a record",
+    "asks": [
+      "add a note to a deal",
+      "log a note",
+      "write a note on a lead",
+      "how do I log a call",
+      "add a note in the CRM"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=deals",
+        "say": "Open the Deals tab of the CRM."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.pipeline",
+        "say": "Open any deal on the board."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.timeline-tab",
+        "say": "Open Timeline."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.add-note",
+        "say": "Write your note here, then press Log."
+      }
+    ],
+    "do_tool": null
+  },
+  {
+    "id": "crm.see-pipeline",
+    "app": "crm",
+    "feature": "crm",
+    "admin_only": false,
+    "title": "See the pipeline",
+    "asks": [
+      "show me the pipeline",
+      "where is the pipeline",
+      "see all my deals by stage",
+      "open the deal board",
+      "how is the pipeline laid out"
+    ],
+    "steps": [
+      {
+        "kind": "open",
+        "path": "/crm?tab=deals",
+        "say": "Open the Deals tab. It shows the board by default."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.pipeline",
+        "say": "This is the pipeline. Each column is a stage, left to right."
+      },
+      {
+        "kind": "point",
+        "anchor": "crm.stage-column",
+        "say": "The cards in a column are the deals at that stage."
+      }
+    ],
+    "do_tool": null
+  }
+]

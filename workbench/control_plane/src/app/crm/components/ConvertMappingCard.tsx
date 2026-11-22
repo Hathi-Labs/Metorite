@@ -40,6 +40,7 @@ import {
   type ConversionMapping,
   type MapEntity,
 } from "../lib/convertMapping";
+import { typeLabel } from "../lib/fieldStudio";
 import { Card } from "./SettingsCards";
 
 /** The card title. The Mirror Field map keeps "Field mapping". */
@@ -88,7 +89,7 @@ export function ConvertMappingView({
                     <span className="min-w-0 text-xs text-foreground">
                       <span className="truncate">{field.label}</span>
                       <span className="ml-1.5 text-[10px] text-muted-foreground">
-                        {field.type}
+                        {typeLabel(field.type)}
                       </span>
                       {cell.problem && (
                         <span className="block text-[10px] text-warning">

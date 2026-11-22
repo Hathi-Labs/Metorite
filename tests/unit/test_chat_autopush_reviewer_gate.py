@@ -35,6 +35,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import acb_auth
+import acb_auth.access as acb_auth_access
 import acb_common
 import pytest
 from acb_auth import agent_operator
@@ -60,6 +61,9 @@ OP_EMPLOYEE = "employee@operator.example"            # no agents:manage
 CUST_OWNER = "owner@customer.example"                # '*' in a customer org
 FP_ADMIN = "admin@fracktal.example"                  # agents:manage, FP_ORG
 FP_EMPLOYEE = "employee@fracktal.example"            # no agents:manage
+#: H-232b: agents:manage in its OWN customer org (its ``app_user`` row), and a
+#: plain active membership in the operator org too.
+CUST_AGENT_ADMIN = "agents@customer.example"
 
 _ACCESS: dict[str, EffectiveAccess] = {
     OP_ADMIN: build_access(["agents:manage", "agents:run:*"], roles=["admin"]),
@@ -67,6 +71,19 @@ _ACCESS: dict[str, EffectiveAccess] = {
     CUST_OWNER: build_access(["*"], roles=["owner"]),
     FP_ADMIN: build_access(["agents:manage", "agents:run:*"], roles=["admin"]),
     FP_EMPLOYEE: build_access(["agents:run:*"], roles=["employee"]),
+    CUST_AGENT_ADMIN: build_access(["agents:manage", "agents:run:*"], roles=["admin"]),
+}
+
+#: H-232b. The org of each member's ``app_user`` row, the one org of its roles.
+_ROLE_ORG: dict[str, str] = {
+    OP_ADMIN: OP_ORG, OP_EMPLOYEE: OP_ORG, CUST_OWNER: CUST_ORG,
+    FP_ADMIN: FP_ORG, FP_EMPLOYEE: FP_ORG, CUST_AGENT_ADMIN: CUST_ORG,
+}
+
+#: H-232b. The active memberships of each member. OP_ADMIN is in two orgs.
+_MEMBER_OF: dict[str, set[str]] = {
+    OP_ADMIN: {OP_ORG, CUST_ORG}, OP_EMPLOYEE: {OP_ORG}, CUST_OWNER: {CUST_ORG},
+    FP_ADMIN: {FP_ORG}, FP_EMPLOYEE: {FP_ORG}, CUST_AGENT_ADMIN: {CUST_ORG, OP_ORG},
 }
 
 
@@ -241,12 +258,28 @@ def run_binding(monkeypatch, operator_settings):
     async def _resolve(email: str | None, **_kw: Any) -> EffectiveAccess:
         return _ACCESS.get(str(email or "").lower(), EffectiveAccess(is_active=False))
 
+    async def _is_member(email: str | None, org: str | None) -> bool:
+        if state.get("member_raises") is not None:
+            raise state["member_raises"]
+        return str(org or "") in _MEMBER_OF.get(str(email or "").lower(), set())
+
+    async def _access_in_org(email: str | None, org: str | None) -> EffectiveAccess:
+        key = str(email or "").lower()
+        if _ROLE_ORG.get(key) != org:
+            return EffectiveAccess(is_active=False)
+        return _ACCESS.get(key, EffectiveAccess(is_active=False))
+
     monkeypatch.setattr(acb_common, "get_run_context", _ctx)
     monkeypatch.setattr(executor, "_current_run_org", lambda: state.get("org"))
+    # The email-keyed read stays stubbed: a gate that goes back to it reads the
+    # roles of the member's own org, and the H-232b case below turns red.
     monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(acb_auth_access, "is_active_member", _is_member)
+    monkeypatch.setattr(acb_auth_access, "resolve_access_in_org", _access_in_org)
 
     def _bind(member: str | None, org: str | None, verified: str = "1") -> None:
         state.update(member=member, org=org, verified=verified)
+    _bind.state = state  # type: ignore[attr-defined]
     return _bind
 
 
@@ -265,6 +298,9 @@ def test_the_decision_takes_no_argument_from_the_request() -> None:
     (OP_ADMIN, OP_ORG, "0", False),   # an unverified claim is no member
     (None, OP_ORG, "1", False),
     (OP_ADMIN, None, "1", False),
+    # H-232b: the roles of the member's own org do not count in the run's org.
+    (CUST_AGENT_ADMIN, OP_ORG, "1", False),
+    (FP_ADMIN, OP_ORG, "1", False),   # not a member of the run's org
 ])
 def test_the_decision_reads_the_member_and_org_of_the_run(
     run_binding, member, org, verified, allowed,
@@ -274,6 +310,16 @@ def test_the_decision_reads_the_member_and_org_of_the_run(
     run_binding(member, org, verified)
     ok, why = asyncio.run(executor._agent_push_allowed())
     assert ok is allowed, why
+
+
+def test_a_membership_read_that_raises_is_refused(run_binding) -> None:
+    """H-232b: fail closed. ``is_active_member`` raises on a pool timeout."""
+    import orchestrator.executor as executor
+
+    run_binding(OP_ADMIN, OP_ORG)
+    run_binding.state["member_raises"] = acb_auth_access.IdentityUnavailable("t")
+    ok, why = asyncio.run(executor._agent_push_allowed())
+    assert not ok and why.startswith("the membership check failed"), why
 
 
 def test_a_refused_host_shell_binds_false_without_a_read(monkeypatch) -> None:

@@ -705,6 +705,7 @@ async def test_item3_the_agent_status_is_for_each_use(ns, app_engine, monkeypatc
 
     # The App is ON, so the App org IS connected for pull requests.
     monkeypatch.setattr(get_settings(), "github_app_enabled", True, raising=False)
+    monkeypatch.setattr(get_settings(), "github_app_orgs", "*", raising=False)
     _seed_app_row(ns, ns.org_a)
     await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
     for org, email, want in ((ns.org_a, ADMIN_A, False), (ns.org_b, ADMIN_B, True)):

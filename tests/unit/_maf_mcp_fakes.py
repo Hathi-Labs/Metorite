@@ -27,17 +27,22 @@ def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
         scope: list[str] | None = None,
-        always_confirm: bool | None = None) -> dict[str, Any]:
+        always_confirm: bool | None = None,
+        read_only_key: bool | None = None) -> dict[str, Any]:
     """One registered MCP server, with its org.
 
     *always_confirm* None stands for a row with no H-300 key, which reads as
-    false."""
+    false. *read_only_key* (MCP-C2) is the field as the registry parsed it,
+    and None leaves it at the default, false. The spy does not apply the
+    parse, so a test can hand the gate a server with both switches on."""
     out = {
         "org": org, "name": name, "transport": transport, "url": url,
         "headers": headers or {}, "agent_scope": scope or ["*"],
     }
     if always_confirm is not None:
         out["always_confirm"] = always_confirm
+    if read_only_key is not None:
+        out["read_only_key"] = read_only_key
     return out
 
 
@@ -75,6 +80,7 @@ class RegistrySpy:
                 agent_scope=tuple(r["agent_scope"]), enabled=True,
                 header_names=tuple(sorted(r["headers"])), headers=dict(r["headers"]),
                 **({"always_confirm": r["always_confirm"]} if "always_confirm" in r else {}),
+                **({"read_only_key": r["read_only_key"]} if "read_only_key" in r else {}),
             )
             for r in self.rows if r["org"] == org
         ]
@@ -170,16 +176,19 @@ def _filler_tool(i: int, calls: list[str]) -> Any:
 
 
 @contextlib.contextmanager
-def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0, instructions: str | None = None) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
-    * ``echo`` says it is read-only, so it runs with no card (H-299).
-    * ``delete_record`` says it is destructive, so it needs the card.
-    * ``plain_note`` sends no hints, so it needs the card too.
+    * ``echo`` says it is read-only, so it runs in every run (H-299).
+    * ``delete_record`` says it is destructive. A member's run calls it with
+      no card (MCP-NC1), and a run with no member refuses it.
+    * ``plain_note`` sends no hints, so it counts as not read-only too.
 
     *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
     on, each with a long description and five arguments. With 10 or more,
     the server has more than 12 tools, so it gets the index (WS-8c item 23).
+
+    *instructions* is the text of the server's ``initialize`` answer (CSY-6).
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -187,7 +196,7 @@ def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
 
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
-    server = FastMCP("probe", stateless_http=True, json_response=True)
+    server = FastMCP("probe", instructions=instructions, stateless_http=True, json_response=True)
     for i in range(filler):
         server.add_tool(
             _filler_tool(i, calls), name=f"bulk_{i:02d}",

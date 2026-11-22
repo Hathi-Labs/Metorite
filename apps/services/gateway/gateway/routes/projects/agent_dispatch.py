@@ -55,6 +55,21 @@ flip is the owner's (`work_plan.md` §6). Fenced by both suites named above.
 `emit`, which awaits every sink. A sink that awaited the run held the
 member's request open for the whole run. `on_event` therefore writes the
 handoff row, starts one task per agent, and returns.
+
+**The run acts for the member who assigned the task (H-240, 2026-11-07).**
+The emitter puts the signed-in assigner on the event under
+:data:`MEMBER_KEY`, from the verified session and never from the body
+(:func:`assigning_member`). The sink hands that member to `run_agent` as
+``session_user``, the keyword no request body can set, and as the run's own
+``user_email``. That is the idiom of `routes/agent.py` `run_agent_sync`:
+``_session_member`` names the member, and ``_drop_identity_claims`` keeps
+only the session's own claim. The executor then binds the member VERIFIED,
+and a `skill-projects` call reaches the gateway as that member, so the
+server limits each write to what the member may do. An event with no member
+(a signed outside agent, a service caller, an inactive member) runs as
+before, with no acting user, and its gateway calls refuse. Fences:
+`tests/unit/test_projects_agent_dispatch_run.py` (R8) and
+`tests/unit/test_projects_automation.py`.
 """
 
 from __future__ import annotations
@@ -128,6 +143,18 @@ REPLY_LIMIT = 2000
 #: is still running. Each task leaves this set when it is done.
 _RUNS: set[asyncio.Task[None]] = set()
 
+#: The ``(task_id, agent)`` pairs that have a live run (H-240). A run acts as
+#: its member, so it can assign the task again. Without this check, an agent
+#: that takes itself off a task and puts itself back starts a second run of
+#: itself, and that run can do the same. A pair leaves when its run ends.
+_LIVE: set[tuple[str, str]] = set()
+
+#: The event key that names the member who assigned the task (H-240). Only
+#: the gateway's own emitter writes it, from the verified session
+#: (:func:`assigning_member`). `tests/unit/test_projects_automation.py` fences
+#: that no other code can publish a ``projects`` event.
+MEMBER_KEY = "assigned_by"
+
 
 def agent_targets(assignees: Any) -> list[str]:
     """The agent names in an assignee list, in order, deduplicated.
@@ -179,7 +206,7 @@ def dispatch_enabled() -> bool:
     return (os.environ.get(DISPATCH_FLAG) or "").strip().lower() in _TRUTHY
 
 
-def run_payload(message: str) -> dict[str, Any]:
+def run_payload(message: str, member: str = "") -> dict[str, Any]:
     """The event payload `run_agent` is handed. A dict, never the bare text.
 
     The same keys the other batch callers send: the workflows agent node and
@@ -187,8 +214,57 @@ def run_payload(message: str) -> dict[str, Any]:
     ⚠️ The tenant is NOT a key here. It goes to `run_agent` as the
     `organization_id` keyword, because the payload is agent-visible and a
     tenant read from it is a spoofing hole (R5, R11).
+
+    *member* (H-240) is the verified assigner, or ``""``. The executor binds
+    the acting user of the gateway-calling tools from ``user_email``
+    (``executor._bind_run_identity``), so the member goes here too. It is
+    the same address as ``session_user``, which is what
+    ``routes/agent._drop_identity_claims(keep_own=True)`` leaves in a
+    ``/agent/run`` body. No caller's body reaches this dict.
     """
-    return {"message": message, "mode": "sub_task", "source": RUN_SOURCE}
+    payload: dict[str, Any] = {
+        "message": message, "mode": "sub_task", "source": RUN_SOURCE,
+    }
+    if member:
+        payload["user_email"] = member
+    return payload
+
+
+def assigning_member(user: Any) -> str:
+    """The member a dispatched run acts for, from the verified session, or ``""``.
+
+    The emitter calls this with the request's ``UserContext``, never with a
+    body field (R11). ``routes/agent._session_member`` decides what counts as
+    a person, so a service caller (``system:internal``) names nobody. Two more
+    cases name nobody:
+
+    * a signed outside agent (``user.agent`` set). Its scope is narrower
+      than its member's, and a run as the member would widen it;
+    * a member whose access is not active. A run must not act for a person
+      the organization has suspended.
+
+    ``""`` keeps the run as it was before H-240: no acting user.
+    """
+    if getattr(user, "agent", None) is not None:
+        return ""
+    if not getattr(getattr(user, "access", None), "is_active", False):
+        return ""
+    from gateway.routes.agent import _session_member
+
+    return _session_member(user) or ""
+
+
+def event_member(payload: dict[str, Any]) -> str:
+    """The member the event names under :data:`MEMBER_KEY`, or ``""``.
+
+    The value is one the gateway's emitter wrote (:func:`assigning_member`).
+    A value that is not a plain address (no ``@``, or a ``:`` such as
+    ``agent:x``) reads as nobody, so a run never acts as an agent key.
+    """
+    member = str(payload.get(MEMBER_KEY) or "").strip()
+    if "@" not in member or ":" in member:
+        return ""
+    return member
 
 
 def reply_text(result: Any) -> str:
@@ -206,11 +282,20 @@ def reply_text(result: Any) -> str:
     return str(reply or "")
 
 
-def _start(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
-    """Start one run in the background and hold it until it ends."""
+def _start(
+    run: Coroutine[Any, Any, None], key: tuple[str, str] | None = None,
+) -> asyncio.Task[None]:
+    """Start one run in the background and hold it until it ends.
+
+    *key* is the run's ``(task_id, agent)`` pair. It stays in :data:`_LIVE`
+    until the run ends.
+    """
     task = asyncio.get_running_loop().create_task(run)
     _RUNS.add(task)
     task.add_done_callback(_RUNS.discard)
+    if key is not None:
+        _LIVE.add(key)
+        task.add_done_callback(lambda _t: _LIVE.discard(key))
     return task
 
 
@@ -294,75 +379,105 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
         )
         return
 
-    async with _tenant_session(organization_id) as db:
-        task = (await db.execute(
-            text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-            {"tid": task_id},
-        )).fetchone()
-        if task is None:
-            return
+    # H-240: the pairs this event holds in `_LIVE`. A failure before the
+    # runs start, the commit included, gives them back.
+    held: list[tuple[str, str]] = []
+    try:
+        async with _tenant_session(organization_id) as db:
+            task = (await db.execute(
+                text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+                {"tid": task_id},
+            )).fetchone()
+            if task is None:
+                return
 
-        # WS-27bg. An agent is not put to work inside a project that is not
-        # running. Assignment in a paused project is planning ("this is yours
-        # when we restart"), and dispatching on it would have an agent burn
-        # budget on work the org has explicitly suspended.
-        #
-        # A WARNING rather than a timeline row, for the same reason the tenant
-        # refusal above is: this is a sink, and the decision belongs in the log
-        # where an operator looks, not in the activity feed of a project nobody
-        # is reading.
-        # Ancestor-aware: an agent must not be put to work inside an active
-        # subproject of a PAUSED department. Reading the immediate project
-        # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
-        if not await is_runnable_with_ancestors(
-            db, getattr(task, "project_id", None)
-        ):
-            _log.warning(
-                "projects.agent_dispatch_skipped", task_id=task_id,
-                agents=agents,
-                reason="the task's project (or one above it) is not running "
-                       "(WS-27bg)",
-            )
-            return
+            # WS-27bg. An agent is not put to work inside a project that is not
+            # running. Assignment in a paused project is planning ("this is yours
+            # when we restart"), and dispatching on it would have an agent burn
+            # budget on work the org has explicitly suspended.
+            #
+            # A WARNING rather than a timeline row, for the same reason the tenant
+            # refusal above is: this is a sink, and the decision belongs in the log
+            # where an operator looks, not in the activity feed of a project nobody
+            # is reading.
+            # Ancestor-aware: an agent must not be put to work inside an active
+            # subproject of a PAUSED department. Reading the immediate project
+            # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
+            if not await is_runnable_with_ancestors(
+                db, getattr(task, "project_id", None)
+            ):
+                _log.warning(
+                    "projects.agent_dispatch_skipped", task_id=task_id,
+                    agents=agents,
+                    reason="the task's project (or one above it) is not running "
+                           "(WS-27bg)",
+                )
+                return
 
-        # Ship dark. OFF: one row the member reads, an INFO line, no run.
-        # Checked after the task and the run state, so a paused project stays
-        # as quiet as it was, and before any `agent_run` "started" row.
-        if not dispatch_enabled():
-            await record_activity(
-                db, activity_type="agent_run",
-                created_by=f"{AGENT_PREFIX}{agents[0]}",
-                task_id=task_id, body=DISABLED_BODY,
-                meta={"agent": agents[0], "agents": agents,
-                      "state": "disabled"},
-            )
-            _log.info(
-                "projects.agent_dispatch_disabled", task_id=task_id,
-                agents=agents, flag=DISPATCH_FLAG,
-            )
-            return
+            # Ship dark. OFF: one row the member reads, an INFO line, no run.
+            # Checked after the task and the run state, so a paused project stays
+            # as quiet as it was, and before any `agent_run` "started" row.
+            if not dispatch_enabled():
+                await record_activity(
+                    db, activity_type="agent_run",
+                    created_by=f"{AGENT_PREFIX}{agents[0]}",
+                    task_id=task_id, body=DISABLED_BODY,
+                    meta={"agent": agents[0], "agents": agents,
+                          "state": "disabled"},
+                )
+                _log.info(
+                    "projects.agent_dispatch_disabled", task_id=task_id,
+                    agents=agents, flag=DISPATCH_FLAG,
+                )
+                return
 
-        message = build_message(task)
-        for name in agents:
-            # The timeline entry is written and COMMITTED before the run
-            # starts — the `_tenant_session` block commits on exit, which is
-            # BEFORE the dispatch loop below — so the handoff is visible
-            # immediately rather than when the agent finishes.
-            await record_activity(
-                db, activity_type="agent_run", created_by=f"{AGENT_PREFIX}{name}",
-                task_id=task_id, body=f"Assigned to {name}; starting a run.",
-                meta={"agent": name, "state": "started"},
-            )
+            # H-240: no second run of an agent on a task while its first one
+            # lives. The run acts as its member, so it can assign the task again,
+            # and an agent that puts itself back on the task must not start a
+            # copy of itself. The pairs are held from here, so a second event
+            # that arrives while this one writes its rows is skipped too.
+            busy = [name for name in agents if (task_id, name) in _LIVE]
+            if busy:
+                _log.warning(
+                    "projects.agent_dispatch_already_running", task_id=task_id,
+                    agents=busy,
+                )
+            agents = [name for name in agents if name not in busy]
+            if not agents:
+                return
+            held = [(task_id, name) for name in agents]
+            _LIVE.update(held)
 
+            message = build_message(task)
+            for name in agents:
+                # The timeline entry is written and COMMITTED before the run
+                # starts — the `_tenant_session` block commits on exit, which is
+                # BEFORE the dispatch loop below — so the handoff is visible
+                # immediately rather than when the agent finishes.
+                await record_activity(
+                    db, activity_type="agent_run", created_by=f"{AGENT_PREFIX}{name}",
+                    task_id=task_id, body=f"Assigned to {name}; starting a run.",
+                    meta={"agent": name, "state": "started"},
+                )
+    except BaseException:
+        _LIVE.difference_update(held)
+        raise
+
+    # H-240: the member the gateway's emitter wrote, or "" (no acting user).
+    member = event_member(payload)
     # Started, never awaited: `set_assignees` awaits this sink, so awaiting the
     # run here held the member's request open until the agent finished. One
     # task per agent, so a second agent does not wait for the first.
     for name in agents:
-        _start(_run_and_record(name, message, task_id, organization_id))
+        _start(
+            _run_and_record(name, message, task_id, organization_id, member),
+            key=(task_id, name),
+        )
 
 
 async def _run_and_record(
     agent: str, message: str, task_id: str, organization_id: str,
+    member: str = "",
 ) -> None:
     """Run one agent and close its timeline entry either way.
 
@@ -375,6 +490,10 @@ async def _run_and_record(
     outlives the transaction that started it, so there is nothing left to read
     it from, and re-resolving it would be a second answer to a question the
     event already settled.
+
+    ``member`` (H-240) is the verified assigner from the event, or ``""``.
+    It goes to `run_agent` as ``session_user``, never as a bare payload key
+    that a caller could write.
     """
     try:
         from orchestrator.executor import run_agent
@@ -395,8 +514,12 @@ async def _run_and_record(
             # WS-63 PZ-2 (personalization.md §5.1): the reply goes to the
             # task timeline, which other members read. The run is never solo,
             # whatever context started it, so it gets no profile block.
+            # H-240: the assigner, verified by the gateway's emitter, is the
+            # run's member. ``None`` keeps a run with no member as it was.
             run_agent(
-                agent, run_payload(message), organization_id=organization_id,
+                agent, run_payload(message, member),
+                organization_id=organization_id,
+                session_user=member or None,
                 solo_room=False,
             ),
             timeout=AGENT_RUN_TIMEOUT_SECONDS,

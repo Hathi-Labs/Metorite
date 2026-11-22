@@ -343,6 +343,33 @@ def test_catching_up_SKIPS_the_missed_ones_rather_than_backfilling():
     assert got == at("2026-01-11T09:00:00")
 
 
+def _daily_at(now: str, day_start: str) -> datetime | None:
+    return next_occurrence(rule(freq="daily", anchor="due"), due_at="2026-01-09T06:30:00+00:00",
+                           completed_at=None, now=at(now), day_start=at(day_start))
+
+
+def test_a_task_closed_after_noon_keeps_the_occurrence_of_that_day():
+    """RX-5, the day rule. An occurrence due at noon today is still due today at
+    15:00, so the series does not skip it. Mutation: read `now` in `passed`."""
+    assert _daily_at("2026-01-10T09:30:00", "2026-01-09T18:30:00") == at("2026-01-10T06:30:00")
+
+
+def test_an_occurrence_of_yesterday_still_moves_on():
+    """The day rule keeps today and nothing before it."""
+    assert _daily_at("2026-01-11T09:30:00", "2026-01-10T18:30:00") == at("2026-01-11T06:30:00")
+
+
+def test_the_edge_of_the_day_is_today():
+    assert _daily_at("2026-01-10T07:00:00", "2026-01-10T06:30:00") == at("2026-01-10T06:30:00")
+
+
+def test_a_completed_anchor_ignores_the_day_rule():
+    got = next_occurrence(rule(freq="daily", anchor="completed"), due_at=None,
+                          completed_at=at("2026-01-10T09:30:00"), now=at("2026-01-10T09:30:00"),
+                          day_start=at("2026-01-09T18:30:00"))
+    assert got == at("2026-01-11T09:30:00")
+
+
 def test_a_series_further_behind_than_the_catch_up_cap_is_dead_not_late():
     r = rule(freq="daily", anchor="due")
     assert nxt(r, due="1990-01-01T09:00:00", now="2026-01-01T00:00:00") is None

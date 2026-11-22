@@ -834,6 +834,8 @@ def _mailbox_namespaces() -> tuple[str, ...]:
     * ``digest.py``: the brief cache, ``key(ns, account_id, day, digest)``.
     * ``automation/replyzero.py``: the status back-off mark,
       ``key(ns, account_id, thread_id, message_id)``.
+    * ``automation/engine.py``: the count of blank rule answers,
+      ``key(ns, account_id, message_id)``.
     * ``email_ingestion/llm_cap.py``: the daily budget count,
       ``key(ns, account_id, day)``.
 
@@ -842,10 +844,12 @@ def _mailbox_namespaces() -> tuple[str, ...]:
     so this module adds no import cycle.
     """
     from email_ingestion.llm_cap import BUDGET_NAMESPACE
+    from gateway.routes.email.automation.engine import BLANK_RULE_NAMESPACE
     from gateway.routes.email.automation.replyzero import STATUS_BACKOFF_NAMESPACE
     from gateway.routes.email.digest import BRIEF_CACHE_NAMESPACE
 
-    return (BRIEF_CACHE_NAMESPACE, STATUS_BACKOFF_NAMESPACE, BUDGET_NAMESPACE)
+    return (BRIEF_CACHE_NAMESPACE, STATUS_BACKOFF_NAMESPACE,
+            BLANK_RULE_NAMESPACE, BUDGET_NAMESPACE)
 
 
 def _redis() -> Any:

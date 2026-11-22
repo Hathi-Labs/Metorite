@@ -77,6 +77,8 @@ const VERB: Record<string, string> = {
   agent_question: "asked you about",
   // Task 1054 — the stranded-run nudge: the run went quiet, the member decides.
   nudge: "has gone quiet on",
+  // WS-ALN ALN-2a — one person decides: the asker needs this member's choice.
+  decision: "asks you to decide on",
 };
 
 /**
@@ -92,8 +94,19 @@ export function describe(row: NotificationRow): string {
   const task = taskLabel(row);
   // No "since <time>": the notice time is when the sweep nudged, after the
   // lease ran out, not when the run went quiet. The row shows its own time.
-  if (row.kind === "nudge") return `${who} ${verb} ${task}. Resume or release it.`;
+  if (row.kind === "nudge") {
+    // Two producers share this kind. The sweep stamps the client (`mcp:` or
+    // `agent:`) as actor. A person's nudge (`nudge_task`) stamps their address.
+    if (!isRunActor(row.actor)) return `${who} nudged you about ${task}`;
+    return `${who} ${verb} ${task}. Resume or release it.`;
+  }
   return `${who} ${verb} ${task}`;
+}
+
+/** True when the actor is an agent or an outside client, not a person. */
+function isRunActor(actor: string | null | undefined): boolean {
+  const raw = (actor ?? "").trim();
+  return raw.startsWith("mcp:") || raw.startsWith("agent:");
 }
 
 export function actorLabel(actor: string | null | undefined): string {

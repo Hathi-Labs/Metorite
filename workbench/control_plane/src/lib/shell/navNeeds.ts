@@ -37,10 +37,6 @@ export function needsLabel(n: number, floor = false): string {
   return `${count} ${count === 1 ? "needs" : "need"} you`;
 }
 
-/** What "Add apps" says for the rows in apps the sidebar does not show. */
-export function strayNeedsLabel(n: number, floor = false): string {
-  return `${needsLabel(n, floor)} in hidden apps`;
-}
 
 /** The printed count: "3", "99+", and "15+" for a floor. */
 export function needsText(needs: number | undefined, floor = false): string | null {
@@ -92,15 +88,3 @@ export function rowName(
   return `${label}${badgeLabel ? `, ${badgeLabel}` : ""}${spoken}`;
 }
 
-/**
- * The name of "Add apps": "Add apps", then the run badge's words, then the
- * needs in hidden apps. "Add apps, 1 assistant running, 2 need you in hidden
- * apps". It is the button's `aria-label` open and folded, so neither form
- * loses the run badge's words.
- */
-export function addAppsName(needs: number, badgeLabel?: string, floor = false): string {
-  const parts = ["Add apps"];
-  if (badgeLabel) parts.push(badgeLabel);
-  if (needsSuffix(needs, floor)) parts.push(strayNeedsLabel(needs, floor));
-  return parts.join(", ");
-}

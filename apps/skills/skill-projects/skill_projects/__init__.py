@@ -9,6 +9,14 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
+from skill_projects.cycles import (
+    close_cycle,
+    create_cycle,
+    cycle_detail,
+    list_cycles,
+    plan_cycle,
+    start_cycle,
+)
 from skill_projects.forms import (
     create_tags,
     create_tasks,
@@ -19,16 +27,20 @@ from skill_projects.forms import (
 )
 from skill_projects.guarded import (
     add_report_recipient,
+    answer_decision,
     archive_project,
     archive_task,
     attach_to_task,
     bulk_update,
+    change_agent_answer,
     convert_folder_to_project,
+    create_project_from_template,
     delete_area,
     delete_attachment,
     delete_comment,
     delete_field,
     delete_project,
+    delete_project_update,
     delete_status,
     delete_tag,
     delete_task,
@@ -39,34 +51,44 @@ from skill_projects.guarded import (
     merge_tasks,
     move_project,
     nudge_task,
+    pin_authority,
     promote_reminder,
     remove_report_recipient,
     rename_area,
     report_delete,
     revert_activity,
     revoke_access,
+    save_as_template,
     set_report_schedule,
     set_status_set,
     unarchive_project,
+    unpin_authority,
 )
 from skill_projects.inbox import (
     calendar,
     capture_intake,
     create_area,
     intake_queue,
+    list_project_updates,
+    list_templates,
     mark_notifications_read,
     my_areas,
     my_contexts,
+    my_decisions,
     my_led_projects,
     notifications,
+    post_project_update,
     project_access,
+    project_authorities,
     project_views,
     save_view,
     triage_intake,
     watchers,
 )
 from skill_projects.nav import open_in_app, show_view
+from skill_projects.question_answers import answer_agent_question
 from skill_projects.reads import (
+    agent_questions,
     analytics_finished,
     analytics_load,
     analytics_outlook,
@@ -75,6 +97,7 @@ from skill_projects.reads import (
     find_conflicts,
     find_tasks,
     fit_for_task,
+    get_plan,
     list_reminders,
     list_tasks,
     my_task,
@@ -126,6 +149,7 @@ from skill_projects.writes import (
     report_save,
     reschedule_reminder,
     resolve_reminder,
+    set_epic_contract,
     set_my_overlay,
     set_recurrence,
     set_reminder,
@@ -137,6 +161,7 @@ from skill_projects.writes import (
     update_status,
     update_tag,
     update_task,
+    update_tasks,
     update_type,
     watch,
 )
@@ -162,6 +187,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "waiting_agent_requests",
     # Class A — WS-55 SW-11a, what needs a person (spec §12.7)
     "needs_attention",
+    # Class A — WS-55 EA-18d, the agent questions that wait on the member (spec §12.8)
+    "agent_questions",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
@@ -183,8 +210,17 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "my_areas",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
+    "my_decisions",
+    # Class A — WS-39 LP-1a, the updates of a project with their health
+    "list_project_updates",
+    # Class A — WS-39 TPL-1a, the templates of the organization
+    "list_templates",
+    # Class A — WS-39 SP-5a, the cycles (sprints) of a node and one cycle's status
+    "list_cycles",
+    "cycle_detail",
     # Class A — navigation (S6)
     "open_in_app",
     "show_view",
@@ -194,6 +230,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "fit_for_task",
     "rebalance",
     "find_conflicts",
+    "get_plan",
     "task_dataset",
     # Class A — WS-66 RM-3 (D114), the member's own reminders
     "list_reminders",
@@ -212,7 +249,10 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "unlink_tasks",
     "update_project",
     "update_task",
+    "update_tasks",
     "watch",
+    # Class B — WS-55 EA-18d, the member answers one agent question (spec §12.8)
+    "answer_agent_question",
     # Class B — the rest: vocabulary, a comment of one's own, the repeat
     # rule, the private capture and the overlay (S2b)
     "create_field",
@@ -243,6 +283,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — the contract of an epic, one card (SP-8a)
+    "set_epic_contract",
     # Class B — WS-64 OP-6a, a new area of the member's own
     "create_area",
     # Class B — the rest of the writes (S5)
@@ -257,6 +299,11 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "resolve_reminder",
     "reopen_reminder",
     "reschedule_reminder",
+    # Class B — WS-39 LP-1a, an update of a project with its health, one card
+    "post_project_update",
+    # Class B — WS-39 SP-5a, plan a cycle and plan its tasks, one card each
+    "create_cycle",
+    "plan_cycle",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
@@ -274,6 +321,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "delete_type",
     "delete_view",
     "grant_access",
+    "pin_authority",
+    "answer_decision",
     "merge_tags",
     "merge_tasks",
     "move_project",
@@ -281,6 +330,12 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "rename_area",
     "report_delete",
     "revoke_access",
+    "unpin_authority",
+    # Class C — WS-39 SP-5a, a cycle starts and a cycle closes, one card each
+    "start_cycle",
+    "close_cycle",
+    # Class C — WS-39 LP-1a, the delete of a project update, one card
+    "delete_project_update",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
@@ -289,4 +344,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "unarchive_project",
     # Class C — WS-66 RM-3: a reminder becomes a task, and it cannot reopen
     "promote_reminder",
+    # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
+    "save_as_template",
+    "create_project_from_template",
+    # Class C — SW-43c: the member takes back or changes an answer to an agent
+    "change_agent_answer",
 ]

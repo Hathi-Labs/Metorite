@@ -205,12 +205,17 @@ def _client(email: str = _ALICE):
     return TestClient(app)
 
 
-def _body(thread: str, message: str, *, history=None, followup=False) -> dict[str, Any]:
+def _body(thread: str, message: str, *, history=None, followup=False,
+          typed=False) -> dict[str, Any]:
+    """A run request. *typed* adds the ONE mark of a message that the member
+    typed in the message box (D-PZ-37). Without it the request is a tap."""
     payload: dict[str, Any] = {
         "mode": "chat", "message": message, "messages": history or [],
     }
     if followup:
         payload["steer_followup"] = True
+    if typed:
+        payload["typed"] = True
     return {
         "agent": "orchestrator", "thread_id": thread,
         "assistant_message_id": f"a-{thread}", "payload": payload,
@@ -498,7 +503,7 @@ def test_pz31_an_own_typed_steer_grounds_a_save_in_the_follow_up(world, saves):
     """(a) The incident: the answer goes as a steer, the run ends without a
     tool call, and the follow-up run saves a phrase of it."""
     world.active = True
-    code, body = _post(_body("t-pz-own", _ANSWER))
+    code, body = _post(_body("t-pz-own", _ANSWER, typed=True))
     assert code == 202 and body["steered"]
     assert [(s["author"], s["typed"]) for s in _stored(world, "t-pz-own")] == [(_ALICE, True)]
     assert steer.buffer_guidance(
@@ -516,10 +521,10 @@ def test_pz31_a_new_message_keeps_its_words_and_adds_the_own_steer(world, saves)
     """A real message that ENGAGEs keeps its own typed words, and the
     member's own typed steer that it replays is added."""
     world.active = True
-    assert _post(_body("t-pz-add", _ANSWER))[0] == 202
+    assert _post(_body("t-pz-add", _ANSWER, typed=True))[0] == 202
     world.active = False
     message = "and remember I like oolong tea"
-    assert _post(_body("t-pz-add", message))[0] == 200
+    assert _post(_body("t-pz-add", message, typed=True))[0] == 200
     typed = saves[-1]["typed"]
     assert typed.startswith(message) and _ANSWER in typed
     assert saves[-1]["grounds"] is True
@@ -529,7 +534,7 @@ def test_pz31_a_steer_by_another_member_grounds_nothing(world, saves):
     """(b) The same words from another member of the thread ground no save
     in the run of the member who asks the follow-up."""
     world.active = True
-    code, _ = _post(_body("t-pz-bob", _ANSWER), email=_BOB)
+    code, _ = _post(_body("t-pz-bob", _ANSWER, typed=True), email=_BOB)
     assert code == 202
     assert [(s["author"], s["typed"]) for s in _stored(world, "t-pz-bob")] == [(_BOB, True)]
     world.active = False
@@ -539,10 +544,37 @@ def test_pz31_a_steer_by_another_member_grounds_nothing(world, saves):
     assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
 
 
+def test_round_4_a_tapped_steer_is_not_typed_and_grounds_nothing(world, saves):
+    """D-PZ-37: a pill tapped while a run is live goes as a steer with no
+    mark. The store keeps it as not typed, so the follow-up run grounds
+    nothing in it. The same words with the mark ground the save (the first
+    test above)."""
+    world.active = True
+    code, body = _post(_body("t-pz-tap", _ANSWER))
+    assert code == 202 and body["steered"]
+    assert [(s["author"], s["typed"]) for s in _stored(world, "t-pz-tap")] == [(_ALICE, False)]
+    world.active = False
+
+    code, _ = _post(_body("t-pz-tap", "", followup=True))
+    assert code == 200
+    assert saves == [{"typed": "", "grounds": False, "refusal": _no_typed_text()}]
+
+
+def test_round_4_a_mark_that_is_not_json_true_is_no_mark(world, saves):
+    """Only JSON ``true`` is the mark. A string or a number is a tap."""
+    for i, mark in enumerate(("true", 1, "yes")):
+        body = _body(f"t-pz-odd-{i}", _ANSWER)
+        body["payload"]["typed"] = mark
+        assert _post(body)[0] == 200
+    assert [run["typed"] for run in saves] == ["", "", ""]
+    assert all(run["grounds"] is False for run in saves)
+
+
 def test_pz31_a_card_answer_sent_as_a_steer_grounds_nothing(world, saves):
     """(c) A card answer holds the card's text, which the model wrote."""
     world.active = True
-    body = _body("t-pz-card", _ANSWER)
+    # The mark does not make a card answer typed (D-PZ-37 keeps the refusal).
+    body = _body("t-pz-card", _ANSWER, typed=True)
     body["payload"]["card_answer"] = {"question": "What do you want to move?"}
     code, out = _post(body)
     assert code == 202 and out["steered"]
@@ -566,7 +598,8 @@ def test_pz31_a_continue_sent_as_a_steer_grounds_nothing(world, saves, monkeypat
 
     monkeypatch.setattr(agent, "_resume_note_for", _note)
     world.active = True
-    body = _body("t-pz-resume", "Continue")
+    # The mark does not make a Continue typed.
+    body = _body("t-pz-resume", "Continue", typed=True)
     body["payload"]["resume"] = True
     code, out = _post(body)
     assert code == 202 and out["steered"]

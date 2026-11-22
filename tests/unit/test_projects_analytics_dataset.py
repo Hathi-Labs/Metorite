@@ -125,7 +125,14 @@ def test_the_filters_are_build_task_filters_plus_three() -> None:
     the scope's to decide, and ``viewer`` is the caller, never the query."""
     builder = set(inspect.signature(build_task_filters).parameters)
     own = set(route.FILTER_KEYS) - set(route.DATE_FILTERS)
-    assert own == builder - {"include_archived", "archived_only", "viewer"}
+    # `day_start` is the reader's own today, never the query's (RX-5).
+    # MCP-G19a. The audit filters serve `list_tasks` and `board_stats`. The
+    # dataset leaves them out on purpose (a later slice may add them), and a
+    # key outside FILTER_KEYS is a 422, never ignored. `created_after` is
+    # already a dataset date filter.
+    audit = {"has_parent", "is_epic", "assigned", "updated_before",
+             "updated_after", "created_after", "title_prefix"}
+    assert own == builder - {"include_archived", "archived_only", "viewer", "day_start"} - audit
     assert set(route.DATE_FILTERS) == {"created_after", "completed_after", "completed_before"}
 
 

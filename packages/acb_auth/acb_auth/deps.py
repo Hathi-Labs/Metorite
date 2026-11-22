@@ -36,8 +36,8 @@ Headers (set by Next.js SSO proxy):
                      Falls back to "employee" if missing/unrecognised.
 
 Both are INTERNAL-ONLY headers and nothing in this module can tell a forwarded
-one from a forged one — the Bearer token beside them is the whole of the proof,
-and that token falls back to the widely-held ``LITELLM_MASTER_KEY`` (below).
+one from a forged one — the Bearer token beside them is the whole of the proof.
+That token is ``GATEWAY_INTERNAL_TOKEN`` only. It has no fallback (WS-24b).
 The boundary therefore has to be the reverse proxy: the public vhost must
 delete ``X-User-Email`` and ``X-User-Role`` from every inbound request, so they
 can only ever be set by a caller already on the box. As of 2026-08-03
@@ -59,9 +59,13 @@ Two secrets, deliberately distinct (BO-2 residual #4):
 They used to be one value: the identity token fell back to the LLM key, and
 the orchestrator handed agents whichever it resolved to. Every agent therefore
 held the identity token and could call /admin/* to grant itself anything.
+WS-24b (2026-11-06) removed that fallback.
 
-Empty string disables Bearer auth (never accept all callers — use SSO headers
-instead).
+An unset ``GATEWAY_INTERNAL_TOKEN`` FAILS CLOSED outside ``ACB_ENV=dev``: no
+Bearer is service identity, ``require_internal_auth`` answers 401, and a bare
+``X-User-Email`` resolves anonymous. On ``ACB_ENV=dev`` an unset token is
+open, the same rule as ``require_llm_api_auth``. This is new: the old
+``sk-local`` default kept a dev box with no token closed.
 
 Branch 0 (WS-55 EA-3a, ``external_agent_access.md`` §10.1): a request that
 carries an ``X-Agent-*`` header or an ``mcp:`` actor stamp is an outside
@@ -74,6 +78,7 @@ such request. Fence: ``tests/unit/test_mcp_edge_signing.py``.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import secrets
 from collections.abc import Collection
@@ -83,7 +88,7 @@ from acb_common import app_manifests, bind_run_context, db_busy, get_logger, ten
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
-from acb_auth import agent_oauth, agent_signing, agent_tokens
+from acb_auth import agent_oauth, agent_signing, agent_tokens, app_requests
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
@@ -119,20 +124,20 @@ def _get_llm_api_token() -> str:
     return tok
 
 
-def _resolve_internal_token() -> tuple[str, bool]:
-    """``(token, is_llm_fallback)`` — the service-identity ladder, once.
+def _get_internal_token() -> str:
+    """The SERVICE IDENTITY token: proof that a caller *is* the platform.
 
-    THE ladder. :func:`_get_internal_token` and
-    :func:`_internal_token_is_llm_fallback` are both thin readers of this
-    tuple, deliberately: the second used to re-implement the precedence, and a
-    later change to one copy would have left the flag answering about a
-    resolution that no longer happens. The consequence of that drift is not
-    academic — ``get_current_user`` uses the flag to REFUSE identity, so a
-    stale copy would start refusing a legitimately provisioned token, which on
-    a flagged box is every member locked out.
+    Grants ``SERVICE_ACCESS`` (everything), so it must never be given to code
+    that runs untrusted input. That is why it is separate from the ``/v1`` API
+    key (BO-2 residual #4).
 
-    Silent by design: the warning belongs to the caller that actually resolves
-    a token for use, not to every predicate that asks about it.
+    It reads ``GATEWAY_INTERNAL_TOKEN``, then the settings field of the same
+    name. There is NO other rung. Before WS-24b (2026-11-06) an unset token
+    fell back to ``LITELLM_MASTER_KEY``, the key that every agent's BYOK client
+    holds, so any agent could authenticate as the platform. ``""`` means
+    unprovisioned. Then no Bearer is service identity, and
+    :func:`_unset_token_is_open` decides the rest. Fence:
+    ``tests/unit/test_service_identity_and_webhook_auth.py``.
     """
     tok = os.getenv("GATEWAY_INTERNAL_TOKEN", "").strip()
     if not tok:
@@ -141,93 +146,21 @@ def _resolve_internal_token() -> tuple[str, bool]:
             tok = (get_settings().gateway_internal_token or "").strip()
         except Exception:  # noqa: BLE001
             pass
-    if tok:
-        return tok, False
-    return _get_llm_api_token(), True
-
-
-def _get_internal_token() -> str:
-    """The SERVICE IDENTITY token: proof that a caller *is* the platform.
-
-    Grants ``SERVICE_ACCESS`` (everything), so it must never be given to code
-    that runs untrusted input — which is exactly why it is now separate from
-    the ``/v1`` API key. Previously this fell back to ``LITELLM_MASTER_KEY``,
-    and the orchestrator handed agents whichever value this resolved to, so
-    every agent held the identity token and could call ``/admin/*`` to grant
-    itself anything. That is BO-2 residual #4.
-
-    Precedence: ``GATEWAY_INTERNAL_TOKEN`` → (unprovisioned only)
-    ``LITELLM_MASTER_KEY`` with a warning → ``""``, which disables Bearer
-    auth entirely.
-
-    The fallback is retained ONLY so a deployment that has not set
-    ``GATEWAY_INTERNAL_TOKEN`` keeps working rather than 401ing every internal
-    call on upgrade. While it is in effect the two secrets are the same value
-    and the separation does not exist, so it warns on every resolution — a
-    silent fallback here would be the vulnerability wearing a fix's clothes.
-    """
-    tok, is_fallback = _resolve_internal_token()
-    if is_fallback and tok:
-        _log.warning(
-            "gateway_internal_token_unset",
-            detail=(
-                "Falling back to LITELLM_MASTER_KEY for service identity. That "
-                "key is handed to every agent, so any agent can currently "
-                "authenticate as the platform. Set GATEWAY_INTERNAL_TOKEN to a "
-                "distinct secret."
-            ),
-        )
     return tok
 
 
-def _internal_token_is_llm_fallback() -> bool:
-    """True when service identity is currently BORROWING the ``/v1`` API key.
+def _unset_token_is_open() -> bool:
+    """May an unprovisioned box trust a caller that it cannot check?
 
-    i.e. ``GATEWAY_INTERNAL_TOKEN`` is unprovisioned and
-    :func:`_get_internal_token` is therefore returning ``LITELLM_MASTER_KEY``.
-    While that holds, the two secrets are one value and "proves it is the
-    platform" means no more than "holds the key every agent holds".
-
-    DERIVED from :func:`_resolve_internal_token`, never re-derived: this
-    predicate and the token it describes have to be two readings of one
-    resolution, or they can disagree.
+    True only when ``ACB_ENV`` is ``dev``. A laptop has nothing to protect,
+    and the rule is the one of :func:`require_llm_api_auth`. On every other
+    box an unset ``GATEWAY_INTERNAL_TOKEN`` FAILS CLOSED:
+    :func:`require_internal_auth` answers 401, and :func:`get_current_user`
+    refuses a bare ``X-User-Email``. Before WS-24b the ``LITELLM_MASTER_KEY``
+    fallback kept the token non-empty, so these two checks were closed on
+    every real box. This rule keeps them closed with the fallback gone.
     """
-    tok, is_fallback = _resolve_internal_token()
-    return is_fallback and bool(tok)
-
-
-def _refuse_llm_key_identity() -> bool:
-    """Opt-in hardening: the ``/v1`` API key may not stand in for identity.
-
-    ``_get_internal_token``'s fallback to ``LITELLM_MASTER_KEY`` keeps an
-    un-migrated deployment working, but while it is in effect that key — which
-    every agent's BYOK client holds, and which is therefore semi-public within
-    the deployment — authenticates a caller as the platform. Such a caller can
-    then either assert any colleague's ``X-User-Email`` (branch 1a) or act as
-    the platform itself with ``SERVICE_ACCESS`` (branch 1b).
-
-    Setting ``GATEWAY_REFUSE_LLM_KEY_IDENTITY=1`` makes that fallback refusable
-    for *identity* purposes: a Bearer that only matches because the fallback is
-    in effect no longer establishes any identity at all, and the caller resolves
-    exactly as an unauthenticated one would.
-
-    **Default is FALSE — today's behaviour.** Flipping it is an OWNER-GATE
-    action (``work_plan.md`` §6: "any deploy that changes auth behaviour"), and
-    it is only safe once ``GATEWAY_INTERNAL_TOKEN`` is provisioned in BOTH
-    ``/opt/acb/app/.env`` and the workbench's ``.env.local`` — the Next.js BFF
-    mirrors the same fallback (``workbench/control_plane/src/lib/gateway.ts``),
-    so flipping this while the token is unset would 401 every signed-in member.
-    Once the token IS provisioned the flag is inert, because the fallback is
-    then never in effect.
-
-    ``require_internal_auth`` and ``require_llm_api_auth`` are deliberately NOT
-    covered: they answer "may this call happen", and a mis-provisioned box
-    should degrade to "nobody is anybody" rather than to "the Bearer check is
-    disabled", which is what an empty expected token would mean.
-    """
-    return os.getenv(
-        "GATEWAY_REFUSE_LLM_KEY_IDENTITY", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    return _acb_env() == "dev"
 
 
 def allowed_email_domain() -> str:
@@ -250,6 +183,31 @@ def allowed_email_domain() -> str:
     and authenticates against the tenant like anybody else.
     """
     return os.getenv("ALLOWED_EMAIL_DOMAIN", "fracktal.in").lower().lstrip("@")
+
+
+#: Task 3865. The mismatch line fired on EVERY request of an off-domain member
+#: (54,959 lines in three days). It logs once per (address, domain) per process
+#: per :data:`_MISMATCH_LOG_WINDOW_S`. The log only labels, so the behaviour is
+#: the same. Fence: tests/unit/test_auth_domain_mismatch_log.py.
+_MISMATCH_LOG_WINDOW_S = 3600.0
+_MISMATCH_LOG_MAX_KEYS = 4096
+_mismatch_logged: dict[tuple[str, str], float] = {}
+
+
+def _mismatch_due(asserted: str, domain: str) -> bool:
+    """True when this (address, domain) has not logged in the window."""
+    import time  # noqa: PLC0415
+
+    now = time.monotonic()
+    key = (asserted.lower(), domain)
+    last = _mismatch_logged.get(key)
+    if last is not None and now - last < _MISMATCH_LOG_WINDOW_S:
+        return False
+    _mismatch_logged.pop(key, None)
+    _mismatch_logged[key] = now  # re-inserted last, so dict order is age order
+    while len(_mismatch_logged) > _MISMATCH_LOG_MAX_KEYS:
+        _mismatch_logged.pop(next(iter(_mismatch_logged)))
+    return True
 
 
 def is_company_email(email: str | None) -> bool:
@@ -477,7 +435,7 @@ def _one_header(request: Request, name: str) -> str | None:
 #: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "method", "nonce", "session",
+    "signature", "method", "nonce", "session", "approval",
 })
 
 
@@ -489,20 +447,29 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
-) -> tuple[str, str, str, str | None] | str:
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
+) -> tuple[str, str, str, str | None, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
-    session key)`` of a well-signed, fresh request, or the reason to
-    refuse it.
+    session key, approval)`` of a well-signed, fresh request, or the reason
+    to refuse it.
 
     SW-7 (spec §12.5): ``X-Agent-Session`` is optional. Once and in its
-    shape, it is the last line of the signed string. Twice, or in another
+    shape, it is a line of the signed string. Twice, or in another
     shape, it is a refusal. The session key comes ONLY from this signed
     header, never from a body or a query.
 
+    MCP-P1b-2 (AD-6): ``X-Agent-Approval`` is optional too, and only a write
+    may carry it. Once and in the shape of a request id, it is the line
+    after the session line. Twice, in another shape, or on a GET, it is a
+    refusal. The request id comes ONLY from this signed header.
+
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -519,6 +486,12 @@ def _verify_signed_request(
         session is not None and not agent_signing.session_key_is_well_formed(session)
     ):
         return "session"
+    approvals = request.headers.getlist(agent_signing.HEADER_APPROVAL)
+    approval = approvals[0] if approvals else None
+    if len(approvals) > 1 or (approval is not None and (
+        nonce is None or not agent_signing.approval_is_well_formed(approval)
+    )):
+        return "approval"
     # A GET has no nonce and a write has one. Anything else never signs.
     if (request.method.upper() == "GET") != (nonce is None):
         return "nonce"
@@ -549,12 +522,13 @@ def _verify_signed_request(
         body=body,
         nonce=nonce,
         session=session,
+        approval=approval,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
     if not agent_signing.timestamp_is_fresh(timestamp):
         return "timestamp"
-    return organization_id, connection_id, actor_via, session
+    return organization_id, connection_id, actor_via, session, approval
 
 
 async def _read_connection(
@@ -635,15 +609,19 @@ async def _claim_write(
             )
             if not fresh:
                 return "replay"
+            # MCP-G20: the live cap and window, read at each write
+            # (`AGENT_WRITE_CAP`, `AGENT_WRITE_WINDOW_S`). Each signed write
+            # counts once, so each item of `update_tasks` counts once too.
+            cap, window = agent_oauth.write_cap(), agent_oauth.write_window_s()
             counter = tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id)
             count = int(await client.incr(counter))
             if count == 1:
-                await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-            if count > agent_oauth.WRITE_CAP:
+                await client.expire(counter, window)
+            if count > cap:
                 left = int(await client.ttl(counter))
                 if left < 0:
-                    await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-                    left = agent_oauth.WRITE_WINDOW_S
+                    await client.expire(counter, window)
+                    left = window
                 over = max(left, 1)
     except Exception as exc:
         # Every failure of the store fails closed as the 503: an outage
@@ -672,7 +650,7 @@ DOOR_READ_CAP_DETAIL = "Too many reads from this connection. Wait a few minutes.
 
 def _audit_door(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    via: str, decision: str,
+    via: str, decision: str, request_id: str | None = None,
 ) -> None:
     """AD-14: the ONE audit row of a door call, allowed or refused. A call
     that is not a door call (*door* is ``None``) writes none.
@@ -680,8 +658,8 @@ def _audit_door(
     It holds the organization, the connection, the member and the stamp,
     then the app, the op, the class, the request id and the decision of
     branch 0. It holds no body and no argument value. The write is best
-    effort, as ``acb_audit.record`` is. MCP-P1a has no request, so the
-    request id is ``None``.
+    effort, as ``acb_audit.record`` is. *request_id* is the approval that
+    the call spends (MCP-P1b-2), and ``None`` for a call with none.
     """
     if door is None:
         return
@@ -700,8 +678,11 @@ def _audit_door(
                 "app": door.app.id,
                 "op": door.name,
                 "class": door.route.cls,
-                "request_id": None,
+                "request_id": request_id,
                 "decision": decision,
+                # BR-7b (core_brief.md §8.2): the app scope that the door
+                # checks. The close-out names it on an allowed call.
+                "policy": door.scope,
             },
             organization_id=connection.organization_id,
         ))
@@ -743,22 +724,142 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
 
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, pair: tuple[str, str | None],
+    *, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
-    """Steps 5a to 5d of branch 0: :func:`_door_gate` for a door pair, else
-    :func:`_claim_write` with ``projects:write`` for a write of
-    ``MCP_WRITE_ROUTES``. A read of ``MCP_ROUTES`` needs neither. A refusal
-    reason (401), or ``None``."""
+    """Steps 5a to 5e of branch 0: :func:`_door_gate` for a door pair, else
+    :func:`_claim_write` for a write of ``MCP_WRITE_ROUTES``. A read of
+    ``MCP_ROUTES`` needs neither. A refusal reason (401), or ``None``.
+
+    A write of ``MCP_WRITE_ROUTES`` needs ``projects:write``. The ask of
+    ``app_write`` (MCP-P1b-2, AD-4) needs any ``<app>:write`` of an app that
+    the door serves (``agent_oauth.request_write_scope``), and the route
+    checks the app of its path.
+
+    MCP-P1b-2 (AD-6): only a door write that waits for the member may carry
+    an *approval*, and only one whose digest :func:`_approval_of` could
+    form. Any other approval is ``"approval"``, with its audit row for a door
+    pair, so no approval reaches a route that does not spend it."""
+    if approval is not None and (door is None or door.asks == "never"
+                                 or approval[1] is None):
+        _audit_door(connection, door, via, "approval", approval[0])
+        return "approval"
     if door is not None:
-        return await _door_gate(connection, door, nonce, via)
+        return await _door_gate(connection, door, nonce, via, approval)
     if nonce is not None:
-        return await _claim_write(connection, nonce, agent_oauth.PROJECTS_WRITE)
+        scope: str | None = agent_oauth.PROJECTS_WRITE
+        if pair == agent_oauth.REQUEST_ASK_ROUTE:
+            scope = agent_oauth.request_write_scope(connection.scopes)
+        if scope is None:
+            return "write_scope"
+        return await _claim_write(connection, nonce, scope)
     return None
+
+
+def _approval_of(
+    connection_id: str, approval_id: str | None, method: str, template: str | None,
+    path: str, query: str | bytes, body: bytes, if_match: list[str],
+) -> tuple[str, str | None] | None:
+    """The approval of a call and the digest of the call (MCP-P1b-2,
+    AD-17): ``(request id, digest)``, or ``None`` for a call with no
+    approval. The digest is ``None`` when branch 0 must refuse the call.
+
+    The parts are the method, the matched template, the signed path and
+    query, the hash of the signed body, the ONE ``If-Match`` that the route
+    reads, and the binding of the ROW's connection. Two ``If-Match`` headers,
+    or a part that cannot form one line of the digest, give no digest.
+    """
+    if approval_id is None:
+        return None
+    pairs = agent_signing.query_pairs(query)
+    if len(if_match) > 1 or not template or pairs is None:
+        return approval_id, None
+    try:
+        return approval_id, app_requests.digest_of(
+            binding=app_requests.mcp_binding(connection_id),
+            method=method, template=template, path=path, query=pairs,
+            body_sha256=hashlib.sha256(body).hexdigest(),
+            if_match=if_match[0] if if_match else None,
+        )
+    except ValueError:
+        return approval_id, None
+
+
+#: MCP-P1b-2 (AD-6). Each class of a refused spend, with its status and its
+#: code. A request that waits for the member, or that this member, app and
+#: connection do not hold, has no approval to spend.
+_SPEND_REFUSALS: dict[str, tuple[int, str]] = {
+    "mismatch": (409, agent_oauth.APPROVAL_MISMATCH_CODE),
+    "declined": (409, agent_oauth.APPROVAL_USED_CODE),
+    "spent": (409, agent_oauth.APPROVAL_USED_CODE),
+    "expired": (409, agent_oauth.APPROVAL_USED_CODE),
+    "awaiting": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+    "not_found": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+}
+
+
+async def _spend_approval(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
+    approval: tuple[str, str | None], via: str,
+) -> None:
+    """Step 5e of branch 0 (MCP-P1b-2, AD-6): spend the approval once.
+
+    *approval* is the signed request id and the digest of THIS call
+    (:func:`_approval_of`). ``acb_auth.app_requests.spend`` is the ONE
+    spend: one ``UPDATE ... RETURNING`` whose WHERE holds the org, the app,
+    the member, the connection, the whole binding, the decision, the expiry
+    and the digest, so two calls that race get one winner. It runs in a
+    tenant session of the ROW's organization, and it commits before the
+    route runs. So a route that refuses the call after the spend changes
+    nothing, and the request stays spent (§19.12).
+
+    A refused spend changes nothing. It answers 409 ``approval_mismatch``
+    for another call (the request stays approved), 409 ``approval_used`` for
+    a spent, declined or expired request, and 403 ``approval_required`` for
+    a request with no decision or one that this member, app and connection
+    do not hold. Each refusal writes its audit row. A failure of the
+    database is the ONE 503 of :func:`_identity_unavailable`, never a 401.
+    """
+    from acb_common.db import tenant_session
+
+    # `_claim_call` refused an approval with no digest. An empty digest
+    # matches no request, so this line cannot open a spend.
+    request_id, digest = approval[0], approval[1] or ""
+    binding = app_requests.mcp_binding(connection.connection_id)
+    spent: app_requests.Spent | None = None
+    why = "not_found"
+    try:
+        async with tenant_session(connection.organization_id) as db:
+            spent = await app_requests.spend(
+                db, org=connection.organization_id, request_id=request_id,
+                app=door.app.id, member=connection.member_email, binding=binding,
+                digest=digest)
+            if spent is None:
+                why = await app_requests.classify_refusal(
+                    db, org=connection.organization_id, request_id=request_id,
+                    app=door.app.id, member=connection.member_email, binding=binding,
+                    digest=digest)
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+        _log.warning("auth.agent_spend_failed", error=type(exc).__name__,
+                     connection_id=connection.connection_id)
+        _audit_door(connection, door, via, "unavailable", request_id)
+        raise _identity_unavailable() from exc
+    if spent is not None:
+        _log.info("auth.agent_approval_spent", request_id=request_id,
+                  connection_id=connection.connection_id)
+        return
+    status, code = _SPEND_REFUSALS.get(why, (403, agent_oauth.APPROVAL_REQUIRED_CODE))
+    _audit_door(connection, door, via, code, request_id)
+    _log.info("auth.agent_refused", reason=code, why=why,
+              connection_id=connection.connection_id)
+    raise HTTPException(status_code=status, detail=code)
 
 
 async def _door_gate(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
     """Step 5a of branch 0, for a door pair (MCP-P1a, spec §19.5 to §19.7).
 
@@ -769,32 +870,36 @@ async def _door_gate(
        ``MCP_WRITE_ROUTES``. It runs here, so the refusal has a connection
        for its audit row.
     1. The door flag names the app, else the coded 403 ``app_off``.
-    2. AD-18: a write of class B or C that is not a proposal gets the coded
-       403 ``approval_required``. Before MCP-P1b no approval can exist, so
-       each such call fails, whatever the scope.
+    2. AD-18: a write of class B or C that is not a proposal needs the
+       member's approval. A call with no *approval* gets the coded 403
+       ``approval_required``, whatever the scope. :func:`_claim_call`
+       already refused an approval on a call that asks nothing.
     3. AD-4: the connection holds the app scope of the op, ``<app>:read`` for
        a read and ``<app>:write`` for a change, else ``"door_scope"`` (401).
     4. AD-13: a read counts under the door read cap (429). A write takes the
        nonce and the write cap of :func:`_claim_write`, with the app's write
-       scope.
+       scope. So the ask and the spend of one change count as two writes.
+    5. MCP-P1b-2 (AD-6): the spend of *approval* (:func:`_spend_approval`),
+       last, so a refused call spends nothing.
 
     Returns a refusal reason, or ``None`` when the call may go on. Each
     refusal writes its audit row (:func:`_audit_door`) before it returns or
     raises. The caller writes the row of an allowed call at the end.
     """
+    request_id = approval[0] if approval is not None else None
     if nonce is not None and not agent_oauth.writes_enabled():
-        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE)
+        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE, request_id)
         raise _writes_disabled()
     if not agent_oauth.door_serves(door.app.id):
-        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE)
+        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE, request_id)
         _log.info("auth.agent_refused", reason=agent_oauth.APP_OFF_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APP_OFF_CODE)
-    if door.asks != "never":
+    if door.asks != "never" and approval is None:
         _audit_door(connection, door, via, agent_oauth.APPROVAL_REQUIRED_CODE)
         _log.info("auth.agent_refused", reason=agent_oauth.APPROVAL_REQUIRED_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APPROVAL_REQUIRED_CODE)
     if not agent_oauth.scope_holds(connection.scopes, door.scope):
-        _audit_door(connection, door, via, "door_scope")
+        _audit_door(connection, door, via, "door_scope", request_id)
         return "door_scope"
     over: int | None = None
     refused: str | None = None
@@ -805,7 +910,7 @@ async def _door_gate(
             refused = await _claim_write(connection, nonce, door.scope)
     except HTTPException as exc:
         _audit_door(connection, door, via,
-                    "write_cap" if exc.status_code == 429 else "unavailable")
+                    "write_cap" if exc.status_code == 429 else "unavailable", request_id)
         raise
     if over is not None:
         _audit_door(connection, door, via, "read_cap")
@@ -815,8 +920,32 @@ async def _door_gate(
             headers={"Retry-After": str(over)},
         )
     if refused is not None:
-        _audit_door(connection, door, via, refused)
-    return refused
+        _audit_door(connection, door, via, refused, request_id)
+        return refused
+    if approval is not None:
+        await _spend_approval(connection, door, approval, via)
+    return None
+
+
+async def _signed_body(request: Request) -> bytes | None:
+    """The body bytes that the signature of a write covers, or ``None``.
+
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
+    """
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
+    try:
+        return await request.body()
+    except RuntimeError:  # "Stream consumed": a form route with no copy
+        return None
 
 
 
@@ -847,6 +976,13 @@ async def _agent_user(request: Request) -> UserContext:
     (AD-13). Each door call that reaches a live connection writes ONE audit
     row (AD-14): the stamp check and the gate write a refusal, the seat check
     its own, and the end writes ``allowed``.
+
+    The spend (MCP-P1b-2, AD-6). A door write that waits for the member
+    carries the signed ``X-Agent-Approval``. Branch 0 computes the digest of
+    the call (:func:`_approval_of`), and the gate spends the request
+    once, last, in place of the blanket refusal of AD-18
+    (:func:`_spend_approval`). A call with no approval still gets the 403
+    ``approval_required``.
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -890,13 +1026,13 @@ async def _agent_user(request: Request) -> UserContext:
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
             return _refuse_agent("nonce")
-        body = await request.body()
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
-    organization_id, connection_id, actor_via, session = signed
+    organization_id, connection_id, actor_via, session, approval_id = signed
 
     # 3. The matched route template is in MCP_ROUTES, or it is a door pair.
     if pair not in agent_oauth.MCP_ROUTES and door is None:
@@ -929,6 +1065,10 @@ async def _agent_user(request: Request) -> UserContext:
     # EA-13a fix round 1).
     expected_via = agent_oauth.actor_via_for(
         connection.client_origin, client_id=connection.client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=connection.credential,
+        connection_id=connection.connection_id,
+        client_name=connection.client_name,
     )
     if (
         not connection.client_origin
@@ -937,15 +1077,26 @@ async def _agent_user(request: Request) -> UserContext:
     ):
         # AD-14: a refused door call writes its row too. The row holds the
         # row's own stamp, never the header value.
-        _audit_door(connection, door, expected_via, "actor_via")
+        _audit_door(connection, door, expected_via, "actor_via", approval_id)
         return _refuse_agent("actor_via", **ids)
 
-    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope and the
-    # caps, in `_door_gate`. 5b to 5d, a write of MCP_WRITE_ROUTES:
-    # `projects:write` on the connection (EA3-29), a fresh nonce (EA3-28) and
-    # room under the cap (EA3-30). They run before the resolve, so a refused
-    # call binds no tenant.
-    refused = await _claim_call(connection, door, nonce, expected_via)
+    # 5a'. MCP-P1b-2 (AD-6, AD-17): the approval of THIS call and its digest,
+    # for the spend, or None. The parts are the signed path, query and body,
+    # the matched template, the ONE `If-Match` that the route reads, and the
+    # ROW's connection.
+    approval = _approval_of(
+        connection.connection_id, approval_id, method, pair[1],
+        str(request.scope.get("path") or ""), request.scope.get("query_string") or b"",
+        body, request.headers.getlist("if-match"),
+    )
+
+    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope, the
+    # caps and, last, the spend of an approval (MCP-P1b-2), in `_door_gate`.
+    # 5b to 5d, a write of MCP_WRITE_ROUTES: its write scope (EA3-29), a
+    # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
+    # the resolve, so a refused call binds no tenant.
+    refused = await _claim_call(connection, door, nonce, expected_via, pair,
+                                 approval=approval)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 
@@ -963,15 +1114,17 @@ async def _agent_user(request: Request) -> UserContext:
         # request keeps none.
         clear_tenant()
         outage = identity_read_failed() or role_read_failed()
-        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat")
+        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat",
+                    approval_id)
         if outage:
             # The database refused a read: an outage, not "no seat".
             db_busy.mark()
             raise _identity_unavailable()
         return _refuse_agent("seat", **ids)
 
-    # The audit row of an allowed door call (AD-14).
-    _audit_door(connection, door, expected_via, "allowed")
+    # The audit row of an allowed door call (AD-14), with the request id of
+    # the approval that it spent (MCP-P1b-2).
+    _audit_door(connection, door, expected_via, "allowed", approval_id)
     # Attach the scope LAST. No `_bind_session_member`: no route in
     # MCP_ROUTES and no door op calls a model (AD-11).
     return dataclasses.replace(
@@ -981,6 +1134,7 @@ async def _agent_user(request: Request) -> UserContext:
             scopes=connection.scopes,
             pinned_projects=connection.pinned_projects,
             include_personal=connection.include_personal,
+            left_out_projects=connection.left_out_projects,
             client_origin=connection.client_origin,
             actor_via=expected_via,
             session_key=session,
@@ -1031,26 +1185,6 @@ async def get_current_user(
         if expected and secrets.compare_digest(submitted, expected):
             bearer_ok = True
 
-    # 1'. Opt-in: a Bearer that only matched because service identity fell back
-    #     to LITELLM_MASTER_KEY establishes NOTHING. Dropping bearer_ok here
-    #     rather than in each branch means the caller then resolves exactly as
-    #     an unauthenticated one — branch 2 refuses their X-User-Email because
-    #     an internal token IS configured (the fallback), and a bare Bearer
-    #     resolves anonymous instead of to SERVICE_ACCESS. Default off, so this
-    #     is one os.getenv on bearer-matched calls and nothing else.
-    if bearer_ok and _refuse_llm_key_identity() and _internal_token_is_llm_fallback():
-        _log.warning(
-            "auth.llm_key_identity_refused",
-            asserted_email=(x_user_email or "")[:64],
-            detail=(
-                "GATEWAY_REFUSE_LLM_KEY_IDENTITY is set and "
-                "GATEWAY_INTERNAL_TOKEN is not, so the Bearer presented is the "
-                "LLM API key every agent holds. Refusing to treat it as "
-                "service identity. Provision GATEWAY_INTERNAL_TOKEN."
-            ),
-        )
-        bearer_ok = False
-
     # 1a. Bearer-matched call WITH user identity headers → real user context.
     #     This is the normal browser flow: Next.js proxy authenticates the
     #     session (NextAuth Google SSO) and forwards the verified email + role
@@ -1065,11 +1199,12 @@ async def get_current_user(
             # whose sign-in address is off-domain. The mismatch is only ever
             # LOGGED — the `or x_user_email` below is what makes that explicit,
             # since the assignment above otherwise reads as a check it is not.
-            _log.warning(
-                "auth.identity_domain_mismatch",
-                asserted_email=email[:64],
-                allowed_domain=allowed_domain,
-            )
+            if _mismatch_due(email[:64], allowed_domain):
+                _log.warning(
+                    "auth.identity_domain_mismatch",
+                    asserted_email=email[:64],
+                    allowed_domain=allowed_domain,
+                )
             email = None
         _bind_session_member(email or x_user_email)
         return await _with_resolved_access(
@@ -1099,12 +1234,12 @@ async def get_current_user(
     #    spoofable by anyone who can reach the gateway directly (it is exposed via
     #    Caddy), so trusting it was a full cross-account auth bypass. When an
     #    internal token IS configured we refuse to authenticate such a caller.
-    #    When none is configured we preserve the old trust to avoid bricking an
-    #    unprovisioned/dev gateway (mirroring require_internal_auth's fail-open
-    #    contract); the escape hatch forces trust for a token-mismatch rollback.
+    #    When none is configured we refuse it too, except on a dev laptop
+    #    (_unset_token_is_open, WS-24b). The escape hatch forces trust for a
+    #    token-mismatch rollback.
     if (
         x_user_email
-        and _get_internal_token()
+        and (_get_internal_token() or not _unset_token_is_open())
         and not _trust_unverified_sso_headers()
     ):
         return UserContext(email=None, role=UserRole.EMPLOYEE, access=NO_ACCESS)
@@ -1138,15 +1273,25 @@ async def require_internal_auth(
     routes) already forwards ``Authorization: Bearer <internal token>``.
 
     If no internal token is configured (``_get_internal_token()`` returns ""),
-    Bearer auth is disabled and the call is allowed — matching that function's
-    documented contract. This means a mis-provisioned deployment fails OPEN
-    rather than bricking; since the endpoint was fully open before this guard,
-    that is strictly no worse, while any real deployment (which always sets
-    ``LITELLM_MASTER_KEY``) is now closed.
+    this FAILS CLOSED with a 401, except on a dev laptop
+    (:func:`_unset_token_is_open`). Before WS-24b (2026-11-06) the
+    ``LITELLM_MASTER_KEY`` fallback kept the token non-empty on every real box.
+    With that fallback gone, an open answer here would open every internal
+    route of a box that forgot the token.
     """
     expected = _get_internal_token()
     if not expected:
-        return  # Bearer auth disabled (unconfigured) — preserve prior behaviour.
+        if _unset_token_is_open():
+            return
+        _log.warning(
+            "gateway_internal_token_unset",
+            detail=(
+                "GATEWAY_INTERNAL_TOKEN is not set, so no caller can prove it "
+                "is the platform. Refusing. Set GATEWAY_INTERNAL_TOKEN in the "
+                "gateway .env and in the workbench .env.local."
+            ),
+        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if authorization and authorization.startswith("Bearer "):
         submitted = authorization.removeprefix("Bearer ").strip()
         if submitted and secrets.compare_digest(submitted, expected):

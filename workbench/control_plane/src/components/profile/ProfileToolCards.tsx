@@ -44,6 +44,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { curlyQuotes } from "@/lib/receiptText";
 import { LANGUAGES } from "@/app/settings/assistant/lib/profile";
+import { G_SETTLED, G_TINTED } from "@/components/glassCard";
 
 /** Each profile write, by the label of its receipt. */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
@@ -332,7 +333,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
     <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={summary} receipt={!failed} header="own">
       <div
         className={`rounded-lg border px-2.5 py-2 ${
-          failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
+          failed ? "border-destructive/40 bg-destructive/5 "+G_TINTED : "border-sidebar-border bg-secondary/40 "+G_SETTLED
         }`}
       >
         <RollupHeader className={`text-[11px] ${tone}`} />

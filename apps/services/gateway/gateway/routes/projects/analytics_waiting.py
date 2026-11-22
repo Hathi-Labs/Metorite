@@ -354,6 +354,7 @@ def questions_sql(open_where: str) -> str:
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_projects p ON p.id = t.project_id"
         f" WHERE {open_where}"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND ({AGENT_RUN_STATE_SQL}) = '{AWAITING}'"
     )
 
@@ -404,7 +405,7 @@ def reviews_sql(open_where: str) -> str:
         f"    ) pr ON {agent_worked_sql('t.id', 'now()')}"
         f"    LEFT JOIN LATERAL ("
         f"      SELECT x.client_via, x.member_email FROM pm_agent_runs x"
-        f"       WHERE x.task_id = t.id"
+        f"       WHERE x.task_id = t.id AND x.task_id IS NOT NULL"
         f"       ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
         f"    ) nr ON TRUE"
         f"   WHERE {open_where}"
@@ -450,7 +451,7 @@ def handoffs_sql(blocked_where: str, blocking_where: str) -> str:
         f"   JOIN pm_tasks b ON b.id = l.source_task_id"
         f"   LEFT JOIN LATERAL ("
         f"     SELECT x.client_via, x.member_email FROM pm_agent_runs x"
-        f"      WHERE x.task_id = {agent_side}"
+        f"      WHERE x.task_id = {agent_side} AND x.task_id IS NOT NULL"
         f"      ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
         f"   ) ar ON TRUE"
         f"   LEFT JOIN LATERAL ("
@@ -526,7 +527,8 @@ def agent_runs_seen_sql(past_where: str) -> str:
     run of any status. The Overview hides the panel without one."""
     return (
         f"SELECT EXISTS (SELECT 1 FROM pm_agent_runs r"
-        f" JOIN pm_tasks t ON t.id = r.task_id WHERE {past_where}) AS seen"
+        f" JOIN pm_tasks t ON t.id = r.task_id"
+        f" WHERE r.task_id IS NOT NULL AND {past_where}) AS seen"
     )
 
 

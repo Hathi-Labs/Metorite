@@ -25,7 +25,7 @@
  * - A retire and a section delete ask first, in a `ConfirmDialog`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
@@ -58,6 +58,7 @@ import {
   stepSection,
   studioLayout,
   typeLabel,
+  type FieldDraft,
   type StudioLayout,
 } from "../lib/fieldStudio";
 import type { EntitySlug } from "../lib/types";
@@ -471,7 +472,8 @@ function FieldRow({
 }
 
 type Confirm =
-  | { kind: "retire"; def: FieldDef }
+  // `back` is the field dialog that closed to make room (CRM-U17a).
+  | { kind: "retire"; def: FieldDef; back: FieldForm | null; draft: FieldDraft | null }
   | { kind: "delete-section"; section: FieldSection; count: number }
   | null;
 
@@ -491,6 +493,19 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
   }
 
   const [fieldForm, setFieldForm] = useState<FieldForm | null>(null);
+  // The edits of the open field dialog (CRM-U17a). A retire confirm closes the
+  // dialog, and a Cancel opens it again on this draft.
+  const draftRef = useRef<FieldDraft | null>(null);
+  const [restored, setRestored] = useState<FieldDraft | null>(null);
+  const keepDraft = useCallback((draft: FieldDraft) => {
+    draftRef.current = draft;
+  }, []);
+  /** A dialog that opens fresh starts from the stored field. */
+  function openForm(next: FieldForm) {
+    draftRef.current = null;
+    setRestored(null);
+    setFieldForm(next);
+  }
   const [sectionForm, setSectionForm] = useState<SectionForm | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [busy, setBusy] = useState(false);
@@ -541,8 +556,8 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
       setNotice(null);
       setEntity(next);
     },
-    onNewField: (section) => setFieldForm({ mode: "create", section }),
-    onEdit: (def) => setFieldForm({ mode: "edit", def }),
+    onNewField: (section) => openForm({ mode: "create", section }),
+    onEdit: (def) => openForm({ mode: "edit", def }),
     onRestore: (def) => void run(() => restoreField(entity, def.key)),
     onNewSection: () => setSectionForm({ mode: "create" }),
     onRenameSection: (section) => setSectionForm({ mode: "rename", section }),
@@ -582,7 +597,14 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
               : patchField(entity, form.def.key, body),
           )
         }
-        onRetire={(def) => setConfirm({ kind: "retire", def })}
+        startDraft={restored}
+        onDraft={keepDraft}
+        onRetire={(def) => {
+          // The field dialog closes first. No dialog opens over another one.
+          // Its unsaved edits wait in the confirm, for a Cancel.
+          setConfirm({ kind: "retire", def, back: fieldForm, draft: draftRef.current });
+          setFieldForm(null);
+        }}
         readOptions={(key) => readFieldOptions(entity, key)}
         onLateError={setNotice}
       />
@@ -605,7 +627,14 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
         confirmLabel="Retire"
         icon="Archive"
         busy={busy}
-        onCancel={() => setConfirm(null)}
+        onCancel={() => {
+          // Back to the field dialog, with the edits that were typed.
+          if (confirm?.kind === "retire") {
+            setRestored(confirm.draft);
+            setFieldForm(confirm.back);
+          }
+          setConfirm(null);
+        }}
         onConfirm={() => {
           if (confirm?.kind !== "retire") return;
           const def = confirm.def;

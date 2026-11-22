@@ -32,6 +32,7 @@ import {
   sortSubpages,
   type SubpageOrder,
 } from "../../lib/editor/subpages";
+import { realSpaces } from "../../lib/labels";
 import { pageHref } from "../../lib/links";
 import type { PageSummary, Space } from "../../lib/types";
 import { useKnowledge } from "../KnowledgeContext";
@@ -45,7 +46,7 @@ export async function loadSubpages(
   spaces: readonly Pick<Space, "id" | "archived_at">[],
   list: (spaceId: string) => Promise<PageSummary[]>,
 ): Promise<PageSummary[]> {
-  const open = spaces.filter((s) => !s.archived_at);
+  const open = realSpaces(spaces).filter((s) => !s.archived_at);
   const lists = await Promise.allSettled(open.map((s) => list(s.id)));
   for (const r of lists) {
     if (r.status !== "fulfilled" || !r.value.some((p) => p.id === pageId)) continue;
@@ -59,7 +60,7 @@ export default function SubpagesView({ node, editor, updateAttributes }: NodeVie
   const params = useParams<{ pageId?: string }>();
   const pageId = typeof params?.pageId === "string" ? params.pageId : null;
   const { spaces } = useKnowledge();
-  const spaceIds = spaces.map((s) => s.id).join(",");
+  const spaceIds = realSpaces(spaces).map((s) => s.id).join(",");
   const read = useCachedResource<PageSummary[]>(
     pageId && spaces.length ? `knowledge/subpages/${pageId}?spaces=${spaceIds}` : null,
     () => loadSubpages(pageId ?? "", spaces, listPages),

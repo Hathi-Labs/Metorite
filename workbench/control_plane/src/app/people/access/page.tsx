@@ -36,10 +36,13 @@ import {
   unmappedFeatures,
 } from "@/lib/accessReport";
 
+import { installFeatureSlugs, usePackageManifest } from "@/lib/shell/packageManifest";
 import { PAGE_FRAME } from "../lib/frame";
 
 export default function AccessPage() {
   const { access, loading } = useAccess();
+  // PKG-6b: a slug that only an install declares has a pane in the sidebar.
+  const manifest = usePackageManifest();
 
   if (loading) {
     return (
@@ -48,7 +51,7 @@ export default function AccessPage() {
   }
 
   const report = paneReport(access);
-  const unmapped = unmappedFeatures(access);
+  const unmapped = unmappedFeatures(access, installFeatureSlugs(manifest));
   const denied = report.filter((r) => r.status === "denied");
 
   // The People app's one frame and one header (`lib/frame.test.ts`), so the

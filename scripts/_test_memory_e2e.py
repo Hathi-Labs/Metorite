@@ -11,7 +11,7 @@ Usage:
 
 Requires:
   GATEWAY_BASE_URL (default http://127.0.0.1:8080)
-  GATEWAY_INTERNAL_TOKEN (or LITELLM_MASTER_KEY)
+  GATEWAY_INTERNAL_TOKEN (the LLM key is not service identity, WS-24b)
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 
 GATEWAY = os.environ.get("E2E_GATEWAY_URL", os.environ.get("GATEWAY_BASE_URL", "http://127.0.0.1:8080"))
-TOKEN = os.environ.get("E2E_TOKEN", os.environ.get("GATEWAY_INTERNAL_TOKEN", os.environ.get("LITELLM_MASTER_KEY", "sk-local-dev-change-me")))
+TOKEN = os.environ.get("E2E_TOKEN", os.environ.get("GATEWAY_INTERNAL_TOKEN", ""))
 # The memory endpoints scope by identity, not just by token: a personal scope
 # needs the platform to say WHO it is acting for (gateway/routes/memory.py
 # _authorize_scope). The token alone reaches shared scopes only.

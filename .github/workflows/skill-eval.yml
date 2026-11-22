@@ -15,6 +15,9 @@ on:
       # The Workflows engine ships with a golden trajectory eval (root
       # AGENTS.md standing rule #3) — engine edits must re-run the gate.
       - "apps/services/gateway/gateway/routes/workflows/**"
+      # TOF-3b F4b: the skill test run has one real-loop trajectory fence.
+      - "apps/services/gateway/gateway/studio/skill_tests.py"
+      - "apps/services/gateway/gateway/routes/studio/skills.py"
       - "packages/acb_skills/**"
       - "packages/acb_llm/**"
       # WS-46 P3: the Projects operations eval replays its sequences through
@@ -28,12 +31,14 @@ on:
       - "apps/agents/agent-whatsapp-assistant/**"
       - "apps/services/gateway/gateway/routes/whatsapp/transport/**"
       # NS-6 6d: the routing eval drives the one assistant and every specialist
-      # it calls. It reads the registry, and the persona, the panes and
-      # ALSO_SERVES from the shell's own source.
+      # it calls. It reads the registry, the persona and the panes from the
+      # shell's own source. It reads ALSO_SERVES from the shell manifests (PKG-3a).
       - "apps/agents/**"
       - "apps/services/gateway/gateway/routes/agent.py"
       - "workbench/control_plane/src/lib/nav.ts"
       - "workbench/control_plane/src/lib/shell/assistant.ts"
+      - "workbench/control_plane/src/lib/shell/gates.generated.ts"
+      - "packages/acb_common/acb_common/app_manifests/shell/**"
       - "workbench/control_plane/src/lib/shell/AssistantDock.tsx"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:
@@ -91,6 +96,12 @@ jobs:
       # orchestrator run with a scripted model. No model, no network.
       - name: Routing eval of the one assistant (scripted)
         run: uv run python -m evals.routing.run --scripted
+
+      # WS-VOX VOX-5 (projects_ai_chat.md §31.5): the image-need set. A scripted
+      # model answers each case through the real orchestrator run, with
+      # IMAGE_ANALYSIS_ORGS on. No model, no network.
+      - name: Image-need eval of the one assistant (scripted)
+        run: uv run python -m evals.image_need.run --scripted
 
       # WS-KG KG-1 (company_context.md §12): the retrieval eval of
       # GET /search/company. This job has no database, so it checks that the

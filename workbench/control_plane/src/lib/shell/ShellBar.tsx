@@ -106,10 +106,17 @@ const GLASS_ROUND = "glass:glass-chrome glass:glass-press glass:rounded-full";
 export function ShellFrame({
   children,
   bar = true,
+  row = true,
   lead,
 }: {
   children: ReactNode;
   bar?: boolean;
+  /**
+   * Draw the bar's row. Off (owner, 2026-11-01), the frame keeps its keys and
+   * its one field, which sits at the foot of the page (`AskBar`), and the
+   * sidebar's head holds the bell, the activity and the assistant.
+   */
+  row?: boolean;
   /**
    * The bar's first zone: the sidebar's fold control and the organization's
    * logo, when the bar spans the whole width (owner, 2026-10-09). The shell
@@ -212,7 +219,7 @@ export function ShellFrame({
   return (
     <>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
-      {bar ? (
+      {bar && row ? (
         <ShellBarRow
           here={here}
           onOpen={() => openWith("")}
@@ -256,7 +263,7 @@ function useShortcutLabel(): string {
  * press will do (owner, 2026-10-14: "I'm not sure when to expect the sidebar
  * or the full screen").
  */
-function ShellAssistantButton() {
+export function ShellAssistantButton() {
   const st = useAssistant();
   const key = useBarKeyLabel().replace("K", "J");
   const label = st.open ? `Close ${ASSISTANT_NAME} (${key})` : `Open ${ASSISTANT_NAME} (${key})`;

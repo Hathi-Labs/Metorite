@@ -83,6 +83,10 @@ PROJECT_DELETE_REFUSED = (
     "Only the person who created this project, the project lead or a Projects "
     "admin can delete it."
 )
+#: The 403 of a project update delete (WS-39 LP-1a). The chat holds no copy.
+UPDATE_DELETE_REFUSED = (
+    "Only the author of this update or a Projects admin can delete it."
+)
 #: The 403 of a grant write.
 GRANT_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who can see this project."
@@ -335,6 +339,24 @@ async def assert_may_delete_task(db: Any, user: Any, task: Any) -> None:
         raise HTTPException(status_code=403, detail=TASK_DELETE_REFUSED)
 
 
+def may_delete_update(user: Any, update: Any) -> bool:
+    """May *user* delete *update*, a row of ``pm_project_updates``? (LP-1a.)
+
+    The author, or a member who may manage Projects settings
+    (``core.can_manage_settings``), as for a task. A lead who did not write
+    the update may not delete it: an update is the author's own statement.
+    No query, so a list can ask it for each row.
+    """
+    me = _me(user)
+    return can_manage_settings(user) or (bool(me) and _same_person(_field(update, "author"), me))
+
+
+def assert_may_delete_update(user: Any, update: Any) -> None:
+    """403 with :data:`UPDATE_DELETE_REFUSED`, or return."""
+    if not may_delete_update(user, update):
+        raise HTTPException(status_code=403, detail=UPDATE_DELETE_REFUSED)
+
+
 async def assert_may_delete_project(db: Any, user: Any, project: Any) -> None:
     """403 with :data:`PROJECT_DELETE_REFUSED`, or return."""
     if not await may_delete_project(db, user, project):
@@ -345,6 +367,40 @@ async def assert_may_write_grant(db: Any, user: Any, project: Any) -> None:
     """403 with :data:`PERSONAL_GRANT_REFUSED` on a personal tree, or with
     :data:`GRANT_WRITE_REFUSED`, or return. (:func:`grant_write_refusal`.)"""
     refused = await grant_write_refusal(db, user, project)
+    if refused:
+        raise HTTPException(status_code=403, detail=refused)
+
+
+#: The 403 of a guidance write by a member who is not a lead (WS-MCP SW-31a).
+GUIDANCE_WRITE_REFUSED = (
+    "Only the project lead or a Projects admin can change the agent guidance of this project."
+)
+
+#: The 403 of a guidance write on a personal tree. A personal space is not
+#: shared, so no org rule for agents belongs there (SW-31a, as D-OP-2).
+PERSONAL_GUIDANCE_REFUSED = (
+    "A personal space has no shared guidance for agents. Write the guidance on a team project."
+)
+
+
+async def guidance_write_refusal(db: Any, user: Any, project: Any) -> str:
+    """The 403 words of a guidance write on *project*, or ``""`` when it may go.
+
+    SW-31a. The write floor of guidance is the write floor of a grant
+    (:func:`may_write_grant`): a lead of the project or of an ancestor, and a
+    ``projects:settings:write`` holder. No second rule exists. A personal tree
+    is refused first and for everyone, as :func:`grant_write_refusal` does.
+    """
+    if await in_personal_tree(db, project):
+        return PERSONAL_GUIDANCE_REFUSED
+    if not await may_write_grant(db, user, project):
+        return GUIDANCE_WRITE_REFUSED
+    return ""
+
+
+async def assert_may_write_guidance(db: Any, user: Any, project: Any) -> None:
+    """403 with the words of :func:`guidance_write_refusal`, or return."""
+    refused = await guidance_write_refusal(db, user, project)
     if refused:
         raise HTTPException(status_code=403, detail=refused)
 

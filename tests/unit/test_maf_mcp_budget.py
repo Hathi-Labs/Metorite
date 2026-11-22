@@ -13,8 +13,10 @@ servers. Now MAF's own progressive disclosure is on (no Metorite meta-tool):
   the loaders, until the sum fits.
 * **A24** The list loader returns an INDEX: the name, one line of 80
   characters or fewer, and ``read_only``. No ``parameters``.
-* **A25** List and load show no card. A loaded tool keeps its card rule, and
-  the H-300 switch ``always_confirm`` applies to it.
+* **A25** List and load show no card. A loaded tool keeps its gate rule, and
+  the H-300 switch ``always_confirm`` applies to it. MCP-NC1 (item 33): a
+  member's run calls a loaded tool with no card, and a run with no member
+  refuses one that does not say read-only.
 * **A26** A loader is egress (``_acb_mcp_loader``), so a ``no_egress`` run
   withholds it.
 * **A27** A 129th tool leaves its server out, and so does a 9th server.
@@ -32,6 +34,7 @@ Mutation table. The rows M1 to M12 were written before the code, and M13 to
 M16 were added during the build. Each mutation was made by the runner script,
 and the named tests failed (measured 2026-10-12, all 16 killed). The first
 runs found two survivors, M6 and M12, and the two tests were then fixed.
+MCP-NC1 (2026-11-17) re-pointed M9 at two new tests, and both failed under it.
 
 | # | Mutation | Test that fails |
 |---|---|---|
@@ -43,7 +46,7 @@ runs found two survivors, M6 and M12, and the two tests were then fixed.
 | M6 | the per-server budget is not enforced | ``test_a_small_server_with_large_schemas_shows_only_the_loaders`` |
 | M7 | the total budget is not enforced | ``test_a_run_of_eight_servers_fits_the_budget``, ``test_the_largest_server_that_shows_full_schemas_changes_first`` |
 | M8 | the server cap is not enforced | ``test_a_ninth_server_is_left_out_in_name_order_and_logged`` |
-| M9 | a loaded tool skips its card | ``test_a_loaded_tool_keeps_its_card_at_the_gate``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
+| M9 | a loaded tool skips its gate rule | ``test_a_loaded_tool_keeps_its_rule_at_the_gate``, ``test_a_run_with_no_member_loads_but_refuses_end_to_end`` |
 | M10 | ``always_confirm`` is ignored for a loaded tool | ``test_a_loaded_read_only_tool_of_an_always_confirm_server_waits_end_to_end`` |
 | M11 | the clash check reads ``functions`` only | ``test_a_hidden_tool_that_clashes_leaves_its_server_out`` |
 | M12 | the constructor runs with no warning filter | ``test_an_experimental_warning_set_to_error_does_not_fail_the_attach``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
@@ -52,6 +55,8 @@ runs found two survivors, M6 and M12, and the two tests were then fixed.
 | M15 | the index line escapes no character | ``test_the_index_line_escapes_control_characters_and_fits_80`` |
 | M16 | ``tool_json_schema`` prices a MAF function by its class docstring again | ``test_tool_json_schema_prices_a_maf_function_by_its_own_schema``, ``test_a_small_server_attaches_its_tools_directly`` |
 | M17 | the cap slices the candidates before the connect again (review of #922, P2) | ``test_a_server_that_does_not_attach_takes_no_slot`` (all 4 cases) |
+| M18 | the index ignores the MCP-C2 read-only key (item 32, A36) | ``test_read_only_in_the_index_is_true_on_a_read_only_key_server`` |
+| M19 | the index lets the read-only key win over always confirm | ``test_read_only_in_the_index_is_true_on_a_read_only_key_server`` |
 """
 from __future__ import annotations
 
@@ -209,17 +214,20 @@ class _Fleet:
         return {h for h, _m in self.requests}
 
 
-def _spec(name: str, *, always_confirm: bool = False) -> _maf_mcp.McpServer:
+def _spec(name: str, *, always_confirm: bool = False,
+          read_only_key: bool = False) -> _maf_mcp.McpServer:
     return _maf_mcp.McpServer(name=name, url=f"https://{name}.example.com/mcp",
-                              always_confirm=always_confirm)
+                              always_confirm=always_confirm, read_only_key=read_only_key)
 
 
 async def _attach(monkeypatch: pytest.MonkeyPatch, servers: dict[str, list[dict[str, Any]]],
                   *, agent: Any = None, member: bool = True,
                   always_confirm: frozenset[str] = frozenset(),
+                  read_only_key: frozenset[str] = frozenset(),
                   dead: frozenset[str] = frozenset()) -> tuple[Any, list, _Fleet, list]:
     """Attach *servers* (name to tools) to a real native agent, offline.
-    The servers in *dead* answer every request with HTTP 500."""
+    The servers in *dead* answer every request with HTTP 500. The servers in
+    *read_only_key* carry the MCP-C2 switch."""
     fleet = _Fleet({f"{n}.example.com": tools for n, tools in servers.items()},
                    dead=frozenset(f"{n}.example.com" for n in dead))
     fleet.install(monkeypatch)
@@ -227,7 +235,8 @@ async def _attach(monkeypatch: pytest.MonkeyPatch, servers: dict[str, list[dict[
     opened: list[Any] = []
     with structlog.testing.capture_logs() as logs:
         await _maf_mcp.attach_mcp_tools(
-            agent, [_spec(n, always_confirm=n in always_confirm) for n in servers], opened,
+            agent, [_spec(n, always_confirm=n in always_confirm,
+                          read_only_key=n in read_only_key) for n in servers], opened,
             member_present=member)
     return agent, opened, fleet, logs
 
@@ -429,6 +438,30 @@ async def test_read_only_in_the_index_is_false_on_an_always_confirm_server(monke
         await _maf_mcp.close_mcp_tools(opened)
 
 
+async def test_read_only_in_the_index_is_true_on_a_read_only_key_server(monkeypatch):
+    """MCP-C2, A36: the admin says the key can only read, so the index shows
+    ``read_only`` true for EACH tool of the server, a destructive one and one
+    with no hints too. A second server with both switches on stays false,
+    because always confirm wins."""
+    tools = [
+        _tool("wiper", hints={"readOnlyHint": False, "destructiveHint": True}),
+        _tool("quiet"),
+        _tool("reader", hints={"readOnlyHint": True}),
+        *_many(12, params=1),
+    ]
+    agent, opened, _fleet, _logs = await _attach(
+        monkeypatch, {"ro": tools, "both": tools},
+        read_only_key=frozenset({"ro", "both"}), always_confirm=frozenset({"both"}))
+    try:
+        listed = _by_name(agent)["ro"]._list_progressive_mcp_tools(SimpleNamespace(tools=[]))
+        assert len(listed) == 15
+        assert all(e["read_only"] is True for e in listed), listed
+        both = _by_name(agent)["both"]._list_progressive_mcp_tools(SimpleNamespace(tools=[]))
+        assert all(e["read_only"] is False for e in both), both
+    finally:
+        await _maf_mcp.close_mcp_tools(opened)
+
+
 # ── A25: list and load show no card, and a loaded tool keeps its card ────────
 
 
@@ -467,54 +500,82 @@ async def test_a_loader_that_no_tool_of_the_run_holds_is_refused(monkeypatch):
         await _maf_mcp.close_mcp_tools(other_opened)
 
 
-async def test_a_loaded_tool_keeps_its_card_at_the_gate(monkeypatch):
+async def test_a_loaded_tool_keeps_its_rule_at_the_gate(monkeypatch):
+    """A25 after MCP-NC1: a loaded write is refused in a run with no member,
+    runs with no card in a member's run, and waits for the card on an
+    always-confirm server. A loaded read-only tool runs with no member."""
     tools = [_tool("wiper", hints={"destructiveHint": True}),
              _tool("reader", hints={"readOnlyHint": True}), *_many(12, params=1)]
-    agent, opened, _fleet, _logs = await _attach(monkeypatch, {"lt": tools})
+    agent, opened, _fleet, _logs = await _attach(monkeypatch, {"lt": tools}, member=False)
+    member_agent, member_opened, _f2, _l2 = await _attach(
+        monkeypatch, {"lt": tools, "ac": tools}, always_confirm=frozenset({"ac"}))
     try:
         tool, gate = _by_name(agent)["lt"], _gate(agent)
         hidden = {f.name: f for f in tool._functions}
         ran = _Ran()
+        ctx = _ctx(hidden["lt_wiper"], {"field_0": "x"})
         with _card_channel() as queue:
-            task = asyncio.create_task(gate.process(_ctx(hidden["lt_wiper"], {"field_0": "x"}),
-                                                    ran))
-            event = await asyncio.wait_for(queue.get(), timeout=5)
-            assert event["name"] == "confirmation_requested"
-            assert ran.count == 0, "the loaded tool ran before its card"
-            executor._pending_user_input[event["value"]["request_id"]].set_result(
-                {"answer": "REJECT"})
-            await asyncio.wait_for(task, timeout=5)
-        assert ran.count == 0
-        ran = _Ran()
+            await asyncio.wait_for(gate.process(ctx, ran), timeout=5)
+        assert ran.count == 0 and _cards(queue) == [], "a run with no member ran a write"
+        assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="lt_wiper")
         with _card_channel() as queue:
             await asyncio.wait_for(gate.process(_ctx(hidden["lt_reader"], {"field_0": "x"}),
                                                 ran), timeout=5)
         assert ran.count == 1 and _cards(queue) == [], "a read-only loaded tool waited"
+
+        servers, gate = _by_name(member_agent), _gate(member_agent)
+        mine = {f.name: f for f in servers["lt"]._functions}
+        strict = {f.name: f for f in servers["ac"]._functions}
+        ran = _Ran()
+        with _card_channel() as queue:
+            await asyncio.wait_for(gate.process(_ctx(mine["lt_wiper"], {"field_0": "x"}), ran),
+                                   timeout=5)
+        assert ran.count == 1 and _cards(queue) == [], "a member's loaded write waited"
+        ran = _Ran()
+        with _card_channel() as queue:
+            task = asyncio.create_task(gate.process(_ctx(strict["ac_wiper"], {"field_0": "x"}),
+                                                    ran))
+            event = await asyncio.wait_for(queue.get(), timeout=5)
+            assert event["name"] == "confirmation_requested"
+            assert ran.count == 0, "an always-confirm loaded tool ran before its card"
+            executor._pending_user_input[event["value"]["request_id"]].set_result(
+                {"answer": "REJECT"})
+            await asyncio.wait_for(task, timeout=5)
+        assert ran.count == 0
     finally:
         await _maf_mcp.close_mcp_tools(opened)
+        await _maf_mcp.close_mcp_tools(member_opened)
 
 
 @pytest.mark.parametrize("writes", [False, True], ids=["reads-only", "writes-on"])
 async def test_on_whatsapp_a_loader_runs_and_a_loaded_tool_that_needs_a_card_is_refused(
         monkeypatch, writes):
+    """WhatsApp keeps the H-299 refusal (MCP-NC1 review, P1): a member's
+    WhatsApp run refuses a loaded write, and a loaded tool of an
+    always-confirm server. A loader and a read-only tool still run."""
     tools = [_tool("wiper", hints={"destructiveHint": True}),
              _tool("reader", hints={"readOnlyHint": True}), *_many(12, params=1)]
-    agent, opened, _fleet, _logs = await _attach(monkeypatch, {"wa": tools})
+    agent, opened, _fleet, _logs = await _attach(
+        monkeypatch, {"wa": tools, "ac": tools}, always_confirm=frozenset({"ac"}))
     try:
-        tool, gate = _by_name(agent)["wa"], _gate(agent)
+        servers, gate = _by_name(agent), _gate(agent)
+        tool = servers["wa"]
         hidden = {f.name: f for f in tool._functions}
+        strict = {f.name: f for f in servers["ac"]._functions}
         results: dict[str, Any] = {}
         with _card_channel() as queue, ask_tools.refuse_cards(), \
                 wui.whatsapp_run("apis-config", writes=writes) as run:
             for label, fn in (("list", _loaders(tool)[0]), ("wiper", hidden["wa_wiper"]),
-                              ("reader", hidden["wa_reader"])):
+                              ("reader", hidden["wa_reader"]), ("strict", strict["ac_wiper"])):
                 ran = _Ran()
                 ctx = _ctx(fn, {"field_0": "x"} if label != "list" else {})
                 await asyncio.wait_for(gate.process(ctx, ran), timeout=5)
                 results[label] = (ran.count, ctx.result)
         assert results["list"][0] == 1
-        assert results["wiper"] == (0, _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="wa_wiper"))
+        assert results["wiper"] == (0, _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="wa_wiper")), (
+            "a member's WhatsApp run ran a write")
         assert results["reader"][0] == 1
+        assert results["strict"] == (0, _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="ac_wiper"))
         assert _cards(queue) == [] and run.parked is None
     finally:
         await _maf_mcp.close_mcp_tools(opened)
@@ -554,6 +615,9 @@ def _offered(body: dict[str, Any], prefix: str = "probe-srv_") -> list[str]:
 
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str = "REJECT",
            always_confirm: bool | None = None):
+    # MCP-NC1 review (F2): the payload's member comes in as the session's
+    # member too, as the web chat sends it. A body's claim alone is no member.
+    session_user = str((payload or {}).get("user_email") or "") or None
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url,
                      always_confirm=always_confirm)]).install(monkeypatch)
@@ -570,7 +634,8 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str = "REJECT",
     with structlog.testing.capture_logs() as logs:
         events, _built = drive_native(
             _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
-            thread_id="thread-mcp-budget", extra_payload=payload, on_event=_on_event)
+            thread_id="thread-mcp-budget", extra_payload=payload, on_event=_on_event,
+            session_user=session_user)
     return events, seen, logs
 
 
@@ -591,18 +656,18 @@ def _load_and_call(tool: str, arguments: str) -> ScriptedModel:
 @pytest.mark.usefixtures("_a_tenant", "warn_again")
 @pytest.mark.filterwarnings("error::agent_framework._feature_stage.ExperimentalWarning")
 def test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end(monkeypatch):
+    """MCP-NC1: a member's run lists, loads and calls a destructive tool, and
+    no step shows a card."""
     with local_mcp_server(filler=10) as srv:
         model = _load_and_call("delete_record", '{"record_id": "r-9"}')
         events, seen, logs = _drive(monkeypatch, srv, model, payload=_a_member(monkeypatch),
-                                    answer="APPROVE")
+                                    answer="REJECT")
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert _offered(model.bodies[0]) == _INDEX_ONLY, "the model saw more than the index"
     listed = next(m["content"] for m in model.bodies[1]["messages"] if m.get("role") == "tool")
     assert "probe-srv_delete_record" in listed and "parameters" not in listed
     assert "probe-srv_delete_record" in _offered(model.bodies[2]), "the load added nothing"
-    assert len(seen["cards"]) == 1, "list, load or the loaded tool showed the wrong cards"
-    assert "delete_record" in seen["cards"][0]["detail"]
-    assert seen["calls_at_card"] == [], "the server ran the tool before the card"
+    assert seen["cards"] == [], "list, load or the loaded tool showed a card"
     assert srv.calls == ["delete:r-9"]
     assert any("deleted:r-9" in r for r in _tool_results(model))
     assert [e["action"] for e in logs if e["event"] == "mcp.loader"] == ["list", "load"]
@@ -702,7 +767,7 @@ async def test_a_server_with_a_129th_tool_is_left_out_and_logged(monkeypatch):
     try:
         assert [t.name for t in agent.mcp_tools] == ["ok"]
         down = [e for e in logs if e["event"] == "mcp.unreachable" and e["name"] == "huge"]
-        assert down and down[0]["reason"] == "McpListTooLong"
+        assert down and down[0]["reason"] == "too_many_tools"
     finally:
         await _maf_mcp.close_mcp_tools(opened)
 

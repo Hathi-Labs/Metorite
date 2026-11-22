@@ -34,15 +34,47 @@ from acb_skills import tool_packs as tp
 WHEN = {
     "email": "Load for mail: read, search, summarise, reply, send, forward, send later, drafts, follow-ups, my inbox.",
     "email-setup": "Load to set up mail: rules, settings, knowledge, writing style, senders and categories.",
+    # WS-CRM CRM-M1: the pack holds the read of the CRM Change history, so
+    # its line names it. "A record's" left the line to stay under 130.
     "crm-records": (
-        "Load to change deals, leads and contacts, or to read a record's timeline. "
+        "Load to change deals, leads and contacts, or to read a timeline or CRM change history. "
         "Plain reads of the pipeline need no load."),
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
-    "projects-plan": "Load for team load, capacity, reports, a timeline or a plan from a goal.",
-    "projects-structure": "Load to change a project's statuses, fields, tags, access or saved views.",
-    "projects-bulk": "Load for two or more tasks at once, and to archive, move or delete.",
+    # SW-43c: the plan pack holds the change of an answer to an agent.
+    "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats, new projects or to change an unread answer.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views or project templates.",
+    "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
+    "projects-reminders": (
+        'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '
+        "Also my areas, task inbox and notifications."),
+    "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
+    # SP-8a and WS-39 LP-1a share the authority pack.
+    "projects-authority": "Load for questions that agents ask the member (list or answer), a project's authority page, a project update or an epic contract.",
+    # WS-39 SP-5a: the cycles pack.
+    "projects-cycles": "Load for cycles (sprints): to list them, plan one, add or remove tasks, start one or close one.",
+    # CAL-1a: the day planner pack.
+    "calendar-day": (
+        "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
+    # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
+    # so the line says "read and change". STB-6a adds the workflow reads.
+    # WS-67 TS-1b: the core builds an app, and studio-more holds the rest.
+    "studio": (
+        "Load for AI Studio: build an app from a brief (manifest, actions), check it, "
+        "show the plan card, save and publish it."),
+    "studio-more": (
+        "Load for AI Studio: manage skills, ready apps, delete an app, read workflows, "
+        "or read and change the records of a package."),
+    # STB-6b: the small pack of the workflow writes, of the studio owner.
+    "studio-workflows": (
+        "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
+    # TOF-3a F12c: the small pack of the repair of a skill, of the studio owner.
+    "studio-repair": "Load to fix a skill that failed, or to undo the newest version of a skill.",
+    # WS-STU J2d: the small pack of the share of a skill, of the studio owner.
+    "studio-share": (
+        "Load to share a skill with the organization, end its share, or approve or reject "
+        "a skill share."),
 }
 
 
@@ -127,8 +159,14 @@ def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -
 
 
 @pytest.mark.parametrize(("label", "base", "bulk_offered"), [
-    ("real base, trim off", 61, False),
-    ("org on the CRM list, trim off", 64, False),
+    # MT-1228: projects-bulk lost the 7 reminder tools (28 to 21), so it fits at
+    # the two real bases. The 70 case keeps the "not offered" path under test.
+    ("real base, trim off", 61, True),
+    ("org on the CRM list, trim off", 64, True),
+    # PJP-2: the Projects owner is reached when one pack fits, and a pack that
+    # does not fit stays on offer: its load fails on the cap and opens the
+    # hand-off (LOAD_NO_PATH, project_planning.md §3.3).
+    ("a larger base, trim off", 70, True),
     ("trim on", 52, True),
 ])
 def test_the_bulk_rule_has_a_path_at_each_real_base(

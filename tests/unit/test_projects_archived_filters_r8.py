@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from gateway.routes.projects import due_day
 from gateway.routes.projects.core import CLOSING_CATEGORIES
 from gateway.routes.projects.personal import MY_TASKS_FROM
 from gateway.routes.projects.tree import (
@@ -135,7 +137,8 @@ def test_node_summary_lists_and_counts_only_active_children(db, world):
         ids = [world["root"]] + [str(r.id) for r in descendants]
         rows = c.execute(
             text(node_counts_sql("TRUE")),
-            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES)},
+            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": due_day.day_start("UTC", datetime.now(UTC))},
         ).fetchall()
     got = fold_node_summary(world["root"], rows, descendants)
     assert [c["id"] for c in got["children"]] == [world["live"]]
@@ -150,7 +153,8 @@ def _summary(db, node, archived_node: bool):
         ids = [node] + [str(r.id) for r in descendants]
         rows = c.execute(
             text(node_counts_sql("TRUE")),
-            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES)},
+            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": due_day.day_start("UTC", datetime.now(UTC))},
         ).fetchall()
     return fold_node_summary(node, rows, descendants)
 
@@ -261,7 +265,8 @@ def test_reports_analytics_leave_out_an_archived_projects_overdue_work(db, world
         load_open_where("TRUE", vis)
         + " AND t.project_id = ANY(CAST(:ids AS uuid[]))"
     )
-    params = {**load_params(vis, None), "ids": both}
+    params = {**load_params(vis, None), "ids": both,
+              "day_start": due_day.day_start("UTC", datetime.now(UTC))}
     with db.begin() as c:
         overdue = c.execute(text(overdue_by_project_sql(where)), params).fetchall()
         load = c.execute(text(load_sql(where)), params).fetchall()

@@ -51,7 +51,6 @@ test.use({
 
 const rail = (page: Page) => page.locator("aside[data-collapsed]");
 const nav = (page: Page) => rail(page).locator("nav");
-const bar = (page: Page) => page.locator("[data-shell-bar]");
 
 test.beforeEach(async ({ page }) => {
   await stubApi(page);
@@ -62,7 +61,7 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto("/settings/appearance");
   await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
-  await bar(page).getByRole("button", { name: "Collapse sidebar" }).click();
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
   await expect.poll(async () => (await rail(page).boundingBox())?.width).toBeLessThan(60);
 });
@@ -73,7 +72,7 @@ test("every app icon in the folded rail keeps 18px while the rail scrolls", asyn
   // The folded rail's bar takes no width, so the icons sit in its centre.
   expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBe(0);
 
-  const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
+  const icons = nav(page).locator("a[data-nav-row] svg, [data-nav-add-apps] button svg");
   expect(await icons.count()).toBeGreaterThan(3);
   const widths = await icons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
   for (const width of widths) expect(width).toBeCloseTo(18, 0);
@@ -88,7 +87,8 @@ test("an icon keeps 18px even when a bar takes the rail's width", async ({ page 
   });
   expect(await nav(page).evaluate((el) => (el as HTMLElement).offsetWidth - el.clientWidth)).toBeGreaterThan(0);
 
-  const icons = nav(page).locator("a[data-nav-row] > svg, [data-nav-add-apps] button > svg");
+  const icons = nav(page).locator("a[data-nav-row] svg, [data-nav-add-apps] button svg");
+  expect(await icons.count()).toBeGreaterThan(3);
   const widths = await icons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
   for (const width of widths) expect(width).toBeCloseTo(18, 0);
 });
@@ -101,7 +101,7 @@ test("the folded rail still scrolls to its last app", async ({ page }) => {
 });
 
 test("the open rail keeps its thin scrollbar", async ({ page }) => {
-  await bar(page).getByRole("button", { name: "Expand sidebar" }).click();
+  await page.getByRole("button", { name: "Expand sidebar" }).click();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
   expect(await nav(page).evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe("thin");
 });

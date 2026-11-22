@@ -15,6 +15,7 @@ import {
   durationLabel,
   formatStatus,
   initials,
+  dueLabel,
   isOverdue,
   relativeTime,
 } from "../lib/utils";
@@ -25,20 +26,14 @@ import { TaskMeta } from "@/components/TaskMeta";
 // §4.8 point 3). Every shared field block comes from Projects' components;
 // this file defines none of its own. `itemDetail.test.ts` is the fence.
 import { TaskBody } from "@/app/projects/components/TaskBody";
-import {
-  type FieldRow,
-  type StatusRow,
-  type TagRow,
-  type TaskRow,
-  projectsApi,
-  projectsKey,
-} from "@/app/projects/lib/api";
+import { projectsApi, projectsKey } from "@/app/projects/lib/api";
+import { useTaskById } from "@/app/projects/lib/useTaskById";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { taskWhere } from "@/app/projects/lib/tree";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { CLOSE_TASK_LABEL } from "@/lib/taskPanel";
-import { fetchMyTaskLanes } from "../lib/api";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -215,41 +210,11 @@ function LensBody({
   // The overlay is `full` on a desktop and the whole screen on a phone; two
   // columns at 390px is two unreadable columns (measured by the S6e rig).
   const { isMobile } = useViewMode();
-  const [task, setTask] = useState<TaskRow | null>(null);
-  const [statuses, setStatuses] = useState<StatusRow[]>([]);
-  const [fields, setFields] = useState<FieldRow[]>([]);
-  const [tags, setTags] = useState<TagRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    // The task as the project sees it, and its lanes off the LENS read
-    // (`/my/tasks/{id}` carries `statuses`, S6e repair): the lane route
-    // under `/nodes` is behind a grant a member reached by assignment alone
-    // may not hold, and a 404 there was a dead Status select. Fields and
-    // tags are behind that same grant and are best effort: a body with no
-    // tag suggestions beats no body.
-    Promise.all([projectsApi.task(item.id), fetchMyTaskLanes(item.id)])
-      .then(async ([row, lanes]) => {
-        if (!live) return;
-        setTask(row);
-        setStatuses(lanes as StatusRow[]);
-        const root = row.root_project_id ?? row.project_id;
-        const [defs, registry] = await Promise.all([
-          projectsApi.fields(root).catch(() => ({ rows: [] as FieldRow[] })),
-          projectsApi.tags(root).catch(() => ({ rows: [] as TagRow[] })),
-        ]);
-        if (!live) return;
-        setFields(defs.rows);
-        setTags(registry.rows);
-      })
-      .catch((err: Error) => {
-        if (live) setError(String(err.message ?? err));
-      });
-    return () => {
-      live = false;
-    };
-  }, [item.id]);
+  // The task as the project sees it, its lanes off the LENS read first, and
+  // its fields and tags at best effort. `useTaskById` is the one loader of a
+  // panel that starts from an id (PK-1), and its header says why each read
+  // is the one it is. My Day's panel reads through it too.
+  const { task, statuses, fields, tags, error, setTask } = useTaskById(item.id);
 
   if (!task) {
     // The strip is the store's row and needs no read — draw it at once, and
@@ -388,12 +353,13 @@ export function TaskDetail({
   // information, not a control.
   const sync = syncBadge(item.syncState);
 
-  const dueValue = item.dueAt ? item.dueAt.slice(0, 10) : "";
+  // RX-7: the day of the instant in this browser, not its first ten characters (the UTC date).
+  const dueValue = item.dueAt ? dueDayOf(item.dueAt) : "";
   // The promised-by date on the waiting-for record (null = no promise made).
   // `promiseLate` highlights only an EXPLICIT promise that has passed — when
   // there is none the Due field above already carries the overdue styling, so
   // the panel never says the same thing twice in two places.
-  const promisedValue = item.expectedBy ? item.expectedBy.slice(0, 10) : "";
+  const promisedValue = item.expectedBy ? dueDayOf(item.expectedBy) : "";
   const promiseLate = !!item.expectedBy && isWaitingOverdue(item);
 
   // S6e — the overlay strip: the member's own facts, drawn in both modes.
@@ -438,7 +404,7 @@ export function TaskDetail({
                 display={item.dueAt
                   ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
                       {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                      {relativeTime(item.dueAt)}
+                      {dueLabel(item.dueAt)}
                     </span>
                   : null}
               >
@@ -450,7 +416,7 @@ export function TaskDetail({
                       autoFocus
                       onChange={(e) => {
                         updateItem(item.id, {
-                          dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
+                          dueAt: e.target.value ? dueInstantForDay(e.target.value) : "",
                         });
                         close();
                       }}
@@ -661,11 +627,11 @@ export function TaskDetail({
                   display={item.expectedBy
                     ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
                         {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                        {relativeTime(item.expectedBy)}
+                        {dueLabel(item.expectedBy)}
                       </span>
                     : <span className="text-sm text-muted-foreground/70">
                         {item.dueAt
-                          ? `not promised — judged on due ${relativeTime(item.dueAt)}`
+                          ? `not promised — judged on due ${dueLabel(item.dueAt)}`
                           : "not promised"}
                       </span>}
                 >
@@ -678,7 +644,7 @@ export function TaskDetail({
                         onChange={(e) => {
                           updateItem(item.id, {
                             expectedBy: e.target.value
-                              ? new Date(e.target.value).toISOString() : "",
+                              ? dueInstantForDay(e.target.value) : "",
                           });
                           close();
                         }}

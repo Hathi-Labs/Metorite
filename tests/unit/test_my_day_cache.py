@@ -26,6 +26,9 @@ Each class fences one done-when, and each is written so a wrong build fails:
   ``admin:members:read``, with a provider's permission and with
   ``MY_DAY_PROVIDERS``. ``TestTheSourcesOfMD3b``: an absent source is kept,
   and a slow feed-only source is not.
+* ``TestTheLearnFlagInTheKey`` (LOOP-4a): the hash holds ``learn=1`` for a
+  listed org only. ``TestALearnedFaultIsNotAStateFault``: a learned fault
+  is served and not stored, and it leaves ``Applied.ok`` True.
 """
 
 from __future__ import annotations
@@ -302,7 +305,6 @@ class TestTheTtl:
 
     @pytest.mark.parametrize("card", [
         {"why_key": "starts_in", "folded": []},
-        {"why_key": "due_soon", "folded": []},
         {"why_key": "days_late", "folded": ["block_soon"]},
     ])
     def test_a_countdown_holds_60_seconds_at_most(self, card):
@@ -941,3 +943,129 @@ class TestWhatIsNotStored:
         answer, _ = read(member(*FULL))
         assert "failed" not in answer["sources"].values() and answer["handled_ok"]
         assert len(answer_keys(redis)) == 1
+
+
+# ── LOOP-4a: the learned feed and the read cache ────────────────────────────
+
+
+def _learn(monkeypatch, value: str) -> None:
+    """``MY_DAY_LEARN_ORGS``, through its one reader's own source."""
+    monkeypatch.setattr(get_settings(), "my_day_learn_orgs", value)
+
+
+def _learn_reads(monkeypatch, *, fail: BaseException | None = None) -> None:
+    """The two reads of the learned path: one stored mute, and no counts. A
+    *fail* makes the prefs read raise. The Redis is the suite's fake."""
+    from gateway.routes.shell import feed_decide, prefs
+
+    async def _read(db, uid):
+        if fail is not None:
+            raise fail
+        return (json.dumps({"mutes": ["stale_next"]}),)
+
+    async def _habits(db, member_):
+        return {}
+
+    monkeypatch.setattr(prefs, "_read", _read)
+    monkeypatch.setattr(feed_decide, "_habits", _habits)
+
+
+class TestTheLearnFlagInTheKey:
+    """LOOP-4a, review finding F1. A learned answer is not the answer of
+    before, so ``features_hash`` holds ``learn=1`` while
+    ``MY_DAY_LEARN_ORGS`` lists the member's org. For any other org the key
+    keeps the bytes of before, so the live cache stays valid at the deploy.
+
+    Mutations, each killed here: the part left out (a flip serves the stored
+    answer), the part added for every org (the key of an unlisted org moves),
+    and a part that reads another org's entry."""
+
+    def test_a_listed_org_and_an_unlisted_org_get_different_keys(self, monkeypatch):
+        user = member(*FULL)
+        _list(monkeypatch, "")
+        _learn(monkeypatch, "another-org")
+        off = cache.features_hash(user)
+        _learn(monkeypatch, ORG)
+        on = cache.features_hash(user)
+        assert on != off
+        _learn(monkeypatch, "*")
+        assert cache.features_hash(user) == on
+
+    @pytest.mark.parametrize("listed", ["", "another-org", "another-org, third-org"])
+    def test_the_key_of_an_unlisted_org_keeps_its_bytes(self, monkeypatch, listed):
+        import hashlib
+
+        _list(monkeypatch, "")
+        _learn(monkeypatch, listed)
+        held = ",".join(sorted(f"feature:{f}" for f in FULL))
+        assert cache.features_hash(member(*FULL)) == \
+            hashlib.sha256(held.encode("utf-8")).hexdigest()[:16]
+
+    def test_the_key_of_a_listed_org_holds_learn(self, monkeypatch):
+        import hashlib
+
+        _list(monkeypatch, "")
+        _learn(monkeypatch, ORG)
+        held = ",".join([*sorted(f"feature:{f}" for f in FULL), "learn=1"])
+        assert cache.features_hash(member(*FULL)) == \
+            hashlib.sha256(held.encode("utf-8")).hexdigest()[:16]
+
+    def test_a_flip_and_a_rollback_miss_at_once(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        _list(monkeypatch, "")
+        _learn_reads(monkeypatch)
+        user = member(*FULL)
+        _learn(monkeypatch, "")
+        read(user)
+        assert len(answer_keys(redis)) == 1
+        before = app_calls(fakes)
+        _learn(monkeypatch, ORG)  # the flip
+        read(user)
+        assert app_calls(fakes) > before, "the flip got the stored answer"
+        assert len(answer_keys(redis)) == 2
+        before = app_calls(fakes)
+        _learn(monkeypatch, "")  # the rollback finds the key of before
+        read(user)
+        assert app_calls(fakes) == before
+        assert len(answer_keys(redis)) == 2
+
+
+class TestALearnedFaultIsNotAStateFault:
+    """LOOP-4a, review finding F2. A fault of the learned path sets
+    ``Applied.cacheable`` False and leaves ``Applied.ok`` True. The read cache
+    stores nothing then, and the snapshot of reach and the briefs stays
+    complete. A failed state read still sets ``ok`` False.
+
+    Mutations, each killed here: a learned fault that sets ``ok`` False, a
+    cache that reads ``ok`` only, and a ``cacheable`` that stays True."""
+
+    def test_a_learned_fault_is_served_and_not_stored(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        _list(monkeypatch, "")
+        _learn(monkeypatch, ORG)
+        _learn_reads(monkeypatch, fail=RuntimeError("the prefs read failed"))
+        user = member(*FULL)
+        answer, resp = read(user)
+        assert answer["cards"] and resp.headers["etag"]
+        assert answer_keys(redis) == []
+        run = _bound(lambda: feed.feed_cards(user))
+        assert (run.joined.ok, run.joined.cacheable) == (True, False)
+
+    def test_a_sound_learned_read_is_stored(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        # Non-vacuity of the case above: the same reads with no fault.
+        _list(monkeypatch, "")
+        _learn(monkeypatch, ORG)
+        _learn_reads(monkeypatch)
+        user = member(*FULL)
+        read(user)
+        assert len(answer_keys(redis)) == 1
+        run = _bound(lambda: feed.feed_cards(user))
+        assert (run.joined.ok, run.joined.cacheable) == (True, True)
+
+    def test_a_failed_state_read_still_sets_ok_false(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        async def broken(*a, **k):
+            raise RuntimeError("pool away")
+
+        _learn(monkeypatch, ORG)
+        _learn_reads(monkeypatch)
+        monkeypatch.setattr(state, "_read_rows", broken)
+        run = _bound(lambda: feed.feed_cards(member(*FULL)))
+        assert run.joined.ok is False

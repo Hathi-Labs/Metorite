@@ -81,7 +81,7 @@ MAX_TTL_S = 600
 #: The longest life of an answer that holds a countdown (§8.4 item 3).
 COUNTDOWN_TTL_S = 60
 #: The why keys that count down (§8.4 item 3).
-COUNTDOWN_WHY_KEYS = frozenset({"starts_in", "due_soon"})
+COUNTDOWN_WHY_KEYS = frozenset({"starts_in"})
 #: A folded kind that adds a countdown clause to the why line of its card
 #: ("Its block starts in 20 min."). Item 3 names only the why keys, and a
 #: folded ``block_soon`` counts down too.
@@ -137,7 +137,9 @@ def features_hash(user: Any) -> str:
     at the gateway restart that it needs, and no stored answer from before
     the restart is served after it. With no such permission and an empty
     list, the hash is the hash of before MD-3b. While ``crm`` is listed, the
-    CRM kill switch of the member's org joins it too (MD-3e)."""
+    CRM kill switch of the member's org joins it too (MD-3e). While
+    ``MY_DAY_LEARN_ORGS`` lists the member's org, ``learn=1`` joins it too
+    (LOOP-4a, ``state.learn_allowed``)."""
     from acb_auth.permissions import FEATURES
     from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION
@@ -166,6 +168,13 @@ def features_hash(user: Any) -> str:
 
         allowed = knowledge_org_allowed(getattr(user, "organization_id", None))
         held.append(f"knowledge_org={int(allowed)}")
+    from gateway.routes.shell.state import learn_allowed
+
+    if learn_allowed(getattr(user, "organization_id", None)):
+        # LOOP-4a: a learned answer is not the answer of before, so a flip or
+        # a rollback of MY_DAY_LEARN_ORGS misses at once. The part is there
+        # only for a listed org, so the key of every other org keeps its bytes.
+        held.append("learn=1")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 
@@ -270,8 +279,9 @@ def signal_edges(signals: Iterable[Any]) -> list[datetime]:
             out.append(expires)
         due = _instant((getattr(signal, "facts", None) or {}).get("due_at"))
         if due is not None:
-            # The due time itself too: the needs view moves the task from
-            # due today to overdue then.
+            # The due time itself too, for a kind that holds an hour, such as
+            # a promise. A task due today turns overdue at the local midnight
+            # of ``day_edges``, never at a due time (RX-5).
             out += [due, due - SOON]
     return out
 

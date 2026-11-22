@@ -35,6 +35,10 @@ naive time is refused, and the flag off gives 404.
   ``test_r8_the_flag_off_answers_404_on_every_route``.
 * M5. ``reminders.py`` ``update_reminder``: drop the ``edited`` ledger write.
   ``test_r8_an_edit_writes_one_edited_row_that_names_the_fields``.
+* M6. ``reminders.py`` ``create_reminder``: drop the ``_open_twin`` check.
+  ``test_r8_a_retry_makes_one_row``.
+* M7. ``reminders.py`` ``create_reminder``: drop the advisory lock.
+  ``test_r8_concurrent_posts_make_one_row``.
 """
 
 from __future__ import annotations
@@ -1065,3 +1069,163 @@ async def test_r8_a_linked_task_shows_only_to_a_member_who_can_open_it(world, ch
     assert seen["preview"].endswith("Linked: a task that you cannot open.")
     assert "Renew the lease" not in said and task_id not in said
     assert _ledger(world, bobs) == ["created", "opened"]
+
+
+# ── One reminder for one ask (WS-66 RX-2) ──────────────────────────────────
+#
+# A create shows no card in an open chat, so a model retry, a double tool call
+# or a double click reaches the route twice.
+
+
+def _count(world: Any, email: str) -> int:
+    """Every row of the member, past RLS, in any state."""
+    with world.p.admin_engine.connect() as c:
+        return c.execute(
+            text("SELECT count(*) FROM reminders WHERE member_email = :e"), {"e": email},
+        ).scalar_one()
+
+
+def _ledger_count(world: Any, email: str) -> int:
+    """Every ledger row of the reminders of the member."""
+    with world.p.admin_engine.connect() as c:
+        return c.execute(
+            text(
+                "SELECT count(*) FROM reminder_events e JOIN reminders r "
+                "ON r.id = e.reminder_id WHERE r.member_email = :e"
+            ),
+            {"e": email},
+        ).scalar_one()
+
+
+async def test_r8_a_retry_makes_one_row(world) -> None:
+    """Mutation M6: drop the ``_open_twin`` check -> two rows -> red."""
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE)
+        assert "already" not in first
+        again = await c.post(BASE, json={"title": "Get a haircut", "fire_at": AT,
+                                         "tz": "Asia/Kolkata"}, headers=_as(ALICE))
+    assert again.status_code == 200, again.text
+    body = again.json()
+    assert body["already"] is True and body["id"] == first["id"]
+    assert _count(world, ALICE) == 1
+    assert _ledger(world, first["id"]) == ["created"]
+
+
+async def test_r8_concurrent_posts_make_one_row(world) -> None:
+    """Five creates at once, on five sessions of the real engine. Mutation M7:
+    drop the lock -> each reads no twin -> more than one row -> red."""
+    payload = {"title": "Call the bank", "fire_at": AT, "tz": "Asia/Kolkata"}
+    async with _client(world, world.org) as c:
+        answers = await asyncio.gather(*(
+            c.post(BASE, json=payload, headers=_as(ALICE)) for _ in range(5)
+        ))
+    assert sorted(a.status_code for a in answers) == [200, 200, 200, 200, 201], (
+        [a.text for a in answers])
+    assert len({a.json()["id"] for a in answers}) == 1
+    assert _count(world, ALICE) == 1
+    assert _ledger_count(world, ALICE) == 1
+
+
+async def test_r8_a_retry_some_seconds_later_makes_one_row(world) -> None:
+    """``in_minutes`` adds to the clock of each call, so a retry names a later
+    instant. A different zone name for one instant counts as the same time."""
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE, fire_at="2099-10-31T09:00:20+05:30")
+        for later in ("2099-10-31T09:00:47+05:30", "2099-10-31T03:30:20+00:00"):
+            again = await c.post(BASE, json={"title": "Get a haircut", "fire_at": later},
+                                 headers=_as(ALICE))
+            assert again.json().get("already") is True, again.text
+            assert again.json()["id"] == first["id"]
+    assert _count(world, ALICE) == 1
+
+
+async def test_r8_the_title_normalises_but_a_new_time_is_a_new_reminder(world) -> None:
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE, title="Get a  Haircut ")
+        same = await c.post(BASE, json={"title": "get a haircut", "fire_at": AT},
+                            headers=_as(ALICE))
+        assert same.json().get("already") is True, same.text
+        later = await _create(c, ALICE, title="Get a haircut", fire_at=LATER)
+        other = await _create(c, ALICE, title="Get a shave")
+    assert len({first["id"], later["id"], other["id"]}) == 3
+    assert _count(world, ALICE) == 3
+
+
+async def test_r8_a_closed_reminder_does_not_answer_a_new_create(world) -> None:
+    """A drop is an Undo. The member may set the same reminder again."""
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE)
+        await c.post(f"{BASE}/{first['id']}/resolve", json={"action": "drop"},
+                     headers=_as(ALICE))
+        fresh = await _create(c, ALICE)
+    assert fresh["id"] != first["id"] and fresh["state"] == "scheduled"
+
+
+async def test_r8_a_fired_reminder_still_answers_a_retry(world) -> None:
+    """``due`` is open, so the member already has this reminder."""
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE)
+        _make_due(world, first["id"])
+        again = await c.post(BASE, json={"title": "Get a haircut", "fire_at": AT},
+                             headers=_as(ALICE))
+    assert again.json().get("already") is True and again.json()["id"] == first["id"]
+
+
+async def test_r8_a_twin_belongs_to_one_member_and_one_org(world) -> None:
+    """The check filters on the member, and RLS binds the org. The same title
+    and time of a colleague, or of the same address in another org, is no
+    twin, and the answer never shows that it exists."""
+    async with _client(world, world.org) as c:
+        alices = await _create(c, ALICE)
+        bobs = await _create(c, BOB)
+    async with _client(world, world.other) as c:
+        elsewhere = await _create(c, ALICE)
+    assert len({alices["id"], bobs["id"], elsewhere["id"]}) == 3
+
+
+async def test_r8_a_different_link_is_a_different_reminder(world) -> None:
+    """Two tasks with one title each keep their own "Remind me"."""
+    one, two = str(uuid.uuid4()), str(uuid.uuid4())
+    async with _client(world, world.org) as c:
+        first = await _create(c, ALICE, subject_kind="task", subject_id=one)
+        second = await _create(c, ALICE, subject_kind="task", subject_id=two)
+        repeat = await c.post(BASE, json={
+            "title": "Get a haircut", "fire_at": AT, "subject_kind": "task", "subject_id": one,
+        }, headers=_as(ALICE))
+    assert first["id"] != second["id"]
+    assert repeat.json().get("already") is True and repeat.json()["id"] == first["id"]
+
+
+# ── The receipt of the chat: Undo and the shared task (WS-66 RX-2, RX-6) ───
+
+
+async def test_r8_undo_of_a_new_reminder_after_it_fired(world) -> None:
+    """Undo drops a new reminder, and a fired reminder is still open, so the
+    drop works. A second Undo is 409, with words that the card shows. Bob's
+    click in a shared chat is 404 and changes nothing."""
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+        _make_due(world, rid)
+        bobs = await c.post(f"{BASE}/{rid}/resolve", json={"action": "drop"},
+                            headers=_as(BOB))
+        assert bobs.status_code == 404
+        assert _row(world, rid).state == "due"
+        undo = await c.post(f"{BASE}/{rid}/resolve", json={"action": "drop"},
+                            headers=_as(ALICE))
+        assert undo.status_code == 200 and undo.json()["state"] == "dropped"
+        late = await c.post(f"{BASE}/{rid}/resolve", json={"action": "drop"},
+                            headers=_as(ALICE))
+    assert late.status_code == 409 and "closed" in late.json()["detail"]
+    assert _ledger(world, rid) == ["created", "dropped"]
+
+
+async def test_r8_remind_me_on_a_shared_task_stays_private(world) -> None:
+    """Alice and Bob share a task. Her "Remind me" links it, and Bob reads and
+    counts no row of hers, also by the link."""
+    shared = str(uuid.uuid4())
+    async with _client(world, world.org) as c:
+        hers = await _create(c, ALICE, subject_kind="task", subject_id=shared)
+        assert hers["subject_id"] == shared
+        seen = (await c.get(BASE, headers=_as(BOB))).json()
+    assert seen == {"rows": [], "total": 0}
+    assert _row(world, hers["id"]).member_email == ALICE

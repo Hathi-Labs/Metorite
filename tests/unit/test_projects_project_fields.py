@@ -757,7 +757,25 @@ async def test_untriaged_reads_the_inbox_and_names_who_assigned(monkeypatch) -> 
     out = await skill_projects.my_work(untriaged=True)
     inbox = [c for c in calls if c["path"] == "/projects/my/inbox"]
     assert inbox and inbox[0]["params"]["untriaged"] is True
-    assert "Landed on my plate" in out and "assigned_by «raj@x.io»" in out
+    # Deferred New work counts in the New chip, so the list asks for it.
+    assert inbox[0]["params"]["include_deferred"] is True
+    assert "New in My tasks" in out and "assigned_by «raj@x.io»" in out
+    # D170 (INB-1): the untriaged read is not the inbox, so it asks no INBOX filter.
+    assert "disposition" not in inbox[0]["params"]
+
+
+async def test_the_inbox_view_lists_only_the_captures(monkeypatch) -> None:
+    """D170 (INB-1). ``my_work(view="inbox")`` asks the one filter the app's inbox
+    list reads: ``disposition=INBOX``. It no longer lists all open work."""
+    row = {"id": TASK, "task_number": 8, "title": "Call the vendor"}
+    calls = fake_gateway(monkeypatch, _gateway({
+        ("GET", "/projects/my/inbox"): {"rows": [row], "total": 1},
+    }))
+    out = await skill_projects.my_work(view="inbox")
+    inbox = [c for c in calls if c["path"] == "/projects/my/inbox"]
+    assert inbox and inbox[0]["params"]["disposition"] == "INBOX"
+    assert "untriaged" not in inbox[0]["params"]
+    assert "My task inbox (1 total" in out
 
 
 # ── The route: GET /projects/my/today ───────────────────────────────────────

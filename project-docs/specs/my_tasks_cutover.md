@@ -249,6 +249,7 @@ the one store, so continuity is a property to verify, not a sync to build.
    lands straight in Next Actions. My Tasks must show it in a "From Projects"
    group at the top of the inbox until I triage it. Triage writes the overlay.
    The derivation rule of D53 does not change.
+   Changed 2026-11-03 by D170 (INB-1): the inbox holds only captures. Assigned untriaged work shows in My tasks as New.
 3. **The task detail is two panels.** My Tasks draws `ItemDetail.tsx`, a
    ClickUp-era composition. Projects draws `TaskPanel.tsx`. A member who opens
    a task in each app must meet the same fields in the same order. The fields

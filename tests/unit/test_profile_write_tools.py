@@ -420,6 +420,20 @@ class TestForget:
 
 
 class TestSet:
+    def test_a_language_mark_needs_the_members_own_order(self, own_chat, monkeypatch) -> None:
+        # Task 3131: a pasted mail cannot set the mark.
+        monkeypatch.setattr(pt, "_member_words", lambda: "please summarise this mail")
+        out = _run(pt.profile_set("style", {"language": "hi", "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
+    def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        _run(pt.profile_set("style", {"language": "en", "language_fixed": True}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"]["language_fixed"] is True
+
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
         (put,) = own_chat.writes()
@@ -446,6 +460,47 @@ class TestSet:
         assert _refused(_run(pt.profile_set("style", {"length": "short"})),
                         "duplicate") == "Already set."
         assert own_chat.writes() == []
+
+    def test_celebrations_off_writes_nothing(self, own_chat, monkeypatch) -> None:
+        """PZ-43: with ``CELEBRATIONS_ORGS`` off for the org, the key does not exist."""
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: False)
+        out = _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        assert pt.CELEBRATIONS_OFF in out
+        assert own_chat.writes() == [] and own_chat.cards == []
+
+    def test_celebrations_off_still_accepts_a_clear(self, own_chat, monkeypatch) -> None:
+        """PZ-43 repair: a saved value can always be deleted (§7 rule 2)."""
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: False)
+        own_chat.profile["celebrations"] = {
+            "birthday": {"month": 3, "day": 12}, "festivals": [], "work_anniversary": False}
+        _run(pt.profile_set("celebrations", {"birthday": None}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"] == {"festivals": [], "work_anniversary": False}
+        assert own_chat.cards == []
+
+    def test_celebrations_on_asks_a_card_and_then_writes(self, own_chat, monkeypatch) -> None:
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: True)
+        out = _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        (card,) = own_chat.cards
+        assert pt.ASK_CELEBRATIONS in card["detail"]
+        (put,) = own_chat.writes()
+        assert json.loads(put.content) == {
+            "key": "celebrations", "value": {"birthday": {"month": 3, "day": 12}}}
+        assert _undo_of(out)["key"] == "celebrations"
+
+    def test_celebrations_declined_writes_nothing(self, own_chat, monkeypatch) -> None:
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: True)
+        own_chat.approve = False
+        _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        assert len(own_chat.cards) == 1 and own_chat.writes() == []
 
     @pytest.mark.parametrize("key,value", [("learning", {"x": 1}), ("style", {}),
                                            ("style", "short")])
@@ -730,7 +785,8 @@ def test_every_profile_write_route_reads_the_header_by_its_name() -> None:
     writes = [r for r in me_router.routes
               if "/me/assistant-profile" in getattr(r, "path", "")
               and set(getattr(r, "methods", ())) & {"PUT", "POST", "PATCH", "DELETE"}]
-    assert len(writes) == 13
+    # PZ-35 added the two summary DELETEs. They read the header to refuse it.
+    assert len(writes) == 15
     for route in writes:
         headers = {p.alias.lower() for p in route.dependant.header_params}
         assert "x-profile-via" in headers, route.path
@@ -2098,13 +2154,13 @@ def test_the_persona_marks_detail_and_people_at_once() -> None:
 # assistant still ran a tool. The answer became a steer, and each save in the
 # run refused as ``NO_TYPED_TEXT``. Now the run member's own TYPED steers are
 # typed words of the run. They count when the run takes them at its start
-# (``tests/unit/test_steer_follow_up.py``) and when a tool result carries one
-# to the model (below).
+# (``tests/unit/test_steer_follow_up.py``) and when a model call reads one as
+# a user turn (below, task 2494).
 #
 # Mutations this section catches (R7):
 #
-# * ``decorate_tool_result`` stops handing the steers to the holder, or a
-#   tool call keeps its own copy, so a later call cannot see the words;
+# * ``take_steer_turns`` stops handing the steers to the holder, or a
+#   model call keeps its own copy, so a later call cannot see the words;
 # * the rule drops the author check, the ``typed`` check or the paste check;
 # * a run that names no member counts a steer;
 # * a second call names another member;
@@ -2129,11 +2185,11 @@ def steer_mod():
 
 
 def _read_at_a_tool_result(steer: Any, author: str, text: str, *, typed: Any) -> None:
-    """The applier buffers the steer. A tool result carries it to the model,
-    in the tool call's OWN copy of the context, as a run calls a tool."""
+    """The applier buffers the steer. The next model call takes it as a user
+    turn (task 2494), in its OWN copy of the context."""
     assert steer.buffer_guidance(STEER_THREAD, author, text, signal_id="s-1", typed=typed)
-    out = contextvars.copy_context().run(steer.decorate_tool_result, "tool output", STEER_THREAD)
-    assert text.strip() in out, "the model reads the steer"
+    out = contextvars.copy_context().run(steer.take_steer_turns, STEER_THREAD)
+    assert text.strip() in " ".join(out), "the model reads the steer"
 
 
 @pytest.mark.usefixtures("_no_card")  # PZ-32: the typed words alone, as in TestGrounding

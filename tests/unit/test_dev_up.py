@@ -53,12 +53,15 @@ def _held(text: str) -> str:
 
 
 def _run(repo: Path, *args: str, flags: Path | None = None,
-         copies: Path | None = None) -> subprocess.CompletedProcess:
+         copies: Path | None = None,
+         extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Run dev_up.sh against ``repo``. ``copies`` is the PROD_COPY_DIR. The
     default is an empty folder, so a real copy on this PC is never read."""
     env = {**os.environ, "DEV_UP_REPO": repo.as_posix()}
     env.pop("DEV_UP_FLAGS_HOST", None)
+    env.pop("DEV_UP_TOOL_PACKS", None)
     env["PROD_COPY_DIR"] = (copies or repo / "no-copies").as_posix()
+    env.update(extra or {})
     if flags is not None:
         env["DEV_UP_FLAGS_FILE"] = flags.as_posix()
     return subprocess.run(
@@ -67,11 +70,21 @@ def _run(repo: Path, *args: str, flags: Path | None = None,
     )
 
 
-def _print_env(tmp_path: Path, flags: Path | None = None, args: tuple[str, ...] = (),
-               copies: Path | None = None) -> dict[str, dict[str, str]]:
+def _print_env_raw(
+    tmp_path: Path, flags: Path | None = None, extra: dict[str, str] | None = None,
+    args: tuple[str, ...] = (), copies: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run --print-env against an empty repo dir: no state, so slot 0."""
-    res = _run(tmp_path, "--print-env", *args, flags=flags, copies=copies)
+    res = _run(tmp_path, "--print-env", *args, flags=flags, copies=copies, extra=extra)
     assert res.returncode == 0, res.stderr
+    return res
+
+
+def _print_env(
+    tmp_path: Path, flags: Path | None = None, extra: dict[str, str] | None = None,
+    args: tuple[str, ...] = (), copies: Path | None = None,
+) -> dict[str, dict[str, str]]:
+    res = _print_env_raw(tmp_path, flags, extra, args, copies)
     out: dict[str, dict[str, str]] = {}
     section = ""
     for line in res.stdout.splitlines():
@@ -115,13 +128,83 @@ class TestOutboundStaysOff:
     @needs_bash
     def test_no_key_or_secret_reaches_the_stack(self, tmp_path):
         env = _print_env(tmp_path)
-        allowed = {"GATEWAY_INTERNAL_TOKEN", "DATABASE_URL", "REDIS_URL", "GATEWAY_BASE_URL"}
+        # GATEWAY_URL (task 2455) is the loopback address of the stack's own gateway.
+        allowed = {"GATEWAY_INTERNAL_TOKEN", "DATABASE_URL", "REDIS_URL", "GATEWAY_BASE_URL", "GATEWAY_URL"}
         for section, values in env.items():
             for name in values:
                 if name in allowed:
                     continue
                 assert not re.search(r"KEY|SECRET|TOKEN|PASSWORD|PASS|DSN|URL", name), (
                     f"{section} gets {name}")
+
+
+class TestPreviewSwitches:
+    @needs_bash
+    def test_dev_up_orgs_on_turns_a_per_org_switch_on_for_this_stack(self, tmp_path, monkeypatch):
+        """A dark feature behind a *_ORGS list shows in the owner's local preview (D145)."""
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "GUIDE_ORGS")
+        assert _print_env(tmp_path)["gateway"]["GUIDE_ORGS"] == "*"
+
+    @needs_bash
+    def test_dev_up_orgs_on_skips_a_held_switch_and_a_non_orgs_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "PUSH_PROMPT_ORGS DATABASE_URL")
+        gw = _print_env(tmp_path)["gateway"]
+        assert "PUSH_PROMPT_ORGS" not in gw
+        assert gw["DATABASE_URL"].startswith("postgresql+psycopg://acb_app:")
+
+
+class TestStudioSwitch:
+    @needs_bash
+    def test_the_gateway_lists_every_org_for_studio(self, tmp_path):
+        """STUDIO_ORGS is not a name of the SWITCH pattern, so the flags file
+        cannot carry it. One fixed line in `gateway_env` lets the owner preview
+        the skill creator (STU-F2b). The stack holds made-up orgs only."""
+        assert _print_env(tmp_path)["gateway"]["STUDIO_ORGS"] == "*"
+
+    @needs_bash
+    def test_the_web_app_does_not_get_it(self, tmp_path):
+        assert "STUDIO_ORGS" not in _print_env(tmp_path)["web"]
+
+    @needs_bash
+    def test_a_direct_key_comes_only_from_the_operator_shell(self, tmp_path):
+        """STU-D2b: the gateway and the web app get one `STUDIO_DIRECT_KEY`, and only when
+        the operator sets `DEV_UP_STUDIO_DIRECT_KEY`. The repo holds no key."""
+        key = "k" * 48
+        env = {**os.environ, "DEV_UP_REPO": tmp_path.as_posix(), "DEV_UP_STUDIO_DIRECT_KEY": key}
+        res = subprocess.run(
+            [_BASH, SCRIPT.as_posix(), "--print-env"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
+        )
+        assert res.returncode == 0, res.stderr
+        assert res.stdout.count(f"STUDIO_DIRECT_KEY={key}") == 2
+        assert "STUDIO_DIRECT_KEY" not in FLAGS.read_text(encoding="utf-8")
+        assert "STUDIO_DIRECT_KEY=" not in BODY.replace("STUDIO_DIRECT_KEY=%s", "")
+
+    def test_the_line_is_fixed_in_the_gateway_function_only(self):
+        assert BODY.count("STUDIO_ORGS") >= 1
+        gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
+        assert '"STUDIO_ORGS=*"' in gateway
+        assert "STUDIO_ORGS" not in FLAGS.read_text(encoding="utf-8")
+
+
+class TestAppRequestsSwitch:
+    """MCP-P1b-1 fix round 1. APP_REQUESTS_ORGS is the dark switch of the app
+    requests. One fixed line in `gateway_env` lets the owner preview the list
+    "Waiting for you" on the stack of this PC, which holds made-up orgs only.
+    The flags file of production never carries it."""
+
+    @needs_bash
+    def test_the_gateway_lists_every_org(self, tmp_path):
+        assert _print_env(tmp_path)["gateway"]["APP_REQUESTS_ORGS"] == "*"
+
+    @needs_bash
+    def test_the_web_app_does_not_get_it(self, tmp_path):
+        assert "APP_REQUESTS_ORGS" not in _print_env(tmp_path)["web"]
+
+    def test_the_line_is_fixed_in_the_gateway_function_only(self):
+        gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
+        assert '"APP_REQUESTS_ORGS=*"' in gateway
+        assert "APP_REQUESTS_ORGS" not in FLAGS.read_text(encoding="utf-8")
 
 
 class TestProductionParity:
@@ -502,3 +585,63 @@ class TestTheRestore:
         assert "u.status = 'active' AND m.status = 'active'" in members
         assert "$AS" not in members, "the email must never become SQL"
         assert "-U acb -d acb_dev" in _fn("check_as")
+
+
+class TestGatewayUrl:
+    """Task 2455. The skill tools read `GATEWAY_URL` and default to
+    `http://localhost:8080`. On this PC another process can listen there, so a
+    tool write went to that process (a 501 from a fake LLM was the proof). The
+    gateway of the stack must name ITSELF."""
+
+    @needs_bash
+    def test_the_gateway_names_its_own_port(self, tmp_path):
+        env = _print_env(tmp_path)
+        assert env["gateway"]["GATEWAY_URL"] == "http://127.0.0.1:8400"
+
+    @needs_bash
+    def test_the_web_app_keeps_its_own_variable(self, tmp_path):
+        assert "GATEWAY_URL" not in _print_env(tmp_path)["web"]
+
+    @needs_bash
+    def test_every_gateway_line_is_a_name_and_a_value(self, tmp_path):
+        """A stray word in the printf list (a literal backslash-n once put an
+        `n` line there) is no setting. The parser of `_print_env` drops it
+        silently, so this test reads the raw lines."""
+        raw = _print_env_raw(tmp_path).stdout.splitlines()
+        start = raw.index("[gateway]")
+        body = []
+        for line in raw[start + 1:]:
+            if line.startswith("["):
+                break
+            if line.strip():
+                body.append(line)
+        bad = [line for line in body if "=" not in line]
+        assert bad == [], bad
+
+
+class TestToolPacks:
+    """Task 2455 item 2. `DEV_UP_TOOL_PACKS` turns chat tool packs on for the
+    orgs of this stack only. Empty gives no pack."""
+
+    @needs_bash
+    def test_no_pack_by_default(self, tmp_path):
+        gw = _print_env(tmp_path)["gateway"]
+        assert "TOOL_PACKS" not in gw
+        assert "TOOL_PACKS_ORGS" not in gw
+
+    @needs_bash
+    def test_the_named_packs_are_on_for_every_org_of_the_stack(self, tmp_path):
+        gw = _print_env(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio, crm"})["gateway"]
+        assert gw["TOOL_PACKS"] == "studio,crm"
+        assert gw["TOOL_PACKS_ORGS"] == "*"
+
+    @needs_bash
+    def test_a_bad_value_is_skipped(self, tmp_path):
+        res = _print_env_raw(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio;rm"})
+        assert "TOOL_PACKS" not in res.stdout
+        assert "DEV_UP_TOOL_PACKS skips" in res.stderr
+
+    @needs_bash
+    def test_the_web_app_gets_no_pack(self, tmp_path):
+        web = _print_env(tmp_path, extra={"DEV_UP_TOOL_PACKS": "studio"})["web"]
+        assert "TOOL_PACKS" not in web

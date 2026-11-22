@@ -101,19 +101,28 @@ def test_no_stale_registry_entries():
 # (``_agent_tools()``, plus ``narrow_and_read`` from ``_narrow_tool``).
 
 
-def _owner_universe(owner: str) -> set[str]:
-    """The tools that agent *owner* holds: declared AND built by its code."""
+#: Packs whose tools are built by the owner but are NOT in its ``own_tool_scope``
+#: on purpose (CAL-1a, task 1675): the day planner tools are My Tasks functions,
+#: and the scope of the Projects specialist must not change. Such a pack is
+#: checked against what the owner builds only.
+SCOPE_FREE_PACKS = frozenset({"calendar-day"})
+
+
+def _owner_universe(owner: str, *, scoped: bool = True) -> set[str]:
+    """The tools that agent *owner* holds: declared AND built by its code.
+    ``scoped=False`` skips the declaration (see ``SCOPE_FREE_PACKS``)."""
     import json
     from pathlib import Path
 
     from acb_skills.narrowing import TOOL_NAME as NARROW
-    from gateway.routes.agent import _AGENT_REGISTRY
+    from gateway.routes.agent import _AGENT_REGISTRY, _PACK_OWNER_AGENTS
 
     from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
 
     # The directory comes from the registry: ``crm-assistant`` lives in
-    # ``apps/agents/agent-crm`` (WS-67 OA-8a).
-    entry = next(a for a in _AGENT_REGISTRY if a.get("name") == owner)
+    # ``apps/agents/agent-crm`` (WS-67 OA-8a). STU-G1: a pack-only owner is in
+    # the owner list, which the pack loader reads first.
+    entry = next(a for a in (*_PACK_OWNER_AGENTS, *_AGENT_REGISTRY) if a.get("name") == owner)
     rel = str(entry["local_path"])
     cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
     module = load_agent_module(rel)
@@ -123,7 +132,7 @@ def _owner_universe(owner: str) -> set[str]:
     built = {tool_name(fn) for fn in module._agent_tools()}
     if callable(getattr(module, "_narrow_tool", None)):
         built.add(NARROW)
-    return set(cfg.get("own_tool_scope") or ()) & built
+    return (set(cfg.get("own_tool_scope") or ()) & built) if scoped else built
 
 
 def test_each_pack_tool_is_a_tool_its_owner_holds():
@@ -133,7 +142,8 @@ def test_each_pack_tool_is_a_tool_its_owner_holds():
     assert packs, "non-vacuity: the registry holds a pack"
     for slug in packs:
         owner = sf.SKILL_FAMILIES[slug]["owner"]
-        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(owner)
+        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(
+            owner, scoped=slug not in SCOPE_FREE_PACKS)
         assert not missing, (
             f"pack {slug!r} names tools its owner {owner!r} does not hold: "
             f"{sorted(missing)}"
@@ -248,7 +258,7 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
     assert by_slug["apps"]["token_cost"] == 0
     # total: unscoped addendum + every static schema (the WS-12 baseline).
     # A tool pack is not injected, so it is not in the total (OA-7a).
-    n_non_core = len(sf.injected_tool_names()) - 22  # 22: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11)
+    n_non_core = len(sf.injected_tool_names()) - 23  # 23: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11), analyze_image (WS-VOX VOX-3)
     assert cat["total_injected_tokens"] == (
         100 + 40 * n_non_core + schemas(sf.injected_tool_names())
     )

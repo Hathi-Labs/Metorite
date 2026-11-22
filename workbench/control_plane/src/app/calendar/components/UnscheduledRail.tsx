@@ -4,8 +4,7 @@ import Icon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
 import { MyTask } from "@/app/tasks/lib/types";
 import { useRemoval } from "@/app/tasks/lib/useRemoval";
-import { durationLabel } from "@/app/tasks/lib/utils";
-import { priorityRank } from "@/app/tasks/lib/priority";
+import { priorityCell, priorityRank } from "@/app/tasks/lib/priority";
 import {
   DEFAULT_BLOCK_MINS,
 } from "@/app/tasks/lib/scheduling";
@@ -13,7 +12,9 @@ import {
   DRAG_TYPE,
 } from "./shared";
 import { ContextMenu } from "@/components/ContextMenu";
-import { ParentCrumb } from "@/components/TaskMeta";
+import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
+import { PriorityChip, TaskMeta } from "@/components/TaskMeta";
+import { priorityChip, taskMeta, type MetaChip } from "@/lib/taskCard";
 
 
 // ── Unscheduled rail ─────────────────────────────────────────────────────────
@@ -83,13 +84,16 @@ export function UnscheduledRail({
         <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
           <Icon name="CalendarPlus" className="h-3.5 w-3.5 text-primary" />
           Unscheduled
+          {tasks.length > 0 && (
+            <span className="font-normal tabular-nums text-muted-foreground">{tasks.length}</span>
+          )}
         </div>
-        <p className="mt-0.5 text-[10px] text-muted-foreground">
+        <p className="mt-0.5 text-[11px] text-muted-foreground">
           Drag a card onto the grid to timebox it · click to open.
         </p>
         <div
           className={[
-            "mt-1 text-[10px]",
+            "mt-1 text-[11px]",
             over ? "font-medium text-warning" : "text-muted-foreground",
           ].join(" ")}
         >
@@ -100,7 +104,7 @@ export function UnscheduledRail({
         {/* leverage meter (80/20): how much of the booked day is the 20% */}
         {capacityMins > 0 && (
           <div
-            className="mt-0.5 text-[10px] text-warning"
+            className="mt-0.5 text-[11px] text-warning"
             title="Share of booked focus-time on leveraged/important work (the 80/20 scoreboard)"
           >
             ★ {Math.round((leveragedMins / 60) * 10) / 10}h leveraged ·{" "}
@@ -114,7 +118,7 @@ export function UnscheduledRail({
           </div>
         )}
         {doneStats.count > 0 && (
-          <div className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium text-success">
+          <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-medium text-success">
             <Icon name="Check" className="h-3 w-3" />
             {doneStats.count} done ·{" "}
             {Math.round((doneStats.mins / 60) * 10) / 10}h
@@ -127,120 +131,105 @@ export function UnscheduledRail({
             Nothing to schedule — My tasks is clear. 🎉
           </p>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            {ordered.map((t) => (
-              <div
-                key={t.id}
-                draggable
-                // Same grammar as a calendar block: CLICK opens the task card,
-                // CLICK-AND-HOLD drags it onto the grid at the slot you want,
-                // RIGHT-CLICK for everything else (incl. first-free-slot).
-                onClick={() => onOpen(t.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setCtx({ x: e.clientX, y: e.clientY, item: t });
-                }}
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(
-                    DRAG_TYPE,
-                    JSON.stringify({
-                      id: t.id,
-                      durationMins: t.timeEstimateMins ?? DEFAULT_BLOCK_MINS,
-                      grabOffsetMins: 0,
-                    }),
-                  );
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                className={[
-                  "group cursor-grab rounded-md border p-2 active:cursor-grabbing",
-                  t.id === oneThingId
-                    ? "border-warning/70 bg-warning/10"
-                    : // Leveraged wears a solid left edge on a plain card,
-                      // as its block does in TimeGrid. "Due soon" below is a
-                      // tinted card with no edge, so the two stay apart.
-                      t.leveraged
-                      ? "border-border border-l-2 border-l-warning bg-background/60 hover:border-warning/60"
-                      : dueDays.has(t.id)
-                        ? "border-warning/40 bg-warning/5 hover:border-warning/70"
-                        : "border-border bg-background/60 hover:border-primary/40",
-                ].join(" ")}
-              >
-                {/* D-PM-38 S4 — a step names its parent, the shared crumb. */}
-                <ParentCrumb parent={t.parent} className="mb-0.5" />
-                <div className="flex items-start gap-1">
-                  <span className="min-w-0 flex-1 truncate text-left text-xs text-foreground">
-                    {t.id === oneThingId && (
-                      <span className="text-warning">★ </span>
-                    )}
-                    {t.title}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={
-                      t.id === oneThingId
-                        ? "Unset the One Thing"
-                        : "Make this the One Thing"
-                    }
-                    title={
-                      t.id === oneThingId
-                        ? "Your One Thing today. Click to unset."
-                        : "If only one thing gets done today… make it this."
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleOneThing(t.id);
-                    }}
-                    className={[
-                      "tech-transition shrink-0 rounded p-0.5",
-                      t.id === oneThingId
-                        ? "text-warning"
-                        : "text-muted-foreground/60 hover:text-warning reveal-on-hover",
-                    ].join(" ")}
-                  >
-                    <Icon name="Star"
-                      className="h-3 w-3"
-                      fill={t.id === oneThingId ? "currentColor" : "none"}
-                    />
-                  </button>
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-                  {t.timeEstimateMins ? (
-                    <span className="inline-flex items-center gap-0.5">
-                      <Icon name="Clock" className="h-3 w-3" />
-                      {durationLabel(t.timeEstimateMins)}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-0.5">
-                      <Icon name="Clock" className="h-3 w-3" />
-                      {DEFAULT_BLOCK_MINS}m
-                    </span>
-                  )}
-                  {t.energy && (
-                    <span className="inline-flex items-center gap-0.5 capitalize">
-                      <Icon name="Zap" className="h-3 w-3" />
-                      {t.energy}
-                    </span>
-                  )}
-                  {dueDays.has(t.id) && (
-                    <span
+          <div className="flex flex-col gap-2">
+            {ordered.map((t) => {
+              const one = t.id === oneThingId;
+              // The chips a board card draws for the same facts, in the same
+              // order and words (`taskMeta`): the due day by RX-5's local-day
+              // rule, then the estimate. A task with no estimate is booked at
+              // the default length, so the rail says that length.
+              const chips: MetaChip[] = taskMeta({
+                dueAt: t.dueAt,
+                completedAt: t.completedAt,
+                estimateMins: t.timeEstimateMins ?? DEFAULT_BLOCK_MINS,
+              });
+              if (t.energy) {
+                chips.push({
+                  key: "energy",
+                  icon: "Zap",
+                  label: t.energy[0].toUpperCase() + t.energy.slice(1),
+                  tone: "muted",
+                  title: `Energy: ${t.energy}`,
+                });
+              }
+              return (
+                // The board's task card (`TaskCardShell`), so a task looks
+                // the same in Projects, My Tasks and here. Same grammar as a
+                // calendar block: a click (or Enter) opens the task, a drag
+                // puts it on the grid at a slot, and a right-click opens the
+                // rest, with the first free slot.
+                <TaskCardShell
+                  key={t.id}
+                  ariaLabel={one ? `${t.title}, your One Thing` : t.title}
+                  parent={t.parent}
+                  draggable
+                  dense
+                  // The rail lists open tasks only (`plannerCandidates`), and
+                  // it has no keyboard cursor: Tab walks the cards.
+                  completed={false}
+                  atCursor={false}
+                  className="w-full min-w-0 cursor-grab active:cursor-grabbing"
+                  onActivate={() => onOpen(t.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtx({ x: e.clientX, y: e.clientY, item: t });
+                  }}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(
+                      DRAG_TYPE,
+                      JSON.stringify({
+                        id: t.id,
+                        durationMins: t.timeEstimateMins ?? DEFAULT_BLOCK_MINS,
+                        grabOffsetMins: 0,
+                      }),
+                    );
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                >
+                  <div className="flex min-w-0 items-start gap-1">
+                    <TaskCardTitle className="flex-1">
+                      {one && <span className="text-warning">★ </span>}
+                      {t.title}
+                    </TaskCardTitle>
+                    <button
+                      type="button"
+                      aria-label={one ? "Unset the One Thing" : "Make this the One Thing"}
+                      title={
+                        one
+                          ? "Your One Thing today. Click to unset."
+                          : "If only one thing gets done today… make it this."
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleOneThing(t.id);
+                      }}
+                      // The card takes Enter and Space too. A key on the star
+                      // must not also open the task.
+                      onKeyDown={(e) => e.stopPropagation()}
                       className={[
-                        "inline-flex items-center gap-0.5 font-medium",
-                        (dueDays.get(t.id) as number) <= 1
-                          ? "text-destructive"
-                          : "text-warning",
+                        "tech-transition -mr-1 -mt-0.5 shrink-0 rounded p-0.5 focus-visible:ring-2 focus-visible:ring-ring",
+                        one
+                          ? "text-warning"
+                          : "text-muted-foreground hover:text-warning reveal-on-hover",
                       ].join(" ")}
                     >
-                      <Icon name="AlertTriangle" className="h-3 w-3" />
-                      {(dueDays.get(t.id) as number) <= 0
-                        ? "due today"
-                        : dueDays.get(t.id) === 1
-                          ? "due tomorrow"
-                          : `due in ${dueDays.get(t.id)}d`}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
+                      <Icon name="Star" className="h-3.5 w-3.5" fill={one ? "currentColor" : "none"} />
+                    </button>
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    {/* Leveraged work gets the shared priority chip, because
+                        the leverage meter above counts it and its block wears
+                        the warning bar. Other levels get none here: "Urgent"
+                        comes from the due day, which the due chip already
+                        says, and two red marks for one fact is noise. */}
+                    {t.leveraged && (
+                      <PriorityChip chip={priorityChip(priorityCell(t, urgentWindowHours))} />
+                    )}
+                    <TaskMeta chips={chips} />
+                  </div>
+                </TaskCardShell>
+              );
+            })}
           </div>
         )}
       </div>

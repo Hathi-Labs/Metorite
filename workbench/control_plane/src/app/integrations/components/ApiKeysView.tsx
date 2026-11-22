@@ -2,6 +2,7 @@
 
 /** The API keys view: the per-org service-key catalog (moved from the old APIs tab, no behaviour change). */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -13,6 +14,16 @@ import { Input } from "@/components/ui/Input";
 import { appConnection, orgKeyConfigured, rowsForTile, type Connection } from "../lib/connections";
 import ZohoInCrm, { ZOHO_SERVICE } from "@/components/ZohoInCrm";
 import OperatorEnvVars from "../OperatorEnvVars";
+import { useCachedResource } from "@/lib/useCachedResource";
+import * as integrationsApi from "../lib/api";
+import { addApiLabel } from "../lib/apiConnect";
+import { ConnectApiModal } from "./ApiConnect";
+
+/**
+ * API-5: the cache key of the Zoho Books status. It sits under `integrations:`,
+ * so a write that wakes the connection list reads it again too.
+ */
+export const BOOKS_STATUS_KEY = "integrations:api-zoho-books";
 
 // ===========================================================================
 // APIS TAB — full existing implementation
@@ -784,7 +795,18 @@ export default function ApiKeysView() {
   const [search, setSearch]   = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [showDiscover, setShowDiscover] = useState(false);
+  // API-5: "Add API" becomes "Connect an API" when the gateway serves Zoho
+  // Books to this admin. A 404 (the org is dark) or a 403 reads as null, and
+  // then the old custom path stays as it was.
+  const books = useCachedResource(BOOKS_STATUS_KEY, integrationsApi.getBooksStatus);
+  const connectApis = books.data !== null && books.data !== undefined;
+  const [showConnect, setShowConnect] = useState(false);
+  const openAdd = () => (connectApis ? setShowConnect(true) : setShowDiscover(true));
   const hasFetched = useRef(false);
+  // A bar tap closes the key panel and the discover window (MOB-9).
+  useCloseOnBarTap(() => setSelected(null), selected !== null);
+  useCloseOnBarTap(() => setShowDiscover(false), showDiscover);
+  useCloseOnBarTap(() => setShowConnect(false), showConnect);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -892,8 +914,8 @@ export default function ApiKeysView() {
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 gap-3 text-muted-foreground text-sm">
               <p>No APIs found{search ? ` for "${search}"` : ""}.</p>
-              <button onClick={() => setShowDiscover(true)} className="flex items-center gap-1.5 text-xs text-primary hover:opacity-80">
-                <Icon name="Plus" className="w-3.5 h-3.5" /> Add a new API
+              <button onClick={openAdd} className="flex items-center gap-1.5 text-xs text-primary hover:opacity-80">
+                <Icon name="Plus" className="w-3.5 h-3.5" /> {connectApis ? addApiLabel(true) : "Add a new API"}
               </button>
             </div>
           ) : (
@@ -901,9 +923,9 @@ export default function ApiKeysView() {
               {filtered.map((api) => (
                 <ApiTile key={api.service} api={api} selected={selected === api.service} onClick={() => setSelected(api.service)} />
               ))}
-              <button onClick={() => setShowDiscover(true)}
+              <button onClick={openAdd}
                 className="p-4 rounded-xl border-2 border-dashed border-border text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-all flex flex-col items-center justify-center gap-2 min-h-[120px]">
-                <Icon name="Plus" className="w-5 h-5" /><span className="text-xs">Add API</span>
+                <Icon name="Plus" className="w-5 h-5" /><span className="text-xs">{addApiLabel(connectApis)}</span>
               </button>
             </div>
           )}
@@ -913,7 +935,7 @@ export default function ApiKeysView() {
           <>
             <div className="sm:hidden fixed inset-0 z-[60] pointer-events-none">
               <div className="absolute inset-0 bg-black/50 pointer-events-auto" onClick={() => setSelected(null)} />
-              <aside className="absolute inset-x-0 bottom-14 pointer-events-auto flex max-h-[55%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
+              <aside className="absolute inset-x-0 bottom-0 pointer-events-auto flex max-h-[55%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
                   <div className="flex items-center gap-2">
                     <ServiceLogo service={selectedApi.service} label={selectedApi.label ?? selectedApi.service} category={selectedApi.category} size="sm" />
@@ -936,6 +958,16 @@ export default function ApiKeysView() {
       </div>
 
       {showDiscover && <DiscoverModal onClose={() => setShowDiscover(false)} onSaved={() => void fetchAll()} />}
+      {showConnect && connectApis && (
+        <ConnectApiModal
+          status={books.data ?? null}
+          onClose={() => setShowConnect(false)}
+          onCustom={() => {
+            setShowConnect(false);
+            setShowDiscover(true);
+          }}
+        />
+      )}
     </div>
   );
 }

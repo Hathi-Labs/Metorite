@@ -49,6 +49,8 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.align.trigger import enqueue_check
+from gateway.db import current_tenant
 from gateway.routes.projects.core import (
     CLIENT_TASK_SOURCES,
     TRIAGE_CATEGORY,
@@ -70,14 +72,15 @@ from gateway.routes.projects.core import (
     require_status_in_project,
     resolve_visibility,
     root_project_id,
-    status_owner_id,
     router,
     row_to_dict,
+    status_owner_id,
     task_visibility_clause,
     update_row,
     wire,
 )
 from gateway.routes.projects.filters import parse_when
+from gateway.routes.projects.personal import stored_due
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -306,7 +309,8 @@ async def capture_intake(
                 {"leveraged": payload.leveraged}
                 if payload.leveraged is not None else {}
             ),
-            "due_at": payload.due_at,
+            # A chat date has no time, so it takes the one date seam (RX-5).
+            "due_at": await stored_due(db, actor(user).lower(), payload.due_at),
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
             # The task's own source speaks the CHECK'd vocabulary; the
@@ -314,6 +318,11 @@ async def capture_intake(
             # source that a request may name (EA-6d): `mcp` is the server's.
             **({"source": source} if source in CLIENT_TASK_SOURCES else {}),
         })
+        # WS-ALN ALN-1 (`project_alignment.md` §5). A capture is a create, so it
+        # enqueues in THIS transaction, as `create_task` does. A personal
+        # project (§1.2) gets no job. Fence: `test_align_trigger.py`.
+        if not getattr(target, "personal_owner", None):
+            await enqueue_check(db, str(task.id), current_tenant(), row=task, known_team=True)
         wrapper = await insert_row(db, "pm_intake", {
             "task_id": str(task.id),
             "status": "pending",

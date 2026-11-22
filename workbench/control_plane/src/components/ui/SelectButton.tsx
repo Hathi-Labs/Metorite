@@ -134,6 +134,36 @@ export function selectPanelReducer(
   }
 }
 
+/**
+ * Escape on an OPEN list closes the list, and nothing else (task 2299).
+ *
+ * The task panel closes on Escape (`panelEscape`), and the Projects page
+ * closes it from a `window` listener. One Escape on an open Status list
+ * closed the list AND the panel. Now the open control takes the key first.
+ *
+ * ⚠️ **What `stopPropagation` reaches.** Next hydrates the whole `document`,
+ * so React runs a key from the main tree at `document`, and a key from a
+ * portal (a dialog, the filter box) at the portal node. The native stop then
+ * keeps the key from each node after that one: `window`, so the page and
+ * `CardPanel`, and from a portal also Base UI's dialog listener on
+ * `document`. React's own stop keeps it from the panel's `onKeyDown`.
+ * `preventDefault` marks the key as used, which `cardEscape` and
+ * `TaskFocusModal` read.
+ *
+ * True when it took the key. A closed list returns false, so the next Escape
+ * reaches the panel. Fences: `SelectButton.test.ts` and
+ * `e2e/projects-select-escape.spec.ts`.
+ */
+export function claimEscape(
+  event: Pick<KeyboardEvent, "key" | "preventDefault" | "stopPropagation">,
+  open: boolean
+): boolean {
+  if (!open || event.key !== "Escape") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
+}
+
 /** One heading and its options, in the caller's order. */
 export interface OptionGroup {
   /** `undefined` for options with no heading. */
@@ -304,6 +334,11 @@ export interface SelectButtonProps {
    */
   panelMaxHeight?: number;
   /**
+   * Which edge of the trigger the list hangs from (`AnchoredPanel`). `end`
+   * keeps a wide list inside the window for a trigger near the right edge.
+   */
+  align?: "start" | "end";
+  /**
    * WS-53 CRM-C4p. The id of the trigger, so a `<label htmlFor>` names it.
    * Absent: no id, as before.
    */
@@ -314,6 +349,13 @@ export interface SelectButtonProps {
   invalid?: boolean;
 }
 
+/**
+ * GL-6. The trigger joins the glass field family of `Input sm`: 28 px, a
+ * capsule, the field fill and the input border. A touch screen gets 44 px.
+ */
+const GLASS_TRIGGER =
+  "glass:h-7 glass:rounded-full glass:border-input glass:bg-field glass:px-3 glass:text-footnote glass:hover:bg-field glass:pointer-coarse:h-11";
+
 export function SelectButton({
   label,
   value,
@@ -322,6 +364,7 @@ export function SelectButton({
   defaultValue = "",
   className = "",
   widthClass = "w-[9rem]",
+  align,
   disabled = false,
   autoOpen = false,
   onClose,
@@ -379,8 +422,12 @@ export function SelectButton({
     // ⚠️ Escape closes, and focus returns to the trigger. Without the return
     // the next Tab starts from the top of the document, which on this row
     // means walking the whole filter bar again.
+    // The root's `onKeyDown` takes a key from inside the control. This takes
+    // a key from elsewhere: Safari does not focus a clicked button, so the
+    // focus can stay on the board row. The stop keeps the page from closing
+    // the panel too (`claimEscape`).
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (claimEscape(event, true)) {
         dispatch({ type: "close" });
         root.current?.querySelector("button")?.focus();
       }
@@ -403,7 +450,19 @@ export function SelectButton({
   );
 
   return (
-    <div ref={root} className={`relative ${widthClass}`}>
+    <div
+      ref={root}
+      className={`relative ${widthClass}`}
+      // Task 2299: one Escape closes the open list only, never the panel or
+      // the dialog around it. A key in the portalled list bubbles here too,
+      // through the React tree. See `claimEscape`.
+      onKeyDown={(event) => {
+        if (claimEscape(event, open)) {
+          dispatch({ type: "close" });
+          root.current?.querySelector("button")?.focus();
+        }
+      }}
+    >
       <button
         ref={setTrigger}
         id={id}
@@ -416,7 +475,7 @@ export function SelectButton({
         aria-controls={open ? listId : undefined}
         disabled={disabled}
         onClick={() => dispatch({ type: "toggle" })}
-        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${GLASS_TRIGGER} ${className}`}
       >
         {/* Task #417: the chosen icon or colour, before its name. */}
         {current ? <OptionMark option={current} /> : null}
@@ -447,6 +506,7 @@ export function SelectButton({
         // The inline max-height `AnchoredPanel` sets beats the class, so
         // `max-h-64` only stays as the fallback when no number is given.
         maxHeight={panelMaxHeight}
+        align={align}
         className="max-h-64 w-max p-1"
         panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >

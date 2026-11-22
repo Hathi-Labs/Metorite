@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { useDraftSession } from "../lib/useDraftSession";
 import { splitQuotedText } from "../lib/quoting";
 import { useEmailStore, withPatch } from "../lib/emailStore";
@@ -20,11 +21,13 @@ import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import {
-  autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
-  type DraftStatus,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, holdPick, pickProblem,
+  saveFailureText, sendFailureText, type DraftStatus,
 } from "../lib/draftAutosave";
+import { fileToSendAttachment, type SendAttachment, type ArtifactAttachmentRef } from "../lib/api";
+import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import {
   draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead, noticeAfterSave,
   noticeWords, sendAfterPreSave, showsFormattingNotice,
@@ -53,6 +56,7 @@ export function ConversationView({
   messages,
   openedId,
   renderActions,
+  renderReplyBar,
   lightVersions,
   onSent,
 }: {
@@ -62,6 +66,9 @@ export function ConversationView({
    *  Forward and "More actions". The reading pane owns every handler, so
    *  each card acts on its own message. */
   renderActions?: (message: Email) => ReactNode;
+  /** The Reply, Reply all and Forward buttons below the body of one open card
+   *  (`MessageReplyBar`). The reading pane owns these handlers too. */
+  renderReplyBar?: (message: Email) => ReactNode;
   /** The messages whose light version the member asked for. */
   lightVersions?: ReadonlySet<string>;
   /** Called after an in-thread draft is sent so the parent can surface the
@@ -155,7 +162,7 @@ export function ConversationView({
           .then((full) => setHydrated((h) => ({ ...h, [m.id]: full })))
           // On failure, cache the list row so the effect doesn't retry this
           // message forever every time `hydrated` changes for another card.
-          .catch(() => setHydrated((h) => ({ ...h, [m.id]: m })));
+          .catch(() => setHydrated((h) => ({ ...h, [m.id]: withFailedFiles(m) })));
       }
     });
   }, [expanded, visible, hydrated]);
@@ -254,16 +261,30 @@ export function ConversationView({
               <div className="px-3 pb-3">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   {/* Every recipient of each mail of a thread: To, Cc and the
-                      Bcc of a mail the member sent. One cut line hid the Cc
-                      (owner report, 2026-10-24). */}
-                  <div className="min-w-0 space-y-0.5 text-[11px]">
-                    <RecipientList label="To" people={m.to} accountId={m.accountId} />
-                    <RecipientList label="Cc" people={m.cc ?? []} accountId={m.accountId} />
-                    <RecipientList label="Bcc" people={m.bcc ?? []} accountId={m.accountId} />
-                  </div>
+                      Bcc of a mail the member sent, in one line until the
+                      member asks (owner, 2026-11-01). The Cc stays in the
+                      line by name: one cut line hid it (2026-10-24). */}
+                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 select-text space-y-0.5 text-[11px]" />
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}
                 </div>
+                {/* The files of this message, on top of its body as in Outlook
+                    (owner, 2026-11-06). The same chips as the single email, so
+                    the earlier messages of a thread show their files too. The
+                    fetch below settles `hydrated`, also on a failure. */}
+                {view.hasAttachments && (
+                  <AttachmentList
+                    attachments={view.attachments}
+                    status={view.attachmentsStatus}
+                    onRetry={async () => {
+                      // This one message: the other cards stay as they are.
+                      const again = await getEmail(m.id);
+                      setHydrated((h) => ({ ...h, [m.id]: again }));
+                    }}
+                    pending={!hydrated[m.id]}
+                    className="mb-3"
+                  />
+                )}
                 {view.bodyHtml || view.bodyText ? (
                   <MessageContent
                     html={view.bodyHtml}
@@ -277,15 +298,7 @@ export function ConversationView({
                     No preview text.
                   </div>
                 )}
-                {/* Per-message attachments — same card UI (with image
-                    thumbnails) as the single-message reader, so a thread's
-                    earlier messages surface their files too. */}
-                {view.hasAttachments && (
-                  <AttachmentList
-                    attachments={view.attachments}
-                    className="mt-4 pt-3 border-t border-border"
-                  />
-                )}
+                {renderReplyBar?.(view)}
               </div>
             )}
           </div>
@@ -307,6 +320,28 @@ export function ConversationView({
 }
 
 export const isDraftEmail = isDraft;
+
+/** The identity of a picked file, for the set of files already on the draft. */
+const attKeys = new WeakMap<SendAttachment, string>();
+export function attKey(a: SendAttachment): string {
+  const known = attKeys.get(a);
+  if (known) return known;
+  // FNV-1a over the content, so two files of one name and one size differ.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < a.contentB64.length; i++) {
+    h ^= a.contentB64.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  const key = `${a.filename}:${a.contentB64.length}:${h.toString(16)}`;
+  attKeys.set(a, key);
+  return key;
+}
+
+/** "1.2 MB" for a file chip. */
+function fileSizeText(bytes: number): string {
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1000))} KB`;
+}
 
 /** Inline editable draft: edit the body/recipients and send it into the thread. */
 export function DraftCard({
@@ -421,6 +456,34 @@ export function DraftCard({
   const [sending, setSending] = useState(false);
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
+  // Task 3812: files the member adds to this reply, from the computer or from
+  // Metorite. Only the save before the send carries them: a provider ADDS the
+  // files of each save, so an autosave that sent them would double them.
+  const [attachments, setAttachments] = useState<SendAttachment[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
+  const readingRef = useRef(0);
+  // The files that an earlier save of this card already put on the draft.
+  const filesOnDraft = useRef<Set<string>>(new Set());
+  const addFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(attachments, picked, readingRef.current);
+    if (problem) {
+      setSendError(problem);
+      return;
+    }
+    const release = holdPick(readingRef, picked);
+    try {
+      const added = await Promise.all(picked.map(fileToSendAttachment));
+      setAttachments((prev) => [...prev, ...added]);
+      dirty.current = true;
+      setSendError((prev) => (prev === FILES_TOO_LARGE ? null : prev));
+    } catch {
+      setSendError("Couldn't read one of the attachments");
+    } finally {
+      release();
+    }
+  };
   // EM-G3a-f7: the HTML that the card read for a Gmail draft with none, a
   // save that answered `lost`, and a stopped send. The member saw the notice
   // after a stop, so the next press sends the text only (D-G3a-f7-11, -12).
@@ -583,6 +646,8 @@ export function DraftCard({
     // the card has one session, 0 (EM-G3c-3 item 1).
     await autosave.drain(0);
     try {
+      const freshAtt = attachments.filter((a) => !filesOnDraft.current.has(attKey(a)));
+      const freshArt = artifacts.filter((a) => !filesOnDraft.current.has(a.path));
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
       // sendDraft removes it from the list. No more full-send detour for a Cc'd
@@ -596,7 +661,13 @@ export function DraftCard({
         cc: ccList(),
         bcc: bccList(),
         subject: draft.subject || "",
+        attachments: freshAtt.length ? freshAtt : undefined,
+        artifacts: freshArt.length ? freshArt : undefined,
       }, openedText, combinedBody(), provider));
+      // The provider ADDS the files of each save, so a retry of a failed send
+      // must not send these again.
+      freshAtt.forEach((a) => filesOnDraft.current.add(attKey(a)));
+      freshArt.forEach((a) => filesOnDraft.current.add(a.path));
       if (noticeAfterSave(saved)) markLost();
       // A `lost` stops the first press, and the card shows the notice. The
       // next press sends the text only (D-G3a-f7-12). A `lost` of an earlier
@@ -699,6 +770,7 @@ export function DraftCard({
     <div
       ref={cardRef}
       data-email-composer=""
+      data-ask-clear=""
       style={size.rootStyle}
       className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
     >
@@ -835,6 +907,25 @@ export function DraftCard({
           <AppIcon name="Trash2" size={13} /> Discard
         </button>
         <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
+        <label
+          className="flex items-center px-2 py-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
+          title="Attach files from this computer (7.5 MB in all)"
+        >
+          <AppIcon name="Paperclip" size={13} />
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { void addFiles(e.target.files); e.target.value = ""; }}
+          />
+        </label>
+        <ArtifactAttachPicker
+          exclude={artifacts.map((a) => a.path)}
+          onPick={(ref) => {
+            dirty.current = true;
+            setArtifacts((prev) => (prev.some((a) => a.path === ref.path) ? prev : [...prev, ref]));
+          }}
+        />
         {saveFailure ? (
           <span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>
         ) : (
@@ -847,6 +938,44 @@ export function DraftCard({
           </span>
         )}
       </div>
+      {(attachments.length > 0 || artifacts.length > 0) && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {attachments.map((a, i) => (
+            <span
+              key={`f-${i}`}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border bg-secondary text-muted-foreground"
+            >
+              <AppIcon name="Paperclip" size={10} />
+              <span className="truncate max-w-[160px]" title={a.filename}>{a.filename}</span>
+              <span>{fileSizeText(Math.floor((a.contentB64.length * 3) / 4))}</span>
+              <button
+                onClick={() => { dirty.current = true; setAttachments((prev) => prev.filter((_, j) => j !== i)); }}
+                className="hover:text-foreground"
+                title="Remove attachment"
+              >
+                <AppIcon name="X" size={10} />
+              </button>
+            </span>
+          ))}
+          {artifacts.map((a, i) => (
+            <span
+              key={`a-${i}`}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-primary/40 bg-primary/5 text-primary"
+              title={a.path}
+            >
+              <AppIcon name="Paperclip" size={10} />
+              <span className="truncate max-w-[160px]">{a.name || a.path}</span>
+              <button
+                onClick={() => { dirty.current = true; setArtifacts((prev) => prev.filter((_, j) => j !== i)); }}
+                className="hover:text-foreground"
+                title="Remove attachment"
+              >
+                <AppIcon name="X" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {/* The slot of a failed send (EM-G3c-2 item 14) */}
       {sendError && (
         <p role="alert" className="mt-1.5 text-[10px] text-destructive">
