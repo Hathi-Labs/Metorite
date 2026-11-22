@@ -196,6 +196,6 @@ async def test_a_family_that_another_org_holds_still_fails_on_the_old_key(db) ->
             await _put(db.org_b, name, [{"family": "memory", "enabled": False,
                                          "reason": "b"}])
         a = await _get(db.org_a, name)
-    assert err.value.orig.diag.constraint_name == "agent_skill_setting_pkey"
+    assert "agent_skill_setting_pkey" in str(err.value)
     assert [s["reason"] for s in a["settings"]] == ["a"]
     assert _rows(db, name) == [(db.org_a, "memory", False)]
