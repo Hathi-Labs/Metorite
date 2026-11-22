@@ -18,8 +18,10 @@ The claims, each written so that a wrong build fails it:
   zero answer states what the search did or found. The four families that no
   guard can see (a recipient, an old sender, a project name, a chat name cut
   by k) prove that the switch alone stops the claim.
-* **The guard behind the switch.** With the switch on (``claims_on``), "No
-  record has all the words" prints only with proof,
+* **The guard behind the switch.** With the switch on (``claims_on``), and
+  each source declaring ``Source.proves_absence`` (``declares``, FIND-4b,
+  ``test_find_absence_declared.py``), "No record has all the words" prints
+  only with proof,
   the rule of ``held`` false: one word of 4 letters or more, searched alone
   in each app that answered, found nothing, nothing was skipped, and no date
   or verified filter limited it. A first pass with no hit is no proof,
@@ -217,6 +219,22 @@ def claims_on(monkeypatch):
     """``find.ABSENCE_CLAIMS`` on, so the three-part guard behind it stays
     fenced (review round 4). The product ships with it off."""
     monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
+
+
+@pytest.fixture()
+def declares(monkeypatch):
+    """Each source of ``sources.REGISTRY`` declares ``Source.proves_absence``
+    (FIND-4b). No source declares it in the product, so a test that claims
+    needs this and ``claims_on``. Ask for it after ``on``, so it marks the
+    fake readers."""
+    for key, source in list(sources.REGISTRY.items()):
+        monkeypatch.setitem(sources.REGISTRY, key,
+                            dataclasses.replace(source, proves_absence=True))
+
+
+#: The declarations of a unit test of the rule: each app that answered
+#: declares ``Source.proves_absence`` (FIND-4b).
+DECLARED = {"crm": True, "email": True}
 
 
 def run(q: str, user: Any = None, **given: Any) -> dict[str, Any]:
@@ -421,7 +439,7 @@ class TestTheHonestZero:
         assert not _claims(body)
 
     def test_with_the_switch_on_a_proven_zero_keeps_the_opening_of_kr_zero(
-            self, on, claims_on):
+            self, on, claims_on, declares):
         body = run(f"{MARKER} Quasar")
         assert body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -490,7 +508,7 @@ class TestMostOfTheWords:
         assert lines[1].startswith(f"{cst.EACH_WORD_OPENING} snowflake (")
         assert not _claims(body)
 
-    def test_with_the_switch_on_a_proven_miss_with_hits_says_so(self, on, claims_on):
+    def test_with_the_switch_on_a_proven_miss_with_hits_says_so(self, on, claims_on, declares):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -527,7 +545,8 @@ class TestMostOfTheWords:
 
         def absent(broadened: Any, skipped: Any = (), limited: bool = False) -> bool:
             return find.word_absent(broadened, query=typed, skipped=list(skipped),
-                                    limited=limited, shown=[], looked=looked)
+                                    limited=limited, shown=[], looked=looked,
+                                    declared=DECLARED)
 
         assert absent([{"word": "alpha", "hits": 2, "skipped": []},
                        {"word": "bravo", "hits": 0, "skipped": []}])
@@ -631,11 +650,13 @@ class TestTheTypedWord:
     def test_the_proof_needs_a_miss_and_no_shown_word(self, on, claims_on):
         zero = [{"word": "zqvortex", "hits": 0, "skipped": []}]
 
-        def proven(*, miss: bool = True, shown: Any = (), looked: Any = None) -> bool:
+        def proven(*, miss: bool = True, shown: Any = (), looked: Any = None,
+                   declared: Any = DECLARED) -> bool:
             return company._none_has_all(
                 member(*ALL), f"Snowflake {MARKER}", ["crm"], [], zero, limited=False,
                 miss=miss, shown=list(shown),
-                looked={"zqvortex": True} if looked is None else looked)
+                looked={"zqvortex": True} if looked is None else looked,
+                declared=declared)
 
         assert proven()
         assert not proven(miss=False)
@@ -643,8 +664,11 @@ class TestTheTypedWord:
         assert not proven(shown=["Deal · Zqvortex Labs"])
         assert not proven(looked={"zqvortex": False})
         assert not proven(looked={})
+        # FIND-4b: an app that answered and does not declare proves nothing.
+        assert not proven(declared={"crm": False})
+        assert not proven(declared={})
 
-    def test_a_plain_word_found_nowhere_still_proves_absence(self, on, claims_on):
+    def test_a_plain_word_found_nowhere_still_proves_absence(self, on, claims_on, declares):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         assert cst.format_answer(body, dated=True).splitlines()[1] == cst.MOST_WORDS
@@ -664,10 +688,10 @@ class TestTheTypedWord:
         looked = {"muller": True, "zqvortex": True}
         assert find.word_absent([{"word": "muller", "hits": 0, "skipped": []}],
                                 query="Müller Hans", skipped=[], limited=False,
-                                shown=[], looked=looked) is False
+                                shown=[], looked=looked, declared=DECLARED) is False
         assert find.word_absent([{"word": "zqvortex", "hits": 0, "skipped": []}],
                                 query="Müller Zqvortex", skipped=[], limited=False,
-                                shown=[], looked=looked) is True
+                                shown=[], looked=looked, declared=DECLARED) is True
 
     def test_held_of_an_accented_word_is_not_known(self, claims_on):
         """The same rule in ``near_report`` (HRD-18b), so the near line does
@@ -675,7 +699,8 @@ class TestTheTypedWord:
         near = [{"word": "Müller", "as": "Mueller", "hits": 1}]
         zero = [{"word": "muller", "hits": 0, "skipped": []}]
         (entry,) = find.near_report(near, {}, zero, query="Müller Zqvortex",
-                                    first_zero=True, skipped=[], looked={"muller": True})
+                                    first_zero=True, skipped=[], looked={"muller": True},
+                                    declared=DECLARED)
         assert entry["held"] is None
         body = {"query": "Müller Zqvortex", "hits": [], "skipped": [], "near": [entry]}
         assert "No record holds «" not in cst.format_answer(body, dated=True)
@@ -683,7 +708,7 @@ class TestTheTypedWord:
         (plain,) = find.near_report([{"word": "Puja", "as": "Pooja", "hits": 1}], {},
                                     [{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert plain["held"] is False
 
 
@@ -743,7 +768,7 @@ class TestTheWordSomewhere:
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is False and not _claims(body)
 
-    def test_the_positive_control_still_claims(self, on, claims_on):
+    def test_the_positive_control_still_claims(self, on, claims_on, declares):
         """With the switch on: a plain word, typed as it folds, with zero
         hits, no skip, no shown hit that holds it and no near name of the
         word itself."""
@@ -755,9 +780,10 @@ class TestTheWordSomewhere:
 
     def test_the_one_helper_of_both_proofs(self, claims_on):
         def proves(word: str = "puja", *, shown: Any = (), looked: Any = None,
-                   query: str = "Puja Shah") -> bool:
+                   query: str = "Puja Shah", declared: Any = DECLARED) -> bool:
             return find.proves_absence(word, query=query, shown=list(shown),
-                                       looked={"puja": True} if looked is None else looked)
+                                       looked={"puja": True} if looked is None else looked,
+                                       declared=declared)
 
         assert proves()
         assert not proves(query="Pujaa Shah")
@@ -765,6 +791,10 @@ class TestTheWordSomewhere:
         assert not proves(shown=["Pujas list"])  # the stem of the word
         assert not proves(looked={"puja": False})
         assert not proves(looked={})
+        # FIND-4b: each app that answered must declare.
+        assert not proves(declared={"crm": True, "email": False})
+        assert not proves(declared={})
+        assert not proves(declared=None)
 
     def test_held_needs_the_same_proof(self, claims_on):
         """``near_report`` (HRD-18b) uses the one helper: a hit of ANY rung
@@ -776,7 +806,8 @@ class TestTheWordSomewhere:
         def held(found: Any = None, related: Any = None, looked: Any = None) -> Any:
             (entry,) = find.near_report(
                 near, found or {}, zero, query="Puja Shah", first_zero=True, skipped=[],
-                related=related, looked={"puja": True} if looked is None else looked)
+                related=related, looked={"puja": True} if looked is None else looked,
+                declared=DECLARED)
             return entry["held"]
 
         assert held() is False
@@ -824,20 +855,20 @@ class TestTheClaimIsOff:
     def test_the_switch_ships_off(self):
         assert find.ABSENCE_CLAIMS is False
         assert not find.proves_absence("puja", query="Puja Shah", shown=[],
-                                       looked={"puja": True})
+                                       looked={"puja": True}, declared=DECLARED)
         assert not find.word_absent([{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", skipped=[], limited=False, shown=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
 
     def test_held_is_true_or_unknown_never_false(self):
         near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
         (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert entry["held"] is None
         (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 2, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert entry["held"] is True
 
     @staticmethod
@@ -851,7 +882,7 @@ class TestTheClaimIsOff:
         monkeypatch.setattr(find, "ABSENCE_CLAIMS", False)
         return body
 
-    def test_a_recipient_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_recipient_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """The member sent «Invoice for October» to Ramesh. Full text never
         reads To or Cc, so "ramesh" alone finds nothing, and no near name or
         hint holds it."""
@@ -859,14 +890,14 @@ class TestTheClaimIsOff:
         assert "m-11" in [h["id"] for h in body["hits"]]
         assert {"word": "ramesh", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_an_old_sender_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_an_old_sender_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """«ops@kowalco.com» is past the newest names of the near lookup, and
         full text keeps the address as one token."""
         body = self._only_the_switch(monkeypatch, "kowalco shipment")
         assert [h["id"] for h in body["hits"]] == ["m-12"]
         assert {"word": "kowalco", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_a_project_name_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_project_name_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """Tasks search the title and the description. «Quarterly budget» is in
         the project «Zenith Launch». "budget" finds «Budget notes» and it, and
         the cut to k = 1 removes the one hit whose hint shows the project. So
@@ -875,7 +906,7 @@ class TestTheClaimIsOff:
         assert [h["id"] for h in body["hits"] if h["app"] == "tasks"] == ["t-3"]
         assert {"word": "zenith", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_a_chat_name_cut_by_k_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_chat_name_cut_by_k_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """WhatsApp never searches the chat name. "deploy" finds «Ops Room»
         and «Orion Team», and the cut to k = 1 keeps «Ops Room» only."""
         body = self._only_the_switch(monkeypatch, "Orion deploy", k=1)

@@ -20,6 +20,10 @@
 > SP-8b, the form in the app, is open.
 > 🟢 **Task 3852 slice 1 BUILT 2026-11-22, not merged** (§14.9 rule 4). Each node that the gateway returns carries `parent_hidden`.
 > `move_node` refuses a move to the top level of a node with a hidden parent. No table and no flag. Slice 2 (task 3885) is open.
+> 🟢 **WS-39 task 2886, part 1 BUILT 2026-11-21, not merged** (§14.9). No group may take the slug `all`.
+> `routes/admin/groups.py` refuses it with 400, and `RESERVED_GROUP_SLUGS` holds the word once. No table and no flag.
+> The T-1 team filter must import that set. Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`,
+> is task 3852. Slice 1 of task 3852 is built (this branch). Slice 2 is task 3885.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
@@ -9788,11 +9792,13 @@ Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEA
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
+The scope value `all` means every team of the member, so no group may take the slug `all` (task 2886). `routes/admin/groups.py` `_clean_slug` refuses it with 400. Fence: `tests/unit/test_admin_groups.py`.
+
 Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
 **A hidden parent (task 3852, slice 1).** Each node that the gateway returns carries `parent_hidden`. The tree, the node list, the node read and each node echo carry it. The value is true when the node has a parent that the member cannot see. `tree.attach_parent_hidden` decides it through `Visibility.project_clause`, so the gateway has no second rule of visibility. The frontend, the MCP edge and the chat skills read one root rule: no parent id, and no hidden parent.
 
-**The guard.** `move_node` refuses a move to the top level of a node with a hidden parent (403, `tree.HIDDEN_PARENT_MOVE_REFUSED`). The words do not name the parent. A move into a project that the member can see still goes. Slice 2 (task 3885) sends a null `parent_project_id` for such a node, one release later. Fences: `tests/unit/test_hidden_parent_flag_r8.py` (R8) and `tests/unit/test_hidden_parent_flag.py`, with `hiddenParent.test.ts` for the frontend.
+**The guard.** `move_node` refuses a move to the top level of a node with a hidden parent (403, `tree.HIDDEN_PARENT_MOVE_REFUSED`). The words do not name the parent. A move into a project that the member can see still goes. The words name the path of two steps: move the node into a team space that the member can see, then move it to the top level. A team node under the personal root of another member has no one above it who can move it. Slice 2 (task 3885) sends a null `parent_project_id` for such a node, one release later. Fences: `tests/unit/test_hidden_parent_flag_r8.py` (R8) and `tests/unit/test_hidden_parent_flag.py`, with `hiddenParent.test.ts` for the frontend.
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|

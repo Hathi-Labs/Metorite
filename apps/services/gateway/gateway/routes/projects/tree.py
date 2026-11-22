@@ -309,9 +309,9 @@ async def attach_parent_hidden(
 #: level, and the node has a parent that the member cannot see. They never
 #: name the parent (§14.9 rule 4).
 HIDDEN_PARENT_MOVE_REFUSED = (
-    "This project is inside a project that you cannot see, so it cannot "
-    "move to the top level. Move it into a project that you can see, or ask "
-    "a person who can see its parent to move it."
+    "You cannot see the space above this project, so it cannot move to the "
+    "top level from here. Move it into a team space you can see first, then "
+    "move it to the top level."
 )
 
 

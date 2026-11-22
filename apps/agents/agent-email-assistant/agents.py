@@ -36,6 +36,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_id_label,
     strip_kind_prefix,
 )
 from acb_common.tool_refusals import data as _fenced
@@ -1392,19 +1393,13 @@ def _canonical_id(value: Any) -> str | None:
         return None
 
 
-_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
-
-
 def _clean_email_id(value: Any) -> str:
     """An email id as the model may write it, without the list label (task 3863).
 
     The inbox tools print ``id=<uuid>``, and the model copies the label with
-    the value. This strips the space and the quotes round the value, then a
-    leading ``id=`` (any case), then the space again. It changes nothing else.
+    the value. ``strip_id_label`` is the one stripper (task 3882).
     """
-    text = str(value if value is not None else "").strip().strip("\"'`").strip()
-    text = _ID_LABEL.sub("", text, count=1)
-    return text.strip().strip("\"'`").strip()
+    return strip_id_label(value)
 
 
 def _clean_email_ids(values: Any) -> list[str]:
@@ -2255,6 +2250,9 @@ async def present_email_groups(groups_json: str) -> str:
         ids: list[str] = []
         for i in ids_in if isinstance(ids_in, list) else []:
             sid = _clean_email_id(i)
+            # One form per mail: braced, no-dash and upper-case UUIDs fold
+            # to the canonical one (task 3882). A non-UUID stays as it is.
+            sid = _canonical_id(sid) or sid
             if sid and sid not in seen:
                 seen.add(sid)
                 ids.append(sid)
@@ -3036,6 +3034,75 @@ def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
             form["notices"].append(_REPLY_NEW_UNTICKED_NOTICE)
         else:
             form["note"] = f"{_REPLY_NEW_UNTICKED_NOTICE} {form['note']}".strip()
+    # Task 3601: the warning goes FIRST, so the four-notice cut never drops it.
+    warning = _unticked_warning(form)
+    if warning:
+        form["notices"].insert(0, warning)
+        if len(form["notices"]) > 4:
+            spill = form["notices"].pop()
+            form["note"] = f"{spill} {form['note']}".strip()
+
+
+def _named_in(body: str, address: str) -> bool:
+    """True when *body* names the person of *address* (task 3601).
+
+    The test is the local part, split at ``. _ - +`` and digits. A part of
+    three letters or more that stands as a whole word in the body counts, so
+    ``vinay@d3.example`` is named by "Srishty, Gaurav and Vinay". A person
+    with a one-word address is the only case that it can catch, and a miss
+    only leaves out the extra sentence, never the unticked box.
+    """
+    text = (body or "").casefold()
+    local = address.split("@", 1)[0].casefold()
+    for part in re.split(r"[._+\-0-9]+", local):
+        if len(part) >= 3 and re.search(rf"\b{re.escape(part)}\b", text):
+            return True
+    return False
+
+
+#: The most characters of addresses that the warning names in one list. The
+#: card refuses a notice of more than 1000 characters (``_whole_line``), so
+#: the warning must not grow with the number of addresses.
+_WARNING_NAMES_MAX = 380
+
+
+def _some(addresses: list[str]) -> str:
+    """The addresses that fit :data:`_WARNING_NAMES_MAX`, then "and K more".
+    The first address always shows."""
+    shown: list[str] = []
+    used = 0
+    for address in addresses:
+        if shown and used + len(address) + 2 > _WARNING_NAMES_MAX:
+            break
+        shown.append(address)
+        used += len(address) + 2
+    rest = len(addresses) - len(shown)
+    return ", ".join(shown) + (f" and {rest} more" if rest else "")
+
+
+def _unticked_warning(form: dict[str, Any]) -> str:
+    """The warning of a held reply card that leaves a person unticked (3601).
+
+    Owner decision, 2026-11-16, on the Vinay case of session a8296fc6: the
+    unknown address stays UNTICKED, and the card says so loudly. It names
+    each address that will not get the reply, and it says when the draft
+    names that person. No tick changes. Empty when everyone is ticked.
+    """
+    shown = (form.get("recipients") or {}).get("reply_all" if form.get("reply_all")
+                                               else "reply") or {}
+    on = {a.strip().lower() for key in ("to", "cc", "bcc")
+          for a in ((form.get("ticked") or {}).get(
+              "reply_all" if form.get("reply_all") else "reply") or {}).get(key) or []}
+    gone = [a for key in ("to", "cc", "bcc") for a in shown.get(key) or []
+            if a.strip().lower() not in on]
+    if not gone:
+        return ""
+    named = [a for a in gone if _named_in(str(form.get("body") or ""), a)]
+    text = f"Not ticked, so no copy goes to: {_some(gone)}."
+    if named:
+        text += (f" Your draft names {_some(named)}. "
+                 "Tick the box to send them a copy.")
+    return text
 
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
