@@ -408,7 +408,7 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/my/summary", "", "X", reason=_MY_TASKS_STEP),
         Route("DELETE", "/projects/my/tasks/{task_id}", "", "X", reason=_PURGE),
         Route("GET", "/projects/my/tasks/{task_id}/lanes", "vocabulary", "A",
-              also=("update_task", "update_tasks"), off_door=TYPED),
+              off_door=LATER),
         Route("GET", "/projects/my/calendar", "calendar", "A", off_door=LATER),
         Route("GET", "/projects/my/contexts", "my_contexts", "A", off_door=LATER),
         Route("GET", "/projects/my/today", "my_work", "A", off_door=LATER),
