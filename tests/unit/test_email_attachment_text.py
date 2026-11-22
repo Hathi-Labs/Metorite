@@ -32,6 +32,11 @@ R7 fences named here, each a test class:
   parses on the ONE bounded pool of ``acb_skills.attachment_tools``, with no
   database session open, and a parse that never stops answers within the
   bound (22 s by default).
+* ``email-attachment-hold-thread`` (:class:`TestTheReleaseFromTheWorkerThread`,
+  task 3888). A release of the read hold on the parse worker thread wakes a
+  waiter of the loop at once, with loop debug off and on. A second release
+  keeps the hold of a new read. A release after the loop closed drops the
+  hold and logs the error class only.
 * ``email-attachment-download-same-bytes``
   (:class:`TestTheDownloadRouteIsUnchanged`). The download route answers the
   same bytes and the same headers through the shared helper.
@@ -899,6 +904,128 @@ class TestTheHoldFollowsTheWorker:
         finally:
             for _ in range(taken):
                 tools._SLOTS.release()
+
+
+class _LogSpy:
+    """Records each log call of the route module, by event and fields."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    debug = info = warning = error = _record
+
+
+class TestTheReleaseFromTheWorkerThread:
+    """Task 3888. ``parse_bounded`` calls ``hold.release`` on the parse worker
+    thread (H-253). A waiter of the loop must wake at once, and the release
+    must change ``_READING`` and ``_WAITERS`` on the loop thread only.
+
+    Each test runs a private loop. So no other timer or I/O wakes the loop,
+    and a wake that debug mode loses fails the test and never hangs the run.
+    """
+
+    _KEY = (ORG_A, OWNER)
+    _USER = SimpleNamespace(organization_id=ORG_A, email=OWNER)
+
+    def _run(self, scenario: Any, *, debug: bool = False) -> Any:
+        loop = asyncio.new_event_loop()
+        loop.set_debug(debug)
+        try:
+            return loop.run_until_complete(scenario())
+        finally:
+            # A waiter that never woke stays pending. Close drops it, and
+            # nothing awaits it, so the run never hangs.
+            loop.close()
+            m._WAITERS.pop(self._KEY, None)
+            m._READING.discard(self._KEY)
+
+    @pytest.mark.parametrize("debug", [False, True], ids=["debug-off", "debug-on"])
+    def test_a_release_on_a_worker_thread_wakes_the_waiter_at_once(
+        self, debug: bool,
+    ) -> None:
+        stamps: dict[str, float] = {}
+        workers: list[threading.Thread] = []
+
+        async def _scenario() -> bool:
+            holder, second = m._ReadHold(self._USER), m._ReadHold(self._USER)
+            assert holder.take()
+
+            async def _wait() -> bool:
+                got = await second.take_waiting(10)
+                stamps["woke"] = time.monotonic()
+                return got
+
+            waiter = asyncio.create_task(_wait())
+            await asyncio.sleep(0)
+            assert m._WAITERS.get(self._KEY), "the second read did not queue"
+
+            def _worker() -> None:
+                time.sleep(0.1)  # the loop sleeps in its selector by now
+                stamps["released"] = time.monotonic()
+                tools._run_quietly(holder.release)  # as `_Slot.release` runs it
+
+            workers.append(threading.Thread(target=_worker, daemon=True))
+            workers[0].start()
+            # The only timer of the loop before the waiter's own is 3 s away.
+            done, _ = await asyncio.wait({waiter}, timeout=3)
+            woke = waiter in done and waiter.result() is True
+            if woke:
+                second.release()
+            return woke
+
+        try:
+            woke = self._run(_scenario, debug=debug)
+        finally:
+            for worker in workers:
+                worker.join(5)
+        assert woke, "the waiter never took the hold that a worker thread released"
+        gap = stamps["woke"] - stamps["released"]
+        assert gap < 1.0, f"the waiter woke {gap:.2f} s after the release"
+        assert not m._READING and not m._WAITERS
+
+    def test_a_second_release_from_a_thread_keeps_a_new_hold(self) -> None:
+        async def _scenario() -> None:
+            holder, other = m._ReadHold(self._USER), m._ReadHold(self._USER)
+            assert holder.take()
+            await asyncio.to_thread(tools._run_quietly, holder.release)
+            await asyncio.sleep(0)
+            assert self._KEY not in m._READING, "the release from a thread did not land"
+            assert other.take()
+            await asyncio.to_thread(tools._run_quietly, holder.release)
+            await asyncio.sleep(0)
+            assert self._KEY in m._READING, "a second release dropped another read's hold"
+            other.release()
+            assert self._KEY not in m._READING
+
+        self._run(_scenario)
+
+    def test_a_release_after_the_loop_closed_drops_the_hold(self, monkeypatch) -> None:
+        spy = _LogSpy()
+        monkeypatch.setattr(m, "_log", spy)
+        loop = asyncio.new_event_loop()
+
+        async def _take() -> Any:
+            hold = m._ReadHold(self._USER)
+            assert hold.take()
+            return hold
+
+        try:
+            hold = loop.run_until_complete(_take())
+        finally:
+            loop.close()
+        try:
+            worker = threading.Thread(target=tools._run_quietly, args=(hold.release,))
+            worker.start()
+            worker.join(5)
+            assert self._KEY not in m._READING, "the hold stayed after its loop closed"
+            assert spy.events == [
+                ("attachment_text.hold_loop_closed", {"error": "RuntimeError"}),
+            ]
+        finally:
+            m._READING.discard(self._KEY)
 
 
 # ── 3. The download route is unchanged ──────────────────────────────────────
