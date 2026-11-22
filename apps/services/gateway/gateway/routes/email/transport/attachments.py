@@ -579,6 +579,7 @@ class _ReadHold:
     def __init__(self, user: UserContext) -> None:
         self._key = (str(user.organization_id or ""), (user.email or "").strip().lower())
         self._held = False
+        self._handed = False
 
     def take(self) -> bool:
         if self._key in _READING:
@@ -591,6 +592,15 @@ class _ReadHold:
         if self._held:
             _READING.discard(self._key)
             self._held = False
+
+    def hand_off(self) -> None:
+        """``parse_bounded`` now owns the release: it ends with the worker (H-253)."""
+        self._handed = True
+
+    def release_request(self) -> None:
+        """The release at the end of a request. A handed-off hold waits for its worker."""
+        if not self._handed:
+            self.release()
 
 
 #: The fields of a cached answer. The file name and the type come from the
@@ -885,6 +895,10 @@ async def attachment_text(
             options["deadline"] = deadline
         elif attachment_ocr.ocr_enabled():
             options["ocr"] = False  # the caller asked for no OCR
+        # H-253: the hold ends when the worker gives its parse slot back, and
+        # not when this request answers. A parse past its deadline keeps the slot.
+        options["on_worker_done"] = hold.release
+        hold.hand_off()
         parsed = await parse_bounded(got.content, suffix, **options)
         if isinstance(parsed, str):
             # Not cached: a busy pool and a deadline pass with time.
@@ -899,7 +913,7 @@ async def attachment_text(
             # The fetch runs on, and holds the member's hold until it ends.
             owned[0].detached = True
         else:
-            hold.release()
+            hold.release_request()
 
 
 async def _ocr_fetch(
