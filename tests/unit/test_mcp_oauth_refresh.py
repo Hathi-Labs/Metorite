@@ -407,3 +407,63 @@ async def test_a_test_in_the_backoff_sends_the_stored_token_while_it_lives(test_
     assert outcome == mcp.TEST_BEARER_OK and test_store["steps"] == []
     assert header == {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
     mcp._BACKOFF.clear()
+
+
+# ── Task 3866: a row with no sign-in whose server asks for one ──────────────
+
+
+def _url_server(name: str, **over: Any) -> Any:
+    from orchestrator import _maf_mcp
+
+    return _maf_mcp.McpServer(name=name, url=f.MCP_URL, headers={}, **over)
+
+
+async def test_a_challenged_401_on_a_url_row_calls_on_needs_signin(session_world: f.World) -> None:
+    session_world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(
+        401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{f.PRM_URL}"'})
+    calls: list[str] = []
+    failures: dict[str, str] = {}
+    from orchestrator import _maf_mcp
+
+    async def _mark(server: Any) -> None:
+        calls.append(server.name)
+
+    with structlog.testing.capture_logs() as logs:
+        names = await _maf_mcp.attach_mcp_tools(
+            native_agent(), [_url_server("zoho")], [], on_needs_signin=_mark, failures=failures)
+    assert names == [] and calls == ["zoho"]
+    assert failures == {"zoho": "reconnect"}, "the chat keeps the CSY-5 reason"
+    text = str(logs)
+    assert f.PRM_URL not in text and "resource_metadata" not in text
+
+
+async def test_a_401_with_no_challenge_calls_nothing_and_still_reads_reconnect(
+        session_world: f.World) -> None:
+    from orchestrator import _maf_mcp
+
+    calls: list[str] = []
+    failures: dict[str, str] = {}
+
+    async def _mark(server: Any) -> None:
+        calls.append(server.name)
+
+    await _maf_mcp.attach_mcp_tools(
+        native_agent(), [_url_server("zoho")], [], on_needs_signin=_mark, failures=failures)
+    assert calls == [] and failures == {"zoho": "reconnect"}
+
+
+async def test_an_oauth_row_or_a_key_row_never_calls_on_needs_signin(
+        session_world: f.World) -> None:
+    from orchestrator import _maf_mcp
+
+    session_world.fixed[(f.MCP_HOST, "/mcp")] = httpx.Response(
+        401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{f.PRM_URL}"'})
+    calls: list[str] = []
+
+    async def _mark(server: Any) -> None:
+        calls.append(server.name)
+
+    keyed = _maf_mcp.McpServer(name="keyed", url=f.MCP_URL, headers={"X-Api-Key": "k"})
+    await _maf_mcp.attach_mcp_tools(
+        native_agent(), [_server("notion", refreshed=False), keyed], [], on_needs_signin=_mark)
+    assert calls == []

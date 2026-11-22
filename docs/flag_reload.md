@@ -33,6 +33,15 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`AI_TURN_KIND_NOWAIT_ORGS` stops the turn-kind wait of a delegated run
+(`ai_tier_routing.md` §4.3, task 3592). For each listed org, a delegated run
+asks no turn-kind question. It starts at once on the `chat` kind, and it does
+not wait up to 3 s. A `plan`, `analysis` or `code` task then keeps the
+agent's own tier. `*` lists every org, and the default is empty. Its one
+reader is `acb_skills.tier_policy.turn_kind_nowait_on`. Each delegated run asks
+it at its start, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `API_CONNECTIONS_ORGS` turns on the API connections of the chat
 (`api_connections.md` §4, D-API-8). API-1 declares it, and the rung 1 slices
 read it. `*` lists every org, and the default is empty. Empty gives no org an
@@ -177,6 +186,19 @@ the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
 gives the answer to the client as `chat_pin`. So a tab shows a change at its
 next shell read. A reload applies a change. The flip stays OWNER-GATE
 (`enforcement-flip`), after the owner preview.
+
+`CHAT_PIN_TOOL_ORGS` gives the chat of each listed org the tool `pin_chat`
+(`chat_organization.md` §18, CO-11b). The owner gave the tool its own flag on
+2026-11-21 (task 3563). `*` lists every org, and the default is empty. Empty
+means no chat holds the tool, and the tool count does not move. The tool acts
+only for an org on the pin list too, because the pin routes answer 404 with
+the pin off.
+
+Its one reader is `gateway.chat_session_member.pin_tool_allowed`, and it asks
+`pin_allowed` first. The build of the orchestrator asks it at the start of
+each run, so a reload applies to the next run. Any value other than empty is
+OWNER-GATE, and only the owner flips it. The tool joins each request, so the
+flip takes the trade of the tool cap in §18.
 
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that

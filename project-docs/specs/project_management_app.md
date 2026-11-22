@@ -18,6 +18,10 @@
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
 > SP-8b, the form in the app, is open.
+> 🟢 **WS-39 task 2886, part 1 BUILT 2026-11-21, not merged** (§14.9). No group may take the slug `all`.
+> `routes/admin/groups.py` refuses it with 400, and `RESERVED_GROUP_SLUGS` holds the word once. No table and no flag.
+> The T-1 team filter must import that set. Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`,
+> is task 3852. Its consumers need a decision first.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
@@ -9786,6 +9790,8 @@ Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEA
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
+The scope value `all` means every team of the member, so no group may take the slug `all` (task 2886). `routes/admin/groups.py` `_clean_slug` refuses it with 400. Fence: `tests/unit/test_admin_groups.py`.
+
 Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
@@ -9798,6 +9804,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
 | **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
+| **T-8** | 3758 | The access panel of a space or a project: who can see it, and a change to everyone, one or more teams, or named people. It uses the grants routes and D-OP-11, and it warns before the last grant goes (owner ask, 2026-11-18, `one_projects_app.md` §9d.2) | Later. A lead changes who sees a space from the panel, and the change shows in the team view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-3 |
 
 **Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
 

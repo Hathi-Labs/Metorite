@@ -197,6 +197,7 @@ from gateway.routes.crm.field_sql import (
     find_words,
     from_source,
     group_sql,
+    label_resolved,
     lookup_ids,
     matched_values,
     measure_sql,
@@ -231,7 +232,11 @@ from gateway.routes.crm.flags import (
     module_find_allowed,
     semantic_model_allowed,
 )
-from gateway.routes.crm.modules import _require_module, mirrored_modules
+from gateway.routes.crm.modules import (
+    _require_module,
+    mirrored_modules,
+    resolve_module,
+)
 from gateway.routes.crm.overlay import (
     SLOT_OF,
     UNSORTED,
@@ -511,6 +516,10 @@ class AggregateResponse(BaseModel):
     #: Each key word that the call used, with the real key that it read. A
     #: sum of fields (CRM-Q32-9) gives the list of its keys.
     keys: dict[str, str | list[str]] = {}
+    #: Task 3864: each field key that the call wrote as a LABEL → the real
+    #: key that the route read. Absent when every key was a real key.
+    resolved: dict[str, str] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: The stored type of ``group_field``, so a caller can tell a ``datetime``
     #: bucket, which reads the zone, from a ``date`` bucket, which does not.
     group_field_type: str | None = None
@@ -1537,6 +1546,7 @@ def _paged_answer(
         field_type=measured.type if measured is not None else None,
         field_label=measured.label if measured is not None else None,
         group_field_label=grouped.label, keys=got.keys,
+        resolved=label_resolved(measured, grouped, grouped2),
         group_field_type=grouped.type, bucket=bucket if dated else None,
         groups=groups, total=total, other=None,
         omitted=max(0, count - len(groups)), zone=got.zone, values=values,
@@ -1828,6 +1838,9 @@ async def _compute(
     paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size,
                      status_group=status_group, q=params.q)
     if paging is not None and module is not None and group_field is not None:
+        # CRM-Q34-12: the paged path takes the API name too.
+        async with _tenant_session() as db:
+            module = resolve_module(await mirrored_modules(db), module)
         paged = await _compute_pages(
             module, measure=measure, field=field, group_field=group_field,
             group_field2=group_field2, bucket=bucket, pairs=pairs, params=params,
@@ -1837,6 +1850,10 @@ async def _compute(
             return paged
     try:
         async with _tenant_session() as db:
+            if module is not None:
+                # CRM-Q34-12: a label or a plural gives the API name, and a
+                # miss is the 404 that names the close modules.
+                module = resolve_module(await mirrored_modules(db), module)
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
             # reads the module. With none, the read of today, unchanged.
             overlay = (
@@ -1929,7 +1946,7 @@ async def _compute(
         field_type=measured.type if measured is not None else None,
         field_label=measured.label if measured is not None else None,
         group_field_label=grouped.label if grouped is not None else None,
-        keys=read.keys,
+        keys=read.keys, resolved=label_resolved(measured, grouped),
         group_field_type=grouped.type if grouped is not None else None,
         bucket=bucket if bucketed else None,
         groups=shown,

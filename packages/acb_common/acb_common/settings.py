@@ -1,6 +1,7 @@
 """Centralised env-driven settings. One source of truth for every service."""
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -1402,6 +1403,17 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agents_overview_r8.py.
     agents_view_orgs: str = ""
 
+    # ── Agents: the map read (WS-MCP SW-102, agent_coordination.md §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agents/overview?shape=map` answers
+    # 404, and the plain overview does not change. The map also needs
+    # AGENTS_VIEW_ORGS. The one reader is
+    # `gateway.routes.projects.agent_summary.agent_map_allowed`. A SIGHUP
+    # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_map_r8.py.
+    agent_map_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1704,6 +1716,24 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
 
+    # ── Pin a chat from the chat (chat_organization.md §18, WS-CO CO-11b) ──
+    #
+    # `chat_pin_tool_orgs` lists the organization ids where the orchestrator
+    # holds the tool `pin_chat`, or `*` for each one. The owner gave the tool
+    # its own flag on 2026-11-21 (task 3563). So the pin of the chat list can
+    # turn on with no change to the tool list. Empty means off: no chat holds
+    # the tool, and the tool count does not move. The one reader is
+    # `gateway.chat_session_member.pin_tool_allowed`. It is true only when
+    # `chat_pin_orgs` holds the org too, because the routes answer 404 with
+    # the pin off. It fails closed. The name ends in `_orgs`, so a SIGHUP
+    # applies a change at the next run (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-GATE: any value other than empty on a box. Only the owner flips
+    # it, because the tool joins each request and moves the tool cap trade of
+    # chat_organization.md §18.
+    # Fences: tests/unit/test_chat_pin_tool.py, tests/unit/test_flag_reload.py.
+    chat_pin_tool_orgs: str = ""
+
     # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
     #
     # `chat_card_record_orgs` lists the organization ids where a write card
@@ -1932,6 +1962,18 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: a restart can bill a prompt twice (spec
     # §13.1). Fence: tests/unit/test_turn_kind_parallel.py.
     ai_turn_kind_parallel: str = ""
+    # Chat speed (task 3592): the orgs whose DELEGATED runs ask no turn-kind
+    # question. A comma list of organization ids, or `*`. Empty means OFF,
+    # and a delegated run waits for the answer as before (up to 3 s). With
+    # it on, the run starts at once on the `chat` kind, so a `plan`,
+    # `analysis` or `code` task no longer raises its tier. The one reader is
+    # `acb_skills.tier_policy.turn_kind_nowait_on`, and it fails closed.
+    # Spec: ai_tier_routing.md §4.3. It reloads with no restart
+    # (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-GATE on production: it changes the tier that a delegated run
+    # pays for. Fence: tests/unit/test_turn_kind_nowait.py.
+    ai_turn_kind_nowait_orgs: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
@@ -2014,6 +2056,18 @@ class Settings(BaseSettings):
     # email_app_master_plan.md §10.4.17 PR-A. Fences:
     # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
     email_triage_once_per_cycle: bool = False
+
+    # ── One Reply Zero classify of a mailbox at a time (WS-17 EM-T16 H-285)
+    #
+    # True: a second call of the classify for a mailbox skips while a first
+    # call of the same mailbox runs. The webhook, the manual sync and the
+    # scheduler hook all end in that call. A mailbox with no running call,
+    # and any other mailbox, runs as before. False is the default, and then
+    # two calls can run at once. The guard lives in one gateway process.
+    # The one reader is `email_ingestion.post_sync.classify_one_at_a_time`.
+    # A value of `true` on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_email_classify_one_at_a_time.py.
+    email_classify_one_at_a_time: bool = False
 
     # ── No rule match when the conversation status decides (WS-17 EM-T16 PR-B)
     #
@@ -3137,6 +3191,45 @@ def install_settings(new: Settings) -> None:
     _NEXT[:] = [new]
     get_settings.cache_clear()
     get_settings()
+
+
+# ── The internal service token (WS-24c slice 2) ──────────────────────────────
+
+
+def internal_service_token() -> str:
+    """The ONE caller-side reader of the service-identity token.
+
+    A caller that sends a request to a gateway business route (``/tasks``,
+    ``/crm``, ``/email``) reads its bearer here. It reads
+    ``GATEWAY_INTERNAL_TOKEN``, then the ``gateway_internal_token`` field. That
+    is the order of ``acb_auth.deps._get_internal_token``, so a caller sends
+    the value that the gateway checks. There is NO fallback to the LLM key
+    (WS-24b). ``""`` means unprovisioned. A settings load that fails also
+    gives ``""``.
+
+    Never give this value to a ``/v1`` client. Use ``Settings.llm_api_key``.
+    Fences: ``tests/unit/test_service_identity_and_webhook_auth.py``
+    (``test_no_copy_of_the_internal_token_reader``).
+    """
+    tok = os.getenv("GATEWAY_INTERNAL_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        return (getattr(get_settings(), "gateway_internal_token", "") or "").strip()
+    except Exception:  # a broken settings load is an unset token
+        return ""
+
+
+def internal_auth_headers() -> dict[str, str]:
+    """The ``Authorization`` header of an internal call, or ``{}``.
+
+    An empty token gives NO header. ``Bearer `` with no token is an illegal
+    header value, and httpx raises ``LocalProtocolError`` before the request
+    leaves. With no header the gateway answers a clean 401. A caller spreads
+    this into its headers: ``{**internal_auth_headers(), ...}``.
+    """
+    tok = internal_service_token()
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
 #: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).

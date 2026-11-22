@@ -122,14 +122,14 @@
         "chat*.spec.ts", "approval-stack.spec.ts", "askbar-clearance.spec.ts", "assistant-motion.spec.ts",
         "genui-option-picker.spec.ts", "interview-offer-start.spec.ts", "plan-card.spec.ts",
         "glass-rail-menu.spec.ts", "phone-bar-always.spec.ts", "email-chat-*.spec.ts",
-        "email-held-send.spec.ts", "email-redraft.spec.ts", "task-edit-card.spec.ts", "one-assistant-email.spec.ts",
+        "email-held-send.spec.ts", "email-redraft.spec.ts", "task-edit-card.spec.ts", "touch-targets.spec.ts", "one-assistant-email.spec.ts",
         "agent-questions*.spec.ts", "agent-runs.spec.ts"
       ]
     },
     "home": {
       "paths": ["src/app/page.tsx", "src/app/api/brief/", "src/components/BreathingCharacter", "src/components/WelcomeDialog"],
       "specs": [
-        "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
+        "my-day-capture.spec.ts", "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
         "chat-starter-pills.spec.ts", "guide-*.spec.ts", "sidebar-row-counts.spec.ts"
       ]
     },

@@ -1410,7 +1410,7 @@ def registered_tools() -> set[str]:
 
     import skill_my_tasks
     import skill_projects
-    from acb_skills import knowledge_tools, profile_tools
+    from acb_skills import chat_pin_tools, knowledge_tools, profile_tools
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names: set[str] = set()
@@ -1422,6 +1422,8 @@ def registered_tools() -> set[str]:
     names |= set(skill_projects.__all__) | set(skill_my_tasks.__all__)
     names |= set(knowledge_tools.__all__)
     names |= {fn.__name__ for fn in profile_tools.WRITE_TOOLS} | {"resolve_person"}
+    # CO-11b (task 3563): the pin of this chat, a core tool of the orchestrator.
+    names |= {fn.__name__ for fn in chat_pin_tools.TOOLS}
     return names
 
 

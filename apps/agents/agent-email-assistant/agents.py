@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import bounds, page_line, paged, prefix_limit, prefix_page
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -35,6 +36,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_id_label,
     strip_kind_prefix,
 )
 from acb_common.tool_refusals import data as _fenced
@@ -380,18 +382,6 @@ def _current_user_email() -> str:
     except Exception:  # noqa: BLE001
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
-
-    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
-    no longer accepts the LLM key as service identity, so that rung would only
-    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
-    """
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -416,7 +406,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -1412,13 +1402,29 @@ def _canonical_id(value: Any) -> str | None:
         return None
 
 
+def _clean_email_id(value: Any) -> str:
+    """An email id as the model may write it, without the list label (task 3863).
+
+    The inbox tools print ``id=<uuid>``, and the model copies the label with
+    the value. ``strip_id_label`` is the one stripper (task 3882).
+    """
+    return strip_id_label(value)
+
+
+def _clean_email_ids(values: Any) -> list[str]:
+    """``_clean_email_id`` over a list. An empty id drops out."""
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple, set)):
+        values = [] if values is None else [values]
+    return [c for c in (_clean_email_id(v) for v in values) if c]
+
+
 def _email_ref(value: Any) -> str:
     """An email id without the ``email:`` that ``search_company`` prints (HRD-2).
 
     A prefix of another kind (``task:``, ``deal:``) is a refusal that names
     the kind, so the model asks the right tool.
     """
-    return strip_kind_prefix(value, "email", read_tool="query_inbox")
+    return strip_kind_prefix(_clean_email_id(value), "email", read_tool="query_inbox")
 
 
 def _email_link(email_id: Any, account_id: Any = None) -> str:
@@ -1601,7 +1607,7 @@ async def read_thread(email_id: str = "", thread_id: str = "",
     The conversation is read in the mailbox of the email, and you name no
     mailbox (§11.3 rule 1). When two mailboxes hold one thread_id, the tool
     merges nothing and asks for the email_id of one email in the thread."""
-    tid = (thread_id or "").strip()
+    tid = _clean_email_id(thread_id)
     acct = ""
     email_id = _email_ref(email_id) if email_id else email_id
     if email_id:
@@ -2227,8 +2233,9 @@ async def present_email_groups(groups_json: str) -> str:
 
     Pass ``groups_json``: a JSON array of groups, each an object with:
       • ``title``     (str, required) — the group name, e.g. "Finance"
-      • ``email_ids`` (list[str], required) — the ``id=…`` values from
-        find_priority or query_inbox
+      • ``email_ids`` (list[str], required) — the ids from find_priority or
+        query_inbox. Pass the id itself, the value after ``id=``, and not
+        the label ``id=``
       • ``note``      (str, optional) — a short caption for the group
 
     Get the ids first, decide the groups, then call this ONCE with every
@@ -2260,7 +2267,10 @@ async def present_email_groups(groups_json: str) -> str:
         ids_in = g.get("email_ids") or g.get("ids") or []
         ids: list[str] = []
         for i in ids_in if isinstance(ids_in, list) else []:
-            sid = str(i).strip()
+            sid = _clean_email_id(i)
+            # One form per mail: braced, no-dash and upper-case UUIDs fold
+            # to the canonical one (task 3882). A non-UUID stays as it is.
+            sid = _canonical_id(sid) or sid
             if sid and sid not in seen:
                 seen.add(sid)
                 ids.append(sid)
@@ -2286,7 +2296,7 @@ async def present_email_groups(groups_json: str) -> str:
     for g in groups:
         rows: list[str] = []
         for sid in g["ids"]:
-            m = meta.get(sid)
+            m = meta.get(sid) or meta.get(sid.lower())
             if m:
                 sender = m.get("from") or "(unknown sender)"
                 subject = m.get("subject") or "(no subject)"
@@ -2417,11 +2427,13 @@ async def manage_inbox(
             messages to the provider's Spam/Junk folder. It is NOT Trash: use
             ``trash`` only to delete. ``flag`` / ``unflag`` set the follow-up
             flag of Outlook (Gmail has none, so use star there).
-        message_ids: ids of the messages to act on
+        message_ids: ids of the messages to act on. Each id is the value
+            after ``id=``, not the label.
         folder: destination for ``action="move"``, an existing folder or
             label ("Archive"). Make a new one with create_label.
         add_labels / remove_labels: label NAMES for ``action="label"``.
     """
+    message_ids = _clean_email_ids(message_ids)
     if action in ("spam", "junk"):
         # One folder key for every provider: the gateway reads "junk" as
         # Gmail SPAM and as Outlook Junk Email, like the MARK_SPAM rule action.
@@ -2509,6 +2521,7 @@ async def draft_reply(
 
     The draft goes to everyone on the mail (Reply all), or to the sender
     alone when nobody else is on it. Say which one in the answer."""
+    email_id = _clean_email_id(email_id)
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -3039,6 +3052,75 @@ def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
             form["notices"].append(_REPLY_NEW_UNTICKED_NOTICE)
         else:
             form["note"] = f"{_REPLY_NEW_UNTICKED_NOTICE} {form['note']}".strip()
+    # Task 3601: the warning goes FIRST, so the four-notice cut never drops it.
+    warning = _unticked_warning(form)
+    if warning:
+        form["notices"].insert(0, warning)
+        if len(form["notices"]) > 4:
+            spill = form["notices"].pop()
+            form["note"] = f"{spill} {form['note']}".strip()
+
+
+def _named_in(body: str, address: str) -> bool:
+    """True when *body* names the person of *address* (task 3601).
+
+    The test is the local part, split at ``. _ - +`` and digits. A part of
+    three letters or more that stands as a whole word in the body counts, so
+    ``vinay@d3.example`` is named by "Srishty, Gaurav and Vinay". A person
+    with a one-word address is the only case that it can catch, and a miss
+    only leaves out the extra sentence, never the unticked box.
+    """
+    text = (body or "").casefold()
+    local = address.split("@", 1)[0].casefold()
+    for part in re.split(r"[._+\-0-9]+", local):
+        if len(part) >= 3 and re.search(rf"\b{re.escape(part)}\b", text):
+            return True
+    return False
+
+
+#: The most characters of addresses that the warning names in one list. The
+#: card refuses a notice of more than 1000 characters (``_whole_line``), so
+#: the warning must not grow with the number of addresses.
+_WARNING_NAMES_MAX = 380
+
+
+def _some(addresses: list[str]) -> str:
+    """The addresses that fit :data:`_WARNING_NAMES_MAX`, then "and K more".
+    The first address always shows."""
+    shown: list[str] = []
+    used = 0
+    for address in addresses:
+        if shown and used + len(address) + 2 > _WARNING_NAMES_MAX:
+            break
+        shown.append(address)
+        used += len(address) + 2
+    rest = len(addresses) - len(shown)
+    return ", ".join(shown) + (f" and {rest} more" if rest else "")
+
+
+def _unticked_warning(form: dict[str, Any]) -> str:
+    """The warning of a held reply card that leaves a person unticked (3601).
+
+    Owner decision, 2026-11-16, on the Vinay case of session a8296fc6: the
+    unknown address stays UNTICKED, and the card says so loudly. It names
+    each address that will not get the reply, and it says when the draft
+    names that person. No tick changes. Empty when everyone is ticked.
+    """
+    shown = (form.get("recipients") or {}).get("reply_all" if form.get("reply_all")
+                                               else "reply") or {}
+    on = {a.strip().lower() for key in ("to", "cc", "bcc")
+          for a in ((form.get("ticked") or {}).get(
+              "reply_all" if form.get("reply_all") else "reply") or {}).get(key) or []}
+    gone = [a for key in ("to", "cc", "bcc") for a in shown.get(key) or []
+            if a.strip().lower() not in on]
+    if not gone:
+        return ""
+    named = [a for a in gone if _named_in(str(form.get("body") or ""), a)]
+    text = f"Not ticked, so no copy goes to: {_some(gone)}."
+    if named:
+        text += (f" Your draft names {_some(named)}. "
+                 "Tick the box to send them a copy.")
+    return text
 
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
@@ -3103,6 +3185,7 @@ async def compose_reply(
     draft in Drafts names the same people. Never tell the member to open the
     Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
+    email_id = _clean_email_id(email_id)
     try:
         from acb_skills import ask_tools
     except ImportError:  # an older platform with no reply card
@@ -3150,6 +3233,11 @@ async def compose_reply(
         # The run decides it, never the model. The record keeps it for a Bcc
         # that the member types on the card.
         steer["held"] = True
+    # HRD-8b-3: in a run that draws the edit card the reply card names the chat
+    # thread, so a message that closes it can spend it and link the next card.
+    thread = _run_thread() if _edit_card_open() else ""
+    if thread:
+        steer["card_thread_id"] = thread
     # HRD-10d-3: the flag is read once for this call. Off, the requests are
     # the requests of before.
     check_thread = _thread_check_on()
@@ -3192,6 +3280,8 @@ async def compose_reply(
         **({"request_id": card_id} if card_id else {}),
     )
     if answer is ask_tools.REVISED:
+        if thread and card_id:
+            await _revise_closed_card(card_id, thread)
         return await _revised_line(form, kept, prep)
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard, a timeout, and a card whose draft left Drafts (2026-11-03).
@@ -4528,7 +4618,8 @@ async def _run_rules_on_one(account_id: str, email_id: str | None, dry_run: bool
     A preview changes nothing and asks nothing. An apply acts as a run of the
     rules does: a held run refuses it while a rule that sends out is on, and
     the card lists each rule that is on."""
-    if not (email_id or "").strip():
+    email_id = _clean_email_id(email_id)
+    if not email_id:
         return "Nothing changed. Name the email in `email_id`."
     if dry_run:
         res = await _post("/email/rules/run-message", {
@@ -6745,6 +6836,7 @@ async def send_email(
             page) or ``"task-file:<attachment id>"`` (a file on a task). The
             server checks that the member can see each one.
     """
+    reply_to_email_id = _clean_email_id(reply_to_email_id) or None
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
                                     bcc=bcc, reply_to_email_id=reply_to_email_id,
@@ -7062,9 +7154,9 @@ def _noted(out: Any, came_back: bool) -> Any:
     return f"{_REVISE_UNREAD}\n\n{out}"
 
 
-async def _revise_forward_card(card_id: str, thread: str) -> None:
-    """Spend the forward card that a chat message closed, and link the next card
-    to it (HRD-8b-2). It is best effort: the link is a label, and the member's
+async def _revise_closed_card(card_id: str, thread: str) -> None:
+    """Spend the forward or reply card that a chat message closed, and link the
+    next card to it (HRD-8b-2, HRD-8b-3). It is best effort: the link is a label, and the member's
     answer to the card is already "closed by your message". A fault only logs,
     so the model still reads the text of the forward and nothing is lost."""
     try:
@@ -7536,6 +7628,7 @@ async def forward_email(
         files: forward ONLY these files, each by its file name or its
             attachment_id from read_email ("only the PDF").
     """
+    email_id = _clean_email_id(email_id)
     mid = _canonical_id(email_id)
     if mid is None:
         return f"Not forwarded. {email_id!r} is not the id of an email."
@@ -7843,7 +7936,7 @@ async def _held_card(
     )
     if _revised(answer):
         if forward and thread and prep.get("card_id"):
-            await _revise_forward_card(str(prep["card_id"]), thread)
+            await _revise_closed_card(str(prep["card_id"]), thread)
         return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
         return _unapproved_line() or _not_done(act)
@@ -9278,6 +9371,7 @@ async def snooze_email(email_id: str, until: str = "") -> str:
     till Monday". ``until`` is ISO 8601 WITH the member's offset, for example
     ``2026-10-27T09:00:00+05:30``. An empty ``until`` brings the
     conversation back now. Shows a card first."""
+    email_id = _clean_email_id(email_id)
     mid = _canonical_id(email_id)
     if mid is None:
         return f"Nothing changed. {email_id!r} is not the id of an email."
@@ -10220,9 +10314,9 @@ async def mark_thread_done(
     Give the email_id that find_priority, query_inbox, read_email or
     read_thread showed: the email decides its thread and its mailbox. A
     thread_id works too. It shows the user a card first."""
-    tid = (thread_id or "").strip()
+    tid = _clean_email_id(thread_id)
     acct = (account_id or "").strip()
-    eid = (email_id or "").strip()
+    eid = _clean_email_id(email_id)
     if eid:
         tid, box = await _thread_of_email(eid)
         acct = box or acct
@@ -10809,6 +10903,7 @@ async def test_rule_match(
     if recent:
         return await _test_rules_recent(account_id, limit)
     payload: dict[str, Any] = {"account_id": account_id}
+    email_id = _clean_email_id(email_id)
     if email_id:
         payload["email_id"] = email_id
     if subject:
