@@ -763,6 +763,17 @@ def test_the_startup_check_judges_the_token_through_the_one_reader(monkeypatch) 
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "")
     assert "gateway_internal_token" in unusable_secrets("gateway", field_empty)
 
+    # The allow entries cover one name and one reader, and nothing more. A
+    # second read, such as os.getenv("GATEWAY_INTERNAL_TOKEN"), adds a hit.
+    import ast
+
+    rel = "packages/acb_auth/acb_auth/secret_check.py"
+    mod = ast.parse((ROOT / rel).read_text(encoding="utf-8-sig"), rel)
+    hits = token_hits("packages/acb_auth/acb_auth/on_no_list.py", mod)
+    kinds = sorted(h.rsplit(" ", 1)[1] for h in hits)
+    # The Need name, the import of the reader, and its one call.
+    assert kinds == ["(direct)", "(reader)", "(reader)"], hits
+
 
 def test_each_allowed_file_exists() -> None:
     """A stale allow-list entry hides nothing today, and a new file could take
