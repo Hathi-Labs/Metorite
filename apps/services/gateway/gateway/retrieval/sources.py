@@ -239,12 +239,18 @@ class Named:
     forms: tuple[str, ...] = ()
     state: str = ""
     email: str = ""
+    #: The label of the module of a mirrored record (FIND-11), or empty.
+    module: str = ""
 
 
 #: ``named(user, name, k)`` (FIND-5): at most *k* records that the app's own
 #: search finds for *name*, and True when the app gave a full page, so more
 #: records may match.
 NamedReader = Callable[..., Awaitable[tuple[list[Named], bool]]]
+
+#: The kind of a record of a mirrored CRM module (FIND-11, ``find_engine.md``
+#: §9.2). It is no ref kind: ``related`` and ``open`` never take it.
+MODULE_KIND = "module_record"
 
 #: The kinds of record of the CRM source, as a ref names them.
 CRM_REF_KINDS: tuple[str, ...] = ("deal", "lead", "contact", "company")
@@ -332,6 +338,21 @@ class Source:
     #: Email). ``resolve_name`` then asks it with one word, the longest, and
     #: its name test checks the other words. The CRM matches word by word.
     names_word: bool = False
+    #: Kinds that :meth:`named_records` keeps beside :attr:`names` (FIND-11).
+    #: They are no closed kind of ``resolve_name``: the module record of the
+    #: CRM. ``names`` stays the one list of the kinds that the tool declares.
+    named_extra: tuple[str, ...] = ()
+    #: True when a zero of this app may prove that none of its records holds
+    #: a word (FIND-4b, ``find_engine.md`` §3.6). Its search must read EVERY
+    #: field that its hits print, and every field that holds a word that a
+    #: member can type. Only then can the zero of that word alone, with the
+    #: three parts of ``find.proves_absence``, prove that no record holds it.
+    #: ``find.proves_absence`` reads the declaration of each app that answered.
+    #: One app that answered with False stops every claim. No source declares
+    #: True yet, because no slice has audited a source. The slice that audits
+    #: a source and sets True must name its evidence in §3.6. Fence:
+    #: ``test_find_absence_declared.py``.
+    proves_absence: bool = False
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -360,7 +381,7 @@ class Source:
         if self.named is None or not self.names or not name or not self.reaches(user):
             return [], False
         found, more = await self.named(user, name, k)
-        return [n for n in found if n.kind in self.names][:k], bool(more)
+        return [n for n in found if n.kind in self.names or n.kind in self.named_extra][:k], bool(more)
 
     async def related_refs(self, user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
         """The triples of the refs of :attr:`takes` in *refs*, as *user*
@@ -574,7 +595,7 @@ async def _email(
         received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,
         importance=None, hybrid=False, light=True, page=1, page_size=k,
-        with_total=False, user=user,
+        with_total=False, user=user, broaden=False,
     )
     lexical = [_email_hit(m) for m in (answer.get("emails") or [])[:k]]
     if not vectors:
@@ -686,6 +707,15 @@ def crm_href(kind: str, record_id: Any) -> str:
     return f"/crm?tab={tab}&{param}={quote(str(record_id))}"
 
 
+def crm_module_href(module: str, record_id: Any) -> str:
+    """The link that opens one record of a mirrored module (FIND-11):
+    ``/crm?tab=module&module=<Module>&mrec=<Module>:<id>``, the view state
+    of ``app/crm/lib/urlState.ts``. The ONE builder of this link."""
+    # Not an f-string: the fence of ``crm_href`` counts one f-string link.
+    return ("/crm?tab=module&module=" + quote(str(module))
+            + "&mrec=" + quote(str(module) + ":" + str(record_id)))
+
+
 def crm_reports_href() -> str:
     """The link that opens the Reports tab of the CRM (WS-53 CRM-Q28 item
     14). The My Day card ``digest_ready`` calls it, so the CRM links of the
@@ -725,7 +755,38 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
     if not flags.crm_org_allowed(user.organization_id):
         return []
     await access.require_crm_access(user)
-    return [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+    found = [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+    if not _module_find_open(user):
+        return found
+    # FIND-11: the mirrored modules, through the module list's own predicate.
+    # The module records share the page, so a full page of deals leaves room.
+    modules = await _module("gateway.routes.crm.modules")
+    mine = [_module_hit(row) for row in await modules.find_module_names(user, q, k)]
+    room = min(len(mine), max(1, k // 2))
+    return found[:max(0, k - room)] + mine[:room]
+
+
+def _module_find_open(user: UserContext) -> bool:
+    """True when the mirrored modules are a source of the find engine for
+    *user*'s org (FIND-11): ``FIND_ORGS`` (``find.find_allowed``, the one
+    reader) AND ``CRM_MODULE_FIND_ORGS`` (``flags.module_find_allowed``, which
+    also needs the CRM switch). Either empty: no read of a module, and the
+    answer of before, byte for byte. The org comes from the session."""
+    from gateway.retrieval import find
+    from gateway.routes.crm import flags
+
+    return bool(find.find_allowed(user.organization_id)
+                and flags.module_find_allowed(user.organization_id))
+
+
+def _module_hit(row: dict[str, Any]) -> Hit:
+    """One mirrored record as a hit: its name, the module's label and a link.
+    No snippet, so the answer text stays short."""
+    return Hit(
+        app="crm", kind=MODULE_KIND, id=str(row["id"]), title=_title(row.get("name")),
+        hint=_title(row.get("label")) or "Record", href=crm_module_href(row["module"], row["id"]),
+        when=_when(row.get("modified")), stamp=_when(row.get("modified")),
+    )
 
 
 def _crm_hit(kind: str, row: dict[str, Any]) -> Hit:
@@ -988,7 +1049,22 @@ async def _crm_near(user: UserContext, words: list[str], k: int) -> dict[str, li
     access = await _module("gateway.routes.crm.access")
     await access.require_crm_access(user)
     records = await _module("gateway.routes.crm.records")
-    return await records.near_names(user, words, k)
+    found = await records.near_names(user, words, k)
+    if not _module_find_open(user):
+        return found
+    # FIND-11: the record names of the mirrored modules. One list for each
+    # word: the nearest first, one entry for each spelling.
+    modules = await _module("gateway.routes.crm.modules")
+    more = await modules.near_module_names(user, words, k)
+    merged: dict[str, list[NearName]] = {}
+    for word in words:
+        kept: list[NearName] = []
+        for near in sorted([*found.get(word, []), *more.get(word, [])],
+                           key=lambda n: (-n.score, n.spelling)):
+            if all(near.spelling.lower() != n.spelling.lower() for n in kept):
+                kept.append(near)
+        merged[word] = kept[:k]
+    return merged
 
 
 # ── named (FIND-5, ``find_engine.md`` §4.2 ``names`` and §5.2) ──────────────
@@ -1012,7 +1088,8 @@ async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named],
     ``search_records`` cuts its four kinds to *k* together, so a full page may
     hide a record."""
     hits = await _crm(user, name, k)
-    return ([Named(h.kind, h.id, h.title, h.href) for h in hits if h.kind in CRM_NAME_KINDS],
+    return ([Named(h.kind, h.id, h.title, h.href, module=h.hint if h.kind == MODULE_KIND else "")
+             for h in hits if h.kind in CRM_NAME_KINDS or h.kind == MODULE_KIND],
             len(hits) >= k)
 
 
@@ -1288,7 +1365,8 @@ REGISTRY: dict[str, Source] = {
                names_word=True),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
-               kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named),
+               kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named,
+               named_extra=(MODULE_KIND,)),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,

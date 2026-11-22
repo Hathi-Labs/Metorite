@@ -678,11 +678,27 @@ async def show_in_app(path: str, why: str) -> dict:
     one sentence. Call it at most once per reply.
 
     Args:
-        path: An in-app path. It starts with one "/" and names a pane:
-            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
-            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
-            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
-            URL, and never another site.
+        path: An in-app path. It starts with one "/" and names a pane. Never a
+            full URL, and never another site. The pages, and what a member
+            does there:
+            /projects (also /projects?project=<id>, /projects?task=<id>):
+            Plan work, boards and tasks, and your own list of tasks.
+            /calendar: Plan your days and time-block tasks.
+            /email (also /email?email=<id>): Read and answer mail.
+            /whatsapp: Your WhatsApp conversations.
+            /crm: Deals, contacts and accounts.
+            /people: The company directory. /people/me: your own profile.
+            /knowledge: The company wiki and its search.
+            /artifacts: Files and documents the assistant made.
+            /chat: Ask the assistant, or have it do the work.
+            /studio: Build apps, workflows and skills for your company.
+            /integrations: Every tool your company has connected.
+            /approvals: Check what the AI will send before it goes out.
+            /settings/organization: Invite members, change roles, assign
+            seats and set your brand. Opens only for an admin of the
+            organization. Add ?tab=members to land on Members & roles
+            (other tabs: seats, branding, requests, email).
+            /settings/appearance: Light or dark, spacing and accent colour.
         why: One short sentence the member reads, such as "Here is the
             board for Website relaunch."
 
@@ -727,7 +743,15 @@ async def show_in_app(path: str, why: str) -> dict:
     # show_in_app must see it. It is pending until the check ends. A refusal
     # gives it back.
     queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
-    reason = _iap.refusal(path, await _iap.member_features())
+    # PAR-1: an admin page opens for an admin of the org only. The right is read for
+    # the verified run member, and only when the pane needs it.
+    pane = _iap.pane_of(path)
+    admin = False
+    if pane is not None and pane.admin:
+        from orchestrator.guide_tools import member_is_admin
+
+        admin = await member_is_admin()
+    reason = _iap.refusal(path, await _iap.member_features(), admin)
     if reason is not None:
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
@@ -799,25 +823,15 @@ async def spawn_copilot_agent(    task: str,
 ) -> str:
     """Spawn a GitHub Copilot SDK agent to create or modify code, skills, or scripts.
 
-    Use this tool when the user asks to:
-    - Create a new skill or script in an agent repo
-    - Add a new capability / automation to an existing agent
-    - Fix a bug or improve an existing script
-    - Write tests, add documentation, or refactor code
-    - Self-improve any part of the system
-
-    The Copilot SDK agent runs in an isolated container with full access to the
-    agent's repository, executes the task autonomously (write code, run tests,
-    commit, push), and returns a summary of what was done.
+    Use it when the user asks to add a skill, script or capability to an
+    agent, fix a bug, write tests or docs, refactor code, or improve any part
+    of the system. The agent works in an isolated container on the agent's
+    repository (code, tests, commit, push) and returns a summary.
 
     Args:
-        task: Natural language description of what to build or fix.
-              Be specific: include file paths, function names, inputs/outputs.
+        task: What to build or fix. Name file paths, functions, inputs and outputs.
         agent_name: Which agent repo to work in (default: current agent).
         agent_dir: Absolute path to the local clone (auto-resolved if omitted).
-
-    Returns:
-        Summary of actions taken and files changed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -877,9 +891,8 @@ async def spawn_copilot_agent(    task: str,
 async def delegate_to_agent(agent_name: str, message: str) -> str:
     """Delegate a task to a specialist agent and return its response.
 
-    Use this tool when the user's request is clearly in the domain of a specialist agent.
-    The specialist agent loads its own system prompt, skills, and tools from its GitHub repo
-    and handles the request fully — its response is returned here verbatim.
+    Use it when the request is clearly in the domain of a specialist agent.
+    The agent handles the request fully, and its response comes back verbatim.
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
@@ -895,8 +908,6 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
         agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
-    Returns:
-        The specialist agent's full response text.
     """
     import uuid as _uuid  # noqa: PLC0415
 

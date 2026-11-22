@@ -20,11 +20,12 @@
 
 import { useId, useMemo, useState } from "react";
 
-import Icon from "@/components/Icon";
+import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Icon, { themedIcon } from "@/components/Icon";
 import SessionRunDot from "@/components/SessionRunDot";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
 import {
@@ -43,6 +44,51 @@ import {
 
 // ── The session picker ───────────────────────────────────────────────────────
 
+/**
+ * The acts of one row as menu items, for a touch device (task 3566). The same
+ * acts, in the same order, under the same guards as the hover strip. Pure, so
+ * the set is a test. Delete keeps its confirm.
+ */
+export function sessionRowMenuItems(a: {
+  session: ChatSession;
+  title: string;
+  onRenameStart: () => void;
+  onPin?: (pinned: boolean) => void;
+  onArchive?: () => void;
+  onRestore?: () => void;
+  onRemove?: () => void;
+}): CtxItem[] {
+  const items: CtxItem[] = [];
+  if (a.session.isOwner !== false) {
+    items.push({ kind: "item", label: "Rename", icon: themedIcon("Pencil"), onSelect: a.onRenameStart });
+  }
+  const onPin = a.onPin;
+  if (onPin) {
+    const pinned = isPinned(a.session);
+    items.push({
+      kind: "item",
+      label: pinned ? "Unpin" : "Pin to the top",
+      icon: themedIcon(pinned ? "PinOff" : "Pin"),
+      onSelect: () => onPin(!pinned),
+    });
+  }
+  if (a.onArchive) items.push({ kind: "item", label: "Archive", icon: themedIcon("Archive"), onSelect: a.onArchive });
+  if (a.onRestore) items.push({ kind: "item", label: "Restore", icon: themedIcon("ArchiveRestore"), onSelect: a.onRestore });
+  const onRemove = a.onRemove;
+  if (onRemove) {
+    items.push({
+      kind: "item",
+      label: "Delete for good",
+      icon: themedIcon("Trash2"),
+      danger: true,
+      onSelect: () => {
+        if (window.confirm(`Delete "${a.title}" and its files? This cannot be undone.`)) onRemove();
+      },
+    });
+  }
+  return items;
+}
+
 /** One row: the name and its age, and on hover the row's own acts. */
 function SessionRow({
   rowId,
@@ -51,6 +97,7 @@ function SessionRow({
   now,
   running,
   unread,
+  needsInput = false,
   onSelect,
   onRename,
   onPin,
@@ -65,6 +112,7 @@ function SessionRow({
   now: number;
   running: boolean;
   unread: boolean;
+  needsInput?: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
   /** CO-11: pin or unpin the chat for this member. Absent: no pin act. */
@@ -75,6 +123,7 @@ function SessionRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const title = sessionTitle(session);
   // Rename is the owner's. Archive, restore and delete come as props.
   const hasActions = session.isOwner !== false || Boolean(onArchive || onRestore || onRemove || onPin);
@@ -135,7 +184,7 @@ function SessionRow({
         {/* The dot and the age give their place to the row's acts on hover
             and on keyboard focus (`rail-row-meta`), so nothing is covered. */}
         <span className="rail-row-meta flex shrink-0 items-center gap-2">
-          <SessionRunDot running={running} unread={unread} />
+          <SessionRunDot running={running} unread={unread} needsInput={needsInput} />
           <span className="text-[11px] text-muted-foreground glass:text-caption">
             {relativeAge(session.updatedAt, now)}
           </span>
@@ -147,7 +196,7 @@ function SessionRow({
           here, never an offset. Fence: `sessionPickerStrip.test.ts`. */}
       <span
         data-session-acts=""
-        className={`reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5 ${hasActions ? "" : "hidden"}`}
+        className={`reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5 pointer-coarse:hidden ${hasActions ? "" : "hidden"}`}
       >
         {/* A room's name is its owner's to change: every member sees it. */}
         {session.isOwner !== false ? (
@@ -191,6 +240,46 @@ function SessionRow({
           />
         ) : null}
       </span>
+      {/* Touch (task 3566): nothing hovers, so the strip above gives way to ONE
+          "More actions" button that opens the same acts in the shared menu.
+          `pointer-coarse` is the shared variant, so a desktop draws no button. */}
+      {hasActions ? (
+        <span data-session-more="" className="hidden shrink-0 items-center pointer-coarse:flex">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="MoreHorizontal"
+            aria-label={`More actions for ${title}`}
+            aria-haspopup="menu"
+            aria-expanded={menuAt !== null}
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenuAt({ x: Math.max(4, r.right - 200), y: r.bottom + 4 });
+            }}
+          />
+        </span>
+      ) : null}
+      {menuAt ? (
+        <ContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          autoFocus
+          items={sessionRowMenuItems({
+            session,
+            title,
+            onRenameStart: () => {
+              setDraft(title === "New chat" ? "" : title);
+              setEditing(true);
+            },
+            onPin,
+            onArchive,
+            onRestore,
+            onRemove,
+          })}
+          onClose={() => setMenuAt(null)}
+        />
+      ) : null}
     </li>
   );
 }
@@ -237,6 +326,7 @@ export function SessionPicker({
   const [showArchived, setShowArchived] = useState(false);
   const running = useActiveSessions();
   const unread = useUnreadIds();
+  const needsInputIds = useNeedsInputIds();
   const [now] = useState(() => Date.now());
   const lists = useMemo(() => splitSessions(sessions, query, activeId), [sessions, query, activeId]);
   // Daily briefs fold into one closed group at the end (task 3564). A search
@@ -269,6 +359,7 @@ export function SessionPicker({
       now={now}
       running={running.has(s.id)}
       unread={unread.has(s.id)}
+      needsInput={needsInputIds.has(s.id)}
       onSelect={() => onSelect(s.id)}
       onRename={(t) => onRename(s.id, t)}
       // CO-11: an archived chat is not pinned, so it offers no pin.

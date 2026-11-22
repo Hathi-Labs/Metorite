@@ -49,8 +49,16 @@ is an object or a list is read, and only a string that starts with ``{`` or
 function it is a validator on the annotation, so the JSON schema that the
 model reads does not change.
 
-Fences: ``tests/unit/test_every_pack_tool_answers_text.py`` and
-``tests/unit/test_tool_argument_shapes.py``.
+**The failure log (TOF-2c).** The guard is the capture site C1 (the
+``except`` branch) and C2 (the ``take_bad`` branch) of
+``tool_failure_log.md`` §4.2. Each hands ONE record to
+``acb_common.failure_log.record_tool_failure``, which is off unless
+``TOOL_FAILURE_LOG_ORGS`` lists the org. :func:`chat_failure_code` holds the
+C1 skip rule. The capture never changes the answer, and it never raises.
+
+Fences: ``tests/unit/test_every_pack_tool_answers_text.py``,
+``tests/unit/test_tool_argument_shapes.py`` and
+``tests/unit/test_failure_capture_sites.py``.
 """
 
 from __future__ import annotations
@@ -59,21 +67,31 @@ import collections.abc
 import contextvars
 import functools
 import json
+import os
 import types
 import typing
+from collections import deque
 from collections.abc import Mapping
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
+from acb_common import failure_log
 from acb_common._log import get_logger
-from acb_common.tool_refusals import FAILED, REFUSED
+from acb_common.tool_refusals import FAILED, REFUSED, GatewayRefusal
+
+# TOF-2b: the set of built-in names is in the failure log before C1 or C2 runs
+# (tool_failure_log.md §3.2 rule 1).
+from acb_skills import builtin_tools as _builtin_tools  # noqa: F401
 
 _log = get_logger("acb_skills.pack_tool_guard")
 
 __all__ = [
     "GUARDED_ATTR",
+    "REFUSAL_STATUSES",
     "STRING_PARAMS",
     "arg_shapes_enabled",
     "bad_shape_text",
+    "chat_failure_code",
     "coerce_arguments",
     "failure_text",
     "guard",
@@ -368,6 +386,112 @@ def install_tool_shapes(tool: Any) -> int:
     return len(shapes) + len(strings)
 
 
+# ── The capture of a failure (TOF-2c, C1 and C2) ───────────────────────────
+#
+# Spec: ``tool_failure_log.md`` §4.1 and §4.2. Fence:
+# ``tests/unit/test_failure_capture_sites.py``. The capture never changes
+# what the guard answers, and it never raises into the tool call.
+
+#: The statuses of §4.1: each is an answer, not a failure.
+REFUSAL_STATUSES = frozenset({400, 403, 404, 409, 412, 422, 429, 503})
+_WALK_MAX = 64
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """*exc*, then its groups, causes and contexts, once each, outer first.
+
+    It follows ``__context__`` too, as ``mcp_tools._causes`` does. So a
+    ``KeyError`` that a handler of a gateway 500 raised still shows the 500."""
+    seen: list[BaseException] = []
+    queue: deque[BaseException | None] = deque([exc])
+    while queue and len(seen) < _WALK_MAX:
+        cur = queue.popleft()
+        if cur is None or any(cur is s for s in seen):
+            continue
+        seen.append(cur)
+        if isinstance(cur, BaseExceptionGroup):
+            queue.extend(cur.exceptions)
+        queue.extend((cur.__cause__, cur.__context__))
+    return seen
+
+
+def _gateway_host() -> str:
+    """The host of ``GATEWAY_URL``, with the default of the pack transports."""
+    url = os.environ.get("GATEWAY_URL", "http://localhost:8080")
+    return (urlsplit(url).hostname or "").lower()
+
+
+def _host_of(exc: BaseException) -> str | None:
+    """The host of the request of an httpx error, or None. It reads no text."""
+    try:
+        return str(exc.request.url.host or "").lower()  # type: ignore[attr-defined]
+    except Exception:  # an error with no request
+        return None
+
+
+def _code_for_status(status: int) -> str | None:
+    """The code of a status of the gateway (§4.2, the C1 skip rule)."""
+    if status in REFUSAL_STATUSES or status >= 500:
+        # A refusal is an answer. D1 or D2 writes a 5xx at the gateway.
+        return None
+    if status == 401:
+        return "auth_401"
+    return "exception"
+
+
+def chat_failure_code(exc: BaseException) -> str | None:
+    """The ``error_code`` of C1 for *exc*, or None to write nothing.
+
+    The walk reads one number from the chain: classes, numbers and hosts,
+    never a message. The first item that names a status or a transport
+    error decides.
+
+    * ``GatewayRefusal.status`` is the gateway's. With no status, it is a
+      refusal of our own client, an answer, so it writes nothing.
+    * ``httpx.HTTPStatusError`` is the gateway's only when its host is the
+      host of ``GATEWAY_URL``. Any other host answered, so it writes nothing.
+    * ``httpx.TransportError`` gives ``gateway_unreachable`` for the gateway
+      host and ``outside_unreachable`` for any other host.
+    * With none of these in the chain, the code is ``exception``.
+    """
+    import httpx
+
+    gateway = None
+    for item in _chain(exc):
+        if isinstance(item, GatewayRefusal):
+            status = item.status
+            return _code_for_status(status) if isinstance(status, int) else None
+        if isinstance(item, httpx.HTTPStatusError):
+            gateway = _gateway_host() if gateway is None else gateway
+            if _host_of(item) != gateway:
+                return None
+            try:
+                status = int(item.response.status_code)
+            except Exception:
+                return "exception"
+            return _code_for_status(status)
+        if isinstance(item, httpx.TransportError):
+            gateway = _gateway_host() if gateway is None else gateway
+            host = _host_of(item)
+            return "gateway_unreachable" if host == gateway else "outside_unreachable"
+    return "exception"
+
+
+def _record(exc: BaseException | None, tool: str) -> None:
+    """Hand one failure to the one writer. Never raises.
+
+    With *exc*, the code is :func:`chat_failure_code` (C1). With no
+    exception, the code is ``bad_arguments`` (C2)."""
+    try:
+        code = chat_failure_code(exc) if exc is not None else "bad_arguments"
+        if code is None:
+            return
+        failure_log.record_tool_failure(
+            exc, source="chat_tool", error_code=code, tool=tool, **failure_log.run_fields())
+    except Exception as err:  # the class only: the tool answers as before
+        _log.debug("pack_tool_guard.capture_failed", error_type=type(err).__name__)
+
+
 # ── The wrapper ─────────────────────────────────────────────────────────────
 
 
@@ -382,18 +506,21 @@ def guard(fn: Any, *, name: str, shapes: bool = False) -> Any:
     gets the refusal of :func:`bad_shape_text` and runs nothing.
 
     ``asyncio.CancelledError`` and the other ``BaseException`` kinds still
-    propagate, so a stopped run stops."""
+    propagate, so a stopped run stops, and they write no failure record.
+    Each branch that answers a failure records it once (C1, C2)."""
     read_only = _read_only(fn)
 
     @functools.wraps(fn)
     async def guarded(*args: Any, **kwargs: Any) -> Any:
         bad = take_bad(name)
         if bad:
+            _record(None, name)  # C2 (TOF-2c)
             return bad_shape_text(*bad[0])
         try:
             return await fn(*args, **kwargs)
         except Exception as exc:
             _log.warning("pack_tool_guard.failed", tool=name, error_type=type(exc).__name__)
+            _record(exc, name)  # C1 (TOF-2c), inside the except: the traceback is there
             return failure_text(exc, read_only=read_only)
 
     setattr(guarded, GUARDED_ATTR, True)

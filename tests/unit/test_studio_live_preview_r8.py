@@ -60,6 +60,10 @@ Run (one R8 suite at a time on the shared scratch database)::
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_studio_live_preview_r8.py -v -rs -p no:xdist
 
+**B1b-3.** The fixture writes REAL approval rows of the text that each
+server lists, so a tool reads as approved. ``test_studio_mcp_approvals_r8.py``
+fences a changed tool.
+
 Without the database every test here SKIPS. A skip is not a pass.
 """
 
@@ -96,6 +100,28 @@ pytestmark = _DB_GATE
 SHARED = "shared"
 ANA = "ana@example.test"
 BEN = "ben@example.test"
+
+
+async def _approve_real(p: Any, servers: dict[str, list[str]], tools: Any) -> None:
+    """B1b-3: an admin of each org approved the text that each server lists,
+    as REAL rows of ``studio_mcp_tool_approvals``. *servers* maps an org to
+    its server names, and *tools* gives the list of one url."""
+    from gateway.db import tenant_session
+    from gateway.studio import mcp_actions, mcp_approvals
+
+    for org, names in servers.items():
+        async with tenant_session(org) as db:
+            for name, url in names:
+                for t in tools(url):
+                    await mcp_approvals.upsert(db, server=name, tool=t["name"],
+                                               text_hash=mcp_actions.tool_text_hash(t),
+                                               member="r8-seed@example.test")
+
+
+def _drop_approvals(p: Any) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM studio_mcp_tool_approvals WHERE organization_id IN "
+                       "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": p.org_a, "b": p.org_b})
 
 
 def _seed_legacy(p: Any, org: str, name: str) -> None:
@@ -145,10 +171,13 @@ async def two_orgs(registry_on_promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
     monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
 
-    async def _lister(server: Any) -> list[dict[str, Any]]:
-        w.lists.append(server.url)
+    def _items(_url: str) -> list[dict[str, Any]]:
         return [{"name": "get_issue", "annotations": {"readOnlyHint": True}},
                 {"name": "delete_repo", "annotations": {"destructiveHint": True}}]
+
+    async def _lister(server: Any) -> list[dict[str, Any]]:
+        w.lists.append(server.url)
+        return _items(server.url)
 
     async def _caller(server: Any, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         w.calls.append((server.url, dict(server.headers).get("Authorization"), tool))
@@ -156,11 +185,15 @@ async def two_orgs(registry_on_promoted, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(mcp_tools, "_sdk_list", _lister)
     monkeypatch.setattr(mcp_tools, "_sdk_call", _caller)
+    await _approve_real(p, {
+        org: [(names[f"reg_{s}"], ""), (names[f"old_{s}"], ""), (SHARED, "")]
+        for org, s in ((p.org_a, "a"), (p.org_b, "b"))}, _items)
     clear_tenant()
     try:
         yield w
     finally:
         clear_tenant()
+        _drop_approvals(p)
 
 
 async def _read(org: str, server: str, *, member: str = ANA, tool: str = "get_issue",

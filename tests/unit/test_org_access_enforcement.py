@@ -207,6 +207,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # No exemption: the callback runs behind the member session through the
     # BFF. The webhook is a separate router in PUBLIC_ROUTES.
     "gateway.routes.github.connect": set(),
+    # API-2 — the connect flow of an API template (Zoho Books). Gated on
+    # `feature:integrations` after the `API_CONNECTIONS_ORGS` 404, and each
+    # route also needs `integrations:manage`. No exemption: the callback runs
+    # behind the member session through the CRM BFF callback.
+    "gateway.routes.integrations_api_connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },

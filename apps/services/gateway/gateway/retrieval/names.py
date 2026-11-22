@@ -473,6 +473,9 @@ def _row(key: str, record: Named, match: str, spelt: str = "") -> dict[str, Any]
     }
     if spelt:
         row["as"] = spelt
+    if record.kind == sources.MODULE_KIND and record.module:
+        # FIND-11: the label of the module, from the profile. It is org text.
+        row["module"] = stored_name(record.module)
     if record.kind == "person" and record.state in PERSON_STATUSES:
         # Fix round, P3-c: the directory shows each status, and FIND-3's
         # `open` shows active people only. The row says which.
@@ -614,7 +617,10 @@ async def resolve_names(
     if aliases:
         reads.append(ask_aliases(user, typed, deadline))
     answers = list(await asyncio.gather(*reads))
-    every, exact = rows_of(answers, wanted)
+    # FIND-11: a record of a mirrored module is no kind of the closed list, so
+    # the tool text and the 422 stay as they were. With no `kinds` it joins the
+    # rows. Only a CRM that the two flags open gives one.
+    every, exact = rows_of(answers, (*wanted, sources.MODULE_KIND) if not kinds else wanted)
     rows = capped(every)
     skipped = [{"app": a.key, "reason": a.skipped} for a in answers if a.skipped]
     near_skipped = [{"app": a.key, "reason": a.near_skipped} for a in answers

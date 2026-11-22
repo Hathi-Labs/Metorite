@@ -8,6 +8,7 @@ Serves both /v1/chat/completions (OpenAI standard) and /chat/completions (some S
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -284,6 +285,43 @@ def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
     return units
 
 
+def _restore_cut_pastes(
+    before: list[dict[str, Any]], after: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """*after*, with each paste block that the char-trim cut made whole again
+    (HRD-14b, ``chat_failure_modes.md`` §4.7b, "The restore").
+
+    It acts ONLY when ``CHAT_PASTE_FRAME_ORGS`` holds ``*``
+    (``paste_frame.paste_frame_everywhere``). This door binds no tenant, and
+    it never reads an org from a header or the body (R5, R11). A list of org
+    ids restores nothing here. Production never runs this path: the Router
+    takes the call and nothing cuts. When the hygiene step of the trim
+    changed the number of messages, the pairs are unknown, and each changed
+    text is read alone. It never raises."""
+    try:
+        from acb_skills.paste_frame import paste_frame_everywhere
+        from acb_skills.untrusted import restore_cut_paste
+
+        if not paste_frame_everywhere():
+            return after
+        paired = len(before) == len(after)
+        out: list[dict[str, Any]] = []
+        for i, message in enumerate(after):
+            # A paste block lives only in a user turn (the seam frames no other).
+            user = isinstance(message, dict) and message.get("role") == "user"
+            content = message.get("content") if user else None
+            old = before[i].get("content") if paired and isinstance(before[i], dict) else None
+            if not isinstance(content, str) or (paired and content == old):
+                out.append(message)
+                continue
+            fixed = restore_cut_paste(old if isinstance(old, str) else None, content)
+            out.append(message if fixed == content else {**message, "content": fixed})
+        return out
+    except Exception:  # noqa: BLE001 — the guard must never break a working call
+        _log.warning("v1.paste_restore_failed", exc_info=True)
+        return after
+
+
 def _fit_context_window(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -351,11 +389,14 @@ def _fit_context_window(
 
         # 3 + 4. Shrink the output to the minimum, then char-trim what is
         # still too long.
+        _pre_cut = out
         out, _trimmed = fit_messages_to_context(
             out, model,
             max_output_tokens=_CONTEXT_FIT_MIN_OUTPUT,
             safety_margin=_CONTEXT_FIT_SAFETY_TOKENS,
         )
+        if _trimmed:
+            out = _restore_cut_pastes(_pre_cut, out)
         final_prompt = count_message_tokens(out, model) + tools_tokens
         _log.warning(
             "v1.context_fit_messages_evicted", model=model, window=window,
@@ -670,10 +711,25 @@ async def _serve_via_router_stream(
     first: bytes | None = None
     try:
         first = await frames.__anext__()
+        if _is_lone_done(first):
+            # AO-3: an old Console answers a stream that no step opened with
+            # 200 and a lone `[DONE]`. A new Console sends the same when a
+            # provider stream opens and yields no chunk. Read both as the
+            # outage that a 503 means, so the agent never reads an empty
+            # stream as a finished turn. The two units restart apart.
+            with contextlib.suppress(Exception):
+                await frames.aclose()
+            raise ConsoleRouterUnavailable("stream_never_opened")
     except StopAsyncIteration:
-        # The Router answered 200 and sent nothing. Rare, and not an error we
-        # can improve on: relay the empty stream.
-        first = None
+        # AO-3: the Router answered 200 and sent nothing. That is no answer,
+        # so it fails as an outage. Before AO-3 this relayed the empty
+        # stream, and the member saw an empty reply.
+        _router_failed()
+        _log.error(
+            "v1.router_unavailable", error="stream_empty", stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return _router_unavailable()
     except ConsoleRouterVerdict as verdict:
         # A VERDICT, relayed with its own status: 402 out of credits, 400 a
         # bare model id, 403 the breaker. Flattening these into one 502 would
@@ -775,6 +831,17 @@ async def _serve_via_router(
         # a customer to support instead of to the top-up they need.
         return JSONResponse(status_code=status, content=payload)
     return payload
+
+
+def _is_lone_done(chunk: bytes | None) -> bool:
+    """True for a first chunk that is only the SSE end, ``data: [DONE]``.
+
+    A real stream's first chunk holds a frame of the answer. The Console
+    pulls that frame before it answers 200 (``main._open_stream_chain``).
+    """
+    if not chunk:
+        return False
+    return chunk.strip() == b"data: [DONE]"
 
 
 def _router_unavailable() -> JSONResponse:

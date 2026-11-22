@@ -418,7 +418,9 @@ async def test_the_revise_keeps_every_safety_write_before_the_spend(env) -> None
     assert cr.CARD_DRAFT_LABEL in out["snapshot"] and "Edited by Jane." in out["snapshot"]
     link = json.loads(env["redis"].keys[f"cc:{F.ORG}:email:card_revised:{THREAD}"])
     # Fix round 3: the link keeps the To of the revised card, in lower case.
-    assert link == {"owner": F.MEMBER, "card_id": cid, "draft": 2, "to": [F.KNOWN]}
+    # HRD-8b: and its act kind and its Cc, so the next card can say what changed.
+    assert link == {"owner": F.MEMBER, "card_id": cid, "draft": 2, "to": [F.KNOWN],
+                    "act": "new", "cc": [F.COLLEAGUE], "bcc": []}
 
 
 async def test_an_answer_to_a_revised_card_sends_nothing(env) -> None:

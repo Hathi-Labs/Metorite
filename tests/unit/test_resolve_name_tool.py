@@ -1518,8 +1518,14 @@ class _Gateway:
         return httpx.Response(self.status, json=self.body)
 
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: The fake gateway fixture sets one, and the tests check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
 @pytest.fixture()
 def gateway(monkeypatch) -> _Gateway:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
     gw = _Gateway()
     real = httpx.AsyncClient
 
@@ -1561,7 +1567,7 @@ class TestTheToolMember:
         assert req.method == "GET" and req.url.path == "/search/names"
         assert dict(req.url.params) == {"name": "Sharat S"}
         assert req.headers["X-User-Email"] == "rep@customer.example"
-        assert req.headers["Authorization"].startswith("Bearer ")
+        assert req.headers["Authorization"] == f"Bearer {_INTERNAL}"
 
     def test_it_passes_the_kinds(self, gateway, monkeypatch):
         _as(monkeypatch, "rep@customer.example")

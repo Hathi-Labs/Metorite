@@ -39,6 +39,7 @@ import {
   readyFiles,
 } from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
+import DecisionChips from "@/components/chat/DecisionChips";
 import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
@@ -73,6 +74,7 @@ import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
+  CONFIRMATION_NOT_DONE,
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   NO_EDITS,
@@ -99,11 +101,12 @@ import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
 import { refreshLiveRuns } from "@/lib/liveRuns";
-import { receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
+import { goesOnInParkedReply, receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
+import { isStaleErrorRow } from "@/lib/chatRunFailed";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
@@ -416,10 +419,12 @@ const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELL
 const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
 
 /** RESUME-3a: where the "Approved" line of a card that another device
- *  approved draws: under the last message before the reply that goes on. */
+ *  approved draws: under the last message before the reply that goes on.
+ *  RESUME-3b: in case A the reply that goes on is the parked one, so the
+ *  line draws under it. */
 function lineAnchorBeforeRun(threadId: string): string | null {
   const st = getSessionState(threadId);
-  return receiptAnchorBeforeRun(st.messages, st.run.messageId);
+  return receiptAnchorBeforeRun(st.messages, st.run.messageId, goesOnInParkedReply(st.run));
 }
 
 export default function AgentChat({
@@ -663,9 +668,7 @@ export default function AgentChat({
   // Drop stale __ERROR__ system messages saved by older builds.
   const cachedFull = useMemo(
     () =>
-      (getMessages(sessionId) as ChatMessage[]).filter(
-        (m) => !(m.role === "system" && m.content.startsWith("__ERROR__")),
-      ),
+      (getMessages(sessionId) as ChatMessage[]).filter((m) => !isStaleErrorRow(m)),
     [sessionId],
   );
   // The composer is declared below the hook, so the run-cap restore reaches
@@ -817,9 +820,7 @@ export default function AgentChat({
       // transient errors must never resurface on reload.
       // An edit in this page removed some rows. A load that answered before
       // the gateway deleted them must not bring them back (lib/chatEdit.ts).
-      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter(
-        (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
-      ));
+      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter((m) => !isStaleErrorRow(m)));
       if (remote.length === 0) return;
       // The store NOW, not the render that started this load: that render
       // held no messages yet, so every load replaced the thread, and a reply
@@ -953,6 +954,16 @@ export default function AgentChat({
   const voiceAvailability = useVoiceAvailability();
   const voiceRef = useRef<VoiceControls>(null);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  // VOX-7: while the mic records or transcribes, the pickers give the row to
+  // the wave. They stay mounted, so a choice and an open menu survive.
+  const voiceBusy = voicePhase === "recording" || voicePhase === "transcribing";
+  // The pickers may sit on a row of their own. The bar keeps the height that
+  // it had when the mic asked, so the composer never shrinks.
+  const barRef = useRef<HTMLDivElement>(null);
+  const barLock = useRef(0);
+  useEffect(() => {
+    if (voicePhase === "asking") barLock.current = barRef.current?.offsetHeight ?? 0;
+  }, [voicePhase]);
   const putDictation = useCallback((text: string) => {
     const el = inputRef.current;
     const prev = el?.value ?? "";
@@ -1301,6 +1312,12 @@ export default function AgentChat({
       }
       // The server closed a card: answered, timed out or cancelled. A replay
       // carries this too, so an answered card never comes back.
+      // Task 3827: the card was approved, and the tool then refused the write
+      // (the object changed after the card). Its line must not read "Approved".
+      if (name === CONFIRMATION_NOT_DONE && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "notDone", requestId: String(rid) });
+      }
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         const answer = (value as Record<string, unknown>).answer;
@@ -1623,6 +1640,8 @@ export default function AgentChat({
           dispatchRun(forSession, {
             type: "resumed", at: Date.now(), runId: resumed.runId,
             ...(resumed.messageId ? { messageId: resumed.messageId } : {}),
+            // RESUME-3b: case A goes on in the parked reply, under its run id.
+            ...(resumed.sameReply ? { sameReply: true } : {}),
           });
           refreshLiveRuns();
         }
@@ -3048,6 +3067,9 @@ export default function AgentChat({
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
           {aboveComposer}
+          {/* HRD-12b: the decisions this chat keeps, each with an Undo. The server
+              says nothing while CHAT_CONSTRAINTS is off, so nothing draws. */}
+          <DecisionChips sessionId={sessionId} enabled={ownAssistantChat} settledKey={isLoading ? null : messages.length} onEmptied={focusQuietly} />
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}
@@ -3102,7 +3124,11 @@ export default function AgentChat({
               disabled={loadingHistory}
               aria-label={`Message ${currentAgentLabel}`}
               placeholder={
-                loadingHistory
+                voicePhase === "recording"
+                  ? "Listening… release to send"
+                  : voicePhase === "transcribing"
+                    ? "Transcribing…"
+                    : loadingHistory
                   ? "Loading previous messages…"
                   : isRunActive
                     ? `Add to the reply of ${currentAgentLabel}…`
@@ -3118,7 +3144,7 @@ export default function AgentChat({
                 right. On a phone the agent's controls take a row of their
                 own above Attach and the primary control, so neither row wraps
                 into a staircase (visual review, 2026-10-12, 390 px). */}
-            <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
+            <div ref={barRef} style={voiceBusy && barLock.current ? { minHeight: barLock.current } : undefined} className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
                 onPick={(files) => { att.add(files); focusAfterPress(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
@@ -3128,7 +3154,7 @@ export default function AgentChat({
                   className={`shrink-0 flex ${tap} items-center justify-center`} />
               )}
             {hasComposerControls && !phoneChrome && (
-            <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
+            <div data-chat-pickers="" style={voiceBusy ? { display: "none" } : undefined} className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
@@ -3327,11 +3353,11 @@ export default function AgentChat({
             </>
             </div>
             )}
-              <span className="flex-1" aria-hidden="true" />
+              {!voiceBusy && <span className="flex-1" aria-hidden="true" />}
               {/* CF-8: the phone's one "…" control, at the composer's end.
                   The status, Share, the effort choice, the context window
                   and the model picker live in it. */}
-              {phoneChrome && (
+              {phoneChrome && !voiceBusy && (
                 <ChatMoreMenu
                   status={{ label: currentAgentLabel, active: isRunActive }}
                   acts={moreActs}

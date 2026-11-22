@@ -517,7 +517,16 @@ async def _attachments_block(task_id: str) -> list[str]:
     files = (attachments or {}).get("rows") or []
     if not files:
         return []
-    return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
+    # HRD-2: the id delete_attachment takes. A name alone left the model no id.
+    return [
+        f"Attachments ({len(files)}): "
+        + ", ".join(
+            data(f.get("name"))
+            + (f" (attachment id {f.get('attachment_id') or f.get('id')})"
+               if (f.get("attachment_id") or f.get("id")) else "")
+            for f in files
+        )
+    ]
 
 
 async def _refs_block(task_id: str) -> list[str]:
@@ -562,6 +571,12 @@ async def _timeline_block(task_id: str) -> list[str]:
         body = ev.get("body") or ""
         meta = ev.get("meta") or {}
         line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
+        if ev.get("id"):
+            # HRD-2: the id that edit_comment, delete_comment, comment(reply_to)
+            # and revert_activity take. A comment row is a comment id, any
+            # other row is an activity id.
+            label = "comment id" if ev.get("type") == "comment" else "activity id"
+            line += f" ({label} {ev['id']})"
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):
@@ -1040,18 +1055,55 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     return "\n".join(out)
 
 
+async def _task_lanes(task_id: str, refused: GatewayRefusal) -> list[dict[str, Any]]:
+    """The lanes of one task of mine (``GET /projects/my/tasks/{id}/lanes``).
+
+    The route checks that the task is the caller's, and it names nothing of
+    the project. A refusal of the route is the project refusal that sent the
+    caller here, so the member reads one answer: not found, or not visible.
+    """
+    tid = uuid_of(task_id, "task_id")
+    try:
+        return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+    except GatewayRefusal:
+        raise refused from None
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def vocabulary(project_id: str) -> str:
+async def vocabulary(project_id: str, task_id: str = "") -> str:
     """The words a project uses: its statuses (with category), task types,
     tags (with counts) and custom fields. Read this before you put a tag on
     a task, because a tag name the project lacks becomes a new tag. A write
     finds a status, a type or a field by name itself, and refuses an unknown
     name with the real ones. Relay these names to the member instead of
     inventing one. project_id is any node in the tree; the root project's
-    vocabulary answers."""
+    vocabulary answers. task_id (optional) is a task of this project. Pass it
+    when the member reached the project through that task alone and the read
+    answers "not found". Then the answer lists the statuses of the task only."""
     pid = uuid_of(project_id, "project_id")
     out = [legend()]
-    status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    try:
+        status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    except GatewayRefusal as exc:
+        # Task 3865: a member who holds a task by assignment alone cannot see
+        # its project, so every project read 404s. The lanes of the task are
+        # the one read that this member's task allows. No tags, types, fields
+        # or counts come with it, because those belong to the project.
+        if exc.status != 404 or not task_id.strip():
+            raise
+        lanes = await _task_lanes(task_id, exc)
+        out.append(
+            "You can open this task but not its project. So only the statuses "
+            "of this task show here. The types, tags and fields of the project "
+            "are not shown."
+        )
+        out.append(f"Statuses ({len(lanes)}):")
+        for s in lanes:
+            default = " · default" if s.get("is_default") else ""
+            out.append(
+                f"- {data(s.get('name'))} [{s.get('category')}]{default} · id {s.get('id')}"
+            )
+        return "\n".join(out)
     if status_set.get("owner_name"):
         owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
         # `may_edit` is the server's answer (`core.can_manage_settings`, the
@@ -2185,7 +2237,7 @@ ATTENTION_ACTIONS = {
         "Resume (asks the same agent client to continue, and the run keeps the task)"
         " or Close the run (frees the task for anyone)"
     ),
-    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
+    "close_run": "Close the run (frees the task for anyone, and the task moves to its lane)",
     "open_blocker": "open the blocker and give it an owner or move it on",
 }
 

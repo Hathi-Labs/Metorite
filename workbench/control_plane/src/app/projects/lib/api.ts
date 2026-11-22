@@ -36,6 +36,7 @@ import {
   resumeBody,
 } from "./needsAttention";
 import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
+import { type AgentMap, parseAgentMap } from "./agentMap";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -3439,6 +3440,33 @@ export const agentsOverviewApi = {
         throw new ProjectsApiError("The agents answer could not be read.", 200);
       }
       return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/** The query string of one map read. `project_id` is present only for a project. */
+export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } = {}): string {
+  let query = "shape=map";
+  if (opts.projectId) query += `&project_id=${encodeURIComponent(opts.projectId)}`;
+  if (opts.showQuiet) query += "&show_quiet=true";
+  return query;
+}
+
+/**
+ * WS-MCP SW-103: the orchestration map (`GET /projects/agents/overview?shape=map`).
+ * `null` means the map is dark for this member (404, 401 or 403).
+ */
+export const agentMapApi = {
+  read: async (opts: { showQuiet?: boolean; projectId?: string } = {}): Promise<AgentMap | null> => {
+    try {
+      // SW-112: a project id scopes the map to that project's subtree. Without it the map is the fleet.
+      const query = agentMapQuery(opts);
+      const map = parseAgentMap(await call<unknown>(`agents/overview?${query}`));
+      if (!map) throw new ProjectsApiError("The map answer could not be read.", 200);
+      return map;
     } catch (err) {
       if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
       throw err;

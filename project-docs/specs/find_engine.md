@@ -26,6 +26,11 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**FIND-4b is built** (task 3674, 2026-11-17, see "As built (FIND-4b)" in
+§3.6). Each source has the field `Source.proves_absence`, and no source
+declares it. The claim reads the declaration of each app that answered. The
+switch stays off, so no answer and no tool text changes for any org.
+
 **FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
 `FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run, for
 an org of `FIND_ORGS` only. An answer that says a record does not exist
@@ -60,6 +65,14 @@ parity of D-FIND-3 did not hold then (§5.3). FIND-6b closed it.
 org, the member's saved aliases (tier 1, match `alias`) and the address of a
 colleague. Each follows the rules of `resolve_person`. `resolve_person` stays
 in the core list. The next PR takes it out (D-FIND-3).
+
+**FIND-11 is built, dark** (task 3710, 2026-11-18, see §9.2). The mirrored
+CRM modules (`crm_module_records`, such as Operator_Associates and Products)
+are a source of the engine. `search_company` finds their records, and
+`resolve_name` gives their record names, exact and near. The records join the
+`crm` source, so the registry and the order of the apps do not change. Two
+flags must name the org: `FIND_ORGS` and `CRM_MODULE_FIND_ORGS`. The predicate
+is the one of the module list (`field_sql.find_where`, CRM-Q34-7).
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -379,6 +392,40 @@ To switch the claim on, each source must first declare
 `True`, and the claim must read each declaration. The tests set the constant
 to `True`, so the rule below stays fenced.
 
+**As built (FIND-4b, task 3674).** The claim reads each declaration. The
+switch stays off.
+
+- **The field.** `Source.proves_absence` is `False` by default. A source
+  sets it `True` only when its search reads each field that its hits print.
+  The search must also read each field that holds a word that a member can
+  type. Only then does a zero of one word alone, with the three parts below,
+  show that no record of that app holds the word.
+- **The rule.** `find.declares_all` is part of `find.proves_absence`, so
+  `held` false and `none_has_all` read it. Each app that answered must
+  declare `True`. One app that answered and does not declare stops each
+  claim. A missing or an empty map proves nothing.
+- **The map.** `company._declared` builds it once in `_find_tail`, from
+  `REGISTRY`. It holds each app that answered the first pass and is open to
+  the member. It also holds the past chats when they answered. A dark Studio
+  search changes no answer (the same answer as for a member with no
+  `feature:studio`). An app that the route did not ask changes nothing.
+  **Open for the audit slice:** `_studio_open` needs `STUDIO_ORGS` and
+  `STUDIO_SEARCH_ORGS`, but the Studio routes gate on `studio_allowed` alone.
+  A member with `feature:studio` can open a Studio record that no search
+  reads. The audit slice must decide: fail closed for such a member, or keep
+  the identity that `test_company_search_studio_off.py` fences.
+- **No source declares it yet.** No slice has audited a source. The text
+  above names fields that the searches of Email, Tasks, WhatsApp and People
+  do not read (the People preferred name is named below, in the rule). The
+  fence `test_find_absence_declared.py` fails when a source declares it.
+- **The audit slice.** A later slice audits each source. For each source
+  that it sets `True`, it names the evidence in this section and changes the
+  fence. Only then may it set `find.ABSENCE_CLAIMS` to `True`.
+- **The past chats.** When the route asks them, they count as an app that
+  answered, and they declare nothing. So a search that asks the past chats
+  makes no claim, even with each other source declared. The audit slice
+  decides how a past chat counts (§6, limit 5).
+
 A zero answer prints these lines, in this order. Each one stays true when a
 record that holds all the words exists:
 
@@ -405,7 +452,9 @@ The rule behind the switch is as follows:
   and no date or verified filter applied. An app may answer nothing for a
   shorter word, with no error.
 - `find.proves_absence` is the one rule of that word, for `held` false and
-  for `none_has_all`. Three parts must hold.
+  for `none_has_all`. Three parts must hold, and each source must declare.
+  That is, each app that answered and is open to the member declares
+  `Source.proves_absence` (FIND-4b).
 - First, the member typed the word as it folds, in ASCII letters and digits
   (`find.typed_alone`). "Müller" folds to "muller", "acme.com" folds to
   "acme" and "com", and "Strauß" folds to "strauss". An app with no
@@ -1214,7 +1263,10 @@ Seven limits stay, and the review must know them:
    `gateway/chat_search.py`, so that no third chat reader exists.
 5. **The `miss` of the log line and `near_report` read the past chats.**
    While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
-   slice that sets it on must decide how a past chat counts.
+   slice that sets it on must decide how a past chat counts. As built
+   (FIND-4b), the past chats that answered must declare
+   `Source.proves_absence`, and they do not. So a search that asks them makes
+   no claim.
 6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
    that it tests, before the cut to 100 chats. Each word arm runs a regular
    expression that no index serves. Run EXPLAIN ANALYZE on a large chat
@@ -1257,6 +1309,7 @@ Seven limits stay, and the review must know them:
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
 | `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
+| `CRM_MODULE_FIND_ORGS` | empty | Owned by CRM-Q34-7 and `crm_platform.md` §18.17. FIND-11 reads it too: the engine reads the mirrored modules only when this flag AND `FIND_ORGS` name the org. Either empty gives the answer of before, byte for byte | AGENT-SAFE. It spends nothing |
 | `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte, and the 422 of before for `apps=chat` and each other unknown app. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
@@ -1292,11 +1345,13 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
+| **FIND-4b** (built) | 3674 | 2 | `Source.proves_absence`, `False` for each source, and the claim reads it (§3.6, "As built (FIND-4b)"). `find.ABSENCE_CLAIMS` stays off | With the switch on in a test, one app that answered and does not declare stops each claim. With each app declared, the claims print as before. With the switch off, the answer and the tool text do not change. No source of `REGISTRY` declares it | `test_find_absence_declared.py`, new. `test_find_honest_zero.py`, `test_find_near.py` | STANDARD · AGENT-SAFE | FIND-4 |
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." Its fences move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
 | **FIND-6b** (built) | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, match `alias`) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. FIND-6b changed the pins of the gaps in `test_find_tools.py` in the same PR | `test_resolve_name_tool.py`, `test_find_near_visibility_r8.py` (R8), `test_find_tools.py` | STANDARD | FIND-5, FIND-6 |
 | **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
+| **FIND-11** (built, dark) | 3710 | 3 | The mirrored CRM modules as a source: `modules.find_module_names` (the predicate `field_sql.find_where` of the module list) and `modules.near_module_names` (`name_match.near_lookup` over the record names), called by the `crm` source and its `near` and `named` abilities. A hit has the kind `module_record`, the module label in its hint and a link. `resolve_name` gives the kind in its rows, with the module, outside the closed list of kinds. No tool description grows (task 3725) | "Operater Associates" finds the record «Operator Associates Pvt Ltd» by the near rung. Exact comes before near. A module that the profile does not mirror, a member with no CRM and org B never show. With `FIND_ORGS` or `CRM_MODULE_FIND_ORGS` empty, the answer and the tool text are byte-identical | `test_find_module_source.py`, new. `test_find_module_source_r8.py`, new | STANDARD · AGENT-SAFE | CRM-Q34-7, FIND-5 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
 | **FIND-9** | 3247 | 3 | The Studio source of §4.5: one source for each install that declares `contributes.search`, over the object query of C2a, as the member | A near name finds a Studio record. A member outside the scope of the install gets nothing. Org B gets nothing | `test_find_studio_source_r8.py`, new | HIGH · AGENT-SAFE. It follows `STUDIO_ORGS` | FIND-8 |
@@ -1360,6 +1415,10 @@ uv run pytest tests/unit/test_find_matched_by.py -q
 
 # FIND-7, the "not found" check, with the number check that shares its retry
 uv run pytest tests/unit/test_answer_not_found.py tests/unit/test_crm_answer_check.py -q
+
+# FIND-4b, the claim reads each declaration of Source.proves_absence
+uv run pytest tests/unit/test_find_absence_declared.py tests/unit/test_find_honest_zero.py \
+  tests/unit/test_find_near.py -q
 ```
 
 ## 13. What this spec does not own

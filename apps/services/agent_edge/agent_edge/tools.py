@@ -93,11 +93,13 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
+from acb_auth import app_requests as approval_store
 from acb_common import app_manifests, get_logger, get_settings
 
 # AD-10 and §9.4. The wrap rule of an answer lives in acb_common.door_values,
 # once. This module imports it, with a few private names kept, and stays the ONE mapping
 # module (EA3-9). Fence: tests/unit/test_door_values_single_copy.py.
+from acb_common.door_values import ISO_TIME_RE as _ISO_TIME_RE
 from acb_common.door_values import KEY_RE as _KEY_RE
 from acb_common.door_values import (
     SECRET_WORDS,
@@ -535,6 +537,11 @@ class _NotSent(ToolError):
     gateway cannot have acted, so ``create_task`` frees its key (EA-6d)."""
 
 
+class _ApprovalUsed(ToolError):
+    """The 409 ``approval_used`` of a spend (MCP-P1b-2). The wait reads the
+    request again, because a send of another wait may have spent it."""
+
+
 class GatewayUnauthorized(Exception):
     """The gateway answered 401. The transport answers the MCP 401 (§9.6)."""
 
@@ -832,6 +839,9 @@ def _next_cursor(ctx: Context, tool: str, args: Mapping[str, Any], *,
 # ── Values (§9.1 and §9.4) ──────────────────────────────────────────────────
 
 _ID_RE = re.compile(_UUID_PATTERN)
+
+#: The one ``If-Match`` shape that ``send_call`` sends (MCP-P1b-2 review P2).
+_IF_MATCH = re.compile(app_manifests.IF_MATCH_PATTERN)
 
 #: A member address: the shape of ``acb_common/tool_refusals.py`` (``_EMAIL``),
 #: with caps. The domain has at most 4 labels (fix round 2). With
@@ -1269,7 +1279,8 @@ class Tool:
     #: PLACE of its write to :attr:`route`, for some inputs. An input may
     #: fill a parameter of one of them (§9.5 rule 4), and each pair is in
     #: ``MCP_WRITE_ROUTES``. Only ``update_task`` has one: the move of
-    #: ``parent_task_id``.
+    #: ``parent_task_id``. MCP-P1b-2: ``app_write`` sends the ask in place of
+    #: the write of an op that waits for the member.
     alt_writes: tuple[tuple[str, str], ...] = ()
     #: IMG-3. Each GET route of :attr:`routes`, other than :attr:`route`,
     #: whose path parameters an input fills (§9.5 rule 4). Only
@@ -2952,6 +2963,10 @@ _WAITING_SCHEMA = _object({
     "until": _NULLABLE_STRING,
     "note": _UNTRUSTED_OR_NULL,
 })
+#: SW-104 (``agent_coordination.md`` §3.12.7 rule 5). The kinds of machine
+#: of a session. ``agent_runs.AGENT_HOST_KINDS`` holds the same, and a pin
+#: test compares the two.
+HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -2963,6 +2978,14 @@ _RUN_SCHEMA = _object({
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
     # SW-7b. The name that an agent gave its session. An agent wrote it, so (U).
     "agent_label": _UNTRUSTED_OR_NULL,
+    # SW-104. The machine and the model of the session. An agent or its box
+    # token wrote them, so (U). The kind is a value of a database CHECK.
+    "agent_host": _UNTRUSTED_OR_NULL,
+    "agent_model": _UNTRUSTED_OR_NULL,
+    "agent_host_kind": {"type": ["string", "null"], "enum": [*HOST_KINDS, None]},
+    # SW-107. The run that dispatched this one. The column is a uuid that the
+    # gateway checked, so it leaves as an id (S), never as text.
+    "dispatched_by_run_id": _NULLABLE_STRING,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
@@ -3122,8 +3145,13 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
     SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
+    SW-104: ``agent_host`` and ``agent_model`` are (U) for the same reason.
+    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`. SW-107:
+    ``dispatched_by_run_id`` leaves only in the shape of an id.
     """
     label = row.get("agent_label")
+    host, model = row.get("agent_host"), row.get("agent_model")
+    kind = row.get("agent_host_kind")
     out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
@@ -3139,6 +3167,10 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
         "agent_label": untrusted(label) if isinstance(label, str) else None,
+        "agent_host": untrusted(host) if isinstance(host, str) else None,
+        "agent_model": untrusted(model) if isinstance(model, str) else None,
+        "agent_host_kind": kind if kind in HOST_KINDS else None,
+        "dispatched_by_run_id": _id(row.get("dispatched_by_run_id")),
         "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
@@ -4206,12 +4238,13 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 PROTOCOL_KEY = "protocol"
 #: SW-43c raised the version to 2: the second line names the thought before an
 #: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
-#: stays free for the park of SW-60.
-PROTOCOL_VERSION = 2
+#: stays free for the park of SW-60. SW-105 raised it to 3: the first line asks
+#: for the label, the machine, its kind and the model on each claim.
+PROTOCOL_VERSION = 3
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
-    "Claim the slice, not the epic.",
+    "Claim the slice, not the epic. On each claim send agent_label, host, host_kind and model.",
     "Post a thought with post_agent_activity each minute. Before you act on an answer,"
     " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
@@ -5429,11 +5462,17 @@ PLAN_ORDER_BUDGET_S = 2.0
 PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
-#: ``claim_task`` sends back as ``expected_version``.
+#: ``claim_task`` sends back as ``expected_version``. SW-104: the machine, its
+#: kind and the model of the row's run, as on the run wire, or null. SW-107:
+#: the run that dispatched the row's run, an id or null.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
     "run_id", "held_by", "yours", "external_link",
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id",
 )
+#: SW-104 and SW-107. The keys of the run wire that a ``my_work`` row copies.
+_WORK_RUN_KEYS: tuple[str, ...] = (
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id")
 
 _MY_WORK_INPUT: dict[str, Any] = {
     "type": "object",
@@ -5453,6 +5492,10 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "run_id": _NULLABLE_STRING, "held_by": _HELD_BY_SCHEMA,
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
+    "agent_host": _RUN_SCHEMA["properties"]["agent_host"],
+    "agent_model": _RUN_SCHEMA["properties"]["agent_model"],
+    "agent_host_kind": _RUN_SCHEMA["properties"]["agent_host_kind"],
+    "dispatched_by_run_id": _RUN_SCHEMA["properties"]["dispatched_by_run_id"],
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
     "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
@@ -5624,15 +5667,21 @@ async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]
 def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
               run_id: str | None,
               names_by_project: Mapping[str, Mapping[str, str]],
-              yours: bool = False, link: Any = None) -> dict[str, Any]:
+              yours: bool = False, link: Any = None,
+              run: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One row of ``my_work`` (§12.4). With no task row, the task fields are
     null and the row still names the run. ``external_link`` is the link of
-    the run, shaped as on the run wire, or null (CIV-14a)."""
+    the run, shaped as on the run wire, or null (CIV-14a). SW-104: the
+    machine, its kind and the model of *run*, shaped by :func:`agent_run`,
+    or null for a row with no run. SW-107: and its dispatcher, by the same
+    rule."""
     shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
+    wire = agent_run(run) if run is not None else {}
+    place = {key: wire.get(key) for key in _WORK_RUN_KEYS}
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
-                "held_by": None, "yours": yours, "external_link": shown}
+                "held_by": None, "yours": yours, "external_link": shown, **place}
     status_id = row.get("status_id")
     names = names_by_project.get(str(row.get("project_id")), {})
     return {
@@ -5650,6 +5699,7 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
         "held_by": _held_by(row.get("held_by")),
         "yours": yours,
         "external_link": shown,
+        **place,
     }
 
 
@@ -5702,6 +5752,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     listed: list[tuple[str, str, str | None, bool]] = []
     links: dict[str, Any] = {}
+    runs: dict[str, Mapping[str, Any]] = {}
     seen: set[str] = set()
     for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
@@ -5710,6 +5761,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             continue
         seen.add(task_id)
         links[task_id] = run.get("external_link")
+        runs[task_id] = run
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
@@ -5746,7 +5798,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     rows.update(await _tasks_by_id(ctx, missing))
     shown = [rows[t] for t, _, _, _ in listed if t in rows]
     names = await _status_names(ctx, _distinct_projects(shown))
-    out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
+    out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t),
+                     runs.get(t))
            for t, reason, run_id, mine in listed]
     for item in out:
         if item["reason"] in (REASON_ASSIGNED, REASON_CHECK_DUE) and item["task_id"] in plans:
@@ -7760,6 +7813,71 @@ _LABEL_INPUT: dict[str, Any] = {
         " Send the same name on each claim and each start. A new name replaces"
         " the old one.")}
 
+#: SW-104 (``agent_coordination.md`` §3.12.3). The most characters of
+#: ``host`` and ``model``. The gateway cleans each value and caps it at the
+#: same number (``agent_runs.AGENT_PLACE_MAX``), and a pin test compares them.
+AGENT_PLACE_MAX = 60
+
+#: SW-104. The optional machine, kind of machine and model of this session,
+#: on a claim and a start. Each name holds no control character.
+_HOST_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_PLACE_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "A short name for the machine of this session, such as VJ laptop. Use"
+        " the name that your member chose. Send the host name of the system"
+        " only when the member chose no name. Send no network address. It is"
+        " display data only. A box token sends its own name. A new value"
+        " replaces the old one.")}
+_MODEL_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_PLACE_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "The model of this session, such as Sonnet 5.5. It is display data"
+        " only. A new value replaces the old one.")}
+_HOST_KIND_INPUT: dict[str, Any] = {
+    "type": "string", "enum": list(HOST_KINDS),
+    "description": (
+        "The kind of the machine: computer for the PC or laptop of a person,"
+        " server for a VPS or a box, cloud for a hosted agent sandbox. It is"
+        " display data only.")}
+
+#: SW-107 (``agent_coordination.md`` §3.12.3). The optional run id of the
+#: session that dispatched this one, on a claim and a start.
+_DISPATCHED_BY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": (
+        "The run id of the session that handed you this task, when one did."
+        " Use the run id from its hand-off. It is display data only. A run"
+        " that your organization does not have, your own run, or a loop of"
+        " dispatchers is dropped, and the result has warning. A new value"
+        " replaces the old one.")}
+
+#: SW-107. The fixed text of each dropped ``dispatched_by``, by the code of
+#: the gateway (``agent_runs.DISPATCH_DROPS``). The edge never shows the
+#: gateway's text. A pin test compares the two.
+DISPATCH_TEXTS: Mapping[str, str] = {
+    "unknown": "Metorite kept no dispatcher: your organization has no run with that id.",
+    "self": "Metorite kept no dispatcher: a run cannot dispatch itself.",
+    "loop": "Metorite kept no dispatcher: that run would make a loop of dispatchers.",
+    "no_run": "Metorite kept no dispatcher, because the claim opened no run.",
+}
+
+
+def _dispatch_body(args: Mapping[str, Any]) -> dict[str, str]:
+    """SW-107. The ``dispatched_by`` of *args*, for the body of a claim or a
+    start. Never a header."""
+    value = _id(args.get("dispatched_by"))
+    return {"dispatched_by": value} if value is not None else {}
+
+
+def _dispatch_warning(written: Mapping[str, Any]) -> str | None:
+    """SW-107. The fixed text for the gateway's code of a dropped
+    ``dispatched_by``, or ``None``."""
+    code = written.get("dispatched_by_dropped")
+    return DISPATCH_TEXTS.get(code) if isinstance(code, str) else None
+
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7783,6 +7901,10 @@ _CLAIM_INPUT: dict[str, Any] = {
             "description": "The version that get_task returned for this task."},
         "external_link": _LINK_INPUT,
         "agent_label": _LABEL_INPUT,
+        "host": _HOST_INPUT,
+        "model": _MODEL_INPUT,
+        "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7801,6 +7923,13 @@ _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
+def _place_body(args: Mapping[str, Any]) -> dict[str, str]:
+    """SW-104. The ``host``, ``model`` and ``host_kind`` of *args* that the
+    agent sent, for the body of a claim or a start. Never a header."""
+    return {key: value for key in ("host", "model", "host_kind")
+            if (value := _str_or_none(args.get(key))) is not None}
+
+
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """POST the claim with ``If-Match`` and no body field (§9.2).
 
@@ -7812,7 +7941,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     It needs no ``_refuse_nul`` (EA-6c): each input must match a pattern of
     the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
-    body only, and its pattern refuses every control character.
+    body only, and its pattern refuses every control character. SW-104:
+    ``host``, ``model`` and ``host_kind`` go in the body by the same rule.
+    SW-107: so does ``dispatched_by``. A dropped one adds a fixed warning.
     """
     body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
@@ -7821,6 +7952,8 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     label = _str_or_none(args.get("agent_label"))
     if label is not None:
         body["agent_label"] = label
+    body.update(_place_body(args))
+    body.update(_dispatch_body(args))
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
@@ -7846,11 +7979,20 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # fixed on the gateway, and the ids leave only in the shape of an id.
     ids = [i for i in (_id(v) for v in
                        (written.get("open_subtasks") or [])[:5]) if i]
-    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
-            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
-            r" the epic\.", written["warning"]):
-        result["warning"] = written["warning"]
+    said = written.get("warning")
+    subtasks = re.match(
+        r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
+        r" the epic\.(?= |$)", said) if isinstance(said, str) else None
+    warnings: list[str] = []
+    if ids and subtasks is not None:
+        warnings.append(subtasks.group(0))
         result["open_subtasks"] = ids
+    # SW-107: the fixed text of a dropped dispatcher, after that warning.
+    dropped = _dispatch_warning(written)
+    if dropped is not None:
+        warnings.append(dropped)
+    if warnings:
+        result["warning"] = " ".join(warnings)
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     protocol = _protocol(ctx)
@@ -7898,7 +8040,9 @@ CLAIM_TASK = Tool(
     output_schema=_CLAIM_OUTPUT,
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
-            "external_link": "external_link", "agent_label": "agent_label"},
+            "external_link": "external_link", "agent_label": "agent_label",
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -9129,6 +9273,241 @@ LIST_TEMPLATES = Tool(
 )
 
 
+# ── get_agent_map (WS-MCP SW-113) ───────────────────────────────────────────
+#
+# Spec: ``agent_coordination.md`` §3.12.7 rule 12 and row SW-113. The tool
+# gives the map read of SW-102 to an agent: ``GET /projects/agents/overview``
+# with ``shape=map``, under the member's session. The gateway decides the
+# reach, the scope of ``project_id``, the fold and the flags. The edge adds
+# no second query.
+#
+# The gateway answers its ONE 404 body for each miss: ``AGENTS_VIEW_ORGS`` or
+# ``AGENT_MAP_ORGS`` off for the org, a project that the member cannot see,
+# and a bad value. The edge cannot tell them apart, so the tool gives ONE
+# text for each of them (:data:`TEXT_MAP_NOT_FOUND`), as the dark read does.
+# With the runs flag off, the gateway answers an empty map, and so does the
+# tool.
+
+AGENT_MAP_ROUTE = "/projects/agents/overview"
+
+#: The most runs and session nodes that one answer lists. A copy of
+#: ``agent_summary.MAP_RUNS_MAX`` and ``MAP_SESSIONS_MAX`` of the gateway,
+#: which the edge may not import. ``test_agent_map_r8.py`` pins them equal.
+AGENT_MAP_RUNS_MAX = 300
+AGENT_MAP_SESSIONS_MAX = 300
+
+#: The top keys of a map answer, in the order of ``agent_summary.MAP_KEYS``.
+AGENT_MAP_KEYS: tuple[str, ...] = (
+    "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
+    "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
+    "quiet_last_at", "host", "host_kind", "host_source", "model",
+)
+AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
+    "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
+    "last_at",
+)
+
+#: The keys of one line of who dispatched whom: the node id of the
+#: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
+#: SW-107. Any other key of a line never leaves the edge.
+AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
+#: The id of a session node: the first 24 hex characters of a sha256
+#: (``agent_summary._NODE_SQL``). It holds no session key.
+_NODE_ID_RE = re.compile(r"[0-9a-f]{24}")
+
+#: The text of every 404 of the map. It names no cause, as the gateway's
+#: one 404 body names none.
+TEXT_MAP_NOT_FOUND = (
+    "No agent map. The project does not exist or this member cannot see it,"
+    " or the agent map is off for this organization.")
+
+_AGENT_MAP_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "Only the runs on the tasks of this project and"
+                                      " its sub-projects. An id from list_projects."
+                                      " Leave it out for every project that you can see."},
+        "show_quiet": {"type": "boolean",
+                       "description": "True to list the quiet runs too. A run is quiet"
+                                      " after 2 hours with no event. Its session still"
+                                      " counts it."},
+    },
+    "additionalProperties": False,
+}
+
+_MAP_PERSON_SCHEMA = _object({"person": _UNTRUSTED_OR_NULL, "sessions": {"type": "integer"}})
+_MAP_SESSION_SCHEMA = _object({
+    "id": _NULLABLE_STRING, "person": _UNTRUSTED_OR_NULL, "name": _UNTRUSTED_OR_NULL,
+    "client": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "last_at": _NULLABLE_STRING,
+    "run_count": {"type": "integer"}, "quiet_count": {"type": "integer"},
+    "quiet_last_at": _NULLABLE_STRING,
+    # SW-106: the machine, its kind, its source and the model. The machine and
+    # the model are text that an agent wrote: untrusted. The kind and the
+    # source are two fixed words, or null.
+    "host": _UNTRUSTED_OR_NULL, "host_kind": _NULLABLE_STRING,
+    "host_source": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
+})
+_MAP_RUN_SCHEMA = _object({
+    "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING, "task_id": _NULLABLE_STRING,
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_OR_NULL,
+    "state": _NULLABLE_STRING, "quiet": {"type": "boolean"}, "age": _NULLABLE_INTEGER,
+    "last_at": _NULLABLE_STRING,
+})
+_MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
+_AGENT_MAP_OUTPUT: dict[str, Any] = _object({
+    "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
+    "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
+    "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
+    # SW-107 fills the lines of who dispatched whom: two node ids each.
+    "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
+    "count": {"type": "integer"},
+    "truncated": {"type": "boolean"},
+    "viewer": _NULLABLE_STRING,
+})
+
+
+def _map_time(value: Any) -> str | None:
+    """A time of the map, plain only in the ISO shape."""
+    return value if isinstance(value, str) and _ISO_TIME_RE.fullmatch(value) else None
+
+
+def _map_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+#: The fixed words of the kind of machine and of its source (SW-104, SW-106).
+#: A copy of ``AGENT_HOST_KINDS`` of the gateway, which the edge may not import.
+_MAP_HOST_KINDS = frozenset({"computer", "server", "cloud"})
+_MAP_HOST_SOURCES = frozenset({"checked", "reported"})
+
+
+def _map_word(value: Any, allowed: frozenset[str]) -> str | None:
+    """One of the fixed *allowed* words, else ``None``."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _map_node(value: Any) -> str | None:
+    return value if isinstance(value, str) and _NODE_ID_RE.fullmatch(value) else None
+
+
+def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One session node (§3.12.2), with the pinned keys only. The person, the
+    name of the session, the client, the machine and the model are untrusted
+    text (§3.12.4 rule 3). The kind of machine and its source are fixed words.
+    A key that the gateway adds later does not leave until a slice maps it
+    here."""
+    return {
+        "id": _map_node(row.get("id")),
+        "person": untrusted(row.get("person")),
+        "name": untrusted(row.get("name")),
+        "client": untrusted(row.get("client")),
+        "state": _key(row.get("state")),
+        "last_at": _map_time(row.get("last_at")),
+        "run_count": _map_count(row.get("run_count")),
+        "quiet_count": _map_count(row.get("quiet_count")),
+        "quiet_last_at": _map_time(row.get("quiet_last_at")),
+        "host": untrusted(row.get("host")),
+        "host_kind": _map_word(row.get("host_kind"), _MAP_HOST_KINDS),
+        "host_source": _map_word(row.get("host_source"), _MAP_HOST_SOURCES),
+        "model": untrusted(row.get("model")),
+    }
+
+
+def map_run(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One listed run of the map, with the pinned keys only. The task title is
+    untrusted text."""
+    return {
+        "run_id": _id(row.get("run_id")),
+        "session_id": _map_node(row.get("session_id")),
+        "task_id": _id(row.get("task_id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title")),
+        "state": _key(row.get("state")),
+        "quiet": _bool(row.get("quiet")),
+        "age": _int_or_none(row.get("age")),
+        "last_at": _map_time(row.get("last_at")),
+    }
+
+
+def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One line of who dispatched whom (SW-107): ``from`` and ``to`` only,
+    each a node id in its shape or null. Any other key, such as a session
+    key or a machine, does not leave."""
+    return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
+
+
+def agent_map(body: Any) -> dict[str, Any]:
+    """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
+    each value in its shape or as untrusted text. At most
+    :data:`AGENT_MAP_RUNS_MAX` runs and :data:`AGENT_MAP_SESSIONS_MAX`
+    sessions. ``truncated`` is true when the gateway cut, or when the edge
+    cut."""
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+
+    def rows(name: str) -> list[dict[str, Any]]:
+        found = body.get(name)
+        return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+    people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
+    lines = rows("lines")
+    viewer = body.get("viewer")
+    cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
+           or len(lines) > AGENT_MAP_RUNS_MAX)
+    return {
+        "people": [{"person": untrusted(p.get("person")),
+                    "sessions": _map_count(p.get("sessions"))} for p in people],
+        "sessions": [map_session(s) for s in sessions[:AGENT_MAP_SESSIONS_MAX]],
+        "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
+        # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
+        "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        "count": _map_count(body.get("count")),
+        "truncated": body.get("truncated") is True or cut,
+        # The viewer level of ``agents_view.md`` §4. The gateway sets it from
+        # fixed words, so it leaves plain only in the key shape (AD-10).
+        "viewer": _key(viewer),
+    }
+
+
+async def _get_agent_map(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    query: list[tuple[str, str]] = [("shape", "map")]
+    if args.get("project_id") is not None:
+        query.append(("project_id", str(args["project_id"]).lower()))
+    if args.get("show_quiet") is True:
+        query.append(("show_quiet", "true"))
+    return agent_map(await _get(ctx, AGENT_MAP_ROUTE, TEXT_MAP_NOT_FOUND, query=query))
+
+
+GET_AGENT_MAP = Tool(
+    name="get_agent_map",
+    title="Read the agent map",
+    description=(
+        "Read the agent map: the people, their agent sessions, and the open"
+        " agent runs on the tasks that this member can see. Call it before you"
+        " dispatch an agent, to see which sessions already work on which tasks."
+        " A session groups the runs of one agent session, with its name, its"
+        " client, its state and its counts. Each run names its session, its"
+        " task and its state. With project_id, the map holds only the runs of"
+        " that project and its sub-projects. A run with no event for 2 hours is"
+        " quiet: its session counts it, and show_quiet true lists it. The map"
+        " lists at most 300 runs, and truncated is true when it cut some. count"
+        " counts every open run that you can see. The map changes nothing."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_AGENT_MAP_INPUT,
+    output_schema=_AGENT_MAP_OUTPUT,
+    route=AGENT_MAP_ROUTE,
+    params={"project_id": "project_id", "show_quiet": "show_quiet"},
+    not_found=TEXT_MAP_NOT_FOUND,
+    run=_get_agent_map,
+    routes=(AGENT_MAP_ROUTE,),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -9194,20 +9573,35 @@ def _check_options(options: list[dict[str, Any]] | None) -> None:
 
 async def _start(ctx: Context, task_id: str, key: str,
                  link: str | None = None,
-                 label: str | None = None) -> tuple[bool, dict[str, Any]]:
+                 label: str | None = None,
+                 place: Mapping[str, str] | None = None) -> tuple[bool, dict[str, Any]]:
     """POST the start of a run. ``(created, run)``. The gateway gives the
     open run of this member and client on the task, if one exists (EA12-6).
-    SW-7b: *label* is the display name of this session, in the body only."""
+    SW-7b: *label* is the display name of this session, in the body only.
+    SW-104: *place* holds ``host``, ``model`` and ``host_kind``, by the same
+    rule."""
+    created, run, _ = await _start_answer(ctx, task_id, key, link, label, place)
+    return created, run
+
+
+async def _start_answer(ctx: Context, task_id: str, key: str,
+                        link: str | None = None,
+                        label: str | None = None,
+                        place: Mapping[str, str] | None = None,
+                        ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+    """:func:`_start`, and the whole answer of the gateway. SW-107: *place*
+    may also hold ``dispatched_by``, and the answer then may name a drop."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
     if label is not None:
         payload["agent_label"] = label
+    payload.update(place or {})
     status, body = await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
         texts={409: TEXT_KEY_USED})
-    return status == 201, _run_body(body)
+    return status == 201, _run_body(body), body
 
 
 async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], *,
@@ -9243,18 +9637,32 @@ _START_INPUT: dict[str, Any] = {
         "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
         "agent_label": _LABEL_INPUT,
+        "host": _HOST_INPUT,
+        "model": _MODEL_INPUT,
+        "host_kind": _HOST_KIND_INPUT,
+        "dispatched_by": _DISPATCHED_BY_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
 }
-_START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}})
+_START_OUTPUT: dict[str, Any] = _optional(
+    _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}}),
+    # SW-107: set only when the gateway dropped `dispatched_by`.
+    "warning", {"type": "string"})
 
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")),
-                                _str_or_none(args.get("agent_label")))
-    return {"run": agent_run(run), "created": created}
+    created, run, answer = await _start_answer(
+        ctx, str(args["task_id"]), str(args["idempotency_key"]),
+        _str_or_none(args.get("external_link")),
+        _str_or_none(args.get("agent_label")),
+        {**_place_body(args), **_dispatch_body(args)})
+    result: dict[str, Any] = {"run": agent_run(run), "created": created}
+    # SW-107: a fixed text for a dropped dispatcher. The start still worked.
+    dropped = _dispatch_warning(answer)
+    if dropped is not None:
+        result["warning"] = dropped
+    return result
 
 
 START_AGENT_RUN = Tool(
@@ -9279,7 +9687,9 @@ START_AGENT_RUN = Tool(
     output_schema=_START_OUTPUT,
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
-            "idempotency_key": "idempotency_key", "agent_label": "agent_label"},
+            "idempotency_key": "idempotency_key", "agent_label": "agent_label",
+            "host": "host", "model": "model", "host_kind": "host_kind",
+            "dispatched_by": "dispatched_by"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",
@@ -9570,7 +9980,8 @@ ASK_ON_TASK = Tool(
         " The my_work text holds the rule."
         " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
-        " record_outside_decision at once.[[ASK_IMAGES]]" + _UNTRUSTED_NOTE
+        " record_outside_decision at once.[[ASK_IMAGES]]"
+        + prompts.LANE_ASK_RULE + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -10161,7 +10572,36 @@ _RELEASE_INPUT: dict[str, Any] = {
     "required": ["run_id"],
     "additionalProperties": False,
 }
-_RELEASE_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "released": {"type": "boolean"}})
+#: Task 3648. The lane of the task after the release: its name (text that
+#: people wrote), its category, whether the release moved it, and why. The
+#: reasons are the closed list ``agent_runs.RELEASE_REASONS``, and a pin test
+#: compares the two.
+RELEASE_REASONS: tuple[str, ...] = (
+    "already_released", "not_started_lane", "archived",
+    "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
+    "no_status_before_claim", "no_task",
+)
+_TASK_STATUS_SCHEMA: dict[str, Any] = _object({
+    "name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
+    "moved": {"type": "boolean"}, "reason": {"type": "string", "enum": list(RELEASE_REASONS)},
+})
+_RELEASE_OUTPUT: dict[str, Any] = _object({
+    "run": _RUN_SCHEMA, "released": {"type": "boolean"}, "task_status": _TASK_STATUS_SCHEMA})
+
+
+def _task_status(body: Any) -> dict[str, Any]:
+    """The lane of the released task, from the answer of the gateway. The
+    name is text that people wrote, so it is ``untrusted_text``."""
+    found = body.get("task_status") if isinstance(body, dict) else None
+    found = found if isinstance(found, dict) else {}
+    name = found.get("name")
+    reason = found.get("reason")
+    return {
+        "name": untrusted(str(name)) if name is not None else None,
+        "category": found.get("category") if isinstance(found.get("category"), str) else None,
+        "moved": found.get("moved") is True,
+        "reason": reason if reason in RELEASE_REASONS else "no_task",
+    }
 
 
 async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -10173,7 +10613,8 @@ async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         texts={409: TEXT_RUN_CONFLICT},
         details={(403, "You may not release this agent run."): TEXT_RELEASE_FORBIDDEN,
                  (422, HANDOFF_NEEDS_NEXT_DETAIL): TEXT_HANDOFF_NEEDS_NEXT})
-    return {"run": agent_run(_run_body(body)), "released": True}
+    return {"run": agent_run(_run_body(body)), "released": True,
+            "task_status": _task_status(body)}
 
 
 RELEASE_TASK = Tool(
@@ -10184,10 +10625,19 @@ RELEASE_TASK = Tool(
         " task that you claimed and you will not finish it. Send the run_id"
         " from claim_task or start_agent_run. Send handoff {done, left, evidence,"
         " next} so the next agent starts with a note. If left has text, next is"
-        " required. The run becomes released. The"
-        " task keeps its status and its assignees, and another AI session may"
-        " claim it. Use finish_agent_run when the work is done. You can"
-        " release only your own run." + _UNTRUSTED_NOTE
+        " required. The run becomes released. The assignees stay, and another"
+        " AI session may claim the task. The release undoes your claim: when"
+        " your claim moved the task into In progress, it moves again, and"
+        " task_status names the lane. An open pull request keeps it in"
+        " progress, in a review lane when the board has one. Started work (a"
+        " handoff done, a branch, a commit or a pull request) puts it in To Do."
+        " A task that nobody started goes back to the lane it had. A started"
+        " task never goes to Backlog. A task that was already In progress"
+        " before your claim is the live work of a person, and the release"
+        " leaves it alone. So attach each branch and pull request with"
+        " add_task_reference, or send a handoff done, before you release:"
+        " a task with neither reads as not started. Use finish_agent_run when"
+        " the work is done. You can release only your own run." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_RELEASE_INPUT,
@@ -10213,9 +10663,13 @@ RELEASE_TASK = Tool(
 # result has at most :data:`DOOR_RESULT_MAX_BYTES` (AD-12).
 #
 # AD-18. A write of class B or C that is not a proposal needs the member's
-# approval. MCP-P1b builds that path. Until then the edge refuses each such
-# op before any request (:data:`TEXT_NEEDS_APPROVAL`), and branch 0 refuses
-# it with the coded 403 ``approval_required``.
+# approval. MCP-P1b-2 builds that path (§19.5, path 2): ``app_write`` asks
+# the member through ``POST /agent-access/apps/{app}/requests``, waits with
+# ``GET /agent-access/requests/{request_id}``, and after an approve sends the
+# STORED call once with the signed ``X-Agent-Approval``. Branch 0 spends the
+# request. A call with no approval still gets the coded 403
+# ``approval_required``. While the approval path is off, the edge refuses
+# the op before any request (:data:`TEXT_NEEDS_APPROVAL`).
 
 DOOR_APPS_ROUTE = "/agent-access/apps"
 DOOR_APP_ROUTE = "/agent-access/apps/{app}"
@@ -10236,8 +10690,26 @@ TEXT_USE_WRITE = "Use app_write for a change."
 TEXT_USE_READ = "Use app_read for a read."
 TEXT_NEEDS_APPROVAL = (
     "This change needs the member's approval, and Metorite cannot ask the member"
-    " for it yet. Nothing changed.")
+    " for it now. Nothing changed.")
 TEXT_NOT_APPROVED = "Metorite refused this change, because the member has not approved it."
+#: MCP-P1b-2 (§19.4). The texts of a spend that branch 0 refuses.
+TEXT_APPROVAL_MISMATCH = "This change is not the change that the member approved. Ask again."
+TEXT_APPROVAL_USED = "That approval is used or expired. Ask again."
+#: MCP-P1b-2. The texts of an ask that the request route refuses.
+TEXT_TOO_MANY_REQUESTS = "Too many changes wait for the member. Wait for an answer first."
+TEXT_REQUEST_TOO_LARGE = "This change is too large for the member's card. Make it smaller."
+TEXT_REQUEST_SECRET = "This change holds a key that names a secret. Metorite refuses it."
+TEXT_REQUEST_UNSHOWABLE = (
+    "This change holds a value that the member's card cannot show exactly. Check the"
+    " numbers and the characters.")
+#: MCP-P1b-2. The texts of a wait.
+TEXT_REQUEST_OTHER_APP = "That request is for another app. Send the app of the request."
+TEXT_REQUEST_SPENT = (
+    "Metorite already sent the change of that request. Read the app to check the"
+    " result. To make another change, ask again.")
+TEXT_REQUEST_STALE = (
+    "The operation of that request changed after the member approved it. Nothing"
+    " changed. Ask again.")
 TEXT_DOOR_INPUT = "Metorite could not use that input. Check: {names}."
 TEXT_DOOR_INPUT_ANY = "Metorite could not use that input. Check the input."
 TEXT_DOOR_NOT_FOUND = "{app} has nothing at that id."
@@ -10263,6 +10735,9 @@ TEXT_DOOR_KEY_UNKNOWN = (
 WHY_NOT_TEXTS: Mapping[str, str] = {
     agent_oauth.APPROVAL_REQUIRED_CODE: TEXT_NEEDS_APPROVAL,
     agent_oauth.DOOR_WRITES_OFF_CODE: TEXT_WRITES_OFF,
+    # MCP-P1b-2: the approval path is off for the organization.
+    agent_oauth.REQUESTS_OFF_CODE: TEXT_NEEDS_APPROVAL,
+    agent_oauth.SENDS_OFF_CODE: TEXT_UNAVAILABLE,
 }
 
 #: AD-12. A door page holds at most :data:`DOOR_PAGE_MAX` rows, and one result
@@ -10385,8 +10860,9 @@ def _door_app(app_id: Any) -> app_manifests.App:
 def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
     """The door op of the call, or the fixed tool error of §19.4.
 
-    AD-18: a write of class B or C that is not a proposal is refused here,
-    before any request, because no approval can exist before MCP-P1b.
+    AD-18 (MCP-P1b-2): a write of class B or C that is not a proposal waits
+    for the member. While ``agent_oauth.door_available`` says that the
+    approval path is off, it is refused here, before any request.
     """
     found = _door_app(app_id)
     door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
@@ -10397,7 +10873,9 @@ def _door_op(app_id: Any, op: Any, *, write: bool) -> app_manifests.DoorOp:
     if not write and door.kind != "read":
         raise ToolError(TEXT_USE_WRITE)
     if write and door.asks != "never":
-        raise ToolError(TEXT_NEEDS_APPROVAL)
+        available, code = agent_oauth.door_available(door)
+        if not available:
+            raise ToolError(WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE))
     return door
 
 
@@ -10454,6 +10932,11 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
         raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
     if status == 404:
         raise ToolError(TEXT_DOOR_NOT_FOUND.format(app=door.app.name))
+    # MCP-P1b-2: the two coded 409 answers of a spend that branch 0 refuses.
+    if status == 409 and detail == agent_oauth.APPROVAL_MISMATCH_CODE:
+        raise ToolError(TEXT_APPROVAL_MISMATCH)
+    if status == 409 and detail == agent_oauth.APPROVAL_USED_CODE:
+        raise _ApprovalUsed(TEXT_APPROVAL_USED)
     if status in (409, 412):
         raise ToolError(TEXT_DOOR_CONFLICT)
     if status == 422:
@@ -10468,10 +10951,12 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
 
 
 async def _door_send(ctx: Context, call: app_manifests.Call, door: app_manifests.DoorOp,
-                     *, write: bool) -> Any:
-    """Send one door call, and map its answer (:func:`_door_body`)."""
+                     *, write: bool, approval: str | None = None) -> Any:
+    """Send one door call, and map its answer (:func:`_door_body`).
+    *approval* is the request id that an approved write spends (MCP-P1b-2)."""
     try:
-        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session)
+        answer = await send_call(ctx.key, ctx.caller.lookup, call, session=ctx.session,
+                                 approval=approval)
     except GatewayNotSent:
         raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
@@ -10543,10 +11028,42 @@ async def _list_apps(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             "available": available,
             "why_not": None if available else WHY_NOT_TEXTS.get(
                 str(row.get("why_not")), TEXT_UNAVAILABLE),
-            # MCP-P1b fills it with the open requests of this connection.
-            "waiting": [],
+            # MCP-P1b-2: the live requests of this connection for the app.
+            "waiting": _waiting_rows(found, row.get("waiting")),
         })
     return {"apps": out}
+
+
+#: MCP-P1b-2. The states of a request that ``list_apps`` names as waiting.
+WAITING_STATES = frozenset({"awaiting", "approved"})
+
+
+def _waiting_rows(found: app_manifests.App, rows: Any) -> list[dict[str, Any]]:
+    """The ``waiting`` key of one app of ``list_apps`` (MCP-P1b-2, §19.4).
+
+    Each row holds ``request_id``, ``op``, ``state`` and ``expires_at``, and
+    nothing more. A value leaves only in its shape: an id, a door write op of
+    THIS app, a state of :data:`WAITING_STATES` and an ISO-8601 time. A row
+    with any other value is dropped, and so is each row of an app with no
+    ops. At most :data:`DOOR_PAGE_MAX` rows.
+    """
+    if found.door != "ops" or not isinstance(rows, list):
+        return []
+    ops = app_manifests.door_ops(found)
+    out: list[dict[str, Any]] = []
+    for row in rows[:DOOR_PAGE_MAX]:
+        if not isinstance(row, dict):
+            continue
+        rid, op, state, expires = (row.get("request_id"), row.get("op"),
+                                   row.get("state"), row.get("expires_at"))
+        door = ops.get(op) if isinstance(op, str) else None
+        if (not isinstance(rid, str) or not _ID_RE.fullmatch(rid) or door is None
+                or door.kind != "write" or state not in WAITING_STATES
+                or not isinstance(expires, str) or not _ISO_TIME_RE.fullmatch(expires)):
+            continue
+        out.append({"request_id": rid.lower(), "op": op, "state": state,
+                    "expires_at": expires})
+    return out
 
 
 LIST_APPS = Tool(
@@ -10803,11 +11320,58 @@ _APP_WRITE_INPUT: dict[str, Any] = {
     "required": ["app"],
     "additionalProperties": False,
 }
-_APP_WRITE_OUTPUT = _object({
-    "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
-    "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
-    "truncated": {"type": "boolean"},
-})
+#: The answer of ``app_write`` (§19.4). A change that waits for the member
+#: also names its request: ``request_id``, ``run_id`` and ``expires_at``
+#: (MCP-P1b-2). A proposal has no request, so those three keys are optional.
+_APP_WRITE_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "state": {"type": "string", "enum": ["done", "awaiting", "declined", "expired"]},
+        "result": {}, "finish_in": _NULLABLE_STRING, "replayed": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "request_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING,
+        "expires_at": _NULLABLE_STRING,
+    },
+    "required": ["state", "result", "finish_in", "replayed", "truncated"],
+    "additionalProperties": False,
+}
+
+#: MCP-P1b-2. The two routes of path 2 of §19.5: the ask and the wait.
+REQUEST_ASK_ROUTE = agent_oauth.REQUEST_ASK_ROUTE[1]
+REQUEST_READ_ROUTE = agent_oauth.REQUEST_READ_ROUTE[1]
+
+#: MCP-P1b-2. The limit of one ``app_write`` call: a wait of up to
+#: :data:`MAX_WAIT_SECONDS` with its request margin, then one send with the
+#: limit of any tool. The send of an approved change runs in the same call.
+APP_WRITE_TIMEOUT_S = MAX_WAIT_SECONDS + LONG_POLL_REQUEST_MARGIN_S + TOOL_TIMEOUT_S
+
+#: MCP-P1b-2. The coded refusals of the ask, by the ``error`` of the route or
+#: of the store. The edge never sends the gateway's text (EA3-16).
+_ASK_CODED: Mapping[str, str] = {
+    "idempotency_key_reused": TEXT_DOOR_KEY_REUSED,
+    "too_many_requests": TEXT_TOO_MANY_REQUESTS,
+    "payload_too_large": TEXT_REQUEST_TOO_LARGE,
+    "secret_in_payload": TEXT_REQUEST_SECRET,
+    "bad_args": TEXT_REQUEST_UNSHOWABLE,
+    "class_refused": TEXT_UNAVAILABLE,
+}
+
+#: MCP-P1b-2. The refusals of the ask whose ``detail`` is a plain code.
+_ASK_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, "insufficient_scope"): TEXT_WRITE_FORBIDDEN,
+    (403, agent_oauth.DOOR_WRITES_OFF_CODE): TEXT_WRITES_OFF,
+    (403, agent_oauth.REQUESTS_OFF_CODE): TEXT_NEEDS_APPROVAL,
+    (403, agent_oauth.SENDS_OFF_CODE): TEXT_UNAVAILABLE,
+    (422, "unknown_op"): TEXT_NO_OP,
+    (422, "not_an_approval_op"): TEXT_UNAVAILABLE,
+}
+
+#: MCP-P1b-2. A request state of the gateway, as the state of ``app_write``.
+#: ``approved`` is not an answer: the edge sends the change in its place.
+_REQUEST_STATES: Mapping[str, str] = {
+    "awaiting": "awaiting", "approved": "awaiting",
+    "declined": "declined", "expired": "expired",
+}
 
 #: The annotations of ``app_write`` (§19.4). One tool covers class C too, so
 #: ``destructiveHint`` is true and a client may ask the person first. A call
@@ -10826,21 +11390,157 @@ def _replayed_id(body: Any) -> str:
     return found if isinstance(found, str) else ""
 
 
+def _request_answer(found: app_manifests.App, body: Any, *, replayed: bool,
+                    state: str | None = None) -> dict[str, Any]:
+    """The answer of ``app_write`` for a request that waits for the member
+    (MCP-P1b-2, §19.4). Each id leaves only in the shape of an id, and the
+    expiry only in the shape of a time. A spent request is a tool error,
+    because only the send that spent it holds the result."""
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    rid, run_id, expires = body.get("request_id"), body.get("run_id"), body.get("expires_at")
+    if not isinstance(rid, str) or not _ID_RE.fullmatch(rid):
+        raise ToolError(TEXT_BUSY)
+    raw = state if state is not None else body.get("state")
+    if raw == "done":
+        raise ToolError(TEXT_REQUEST_SPENT)
+    mapped = _REQUEST_STATES.get(raw) if isinstance(raw, str) else None
+    if mapped is None:
+        raise ToolError(TEXT_BUSY)
+    return {
+        "state": mapped, "result": None, "finish_in": found.finish_in or None,
+        "replayed": replayed, "truncated": False, "request_id": rid.lower(),
+        "run_id": run_id.lower() if isinstance(run_id, str) and _ID_RE.fullmatch(run_id)
+        else None,
+        "expires_at": expires if isinstance(expires, str) and _ISO_TIME_RE.fullmatch(expires)
+        else None,
+    }
+
+
+async def _app_ask(ctx: Context, found: app_manifests.App, door: app_manifests.DoorOp,
+                   sent: dict[str, Any], key: str) -> dict[str, Any]:
+    """Path 2 of §19.5, steps 1 to 6 (MCP-P1b-2): ask the member to approve
+    ONE call. Nothing changes yet.
+
+    The edge sends the op, the args and the key. The gateway builds the call
+    with ``build_call``, the one builder, and keeps the key with the request,
+    so the same key and args give the first request, and another change
+    under the key is refused. The class never leaves the edge.
+    """
+    status, body = await _write(
+        ctx, "POST", REQUEST_ASK_ROUTE, TEXT_NEEDS_APPROVAL,
+        json_body={"op": door.name, "args": sent, "idempotency_key": key},
+        path_params={"app": found.id}, details=_ASK_DETAILS, coded=_ASK_CODED,
+        coded_statuses=(409, 413, 422, 429))
+    return _request_answer(found, body, replayed=status == 200)
+
+
+def _stored_call(door: app_manifests.DoorOp, stored: Any) -> app_manifests.Call:
+    """The call that the member approved, from the request (MCP-P1b-2).
+
+    The edge sends the STORED call, never the args of this tool call. Its
+    method and template must be the ones of the door op, or the op of the
+    request changed after the approval, and nothing goes out. The body bytes
+    are ``acb_auth.app_requests.body_bytes`` of the stored body, the bytes
+    that the digest of the request read (AD-17).
+    """
+    if not isinstance(stored, dict):
+        raise ToolError(TEXT_BUSY)
+    method, template, path = stored.get("method"), stored.get("template"), stored.get("path")
+    if (method, template) != (door.route.method, door.route.path) or not isinstance(path, str):
+        raise ToolError(TEXT_REQUEST_STALE)
+    query: list[tuple[str, str]] = []
+    for pair in stored.get("query") or ():
+        if (not isinstance(pair, list) or len(pair) != 2
+                or not all(isinstance(part, str) for part in pair)):
+            raise ToolError(TEXT_BUSY)
+        query.append((pair[0], pair[1]))
+    if_match = stored.get("if_match")
+    if if_match is not None and not isinstance(if_match, str):
+        raise ToolError(TEXT_BUSY)
+    return app_manifests.Call(method=method, template=template, path=path,
+                              query=tuple(query),
+                              body=approval_store.body_bytes(stored.get("body")),
+                              if_match=if_match)
+
+
+async def _request_state(ctx: Context, rid: str) -> str | None:
+    """The state of one request of this connection, with no wait, or
+    ``None`` when the read fails. Only the answer of a refused spend reads
+    it (MCP-P1b-2 review P2)."""
+    try:
+        body = await _get(ctx, REQUEST_READ_ROUTE, TEXT_NO_REQUEST,
+                          path_params={"request_id": rid}, query=[("wait_s", "0")])
+    except ToolError:
+        return None
+    state = body.get("state") if isinstance(body, dict) else None
+    return state if isinstance(state, str) else None
+
+
+async def _app_wait(ctx: Context, found: app_manifests.App,
+                    args: dict[str, Any]) -> dict[str, Any]:
+    """Path 2 of §19.5, steps 8 to 10 (MCP-P1b-2): wait for the member, and
+    after an approve send the stored call once.
+
+    One read of :data:`REQUEST_READ_ROUTE`, which holds the answer for up to
+    ``wait_seconds``. The gateway gives only a request of THIS connection
+    (AD-16), so another id reads as no request. A request of another app is
+    refused. After an approve, the edge sends the stored call with the
+    signed ``X-Agent-Approval`` in the same tool call. Branch 0 spends the
+    request, so a second send gets ``approval_used`` and changes nothing.
+    """
+    rid = str(args["request_id"]).lower()
+    wait = int(args.get("wait_seconds", 0))
+    body = await _get(ctx, REQUEST_READ_ROUTE, TEXT_NO_REQUEST,
+                      path_params={"request_id": rid}, query=[("wait_s", str(wait))],
+                      timeout_s=wait + LONG_POLL_REQUEST_MARGIN_S)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    if body.get("app") != found.id:
+        raise ToolError(TEXT_REQUEST_OTHER_APP)
+    state = body.get("state")
+    if state != "approved":
+        return _request_answer(found, {**body, "request_id": rid}, replayed=False)
+    op = body.get("op")
+    door = app_manifests.door_ops(found).get(op) if isinstance(op, str) else None
+    if door is None or door.kind != "write":
+        raise ToolError(TEXT_REQUEST_STALE)
+    available, code = agent_oauth.door_available(door)
+    if not available:
+        raise ToolError(WHY_NOT_TEXTS.get(code or "", TEXT_UNAVAILABLE))
+    call = _stored_call(door, body.get("call"))
+    try:
+        sent = await _door_send(ctx, call, door, write=True, approval=rid)
+    except _ApprovalUsed:
+        # Review P2: two waits on one request may send together. Branch 0
+        # spends it once, and the other send gets `approval_used`. When the
+        # request is done, its change ran, so say so and not "Ask again".
+        if await _request_state(ctx, rid) == "done":
+            raise ToolError(TEXT_REQUEST_SPENT) from None
+        raise
+    result, truncated = door_cut(door_value(sent, _plain_of(door)))
+    answer = _request_answer(found, {**body, "request_id": rid}, replayed=False,
+                             state="approved")
+    return {**answer, "state": "done", "result": result, "truncated": truncated}
+
+
 async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """``app_write``: a proposal goes to the route of its op at once (AD-8).
 
-    Each other write needs the approval path of MCP-P1b, so the edge refuses
-    it here with no request (AD-18). A ``request_id`` names no request
-    before MCP-P1b. The ``idempotency_key`` holds the slot of
-    :func:`_claim_slot`, so a retry with the same key and input gives the
-    first answer and makes one proposal.
+    Each other write waits for the member (path 2 of §19.5, MCP-P1b-2). The
+    first call asks (:func:`_app_ask`) and answers ``awaiting``. A call with
+    ``request_id`` waits, and after an approve it sends the stored call once
+    (:func:`_app_wait`). For a proposal, the ``idempotency_key`` holds the
+    slot of :func:`_claim_slot`, so a retry with the same key and input
+    gives the first answer and makes one proposal. For a request, the
+    gateway keeps the key with the request.
     """
     found = _door_app(args["app"])
     asking = any(name in args for name in ("op", "args", "idempotency_key"))
     if "request_id" in args:
         if asking:
             raise ToolError(TEXT_TWO_FORMS)
-        raise ToolError(TEXT_NO_REQUEST)
+        return await _app_wait(ctx, found, args)
     if "wait_seconds" in args:
         raise ToolError(TEXT_WAIT_NEEDS_REQUEST)
     for name in ("op", "idempotency_key"):
@@ -10851,6 +11551,15 @@ async def _app_write(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if _holds_nul(sent):
         raise ToolError(text_nul("args"))
     call = _door_call(door, sent)
+    if door.kind == "write":
+        # Path 2: the call is built here only to refuse a bad input with no
+        # request. The gateway builds the same call with the same builder.
+        # Review P2: the send refuses an `If-Match` of another shape, so
+        # the ask refuses it first, and no member approves a dead call.
+        if call.if_match is not None and not _IF_MATCH.fullmatch(call.if_match):
+            raise ToolError(
+                f"The input 'args.{app_manifests.VERSION_ARG}' has the wrong form.")
+        return await _app_ask(ctx, found, door, sent, str(args["idempotency_key"]))
     claim = await _claim_slot(ctx, f"app_write.{found.id}.{door.name}",
                               str(args["idempotency_key"]), args, _DOOR_KEY_TEXTS)
     if claim.earlier is not None:
@@ -10877,9 +11586,13 @@ APP_WRITE = Tool(
         " from describe_app, send args as its args schema says, and send a new"
         " idempotency_key. An op of kind proposal files a draft at once, and a"
         " person accepts or rejects it in the app (finish_in says where). An op"
-        " of kind write waits for the member's approval. Metorite cannot ask"
-        " for that approval yet, so such an op is not available."
-        + _UNTRUSTED_NOTE
+        " of kind write asks the member first: the answer has state awaiting"
+        " and a request_id, and nothing has changed. Then call app_write with"
+        " app, request_id and wait_seconds 20, again and again, while the state"
+        " is awaiting. After the member approves, that call makes the approved"
+        " change once and answers state done with the result. declined or"
+        " expired means that nothing changed. list_apps names the requests that"
+        " still wait." + _UNTRUSTED_NOTE
     ),
     required_scope=None,
     input_schema=_APP_WRITE_INPUT,
@@ -10892,6 +11605,10 @@ APP_WRITE = Tool(
     annotations=dict(APP_WRITE_ANNOTATIONS),
     door=True,
     app_scope="write",
+    timeout_s=APP_WRITE_TIMEOUT_S,
+    # MCP-P1b-2: for an op that waits for the member, the ask goes out in
+    # place of the write of the op. The read of the wait is not a write.
+    alt_writes=(agent_oauth.REQUEST_ASK_ROUTE,),
 )
 
 
@@ -11022,6 +11739,9 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     LIST_TEMPLATES,
+    # WS-MCP SW-113: the agent map of SW-102. A read, so it shows with the
+    # writes flag off. The gateway reads AGENT_MAP_ORGS, and the edge does not.
+    GET_AGENT_MAP,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
@@ -11182,6 +11902,13 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
+    "AGENT_MAP_KEYS",
+    "AGENT_MAP_LINE_KEYS",
+    "AGENT_MAP_ROUTE",
+    "AGENT_MAP_RUNS_MAX",
+    "AGENT_MAP_RUN_KEYS",
+    "AGENT_MAP_SESSIONS_MAX",
+    "AGENT_MAP_SESSION_KEYS",
     "AGENT_MOVE_REFUSED",
     "AGENT_SPACE_PINNED",
     "ANCESTOR_DESCRIPTION_CHARS",
@@ -11189,6 +11916,7 @@ __all__ = [
     "APP_READ",
     "APP_WRITE",
     "APP_WRITE_ANNOTATIONS",
+    "APP_WRITE_TIMEOUT_S",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "ASSIGNEES_ROUTE",
@@ -11284,6 +12012,7 @@ __all__ = [
     "EPIC_RISK_TIERS",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
+    "GET_AGENT_MAP",
     "GET_AGENT_RUN",
     "GET_ATTACHMENT",
     "GET_ATTACHMENT_KEYS",
@@ -11380,6 +12109,8 @@ __all__ = [
     "REMOVE_TASK_LINK",
     "REPORT_CHECK",
     "REPORT_CHECK_KEYS",
+    "REQUEST_ASK_ROUTE",
+    "REQUEST_READ_ROUTE",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
@@ -11399,6 +12130,8 @@ __all__ = [
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
     "TAG_KEYS",
+    "TEXT_APPROVAL_MISMATCH",
+    "TEXT_APPROVAL_USED",
     "TEXT_APPS_OFF",
     "TEXT_APP_OFF",
     "TEXT_ARCHIVE_CONFLICT",
@@ -11469,6 +12202,7 @@ __all__ = [
     "TEXT_LINK_NOT_FOUND",
     "TEXT_LINK_SELF",
     "TEXT_LINK_TOO_LONG",
+    "TEXT_MAP_NOT_FOUND",
     "TEXT_MAX_BYTES",
     "TEXT_MOVE_ALONE",
     "TEXT_MOVE_CHANGED",
@@ -11516,6 +12250,12 @@ __all__ = [
     "TEXT_REF_BAD_URL",
     "TEXT_REF_RETRY",
     "TEXT_RELEASE_FORBIDDEN",
+    "TEXT_REQUEST_OTHER_APP",
+    "TEXT_REQUEST_SECRET",
+    "TEXT_REQUEST_SPENT",
+    "TEXT_REQUEST_STALE",
+    "TEXT_REQUEST_TOO_LARGE",
+    "TEXT_REQUEST_UNSHOWABLE",
     "TEXT_RUNS_OFF",
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
@@ -11528,6 +12268,7 @@ __all__ = [
     "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_TOOLS_APP",
+    "TEXT_TOO_MANY_REQUESTS",
     "TEXT_TREE_RACE",
     "TEXT_TWO_FORMS",
     "TEXT_UNAVAILABLE",
@@ -11565,6 +12306,7 @@ __all__ = [
     "UPLOAD_SVG_SUFFIXES",
     "UPLOAD_TASK_IMAGE",
     "WAITING_REASONS",
+    "WAITING_STATES",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WHY_NOT_TEXTS",
@@ -11575,6 +12317,7 @@ __all__ = [
     "Tip",
     "Tool",
     "ToolError",
+    "agent_map",
     "agent_run",
     "call",
     "call_timeout",
@@ -11597,6 +12340,9 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_line",
+    "map_run",
+    "map_session",
     "offered",
     "plain_shape",
     "preview_id",
