@@ -181,14 +181,12 @@ describe("source fences", () => {
     expect(wave).toContain('stroke="currentColor"');
   });
 
-  it("the stop control: label, ring that takes no click, discard, timer warning", () => {
+  it("the held control: label, ring that takes no click, timer warning, no Stop or X", () => {
     expect(button).toContain('variant={recording ? "primary" : "ghost"}');
-    expect(button).toContain('aria-label="Discard recording"');
+    expect(button).not.toContain("Discard recording");
     expect(button).toContain("pointer-events-none absolute -inset-1 rounded-full");
     expect(button).toContain("text-warning");
     expect(button).toContain("s left");
-    expect(button).toContain("onClick={() => voice.cancel()}");
-    expect(button).toContain("HINT_MS");
   });
 
   it("the cluster takes room with basis-0, so the bar keeps its height", () => {
@@ -199,9 +197,8 @@ describe("source fences", () => {
     const chat = read("components/AgentChat.tsx");
     expect(chat).toContain('const voiceBusy = voicePhase === "recording" || voicePhase === "transcribing";');
     expect(chat).toContain('style={voiceBusy ? { display: "none" } : undefined}');
-    expect(chat).toContain("Listening… tap ■ to finish");
+    expect(chat).toContain("Listening… release to send");
     expect(chat).toMatch(/voicePhase === "transcribing"\s*\? "Transcribing…"/);
-    expect(button).toContain("data-chat-composer");
     expect(chat).toContain("minHeight: barLock.current");
   });
 

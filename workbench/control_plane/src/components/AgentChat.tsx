@@ -3128,7 +3128,7 @@ export default function AgentChat({
               aria-label={`Message ${currentAgentLabel}`}
               placeholder={
                 voicePhase === "recording"
-                  ? "Listening… tap ■ to finish"
+                  ? "Listening… release to send"
                   : voicePhase === "transcribing"
                     ? "Transcribing…"
                     : loadingHistory

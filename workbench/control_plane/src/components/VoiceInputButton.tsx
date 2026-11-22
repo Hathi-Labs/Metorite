@@ -1,30 +1,34 @@
 "use client";
 
 /**
- * The mic of the chat composer (`projects_ai_chat.md` §31, VOX-1 and VOX-7).
+ * The mic of the chat composer (`projects_ai_chat.md` §31, VOX-1, VOX-7 and
+ * hold to talk, owner 2026-11-21, task 2501).
  *
- * A press starts a recording. A second press, or Enter, stops it, and the box
- * shows "Transcribing…". Escape, or the cross, cancels it and keeps nothing.
- * While it records, the mic is a filled round Stop button with a ring that
- * moves with the voice. A band of three layered sine lines sits in the bar
- * row beside a timer. The draft in the box stays in view, and the box stays
+ * HOLD TO TALK. A press starts a recording at once. Letting go stops it, and
+ * the box shows "Transcribing…". A press under 300 ms is a tap: nothing is
+ * kept, and a small popover says "Hold to talk" for 2 s. A pointercancel, a
+ * lost focus, Escape, or a release off the button discards the clip, and no
+ * text is sent. Space and Enter hold the button too, and the key up stops.
+ * While it records, a band of three layered sine lines sits in the bar row
+ * beside a timer. The draft in the box stays in view, and the box stays
  * mounted. At 120 s the recording stops by itself. The text goes to
- * `onText`, and the composer puts it in the box at the caret. A refused mic
- * or a refused clip goes to `onNotice` as one sentence.
+ * `onText`, and the composer puts it in the box at the caret, so a second
+ * clip appends. A refused mic or a refused clip goes to `onNotice`.
  *
  * It sits beside Attach, inside the composer's form, so every button here is
  * `type="button"` (`lib/chatAttachments.test.ts` fences it, as it fences
  * Attach). The composer reaches `stop` and `cancel` through `ref`, so Enter
  * and Escape in the box act on a recording.
  */
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import VoiceWave, { usePrefersReducedMotion } from "@/components/VoiceWave";
 import { useVoiceDictation } from "@/hooks/useVoiceDictation";
+import { HOLD_TEXT, isHoldKey, isOffButton, POPOVER_MS, releaseOutcome } from "@/lib/holdToTalk";
 import { formatClock, MAX_SECONDS, type VoiceAvailability, type VoicePhase } from "@/lib/voiceDictation";
-import { HINT_MS, HINT_TEXT, hintSeen, markHintSeen, secondsLeft } from "@/lib/voiceWave";
+import { secondsLeft } from "@/lib/voiceWave";
 
 export interface VoiceControls {
   stop: () => void;
@@ -35,13 +39,13 @@ export interface VoiceControls {
 export function voiceLabel(phase: VoicePhase): string {
   switch (phase) {
     case "recording":
-      return "Stop recording";
+      return `${HOLD_TEXT}. Release to send`;
     case "transcribing":
       return "Transcribing";
     case "asking":
       return "Waiting for the microphone";
     default:
-      return "Dictate a message";
+      return HOLD_TEXT;
   }
 }
 
@@ -69,6 +73,7 @@ export default function VoiceInputButton({
   const waiting = phase === "asking" || transcribing;
   const reduced = usePrefersReducedMotion();
   const ringRef = useRef<HTMLSpanElement>(null);
+  const wrapRef = useRef<HTMLSpanElement>(null);
 
   const { stop, cancel } = voice;
   useImperativeHandle(ref, () => ({ stop: () => void stop(), cancel }), [stop, cancel]);
@@ -76,50 +81,76 @@ export default function VoiceInputButton({
     onPhase?.(phase);
   }, [phase, onPhase]);
 
-  // The first recording of this browser shows "Tap ■ to finish" for 4.5 s.
-  const [hint, setHint] = useState<"shown" | "fading" | null>(null);
-  // The tip sits above the top edge of the composer, so it never covers the
-  // box. `lift` is the distance from the button to that edge.
-  const wrapRef = useRef<HTMLSpanElement>(null);
-  const [lift, setLift] = useState(0);
-  useEffect(() => {
-    if (!recording || hintSeen()) return;
-    markHintSeen();
-    const show = setTimeout(() => {
-      const wrap = wrapRef.current;
-      const box = wrap?.closest("[data-chat-composer]");
-      if (wrap && box) setLift(Math.max(0, wrap.getBoundingClientRect().top - box.getBoundingClientRect().top));
-      setHint("shown");
-    }, 0);
-    const fade = setTimeout(() => setHint("fading"), HINT_MS);
-    return () => {
-      clearTimeout(show);
-      clearTimeout(fade);
-      setHint(null);
-    };
-  }, [recording]);
+  // The press that is held now: when it began, and the pointer that holds it
+  // (null for a key).
+  const held = useRef<{ at: number; pointerId: number | null } | null>(null);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
-  const press = () => {
-    if (!availability.ready) {
-      onNotice(availability.message);
-      return;
-    }
-    if (recording) void voice.stop();
-    else if (phase === "idle") void voice.start();
-  };
+  // The "Hold to talk" popover: 2 s, or the next click elsewhere.
+  const [popover, setPopover] = useState(false);
+  useEffect(() => {
+    if (!popover) return;
+    const timer = setTimeout(() => setPopover(false), POPOVER_MS);
+    const away = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setPopover(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", away);
+    };
+  }, [popover]);
+
+  const begin = useCallback(
+    (pointerId: number | null) => {
+      if (held.current) return;
+      if (!availability.ready) {
+        onNotice(availability.message);
+        return;
+      }
+      if (phaseRef.current !== "idle") return;
+      held.current = { at: Date.now(), pointerId };
+      setPopover(false);
+      void voice.start();
+    },
+    [availability, onNotice, voice],
+  );
+
+  const end = useCallback(
+    (cancelled: boolean) => {
+      const press = held.current;
+      if (!press) return;
+      held.current = null;
+      const outcome = releaseOutcome({
+        heldMs: Date.now() - press.at,
+        cancelled,
+        recording: phaseRef.current === "recording",
+      });
+      if (outcome === "stop") {
+        void voice.stop();
+        return;
+      }
+      voice.cancel();
+      if (outcome === "tap") setPopover(true);
+    },
+    [voice],
+  );
+
   const escape = (e: React.KeyboardEvent) => {
     if (e.key === "Escape" && (recording || phase === "asking")) {
       e.preventDefault();
       e.stopPropagation();
+      held.current = null;
       voice.cancel();
     }
   };
 
   const title = recording
-    ? "Stop recording (Enter). Esc discards."
+    ? "Release to send. Drag off the button or press Esc to discard."
     : !availability.ready && availability.message
       ? availability.message
-      : `Dictate a message. Talk for up to ${MAX_SECONDS / 60} minutes.`;
+      : `${HOLD_TEXT}. Talk for up to ${MAX_SECONDS / 60} minutes.`;
 
   const left = recording ? secondsLeft(voice.elapsed) : null;
   const clock = formatClock(voice.elapsed);
@@ -140,19 +171,14 @@ export default function VoiceInputButton({
             className="pointer-events-none absolute -inset-1 rounded-full border-2 border-primary opacity-30"
           />
         )}
-        {recording && hint && (
+        {popover && (
           <span
-            aria-hidden={hint === "fading"}
-            data-chat-voice-hint=""
-            style={{ marginBottom: lift + 10 }}
-            className={`pointer-events-none absolute bottom-full left-0 z-20 flex w-full justify-center transition-opacity duration-500 motion-reduce:transition-none ${
-              hint === "shown" ? "opacity-100" : "opacity-0"
-            }`}
+            role="status"
+            data-chat-voice-popover=""
+            className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 whitespace-nowrap rounded-lg bg-tooltip px-2.5 py-1.5 text-xs font-medium text-tooltip-foreground shadow-lg"
           >
-            <span role="status" className="absolute bottom-1.5 left-0 whitespace-nowrap rounded-lg bg-tooltip px-2.5 py-1.5 text-xs font-medium text-tooltip-foreground shadow-lg">
-              {HINT_TEXT}
-            </span>
-            <span className="h-2 w-2 rotate-45 bg-tooltip" />
+            {HOLD_TEXT}
+            <span aria-hidden="true" className="absolute -bottom-1 left-3 h-2 w-2 rotate-45 bg-tooltip" />
           </span>
         )}
         <Button
@@ -164,12 +190,42 @@ export default function VoiceInputButton({
           aria-label={voiceLabel(phase)}
           aria-busy={waiting || undefined}
           title={title}
-          onClick={press}
-          onKeyDown={escape}
+          // The press is the pointer or the key. A click that has no press
+          // before it comes from a screen reader, so it shows the popover.
+          onClick={(e) => {
+            if (e.detail === 0 && !held.current && phase === "idle") setPopover(true);
+          }}
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse" && e.button !== 0) return;
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            begin(e.pointerId);
+          }}
+          onPointerUp={(e) => {
+            const off = isOffButton(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), 4);
+            end(off);
+          }}
+          onPointerCancel={() => end(true)}
+          onContextMenu={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            escape(e);
+            if (!isHoldKey(e.key)) return;
+            // Space and Enter would click the button. A hold is not a click.
+            e.preventDefault();
+            if (e.repeat) return;
+            begin(null);
+          }}
+          onKeyUp={(e) => {
+            if (!isHoldKey(e.key)) return;
+            e.preventDefault();
+            if (held.current?.pointerId === null) end(false);
+          }}
+          onBlur={() => end(true)}
           // GL-6: in glass, the mic is a round icon button on the secondary
           // fill, as Attach beside it is. While it records, it is a filled
-          // round primary Stop button. The size comes from `className`.
-          className={`${
+          // round primary button. The size comes from `className`.
+          // Touch: no long-press menu, no text selection, no scroll start.
+          style={{ touchAction: "none", WebkitTouchCallout: "none" }}
+          className={`touch-none select-none ${
             recording
               ? "rounded-full"
               : "rounded-lg p-2 glass:rounded-full glass:p-0 glass:bg-secondary glass:text-foreground glass:hover:bg-muted"
@@ -177,10 +233,8 @@ export default function VoiceInputButton({
         >
           {waiting ? (
             <Icon name="Loader2" size={16} className="animate-spin motion-reduce:animate-none" />
-          ) : recording ? (
-            <Icon name="Square" size={12} strokeWidth={2.5} fill="currentColor" />
           ) : (
-            <Icon name="Mic" size={18} />
+            <Icon name="Mic" size={recording ? 16 : 18} />
           )}
         </Button>
       </span>
@@ -199,19 +253,6 @@ export default function VoiceInputButton({
               </span>
             )}
           </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="none"
-            radius="keep"
-            aria-label="Discard recording"
-            title="Discard recording (Esc)"
-            onClick={() => voice.cancel()}
-            onKeyDown={escape}
-            className={`shrink-0 rounded-full ${className}`}
-          >
-            <Icon name="X" size={16} />
-          </Button>
           <VoiceWave levelRef={voice.levelRef} reduced={reduced} ringRef={ringRef} />
         </>
       )}

@@ -86,9 +86,9 @@ describe("the recorder states", () => {
   });
 
   it("each phase has an accessible name", () => {
-    expect(voiceLabel("idle")).toBe("Dictate a message");
+    expect(voiceLabel("idle")).toBe("Hold to talk");
     expect(voiceLabel("asking")).toBe("Waiting for the microphone");
-    expect(voiceLabel("recording")).toBe("Stop recording");
+    expect(voiceLabel("recording")).toBe("Hold to talk. Release to send");
     expect(voiceLabel("transcribing")).toBe("Transcribing");
   });
 });
