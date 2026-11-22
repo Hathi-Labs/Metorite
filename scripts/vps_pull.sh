@@ -258,12 +258,16 @@ fi
 
 if [ "$MODE" = "check" ]; then
   echo "    BEHIND — $(git rev-list --count HEAD.."origin/$RELEASE_REF") commit(s)"
-  git log --oneline HEAD.."origin/$RELEASE_REF" | head -20
+  # -n 20, not `| head -20`: under pipefail head's early exit SIGPIPEs git (141).
+  git log --oneline -n 20 HEAD.."origin/$RELEASE_REF"
   exit 10
 fi
 
 say "Applying $(git rev-list --count HEAD.."origin/$RELEASE_REF" 2>/dev/null || echo '?') commit(s)"
-git log --oneline HEAD.."origin/$RELEASE_REF" 2>/dev/null | head -20 | sed 's/^/    /'
+# -n 20, not `| head -20`: with more than 20 commits head exits early, git gets
+# SIGPIPE, and pipefail kills the round with 141 before the apply (2026-11-22,
+# 37 commits). Fence: tests/unit/test_vps_pull_pipefail.py.
+git log --oneline -n 20 HEAD.."origin/$RELEASE_REF" 2>/dev/null | sed 's/^/    /'
 
 # --- Read the apply script from the TARGET, not the working tree -------------
 # The apply script's own first act is to synchronise the checkout — which

@@ -12,7 +12,10 @@ import functools
 from typing import Any
 
 from acb_common.db import mark_background, release_background
-from email_ingestion.post_sync import register_post_sync_hooks
+from email_ingestion.post_sync import (
+    classify_one_at_a_time,
+    register_post_sync_hooks,
+)
 from gateway.db import current_tenant
 from gateway.routes.email.core import _get_db, _log, _tenant_session
 
@@ -127,6 +130,39 @@ async def auto_run_rules_for_account(account_id: str) -> None:
     await _run_rules_job(account_id, 50, False, "scheduler")
 
 
+# H-285: mailboxes whose Reply Zero classify runs now. One gateway process
+# holds it, and the sync loop, the webhook and the manual sync all run there.
+# `hold_mailbox` does not fit. It queues a caller, it raises when the wait is
+# too long, and it makes a sync skip. This guard skips the second classify and
+# never blocks a sync.
+_classifying: set[str] = set()
+
+
+async def classify_threads_once(account_id: str) -> None:
+    """Run ``_maybe_classify_threads``, one run for a mailbox at a time.
+
+    With ``email_classify_one_at_a_time`` on, a call for a mailbox that
+    already runs returns at once. That skip loses no work. The running call
+    selects the rows that need a status, and each later cycle selects them
+    again, so a row that the running call misses waits for the next cycle.
+    A different mailbox runs. The guard clears on every exit, a raise and a
+    cancel included. With the flag off, every call runs.
+    """
+    from gateway.routes.email.automation.replyzero import _maybe_classify_threads
+
+    if not classify_one_at_a_time():
+        await _maybe_classify_threads(account_id)
+        return
+    if account_id in _classifying:
+        _log.info("sync.classify_threads_skipped_busy", account_id=account_id)
+        return
+    _classifying.add(account_id)
+    try:
+        await _maybe_classify_threads(account_id)
+    finally:
+        _classifying.discard(account_id)
+
+
 @as_mailbox_owner
 async def process_new_mail(account_id: str) -> None:
     """The shared new-mail pipeline (H1): auto-run rules → sweep the leftovers →
@@ -154,7 +190,6 @@ async def process_new_mail(account_id: str) -> None:
     so new mail is processed identically however it arrived.
     """
     from gateway.routes.email.automation.cleanup import sweep_uncategorized
-    from gateway.routes.email.automation.replyzero import _maybe_classify_threads
     from gateway.routes.email.automation.senders import (
         _categorize_senders_job,
         _maybe_auto_archive,
@@ -187,7 +222,7 @@ async def process_new_mail(account_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         _log.warning("sync.categorize_failed", account_id=account_id, error=str(exc)[:200])
     try:
-        await _maybe_classify_threads(account_id)
+        await classify_threads_once(account_id)
     except Exception as exc:  # noqa: BLE001
         _log.warning("sync.classify_threads_failed", account_id=account_id,
                      error=str(exc)[:200])
@@ -323,9 +358,6 @@ def register_email_post_sync_hooks() -> None:
     from gateway.routes.email.automation.followups import (
         _maybe_send_follow_up_reminders,
     )
-    from gateway.routes.email.automation.replyzero import (
-        _maybe_classify_threads,
-    )
     from gateway.routes.email.digest import _maybe_send_digest
     from gateway.routes.email.transport.sync import _ensure_subscription
 
@@ -333,7 +365,7 @@ def register_email_post_sync_hooks() -> None:
         # Registered separately from process_new_mail so it runs EVERY cycle.
         # It drains a backlog of unclassified threads, so gating it on new mail
         # arriving left a quiet mailbox permanently behind.
-        await _maybe_classify_threads(account_id)
+        await classify_threads_once(account_id)
 
     async def _follow_up(account_id: str) -> None:
         # Follow-up reminders return a small stats dict; the scheduler runs it

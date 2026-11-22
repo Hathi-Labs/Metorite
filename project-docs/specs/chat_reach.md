@@ -39,9 +39,9 @@ workflows, and published skills. Each has limits, listed below.
   solo chat on the web (task 3494). WhatsApp, a shared room and a delegated run
   load none.
 - **One mail rule.** A run that holds a mail pack holds no MCP tool (OA-7b),
-  and that rule stays (D-CSY-5). CSY-4 (task 3403) is not built. It changes
-  only the precedence of a sticky mail pack, when the words of the turn name
-  the server and not mail.
+  and that rule stays (D-CSY-5). CSY-4 (task 3403) is built dark behind
+  `MCP_MAIL_PRECEDENCE_ORGS`. It changes only the precedence of a sticky mail
+  pack, when the words of the turn name the server and not mail.
 - **One narrow finder.** `find_tools` searches the Studio packs only
   (`PACK_ONLY_OWNERS`). It does not find a CRM, mail or MCP tool (WS-TOF,
   task 3203 for MCP).
@@ -86,7 +86,7 @@ several slices). Tier is the review tier of `next-ticket.md`.
 
 | Id | Gap | Evidence | Owner task | Size | Tier | Owner decision | Recommended next slice |
 |---|---|---|---|---|---|---|---|
-| G1 | A turn that holds a mail pack holds no MCP tool (OA-7b, kept by D-CSY-5). A sticky mail pack stays for 8 turns, so a later turn about the server alone also loses it | `_holds_untrusted_pack` returns early in `_inject_mcp_servers` (`_tool_injection.py:4854`, `:4923`) | CSY-4, task 3403 (planned, not built). CSY-1 task 3400 gives the brief | M | HIGH | Yes, D-CSY-2 (default yes) | CSY-4, then CSY-1 (§3.1) |
+| G1 | A turn that holds a mail pack holds no MCP tool (OA-7b, kept by D-CSY-5). A sticky mail pack stays for 8 turns, so a later turn about the server alone also loses it | `_holds_untrusted_pack` returns early in `_inject_mcp_servers` (`_tool_injection.py:4854`, `:4923`) | CSY-4, task 3403 (built dark, 2026-11-21, owner-only flag). CSY-1 task 3400 gives the brief | M | HIGH | Yes, D-CSY-2 (default yes) | CSY-4, then CSY-1 (§3.1) |
 | G2 | Packs, `find_tools` and skills load only in a solo web chat. WhatsApp, a shared room and a delegated run get none | `_start_pack_turn` returns None (`executor.py:2055`) | Task 3494 | M | HIGH | No for the dark build. The flip needs the owner's word | §3.2 |
 | G3 | A skill cannot name an MCP tool or an integration action. It fails to load with `action_unserved` | `skill_packs.action_tool` returns None for any other name (`skill_packs.py:223`) | TOF-5a, task 3423 (3493 records it) | M | HIGH | No (D224 rung 1 covers it) | §3.3 |
 | G4 | The chat does not know what a server holds, and `find_tools` does not list MCP tools | No `CONNECTED_SYSTEMS_ORGS` setting in `settings.py`. The finder owners are `PACK_ONLY_OWNERS` (`tool_packs.py:2985`) | CSY-1 (3400), CSY-5 (3405), CSY-6 (3406), TS-9 (3203) | M each | STANDARD, CSY-6 HIGH | D-CSY-1 and D-CSY-3 (default yes) | Already planned. Do not re-plan |
@@ -112,9 +112,10 @@ through `my_tasks_list_events`. Task 3440 holds this matrix.
 - CSY-10: the running step keeps the server label.
 - MCP-NC1: a member's MCP call asks no card.
 - The CHAT-REACH fences.
-
-CSY-4 is NOT built. CSY-1 is NOT built. `CONNECTED_SYSTEMS_ORGS` and
-`MCP_MAIL_PRECEDENCE_ORGS` do not exist in `settings.py`.
+- CSY-1, CSY-5 and CSY-6: the brief, the reasons line and the server's own
+  instructions, dark behind `CONNECTED_SYSTEMS_ORGS`.
+- CSY-4: a turn that names a server evicts a sticky mail pack, dark behind
+  `MCP_MAIL_PRECEDENCE_ORGS`. Only the owner flips it, after task 3604.
 
 ## 3. The top three slices
 
@@ -124,14 +125,14 @@ reach the model or the screen. The test is `is_authorized("mcp-<name>")`.
 
 ### 3.1 G1: an MCP server reaches a turn that follows a mail turn
 
-CSY-4 (task 3403) is specified in `chat_connected_systems.md` §3.4. This spec
-adds only the reach evidence.
+CSY-4 (task 3403) is specified in `chat_connected_systems.md` §3.4, and it is
+built dark (2026-11-21). This spec adds only the reach evidence.
 
 - **Change:** `choose` in `acb_skills/tool_packs.py` gets one more reason. A
   sticky email pack leaves when the words name a server. A pack that the words
   name stays.
-- **Flag:** `MCP_MAIL_PRECEDENCE_ORGS` (new, dark, empty by default).
-- **Fence:** `tests/unit/test_pack_choose_server_words.py` (new). It proves
+- **Flag:** `MCP_MAIL_PRECEDENCE_ORGS` (dark, empty by default, owner-only).
+- **Fence:** `tests/unit/test_pack_choose_server_words.py`. It proves
   that no run holds a mail pack and an MCP tool together.
 - **Keep:** OA-7b, the mark of a chat that read mail, and the refusal for a
   server that the grant refuses.

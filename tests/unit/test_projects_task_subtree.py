@@ -3,8 +3,9 @@
 The delete dialog and the chat card read their subtasks here. The route shows
 the descendants the caller can see, archived ones too, and counts the hidden
 ones without a title. Both facts must match what ``delete_task_in`` takes with
-``delete_all``. Hermetic: ``load_subtree`` is the real SQL's seam, and R8 holds
-it in ``test_mcp_edge_delete.py``.
+``delete_all``, except a subtask in an archived project, which the delete keeps
+(ARC-2b, ``test_projects_archived_readonly_r8.py``). Hermetic: ``load_subtree``
+is the real SQL's seam, and R8 holds it in ``test_mcp_edge_delete.py``.
 """
 
 from __future__ import annotations
@@ -94,6 +95,12 @@ async def test_delete_route_maps_the_all_flag_to_delete_all(monkeypatch) -> None
     monkeypatch.setattr(tasks, "load_visible_task", load_visible_task)
     monkeypatch.setattr(tasks, "delete_task_in", delete_task_in)
     monkeypatch.setattr(tasks, "emit", emit)
+
+    async def project_open(db, task):
+        return None
+
+    # ARC-2b: this test pins the flag mapping, not the archived-project guard.
+    monkeypatch.setattr(tasks, "assert_task_project_open", project_open)
     tid = str(uuid.uuid4())
     maker = SimpleNamespace(email="maker@subtree.test", has_permission=lambda _p: False)
     await tasks.delete_task(tid, user=maker, delete_subtask_ids=[],

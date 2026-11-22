@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
@@ -255,12 +257,30 @@ def _sync_delete(
         s.commit()
 
 
+@contextmanager
+def _bound(db: Any, organization_id: str | None) -> Iterator[Any]:
+    """The caller's open tenant session *db*, or a new one for this call.
+
+    H-242 (``projects_ai_chat.md`` §22.9): the gateway's new-chat step holds
+    ONE transaction for its lock, its check, the purge and the new row. It
+    passes that session here, so the purge reads and deletes in it, and takes
+    no second connection of the small sync pool. With no *db*, the call opens
+    its own ``tenant_session`` and commits it, as before.
+    """
+    if db is not None:
+        yield db
+        return
+    from acb_graph import tenant_session  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        yield s
+
+
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
     organization_id: str | None = None, session_id: str | None = None,
-    run_rows: bool = False,
+    run_rows: bool = False, db: Any = None,
 ) -> list[dict]:
-    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     sql = (
@@ -279,7 +299,7 @@ def _sync_history(
         sql += f" AND {_RUN_ROW}"
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
-    with tenant_session(organization_id) as s:
+    with _bound(db, organization_id) as s:
         rows = s.execute(text(sql), params).fetchall()
     return [
         {
@@ -309,12 +329,11 @@ _RUN_ROW = (
 
 
 def _sync_session_paths(
-    session_id: str, instance: str, organization_id: str | None,
+    session_id: str, instance: str, organization_id: str | None, db: Any = None,
 ) -> list[tuple[str, str]]:
-    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with tenant_session(organization_id) as s:
+    with _bound(db, organization_id) as s:
         rows = s.execute(
             text(
                 "SELECT DISTINCT agent_name, path FROM agent_file_history "
@@ -329,13 +348,12 @@ def _sync_session_paths(
 def _sync_purge(
     instance: str, organization_id: str | None, *,
     prefixes: tuple[str, ...], paths: tuple[tuple[str, str], ...],
-    session_id: str | None,
+    session_id: str | None, db: Any = None,
 ) -> int:
-    from acb_graph import tenant_session
     from sqlalchemy import text
 
     gone = 0
-    with tenant_session(organization_id) as s:
+    with _bound(db, organization_id) as s:
         for prefix in prefixes:
             # left() and not LIKE: a slug may hold '_', which LIKE reads as
             # any one character.
@@ -364,7 +382,8 @@ def _sync_purge(
                 ),
                 {"sid": session_id, "i": instance},
             ).rowcount or 0
-        s.commit()
+        if db is None:
+            s.commit()  # A caller's session commits with the caller.
     return gone
 
 
@@ -474,7 +493,7 @@ async def delete_file(
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
     *, instance: str = "", organization_id: str | None = None,
-    session_id: str | None = None, run_rows: bool = False,
+    session_id: str | None = None, run_rows: bool = False, db: Any = None,
 ) -> list[dict]:
     """Version history for one agent instance, newest first.
 
@@ -482,13 +501,14 @@ async def file_history(
     *run_rows* only the rows of a run with no chat (``_RUN_ROW``). The
     gateway's session routes ask for them, to tell which loose file of a
     shared agent's tenant dir a session wrote, or a batch run wrote (H-227).
+    *db* is an open tenant session of the caller (:func:`_bound`, H-242).
     """
     if not agent_name:
         return []
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
-            _caller_tenant(organization_id), session_id, run_rows,
+            _caller_tenant(organization_id), session_id, run_rows, db,
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
@@ -497,6 +517,7 @@ async def file_history(
 
 async def session_paths(
     session_id: str, *, instance: str, organization_id: str | None = None,
+    db: Any = None,
 ) -> list[tuple[str, str]]:
     """``(agent, path)`` of each ``inputs/`` or ``outputs/`` path that one chat
     session wrote, under *instance* or the older ``''`` key.
@@ -509,14 +530,14 @@ async def session_paths(
     if not session_id:
         return []
     return await asyncio.to_thread(
-        _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
+        _sync_session_paths, session_id, instance, _caller_tenant(organization_id), db,
     )
 
 
 async def purge_files(
     *, instance: str, organization_id: str | None = None,
     prefixes: tuple[str, ...] = (), paths: tuple[tuple[str, str], ...] = (),
-    session_id: str | None = None,
+    session_id: str | None = None, db: Any = None,
 ) -> int:
     """Delete stored files AND their history, for a deleted chat (H-227).
 
@@ -531,11 +552,12 @@ async def purge_files(
     Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
     from a client, and a row that names it would hand the next owner of the
     id its files. Returns the rows deleted. Raises on a database error, so
-    the caller can log that the purge did not finish.
+    the caller can log that the purge did not finish. With *db* (H-242) the
+    deletes run in the caller's open transaction, and the caller commits.
     """
     return await asyncio.to_thread(
         _sync_purge, instance, _caller_tenant(organization_id),
-        prefixes=tuple(prefixes), paths=tuple(paths), session_id=session_id,
+        prefixes=tuple(prefixes), paths=tuple(paths), session_id=session_id, db=db,
     )
 
 
