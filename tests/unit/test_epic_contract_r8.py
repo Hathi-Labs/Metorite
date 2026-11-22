@@ -38,8 +38,10 @@ Run::
 * M4. ``E/tools.py``: ``_get_task`` drops ``epic_contract``.
   ``test_get_task_over_the_real_edge_returns_the_contract``.
 * M5. The migration loses ``trg_pm_epic_contracts_same_org``.
-  ``test_the_database_refuses_a_contract_across_tenants`` and
-  ``test_the_numbered_migration_writes_its_policy_and_its_guard``.
+  ``test_the_numbered_migration_writes_its_policy_and_its_guard``. Since
+  task 2324 (470 at build, 471 at merge) the 161 trigger refuses each cross-tenant write
+  of ``test_the_database_refuses_a_contract_across_tenants`` first, so M5
+  leaves that test green. Its fence is ``test_pm_org_from_parent_r8.py``.
 * M6. ``G/epic_contract.py``: ``epic_contract_of`` skips ``task_is_epic``.
   ``test_a_row_stays_when_the_type_changes_and_the_reads_ignore_it``.
 * M7. ``G/epic_contract.py``: ``_require_version`` gives an agent the member
@@ -102,6 +104,8 @@ EVE = "eve@other-org.test"
 _APP_ROLE = "acb_app_sp8epic"
 _APP_PW = "sp8epic_scratch_pw"
 ROUTE = "/projects/tasks/{}/epic-contract"
+#: The 471 refusal of the 161 trigger, or the 402 guard `_same_org`.
+_TENANT_REFUSAL = r"is not a (row|task) of this organization"
 
 
 def _migration() -> str:
@@ -747,7 +751,7 @@ class TestThePinAndTheTenant:
                     {"t": live.foreign_epic}).scalar()
                 assert seen == 0
             for org in (live.org, live.org2):
-                with pytest.raises(DBAPIError), app.begin() as c:
+                with pytest.raises(DBAPIError, match=_TENANT_REFUSAL), app.begin() as c:
                     c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
                               {"o": live.org})
                     c.execute(text(
@@ -755,7 +759,7 @@ class TestThePinAndTheTenant:
                         " VALUES (CAST(:t AS uuid), CAST(:o AS uuid), '[]'::jsonb)"),
                         {"t": live.foreign_epic, "o": org})
             # A row of my own task in the other org is refused too.
-            with pytest.raises(DBAPIError), app.begin() as c:
+            with pytest.raises(DBAPIError, match=_TENANT_REFUSAL), app.begin() as c:
                 c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": live.org2})
                 c.execute(text(
                     "INSERT INTO pm_epic_contracts (task_id, acceptance)"
@@ -924,7 +928,7 @@ class TestTheRepairs:
         monkeypatch.setattr(chat_client, "httpx", SimpleNamespace(
             AsyncClient=lambda **kw: httpx.AsyncClient(transport=transport, **kw)))
         monkeypatch.setattr(chat_client, "gateway_url", lambda: "http://gateway.test")
-        monkeypatch.setattr(chat_client, "internal_token", lambda: t.INTERNAL)
+        monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", t.INTERNAL)
         monkeypatch.setattr(chat_client, "current_user_email", lambda: MEMBER)
         ticked = {"outcome": "First", "acceptance": [
             {"text": c["text"], "done": i == 0, "evidence": "PR 42" if i == 0 else None}
