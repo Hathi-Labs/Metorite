@@ -72,6 +72,11 @@ fixture hashes the ladder files, so the next run builds a new template.
   (SW-107's key). The block count, the attachment fence, the guard fence, the
   two cross-org INSERT probes and the UPDATE probe of
   ``pm_agent_runs.dispatched_by_run_id`` go red (6). Run 2026-11-22.
+* M5. Remove the attachment ``trg_pm_agent_runs_same_org_parent_run_id``
+  (SW-39's key, 475). The block count, the attachment fence, the guard fence,
+  the two cross-org INSERT probes, the UPDATE probe of
+  ``pm_agent_runs.parent_run_id`` and the cross-org child test go red (7).
+  Run 2026-11-22.
 """
 
 from __future__ import annotations
