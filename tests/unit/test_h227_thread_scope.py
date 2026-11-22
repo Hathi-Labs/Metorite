@@ -514,6 +514,177 @@ def test_a_run_prepares_a_thread_with_no_row_or_no_room(monkeypatch) -> None:
     assert calls == ["t-1", "t-2", "t-3"], calls
 
 
+class _Result:
+    rowcount = 0
+
+    def fetchall(self) -> list:
+        return []
+
+    def first(self) -> None:
+        return None
+
+
+class _Session:
+    """A stand-in for a bound sync session. It records each statement."""
+
+    def __init__(self, log: list) -> None:
+        self.log = log
+
+    def execute(self, stmt: Any, params: Any = None) -> _Result:
+        self.log.append(("sql", " ".join(str(stmt).split()), dict(params or {})))
+        return _Result()
+
+    def commit(self) -> None:
+        self.log.append(("commit",))
+
+
+def _fake_step(monkeypatch: pytest.MonkeyPatch, *, exists: bool) -> list:
+    """Wire ``chat.open_new_session`` to fakes: the tenant session, the row
+    check and the purge. Returns the log of what ran, in order."""
+    import contextlib
+
+    import acb_graph
+    from gateway.routes import chat, workspace
+
+    log: list = []
+
+    @contextlib.contextmanager
+    def tenant_session(org: Any) -> Any:
+        log.append(("begin", org))
+        try:
+            yield _Session(log)
+        except BaseException:
+            log.append(("rollback",))
+            raise
+        log.append(("end-commit",))
+
+    def check(s: Any, sid: str) -> bool:
+        log.append(("check", sid))
+        return exists
+
+    async def purge(sid: str, org: Any, **kw: Any) -> None:
+        log.append(("purge", sid, kw.get("db")))
+
+    monkeypatch.setattr(acb_graph, "tenant_session", tenant_session)
+    monkeypatch.setattr(chat, "_refuse_if_elsewhere", check)
+    monkeypatch.setattr(workspace, "purge_thread_files", purge)
+    return log
+
+
+def test_the_new_chat_step_locks_checks_purges_and_inserts_in_one_transaction(
+    monkeypatch,
+) -> None:
+    """H-242 step 3, with no database. ``open_new_session`` takes the lock of
+    the id, checks for the row, purges in the SAME session, and inserts, all
+    before the one commit. The R8 race test proves the lock on Postgres."""
+    from gateway.routes import chat
+
+    log = _fake_step(monkeypatch, exists=False)
+    made = asyncio.run(chat.open_new_session(
+        "c-1", ORG_A, insert=lambda s: log.append(("insert", s))))
+    assert made is True
+    kinds = [e[0] if e[0] != "sql" else e[1].split("(")[0] for e in log]
+    assert kinds == ["begin", "SELECT set_config", "SELECT pg_advisory_xact_lock",
+                     "check", "purge", "insert", "end-commit"], log
+    assert "hashtextextended(:id, 0)" in log[2][1] and log[2][2] == {"id": "c-1"}
+    session = log[-2][1]
+    assert log[4][2] is session, "the purge ran in another session"
+
+
+def test_the_new_chat_step_purges_nothing_when_the_row_exists(monkeypatch) -> None:
+    """The door that comes second finds the row under the lock. It purges
+    nothing, inserts nothing, and answers False."""
+    from gateway.routes import chat
+
+    log = _fake_step(monkeypatch, exists=True)
+    made = asyncio.run(chat.open_new_session(
+        "c-1", ORG_A, insert=lambda s: log.append(("insert", s))))
+    assert made is False
+    assert not [e for e in log if e[0] in ("purge", "insert")], log
+
+
+@pytest.mark.parametrize(("sid", "status"), [("a:b", 400), ("c-1", 503)])
+def test_a_refused_new_chat_step_rolls_back(monkeypatch, sid, status) -> None:
+    """A colon id answers 400. A failed insert answers 503. Either way the
+    transaction rolls back, so no row and no lock stay."""
+    from fastapi import HTTPException
+    from gateway.routes import chat
+
+    log = _fake_step(monkeypatch, exists=False)
+
+    def broken(_s: Any) -> None:
+        raise RuntimeError("the insert failed")
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(chat.open_new_session(sid, ORG_A, insert=broken))
+    assert refused.value.status_code == status
+    assert log[-1] == ("rollback",), log
+
+
+def test_the_store_runs_in_the_callers_session_and_never_commits_it(monkeypatch) -> None:
+    """H-242 step 3: with ``db=`` the purge reads and deletes in the caller's
+    session, opens none of its own, and leaves the commit to the caller."""
+    import acb_graph
+    import acb_memory.blob_store as bs
+
+    def no_session(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the store opened its own session")
+
+    monkeypatch.setattr(acb_graph, "tenant_session", no_session)
+    log: list = []
+    db = _Session(log)
+    assert bs._sync_session_paths("c-1", "o:x", ORG_A, db) == []
+    assert bs._sync_history("a", "outputs/x", 10, "o:x", ORG_A, None, False, db) == []
+    bs._sync_purge("o:x", ORG_A, prefixes=("outputs/s/",), paths=(("a", "outputs/x"),),
+                   session_id="c-1", db=db)
+    assert log and ("commit",) not in log, log
+
+
+def test_the_purge_takes_a_file_the_chat_began_whoever_wrote_last(monkeypatch, tmp_path) -> None:
+    """H-242 step 2, with no database. The chat began a loose file, and Bob's
+    session wrote its newest bytes. The purge deletes the file on disk and
+    names its path to the store, so every row at the path goes. A file that
+    another session began stays. The R8 test runs the same case on Postgres."""
+    import acb_memory
+    from gateway.routes import workspace
+
+    ws = tmp_path / _S / "o-x"
+    (ws / "outputs").mkdir(parents=True)
+    for name in ("rw.md", "bobs.md"):
+        (ws / "outputs" / name).write_bytes(b"ALICE + BOB")
+    history = {
+        "outputs/rw.md": [
+            {"session_id": "c-1", "action": "create", "created_at": "2026-11-22 09:00:00+00:00"},
+            {"session_id": "s-bob", "action": "modify", "created_at": "2026-11-22 09:05:00+00:00"},
+        ],
+        "outputs/bobs.md": [
+            {"session_id": "s-bob", "action": "create", "created_at": "2026-11-22 09:00:00+00:00"},
+            {"session_id": "c-1", "action": "modify", "created_at": "2026-11-22 09:05:00+00:00"},
+        ],
+    }
+    sent: dict[str, Any] = {}
+
+    async def session_paths(*_a: Any, **_k: Any) -> list:
+        return [(_S, p) for p in history]
+
+    async def file_history(_agent: str, path: str, *_a: Any, instance: str = "", **_k: Any) -> list:
+        return history[path] if instance else []
+
+    async def purge_files(**kw: Any) -> int:
+        sent.update(kw)
+        return 0
+
+    monkeypatch.setattr(acb_memory, "session_paths", session_paths)
+    monkeypatch.setattr(acb_memory, "file_history", file_history)
+    monkeypatch.setattr(acb_memory, "purge_files", purge_files)
+    monkeypatch.setattr(workspace, "_tenant_dirs", lambda _org: [ws])
+    asyncio.run(workspace.purge_thread_files("c-1", ORG_A))
+    assert not (ws / "outputs" / "rw.md").exists(), "the purge kept a file that the chat began"
+    assert (_S, "outputs/rw.md") in sent["paths"], sent
+    assert (ws / "outputs" / "bobs.md").exists(), "the purge took a file that Bob began"
+    assert (_S, "outputs/bobs.md") not in sent["paths"], sent
+
+
 @pytest.mark.parametrize("door", ["sync", "async"])
 def test_both_run_doors_with_no_stream_call_the_guard(monkeypatch, door) -> None:
     """``POST /agent/run`` and ``/agent/run/async`` call ``_guard_run_thread``
