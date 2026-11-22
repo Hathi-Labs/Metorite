@@ -4692,6 +4692,8 @@ chat answered that it could not read the files of a mail.
 
 **EM-T11 slot gap closed (2026-11-22, H-253).** The hold of a member (`_ReadHold`) now ends when the parse worker gives its slot back. `parse_bounded` takes `on_worker_done`, and the route passes `hold.release`. A parse past its deadline still answers "took too long", and its member cannot start a second read until the worker ends.
 
+**The release runs on the loop (2026-11-22, task 3888).** The thread of the parse worker calls `hold.release`. The release now goes to the event loop of the hold with `call_soon_threadsafe`, so a read that waits wakes at once. A release after that loop closed drops the hold and logs the error class. Fence: `test_email_attachment_text.py::TestTheReleaseFromTheWorkerThread`.
+
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It adds one read route and one agent tool. The
 route reads mail of the member, so it takes the full review loop and a security review.
 
