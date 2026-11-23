@@ -73,6 +73,7 @@
       "tests/unit/test_fence_lists.py",
       "tests/unit/test_gtd_backfill.py",
       "tests/unit/test_gtd_rename_upgrade.py",
+      "tests/unit/test_import_discard_tables.py",
       "tests/unit/test_import_no_network.py",
       "tests/unit/test_kb_one_index.py",
       "tests/unit/test_kb_visibility_one_seam.py",

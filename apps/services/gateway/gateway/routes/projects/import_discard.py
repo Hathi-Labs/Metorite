@@ -117,6 +117,13 @@ UPDATED_LATER_SQL = (
 #: `updated_at`, and neither does a watch, an attachment, a link or a board
 #: position. Every one of those rows cascades with the task, so each is read.
 #: The import writes none of them after it ends, and no personal row at all.
+#:
+#: Task 2516: an agent run and a place in a cycle write no activity either.
+#: An agent that claims or starts a run for its member writes the run row
+#: only (`agent_runs.open_run_for_claim`). A member who adds a task to a cycle
+#: writes the cycle row only (`cycles.add_cycle_task`). The import writes
+#: neither table, and its batches commit before the run ends, so any row
+#: counts, with no test of its time.
 EDITED_SQL = (
     "SELECT t.id, t.title FROM pm_tasks t "
     " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = CAST(:run AS text) "
@@ -137,7 +144,9 @@ EDITED_SQL = (
     "        OR EXISTS (SELECT 1 FROM pm_task_links x "
     "                    WHERE (x.source_task_id = t.id OR x.target_task_id = t.id) "
     "                      AND x.created_at > CAST(:finished AS timestamptz)) "
-    "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id)) "
+    "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id) "
+    "        OR EXISTS (SELECT 1 FROM pm_agent_runs x WHERE x.task_id = t.id) "
+    "        OR EXISTS (SELECT 1 FROM pm_cycle_tasks x WHERE x.task_id = t.id)) "
     " LIMIT :n"
 )
 #: Rule 3 — a member added a task or a node inside a node this run made.
@@ -181,6 +190,8 @@ IMPORT_WRITES = ("pm_task_statuses", "pm_task_types", "pm_tags")
 NODE_TABLES_IGNORED = ("pm_task_counters",)
 #: The tables that CASCADE with a task, and what rule 2 does with each. The
 #: live test reads the catalog and fails on one that is in neither list.
+#: `test_import_discard_tables.py` reads the migrations and fails on one too,
+#: with no database.
 TASK_TABLES_CHECKED = (
     "pm_activities",
     "pm_task_personal",
@@ -188,6 +199,10 @@ TASK_TABLES_CHECKED = (
     "pm_task_attachments",
     "pm_task_links",
     "pm_view_task_positions",
+    # Task 2516: an agent's claim or start of a run writes no activity.
+    "pm_agent_runs",
+    # Task 2516: a member's add of a task to a cycle writes no activity.
+    "pm_cycle_tasks",
 )
 TASK_TABLES_IGNORED: dict[str, str] = {
     "pm_task_assignees": "an assignment by a member writes an activity, which rule 2 reads",
@@ -195,6 +210,12 @@ TASK_TABLES_IGNORED: dict[str, str] = {
     "pm_intake": "an intake item a member converted names a task the member made",
     # SP-8a: a save of a contract that changes it writes a field_change.
     "pm_epic_contracts": "a contract save by a member writes a field_change activity, which rule 2 reads",
+    # Task 2516. `refs.insert_ref` is the one insert, and `delete_ref` the one delete.
+    "pm_task_refs": "an add or a remove of a reference writes a link activity, which rule 2 reads",
+    # Task 2516. `agent_runs._write_activity` copies the task of the run.
+    "pm_agent_run_activities": "each row hangs off a pm_agent_runs row of the same task, which rule 2 reads",
+    # Task 2516. `agent_run_sweep._FIRST_MISS_SQL` is the one insert.
+    "pm_agent_run_strands": "the sweep writes it, never a member, and it hangs off a pm_agent_runs row of the same task",
 }
 
 

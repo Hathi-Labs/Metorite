@@ -7,7 +7,8 @@ Spec `project-docs/specs/project_import.md` §6.9 "Discard", §9 row I-6 · **D8
 1. A discard removes exactly the run's tasks and nodes. The delta feed gets a
    tombstone for every task, and the run is `discarded`.
 2. A member's edit on one of the run's tasks refuses the discard, names the
-   task, and deletes nothing.
+   task, and deletes nothing. So do a personal triage, an agent run and a
+   place in a cycle, which write no activity (task 2516).
 3. A member's node inside a space the run created refuses the discard.
 4. An update run on top of an earlier run: the earlier run refuses while the
    later one stands. The later run's discard removes its comment on the
@@ -344,6 +345,49 @@ async def refusals(org: str, bundle: object, raw: bytes) -> None:
     )
     async with tenant_session(org) as db:
         await db.execute(text("DELETE FROM pm_task_personal WHERE task_id = :t"), {"t": task})
+        # Task 2516: an agent that claims a task for its member writes the run
+        # row and no activity (`agent_runs.open_run_for_claim`).
+        await db.execute(
+            text(
+                "INSERT INTO pm_agent_runs (task_id, member_email, client_via, status, started_by) "
+                "VALUES (:t, :who, 'mcp:live-discard', 'in_progress', 'mcp:live-discard')"
+            ),
+            {"t": task, "who": ADMINS[org]},
+        )
+    _, refused = await discard(org, run)
+    check(
+        "2.5 an agent run on a task refuses the discard, and names the task",
+        refused is not None and any(b["id"] == str(task) for b in refused.blocking),
+        refused.message if refused else "not refused",
+    )
+    async with tenant_session(org) as db:
+        await db.execute(text("DELETE FROM pm_agent_runs WHERE task_id = :t"), {"t": task})
+        # Task 2516: a member who adds a task to a cycle writes the cycle row
+        # and no activity (`cycles.add_cycle_task`).
+        cycle = (
+            await db.execute(
+                text(
+                    "INSERT INTO pm_cycles (project_id, name, starts_on, ends_on, created_by) "
+                    "SELECT project_id, 'Sprint 1', current_date, current_date + 13, :who "
+                    "  FROM pm_tasks WHERE id = :t RETURNING id"
+                ),
+                {"t": task, "who": ADMINS[org]},
+            )
+        ).scalar()
+        await db.execute(
+            text("INSERT INTO pm_cycle_tasks (cycle_id, task_id, added_by) VALUES (:c, :t, :who)"),
+            {"c": cycle, "t": task, "who": ADMINS[org]},
+        )
+    _, refused = await discard(org, run)
+    check(
+        "2.6 a place in a cycle refuses the discard, and names the task",
+        refused is not None and any(b["id"] == str(task) for b in refused.blocking),
+        refused.message if refused else "not refused",
+    )
+    check("2.7 the refusals delete nothing", await run_tasks(org, run) == 2423)
+    async with tenant_session(org) as db:
+        # The cycle row of the task goes with the cycle.
+        await db.execute(text("DELETE FROM pm_cycles WHERE id = :c"), {"c": cycle})
     counts, refused = await discard(org, run)
     check(
         "3.4 with the member work gone, the same run discards",

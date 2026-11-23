@@ -2,6 +2,8 @@
 
 **Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28. I-8 (the Spaces step and unknown columns) is built, and I-5 is deferred. I-10 (one status set per space, a Map section that opens on a summary) is built, 2026-10-09 (§6.3, §7.7). I-10b (status and stage made plain) is built, 2026-10-09 (§7.7). I-11 (tags and types into the shared vocabulary) is spec only (§6.5), and so are the other tools.**
 
+**Status of task 2516 (2026-11-23): built, not merged.** Discard rule 2 reads agent runs and cycle places (§6.9).
+
 Owner directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. The I-10 anchors
 were verified against code on 2026-10-09 at `807be57cb`, and the I-10b
@@ -855,7 +857,8 @@ themselves, uploaded as a ZIP.
      than the end of the last import that wrote it, or it has a comment or
      activity that no import wrote. A personal triage, an attachment or a
      board position counts, and so does a watch or a link made after the
-     run.
+     run. An agent run on the task and a place in a cycle count too (task
+     2516). These write no activity, and the import writes neither.
   3. A member added work inside a node this run created: a task or a node
      that no run created, a rename, or a row made after the run in a table
      that cascades with a node. Those tables are views, reports, custom
@@ -884,7 +887,9 @@ themselves, uploaded as a ZIP.
   left open hides nothing (check 3.5). The one gap is a member's status, type,
   tag or watch made while a related import was writing, which is minutes.
   A table that cascades with a task and is in neither list of
-  `import_discard.py` fails check 0.2.
+  `import_discard.py` fails check 0.2. `test_import_discard_tables.py` reads
+  the migrations and fails on it too, with no database. Each ignored table
+  carries its reason in the list.
 
 ### 6.10 Side effects that stay off
 
