@@ -830,13 +830,6 @@ line — never reclaim a number by deleting the other entry.
   correlated subquery. Two different statements.
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
-### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
-- **Metorite:** #496. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
-  → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
-  `_plan` checks `compatible()` for each entry and never checks `claimed`.
-- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
-
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
 - **Metorite:** #485. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
