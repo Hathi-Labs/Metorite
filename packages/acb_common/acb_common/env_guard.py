@@ -214,6 +214,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # crm_platform.md CRM-Q30c (task 3868): the orgs whose CRM read tools say
+    # how old the Zoho mirror of a module is. It changes what the chat reads
+    # for the org, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MIRROR_AGE_ORGS",
     # semantic_model.md SEM-7: the orgs where the CRM plan checks the kinds
     # measure, join and query, and org_facts serves them. It changes what the
     # chat reads for the org, so only the operator writes it.
@@ -398,6 +403,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # changes what each member of the org sees, so only the operator writes
     # it (proactive_loop.md §7.2).
     "MY_DAY_LEARN_ORGS",
+    # LOOP-9: the shadow gate of a new nudge kind. It decides which kinds reach
+    # a member, so only the operator writes it (proactive_loop.md).
+    "PROACTIVE_KIND_MODES", "PROACTIVE_KIND_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",
