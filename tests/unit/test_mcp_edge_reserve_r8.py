@@ -28,7 +28,12 @@ The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
   ``test_r3_a_pinned_connection_reserves_only_in_its_pins`` turns red: the
   pinned connection reserves in project TWO.
 * Take the reserve pair out of ``MCP_WRITE_ROUTES``, and
-  ``test_r1_two_calls_get_one_and_two`` turns red: branch 0 refuses the pair.
+  ``test_r1_two_calls_get_one_and_two`` turns red: the edge client refuses the
+  pair before it signs a call (``gateway_client._path``). Branch 0 holds the
+  same list, and ``test_r4`` sends the signed POST past the edge.
+* Drop the agent narrowing of ``load_visible_project`` only, and
+  ``test_r8_a_pin_on_a_subproject_does_not_reach_its_parent`` turns red: the
+  task loads, and only the project load can refuse.
 """
 from __future__ import annotations
 
@@ -108,6 +113,18 @@ def world():
     for key in ("one", "two"):
         p[key] = a.project(key.title(), in_space=True)
         t[key] = a.task(p[key], a.status(p[key], "To do", "todo", 0), key)
+    # SUB is a child of ONE. A connection pinned to SUB sees the task of SUB,
+    # and must not reserve in the sequence of ONE (review P3).
+    p["sub"] = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses, parent_project_id) VALUES ('Sub', 'active', 'manual',"
+        " :a, CAST(:o AS uuid), 'Asia/Kolkata', true, CAST(:par AS uuid)) RETURNING id",
+        a=w.OWNER, o=org, par=p["one"]))
+    a.one("INSERT INTO pm_project_grants (project_id, subject, created_by, organization_id)"
+          " VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid)) RETURNING project_id",
+          p=p["sub"], s=MEMBER, a=w.OWNER, o=org)
+    a.root_of[p["sub"]] = a.root(p["one"])
+    t["sub"] = a.task(p["sub"], a.status(p["sub"], "To do", "todo", 0), "sub")
     run = str(a.one(
         "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via,"
         " status, started_by) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :m, 'mcp:test',"
@@ -123,6 +140,8 @@ def world():
     world_.c["pinned"], world_.tok["pinned"] = a.connection(
         scopes=("projects:write",), pins=(p["one"],))
     world_.c["read"], world_.tok["read"] = a.connection(scopes=("projects:read",))
+    world_.c["sub"], world_.tok["sub"] = a.connection(
+        scopes=("projects:write",), pins=(p["sub"],))
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -252,3 +271,16 @@ class TestReserveNumberOnARealDatabase:
         result = await _reserve(live, "write", "one", "two", "r7")
         assert _refused(result, tools.TEXT_RESERVE_NOT_IN_PROJECT), result
         assert _rows(live, "r7") == []
+
+    async def test_r8_a_pin_on_a_subproject_does_not_reach_its_parent(self, live):
+        """Review P3. The task of SUB is in the pins and in the subtree of
+        ONE, so the task load passes. Only the project load refuses ONE."""
+        refused = await _reserve(live, "sub", "one", "sub", "r8")
+        assert _refused(refused, tools.TEXT_RESERVE_NOT_FOUND), refused
+        assert _rows(live, "r8") == []
+        own = await _reserve(live, "sub", "sub", "sub", "r8")
+        assert own["isError"] is False, own
+        assert own["structuredContent"]["value"] == 1
+        # The unpinned connection may use the parent's sequence for the task.
+        parent = await _reserve(live, "write", "one", "sub", "r8p")
+        assert parent["structuredContent"]["value"] == 1

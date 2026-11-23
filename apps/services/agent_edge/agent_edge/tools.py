@@ -6233,8 +6233,8 @@ _RESERVE_INPUT: dict[str, Any] = {
                     "description": "The task that the number is for. It must be"
                                    " in the project or in a subproject."},
         "run_id": {"type": "string", "pattern": _UUID_PATTERN,
-                   "description": "Optional. Your agent run on that task, from"
-                                  " claim_task or start_agent_run."},
+                   "description": "Optional. An agent run on that task, from"
+                                  " claim_task or start_agent_run. Send your own."},
     },
     "required": ["project_id", "sequence", "task_id"],
     "additionalProperties": False,
