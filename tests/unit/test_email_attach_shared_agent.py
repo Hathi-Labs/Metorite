@@ -70,6 +70,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -302,14 +303,14 @@ def routes(monkeypatch) -> dict[str, Any]:
     async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
         yield SimpleNamespace(provider=_Provider())
 
-    async def _no_signature(*_a: Any, **_k: Any) -> str:
-        return ""
-
     from gateway.routes.email import signature
+
+    async def _no_signature(*_a: Any, **_k: Any) -> Any:
+        return signature.SignatureForms(stored="", full="")
 
     monkeypatch.setattr(send, "_tenant_session", _session)
     monkeypatch.setattr(send, "provider_session", _provider_session)
-    monkeypatch.setattr(signature, "resolve_signature_for_send", _no_signature)
+    monkeypatch.setattr(signature, "signature_forms", _no_signature)
     return sent
 
 
@@ -743,7 +744,7 @@ async def test_a_draft_save_refuses_a_bare_chat_path(disk, monkeypatch) -> None:
 
     monkeypatch.setattr(dr, "_tenant_session", _session)
     monkeypatch.setattr(dr, "_assert_account_owner", nothing)
-    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "_account_forms", AsyncMock(return_value=dr._NO_FORMS))
     monkeypatch.setattr(dr, "provider_session", _provider_session)
     rel = disk.rel(disk.s_alice, "q3/deep.pdf")
     for ref in ({"path": rel}, {"agent": "orchestrator", "path": rel}):

@@ -563,7 +563,7 @@ def route(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     monkeypatch.setattr(dr, "_tenant_session", session)
     monkeypatch.setattr(dr, "_assert_account_owner", nothing)
-    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "_account_forms", AsyncMock(return_value=dr._NO_FORMS))
     monkeypatch.setattr(dr, "provider_session", provider_session)
     monkeypatch.setattr(dr, "_upsert_local_draft", upsert)
     monkeypatch.setattr(dr, "_fetch_message_dict", fetch)

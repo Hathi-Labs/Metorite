@@ -300,7 +300,8 @@ class TestTheResolverOnRealSql:
         try:
             async with tenant_engine_scope(_app_dsn(promoted)):
                 async with _tenant_session() as db:
-                    drafted = await drafting._account_signature(db, acc)
+                    drafted = drafting.draft_form(
+                        await drafting._account_forms(db, acc), "")
                     _, about_sig = await assistant_mod._load_assistant_about(db, acc)
                 got = await assistant_mod.get_assistant_settings(account_id=acc, user=user)
                 put = await assistant_mod.put_assistant_settings(

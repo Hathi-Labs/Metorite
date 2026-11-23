@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.routes import email as m
+from gateway.routes.email.signature import SignatureForms
 
 from tests.unit._email_fakes import bind_db
 
@@ -407,8 +408,8 @@ async def test_learn_from_sent_is_signature_insensitive() -> None:
         MagicMock(),  # DELETE of the consumed draft row
     ]
     with patch.object(_drafting, "_tenant_session", bind_db(db)), \
-            patch.object(_drafting, "_account_signature",
-                         AsyncMock(return_value="Best,\nVijay")), \
+            patch.object(_drafting, "_account_forms", AsyncMock(return_value=SignatureForms(
+                stored="Best,\nVijay", full="Best,\nVijay"))), \
             patch.object(_drafting, "_llm_extract_reply_memories", fake_extract):
         await _drafting._learn_from_sent(
             "acc", "t1", "Hi A,\n\nThanks!\n\nBest,\nVijay")

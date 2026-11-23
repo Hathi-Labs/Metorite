@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from gateway.routes.email.automation import draft_files as df
@@ -330,7 +331,7 @@ async def test_a_saved_reply_draft_keeps_every_to(monkeypatch) -> None:
 
     monkeypatch.setattr(dr, "_tenant_session", session)
     monkeypatch.setattr(dr, "_assert_account_owner", nothing)
-    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "_account_forms", AsyncMock(return_value=dr._NO_FORMS))
     monkeypatch.setattr(dr, "provider_session", provider_session)
     monkeypatch.setattr(dr, "_reply_to_list", two)
     monkeypatch.setattr(dr, "_upsert_local_draft", upsert)

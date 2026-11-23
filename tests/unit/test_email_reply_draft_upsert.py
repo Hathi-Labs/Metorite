@@ -188,10 +188,10 @@ class _Imap(_Outlook):
 
 @pytest.fixture(autouse=True)
 def _no_signature(monkeypatch) -> None:
-    async def sig(_db: Any, _aid: str) -> str:
-        return ""
+    async def no_forms(_db: Any, _aid: str) -> Any:
+        return drafting._NO_FORMS
 
-    monkeypatch.setattr(drafting, "_account_signature", sig)
+    monkeypatch.setattr(drafting, "_account_forms", no_forms)
 
 
 async def _write(db: _Db, provider: Any, body: str = "New chat text",

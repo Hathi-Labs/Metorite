@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acb_auth.roles import UserContext, UserRole
@@ -506,7 +506,7 @@ async def test_the_route_keeps_the_body_when_asked(monkeypatch, gmail, sent_body
 
     monkeypatch.setattr(dr, "_tenant_session", session)
     monkeypatch.setattr(dr, "_assert_account_owner", nothing)
-    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "_account_forms", AsyncMock(return_value=dr._NO_FORMS))
     monkeypatch.setattr(dr, "provider_session", provider_session)
     monkeypatch.setattr(dr, "_upsert_local_draft", upsert)
     monkeypatch.setattr(dr, "_html_to_keep", html)

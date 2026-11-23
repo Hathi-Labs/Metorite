@@ -141,10 +141,10 @@ async def test_no_row_resolves_to_the_stored_bytes_unchanged(
         _flag(monkeypatch, value)
         db = _Db(stored)
         assert await sig.resolve_signature(db, _ACC, kind) == _main_bytes(stored)
-        assert await sig.resolve_signature_for_send(db, _ACC, kind, _REPLY) == (
-            _main_bytes(stored))
         forms = await sig.signature_forms(db, _ACC)
+        assert forms.for_body(kind, _REPLY) == _main_bytes(stored)
         assert forms.stored == forms.of(kind) == _main_bytes(stored)
+        assert forms.rendered is False
 
 
 @pytest.mark.parametrize("settings", [None, _template(), _template("none"),
@@ -160,7 +160,7 @@ async def test_with_the_flag_off_the_resolver_runs_the_one_query_of_main(
         assert await sig.resolve_signature(db, _ACC, kind) == "<p>Jane</p>"
         assert db.sql == [sig.STORED_SIGNATURE_SQL], db.sql
         db = _Db("<p>Jane</p>", settings)
-        assert await sig.resolve_signature_for_send(db, _ACC, kind, "") == "<p>Jane</p>"
+        assert (await sig.signature_forms(db, _ACC)).for_body(kind, "") == "<p>Jane</p>"
         assert db.sql == [sig.STORED_SIGNATURE_SQL]
 
 
@@ -283,7 +283,7 @@ async def _send(monkeypatch: pytest.MonkeyPatch, db: _Db, body: str,
 
 async def _drafted(db: _Db, body: str) -> str:
     """The body that a draft path writes (``upsert_draft``, ``save_draft``)."""
-    return append_signature_text(await drafting._account_signature(db, _ACC), body)
+    return drafting._signed_draft(await drafting._account_forms(db, _ACC), body)
 
 
 @pytest.mark.parametrize("reply_mode", sig.REPLY_MODES)
@@ -364,7 +364,8 @@ async def test_rule_7_each_draft_reader_gets_the_bytes_of_main(
     from gateway.routes.email.automation import voice_profile
 
     monkeypatch.setattr(voice_profile, "load_voice_profile_block", _no_profile)
-    assert await drafting._account_signature(_Db(stored), _ACC) == _main_bytes(stored)
+    forms = await drafting._account_forms(_Db(stored), _ACC)
+    assert drafting.draft_form(forms, _REPLY) == _main_bytes(stored)
     _, got = await assistant_mod._load_assistant_about(_Db(stored), _ACC)
     assert got == _main_bytes(stored)
 
@@ -503,18 +504,24 @@ def test_the_scan_passes_a_read_of_another_column(source: str) -> None:
 
 
 #: Each reader of §23.3.3: its file, its function, the resolver call it makes,
-#: and the kinds it passes. The draft paths pass ``new`` until SG-5.
+#: and the kinds it passes. The draft paths pass ``new`` until SG-5b. SG-5a:
+#: a send takes ``signature_forms`` and ``for_body``, and each draft send and
+#: seal takes ``draft_form``.
 READERS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("routes/email/transport/send.py", "send_email"):
-        ("resolve_signature_for_send", frozenset({"reply", "new"})),
+        ("signature_forms", frozenset({"reply", "new"})),
     ("routes/email/transport/forward.py", "forward_email"):
-        ("resolve_signature_for_send", frozenset({"forward"})),
+        ("signature_forms", frozenset({"forward"})),
     ("routes/notes/dispatch.py", "_dispatch_email"):
         ("resolve_signature", frozenset({"new"})),
-    ("routes/email/automation/drafting.py", "_account_signature"):
-        ("resolve_signature", frozenset({"new"})),
+    ("routes/email/automation/drafting.py", "_account_forms"):
+        ("signature_forms", frozenset()),
+    ("routes/email/automation/drafting.py", "draft_form"):
+        ("for_body", frozenset({"new"})),
     ("routes/email/automation/drafting.py", "send_draft_endpoint"):
-        ("resolve_signature", frozenset({"new"})),
+        ("draft_form", frozenset()),
+    ("routes/email/automation/drafting.py", "draft_seal"):
+        ("draft_form", frozenset()),
     ("routes/email/automation/assistant.py", "_load_assistant_about"):
         ("resolve_signature", frozenset({"new"})),
     ("routes/email/automation/assistant.py", "get_assistant_settings"):
@@ -524,7 +531,7 @@ READERS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("routes/email/automation/reply_card.py", "_load_mail"):
         ("resolve_signature", frozenset({"reply"})),
     ("routes/email/automation/held_card.py", "seal_of"):
-        ("_account_signature", frozenset()),
+        ("draft_form", frozenset()),
 }
 
 
@@ -544,10 +551,11 @@ def _name(call: ast.Call) -> str:
 
 
 def _kinds(fn: ast.AST, resolver: str) -> set[str]:
-    """The kinds that ``fn`` passes to the resolver, or to ``.of(...)``."""
+    """The kinds that ``fn`` passes to the resolver, to ``.of(...)`` or to
+    ``.for_body(...)``."""
     out: set[str] = set()
     for call in _calls(fn):
-        if _name(call) in (resolver, "of"):
+        if _name(call) in (resolver, "of", "for_body"):
             for arg in call.args:
                 out |= {n.value for n in ast.walk(arg) if isinstance(n, ast.Constant)
                         and n.value in sig.SIGNATURE_KINDS}
@@ -564,11 +572,11 @@ def test_each_reader_reaches_the_resolver_with_its_kind(reader: tuple[str, str])
 
 
 def test_the_two_wrappers_call_the_resolver() -> None:
-    """``_account_signature`` and ``_load_assistant_about`` feed each draft
+    """``_account_forms`` and ``_load_assistant_about`` feed each draft
     path, the follow-ups, the rule actions and the compose step."""
     drafting_fns = _functions(_EMAIL / "automation/drafting.py")
     assistant_fns = _functions(_EMAIL / "automation/assistant.py")
-    assert "resolve_signature" in {_name(c) for c in _calls(drafting_fns["_account_signature"])}
+    assert "signature_forms" in {_name(c) for c in _calls(drafting_fns["_account_forms"])}
     assert "resolve_signature" in {
         _name(c) for c in _calls(assistant_fns["_load_assistant_about"])}
 
@@ -577,14 +585,14 @@ def test_the_two_wrappers_call_the_resolver() -> None:
 #: reaches it: a call of a resolver-backed function, or a parameter whose
 #: callers are such functions. A new caller fails until it is added here.
 STRIP_CALLERS: dict[str, str] = {
-    "_cleanup_thread_drafts": "calls _account_signature",
-    "_learn_from_sent": "calls _account_signature",
+    "_cleanup_thread_drafts": "calls _account_forms",
+    "_learn_from_sent": "calls _account_forms",
     "_compose_assist_run": "step.signature, from _ComposeStep.block_1",
     "_compose_draft": "a parameter of _compose_assist_run",
-    "_fold_draft": "a parameter of four callers",
+    "_fold_draft": "a parameter of _fold_own and draft_text_seal",
 }
 #: The names that give a resolved signature.
-_SOURCES = frozenset({"resolve_signature", "resolve_signature_for_send", "signature_forms"})
+_SOURCES = frozenset({"resolve_signature", "signature_forms"})
 
 
 def _scan_defs() -> list[tuple[str, ast.AST]]:
@@ -628,7 +636,7 @@ def test_each_strip_caller_takes_the_resolved_signature() -> None:
         "send must strip the form that the resolver gives (§23.3.3). Add the "
         f"new caller to STRIP_CALLERS with its source: {sorted(callers)}")
     sourced = _sourced_names(defs)
-    assert "_ComposeStep" in sourced and "_account_signature" in sourced
+    assert "_ComposeStep" in sourced and "_account_forms" in sourced
     for name in STRIP_CALLERS:
         assert _is_sourced(name, defs, sourced), name
 
@@ -762,7 +770,7 @@ def test_the_preview_is_a_gated_member_route_that_writes_nothing() -> None:
 _DRAFT = "0d0d0d0d-0000-4000-8000-0000000005a0"
 _FULL_TEXT = signature_render.render("classic", _FIELDS)[1]
 _SHORT_TEXT = signature_render.render(signature_render.SHORT_LAYOUT, _FIELDS)[1]
-_TABLE = 'role="presentation"'
+_LAYOUT_TABLE = 'role="presentation"'
 _NEW_TEXT = "Hi Kim,\n\nThe quote stands."
 _MARKER = "On Mon, 9 Nov 2026, Kim wrote:"
 #: The quote of a thread whose earlier reply carried the compact form. The
@@ -818,8 +826,8 @@ async def _send_draft(monkeypatch: pytest.MonkeyPatch, db: _Db, body: str,
 
 
 def _one_table_above(html: str, marker: str) -> None:
-    assert html.count(_TABLE) == 1, html
-    assert html.index(_TABLE) < html.index(marker), html
+    assert html.count(_LAYOUT_TABLE) == 1, html
+    assert html.index(_LAYOUT_TABLE) < html.index(marker), html
 
 
 @pytest.mark.parametrize("reply_mode", ["full", "short"])
@@ -865,7 +873,7 @@ async def test_sg5a_a_compact_body_sent_as_new_carries_the_name_once(
     for out in (drafted, sent):
         assert out["body_text"].count("Jane Doe") == 1, out["body_text"]
         assert out["body_html"].count("Jane Doe") == 1, out["body_html"]
-        assert out["body_html"].count(_TABLE) == 1
+        assert out["body_html"].count(_LAYOUT_TABLE) == 1
 
 
 @pytest.mark.parametrize("reply_mode", ["full", "short"])
@@ -1065,3 +1073,94 @@ async def test_sg5a_a_stored_form_with_an_underscore_line_is_found_once(
         assert out["body_html"].count("Ravi Kumar<br>") == 1, out["body_html"]
         assert "Jane Doe" not in out["body_html"]
         assert out["body_html"].index("Acme Ltd") < out["body_html"].index("Kim wrote:")
+
+
+# ── 8. SG-5a: the one quote rule and the one form of the seals ──────────────
+
+
+@pytest.mark.parametrize(("body", "want"), [
+    ("Hi\n\nRavi Kumar\n\nOn Mon, Kim wrote:\n> q", True),        # above the quote
+    ("Hi\n\nOn Mon, Kim wrote:\n> Ravi Kumar", False),            # only in the quote
+    ("Hi\n\nRavi Kumar\n\nOn Mon, Kim wrote:\n> Ravi Kumar", True),  # first match above
+    ("Hi\n\nNo form here.", False),
+    ("Hi\n\nRavi Kumar", True),                                   # no quote at all
+])
+def test_sg5a_held_above_quote_reads_the_first_match(body: str, want: bool) -> None:
+    assert sig.held_above_quote("Ravi Kumar", body) is want
+    # With ``quoted_thread`` False the whole body is new text (task 3605).
+    assert sig.held_above_quote("Ravi Kumar", body, quoted_thread=False) is (
+        "Ravi Kumar" in body)
+
+
+def test_sg5a_a_form_that_starts_with_the_quote_marker_counts() -> None:
+    """Done-when c. ``split_quoted_text`` cuts at the underscore line, so the
+    quote starts exactly where the form starts. That match counts."""
+    body = f"{_NEW_TEXT}\n\n{_UNDERSCORE_FIRST}\n\n{_QUOTE_WITH_STORED}"
+    assert sig.held_above_quote(_UNDERSCORE_FIRST, body) is True
+    assert sig.held_above_quote(_UNDERSCORE_MIDDLE, f"{_NEW_TEXT}\n\n{_UNDERSCORE_MIDDLE}")
+
+
+def test_sg5a_only_a_rendered_form_takes_the_quote_rule() -> None:
+    """Decision 3. The same body and forms: a ``custom`` mailbox keeps the
+    search of main and finds the form in the quote. A rendered one does not."""
+    body = f"{_NEW_TEXT}\n\n{_QUOTE_WITH_COMPACT}"
+    custom = sig.SignatureForms(stored="", full=_FULL_TEXT, short=_SHORT_TEXT,
+                                reply_mode="short")
+    rendered = sig.SignatureForms(stored="", full=_FULL_TEXT, short=_SHORT_TEXT,
+                                  reply_mode="short", rendered=True)
+    assert custom.for_body("reply", body) == _SHORT_TEXT
+    assert rendered.for_body("reply", body) == _SHORT_TEXT
+    assert build_signed_bodies(_SHORT_TEXT, body)[0] == body  # main: held in the quote
+    signed = build_signed_bodies(_SHORT_TEXT, body, above_quote=True)[0]
+    assert signed.index(_SHORT_TEXT) < signed.index(_MARKER)
+    # A compact body sent as ``new``: only the rendered search finds it.
+    compact = f"Hi Kim,\n\n{_SHORT_TEXT}"
+    assert custom.for_body("new", compact) == _FULL_TEXT
+    assert rendered.for_body("new", compact) == _SHORT_TEXT
+
+
+#: The three seals of a draft (decision 9): the send and its seal check, the
+#: seal route of the card, and the seal of the held card.
+_SEALS = (
+    ("routes/email/automation/drafting.py", "send_draft_endpoint"),
+    ("routes/email/automation/drafting.py", "draft_seal"),
+    ("routes/email/automation/held_card.py", "seal_of"),
+)
+
+
+@pytest.mark.parametrize("seal", _SEALS, ids=lambda s: s[1])
+def test_sg5a_the_three_seals_take_one_form(seal: tuple[str, str]) -> None:
+    """Each seal takes its form from ``draft_form``, and no seal picks a form
+    of its own. Otherwise a chat-card send of a compact reply answers 409."""
+    rel, name = seal
+    called = {_name(c) for c in _calls(_functions(_GATEWAY / rel)[name])}
+    assert "draft_form" in called, (rel, name)
+    assert not called & {"of", "for_body", "resolve_signature"}, (rel, name, called)
+
+
+@pytest.mark.parametrize("reply_mode", sig.REPLY_MODES)
+async def test_sg5a_the_backstop_signs_above_a_quote_that_holds_the_form(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str,
+) -> None:
+    """The backstop of ``PUT /email/drafts`` uses the quote rule too. A new
+    text with no form, above an Outlook quote that holds the full form, gets
+    the form above the quote. On main the draft kept no signature of its own."""
+    _flag(monkeypatch, "*")
+    body = f"{_NEW_TEXT}\n\n{_OUTLOOK_QUOTE}"
+    drafted = await _backstop(monkeypatch, _Db("", _template(reply_mode)), body)
+    assert _FULL_TEXT in drafted.split("From: Kim")[0], drafted
+    # A body that holds the compact form above the quote keeps it, once.
+    body = f"{_NEW_TEXT}\n\n{_SHORT_TEXT}\n\n{_QUOTE_WITH_COMPACT}"
+    drafted = await _backstop(monkeypatch, _Db("", _template(reply_mode)), body)
+    assert drafted == body
+
+
+def test_sg5a_each_strip_drops_the_form_that_its_text_holds() -> None:
+    """``_fold_own`` folds each text less its own form. A draft that holds the
+    compact form and its record that holds the full form fold the same, so
+    the chat finds its own draft again."""
+    forms = sig.SignatureForms(stored="", full=_FULL_TEXT, short=_SHORT_TEXT,
+                               reply_mode="short", rendered=True)
+    bare = drafting._fold_own(forms, _NEW_TEXT)
+    assert drafting._fold_own(forms, f"{_NEW_TEXT}\n\n{_SHORT_TEXT}") == bare
+    assert drafting._fold_own(forms, f"{_NEW_TEXT}\n\n{_FULL_TEXT}") == bare

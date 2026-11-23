@@ -1381,7 +1381,7 @@ async def test_a_saved_draft_copy_stores_the_mailbox_as_from(monkeypatch) -> Non
     for name, value in (
         ("_tenant_session", bind_db(db)),
         ("_assert_account_owner", AsyncMock()),
-        ("_account_signature", AsyncMock(return_value="")),
+        ("_account_forms", AsyncMock(return_value=drafting_mod._NO_FORMS)),
         ("resolve_self", AsyncMock(return_value=SelfIdentity(address=BOX))),
         ("provider_session", _session),
         ("_upsert_local_draft", upsert),

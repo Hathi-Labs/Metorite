@@ -260,6 +260,27 @@ class TestTheForwardRoute:
             assert html.count('role="presentation"') == 1, html
             assert html.index('role="presentation"') < html.index("Forwarded message")
 
+    async def test_a_form_only_in_a_quote_of_the_note_goes_above_that_quote(
+        self, monkeypatch,
+    ) -> None:
+        """WS-17 SG-5a (done-when b). The note quotes an earlier mail that
+        holds the compact form, and the new text of the note holds none. The
+        forward adds the compact form above that quote, not inside it."""
+        from acb_common import get_settings
+        from gateway.routes.email import signature_render
+
+        monkeypatch.setattr(get_settings(), "email_signature_templates_orgs", "*",
+                            raising=False)
+        fields = {"name": "Dana Iyer", "title": "Buyer", "company": "Fracktal Works"}
+        row = SimpleNamespace(mode="template", layout="classic", fields=fields,
+                              reply_mode="short")
+        h = _Harness(monkeypatch, settings=row)
+        short = signature_render.render("compact", fields)[1]
+        await _forward(note=f"Geo, see below.\n\nOn Mon, Kim wrote:\n> Sure.\n> {short}")
+        html = h.sent[0]["body_html"]
+        assert html.count('role="presentation"') == 1, html
+        assert html.index('role="presentation"') < html.index("Kim wrote:"), html
+
     async def test_a_mail_of_another_member_is_404_before_any_fetch(self, monkeypatch) -> None:
         h = _Harness(monkeypatch)
         with pytest.raises(HTTPException) as exc:

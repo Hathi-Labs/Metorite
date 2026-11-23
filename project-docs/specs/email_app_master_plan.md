@@ -22781,7 +22781,9 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 2026-11-09 07:00 UTC. SG-2 MERGED as `623948e7f` (task 2178, migration 393), dark behind
 `EMAIL_SIGNATURE_TEMPLATES_ORGS`. A spec-auditor split SG-3 into SG-3a to SG-3d on 2026-11-09
 (23.3.10, tasks 2495 to 2498). SG-3a, the writer, is BUILT (task 2495, fix round 1 on
-2026-11-22), dark behind the same flag, with no migration. SG-3b to SG-3d and SG-4 to SG-9 are not built.**
+2026-11-22), dark behind the same flag, with no migration. SG-5a, the quote rule and one form
+for the three seals, is BUILT (task 2512), dark behind the same flag, with no migration.
+SG-3b to SG-3d, SG-4, SG-5b, SG-5c and SG-6 to SG-9 are not built.**
 
 Task 1959. Owner request in chat, 2026-11-07: "design and create good signatures for our
 email." The orchestrator checked the anchors at `origin/main`
@@ -22950,6 +22952,9 @@ second one. So a reply carries one signature for each `reply_mode`, before and a
 | `_load_assistant_about`, which feeds `step.signature`, `actions.py:748`, `:816` and `followups.py:248` | `automation/assistant.py:78` | `resolve_signature` | `new` |
 | `GET /email/assistant/settings` and the PUT answer, read by `lib/signature.ts:35` | `automation/assistant.py:326`, `:549` | `signature_forms` | `new` |
 | The reply card | `automation/reply_card.py:481` | `resolve_signature` | `reply` |
+
+SG-5a changed the rows of the send, the forward, `_account_signature` and `/drafts/send`.
+"SG-5a as built" in 23.6 gives the calls of these readers now.
 
 The SG-1 save (`signature_images.signature_for_save`) also calls `stored_signature`. It compares
 the new HTML with the stored HTML, and it sends nothing.
@@ -23315,7 +23320,7 @@ slices add no palette entry, no bell, no assistant rail and no ⌘K listener.
 | **SG-3d** | A draft written before a signature edit gets one signature at the send: the earlier renders | HIGH (migration, the send path) | AGENT-SAFE, dark. Must merge before the flag flip | SG-3a | 2498 |
 | **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | AGENT-SAFE, dark | SG-2 | 2180 |
 | **SG-5** | Replies and forwards. The parent of SG-5a to SG-5c (23.3.6) | — | — | SG-2 | 2181 |
-| **SG-5a** | One signature for every kind: the quote rule, one form for the three seals, the backstops and the strips. No migration | HIGH (the send path) | AGENT-SAFE, dark. Merge after SG-3a and before SG-3d | SG-2 | 2512 |
+| **SG-5a** | One signature for every kind: the quote rule, one form for the three seals, the backstops and the strips. No migration | HIGH (the send path) | AGENT-SAFE, dark. Merge after SG-3a and before SG-3d | SG-2 | 2512, built |
 | **SG-5b** | The draft records its kind: `email_messages.draft_kind`, each draft writer, the rule actions, the two GET fields | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-5a | 2513 |
 | **SG-5c** | The composers ask by kind: reply, reply-all, forward and a From change. An owner preview | STANDARD | AGENT-SAFE, dark | SG-5b | 2514 |
 | **SG-6** | The chat: `get_signature`, `set_signature`, the preview card, the fence set | STANDARD | AGENT-SAFE, dark | SG-2 | 2182 |
@@ -23434,6 +23439,33 @@ slices add no palette entry, no bell, no assistant rail and no ⌘K listener.
   go red.
 - Follow-up: the preview route (`signature_preview.py`) has no depth bound. It stores nothing,
   and a probe at 1000 levels answered 200.
+
+**SG-5a as built (2026-11-23).** These points narrow 23.3.3 and 23.3.6:
+
+- `signature.held_above_quote` is the one quote rule. A form counts when its first match starts
+  above the `split_quoted_text` boundary, or at the first character of the quote. A signature
+  that starts with a line of five underscores starts at the boundary, so it counts (done-when c).
+- `SignatureForms.rendered` is True for a `template` row only. SG-4 sets it for `company`. With
+  `rendered`, `for_body` searches `of(kind)`, then the full, the short and the stored form, above
+  the quote. With `rendered` False, `for_body` runs the code of main.
+- `build_signed_bodies` and `append_signature_text` take `above_quote`, default False. The send,
+  the forward, `/drafts/send` and the two backstops of a draft pass `forms.rendered`. The other
+  writers (rule actions, follow-ups, compose, meeting notes) keep main's call until SG-5b.
+- `resolve_signature_for_send` is gone. `send.py` and `forward.py` call `signature_forms`, then
+  `for_body`. A Markdown send passes `quoted_thread` False to both, so its whole body is new text.
+- `drafting._account_forms` replaced `_account_signature`. A failed read still gives no
+  signature. `drafting.draft_form(forms, text)` is `for_body("new", text)`. It is the one form of
+  a stored draft, for `/drafts/send`, `GET /drafts/seal`, `held_card.seal_of`, the backstops of
+  `PUT /drafts` and `/drafts/save`, and the strips of `_cleanup_thread_drafts`,
+  `_learn_from_sent`, `_upsert_reply_draft` and `trash_chat_draft`. Each strip takes the form of
+  its own text.
+- `/drafts/send` calls `signature_forms` with no `try`, as main called `resolve_signature`. So a
+  failed read there still answers 500, as on main.
+- The compose strips (`_compose_assist_run`, `_compose_draft`) still take `step.signature`, the
+  `new` form. SG-5b changes `_load_assistant_about` (decision 10).
+- Fences: sections 6 to 8 of `test_email_signature_resolver.py`, with literal goldens of main
+  for rule 7. Also `test_held_text_seal.py::test_the_three_seals_agree_on_a_compact_draft_and_its_send_goes`
+  and two cases in `test_email_forward.py`.
 
 The flag flip of `EMAIL_SIGNATURE_TEMPLATES_ORGS` needs the `enforcement-flip` grant. The
 person who flips it names the flag and the box in the same message.

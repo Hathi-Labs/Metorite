@@ -56,7 +56,11 @@ from gateway.routes.email.automation import drafting
 from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.automation import new_mail_card as nm
 from gateway.routes.email.automation import reply_card as rc
-from gateway.routes.email.signature import build_signed_bodies, clean_signature_html
+from gateway.routes.email.signature import (
+    SignatureForms,
+    build_signed_bodies,
+    clean_signature_html,
+)
 from gateway.routes.email.transport import send as send_mod
 from gateway.routes.email.transport.send import SendEmailRequest
 
@@ -697,8 +701,8 @@ async def test_a_draft_save_writes_the_text_part_and_one_signature(monkeypatch) 
     async def nothing(*_a: Any, **_k: Any) -> None:
         return None
 
-    async def signature(*_a: Any, **_k: Any) -> str:
-        return SIG
+    async def signature(*_a: Any, **_k: Any) -> SignatureForms:
+        return SignatureForms(stored=SIG, full=SIG)
 
     async def upsert(*_a: Any, **_k: Any) -> str:
         return "d1"
@@ -708,7 +712,7 @@ async def test_a_draft_save_writes_the_text_part_and_one_signature(monkeypatch) 
 
     monkeypatch.setattr(drafting, "_tenant_session", session)
     monkeypatch.setattr(drafting, "_assert_account_owner", nothing)
-    monkeypatch.setattr(drafting, "_account_signature", signature)
+    monkeypatch.setattr(drafting, "_account_forms", signature)
     monkeypatch.setattr(drafting, "provider_session", provider_session)
     monkeypatch.setattr(drafting, "_upsert_local_draft", upsert)
     monkeypatch.setattr(drafting, "_fetch_message_dict", fetch)
