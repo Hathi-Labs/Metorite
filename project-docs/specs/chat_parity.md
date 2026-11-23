@@ -24,6 +24,12 @@ connected calendars, and proposes a clearer title or the missing fields of a
 task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
 P-1 slices.
 
+**P-1c (task 3923) is BUILT on its branch, 2026-11-23, and waits for the
+owner.** The chat syncs a connected calendar now, turns the task switch of a
+connection on or off, and disconnects a calendar. Each act asks on one card
+first. It pays three calendar rows, 4 to 1. The owner approves the card
+previews (D145) and the merge (D-PAR-4).
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -173,12 +179,13 @@ file that a member gave to the chat could not go on an email.
 table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
 412 at P-0, and it was 427 at that reading. Eight ceilings went up, and four
 went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
+P-1c then paid three rows of calendar, so the total is 421.
 
 | App | P-0 | Today | Wave | Task |
 |---|---|---|---|---|
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
-| calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
+| calendar | 1 | 1 | P-1 | 3923 (P-1a, task 3112, paid 1. P-1c, task 3923, paid 3) |
 | email | 13 | 14 | P-2 | 3111 |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
@@ -319,7 +326,7 @@ P-1 does not take all 14. The table names the owner of each row.
 |---|---|---|---|---|
 | P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
 | P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
-| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
+| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | BUILT on its branch, 2026-11-23. Waits for the owner |
 | The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
 | Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
 
@@ -336,6 +343,46 @@ P-1 does not take all 14. The table names the owner of each row.
 ```bash
 timeout 900 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_calendar_settings_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1a_tools.py
+```
+
+**P-1c: Sync now, the switch and Disconnect (task 3923, rung 4, HIGH).**
+
+- **Gate.** AGENT-SAFE to build, dark. The owner approves the card previews
+  (D145) and the merge (D-PAR-4).
+- **Scope.** Two tools of `skill_my_tasks`, in the `calendar-day` pack.
+  `my_tasks_calendar_connection(provider, action)` sends Sync now
+  (`POST .../{id}/sync`) or the switch (`PATCH .../{id}` with `push_tasks`).
+  `my_tasks_disconnect_calendar(provider)` sends `DELETE .../{id}`. They pay
+  the three rows of the sync, the `PATCH` and the `DELETE` of a connection.
+- **The flow.** A tool takes the provider, `google` or `outlook`, and no id. It
+  reads the list of P-1a and takes the row that is not disconnected. It shows
+  one card, and it sends one write after an approve.
+- **No new seam.** The gateway routes exist. This slice adds no route, no BFF
+  path, no migration, no flag, no SQL, no `TOOL_PACKS` slug and no `FOLLOWS`
+  entry.
+- **A known gap.** Disconnect does not clear `calendar_task_links`
+  (`calendar_sync/connections.py`, `disconnect_connection`). CE-13 owns that
+  gap, not P-1c.
+- **Acceptance.**
+  1. The three rows are COVERED, and the calendar ceiling is 1
+     (`test_chat_parity.py`).
+  2. Each act sends its request only after an approve of one card. A deny, a
+     closed card or a run with no person sends no write.
+  3. The disconnect card states the `entry_count` of the list read. The reply
+     states the `removed_entries` that the route returned.
+  4. When the route answers 404 (the flag is off), the tool answers the
+     `CONNECTIONS_OFF` line and sends no write.
+  5. In a held chat the tools are absent, with `HELD_CARD_WRITES_ORGS` empty
+     and with it on.
+  6. No output holds a token or a field outside the allow-list.
+  7. The pack holds 22 tools. The golden matrix is made again, and the test
+     docstring names each row that changed.
+- **Done when** the commands below pass, and the owner approves the previews
+  and the merge.
+
+```bash
+timeout 1500 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_held_card_writes.py tests/unit/test_pack_requests.py tests/unit/test_pack_cues.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_skill_index.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider --timeout=120
+uv run ruff check tests/unit/test_my_tasks_p1c_tools.py
 ```
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
@@ -399,3 +446,13 @@ he approves the merge.
    the person answers.
 8. **The Customer Console for seats.** The seat writes of PAR-4 need it wired
    on production (`customer_console.md` §8, gates 7 and 8).
+9. **P-1c: a card on Sync now and on the switch.** The page has no confirm
+   step for these two acts. Default: each of the three acts asks on a card.
+10. **P-1c: is `CALENDAR_SYNC_READ` on for an org on production?** Default:
+    treat the tools as live at the merge.
+11. **P-1c: the words of the switch while `CALENDAR_SYNC_WRITE` is off.** The
+    tool cannot read that flag. Default: the card says that the task blocks go
+    to the Metorite calendar when calendar write-out is on. It promises no
+    delivery.
+12. **P-1c: Disconnect in a held chat.** Default: a held chat holds off all
+    three acts, also while `HELD_CARD_WRITES_ORGS` is empty.
