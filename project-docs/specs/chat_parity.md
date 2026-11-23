@@ -33,7 +33,9 @@ card. The pack is not in `FOLLOWS`, so the owner turns it on with a
 **PAR-8a, the facts for the owner.** Each chat refuses a text that holds a
 character that no person sees, before any card. This covers the input of a
 run, a name, a description, the words to the helper and the code and inputs
-of a module. So each card shows the text that the route gets.
+of a module. The check is the one rule of `hidden_text.py`, so an emoji
+and a Persian word pass. So each card shows the text that the route gets. A
+card shows module code with a number for each line.
 
 - The routes that save, change and delete a code module have no author gate
   (`modules.py`). That was so before PAR-8a, and the chat can now reach them.

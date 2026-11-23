@@ -2150,7 +2150,8 @@ async def _chat_is_held() -> bool:
         return True
 
 
-async def _card(note: str, rows: list[tuple[str, str]], wont_fit: str = _WONT_FIT) -> CardBody:
+async def _card(note: str, rows: list[tuple[str, str]], wont_fit: str = _WONT_FIT,
+                names: dict[str, str] | None = None) -> CardBody:
     """THE one builder of a skill card and a package card (``acb_common.card_body``,
     D169 item 9).
 
@@ -2165,7 +2166,7 @@ async def _card(note: str, rows: list[tuple[str, str]], wont_fit: str = _WONT_FI
         raise _Refused(wont_fit) from None
     if not is_cut(made):
         return made
-    made = _named_cut(made, rows)
+    made = _named_cut(made, rows, names)
     if await _chat_is_held():
         raise _Refused(cut_refusal(made))
     return made
@@ -2175,15 +2176,22 @@ async def _card(note: str, rows: list[tuple[str, str]], wont_fit: str = _WONT_FI
 _LONG_LABELS = {"description": "Description: «»", "body": "Instructions: «»"}
 
 
-def _named_cut(made: CardBody, rows: list[tuple[str, str]]) -> CardBody:
+def _named_cut(made: CardBody, rows: list[tuple[str, str]],
+               names: dict[str, str] | None = None) -> CardBody:
     """*made*, with each cut named for the parameter that the model sends, and
     a room that fits (review round 2, item 3).
 
     ``card_body`` gives one room for each long text together, so a text at
     that size beside a whole description does not fit. Here the room is what
     the long rows that are not cut leave, shared by the cut ones, less the
-    text around each value."""
+    text around each value. *names* maps the key of a row to its parameter
+    (PAR-8a). Then the text around a value is the label of that row itself."""
     whole = sum(len(line) for key, line in rows if key in LONG_TEXT_KEYS and key not in made.cut)
+    if names:
+        around = {key: line.split("«", 1)[0] + "«»" for key, line in rows if key in names}
+        labels = sum(len(around.get(key, "")) for key in made.cut)
+        room = max(0, (made.room - whole - labels) // len(made.cut))
+        return CardBody(made, (names.get(k, k) for k in made.cut), room)
     labels = sum(len(_LONG_LABELS.get(key, "")) for key in made.cut)
     room = max(0, (made.room - whole - labels) // len(made.cut))
     return CardBody(made, (("instructions" if k == "body" else k) for k in made.cut), room)
@@ -6197,8 +6205,8 @@ _WFA_BAD_CODE = "The code must have 1 to {limit} characters. Nothing changed."
 _WFA_BAD_INPUTS = "The inputs must be one JSON object, or nothing. Nothing ran."
 _WFA_BAD_QUERY = "The search text must have at most {limit} characters. Nothing was read."
 _WFA_UNREAD = "The workflow could not be read. Nothing changed. Try again."
-_WFA_HIDDEN = ("The {what} holds characters that no person sees. A card cannot show them, so no "
-               "card shows and nothing was sent. Remove them, and ask again.")
+_WFA_HIDDEN = ("The {what} holds a character that no person sees. A card cannot show it, so no "
+               "card shows and nothing was sent. {problem}")
 _WFA_MODULE_UNREAD = "The module could not be read. Nothing changed. Try again."
 _WFA_MAYBE = "The {act} may have worked. Read it again before you try again."
 _WFA_HELPER_DOWN = "The workflow helper did not answer. Nothing was saved to the workflow."
@@ -6293,28 +6301,19 @@ def _wfa_json(raw: Any, limit: int) -> Any:
     return value if size <= limit else _BAD
 
 
-def _wfa_hidden_count(value: Any) -> int:
-    """The count of the characters that a card would drop from *value*
-    (:func:`_shown_count`): each one that shows nothing. It reads each text of
-    a dict (the keys too) and of a list, to any depth."""
-    from acb_skills.untrusted import is_invisible
-
-    if isinstance(value, str):
-        return sum(1 for ch in value if ord(ch) in _CARD_HIDDEN or is_invisible(ch))
-    if isinstance(value, dict):
-        return sum(_wfa_hidden_count(k) + _wfa_hidden_count(v) for k, v in value.items())
-    if isinstance(value, (list, tuple)):
-        return sum(_wfa_hidden_count(v) for v in value)
-    return 0
-
-
 def _wfa_hidden_refusal(texts: list[tuple[str, Any]]) -> dict[str, Any] | None:
-    """The refusal of a text that holds a character that no person sees, or
-    None. A card drops such a character, and the route would get it, so the
-    card would not show what is sent. So each chat refuses it, a clear chat
-    too, before any card and any call."""
-    fields = [what for what, value in texts if _wfa_hidden_count(value)]
-    return _refusal(_WFA_HIDDEN.format(what=" and ".join(fields))) if fields else None
+    """The refusal of the first character that no person sees, or None.
+
+    The ONE rule is ``hidden_text`` (WS-STU F1b): :func:`body_hidden_problem`
+    walks each string at any depth, the keys too, and names the place and the
+    code point. A legal joiner or selector (an emoji, Persian, Hindi) passes.
+    A card drops such a character, and the route would get it, so each chat
+    refuses it, a clear chat too, before any card and any call."""
+    for what, value in texts:
+        problem = body_hidden_problem(value)
+        if problem is not None:
+            return _refusal(_WFA_HIDDEN.format(what=what, problem=what + problem[len("body"):]))
+    return None
 
 
 def _wfa_graph_print(data: dict[str, Any]) -> str:
@@ -6352,11 +6351,12 @@ def _wfa_not_done(act: str, decision: str, context: str, extra_note: str = "",
                     card=frame.wrap("WORKFLOW CARD", str(context)), note=note, **extra)
 
 
-async def _wfa_ask(act: str, title: str, detail: str,
-                   rows: list[tuple[str, str]]) -> tuple[str, str]:
+async def _wfa_ask(act: str, title: str, detail: str, rows: list[tuple[str, str]],
+                   names: dict[str, str] | None = None) -> tuple[str, str]:
     """ONE card for *act*, and the decision and the card text. Raises
-    :class:`_Refused` when the card does not fit."""
-    context = await _card(_WFA_NOTE[act], rows, _WFA_WONT_FIT)
+    :class:`_Refused` when the card does not fit. *names* maps a long row to
+    its parameter, so a cut card names the right one."""
+    context = await _card(_WFA_NOTE[act], rows, _WFA_WONT_FIT, names)
     return await _decide(title, detail, context), str(context)
 
 
@@ -6453,7 +6453,8 @@ async def _run_after_card(wid: str, payload: dict[str, Any], draft: bool) -> dic
     title = f"Test run {name}?" if draft else f"Run {name}?"
     detail = ("The draft runs once now, as a test." if draft
               else f"Version {latest} runs once now.")
-    decision, context = await _wfa_ask("run", title, detail, _run_card_rows(data, draft, payload))
+    decision, context = await _wfa_ask("run", title, detail, _run_card_rows(data, draft, payload),
+                                       {"body": "payload_json"})
     if decision != "approved":
         return _wfa_not_done("run", decision, _no_token(context, token))
     asked = {"decision": decision}
@@ -6968,7 +6969,8 @@ async def _build_after_cards(wid: str, words: str) -> dict[str, Any]:
         rows = [*_wfa_name_rows("Workflow", data.get("name"), token),
                 ("body", f"Request: {_shown(words)}")]
         decision, context = await _wfa_ask("ask", f"Ask the helper to change {name}?",
-                                           "Nothing is saved to the workflow yet.", rows)
+                                           "Nothing is saved to the workflow yet.", rows,
+                                           {"body": "instruction"})
         if decision != "approved":
             return _wfa_not_done("ask", decision, _no_token(context, token))
     reply = await _send("POST", f"/workflows/{wid}/copilot", {"message": words},
@@ -6994,7 +6996,8 @@ async def _build_after_cards(wid: str, words: str) -> dict[str, Any]:
             ("issues", f"Problems that the check found: {len(issues)}."),
             ("body", f"The helper says: {_shown(_no_token(said['reply'], token))}")]
     decision, context = await _wfa_ask("build", f"Save the change to {name}?",
-                                       "The draft changes. The live version does not.", rows)
+                                       "The draft changes. The live version does not.", rows,
+                                       {"body": "instruction"})
     if decision != "approved":
         return _wfa_not_done("build", decision, _no_token(context, token), stay,
                              new_module_count=len(created))
@@ -7022,6 +7025,24 @@ async def _module_read(mid: str) -> _Reply:
     return await _send("GET", f"/workflows/modules/{mid}", None, miss=_WFA_MODULE_UNREAD)
 
 
+#: The mark between two lines of code on a card. A card row is one line, so
+#: each line of the code shows its number after this mark.
+CODE_LINE_MARK = "⏎"
+
+
+def _code_lines(code: str) -> str:
+    """*code* as one card value that keeps each line break visible: each line
+    starts with its number, after :data:`CODE_LINE_MARK` from the second line
+    on, and each space of its indent shows as a dot. So a line that a comment
+    seems to hide still shows as its own numbered line."""
+    out: list[str] = []
+    for n, line in enumerate(str(code).split("\n"), start=1):
+        body = line.rstrip("\r")
+        indent = len(body) - len(body.lstrip(" "))
+        out.append(f"{n}: " + "·" * indent + body.lstrip(" "))
+    return f" {CODE_LINE_MARK} ".join(out)
+
+
 def _module_card(what: str, old: dict[str, Any], fields: dict[str, Any]) -> list[tuple[str, str]]:
     """The rows of the card of a module act. The code is long text."""
     rows = _wfa_name_rows("Module", fields.get("name") or old.get("name"))
@@ -7034,7 +7055,7 @@ def _module_card(what: str, old: dict[str, Any], fields: dict[str, Any]) -> list
     if fields.get("description"):
         rows.append(("description", f"Description: {_shown(fields['description'])}"))
     if fields.get("code"):
-        rows.append(("body", f"Code: {_shown(fields['code'])}"))
+        rows.append(("body", f"Code: {_shown(_code_lines(fields['code']))}"))
     return rows
 
 
@@ -7116,9 +7137,12 @@ async def _module_generate(words: str, current: str) -> dict[str, Any]:
     asked: dict[str, Any] = {}
     if await _must_ask():
         # As the helper: the writer spends credits, so a held chat asks first.
-        rows = [("body", f"Request: {_shown(words)}")]
+        rows = [("notes", f"Request: {_shown(words)}")]
+        if current:
+            rows.append(("body", f"Code: {_shown(_code_lines(current))}"))
         decision, context = await _wfa_ask("module_generate", "Ask the module writer?",
-                                           "It saves nothing.", rows)
+                                           "It saves nothing.", rows,
+                                           {"notes": "prompt", "body": "code"})
         if decision != "approved":
             return _wfa_not_done("module_generate", decision, context)
         asked = {"decision": decision}
@@ -7168,9 +7192,11 @@ async def _module_test(mid: str | None, code: str, inputs_raw: Any) -> dict[str,
     if await _must_ask():
         text = json.dumps(inputs, ensure_ascii=False, sort_keys=True, default=repr)
         rows = [*_wfa_name_rows("Module", name), ("inputs", f"Inputs: {len(inputs)} fields."),
-                ("body", f"Code: {_shown(code)} Inputs: {_shown(text)}")]
+                ("body", f"Code: {_shown(_code_lines(code))}"),
+                ("notes", f"Inputs: {_shown(text)}")]
         decision, context = await _wfa_ask("module_test", "Test this code?",
-                                           "It runs once, and saves nothing.", rows)
+                                           "It runs once, and saves nothing.", rows,
+                                           {"body": "code", "notes": "inputs_json"})
         if decision != "approved":
             return _wfa_not_done("module_test", decision, context)
         asked = {"decision": decision}
@@ -7207,8 +7233,8 @@ async def _module_create(fields: dict[str, Any]) -> dict[str, Any]:
         return smuggled
     decision, context = await _wfa_ask(
         "module_create", f"Add the module {_title_name(fields['name'])}?",
-        "The code goes to the library of the organization.", _module_card("module_create", {},
-                                                                         fields))
+        "The code goes to the library of the organization.",
+        _module_card("module_create", {}, fields), {"body": "code", "description": "description"})
     if decision != "approved":
         return _wfa_not_done("module_create", decision, context)
     asked = {"decision": decision}
@@ -7243,7 +7269,8 @@ async def _module_change(what: str, mid: str, fields: dict[str, Any]) -> dict[st
     title = f"Delete the module {name}?" if what == "module_delete" else f"Change the module {name}?"
     detail = ("This cannot be undone." if what == "module_delete"
               else "The steps that use it run the new version.")
-    decision, context = await _wfa_ask(what, title, detail, _module_card(what, old, fields))
+    decision, context = await _wfa_ask(what, title, detail, _module_card(what, old, fields),
+                                       {"body": "code", "description": "description"})
     if decision != "approved":
         return _wfa_not_done(what, decision, context)
     asked = {"decision": decision}
