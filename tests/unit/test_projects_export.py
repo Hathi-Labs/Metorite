@@ -293,6 +293,11 @@ NOT_ON_THE_EXPORT = {
     # #918. Not a filter: it asks the list to also answer the size of each
     # status lane for the board's column heads. The rows are the same.
     "with_status_counts",
+    # WS-39 SP-3a. Only the Backlog canvas sends `cycle=none`, and that canvas
+    # has no Export: its tool row is view-only. Like `unheld`, who sits in an
+    # open cycle changes by the hour, so a file of the backlog is stale on
+    # download, and no saved view pins the filter.
+    "cycle",
 }
 
 
