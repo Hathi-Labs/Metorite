@@ -90,6 +90,7 @@ def _run(org: str, short_tmp: Path, body: Any) -> Any:  # noqa: F811
             store = TenantFileStore(
                 workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}",
                 run_data=run_data, guard=_Guard(), member="member@example.com",
+                instance=tenant_instance(org),
             )
             out = await body(store, ws, run_data, thread_slug(thread))
             rest = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

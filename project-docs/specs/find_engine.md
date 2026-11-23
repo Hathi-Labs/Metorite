@@ -26,6 +26,11 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**FIND-4b is built** (task 3674, 2026-11-17, see "As built (FIND-4b)" in
+§3.6). Each source has the field `Source.proves_absence`, and no source
+declares it. The claim reads the declaration of each app that answered. The
+switch stays off, so no answer and no tool text changes for any org.
+
 **FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
 `FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run, for
 an org of `FIND_ORGS` only. An answer that says a record does not exist
@@ -53,7 +58,14 @@ contact, lead, company and mail sender that holds one name, exact or near.
 a failure as text. With `CONTEXT_RECENCY` on too, a zero of `search_crm`,
 `query_inbox` and `find_tasks` ends with the pointer, and the persona holds
 the standing rule. `resolve_person` stays in the core list, because the
-parity of D-FIND-3 does not hold yet (§5.3).
+parity of D-FIND-3 did not hold then (§5.3). FIND-6b closed it, except for
+the limits that §5.2 lists ("Limits of FIND-6b").
+
+**FIND-6b is built** (task 3665, 2026-11-17, see "As built (FIND-6b)" in
+§5.2). Behind `FIND_ORGS`, `GET /search/names` also gives a member of the
+org, the member's saved aliases (tier 1, match `alias`) and the address of a
+colleague. Each follows the rules of `resolve_person`. `resolve_person` stays
+in the core list. The next PR takes it out (D-FIND-3).
 
 **FIND-11 is built, dark** (task 3710, 2026-11-18, see §9.2). The mirrored
 CRM modules (`crm_module_records`, such as Operator_Associates and Products)
@@ -316,7 +328,9 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 
 `edge` is a code constant from a closed list: `contact_of`, `lead_of`,
 `deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. It holds no
-text of either record. A hit found by two rungs keeps the lower rung.
+text of either record. A hit found by two rungs keeps the copy that holds
+more words. On a tie of words, it keeps the lower rung (the planner, FIND-2b,
+2026-11-17).
 
 As built (HRD-21), a past chat prints its date beside its hint, as each app
 does: "(Your chat, updated 2026-11-12)". The date is `updated_at` of the
@@ -381,6 +395,40 @@ To switch the claim on, each source must first declare
 `True`, and the claim must read each declaration. The tests set the constant
 to `True`, so the rule below stays fenced.
 
+**As built (FIND-4b, task 3674).** The claim reads each declaration. The
+switch stays off.
+
+- **The field.** `Source.proves_absence` is `False` by default. A source
+  sets it `True` only when its search reads each field that its hits print.
+  The search must also read each field that holds a word that a member can
+  type. Only then does a zero of one word alone, with the three parts below,
+  show that no record of that app holds the word.
+- **The rule.** `find.declares_all` is part of `find.proves_absence`, so
+  `held` false and `none_has_all` read it. Each app that answered must
+  declare `True`. One app that answered and does not declare stops each
+  claim. A missing or an empty map proves nothing.
+- **The map.** `company._declared` builds it once in `_find_tail`, from
+  `REGISTRY`. It holds each app that answered the first pass and is open to
+  the member. It also holds the past chats when they answered. A dark Studio
+  search changes no answer (the same answer as for a member with no
+  `feature:studio`). An app that the route did not ask changes nothing.
+  **Open for the audit slice:** `_studio_open` needs `STUDIO_ORGS` and
+  `STUDIO_SEARCH_ORGS`, but the Studio routes gate on `studio_allowed` alone.
+  A member with `feature:studio` can open a Studio record that no search
+  reads. The audit slice must decide: fail closed for such a member, or keep
+  the identity that `test_company_search_studio_off.py` fences.
+- **No source declares it yet.** No slice has audited a source. The text
+  above names fields that the searches of Email, Tasks, WhatsApp and People
+  do not read (the People preferred name is named below, in the rule). The
+  fence `test_find_absence_declared.py` fails when a source declares it.
+- **The audit slice.** A later slice audits each source. For each source
+  that it sets `True`, it names the evidence in this section and changes the
+  fence. Only then may it set `find.ABSENCE_CLAIMS` to `True`.
+- **The past chats.** When the route asks them, they count as an app that
+  answered, and they declare nothing. So a search that asks the past chats
+  makes no claim, even with each other source declared. The audit slice
+  decides how a past chat counts (§6, limit 5).
+
 A zero answer prints these lines, in this order. Each one stays true when a
 record that holds all the words exists:
 
@@ -407,7 +455,9 @@ The rule behind the switch is as follows:
   and no date or verified filter applied. An app may answer nothing for a
   shorter word, with no error.
 - `find.proves_absence` is the one rule of that word, for `held` false and
-  for `none_has_all`. Three parts must hold.
+  for `none_has_all`. Three parts must hold, and each source must declare.
+  That is, each app that answered and is open to the member declares
+  `Source.proves_absence` (FIND-4b).
 - First, the member typed the word as it folds, in ASCII letters and digits
   (`find.typed_alone`). "Müller" folds to "muller", "acme.com" folds to
   "acme" and "com", and "Strauß" folds to "strauss". An app with no
@@ -626,16 +676,17 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
   `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
   and `kinds` only, and the org and the member come from the session.
 - **The name.** One name of 2 to 60 characters and at most 3 words. `kinds` is
-  a comma list from the closed list person, contact, lead, company and sender.
-  An unknown kind gets a 422 with fixed text.
+  a comma list from the closed list alias, person, member, contact, lead,
+  company and sender (FIND-6b added alias and member). An unknown kind gets a
+  422 with fixed text.
 - **A word that the matcher reads.** The name must hold one word of 2 letters
   or more in the letters a to z or the digits 0 to 9. Else the route answers
   a 422 with its own fixed sentence, before any read. Initials alone ("A B")
   and a name in another script get it. The tool tells the model to ask the
   member for the name in those letters.
 - **The sources.** The CRM gives contact, lead and company. People gives
-  person. Email gives sender. No source gives a member yet, so `resolve_person`
-  keeps the members until FIND-6.
+  person. Email gives sender. FIND-6b adds the member and the saved alias
+  (see "As built (FIND-6b)" below).
 - **The reads.** Each source has the ability `named` (`Source.named_records`).
   It calls the app's own search. Each source runs `named` with the name and
   `Source.near_names` at once. Then it runs `named` once more, with each word
@@ -753,6 +804,143 @@ person.
   gives a place back only to an org with the profile on. The fence is
   `test_resolve_name_tool.py`.
 
+**As built (FIND-6b, task 3665, 2026-11-17).** It closes the three gaps of
+parity with `resolve_person` that §5.3 named: the member, the saved alias and
+the address. The parity holds except for the limits listed below ("Limits
+of FIND-6b"). `resolve_person` stays in the core list. The next PR takes it
+out (D-FIND-3).
+
+- **The member.** People gives the kind `member` too. The read is the read of
+  `resolve_person`: `assistant_profile_people.members_named` runs
+  `MEMBERS_SQL`, the active members of the bound org. It needs
+  `feature:people`, the gate of the directory tier of `resolve_person`.
+- **The member row.** Its id is its address, as for a sender, and it has no
+  link. It has two forms: the display name, and the part of the address
+  before the `@`. People gets one word, so the read gives each member whose
+  display name or address part holds that word. The name test checks the
+  other words.
+- **The saved alias.** `assistant_profile_people.saved_names` runs tier 1 of
+  `resolve_person` (`_alias_tier`). An alias of the member matches when the
+  whole name equals it, after the fold. An alias never matches nearly. Each
+  address must still be in the org (`email_in_org`).
+- **The gate of the alias.** The read needs no feature, as tier 1 needs none.
+  It runs only when the assistant profile is on for the org (`enabled_for`),
+  the switch of `resolve_person`. The row has the app `profile`, the kind
+  `alias` and the match `alias`. The key `profile` is not in `REGISTRY`, so
+  `/search/company` and the command bar do not change.
+- **The field.** The match is the field `match` of the row, from the closed
+  list `names.MATCHES`. `find.RUNGS` is the ladder of `search_company`, and
+  it does not change.
+- **Tier 1 wins.** When an alias matched, no person or member row stays, as
+  in `resolve_person`. A CRM record stays, because `resolve_person` does not
+  read the CRM.
+- **A colleague is no mail sender.** A sender row whose address an alias, a
+  person or a member of the answer holds gives no row. The mail tier of
+  `resolve_person` drops each address of the org (`email_in_org`). With
+  `kinds=sender`, no colleague is in the answer, so the sender row stays.
+- **Only a row that prints the address hides the sender (review round).** A
+  contractor, an invited person or a person with no status is of the org,
+  but its row prints no address. So the sender row of that address stays.
+  The answer then shows the address, and the verdict is `several`, as before
+  FIND-6b. `names.rows_of` reads `in_org` and `shows_email` together. The
+  fence is `test_a_colleague_row_with_no_address_keeps_its_sender_row`.
+- **A saved name that the matcher cannot read (review round).** Tier 1 of
+  `resolve_person` folds the whole name and has no word rule. So when
+  `typed_name` refuses a name for its letters or its count of words,
+  `names.saved_name_only` still reads the member's saved names. A saved name
+  in another script, or of 4 words or more, then gives its `alias` row, and
+  the route asks no app. A name out of bounds, a closed profile, a kind list
+  without `alias`, a failed read or no saved name gives the 422 of before.
+  The fence is `test_a_saved_name_that_the_matcher_cannot_read_still_wins`.
+- **An alumnus is no colleague there (fix round).** `email_in_org` refuses
+  a person with the status `alumni`, and accepts each other status. So the
+  mail of an alumnus keeps its sender row, and the answer is `several`, as
+  before FIND-6b (`names.in_org`). The alumnus row prints no address.
+- **Each member record reaches the name test (fix round 3).** The People
+  read keeps each member record, also beside a People row of the same name
+  and address. Only the member record holds the part of its address before
+  the `@`, and `resolve_person` matches that part. So "Chris" finds the
+  member «Christopher Lee» <chris@…>, also with `kinds=member`.
+- **One address is one colleague.** A member with a login has a People row
+  too (migration 206). A person or member row whose address an earlier row
+  holds gives no row. The exact rows come first, and a person comes before a
+  member. The row that stays prints the address when a row of that address
+  may print it.
+- **The address.** A row prints the address (`email`) only where
+  `resolve_person` prints it: a saved alias, an active member, and a person
+  with the status `active` (`PEOPLE_SQL`). A contractor, an alumnus or an
+  invited person prints no address. A near row prints it too, as the near
+  tier of `resolve_person` does.
+- **The check of the address.** The tool prints the address in angle
+  brackets after the name. An address with a hidden character, or a
+  character of Unicode category C, prints no address. The tool never folds an
+  address, because the address prints outside the quotes. A member or an
+  alias whose address fails the check gives no row.
+- **The verdict.** The verdict table above stays closed. A saved alias is an
+  exact record for the member who saved it. A member row is a person, not a
+  mail sender. So "Raj", the alias of one colleague, is `one`, also beside a
+  People row of another Raj. An alias and a CRM contact of the name give
+  `several`.
+- **The tool.** A member prints "(People member)". A saved alias prints
+  "(colleague)" and "[your saved name]". The lines of the skipped and the
+  searched apps name the alias read "Your saved names".
+- **The tool description (merge with FIND-11).** Task 3725 caps the
+  description of `resolve_name` at 1082 characters, and
+  `test_find_module_source.py` holds the cap. So the description names the
+  saved names, the member and the seven kinds in short words, and `alias`
+  reads "a saved name". It does not say that the address prints after the
+  name, because the answer shows it. The detail stays in this section and in
+  the comment above the tool in `company_search_tools.py`.
+
+**Limits of FIND-6b.** Each limit below is known, and no test hides it.
+
+- An alias beside a People read that failed or gave a full page reads
+  `partial`. `resolve_person` acts on the alias, because its tier 1 does not
+  read the directory.
+- The near spelling of a member comes from the names of the People directory.
+  The near lookup of People reads `people` only, and rung 3 shares it. A
+  member with no People row, or with another People name, gets no near row.
+- The member read reads at most 2000 members (`DIRECTORY_CAP`). In a larger
+  org, People reads `full`.
+- **A colleague takes two places of the People page.** Each member also has
+  a People row (migration 206), and the page holds 20 records, people and
+  members together. So about 11 matches fill the page. Then People reads
+  `full`, and a `one` becomes `partial`. It fails safe: the answer asks the
+  member to confirm. A later slice can count a colleague once for the test of
+  a full page, and keep the member record. `rows_of` already joins one
+  address into one row. The fences are
+  `test_the_limit_each_member_record_takes_a_place_of_the_page` and its R8
+  twin.
+- The drop of a sender row is local to the answer. A sender row of a
+  colleague stays when the answer holds no alias, person or member row of
+  that address. That happens without `feature:people`, when the People read
+  fails or runs late, or when the People name does not hold the asked words. FIND-5
+  gave the same row, so no new text shows.
+- Migration 206 never rewrites the People row of a member. A member who was
+  active and is now suspended keeps an `active` People row, and that row
+  prints the address. `PEOPLE_SQL` reads the same row, so `resolve_person`
+  prints it too.
+- An alias matches the whole name only. "Raj K" does not match the alias
+  «Raj».
+- `resolve_person` matches an address with an alias. `resolve_name` takes a
+  name, so an address matches no alias there.
+- The address check of a sender refuses an apostrophe. So a person whose
+  address holds one prints no address, and a member or an alias with one
+  gives no row. `resolve_person` prints such an address.
+- **A People row with no login has no address form.** `resolve_person`
+  matches the part of the address before the `@` for a People row too.
+  Here only a member record carries that form. So "Chris" finds «Christopher
+  Lee» <chris@…> only when an `app_user` row holds that address.
+- **An alias does not hide each other sender.** Tier 1 drops the person and
+  member rows only. A mail sender of the same name stays when its address is
+  outside the org. It also stays when the colleague of its address prints no
+  address: a contractor, an invited person or a person with no status. So
+  the answer is `several`. `resolve_person` acts on the alias, because its
+  tier 1 wins outright. It fails safe: the answer asks the member which one.
+- **A preferred name that the full name does not hold** gives no People row
+  (see "Limits of FIND-5" above). `resolve_person` matches the preferred
+  name itself, so it finds that person.
+
 ### 5.3 How the app search tools wrap the engine
 
 | Tool (where) | What stays | What changes | Slice |
@@ -762,7 +950,7 @@ person.
 | `query_inbox` (pack `email`) | Each filter | A sender name tries its near spelling, in the email app's own function. The same zero line | HRD-18b, FIND-6 |
 | `find_contact` (pack `email`) | The address lookup | The one matcher | HRD-18a |
 | `find_tasks` (pack `projects`) | The task filters | Most of the words on a miss. The same zero line | HRD-4, FIND-6 |
-| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the parity gaps | HRD-18a, FIND-6, FIND-6b |
+| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the three named gaps, except for the limits of FIND-6b (§5.2). The removal is the next PR (D-FIND-3) | HRD-18a, FIND-6, FIND-6b |
 
 No app tool gets a second matcher, and no tool reads a second store. So no
 second read path exists.
@@ -797,14 +985,15 @@ second read path exists.
   `CONTEXT_RECENCY`, and neither does `resolve_name`: `GET /search/names`
   does not read it. Each other org keeps the tool objects of before, so MAF
   answers its failure as before.
-- **`resolve_person` stays (D-FIND-3).** The parity does not hold.
-  `resolve_name` has no source that gives a member (`app_user`). It does not
-  read the member's saved aliases. A person row prints no address.
-  `resolve_person` gives all three, and the table gives it the colleague
-  address for an act. So FIND-6 keeps it in the core list, with the guard.
+- **`resolve_person` stays (D-FIND-3).** When FIND-6 merged, the parity did
+  not hold. `resolve_name` had no source that gave a member (`app_user`). It
+  did not read the member's saved aliases. A person row printed no address.
+  `resolve_person` gives all three. So FIND-6 kept it in the core list, with
+  the guard. FIND-6b closed the three gaps, except for the limits of FIND-6b
+  (§5.2). The removal is the next PR.
 - **How `resolve_person` leaves (decided by the planner, 2026-11-17).** Option
   (a). FIND-6b (task 3665) gives `GET /search/names` the kind `member`, the
-  saved aliases (tier 1, `matched_by` alias) and the address of a person row.
+  saved aliases (tier 1, match `alias`) and the address of a person row.
   One release after FIND-6b merges, a second PR takes `resolve_person` out of
   `core_tools` and gives the pack cap its place back. The owner can override.
   `test_find_tools.py` names the gaps, so the slice that closes them must
@@ -1113,7 +1302,10 @@ Seven limits stay, and the review must know them:
    `gateway/chat_search.py`, so that no third chat reader exists.
 5. **The `miss` of the log line and `near_report` read the past chats.**
    While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
-   slice that sets it on must decide how a past chat counts.
+   slice that sets it on must decide how a past chat counts. As built
+   (FIND-4b), the past chats that answered must declare
+   `Source.proves_absence`, and they do not. So a search that asks them makes
+   no claim.
 6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
    that it tests, before the cut to 100 chats. Each word arm runs a regular
    expression that no index serves. Run EXPLAIN ANALYZE on a large chat
@@ -1192,10 +1384,11 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
+| **FIND-4b** (built) | 3674 | 2 | `Source.proves_absence`, `False` for each source, and the claim reads it (§3.6, "As built (FIND-4b)"). `find.ABSENCE_CLAIMS` stays off | With the switch on in a test, one app that answered and does not declare stops each claim. With each app declared, the claims print as before. With the switch off, the answer and the tool text do not change. No source of `REGISTRY` declares it | `test_find_absence_declared.py`, new. `test_find_honest_zero.py`, `test_find_near.py` | STANDARD · AGENT-SAFE | FIND-4 |
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." Its fences move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
-| **FIND-6b** | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, `matched_by` alias) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. The pins of the gaps in `test_find_tools.py` change | `test_find_tools.py`, `test_resolve_name_tool.py` | STANDARD | FIND-6 |
+| **FIND-6b** (built) | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, match `alias`) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. FIND-6b changed the pins of the gaps in `test_find_tools.py` in the same PR | `test_resolve_name_tool.py`, `test_find_near_visibility_r8.py` (R8), `test_find_tools.py` | STANDARD | FIND-5, FIND-6 |
 | **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-11** (built, dark) | 3710 | 3 | The mirrored CRM modules as a source: `modules.find_module_names` (the predicate `field_sql.find_where` of the module list) and `modules.near_module_names` (`name_match.near_lookup` over the record names), called by the `crm` source and its `near` and `named` abilities. A hit has the kind `module_record`, the module label in its hint and a link. `resolve_name` gives the kind in its rows, with the module, outside the closed list of kinds. No tool description grows (task 3725) | "Operater Associates" finds the record «Operator Associates Pvt Ltd» by the near rung. Exact comes before near. A module that the profile does not mirror, a member with no CRM and org B never show. With `FIND_ORGS` or `CRM_MODULE_FIND_ORGS` empty, the answer and the tool text are byte-identical | `test_find_module_source.py`, new. `test_find_module_source_r8.py`, new | STANDARD · AGENT-SAFE | CRM-Q34-7, FIND-5 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
@@ -1261,6 +1454,10 @@ uv run pytest tests/unit/test_find_matched_by.py -q
 
 # FIND-7, the "not found" check, with the number check that shares its retry
 uv run pytest tests/unit/test_answer_not_found.py tests/unit/test_crm_answer_check.py -q
+
+# FIND-4b, the claim reads each declaration of Source.proves_absence
+uv run pytest tests/unit/test_find_absence_declared.py tests/unit/test_find_honest_zero.py \
+  tests/unit/test_find_near.py -q
 ```
 
 ## 13. What this spec does not own

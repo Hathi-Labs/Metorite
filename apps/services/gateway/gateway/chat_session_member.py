@@ -35,6 +35,9 @@ The rules:
 * **The switch.** ``CHAT_PIN_ORGS`` lists the orgs. :func:`pin_allowed` is its
   one reader. Off, the chat list sends today's statement and no pin key, the
   shell read says ``chat_pin: false``, and the pin routes answer 404.
+* **The switch of the chat tool.** ``CHAT_PIN_TOOL_ORGS`` lists the orgs where
+  the orchestrator holds ``pin_chat`` (CO-11b). :func:`pin_tool_allowed` is
+  its one reader, and it needs :func:`pin_allowed` too.
 
 The topic of a chat (CO-2b, D163):
 
@@ -102,6 +105,30 @@ def pin_allowed(organization_id: str | None) -> bool:
         return False
     listed = _parse_orgs(raw)
     return "*" in listed or org in listed
+
+
+def pin_tool_allowed(organization_id: str | None) -> bool:
+    """True when the orchestrator may hold the chat tool ``pin_chat`` (CO-11b).
+
+    The one reader of ``CHAT_PIN_TOOL_ORGS``. The owner gave the tool its own
+    flag on 2026-11-21 (task 3563). It is true only when :func:`pin_allowed`
+    is true for the org, AND the list holds the org or ``*``. With the pin
+    off, the routes answer 404, so a tool would only fail. It reads the
+    settings on each call, so a reload (SIGHUP) applies at the next run. A
+    fault reads as off. The org comes from the session, never from request
+    input (R5).
+    """
+    try:
+        if not pin_allowed(organization_id):
+            return False
+        org = str(organization_id or "").strip().lower()
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "chat_pin_tool_orgs", "") or "")
+        listed = _parse_orgs(raw)
+        return "*" in listed or org in listed
+    except Exception:
+        return False
 
 
 def member_key(email: str | None) -> str:

@@ -354,6 +354,16 @@ reason. `routes/projects/core.py` now:
 `NOT NULL`, with a `pm_organization_from_parent()` trigger (`:117`) so descendants inherit
 rather than each INSERT site remembering.
 
+**Task 2324 (2026-11-21).** Under FORCE RLS the trigger cannot read a parent of another
+organization. The 161 body then returned in silence. The child kept the org that the writer
+named, or got it from its other attachment. RLS WITH CHECK accepted that bound org, and the
+foreign key ignores RLS. So a child could name that parent.
+
+A new migration (471 at merge, 470 at build)
+makes the trigger refuse such a parent with SQLSTATE 23503. It refuses on an INSERT, and on an
+UPDATE that changes the link or the org. An UPDATE that keeps the link keeps the old return,
+because the cascade of a delete runs one. Fence: `tests/unit/test_pm_org_from_parent_r8.py`.
+
 **What remains open here.** Assignee writes still accept any address. Nothing leaks now, but
 `PUT /tasks/{id}/assignees` returns `not_notified` (`tasks.py:591-596`) — the list of addresses
 that could not see the task. Post-retrofit, every out-of-tenant address lands in it, which

@@ -959,7 +959,16 @@ interface TaskState {
    *  `focusedItemId` (the task-detail modal). */
   focusSessionId: string | null;
   focusMinimized: boolean;
-  enterFocusSession: (id: string) => void;
+  /** `minimized` starts the session as the dock, for a start from My Day,
+   *  where the Now card shows the timer (CC-4). */
+  enterFocusSession: (id: string, opts?: { minimized?: boolean }) => void;
+  /** Put one task row into `items`, or replace the row it already holds. A
+   *  session started where the store never hydrated (My Day, a Projects
+   *  panel) reads its task by id and adopts it here (CC-4). */
+  adoptItem: (item: MyTask) => void;
+  /** Hydrate once when the store still holds the demo rows, so a write from a
+   *  page that never hydrated reaches the gateway (CC-4). */
+  ensureLive: () => Promise<void>;
   minimizeFocusSession: () => void;
   expandFocusSession: () => void;
   /** Remove the session UI. The component stops the remote timer (actualEnd)
@@ -994,6 +1003,8 @@ interface TaskState {
   quickCaptureSeed: string;
   /** The seed came from the AI, so the box says "Filled by AI" (§6.4 rule 2). */
   quickCaptureSeedFromAI: boolean;
+  /** The box opens on the AI split's review of the seed (My Day, CC-1). */
+  quickCaptureReview: boolean;
   /** the focused clarify overlay (keyboard-driven inbox processing). */
   clarifyModalOpen: boolean;
   // ⚠️ `workspacesModalOpen` / `openWorkspaces` / `closeWorkspaces` were
@@ -1477,7 +1488,7 @@ interface TaskState {
   openSettings: () => void;
   closeSettings: () => void;
   /** `seed` types words into the box first, for a member to check (NS-4b). */
-  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean) => void;
+  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean, review?: boolean) => void;
   closeQuickCapture: () => void;
   /** Open/close the clarify overlay for an item. */
   openClarify: (id: string) => void;
@@ -1525,6 +1536,9 @@ function applySelection(next: SelectionState): Pick<
     selectMode: selected.size > 0,
   };
 }
+
+/** The one in-flight `ensureLive` hydrate, shared by every caller. */
+let liveBoot: Promise<void> | null = null;
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   // Start EMPTY + loading. hydrate() fills from the gateway (live) or, only if
@@ -1592,8 +1606,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   focusMinimized: false,
   // Entering the room also closes the task-detail modal (z-[80], which would
   // otherwise sit ON TOP of the z-[70] room it just launched).
-  enterFocusSession: (id) =>
-    set({ focusSessionId: id, focusMinimized: false, focusedItemId: null }),
+  enterFocusSession: (id, opts) =>
+    set({
+      focusSessionId: id,
+      focusMinimized: opts?.minimized ?? false,
+      focusedItemId: null,
+    }),
+  adoptItem: (item) =>
+    set((s) => ({
+      items: s.items.some((i) => i.id === item.id)
+        ? s.items.map((i) => (i.id === item.id ? item : i))
+        : [...s.items, item],
+    })),
+  ensureLive: async () => {
+    if (get().backend === "live") return;
+    liveBoot ??= get()
+      .hydrate()
+      .finally(() => {
+        liveBoot = null;
+      });
+    await liveBoot;
+  },
   minimizeFocusSession: () => set({ focusMinimized: true }),
   expandFocusSession: () => set({ focusMinimized: false }),
   clearFocusSession: () => set({ focusSessionId: null, focusMinimized: false }),
@@ -1860,6 +1893,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureMode: "single",
   quickCaptureSeed: "",
   quickCaptureSeedFromAI: false,
+  quickCaptureReview: false,
   clarifyModalOpen: false,
   processedThisSession: 0,
   clarifiedThisSession: new Set(),
@@ -2171,8 +2205,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  openQuickCapture: (mode, seed = "", fromAI = false) =>
+  openQuickCapture: (mode, seed = "", fromAI = false, review = false) =>
     set({
+      quickCaptureReview: review && seed.trim() !== "",
       quickCaptureOpen: true,
       quickCaptureMode: mode,
       quickCaptureSeed: seed.slice(0, 500),

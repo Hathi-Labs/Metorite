@@ -96,10 +96,12 @@ import {
   writeFailure,
 } from "../lib/agentRuns";
 import { newestHandoff } from "../lib/agentHandoff";
+import { agentPlaceLine } from "../lib/agentCardLook";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentImageStrip } from "./AgentImageStrip";
 import { AgentPill } from "./AgentPill";
 import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
+import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
 import { MarkdownBody } from "@/components/MarkdownMessage";
@@ -352,6 +354,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   const client = clientName(run.client_via);
+  const placeLook = agentPlaceLine(run);
   // The closures below cannot see the narrowing of `run` above.
   const shownRunId = run.id;
   const host = httpsHost(run.external_link);
@@ -622,6 +625,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         </div>
       ) : null}
 
+      {/* SW-106: where the session runs, and on which model. It shows only when
+          the session reported a machine, a kind or a model, so a run with none
+          adds no line. */}
+      {placeLook.none ? null : (
+        <p
+          className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+          data-agent-place=""
+          title={placeLook.line}
+        >
+          <Icon name={placeLook.icon} size={12} className="shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">{placeLook.line}</span>
+        </p>
+      )}
+
       {/* The second line: the newest thought, and the session link. */}
       {(ephemeral && run.status !== "failed") || host ? (
         <div className="flex min-w-0 items-center gap-2 text-xs">
@@ -653,6 +670,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           <AgentImageStrip images={lineImages} agentLabel={client} />
         </div>
       ) : null}
+
+      <AgentRunPlan plan={run.plan} />
 
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.

@@ -71,6 +71,16 @@ _M = load_agent_module()
 # speak through its own transport, so a fake gateway patches both modules.
 import acb_skills.crm_tools as _T  # noqa: E402
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _ID = str(uuid4())
 _STATUS_ID = str(uuid4())
 
@@ -298,7 +308,7 @@ async def test_every_tool_sends_the_acting_user(monkeypatch) -> None:
         assert call["headers"].get("X-User-Email") == "sales@fracktal.in", (
             f"{call['path']} called the gateway with no acting user"
         )
-        assert call["headers"].get("Authorization", "").startswith("Bearer ")
+        assert call["headers"].get("Authorization", "") == f"Bearer {_INTERNAL}"
 
 
 @pytest.mark.parametrize("tool", sorted(_INVOCATIONS), ids=sorted(_INVOCATIONS))
@@ -1064,7 +1074,7 @@ async def test_each_shared_tool_reads_its_route_as_the_member(
     for call in calls:
         assert call["method"] == "GET"
         assert call["headers"].get("X-User-Email") == "sales@fracktal.in"
-        assert call["headers"].get("Authorization", "").startswith("Bearer ")
+        assert call["headers"].get("Authorization", "") == f"Bearer {_INTERNAL}"
 
 
 def test_every_shared_tool_is_an_annotated_read() -> None:
@@ -1182,11 +1192,12 @@ async def test_a_bad_module_entity_never_reaches_the_gateway(bad, monkeypatch) -
 
 
 async def test_only_the_aggregate_and_the_field_list_take_a_module(monkeypatch) -> None:
-    """A record tool builds ``/crm/{slug}``, so a module entity stays refused."""
+    """A record tool builds ``/crm/{slug}`` for a core type. Task 3864: a
+    module entity goes to the module route, never to ``/crm/{slug}``."""
     calls = _fake_gateway(monkeypatch, _responder)
-    out = await _T.crm_list_records("module:Products")
-    assert out.startswith("Refused:") and "Unknown CRM record type" in out
-    assert calls == []
+    await _T.crm_list_records("module:Products")
+    assert any(c["path"].startswith("/crm/modules/Products/records") for c in calls)
+    assert not any(c["path"].startswith("/crm/module:") for c in calls)
 
 
 def _old_filters_line(params: dict, data: dict | None) -> str:

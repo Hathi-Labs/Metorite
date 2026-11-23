@@ -181,9 +181,10 @@ def app_of(path: str) -> str | None:
 #: Metorite tasks of the board that build it (PAR-1b, task 3100). A wave with no
 #: task is a wave that nobody builds, so ``test_chat_parity.py`` refuses it. A
 #: wave that splits into slices lists the task of each slice.
-#: P-1 is the next slice. The epic sets the order of the waves after it.
+#: P-1 is the next slice: P-1a (task 3112), P-1b (task 3922) and P-1c (task 3923).
+#: The epic sets the order of the waves after it.
 WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
-    "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112,)),
+    "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112, 3922, 3923)),
     "P-2": ("Email", ("email",), (3111,)),
     "P-3": ("CRM", ("crm",), (3678,)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
@@ -223,6 +224,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-crm/agents.py",
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
+    "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
     "packages/acb_skills/acb_skills/org_facts_tools.py",
@@ -242,6 +244,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/tasks/items/{}/clarify": "my_tasks_clarify",
     "POST /api/tasks/plan": "my_tasks_plan_project",
     "POST /api/tasks/plan/apply": "my_tasks_plan_project",
+    # P-1a (task 3112): the two proposals of the task page. Each tool writes nothing.
+    "POST /api/tasks/items/{}/enrich": "my_tasks_enrich",
+    "POST /api/tasks/items/{}/suggest-title": "my_tasks_suggest_title",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
     # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
@@ -250,6 +255,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
+    # P-1a (task 3112): the read of the Connected calendars section (CE-10c). No token shows.
+    "GET /api/calendar/connections": "my_tasks_list_calendar_connections",
     # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
     # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
     # auto rollover, time zone). The model choices, the sync flags and capture_dedup
@@ -358,7 +365,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # ── People ──
     "GET /api/tasks/people": "my_tasks_people",
     # ── Chat ──
+    # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
+    # id: it acts on the chat of the run, as the member of the run.
+    "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
+    "PUT /api/chat/sessions/{}/pin": "pin_chat",
     # ── Settings and the assistant profile ──
     "DELETE /api/auth/me/assistant-profile/aliases/{}": (
         "profile_alias",
@@ -602,6 +613,16 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "download",
         "The bytes of a chat file for the viewer and the download button. The chat writes and reads its files itself.",
     ),
+    "GET /api/auth/me/chat-decisions": (
+        "chat",
+        "Reads the kept decisions of this chat to draw the chips under the answer (HRD-12b). "
+        "It is the chat's own card. Mira holds the same list in her context.",
+    ),
+    "POST /api/auth/me/chat-decisions/undo": (
+        "chat",
+        "The Undo of a kept decision, on the chip in the chat (HRD-12b). It is the chat's own card. "
+        "In the chat, the member says it and Mira calls drop_correction.",
+    ),
     "GET /api/chat/active-sessions": (
         "stream",
         "A poll of the runs that are live, for the rail's spinners. The chat is the run.",
@@ -781,21 +802,23 @@ DEBT: dict[str, str] = {
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
+    # The owner decides: retire the /tasks button, or build a tool with a card.
     "POST /api/tasks/ai/backfill-context": "P-1",
+    # P-1b (task 3922): the six capture rows of mail. HIGH, with the owner's Approve.
     "POST /api/tasks/capture/from-email": "P-1",
     "POST /api/tasks/capture/from-email/create": "P-1",
     "POST /api/tasks/capture/from-email/enhance": "P-1",
     "POST /api/tasks/capture/from-email/preview": "P-1",
     "POST /api/tasks/capture/from-reply/create": "P-1",
     "POST /api/tasks/capture/from-reply/detect": "P-1",
-    "POST /api/tasks/items/{}/enrich": "P-1",
-    "POST /api/tasks/items/{}/suggest-title": "P-1",
     # ── Calendar ──
-    # CE-10c (task 66): the Connected calendars section of Calendar settings. A later chat tool pays all three.
+    # CE-10c (task 66): the Connected calendars section of Calendar settings. P-1a (task 3112)
+    # paid the list read. P-1c (task 3923) pays Disconnect and Sync now.
     "DELETE /api/calendar/connections/{}": "P-1",
-    "GET /api/calendar/connections": "P-1",
+    # The read of the day state is task 1680 (PR 1998), not P-1a.
     "GET /api/tasks/calendar/day-state": "P-1",
     # The switch of CE-10c follow-up (task 66): Show my Metorite tasks in Google Calendar or Outlook.
+    # P-1c (task 3923) pays it.
     "PATCH /api/calendar/connections/{}": "P-1",
     "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
@@ -993,10 +1016,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/chat/sessions/{}": "P-7",
     "DELETE /api/chat/sessions/{}/agents/{}": "P-7",
     "DELETE /api/chat/sessions/{}/participants/{}": "P-7",
-    # CO-11 (task 3510): Unpin and Pin of a chat. No chat tool lists or opens
-    # chats today, so P-7 pays both in a separate slice. That slice can need a
-    # line in tool_packs.py, which the cal-tasks session owns.
-    "DELETE /api/chat/sessions/{}/pin": "P-7",
     "GET /api/agent/workspace/{}": "P-7",
     "GET /api/agent/workspace/{}/history": "P-7",
     "GET /api/chat/directory": "P-7",
@@ -1023,7 +1042,6 @@ DEBT: dict[str, str] = {
     "POST /api/documents/pdf": "P-7",
     "POST /api/feedback": "P-7",
     "PUT /api/agent/workspace/{}/file": "P-7",
-    "PUT /api/chat/sessions/{}/pin": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
     "DELETE /api/push/subscriptions": "P-7",
@@ -1162,8 +1180,8 @@ P0_CEILING: dict[str, int] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
-    "tasks": 9,
-    "calendar": 5,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). Paid by task 3112.
+    "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
+    "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111.
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
@@ -1174,7 +1192,7 @@ DEBT_CEILING: dict[str, int] = {
     "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,
     "agents": 20,
-    "chat": 30,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). P-7 pays them with the chat tool of the chat list, a separate slice. Paid by task 3115.
+    "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,
