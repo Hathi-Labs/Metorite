@@ -498,7 +498,10 @@ async def _name_actors(db: Any, wire: list[dict]) -> None:
             logging.getLogger(__name__).warning(
                 "notifications.actor_names_unavailable class=%s", type(exc).__name__)
     for r in wire:
-        r["actor_name"] = names.get(str(r.get("actor") or "").strip().lower())
+        name = names.get(str(r.get("actor") or "").strip().lower())
+        # A directory name that is itself an address names nobody: the caller's
+        # label (the local part) reads better.
+        r["actor_name"] = None if name and "@" in name else name
 
 
 async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
