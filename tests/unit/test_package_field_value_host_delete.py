@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/package_host.md`` §8.3, the PKG-14a-3 row of §10
 and PKG-Q30. Migration: the file that creates the function
-``package_field_value_host_delete`` (484, 372 at build). The R8 suite is
+``package_field_value_host_delete`` (492, 372 at build). The R8 suite is
 ``tests/unit/test_package_field_value_host_delete_r8.py``.
 
 This file needs no database. It holds four rules:
