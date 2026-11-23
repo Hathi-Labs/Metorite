@@ -108,3 +108,22 @@ def test_the_width_of_the_old_number_is_kept(repo: Path) -> None:
     _git(repo, "commit", "-q", "-m", "pad")
     assert _run(repo, "97", "98").returncode == 0
     assert (folder / "098_old.sql").exists()
+
+
+def test_a_longer_name_that_ends_like_the_old_one_is_not_rewritten(repo: Path) -> None:
+    """Verifier finding: "80_x.sql" must not match inside "180_x.sql"."""
+    folder = repo / "infra" / "postgres"
+    (folder / "80_widget.sql").write_text("SELECT 3;\n", encoding="utf-8")
+    (repo / "docs" / "other.md").write_text(
+        "old 80_widget.sql and other 180_widget.sql here\n", encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "near miss")
+    assert _run(repo, "80", "81").returncode == 0
+    text = (repo / "docs" / "other.md").read_text(encoding="utf-8")
+    assert "old 81_widget.sql" in text and "other 180_widget.sql" in text
+
+
+def test_a_lane_with_a_shell_character_is_refused(repo: Path) -> None:
+    out = _run(repo, "480", env={"RENUMBER_BOOK_CMD": "", "LANE": "x; touch /tmp/p", "TASK": "1"})
+    assert out.returncode == 2 and "letters, digits" in out.stderr

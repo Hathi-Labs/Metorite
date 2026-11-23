@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -69,7 +68,9 @@ def book_number() -> int:
                 "no new number. Give one, or set LANE and TASK to book one "
                 "(~/lanes/reserve_migration.sh <lane> <task>)."
             )
-        cmd = f"ssh metorite-home '~/lanes/reserve_migration.sh {shlex.quote(lane)} {shlex.quote(task)}'"
+        if not (re.fullmatch(r"[A-Za-z0-9_.-]+", lane) and re.fullmatch(r"[A-Za-z0-9_.-]+", task)):
+            raise RenumberError("LANE and TASK may hold letters, digits, dot, dash and underscore only")
+        cmd = f"ssh metorite-home '~/lanes/reserve_migration.sh {lane} {task}'"
     out = subprocess.run(cmd, shell=True, capture_output=True, check=False)
     text = out.stdout.decode("utf-8", "replace").strip().splitlines()
     if out.returncode != 0 or not text or not text[-1].strip().isdigit():
@@ -98,7 +99,10 @@ def renumber(repo: Path, folder: str, old: int, new: int | None) -> tuple[Path, 
     changed: list[str] = []
     review: list[str] = []
     old_name = src.name
-    old_num = re.compile(rf"(?i)\bmigration\s+0*{old}\b")
+    # The old name only counts as a whole name: "48_x.sql" must not match inside
+    # "148_x.sql", which is another migration (a finding of the verifier).
+    name_re = re.compile(rb"(?<![0-9A-Za-z_])" + re.escape(old_name.encode("utf-8")))
+    old_num =re.compile(rf"(?i)\bmigration\s+0*{old}\b")
     for rel in _git(repo, "ls-files", "-z").split("\0"):
         if not rel:
             continue
@@ -110,8 +114,8 @@ def renumber(repo: Path, folder: str, old: int, new: int | None) -> tuple[Path, 
         if b"\0" in data:  # a binary file
             continue
         text = data.decode("utf-8", "replace")
-        if old_name in text:
-            nl_data = data.replace(old_name.encode("utf-8"), new_name.encode("utf-8"))
+        if name_re.search(data):
+            nl_data = name_re.sub(new_name.encode("utf-8"), data)
             path.write_bytes(nl_data)
             changed.append(rel)
             text = nl_data.decode("utf-8", "replace")
