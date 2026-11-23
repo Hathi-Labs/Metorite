@@ -231,6 +231,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # model of a connection. It changes what the chat may read for the org,
     # so only the operator writes it.
     "CONNECTION_MODEL_ORGS",
+    # crm_platform.md §18.7, task 3869: the orgs whose Zoho mirror reads each
+    # generic module in full once in 7 days. It spends the org's Zoho API
+    # credits, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MODULE_REREAD_ORGS",
     # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
