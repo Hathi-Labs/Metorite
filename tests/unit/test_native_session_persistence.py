@@ -681,13 +681,14 @@ class _FakeDb:
         chat = self.chats.get(tid)
         if chat is None:
             return store.LoadState(chat_exists=False)
-        # A row may carry a third item, True for a mid-run steer (task 2948).
+        # A row may carry a third item, True for a mid-run steer (task 2948). The store's
+        # own rule decides which steer rows the digests skip, so no copy of it lives here.
         rows = [tuple(r[:2]) for r in chat["rows"]]
-        digest_rows = [tuple(r[:2]) for r in chat["rows"] if not (len(r) > 2 and r[2])]
+        stored = self.stored.get((org, tid, agent))
         return store.LoadState(
             chat_exists=True, session_user=chat["owner"],
-            participants=list(chat["participants"]), rows=rows,
-            stored=self.stored.get((org, tid, agent)), digest_rows=digest_rows,
+            participants=list(chat["participants"]), rows=rows, stored=stored,
+            digest_rows=store.rows_for_digest(chat["rows"], stored),
         )
 
     def write_row(
@@ -2161,17 +2162,52 @@ def test_r8_the_probe_through_the_real_executor_and_the_real_fold(
 
 
 # ── 13. Task 2948: a mid-run steer never drops the session ──────────────────
+#
+# The gateway saves each steer as a user row with a ``steered`` mark, at the 202 and
+# before any run reads it. The digests skip such a row only while the stored session
+# holds that steer as a turn of its own (``steer.STEER_TURN_KEY``, task 2494). A steer
+# that no model call took counts, so the load drops and the run reads the text history.
 
 _STEER = "also check the archive folder"
 
 
+def _with_steers(messages: list[Any], *steers: str) -> list[Any]:
+    """*messages* after one tool boundary took each of *steers*.
+
+    The real ``steer.buffer_guidance`` and ``steer.SteerTurns`` make each turn, so the
+    mark, the ``[steer from ...]`` head and the frame of two or more are production's.
+    """
+    import uuid
+
+    from orchestrator import steer
+
+    thread = f"thread-2948-{uuid.uuid4().hex[:8]}"
+    for words in steers:
+        assert steer.buffer_guidance(thread, _OWNER, words)
+    return steer.SteerTurns(thread)._with_turns(list(messages))
+
+
+def _answer_with_steers(turn: Any, current: str, answer: str, *steers: str) -> None:
+    """What a run that took *steers* at a tool boundary appends to its session."""
+    messages = list(turn.session.state.get(store.HISTORY_SOURCE_ID, {}).get("messages", []))
+    messages = _with_steers([*messages, _message("user", current)], *steers)
+    turn.session.state[store.HISTORY_SOURCE_ID] = {
+        "messages": [*messages, _message("assistant", answer)],
+    }
+
+
+def _last_reason(store_log: _LogSpy) -> str | None:
+    return store_log.named("native_session.load")[-1]["reason"]
+
+
 def test_a_steered_run_hits_on_the_next_turn(fake_db, store_log) -> None:
-    """The run began on ``_PROPOSE``. A steer row (``steered`` mark) was saved while it ran.
-    The save digest never held the steer, so the next load must not count it either."""
+    """The run began on ``_PROPOSE``, and a tool boundary took the steer, so its session
+    holds the steer turn. The steer row (``steered`` mark) came while it ran. The save
+    digest never held that row, so the next load must not count it either."""
     tid = "thread-f20-steer"
     fake_db.chat(tid, rows=[("user", _PROPOSE)])
     turn = _begin(tid, _PROPOSE)
-    _answer(turn, _PROPOSE, _ASK)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
     assert _finish(turn) == "saved"
     fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK),
                                   ("user", "yes")]
@@ -2182,22 +2218,91 @@ def test_a_steered_run_hits_on_the_next_turn(fake_db, store_log) -> None:
     assert nxt.outcome == "hit", store_log.outcomes()
 
 
+def test_a_late_steer_that_no_model_call_took_drops_the_session(fake_db, store_log) -> None:
+    """Review of PR 2521. The member steers while the model writes its last answer. No
+    model call takes the steer, so the saved session does not hold it, and the run end
+    gives it back. The follow-up that takes it is stopped, so it saves no session, and
+    the gateway saves no user row for a follow-up. The next load must drop. A hit sends
+    no history, and the model would never read the steer that the member sees."""
+    tid = "thread-f20-steer-late"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("assistant", _ASK), ("user", _STEER, True),
+                                  ("user", "yes")]
+    browser = [{"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK},
+               {"role": "user", "content": _STEER}]
+    nxt = _begin(tid, "yes", browser=browser)
+    assert nxt.outcome == "digest_drop" and not nxt.loaded, store_log.outcomes()
+    assert _last_reason(store_log) == "transcript"
+
+
+def test_a_plain_turn_with_the_same_words_does_not_hold_a_late_steer(fake_db, store_log) -> None:
+    """Only a steer turn holds a steer. An earlier real turn with the same words does not."""
+    tid = "thread-f20-steer-plain"
+    fake_db.chat(tid, rows=[("user", _STEER)])
+    first = _begin(tid, _STEER)
+    _answer(first, _STEER, "Done.")
+    assert _finish(first) == "saved"
+    rows = [("user", _STEER), ("assistant", "Done."), ("user", _PROPOSE)]
+    fake_db.chats[tid]["rows"] = rows
+    second = _begin(tid, _PROPOSE)
+    assert second.outcome == "hit"
+    _answer(second, _PROPOSE, _ASK)
+    assert _finish(second) == "saved"
+    fake_db.chats[tid]["rows"] = [*rows, ("assistant", _ASK), ("user", _STEER, True), ("user", "yes")]
+    assert _begin(tid, "yes").outcome == "digest_drop"
+    assert _last_reason(store_log) == "transcript"
+
+
+def test_one_held_steer_turn_holds_one_steer_row(fake_db, store_log) -> None:
+    """The member sends the same words twice. A tool boundary took the first steer, and
+    the second came too late. One steer turn excuses one row, so the second row counts."""
+    tid = "thread-f20-steer-twice"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK),
+                                  ("user", _STEER, True), ("user", "yes")]
+    assert _begin(tid, "yes").outcome == "digest_drop"
+    assert _last_reason(store_log) == "transcript"
+
+
+def test_two_steers_that_one_boundary_took_both_hit(fake_db, store_log) -> None:
+    """Two steers in one run: the newest turn ends with ``steer.steers_frame`` (task 3130).
+    The frame is not the member's words, so both rows still match their turns."""
+    tid = "thread-f20-steer-frame"
+    second = "and skip the spam folder"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER, second)
+    held = turn.session.state[store.HISTORY_SOURCE_ID]["messages"]
+    assert "new messages came in" in held[-2].text, "the newest steer turn holds the frame"
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER, True), ("user", second, True),
+                                  ("assistant", _ASK), ("user", "yes")]
+    assert _begin(tid, "yes").outcome == "hit", store_log.outcomes()
+
+
 def test_without_the_mark_the_same_rows_still_drop(fake_db, store_log) -> None:
     """The mark is what makes it a hit: an ordinary user row in the middle changes the transcript."""
     tid = "thread-f20-steer-unmarked"
     fake_db.chat(tid, rows=[("user", _PROPOSE)])
     turn = _begin(tid, _PROPOSE)
-    _answer(turn, _PROPOSE, _ASK)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
     assert _finish(turn) == "saved"
     fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("user", _STEER), ("assistant", _ASK), ("user", "yes")]
     assert _begin(tid, "yes").outcome == "digest_drop"
 
 
 def test_a_second_turn_after_a_steer_saves_a_digest_that_the_third_turn_matches(fake_db, store_log) -> None:
+    """The steer turn survives the restore, the compaction and the save of the second turn."""
     tid = "thread-f20-steer-3"
     fake_db.chat(tid, rows=[("user", _PROPOSE)])
     turn = _begin(tid, _PROPOSE)
-    _answer(turn, _PROPOSE, _ASK)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
     assert _finish(turn) == "saved"
     rows = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK), ("user", "yes")]
     fake_db.chats[tid]["rows"] = rows
@@ -2207,6 +2312,29 @@ def test_a_second_turn_after_a_steer_saves_a_digest_that_the_third_turn_matches(
     assert _finish(turn2) == "saved"
     fake_db.chats[tid]["rows"] = [*rows, ("assistant", "Applied."), ("user", "thanks")]
     assert _begin(tid, "thanks").outcome == "hit"
+
+
+def test_a_drop_after_a_held_steer_saves_a_digest_that_the_next_turn_matches(fake_db, store_log) -> None:
+    """A load that does not hit starts a fresh session, and the run reads the text history.
+    That session holds the steer only as a plain user turn, so the save digest counts
+    the steer row, as the next load will."""
+    tid = "thread-f20-steer-drop"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
+    assert _finish(turn) == "saved"
+    rows = [("user", _PROPOSE), ("user", _STEER, True), ("assistant", _ASK), ("user", "yes")]
+    fake_db.chats[tid]["rows"] = rows
+    # The browser lost a turn, so this load drops for its own reason.
+    turn2 = _begin(tid, "yes", browser=[{"role": "user", "content": _PROPOSE}])
+    assert turn2.outcome == "digest_drop" and _last_reason(store_log) == "browser_dropped_turn"
+    turn2.session.state[store.HISTORY_SOURCE_ID] = {"messages": [
+        _message("user", _PROPOSE), _message("user", _STEER), _message("assistant", _ASK),
+        _message("user", "yes"), _message("assistant", "Applied."),
+    ]}
+    assert _finish(turn2) == "saved"
+    fake_db.chats[tid]["rows"] = [*rows, ("assistant", "Applied."), ("user", "thanks")]
+    assert _begin(tid, "thanks").outcome == "hit", store_log.outcomes()
 
 
 @_DB_GATE
@@ -2226,9 +2354,7 @@ def test_r8_a_steered_run_then_hits_and_holds_the_steer_once(graph_as_app, store
                           timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
     assert _upsert_messages(tid, [steer], actor_email=_ALICE, organization_id=org) == []
     # The run stores its own prompt, the steer turn and its answer in its session (task 2494).
-    messages = list(turn.session.state.get(store.HISTORY_SOURCE_ID, {}).get("messages", []))
-    messages += [_message("user", _PROPOSE), _message("user", _STEER), _message("assistant", _ASK)]
-    turn.session.state[store.HISTORY_SOURCE_ID] = {"messages": messages}
+    _answer_with_steers(turn, _PROPOSE, _ASK, _STEER)
     assert _finish(turn) == "saved"
     _agent_row(org, tid, _ASK)
     _user_row(org, tid, "yes")
@@ -2237,4 +2363,28 @@ def test_r8_a_steered_run_then_hits_and_holds_the_steer_once(graph_as_app, store
     nxt = _begin(tid, "yes", org=org, browser=browser)
     assert nxt.loaded and store_log.outcomes()[-1] == "hit", store_log.outcomes()
     texts = [m.text for m in nxt.session.state[store.HISTORY_SOURCE_ID]["messages"]]
-    assert texts.count(_STEER) == 1 and texts == [_PROPOSE, _STEER, _ASK]
+    assert sum(_STEER in t for t in texts) == 1
+    assert texts == [_PROPOSE, f"[steer from {_OWNER}] {_STEER}", _ASK]
+
+
+@_DB_GATE
+def test_r8_a_late_steer_drops_the_session(graph_as_app, store_log) -> None:
+    """Task 2948, R8: the same rows, but no model call took the steer, so the load drops."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    steer = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                          timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer], actor_email=_ALICE, organization_id=org) == []
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+    _user_row(org, tid, "yes")
+    nxt = _begin(tid, "yes", org=org)
+    assert not nxt.loaded and store_log.outcomes()[-1] == "digest_drop", store_log.outcomes()
+    assert _last_reason(store_log) == "transcript"
