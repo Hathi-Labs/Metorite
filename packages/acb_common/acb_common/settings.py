@@ -384,6 +384,16 @@ class Settings(BaseSettings):
     # owner's production run (CRM-Z10-run). Fence:
     # tests/unit/test_crm_cutover_switch_r8.py.
     crm_cutover_orgs: str = ""
+    # `crm_mirror_age_orgs` (WS-53 CRM-Q30c, task 3868, 2026-11-22) lists the
+    # organization ids whose CRM read tools say how old the Zoho mirror of a
+    # module is, in the grammar of `crm_orgs`. Default empty means NO
+    # organization: `GET /crm/sync/mirror-age` answers an empty list and
+    # sends no SQL, and the tools send no request for it. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_mirror_age.py, tests/unit/test_crm_mirror_age_note.py.
+    crm_mirror_age_orgs: str = ""
     # `crm_module_find_orgs` (WS-53 CRM-Q34-6, task 3699, 2026-11-18) lists
     # the organization ids whose chat may find a field by its words, in one
     # module or in each mirrored module, in the grammar of `crm_orgs`.
