@@ -924,7 +924,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
-        inputs_rel=binding.inputs_rel,
+        inputs_rel=binding.inputs_rel, instance=binding.instance,
     )
     files = FileAccessProvider(
         store,
@@ -1048,7 +1048,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     broker = sb.get_broker()
     member = str(artifact_context().get("member") or "")
     guard = _WorkspaceGuard(broker, binding.workspace)
-    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    store = WorkspaceFileStore(
+        workspace=binding.workspace, guard=guard, member=member, instance=binding.instance,
+    )
     skills = SkillsProvider(
         LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
         source_id=f"{SOURCE_ID}-code-task-skills",
