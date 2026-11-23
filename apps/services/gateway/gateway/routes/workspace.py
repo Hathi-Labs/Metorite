@@ -1627,7 +1627,8 @@ async def _apply_write_rules(
     becomes its author, and the marker goes to the blob store too. The marker
     holds an opaque member id (``agent_paths.skill_author_id``), never the
     address (WS-43v). A sandboxed run loads, and runs the scripts of, only its
-    own member's skills.
+    own member's skills. A name that no member owns but that is taken answers
+    409, and a store that cannot check the name answers 503 (H-245 review).
     """
     from acb_skills.agent_paths import (
         SKILL_AUTHOR_MARKER,
@@ -1651,17 +1652,30 @@ async def _apply_write_rules(
         raise HTTPException(status_code=404, detail="File not found")
     if not claim or own is None:
         return
-    from acb_skills.agent_paths import SkillOwnedElsewhere
+    from acb_skills.agent_paths import SkillClaimRefusal, SkillOwnedElsewhere, tenant_instance
 
     try:
-        claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+        # ``own`` is set only in this tenant's own dir, told from its path, so
+        # the store key is ``o:<org>`` from the session, never the dir's
+        # ``.cc-instance`` marker (H-245 review, P3).
+        claimed = await asyncio.to_thread(
+            claim_skill, workspace.resolve(), rel, user.email,
+            organization_id=user.organization_id,
+            instance=tenant_instance(user.organization_id),
+        )
     except SkillNameRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    except SkillOwnedElsewhere:
-        # Another member claimed the folder between the check and the claim.
-        raise HTTPException(
-            status_code=403, detail="That skill belongs to another member.",
-        ) from None
+    except SkillOwnedElsewhere as exc:
+        # H-245 review, P2: each reason has its own status and text.
+        # FOREIGN (403): another member's folder, or their claim won a race.
+        # IN_USE (409): no member owns the folder, but the name is taken, so
+        # another name works.
+        # STORE_UNREAD (503): the store did not answer. A retry can pass.
+        status = {
+            SkillClaimRefusal.IN_USE: 409,
+            SkillClaimRefusal.STORE_UNREAD: 503,
+        }.get(exc.reason, 403)
+        raise HTTPException(status_code=status, detail=exc.member_text) from None
     except ValueError:
         # No member id: no member, or no usable session secret. A skill folder
         # with no author would go to the next member who writes into it, with
@@ -1861,6 +1875,10 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
+    # H-245 step 4: a path form that GET refuses in every dir
+    # (``_odd_name_form``, such as an ``agent-data/Skills/`` head) is not
+    # listed either, so the tree never names a file that GET answers 404 for.
+    files = [f for f in files if not _odd_name_form(f.path)]
     # WS-43d (§16.3) and H-227: another thread's output and upload folders
     # are not listed, and a loose file only for the session that wrote it.
     own = _own_thread_slug(workspace, session_id, _user.organization_id)

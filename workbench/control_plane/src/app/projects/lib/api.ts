@@ -10,6 +10,7 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentPlanSummary,
   type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
@@ -27,6 +28,7 @@ import {
   questionsPage,
   questionsQuery,
 } from "./agentQuestions";
+import type { TaskHeldBy } from "./agentHolder";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -1909,6 +1911,11 @@ export interface TaskRow {
    */
   agent_label?: string | null;
   /**
+   * SW-5 — who holds the task now: the member, the client, since when. The
+   * gateway sets it for an open run (`filters.held_by_of`). Null for a free task.
+   */
+  held_by?: TaskHeldBy | null;
+  /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
    */
@@ -1918,6 +1925,11 @@ export interface TaskRow {
    * `waiting`: what it waits on and when the wait ends. Null in any other state.
    */
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
+   * SW-32 (task 1049) — the plan of the open run, as a count and the step in
+   * progress. Null while the run has no plan.
+   */
+  agent_plan?: AgentPlanSummary | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
