@@ -30,6 +30,22 @@ card. The pack is not in `FOLLOWS`, so the owner turns it on with a
 `TOOL_PACKS` line. PAR-8b builds the shell rows of rung 5. Fence:
 `tests/unit/test_studio_workflow_acts.py`.
 
+**PAR-8a, the facts for the owner.** Each chat refuses a text that holds a
+character that no person sees, before any card. This covers the input of a
+run, a name, a description, the words to the helper and the code and inputs
+of a module. So each card shows the text that the route gets.
+
+- The routes that save, change and delete a code module have no author gate
+  (`modules.py`). That was so before PAR-8a, and the chat can now reach them.
+- In a clear chat, the workflow helper and the module writer use model
+  credits with no card, as the UI does. In a chat that read outside mail,
+  each one shows a card first. The helper saves its new modules as ready
+  before the card of the change (`copilot.py`).
+- The cards of a test run and of the helper count the steps by type. They do
+  not show the text of a step.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.

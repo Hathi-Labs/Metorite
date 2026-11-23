@@ -416,17 +416,42 @@ def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
     assert cp.DEBT_CEILING["studio"] == 3
 
 
-def test_an_id_segment_passes_over_a_static_route_with_no_handler_for_its_verb() -> None:
-    """PAR-8a. ``/api/workflows/{}/runs`` also fits the hooks route, which has a
-    POST and no GET. The GET goes to the catch-all, as Next.js sends it. A POST
-    of the same shape still finds the hooks route, as before. Mutation: drop the
-    verb from ``gateway_paths`` -> the runs row has no gateway route -> red."""
+#: PAR-8a: each Workflows row whose UI path fits ``/api/workflows/hooks/{}`` by
+#: its shape, and the gateway route that Next.js really reaches (the catch-all).
+_HOOK_SHAPED = {
+    ("GET", "/api/workflows/{}/runs"): "/workflows/{}/runs",
+    ("POST", "/api/workflows/{}/run"): "/workflows/{}/run",
+    ("POST", "/api/workflows/{}/copilot"): "/workflows/{}/copilot",
+    ("POST", "/api/workflows/{}/validate"): "/workflows/{}/validate",
+    ("POST", "/api/workflows/{}/duplicate"): "/workflows/{}/duplicate",
+    ("POST", "/api/workflows/{}/publish"): "/workflows/{}/publish",
+    ("POST", "/api/workflows/{}/disable"): "/workflows/{}/disable",
+    ("POST", "/api/workflows/{}/enable"): "/workflows/{}/enable",
+}
+
+
+def test_an_id_segment_of_the_ui_never_stands_on_a_static_bff_segment() -> None:
+    """PAR-8a. An id of the UI is never the literal ``hooks``, so Next.js
+    sends each of these requests to the catch-all. Only a path with the
+    literal ``hooks`` reaches the hooks route. Mutation: let a UI ``{}`` match
+    the static ``hooks`` again -> each row reads ``/workflows/hooks/{}`` -> red."""
     routes = r.bff_routes()
-    assert r.gateway_paths("GET", "/api/workflows/{}/runs", routes) == ("/workflows/{}/runs",)
-    hooks = r.bff_route_for("/api/workflows/{}/runs", routes)
+    for (verb, path), gateway in _HOOK_SHAPED.items():
+        assert r.gateway_paths(verb, path, routes) == (gateway,), (verb, path)
+        assert r.bff_route_for(path, routes, verb).template == "/api/workflows/**", path
+    hooks = r.bff_route_for("/api/workflows/hooks/{}", routes, "POST")
     assert hooks is not None and hooks.template == "/api/workflows/hooks/{}"
-    assert hooks.gateway and "GET" not in hooks.gateway
-    assert r.bff_route_for("/api/workflows/{}/runs", routes, "POST") is hooks
+
+
+def test_a_workflow_row_mapped_to_a_tool_that_never_sends_it_fails_by_name() -> None:
+    """PAR-8a. Mutation: map the run of a workflow to the check tool. The
+    check sends ``POST /workflows/{}/validate`` and never ``.../run``."""
+    acts, _ = _read()
+    tables = _tables()
+    tables["COVERED"]["POST /api/workflows/{}/run"] = "studio_workflow_check"
+    bad = false_claims(acts, tables)
+    assert bad == ["POST /api/workflows/{}/run: studio_workflow_check does not send "
+                   "POST /workflows/{}/run"], bad
 
 
 def test_a_false_also_claim_fails() -> None:
@@ -607,6 +632,37 @@ def _ceiling_comments() -> dict[str, str]:
 
 def test_each_wave_names_a_board_task() -> None:
     assert waves_without_a_task(cp.WAVES) == []
+
+
+def baseline_tasks_not_in_waves(table: str, waves: dict[str, Any]) -> list[str]:
+    """Each task that a row of the baseline table (``chat_parity.md`` §6.2)
+    names, and that the ``WAVES`` entry of the wave of its app does not hold."""
+    wave_of = {app: name for name, (_label, apps, _tasks) in waves.items() for app in apps}
+    bad: list[str] = []
+    for line in table.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 5 or cells[0] not in wave_of:
+            continue
+        wave = wave_of[cells[0]]
+        for task in re.findall(r"\b\d{4}\b", cells[4]):
+            if int(task) not in waves[wave][2]:
+                bad.append(f"{cells[0]}: task {task} is not in WAVES[{wave!r}]")
+    return bad
+
+
+def _baseline_table() -> str:
+    spec = (r.REPO_ROOT / "project-docs" / "specs" / "chat_parity.md").read_text(encoding="utf-8")
+    start = spec.index("### 6.2 The debt today")
+    return spec[start:spec.index("### 6.3", start)]
+
+
+def test_each_task_of_the_baseline_table_is_in_the_wave_of_its_app() -> None:
+    """PAR-8a (D-PAR-5). A task that builds a wave joins its ``WAVES`` tuple.
+    Mutation: drop 3903 from ``WAVES["P-6"]`` -> red."""
+    assert baseline_tasks_not_in_waves(_baseline_table(), cp.WAVES) == []
+    waves = {**cp.WAVES, "P-6": (cp.WAVES["P-6"][0], cp.WAVES["P-6"][1], (3115,))}
+    assert baseline_tasks_not_in_waves(_baseline_table(), waves) == [
+        "workflows: task 3903 is not in WAVES['P-6']"]
 
 
 def test_a_wave_with_no_task_is_found() -> None:

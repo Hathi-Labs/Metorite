@@ -1174,17 +1174,31 @@ def _seg_match(pattern: list[str], segs: list[str]) -> bool:
     return all(p == "{}" or p == s or s == "{}" for p, s in zip(pattern, segs, strict=True))
 
 
+def _strict(pattern: list[str], segs: list[str]) -> bool:
+    """True when no id segment of the UI (``{}``) stands on a static segment
+    of the BFF template. Only the literal text of the UI path matches a
+    static segment, as in Next.js."""
+    head = pattern[:-1] if pattern and pattern[-1] == "**" else pattern
+    return not any(s == "{}" and p not in ("{}", "**") for p, s in zip(head, segs, strict=False))
+
+
 def bff_route_for(
     path: str, routes: tuple[BffRoute, ...], verb: str | None = None
 ) -> BffRoute | None:
-    """The BFF route that serves ``path``. With a ``verb``, a route whose
-    handlers the reader read, and none of them for that verb, is passed over
-    when a later route also matches. An id segment of the UI (``{}``) matches
-    each static segment, so ``/api/workflows/{}/runs`` also fits
-    ``/api/workflows/hooks/{}``, which has a POST and no GET. Next.js sends an
-    id there to the catch-all (PAR-8a)."""
+    """The BFF route that serves ``path``.
+
+    An id segment of the UI (``{}``) matches a static segment of a BFF route
+    only when no dynamic or catch-all route also matches (PAR-8a). So
+    ``POST /api/workflows/{}/run`` goes to the catch-all, as Next.js sends
+    it, and not to ``/api/workflows/hooks/{}``. A UI segment that code fills,
+    such as ``${kind}`` for approve or reject, still finds the static routes
+    when nothing else matches. With a ``verb``, a route whose handlers the
+    reader read, and none of them for that verb, is passed over when a later
+    route also matches."""
     segs = path.strip("/").split("/")
     found = [r for r in routes if _seg_match(r.template.strip("/").split("/"), segs)]
+    strict = [r for r in found if _strict(r.template.strip("/").split("/"), segs)]
+    found = strict or found
     if verb is not None:
         for route in found:
             if not route.gateway or verb in route.gateway:
