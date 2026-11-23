@@ -26,8 +26,9 @@ Fences (R7):
 * ``notes-bound-read-own-rows``: a session bound to org A sees A's row and no
   row of any other org, also by B's key. The mirror holds for org B.
 * ``notes-write-other-tenant-refused``: an INSERT stamped with org B, from a
-  session bound to org A, fails on row level security. The same row stamped
-  with org A succeeds (a control, rolled back).
+  session bound to org A, fails on row level security. For a child with a
+  parent key, the same-org guard of task 3845 can refuse it first (SQLSTATE
+  23503). The same row stamped with org A succeeds (a control, rolled back).
 * ``notes-change-other-tenant-noop``: an UPDATE or DELETE of B's row by key,
   from a session bound to org A, touches 0 rows, and B's row stays.
 * ``notes-unbound-fail-closed``: a session with no tenant sees 0 rows.
@@ -172,6 +173,15 @@ NOT_NOTES_CHILDREN: dict[str, str] = {}
 
 #: Leak findings: table -> the reason of its strict xfail. Empty today.
 LEAKS: dict[str, str] = {}
+
+#: The tables with a same-org guard on a parent key (task 3845, the file that
+#: adds ``notes_same_org_ref()``). An INSERT stamped with the other org that
+#: names a parent of the bound org gets SQLSTATE 23503 from the guard, before
+#: WITH CHECK. ``tests/unit/test_notes_fk_same_org_r8.py`` owns the guard.
+SAME_ORG_GUARDED = frozenset({
+    "action_item", "meeting_recording", "transcript_segment", "meeting_note",
+    "summary_run", "meeting_bot", "live_session", "copilot_event",
+})
 
 
 def _params() -> list[Any]:
@@ -410,8 +420,17 @@ def test_a_write_stamped_with_the_other_tenant_is_refused(
         control.rollback()
         with pytest.raises(DBAPIError) as exc:
             _insert(c, t, key, cols, seeded["b"]["org"])
-    assert "row-level security" in str(exc.value).lower(), (
-        f"{name}: expected a WITH CHECK refusal, got: {exc.value}")
+    msg = str(exc.value).lower()
+    if name in SAME_ORG_GUARDED:
+        # A BEFORE ROW trigger runs before WITH CHECK. The row names a parent
+        # of org A and is stamped org B, so the same-org guard refuses first.
+        assert "row-level security" in msg or (
+            getattr(exc.value.orig, "sqlstate", None) == "23503"
+            and "row of this organization" in msg), (
+            f"{name}: expected a WITH CHECK or a same-org refusal, got: {exc.value}")
+    else:
+        assert "row-level security" in msg, (
+            f"{name}: expected a WITH CHECK refusal, got: {exc.value}")
     assert _admin_row(promoted, name, key) is None, f"{name}: the refused row landed"
 
 
