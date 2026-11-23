@@ -189,7 +189,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"), (3115,)),
-    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115,)),
+    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3107, 3108, 3109)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
@@ -225,6 +225,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # PAR-8b: the Home tools send the shell routes, the brief, the approval queue and the test push.
+    "packages/acb_skills/acb_skills/home_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
     "packages/acb_skills/acb_skills/org_facts_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
@@ -364,6 +366,19 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
     "PUT /api/chat/sessions/{}/pin": "pin_chat",
+    # ── Shell, Home and approvals ──
+    # PAR-8b (task 3903, chat_parity.md section 6.4 rung 5): the Home tools of the
+    # orchestrator, dark behind HOME_TOOLS_ORGS. Each sends the route as the member of the run.
+    "GET /api/shell/feed": "home_read",
+    "GET /api/shell/needs": "home_read",
+    "GET /api/shell/search": "home_read",
+    "GET /api/shell/feed/prefs": "home_read",
+    "GET /api/brief/today": "home_read",
+    "GET /api/actions/pending": "home_read",
+    "POST /api/shell/feed/state": "home_card",
+    "PUT /api/shell/feed/prefs": "home_prefs",
+    "PUT /api/shell/layout": "home_layout",
+    "POST /api/push/test": "home_test_push",
     # ── Settings and the assistant profile ──
     "DELETE /api/auth/me/assistant-profile/aliases/{}": (
         "profile_alias",
@@ -686,6 +701,34 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "GET /api/health": (
         "health",
         "The gateway health ping that the chat recovery and the service banner read.",
+    ),
+    # PAR-8b (task 3903): the command bar's model step, and the four routes of the push
+    # subscription of a device. A chat sends the test push with home_test_push.
+    "POST /api/shell/intent": (
+        "chat",
+        "The command bar sends the member's words to a model that picks a page to open, or hands "
+        "the words to the assistant (NS-4b). In the chat, the member's turn is the words, and "
+        "show_in_app opens the page.",
+    ),
+    "GET /api/push/public-key": (
+        "session",
+        "The browser reads the server key to subscribe this device to notifications (PN-1). Only "
+        "the browser of the device can subscribe itself. The chat sends a test with home_test_push.",
+    ),
+    "POST /api/push/subscriptions": (
+        "secret",
+        "The browser saves the push address of this device and its own auth secret (PN-1). The "
+        "address and the secret exist only in the browser, and a secret never goes through the chat.",
+    ),
+    "POST /api/push/subscriptions/status": (
+        "session",
+        "The browser asks if the member of this session gets the pushes of this device (PN-1). "
+        "Only the browser knows the push address of its device.",
+    ),
+    "DELETE /api/push/subscriptions": (
+        "session",
+        "The browser removes the push address of this device, at a sign-out or a switch-off "
+        "(PN-1). Only the browser knows the address. The member does it on the device.",
     ),
     # ── Settings and the assistant profile ──
     "GET /api/accounts": (
@@ -1036,23 +1079,11 @@ DEBT: dict[str, str] = {
     "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
-    "DELETE /api/push/subscriptions": "P-7",
-    "GET /api/actions/pending": "P-7",
-    "GET /api/brief/today": "P-7",
-    "GET /api/push/public-key": "P-7",
-    "GET /api/shell/feed": "P-7",
-    "GET /api/shell/feed/prefs": "P-7",
-    "GET /api/shell/needs": "P-7",
-    "GET /api/shell/search": "P-7",
+    # PAR-8b (task 3903) paid 15 of the 16 shell rows. The decision on a pending action
+    # waits for the owner (chat_parity.md section 7, item 6): can the chat approve an action
+    # that the chat itself asked for? pending_actions has no requester column, so a tool
+    # cannot tell. The member decides on the Approvals page, and home_read lists the queue.
     "POST /api/actions/pending/{}/{}": "P-7",
-    "POST /api/push/subscriptions": "P-7",
-    "POST /api/push/subscriptions/status": "P-7",
-    "POST /api/push/test": "P-7",
-    "POST /api/shell/feed/state": "P-7",
-    "POST /api/shell/intent": "P-7",
-    "PUT /api/shell/feed/prefs": "P-7",
-    # PKG-17c-1 (task 2969): the save of the org default of the shell layout. P-7 gives the chat a tool for it.
-    "PUT /api/shell/layout": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
     # saves a new version. The chat tool is SW-31c (task 1531).
@@ -1185,7 +1216,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
-    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
+    "shell": 1,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 10 rows with the Home tools and exempted 5 (16 to 1). The decision on a pending action waits for the owner (chat_parity.md section 7, item 6).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
