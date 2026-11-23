@@ -286,8 +286,11 @@ def _path_email(email: str) -> str:
     return quote(email, safe="")
 
 
-#: A role slug, as ``routes/admin/roles.py::_clean_slug`` makes one.
-_SLUG = re.compile(r"[a-z0-9_-]{1,64}")
+#: A role slug, as ``routes/admin/roles.py::_clean_slug`` makes one: 1 to 64
+#: characters, each ``isalnum()`` or ``_`` or ``-``. The real check against
+#: ``GET /admin/roles`` follows, so this is the shape check only.
+def _slug_shape(slug: str) -> bool:
+    return 1 <= len(slug) <= 64 and all(c.isalnum() or c in "_-" for c in slug)
 
 
 def _roles_arg(raw: Any) -> list[str] | None:
@@ -302,7 +305,7 @@ def _roles_arg(raw: Any) -> list[str] | None:
     out: list[str] = []
     for item in raw:
         slug = item.strip().lower() if isinstance(item, str) else ""
-        if not _SLUG.fullmatch(slug):
+        if not _slug_shape(slug):
             return None
         if slug not in out:
             out.append(slug)
@@ -457,7 +460,8 @@ def _request_snap(row: dict[str, Any]) -> tuple[Any, ...]:
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def list_members(offset: int = 0, limit: int = MAX_ROWS) -> dict[str, Any]:
+async def list_members(offset: int = 0, limit: int = MAX_ROWS,
+                       requests_offset: int = 0) -> dict[str, Any]:
     """List the members of your organization with their roles and status, and the sign-in requests that wait."""
     try:
         members = await _get(MEMBERS_PATH)
@@ -477,7 +481,8 @@ async def list_members(offset: int = 0, limit: int = MAX_ROWS) -> dict[str, Any]
     from acb_skills.untrusted import UntrustedFrame
 
     page = paged(rows, offset, limit, default=MAX_ROWS, maximum=MAX_ROWS, noun="members")
-    asks = paged(waiting, 0, MAX_ROWS, default=MAX_ROWS, maximum=MAX_ROWS, noun="requests")
+    asks = paged(waiting, requests_offset, MAX_ROWS, default=MAX_ROWS, maximum=MAX_ROWS,
+                 noun="requests", param="requests_offset")
     shown = asks.items
     frame = UntrustedFrame.new()
     block = json.dumps({"members": [_member_row(r) for r in page.items],
@@ -571,10 +576,15 @@ async def set_member_status(
         if now == want:
             return {"ok": True, "email": target, "status": now,
                     "note": _SAME_STATUS.format(status=now)}
-        verb = "Suspend" if want == "suspended" else "Reactivate"
+        invited = now == "invited"
+        verb = ("Suspend" if want == "suspended"
+                else "Activate" if invited else "Reactivate")
         note = ("Approve to suspend this member. The member cannot sign in until an admin "
                 "makes the member active again. Reject to leave the member as now."
                 if want == "suspended" else
+                "Approve to activate this invited person, who has not signed in yet. "
+                "The member can then sign in. Reject to leave the member as now."
+                if invited else
                 "Approve to make this member active again. The member can sign in. Reject to "
                 "leave the member as now.")
         rows = [

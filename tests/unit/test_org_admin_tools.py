@@ -374,3 +374,57 @@ def test_each_tool_states_its_risk() -> None:
         assert TOOL_ANNOTATIONS[fn.__name__]["open_world"] is False
     for fn in oa.ORG_ADMIN_TOOLS[1:]:
         assert TOOL_ANNOTATIONS[fn.__name__]["read_only"] is False
+
+
+# ── Repair round: paging, slugs, the invited card ──────────────────────────
+
+
+async def test_the_requests_page_with_their_own_offset(gw, card) -> None:
+    """Mutation: the requests ignore ``requests_offset`` -> the second call shows 1-50 -> red."""
+    gw.requests = [{"email": f"k{i}@outside.example", "display_name": f"K{i}",
+                    "attempt_count": 1, "status": "pending"} for i in range(1, 61)]
+    first = await oa.list_members()
+    assert first["requests_shown"] == 50 and "requests_offset=50" in first["requests_page"]
+    second = await oa.list_members(requests_offset=50)
+    assert second["requests_shown"] == 10 and second["requests_total"] == 60
+    assert "k51@outside.example" in second["rows"] and "k60@outside.example" in second["rows"]
+    assert "k50@outside.example" not in second["rows"]
+    assert "Showing 51-60" in second["requests_page"]
+
+
+async def test_a_non_ascii_role_slug_passes_the_shape_check(gw, card) -> None:
+    """Mutation: the shape check is ASCII only -> ``händler`` is refused -> red."""
+    gw.roles.append({"slug": "händler", "display_name": "Händler"})
+    out = await oa.set_member_roles(MEMBER, ["Händler"])
+    assert out["ok"] is True, out
+    assert gw.writes()[-1][2] == {"roles": ["händler"]}
+
+
+@pytest.mark.parametrize("bad", ["a/b", "a\\b", "a?b", "a#b", "a%b", "a b", "a\nb", "a\x00b"])
+async def test_a_slug_with_a_reserved_character_is_refused(gw, card, bad) -> None:
+    out = await oa.set_member_roles(MEMBER, [bad])
+    assert out["ok"] is False and gw.calls == []
+
+
+@pytest.mark.parametrize("now,verb,words", [
+    ("invited", "Activate", "has not signed in yet"),
+    ("suspended", "Reactivate", "active again"),
+    ("inactive", "Reactivate", "active again"),
+])
+async def test_the_status_card_words_follow_the_status_now(gw, card, now, verb, words) -> None:
+    """Mutation: an invited member reads "active again" -> red."""
+    gw.members[1] = {**gw.members[1], "status": now}
+    out = await oa.set_member_status(MEMBER, "active")
+    assert out["ok"] is True, out
+    shown = card.shown[0]
+    text = shown["title"] + shown["detail"] + shown["context"] + json.dumps(shown, default=str)
+    assert shown["title"].startswith(verb)
+    assert words in text
+    if now == "invited":
+        assert "active again" not in text
+
+
+async def test_the_status_card_of_a_suspend_is_unchanged(gw, card) -> None:
+    out = await oa.set_member_status(MEMBER, "suspended")
+    assert out["ok"] is True
+    assert card.shown[0]["title"].startswith("Suspend")
