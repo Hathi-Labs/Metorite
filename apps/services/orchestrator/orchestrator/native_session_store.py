@@ -51,6 +51,11 @@ and takes no ambient tenant, so a worker thread could not resolve it.
    never fails the run.
 9. **No pickle.** ``AgentSession.from_dict`` restores through MAF's state type
    registry only.
+10. **The stale mark** (RESUME-4a-1). A continuation on the note path writes
+    :data:`STALE_DIGEST` over each session row of its thread before its model runs
+    (:func:`mark_stale`). The next load gives ``digest_drop`` with the reason
+    ``resume_stale``, and the run reads the text history. The mark makes no
+    row, and a run that is not a continuation never sends it.
 """
 from __future__ import annotations
 
@@ -139,6 +144,26 @@ _UPSERT_SQL = """
     RETURNING 1
 """
 
+#: RESUME-4a-1 (``chat_run_continuity.md`` §4.12.7). The digest that a
+#: continuation writes over a stored session. The column takes only 64
+#: lower-case hex characters (``maf_agent_session_digest_is_sha256``,
+#: migration 228), so the mark needs no migration. A real digest equals the
+#: zero digest only through a SHA-256 preimage of zero. And :func:`_decide`
+#: reads this value as a drop before it compares, so the next load of the
+#: key gives ``digest_drop`` with the reason ``resume_stale``.
+STALE_DIGEST = "0" * 64
+
+#: The mark. ONE bound statement: an UPDATE only, so it never makes a row.
+#: It has no agent predicate: ``_ROWS_SQL`` reads the rows of EVERY agent in
+#: the thread, so the session of each agent in the thread is stale too.
+#: The organization predicate stands beside RLS (FORCE, migration 228). A
+#: row that is already stale matches nothing, so a second mark is a no-op.
+_MARK_STALE_SQL = (
+    "UPDATE maf_agent_session SET transcript_digest = :stale "
+    "WHERE organization_id = CAST(:org AS uuid) AND thread_id = :tid "
+    "AND transcript_digest <> :stale RETURNING 1"
+)
+
 Row = tuple[str, str]
 
 
@@ -149,10 +174,40 @@ class SessionHistoryProvider(InMemoryHistoryProvider):
     has no id when a stored message has the same role and content. A member
     who answers "yes" on two turns would lose the second answer. A run here
     sends only its own new turn, so a plain append is exact.
+
+    It also stores each steer turn of the run (task 2494), see
+    :meth:`after_run`.
     """
 
     def __init__(self) -> None:
         super().__init__(HISTORY_SOURCE_ID)
+
+    async def after_run(
+        self,
+        *,
+        agent: Any,
+        session: AgentSession,
+        context: Any,
+        state: dict[str, Any],
+    ) -> None:
+        """Store the run as MAF does, with each steer turn in its place.
+
+        A steer reaches the model as a user turn of one model request
+        (``steer.SteerTurns``). MAF stores the input and the response of the
+        run, and neither holds that turn. So the save asks
+        ``steer.with_steer_turns`` to put each one back right after its tool
+        result. The next turn then reads the member's words as their own turn.
+        A run with no steer stores exactly what MAF 1.19 stores.
+        """
+        from orchestrator.steer import with_steer_turns
+
+        messages: list[Message] = [*self._get_context_messages_to_store(context)]
+        if self.store_inputs:
+            messages.extend(context.input_messages)
+        if self.store_outputs and context.response and context.response.messages:
+            messages.extend(with_steer_turns(context, context.response.messages))
+        if messages:
+            await self.save_messages(context.session_id, messages, state=state)
 
     async def save_messages(
         self,
@@ -412,6 +467,51 @@ def write_row(
     return written is not None
 
 
+def mark_row_stale(organization_id: str, thread_id: str) -> bool:
+    """Write :data:`STALE_DIGEST` over each session row of the thread. True when a row changed.
+
+    ONE bound statement under ``tenant_session``. It makes no row. A thread
+    with no row, a row of another tenant and a row that is stale already change
+    nothing.
+    """
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        marked = s.execute(
+            text(_MARK_STALE_SQL),
+            {"org": organization_id, "tid": thread_id, "stale": STALE_DIGEST},
+        ).first()
+    return marked is not None
+
+
+async def mark_stale(*, organization_id: str, thread_id: str) -> str:
+    """Make the next load of each session of the thread a miss (RESUME-4a-1). Never raises.
+
+    A continuation on the note path neither loads nor saves a session
+    (``resume_note``), and its reply row has no user row before it. So the
+    covered rows of the next turn still end at the user row that the stored
+    session holds, and that load would be a ``hit`` with no reply of the
+    continuation in it. The mark drops that session, and the next turn reads
+    the text history, which holds the reply.
+
+    Returns ``marked``, ``unchanged`` (no row, or stale already) or
+    ``failed``. A fault logs its type only.
+    """
+    loop = asyncio.get_running_loop()
+    log = {"thread_id": thread_id[:40]}
+    try:
+        marked = await loop.run_in_executor(None, functools.partial(
+            mark_row_stale, organization_id, thread_id,
+        ))
+    except Exception as exc:
+        _log.warning("native_session.mark_stale_failed", **log, error=type(exc).__name__)
+        return "failed"
+    outcome = "marked" if marked else "unchanged"
+    _log.info("native_session.mark_stale", **log, outcome=outcome)
+    return outcome
+
+
 # ── The compaction ──────────────────────────────────────────────────────────
 
 
@@ -476,6 +576,8 @@ def _decide(
         return NO_ROW, "absent"
     if stored.session_fingerprint != fingerprint:
         return FINGERPRINT_DROP, "room"
+    if stored.transcript_digest == STALE_DIGEST:
+        return DIGEST_DROP, "resume_stale"
     if stored.transcript_digest != transcript_digest(covered):
         return DIGEST_DROP, "transcript"
     if not browser_agrees(browser_history, covered):
@@ -593,6 +695,38 @@ def _is_foreign_key_error(exc: BaseException) -> bool:
     from sqlalchemy.exc import IntegrityError
 
     return isinstance(exc, IntegrityError) and "foreign key" in str(exc).lower()
+
+
+def add_closing_line(turn: SessionTurn, line: str) -> bool:
+    """End the run's last answer in the session with *line* (task 3130).
+
+    The server sends the "Not done" line after the model's answer, so MAF's
+    response does not hold it. This puts it in the stored session too, as
+    the stored message holds it. The last message is the answer: the line
+    joins it as one more text part. A session with no answer gets a new
+    answer that holds only the line. True when the line went in. Never
+    raises, and a fault leaves the session as it was."""
+    if not line or not turn.usable:
+        return False
+    try:
+        from agent_framework import Content
+
+        state = turn.session.state.get(HISTORY_SOURCE_ID)
+        messages = state.get("messages") if isinstance(state, dict) else None
+        if not isinstance(messages, list):
+            return False
+        text = f"\n\n{line}"
+        last = messages[-1] if messages else None
+        role = getattr(getattr(last, "role", None), "value", getattr(last, "role", None))
+        if last is not None and str(role) == "assistant" and isinstance(
+                getattr(last, "contents", None), list):
+            last.contents.append(Content.from_text(text))
+        else:
+            messages.append(Message("assistant", [text]))
+        return True
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
+        return False
 
 
 async def finish_turn(turn: SessionTurn, *, token_budget: int) -> str:

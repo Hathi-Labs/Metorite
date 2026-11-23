@@ -1,14 +1,19 @@
 "use client";
 
 /**
- * /studio/blocks-preview — the Table, Form and Detail blocks on sample
- * records (`specs/ai_studio.md` §14 D2a).
+ * /studio/blocks-preview — the Table, Board, Gallery, Form and Detail blocks on
+ * sample records (`specs/ai_studio.md` §14 D2a, D3 and D19a).
  *
  * A member sees each block as an app will draw it. The data is a fake door
  * (`lib/studio/sampleDoor.ts`): nothing is read and nothing is stored, and
  * the page says so. It is no pane, so `nav.ts` does not list it. The access
  * gate of `/studio` covers it, because `featureForPath` matches the longest
  * prefix (`blocks-preview/page.test.ts` holds that).
+ *
+ * The Gallery has its own sample door with 200 assets. A live door reads at
+ * most 100 records (`VIEW_LIMIT`), and `moreLine` then names the rest. This
+ * page has no record panel, so it plays the app frame: a click on a card
+ * shows which record the link opens (`parseRecordLink`).
  */
 import { useMemo, useState } from "react";
 
@@ -22,19 +27,27 @@ import { tableBlock } from "@/lib/studio/blocks";
 import { boardBlock } from "@/lib/studio/boardModel";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, sourceKey } from "@/lib/studio/dataDoor";
+import { galleryBlock } from "@/lib/studio/galleryModel";
+import { parseRecordLink, recordLinkBase } from "@/lib/studio/recordPageModel";
 import {
-  SAMPLE_FIELDS, SAMPLE_TABLE_KEYS, makeSampleDoor,
+  NO_PHOTO_EVERY, SAMPLE_ASSET_FIELDS, SAMPLE_FIELDS, SAMPLE_TABLE_KEYS, makeSampleDoor, sampleAssetRows,
 } from "@/lib/studio/sampleDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 const LIST = { action: "object:visit.list" };
+const ASSETS = { action: "object:asset.list" };
+/** More than a live door reads, so the preview shows the lazy load over a long list. */
+const GALLERY_COUNT = 200;
 const BOARD_FIELDS = SAMPLE_FIELDS.filter((f) =>
   ["title", "status", "owner", "visit_date", "tags", "done"].includes(f.key));
 const TABLE_FIELDS = SAMPLE_FIELDS.filter((f) => SAMPLE_TABLE_KEYS.includes(f.key));
 
 export default function BlocksPreviewPage() {
   const door = useMemo(() => makeSampleDoor(), []);
+  const assetRows = useMemo(() => sampleAssetRows(GALLERY_COUNT), []);
+  const assetDoor = useMemo(() => makeSampleDoor(SAMPLE_ASSET_FIELDS, assetRows), [assetRows]);
+  const [opened, setOpened] = useState<string | null>(null);
   const [picked, setPicked] = useState("");
   const { data } = useCachedResource<Row[]>(sourceKey(door, LIST), () => door.read(LIST));
   const rows = data ?? [];
@@ -44,10 +57,25 @@ export default function BlocksPreviewPage() {
     fields: BOARD_FIELDS, groupBy: "status", titleField: "title", cardFields: ["owner", "visit_date", "tags"],
     update: "object:visit.update", title: "Visits",
   }, LIST), []);
+  const gallery = useMemo(() => galleryBlock({
+    fields: SAMPLE_ASSET_FIELDS, titleField: "name", coverField: "photo",
+    cardFields: ["status", "owner", "bought_on"], openBase: recordLinkBase("", "asset"), title: "Assets",
+  }, ASSETS), []);
+  const openedName = opened ? String(assetRows.find((r) => r.id === opened)?.name ?? opened) : null;
+
+  // The app frame opens a record link in its panel. This page has no panel, so it names the record.
+  const onGalleryClick = (e: React.MouseEvent) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    const link = parseRecordLink(a?.getAttribute("href"));
+    if (!link) return;
+    e.preventDefault();
+    setOpened(link.id);
+  };
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title="Block preview" subtitle="Table, Board, Form and Detail on sample records"
+      <AppTopBar title="Block preview" subtitle="Table, Board, Gallery, Form and Detail on sample records"
         back={{ href: "/studio", label: "Back to Studio" }} />
       <div className="pb-askbar flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -71,7 +99,26 @@ export default function BlocksPreviewPage() {
               To see a refusal of the server, move a visit that is not done into Closed.
             </p>
           </section>
+        </StudioDataContext.Provider>
 
+        <StudioDataContext.Provider value={assetDoor}>
+          <section aria-label="Gallery" className={PANEL} onClick={onGalleryClick}>
+            <h2 className="mb-2 text-sm font-semibold text-foreground">Gallery</h2>
+            <p role="status" className="mb-2 text-xs text-muted-foreground">
+              {openedName
+                ? `The card opens the record ${openedName}. In an app, the record panel shows it.`
+                : `${GALLERY_COUNT} sample assets. Each card loads its photo when it comes into view. Click a card to open its record.`}
+            </p>
+            <GenerativeUINode spec={gallery} />
+            <p className="mt-3 text-xs text-muted-foreground">
+              One asset in {NO_PHOTO_EVERY} has no photo, so its card shows the placeholder. A live app reads at most
+              100 records and says &quot;Showing the first 100 of&quot; the total. Until Studio can serve a stored
+              file, each live card shows the placeholder.
+            </p>
+          </section>
+        </StudioDataContext.Provider>
+
+        <StudioDataContext.Provider value={door}>
           <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
             <section aria-label="Form" className={PANEL}>
               <StudioForm fields={SAMPLE_FIELDS} door={door} action="object:visit.create"

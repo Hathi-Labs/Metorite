@@ -9,6 +9,7 @@
 
 import {
   archiveRequestOf,
+  hasConfirmOption,
   runIdentity,
   type AgentActivity,
   type AgentRun,
@@ -71,5 +72,8 @@ export function taskHref(run: WaitingRun): string {
  * list shows it and links to the task card, where the member answers it.
  */
 export function answersInPlace(run: WaitingRun): boolean {
-  return archiveRequestOf(openQuestion(run)) === null;
+  const question = openQuestion(run);
+  // SW-43b. A costly option (`confirm: true`) asks "Are you sure?", and only
+  // the run card asks it. The list links to the card.
+  return archiveRequestOf(question) === null && !hasConfirmOption(question);
 }

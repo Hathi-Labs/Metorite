@@ -180,6 +180,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # VIEWER, not EDITOR: it writes nothing, mints nothing and consumes no
     # seat. It is a read of the caller's own roster.
     ("POST", "/registry/orgs"): _R(VIEWER),
+    # The vendor alert READ of a box (AO-2). Deployment-key only: the handler
+    # 400s an operator, who reads GET /providers/health. It needs a row for the
+    # reason the row above gives. VIEWER: it writes nothing.
+    ("POST", "/registry/providers/health"): _R(VIEWER),
     ("POST", "/registry/seats/release"): _R(EDITOR),
     ("POST", "/registry/members"): _R(EDITOR),
     # The member-REMOVE door (owner request, 2026-10-15). EDITOR, the rank of

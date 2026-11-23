@@ -57,8 +57,13 @@ BEFORE: dict[str, tuple[str, bool]] = {
 }
 #: DEC-2a: the three yes/no steps of Tasks AI.
 DEC2A = ("projects.vague_title", "projects.atomize_dedup", "projects.commitment")
+#: DEC-2b: the four pick steps of Tasks AI.
+DEC2B = ("projects.parent_step", "projects.enrich", "projects.delegate_pick",
+         "projects.propose_picks")
+#: SEM-13b (``semantic_model.md`` §10.7): the profiler of a connection.
+CONNECTION = ("connection.map_model",)
 ORG_SETTINGS = ("decide_feature_orgs", "my_day_decide_orgs", "crm_decide_orgs",
-                "projects_decide_orgs")
+                "projects_decide_orgs", "connection_model_orgs")
 
 
 def _clear() -> None:
@@ -164,18 +169,20 @@ def _read(decision):
 def test_the_registry_lists_every_old_feature_in_the_old_order():
     old = list(BEFORE)
     assert list(df.REGISTERED[:len(old)]) == old
-    assert df.REGISTERED[len(old):] == ("projects.align", *DEC2A)
-    assert df.FEATURES == tuple(f for f in old if f.startswith("email."))
-    assert df.MY_DAY_FEATURES == tuple(
-        f for f in old if f.startswith("my_day.") and f != "my_day.day_plan")
+    # SEM-13b pins the new tail: the connection feature comes last.
+    assert df.REGISTERED[len(old):] == ("projects.align", *DEC2A, *DEC2B, *CONNECTION)
+    assert tuple(f for f in old if f.startswith("email.")) == df.FEATURES
+    assert tuple(
+        f for f in old if f.startswith("my_day.") and f != "my_day.day_plan") == df.MY_DAY_FEATURES
     assert df.DAY_PLAN_FEATURES == ("my_day.day_plan",)
-    assert df.CRM_FEATURES == tuple(f for f in old if f.startswith("crm."))
-    assert df.PROJECTS_FEATURES == ("projects.align", *DEC2A)
+    assert tuple(f for f in old if f.startswith("crm.")) == df.CRM_FEATURES
+    assert ("projects.align", *DEC2A, *DEC2B) == df.PROJECTS_FEATURES
+    assert df.CONNECTION_FEATURES == CONNECTION
 
 
 def test_on_features_is_the_old_set_plus_projects_align():
     old_on = frozenset(f for f, (_s, on) in BEFORE.items() if on)
-    assert df.ON_FEATURES == old_on | {"projects.align", *DEC2A}
+    assert old_on | {"projects.align", *DEC2A, *DEC2B, *CONNECTION} == df.ON_FEATURES
 
 
 def test_every_feature_has_a_question_type_and_one_entry():
@@ -224,6 +231,44 @@ def test_a_projects_feature_reads_projects_decide_orgs(monkeypatch):
     assert df.mode_for("projects.align") == "off"
     _set(monkeypatch, "projects.align=on", projects_decide_orgs=ORG)
     assert df.mode_for("projects.align") == "on"
+
+
+def test_a_connection_feature_reads_its_orgs_setting(monkeypatch):
+    """SEM-13b: ``connection.map_model`` reads ``connection_model_orgs``
+    (``CONNECTION_MODEL_ORGS``), bills ``integrations``, starts the cool-down
+    on a 402 only, and is ``off`` by default. No other org list starts it,
+    and its list starts no other feature.
+
+    Mutation: drop the ``connection.`` row of ``PREFIXES``, and the feature
+    reads ``decide_feature_orgs``, so this case fails."""
+    feature = CONNECTION[0]
+    assert df._parse_modes("")[feature] == "off"
+    _set(monkeypatch, "", connection_model_orgs=ORG)
+    assert df.mode_for(feature) == "off"
+    for mode in ("shadow", "on"):
+        _set(monkeypatch, f"{feature}={mode}", connection_model_orgs=ORG)
+        assert df.mode_for(feature) == mode
+    _set(monkeypatch, f"{feature}=on", connection_model_orgs="",
+         decide_feature_orgs=ORG, my_day_decide_orgs=ORG, crm_decide_orgs=ORG,
+         projects_decide_orgs=ORG)
+    assert df.mode_for(feature) == "off"
+    _set(monkeypatch, "crm.map_catalogue=on,email.cold_check=on,projects.align=on",
+         connection_model_orgs=ORG, decide_feature_orgs="", my_day_decide_orgs="",
+         crm_decide_orgs="", projects_decide_orgs="")
+    for other in ("crm.map_catalogue", "email.cold_check", "projects.align"):
+        assert df.mode_for(other) == "off"
+    prefix = df.prefix_of(feature)
+    assert prefix is not None and prefix.prefix == df.CONNECTION_PREFIX
+    assert prefix.orgs_setting == "connection_model_orgs" and prefix.only_402
+    assert df.module_of(feature) == "integrations"
+
+
+def test_a_connection_call_bills_integrations(monkeypatch):
+    fake = _fake(monkeypatch)
+    _set(monkeypatch, f"{CONNECTION[0]}=on", connection_model_orgs=ORG)
+    out = asyncio.run(df.ask(CONNECTION[0], build=lambda: ({"t": 1}, _questions(1)),
+                             read=_read))
+    assert out == ["q00"] and fake.calls[0]["module_slug"] == "integrations"
 
 
 def test_the_projects_list_does_not_start_an_email_feature(monkeypatch):

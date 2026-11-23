@@ -1,0 +1,10 @@
+# CIV-33b: refresh the test timings nightly. The owner installs this timer, see the service file.
+[Unit]
+Description=Metorite durations refresh, nightly (CIV-33b)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

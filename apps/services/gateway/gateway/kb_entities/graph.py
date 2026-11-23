@@ -389,6 +389,14 @@ _ONE_COMPANY_HOSTS = (
     "GROUP BY c.k HAVING count(DISTINCT c.t) = 1"
 )
 
+#: The web domain of a CRM company, by the rule of KG-5 (§4.1): the host of
+#: its website, never a free-mail host of ``CONSUMER_DOMAINS``, never a host of
+#: :data:`SITE_HOSTS` or under one, and never a host that two companies of the
+#: org share. Rows ``t`` (the company id as text) and ``k`` (the host). It
+#: binds ``:org``. The related step of the company search reads the rule here
+#: (FIND-3, ``find_engine.md`` §3.1 rung 4), so the rule has one copy.
+ONE_COMPANY_HOSTS_SQL = _ONE_COMPANY_HOSTS
+
 #: Each host that two companies of the org or more hold.
 _SHARED_HOSTS = (
     f"SELECT c.k FROM ({_COMPANY_HOSTS}) AS c GROUP BY c.k HAVING count(DISTINCT c.t) > 1"
@@ -839,6 +847,7 @@ __all__ = [
     "APP_KINDS",
     "MAX_EDGES",
     "NODE_KINDS",
+    "ONE_COMPANY_HOSTS_SQL",
     "PROVENANCES",
     "RELATIONS",
     "RESOLVER",

@@ -210,6 +210,13 @@ a flag that is off. It still needs the captures, the verifier and the full
 gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
 D200 lists the cases that do not qualify. When in doubt, preview first.
 
+**A slice behind a flag that is off (D218, 2026-11-12).** It merges on green
+with its captures and the `Visual review:` line, and does not wait here. After
+the merge, ask the owner "Approve the flag flip" or "Change it" on the task.
+The flag flips only after Approve. A new page, screen, navigation entry or flow
+with no flag still waits for the preview before the merge. A HIGH slice keeps
+its full loop (D218, `ci_velocity.md` §8).
+
 **3. The owner answers.**
 
 - **Approve:** go to step 4.
@@ -217,13 +224,18 @@ D200 lists the cases that do not qualify. When in doubt, preview first.
 - **No answer in this session:** leave the PR as a draft and the question
   open. The next session finds the answer in `my_work` as `run_answered`.
 
-**4. The local staging gate (LD-9).** Run `bash scripts/stage_local.sh` in the
-worktree. The independent verifier, and the reviewer by tier, run beside it.
-The gate tests the merge of the branch with today's `origin/main`, not the
-branch alone. It runs four steps:
+**4. The gate (D218).** GitHub `pr-check` is the gate for every slice.
+`bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for an
+early signal. Push when the verifier passes, not after each commit.
 
-1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). The
-   home server runs it first.
+**The local staging gate (LD-9)** runs only for a slice that adds a migration
+or changes the build path. Run `bash scripts/stage_local.sh` in the worktree.
+The independent verifier, and the reviewer by tier, run beside it. The gate
+tests the merge of the branch with today's `origin/main`, not the branch
+alone. It runs four steps:
+
+1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). It is
+   optional when `pr-check` already passed on the same head.
 2. The production build: `next build` and `next start`, and the gateway with
    no reload, as `acb_app` under FORCE RLS.
 3. The migration rehearsal. It restores last night's reduced copy at
@@ -237,9 +249,9 @@ commit, with a summary of the run. A failure posts `failure` and names the
 step. Fence: `tests/unit/test_stage_local.py` (LD-9).
 
 **5. Merge.** Run `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n>
---squash`. From LD-10, `premerge.sh` refuses a head commit with no
-`local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
-its fence.
+--squash`. From LD-10, `premerge.sh` refuses a migration or build-path slice
+whose head commit has no `local-staging` pass. A new commit on the branch needs
+a new pass. LD-10 names its fence.
 
 **6. Production, three times a day (D194).** Each release slot, at 05:30,
 13:30 and 21:30 UTC, ships the tip of `main` (§2 and
@@ -250,7 +262,7 @@ confirm `/version` `applied_sha`. The home box's timer starts each release
 (D178). An agent never sets `nightly=true` by hand.
 
 **Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
-`bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
+GitHub `pr-check`, and then `premerge.sh` (D218). Name the steps that ran in
 the PR body.
 
 **Steps 1 to 3 are advisory (R7).** No test makes a skipped preview fail. The
@@ -259,8 +271,9 @@ owner sees a missing preview, because no approval arrives.
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
 **Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
-production at the 21:30 UTC release. LD-8a and LD-8b are in build. The
-spec-auditor gave GO-NARROWED and split LD-8 into three slices.
+production at the 21:30 UTC release. LD-8b is built on its branch, and the
+branch is now in a pull request. It was tested on a fake copy only. LD-8a is in
+build. The spec-auditor gave GO-NARROWED and split LD-8 into three slices.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -341,6 +354,38 @@ no sudo.
 - Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
   `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
   rows, and `acb_app` reads 0 rows of another organization.
+
+**How LD-8b runs (as built).**
+
+```sh
+bash scripts/dev_up.sh --data prod --as <email>     # the newest copy
+bash scripts/dev_up.sh --data prod --copy <DIR> --as <email>
+bash scripts/dev_up.sh --data prod --db-only        # the database only
+bash scripts/dev_up.sh --reset --data demo          # back to the demo seed
+```
+
+- The copy folders are in `~/.metorite/prod-copy/`. `PROD_COPY_DIR` changes
+  the folder. A run takes the newest folder by name. A name that starts with
+  `.` is a pull that did not finish, so the run ignores it.
+- Before a restore, the script checks that all five files are there, and that
+  `SHA256SUMS` names the four data files. Then it runs `sha256sum -c`.
+- The pg17 container starts with `-c maintenance_work_mem=256MB`, after the
+  image name. An IVFFlat index on a large mailbox needs more than the 64 MB
+  default. A server flag reaches every session. `PGOPTIONS` is not used,
+  because the Supabase session pooler ignores it (measured 2026-10-31).
+- The stack keeps the copy that it restored, and its `flags.env`. A newer copy
+  needs `--reset`.
+- The member check reads the list of active members as `acb`, and matches
+  `--as` in the script. The email never goes into the SQL.
+- `--db-only` builds the database and stops, with no gateway and no web app.
+  The R8 fence uses it.
+- `--check` skips the tenant-isolation check in this mode, because that check
+  reads the demo seed.
+- `--refresh-flags` read the staging box, and the owner retired that box
+  (D144). Now `--refresh-flags` exits 2 and names `--data prod`.
+- R8 fence: `tests/unit/test_dev_up_prod_r8.py`. It builds a fake copy in a
+  private `pgvector/pgvector:pg17` container, from the ladder and the RLS
+  promotion, by the queries of `scripts/staging_export.sh`. It needs Docker.
 
 **Non-goals.** No write to production. No change to the export schedule. The
 copy is never used by CI, never goes into git, a log, a PR or a chat message,
@@ -489,7 +534,9 @@ three distinct symptoms, one cause.
 
 **Cap work in flight.** The constraint is not agent capacity; it is integration
 bandwidth, and that is one person. Three or four open branches is the ceiling. A
-queue of six (2026-08-09) is above it.
+queue of six (2026-08-09) is above it. More machines do not raise this cap.
+`docs/dev_capacity.md` sizes lanes, sub-agents and CI to the machines that we
+have, inside this cap.
 
 **The supervisor loop:** audit the spec (is it dispatchable?) → set the risk
 tier → implement one narrowed slice → **independently** verify against the
@@ -650,8 +697,10 @@ fence goes into one list in the PR that adds it. If you are not sure, choose
 **Before you push.** `bash scripts/prepush.sh` runs the fences and the
 affected tests in a few minutes.
 
-**The whole suite, on the home server or this PC.** `bash scripts/ci_local.sh`
-runs every pr-check job on a preset machine. The machine is preset, so a run
+**The whole suite, on the home server or this PC.** GitHub `pr-check` is the
+gate (D218), so this run is optional. Use it when GitHub is down, or for an
+early signal. `bash scripts/ci_local.sh` runs every pr-check job on a preset
+machine. The machine is preset, so a run
 spends its time on tests, not on installs. The jobs come from
 `.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
 cannot drift.

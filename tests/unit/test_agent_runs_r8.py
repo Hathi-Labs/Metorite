@@ -131,6 +131,7 @@ def test_the_routes_are_mounted() -> None:
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"),
+        ("POST", "/projects/agent-runs/{run_id}/answer/replace"),
     ):
         assert pair in mounted, pair
 
@@ -1208,6 +1209,111 @@ def _withdraw(call: Any, user: Any, rid: str, answer: str, key: str | None = Non
                 {"answer_id": answer, "idempotency_key": key or _key()})
 
 
+def _replace(call: Any, user: Any, rid: str, answer: str, selected: list[str],
+             key: str | None = None) -> Any:
+    return call(user, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                {"answer_id": answer, "selected": selected, "idempotency_key": key or _key()})
+
+
+@_DB_GATE
+class TestReplaceAnAnswer:
+    """SW-43b. One transaction: the old answer is withdrawn, the new one is written."""
+
+    async def test_the_flag_off_gives_404(self, w):
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _replace(call, w.a, rid, aid, ["my"])).status_code == 404
+
+    async def test_a_replace_swaps_the_answer_and_the_run_keeps_working(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, qid, aid = await _answered(w, call)
+            done = await _replace(call, w.a, rid, aid, ["my"])
+            assert done.status_code == 200, done.text
+            run = done.json()["run"]
+            assert run["status"] == "in_progress"
+            assert run["answer"]["id"] != aid and run["answer"]["changeable"] is True
+            new = done.json()["activity"]
+            assert new["content"]["selected"] == ["my"]
+            assert new["content"]["replaces"] == aid and new["in_reply_to"] == qid
+            old = _rows(w.p, "SELECT in_reply_to, content FROM pm_agent_run_activities "
+                             "WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert old.in_reply_to is None and old.content["withdrawn"]["by"] == w.a_email
+            # The agent reads the new answer and the marker, never the old answer.
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            ids = [a["id"] for a in read.json()["activities"]]
+            assert aid not in ids and new["id"] in ids
+
+    async def test_a_bad_option_rolls_the_withdraw_back(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            bad = await _replace(call, w.a, rid, aid, ["nope"])
+            assert bad.status_code == 422
+            row = _rows(w.p, "SELECT in_reply_to FROM pm_agent_run_activities "
+                             "WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert row.in_reply_to is not None
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'withdraws'",
+                          r=rid) == 0
+
+    async def test_after_the_agent_read_it_gives_409(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            await _act(call, w.agent_a, rid, type="thought", body="Got it")
+            late = await _replace(call, w.a, rid, aid, ["my"])
+            assert late.status_code == 409
+            assert "already has your answer" in late.json()["detail"]
+
+    async def test_only_the_runs_member_and_never_an_agent(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _replace(call, w.c, rid, aid, ["my"])).status_code == 403
+            assert (await _replace(call, w.agent_a, rid, aid, ["my"])).status_code == 403
+            assert (await _replace(call, w.b, rid, aid, ["my"])).status_code == 404
+
+    async def test_a_replace_needs_an_option_or_a_text(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            none = await call(w.a, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                              {"answer_id": aid, "idempotency_key": _key()})
+            assert none.status_code == 422
+            typed = await call(w.a, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                               {"answer_id": aid, "body": "Use Postgres 16",
+                                "idempotency_key": _key()})
+            assert typed.status_code == 200, typed.text
+            assert typed.json()["activity"]["content"]["replaces"] == aid
+
+    async def test_a_replay_of_the_key_writes_once(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            key = _key()
+            first = await _replace(call, w.a, rid, aid, ["my"], key)
+            second = await _replace(call, w.a, rid, aid, ["my"], key)
+            assert (first.status_code, second.status_code) == (200, 200)
+            assert second.json()["created"] is False
+            assert first.json()["activity"]["id"] == second.json()["activity"]["id"]
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'replaces'",
+                          r=rid) == 1
+
+    async def test_confirm_is_kept_on_an_option_and_absent_otherwise(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            opts = [{"id": "go", "label": "Restart it now", "confirm": True},
+                    {"id": "no", "label": "Not now"}]
+            asked = await _act(call, w.agent_a, run["id"], type="elicitation",
+                               body="Restart?", options=opts)
+            assert asked.status_code == 201, asked.text
+            stored = asked.json()["activity"]["signal_metadata"]["options"]
+            assert stored[0]["confirm"] is True and "confirm" not in stored[1]
+
+
 @_DB_GATE
 class TestWithdrawAnAnswer:
     async def test_the_flag_off_gives_404_and_no_answer_field(self, w):
@@ -1522,3 +1628,738 @@ class TestWithdrawAnAnswer:
             assert self._read_at(w, aid) is None
             assert seen.json()["run"]["answer"]["changeable"] is True
             assert (await _withdraw(call, w.a, rid, aid)).status_code == 200
+
+
+# ── Task 1045a: the `waiting` state (spec agent_coordination.md §3.2) ───────
+
+
+def _waiting_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.waiting_on``, found by content
+    (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "CONSTRAINT pm_agent_runs_waiting_on" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_waiting_migration_is_expand_only_and_checks_the_five_values() -> None:
+    """1045a item 2. Two nullable columns with no default, and a CHECK of the
+    same five values that the gateway and the edge hold."""
+    from agent_edge import tools as edge_tools
+    from gateway.routes.projects import filters
+
+    sql = _waiting_migration().read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS waiting_until TIMESTAMPTZ" in sql
+    assert "DEFAULT" not in sql.split("$checks$")[0].split("SET lock_timeout")[1]
+    for value in filters.AGENT_RUN_WAITING_ON:
+        assert f"'{value}'" in sql, value
+    assert filters.AGENT_RUN_WAITING_ON == edge_tools.WAITING_ON
+    assert filters.AGENT_RUN_WAITING_MAX_MIN == edge_tools.MAX_WAITING_MINUTES == 120
+    assert agent_runs.MAX_WAITING_NOTE == edge_tools.MAX_WAITING_NOTE
+    for forbidden in ("DROP ", "RENAME", "UPDATE "):
+        assert forbidden not in sql.upper().split("-- ====")[-1], forbidden
+
+
+@pytest.mark.parametrize(("lease", "cap"), [
+    ("", 120), ("7200", 120), ("9000", 120), ("1800", 30), ("90", 1), ("30", 1),
+])
+def test_the_cap_of_a_wait_is_120_minutes_or_one_lease(monkeypatch, lease, cap) -> None:
+    """D140.8 and SW-4 item 2. A wait never passes one lease."""
+    from gateway.routes.projects import filters
+
+    monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, lease)
+    assert filters.agent_run_waiting_cap_min() == cap
+
+
+def test_waiting_comes_first_in_the_in_progress_arm() -> None:
+    """§3.2: the order is waiting, then stale, then answered, then working."""
+    from gateway.routes.projects import filters
+
+    sql = filters.AGENT_RUN_STATE_SQL
+    arm = sql[sql.index("WHEN 'in_progress'"):]
+    order = [arm.index(f"'{s}'") for s in ("waiting", "stale", "answered", "working")]
+    assert order == sorted(order), order
+    assert "waiting" in filters.WORKING_STATES
+
+
+def _clock_back(w: Any, rid: str, minutes: int) -> None:
+    """Move the clock of run *rid* on by *minutes*: every stamp of the run
+    goes back by that much, so ``now()`` reads that many minutes later."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE pm_agent_runs SET"
+            " last_activity_at = last_activity_at - make_interval(mins => :m),"
+            " last_agent_activity_at = last_agent_activity_at - make_interval(mins => :m),"
+            " waiting_until = waiting_until - make_interval(mins => :m)"
+            " WHERE id = CAST(:r AS uuid)"), {"r": rid, "m": minutes})
+
+
+def _waits(w: Any, rid: str) -> tuple[Any, Any]:
+    found = _rows(w.p, "SELECT waiting_on, waiting_until FROM pm_agent_runs "
+                       "WHERE id = CAST(:r AS uuid)", r=rid)
+    return found[0][0], found[0][1]
+
+
+_CI_30 = {"on": "ci", "until_minutes": 30, "note": "PR 12 runs its checks"}
+
+
+@_DB_GATE
+class TestTheWaitingState:
+    async def test_a_wait_on_ci_reads_waiting_at_minute_20_and_stale_at_minute_31(self, w):
+        """1045a done-when 1. Mutation: drop the `waiting` arm of the state
+        SQL, and minute 20 reads `stale`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            got = await _act(call, w.agent_a, rid, type="thought",
+                             body="Waiting on CI", waiting=_CI_30)
+            assert got.status_code == 201, got.text
+            run = got.json()["run"]
+            assert run["state"] == "waiting"
+            assert run["waiting"]["on"] == "ci"
+            assert run["waiting"]["note"] == "PR 12 runs its checks"
+            assert run["waiting"]["until"] is not None
+            assert got.json()["activity"]["content"]["waiting"] == {
+                "on": "ci", "until_minutes": 30, "note": "PR 12 runs its checks"}
+            on, until = _waits(w, rid)
+            assert on == "ci" and until is not None
+            _clock_back(w, rid, 20)
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            # The task row carries the wait for the card, and the strip
+            # counts the run as working.
+            task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+            assert task.json()["agent_state"] == "waiting"
+            assert task.json()["agent_waiting"]["on"] == "ci"
+            _clock_back(w, rid, 11)
+            assert await _status(call, w.a, rid) == ("in_progress", "stale")
+            read = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.json()["run"]["waiting"] is None
+            task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+            assert task.json()["agent_state"] == "stale"
+            assert task.json()["agent_waiting"] is None
+
+    async def test_a_thought_at_minute_10_clears_the_wait(self, w):
+        """1045a done-when 2. Mutation: keep the columns on a plain activity,
+        and the run still reads `waiting`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait", waiting=_CI_30)
+            _clock_back(w, rid, 10)
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            got = await _act(call, w.agent_a, rid, type="thought", body="CI passed")
+            assert got.status_code == 201, got.text
+            assert got.json()["run"]["state"] == "working"
+            assert got.json()["run"]["waiting"] is None
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_members_prompt_clears_the_wait(self, w):
+        """§3.2: a member's answer clears the wait, so the card reads
+        `answered`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                       waiting={"on": "member", "until_minutes": 60})
+            said = await _act(call, w.a, rid, type="prompt", body="Go on")
+            assert said.status_code == 201, said.text
+            assert await _status(call, w.a, rid) == ("in_progress", "answered")
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_wrong_wait_gets_422_and_writes_nothing(self, w):
+        """1045a done-when 3: `until_minutes` of 121 gets 422. So do 0, an
+        unknown `on`, a long note and a wait on a question or an error."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            for waiting, kind in (
+                ({"on": "ci", "until_minutes": 121}, "thought"),
+                ({"on": "ci", "until_minutes": 0}, "thought"),
+                ({"on": "lunch", "until_minutes": 5}, "thought"),
+                ({"on": "ci", "until_minutes": 5, "note": "x" * 201}, "thought"),
+                ({"on": "ci", "until_minutes": 5, "extra": 1}, "thought"),
+                ({"on": "ci", "until_minutes": 5}, "elicitation"),
+                ({"on": "ci", "until_minutes": 5}, "error"),
+            ):
+                got = await _act(call, w.agent_a, rid, type=kind, body="b", waiting=waiting)
+                assert got.status_code == 422, (waiting, kind, got.text)
+            said = await _act(call, w.a, rid, type="prompt", body="hi",
+                              waiting={"on": "ci", "until_minutes": 5})
+            assert said.status_code == 422, said.text
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'waiting'",
+                          r=rid) == 0
+            assert _waits(w, rid) == (None, None)
+
+    async def test_own_sub_agents_are_no_wait_and_another_agent_is(self, w):
+        """Owner, 2026-11-07. While the agent's own sub-agents work, the run
+        is working, so ``subagents`` gets 422 and writes nothing. ``agent``
+        (another, external agent) is a wait. The CHECK refuses the old value
+        too. Mutation: put ``subagents`` back in ``RUN_WAITING_ON``."""
+        from sqlalchemy.exc import IntegrityError
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            old = await _act(call, w.agent_a, rid, type="thought", body="b",
+                             waiting={"on": "subagents", "until_minutes": 5})
+            assert old.status_code == 422, old.text
+            assert _waits(w, rid) == (None, None)
+            got = await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                             waiting={"on": "agent", "until_minutes": 10})
+            assert got.status_code == 201, got.text
+            assert _waits(w, rid)[0] == "agent"
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+        with (pytest.raises(IntegrityError, match="pm_agent_runs_waiting_on"),
+              w.p.admin_engine.begin() as c):
+            c.execute(text("UPDATE pm_agent_runs SET waiting_on = 'subagents'"
+                           " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+
+    async def test_a_lease_below_two_hours_caps_the_wait(self, w, monkeypatch):
+        """SW-4 item 2 (D140.8). With a lease of 30 minutes, a wait of 31
+        minutes gets the coded 422, and a wait of 30 is taken."""
+        from gateway.routes.projects import filters
+
+        monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "1800")
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            long = await _act(call, w.agent_a, rid, type="thought", body="b",
+                              waiting={"on": "ci", "until_minutes": 31})
+            assert long.status_code == 422, long.text
+            assert long.json()["detail"]["error"] == agent_runs.WAITING_TOO_LONG
+            ok = await _act(call, w.agent_a, rid, type="thought", body="b",
+                            waiting={"on": "ci", "until_minutes": 30})
+            assert ok.status_code == 201, ok.text
+
+    async def test_the_stranded_clause_never_matches_a_waiting_run(self, w):
+        """1045a done-when 4. A waiting run whose lease ended still reads
+        `waiting`, and the stranded clause does not match it. The control:
+        the same run with no wait matches. Mutation: put the `stale` arm
+        before the `waiting` arm, and the first count is 1."""
+        from gateway.routes.projects import filters
+
+        stranded = (f"SELECT count(*) FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"
+                    f" AND {filters.stranded_clause()}")
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait", waiting=_CI_30)
+            # The lease (2 hours) ended, and the wait has not: an edge case
+            # that the cap prevents, made here by hand.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                    " last_agent_activity_at = now() - interval '3 hours'"
+                    " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            assert _count(w.p, stranded, r=rid) == 0
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET waiting_until = now() - interval"
+                               " '1 minute' WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            assert await _status(call, w.a, rid) == ("in_progress", "stale")
+            assert _count(w.p, stranded, r=rid) == 1
+
+
+# ── Task 1049 (SW-32): the plan of a run (agent_coordination.md SW-32) ──────
+
+
+def _plan_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.plan``, found by content (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "CONSTRAINT pm_agent_runs_plan_shape" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_plan_migration_is_expand_only_and_caps_the_list() -> None:
+    """SW-32. One nullable column, no default, a CHECK of the 30-step cap that
+    the gateway and the edge hold. Mutation: change the 30 of the CHECK."""
+    from agent_edge import tools as edge_tools
+
+    sql = _plan_migration().read_text(encoding="utf-8")
+    body = sql.split("-- ====")[-1]
+    assert "ADD COLUMN IF NOT EXISTS plan JSONB;" in body
+    assert "<= 30" in body and "jsonb_typeof(plan) = 'array'" in body
+    for forbidden in ("DROP ", "RENAME", "UPDATE ", "DEFAULT", "NOT NULL"):
+        assert forbidden not in body.upper().replace("IF NOT EXISTS", ""), forbidden
+    assert agent_runs.MAX_PLAN_STEPS == edge_tools.MAX_PLAN_STEPS == 30
+    assert agent_runs.MAX_PLAN_STEP == edge_tools.MAX_PLAN_STEP == 200
+    assert agent_runs.PLAN_STATUSES == edge_tools.PLAN_STATUSES
+
+
+def _step(content: str, status: str = "pending") -> dict[str, str]:
+    return {"content": content, "status": status}
+
+
+def _plan_of(w: Any, rid: str) -> Any:
+    from gateway.routes.projects.core import from_jsonb
+
+    return from_jsonb(_rows(
+        w.p, "SELECT plan FROM pm_agent_runs WHERE id = CAST(:r AS uuid)", r=rid)[0][0])
+
+
+@_DB_GATE
+class TestTheRunPlan:
+    async def test_each_call_replaces_the_whole_list(self, w):
+        """SW-32 done-when. Mutation: make the UPDATE append to the list."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            first = await call(w.agent_a, "PUT", url, {"steps": [
+                _step("Read the spec", "completed"), _step("Write the code", "inProgress"),
+                _step("Run the tests")]})
+            assert first.status_code == 200, first.text
+            assert [s["status"] for s in first.json()["run"]["plan"]] == [
+                "completed", "inProgress", "pending"]
+            second = await call(w.agent_a, "PUT", url, {"steps": [_step("Only this", "pending")]})
+            assert second.status_code == 200, second.text
+            assert second.json()["run"]["plan"] == [_step("Only this")]
+            assert _plan_of(w, rid) == [_step("Only this")]
+            cleared = await call(w.agent_a, "PUT", url, {"steps": []})
+            assert cleared.status_code == 200 and cleared.json()["run"]["plan"] == []
+            read = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.json()["run"]["plan"] == []
+
+    async def test_a_call_writes_one_action_activity_with_the_counts_and_no_step_text(self, w):
+        """A plan change is a run activity (spec). The step text stays out of
+        the timeline. Mutation: drop the activity write."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": [
+                _step("SECRET-STEP one", "completed"), _step("two", "inProgress"),
+                _step("three"), _step("four", "canceled")]})
+            assert got.status_code == 200, got.text
+            activity = got.json()["activity"]
+            assert activity["type"] == "action"
+            assert activity["content"]["action"] == "set_run_plan"
+            assert activity["content"]["parameters"] == {
+                "steps": "4", "completed": "1", "in_progress": "1"}
+            rows = _rows(w.p, "SELECT content::text FROM pm_agent_run_activities"
+                              " WHERE run_id = CAST(:r AS uuid)", r=rid)
+            assert not any("SECRET-STEP" in r[0] for r in rows)
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities WHERE"
+                               " run_id = CAST(:r AS uuid) AND content->>'action' = 'set_run_plan'",
+                          r=rid) == 1
+            assert _count(w.p, "SELECT count(*) FROM pm_activities WHERE type = 'comment'") == 0
+
+    async def test_the_caps_are_422_and_leave_the_plan_as_it_was(self, w):
+        """30 steps and 200 characters are the limits. Mutation: raise either
+        cap in ``PlanIn`` or ``PlanStepIn``."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            ok = await call(w.agent_a, "PUT", url, {"steps": [_step(f"s{i}") for i in range(30)]})
+            assert ok.status_code == 200, ok.text
+            edge = await call(w.agent_a, "PUT", url, {"steps": [_step("x" * 200)]})
+            assert edge.status_code == 200, edge.text
+            kept = _plan_of(w, rid)
+            for bad in (
+                {"steps": [_step(f"s{i}") for i in range(31)]},
+                {"steps": [_step("x" * 201)]},
+                {"steps": [_step("")]},
+                {"steps": [_step("   ")]},
+                {"steps": [_step("a", "done")]},
+                {"steps": [{"content": "a"}]},
+                {"steps": [{"content": "a", "status": "pending", "extra": 1}]},
+                {"steps": "nope"},
+                {},
+            ):
+                refused = await call(w.agent_a, "PUT", url, bad)
+                assert refused.status_code == 422, (bad, refused.text)
+            assert _plan_of(w, rid) == kept
+
+    async def test_the_database_check_refuses_a_plan_past_30_or_not_an_array(self, w):
+        """The last guard, under the route. Mutation: drop the CHECK."""
+        from sqlalchemy.exc import IntegrityError
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+        for bad in ('[' + ",".join(['{}'] * 31) + ']', '{"a": 1}', '"text"'):
+            with (pytest.raises(IntegrityError, match="pm_agent_runs_plan_shape"),
+                  w.p.admin_engine.begin() as c):
+                c.execute(text("UPDATE pm_agent_runs SET plan = CAST(:p AS jsonb)"
+                               " WHERE id = CAST(:r AS uuid)"), {"p": bad, "r": rid})
+
+    async def test_only_the_agent_of_the_run_writes_its_plan(self, w):
+        """A person, another member's agent, a read-only agent and another
+        organization all fail, and the plan stays null."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            body = {"steps": [_step("x")]}
+            assert (await call(w.a, "PUT", url, body)).status_code == 403
+            agent_c = _principal(w.c_email, w.p.org_a, agent_connection=w.conn_a)
+            assert (await call(agent_c, "PUT", url, body)).status_code == 403
+            read_only = _principal(w.a_email, w.p.org_a, agent_connection=w.conn_a,
+                                   scopes=("projects:read",))
+            assert (await call(read_only, "PUT", url, body)).status_code == 403
+            assert (await call(w.agent_b, "PUT", url, body)).status_code == 404
+            # The same member with another client stamp is not the run's agent.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET client_via = 'mcp:other.example'"
+                               " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            other = await call(w.agent_a, "PUT", url, body)
+            assert other.status_code == 403, other.text
+            assert _plan_of(w, rid) is None
+
+    async def test_a_plan_write_ends_a_wait(self, w):
+        """The activity carries no `waiting`. This pins the documented rule."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                       waiting={"on": "ci", "until_minutes": 30})
+            assert _waits(w, rid)[0] == "ci"
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                             {"steps": [_step("x")]})
+            assert got.status_code == 200, got.text
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_run_that_ended_takes_no_plan(self, w):
+        """The status machine: an agent write on a finished run is 409."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            done = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/finish",
+                              {"idempotency_key": _key()})
+            assert done.status_code == 200, done.text
+            late = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                              {"steps": [_step("x")]})
+            assert late.status_code == 409, late.text
+            assert _plan_of(w, rid) is None
+
+    async def test_the_flag_off_gives_404(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                             {"steps": [_step("x")]})
+            assert got.status_code == 404
+
+    async def test_the_task_row_carries_the_count_and_the_step_in_progress(self, w):
+        """The card line. ``done`` counts completed and canceled steps.
+        Mutation: count ``completed`` only, or read the first step."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            before = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                                {"description": "plan row"})
+            assert before.json()["agent_plan"] is None
+            put = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": [
+                _step("one", "completed"), _step("two", "canceled"),
+                _step("three " + "w" * 120, "inProgress"), _step("four")]})
+            assert put.status_code == 200, put.text
+            row = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"description": "plan row 2"})
+            plan = row.json()["agent_plan"]
+            assert plan["done"] == 2 and plan["total"] == 4
+            assert plan["step"].startswith("three ") and len(plan["step"]) == 80
+            await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": []})
+            empty = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                               {"description": "plan row 3"})
+            assert empty.json()["agent_plan"] is None
+
+
+# ── Task 1045b: linked events count as life (agent_coordination.md) ─────────
+#
+# R7, the mutations. Each one turns a test here red:
+#
+# * 1045b-M1 ``_signal_sql`` also sets ``last_activity_at`` -> the run reads
+#   ``answered`` and ``needs_agent`` lists it:
+#   ``test_a_check_event_leaves_a_thought_run_out_of_answered_and_needs_agent``.
+# * 1045b-M2 ``AGENT_RUN_ANSWER_WAITS_SQL`` reads ``run_life_at_sql`` -> the
+#   same test.
+# * 1045b-M3 ``lease_held_sql`` reads ``last_activity_at`` again ->
+#   ``test_a_linked_event_renews_the_lease_and_the_stranded_clause_stops``.
+
+LINKED_SHA = "e" * 40
+
+
+def _signal_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.last_signal_at``, found by
+    content (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "ADD COLUMN IF NOT EXISTS last_signal_at" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_signal_migration_is_expand_only() -> None:
+    """1045b item 2. One nullable column, no default and no backfill."""
+    sql = _signal_migration().read_text(encoding="utf-8")
+    body = sql.split("-- ====")[-1]
+    assert "ADD COLUMN IF NOT EXISTS last_signal_at TIMESTAMPTZ;" in body
+    for forbidden in ("DEFAULT", "NOT NULL", "DROP ", "RENAME", "UPDATE "):
+        assert forbidden not in body.upper().replace("COMMENT ON", ""), forbidden
+
+
+def test_every_reader_of_the_run_clock_reads_the_life_clock() -> None:
+    """1045b item 3 and item 4. The stale band, the lease, the strand fit and
+    the idle seconds read ``run_life_at_sql``. The answered rule does not."""
+    from gateway import agent_run_sweep
+    from gateway.routes.projects import filters
+
+    life = filters.run_life_at_sql("r")
+    assert life == "GREATEST(r.last_activity_at, r.last_signal_at)"
+    assert "last_signal_at" not in filters.AGENT_RUN_ANSWER_WAITS_SQL
+    stale_arm = filters.AGENT_RUN_STATE_SQL.split("THEN 'waiting'")[1].split("THEN 'stale'")[0]
+    assert life in stale_arm and "r.last_activity_at <" not in stale_arm
+    assert filters.run_life_at_sql("h") in filters.lease_held_sql("h")
+    assert filters.run_life_at_sql("r") in filters.strand_fits_sql("s", "r")
+    for sql in (agent_runs._RUN_SELECT, agent_runs._HOLDER_SQL,
+                filters.agent_state_sql("true"), agent_run_sweep._stranded_sql()):
+        assert filters.run_idle_s_sql("r") in sql
+        assert "clock_timestamp() - r.last_activity_at" not in sql
+    for sql in (agent_run_sweep._CLEAR_SQL, agent_run_sweep._FIRST_MISS_SQL):
+        assert life in sql
+
+
+def _seed_linked_pr(p: Any, org: str, task: str, number: int = 21) -> str:
+    with p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url,"
+            " via, created_by, head_sha) VALUES (CAST(:o AS uuid), CAST(:t AS uuid),"
+            " 'pull_request', 'github', :ref, :url, 'ui', 'dev@runs-r8.test', :sha)"
+            " RETURNING id"),
+            {"o": org, "t": task, "ref": f"acme/widgets#{number}", "sha": LINKED_SHA,
+             "url": f"https://github.com/acme/widgets/pull/{number}"}).scalar_one())
+
+
+def _drop_ref(p: Any, ref: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM pm_task_refs WHERE id = CAST(:i AS uuid)"), {"i": ref})
+
+
+async def _check_event(p: Any, org: str, event: str = "ci_passed") -> int:
+    """One check event on the linked head, as the webhook sends it: in the
+    bound tenant session of *org*, as the non-privileged role."""
+    from gateway.db import tenant_session
+
+    async with (tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+                tenant_session(org) as db):
+        return await agent_runs.signal_linked_runs(
+            db, org, match="head_sha", key=LINKED_SHA, event=event)
+
+
+def _clocks(w: Any, rid: str) -> Any:
+    return _rows(w.p, "SELECT last_activity_at, last_agent_activity_at, last_signal_at"
+                      " FROM pm_agent_runs WHERE id = CAST(:r AS uuid)", r=rid)[0]
+
+
+def _lines(w: Any, rid: str) -> list[str]:
+    return [r.body for r in _rows(
+        w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
+             " WHERE run_id = CAST(:r AS uuid) AND content->>'system' = 'true' ORDER BY seq",
+        r=rid)]
+
+
+@_DB_GATE
+class TestLinkedEvents:
+    async def test_a_check_event_leaves_a_thought_run_out_of_answered_and_needs_agent(
+            self, w):
+        """1045b done-when 2. The newest activity is an agent thought. A check
+        event refreshes the run to ``working``, and the run never reads
+        ``answered``, and ``needs_agent`` does not list it."""
+        ref = _seed_linked_pr(w.p, w.p.org_a, w.task_a)
+        try:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                said = await _act(call, w.agent_a, rid, type="thought", body="Pushed a fix")
+                assert said.status_code == 201, said.text
+                _clock_back(w, rid, 10)
+                assert await _status(call, w.a, rid) == ("in_progress", "stale")
+                before = _clocks(w, rid)
+                assert await _check_event(w.p, w.p.org_a) == 1
+                assert await _status(call, w.a, rid) == ("in_progress", "working")
+                after = _clocks(w, rid)
+                assert after.last_signal_at is not None
+                assert after.last_activity_at == before.last_activity_at
+                assert after.last_agent_activity_at == before.last_agent_activity_at
+                needs = await call(w.agent_a, "GET", "/projects/agent-runs?needs_agent=true")
+                assert needs.status_code == 200, needs.text
+                assert needs.json()["rows"] == []
+                task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+                assert task.json()["agent_state"] == "working"
+                assert _lines(w, rid) == ["CI passed on PR 21."]
+                # A run of org B saw nothing: the org arm and RLS hold.
+                assert await _check_event(w.p, w.p.org_b) == 0
+                assert _clocks(w, rid).last_signal_at == after.last_signal_at
+        finally:
+            _drop_ref(w.p, ref)
+
+    async def test_a_linked_event_renews_the_lease_and_the_stranded_clause_stops(self, w):
+        """1045b done-when 3. A run whose lease ended is stranded and leaves
+        the task unheld. A linked event renews the lease, so the task is held
+        again and the stranded clause stops matching."""
+        from gateway.routes.projects import filters
+
+        stranded = (f"SELECT count(*) FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"
+                    f" AND {filters.stranded_clause()}")
+        unheld = (f"SELECT count(*) FROM pm_tasks t WHERE t.id = CAST(:t AS uuid)"
+                  f" AND {filters.unheld_clause()}")
+        ref = _seed_linked_pr(w.p, w.p.org_a, w.task_a)
+        try:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                await _act(call, w.agent_a, rid, type="thought", body="Waiting for CI")
+                with w.p.admin_engine.begin() as c:
+                    c.execute(text(
+                        "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                        " last_agent_activity_at = now() - interval '3 hours'"
+                        " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+                assert _count(w.p, stranded, r=rid) == 1
+                assert _count(w.p, unheld, t=w.task_a) == 1
+                assert await _check_event(w.p, w.p.org_a, "ci_failed") == 1
+                assert _count(w.p, stranded, r=rid) == 0
+                assert _count(w.p, unheld, t=w.task_a) == 0
+                # The stale band reads the same clock.
+                held = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+                assert held.json()["run"]["state"] == "working"
+                assert _lines(w, rid) == ["CI failed on PR 21."]
+                # One more event with the same words writes no second line.
+                assert await _check_event(w.p, w.p.org_a, "ci_failed") == 1
+                assert _lines(w, rid) == ["CI failed on PR 21."]
+        finally:
+            _drop_ref(w.p, ref)
+
+
+# ── Task 1045d: the task row sends the open strand of its run ────────────────
+
+
+def _strand(w: Any, rid: str, reason: str = "agent_quiet") -> None:
+    """The first miss of the sweep, as the sweep writes it: the run's life
+    clock at the miss goes into ``seen_activity_at``, so the strand fits."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_run_strands"
+            " (organization_id, run_id, task_id, member_email, reason, seen_activity_at)"
+            " SELECT r.organization_id, r.id, r.task_id, r.member_email, :why,"
+            "        GREATEST(r.last_activity_at, r.last_signal_at)"
+            "   FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"), {"r": rid, "why": reason})
+
+
+@_DB_GATE
+class TestTheStrandedRow:
+    async def test_a_stranded_run_shows_on_the_task_row_and_the_list(self, w):
+        """1045d done-when 1. The task row and the list row carry the same
+        strand as the runs wire. Mutation: drop `_attach_stranded`, and the
+        row reads null."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            got = task["agent_stranded"]
+            assert got["reason"] == "agent_quiet"
+            assert got["nudged_at"] is not None and got["recovered_at"] is None
+            assert isinstance(got["idle_s"], int)
+            run = (await call(w.a, "GET", f"/projects/agent-runs/{rid}")).json()["run"]
+            assert run["stranded"]["reason"] == got["reason"]
+            assert run["stranded"]["nudged_at"] == got["nudged_at"]
+            listed = await call(w.a, "GET", "/projects/tasks?q=extruder")
+            rows = {r["id"]: r for r in listed.json()["rows"]}
+            assert rows[w.task_a]["agent_stranded"]["reason"] == "agent_quiet"
+
+    async def test_a_strand_that_the_sweep_cleared_shows_nothing(self, w):
+        """1045d done-when 2. Mutation: read the strand table without
+        `strand_fits_sql`, and a cleared strand still shows."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_agent_run_strands SET cleared_at = now(),"
+                    " cleared_reason = 'new_activity' WHERE run_id = CAST(:r AS uuid)"),
+                    {"r": rid})
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_a_new_activity_ends_the_strand_before_the_sweep_runs(self, w):
+        """The strand stops fitting at once when the agent posts, before the
+        next tick writes `cleared_at` (the rule of `strand_fits_sql`)."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            assert (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()[
+                "agent_stranded"] is not None
+            await _act(call, w.agent_a, rid, type="thought", body="Back at work")
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_a_task_with_no_run_and_the_flag_off_show_nothing(self, w, monkeypatch):
+        async with _session(w.p) as call:
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            from acb_common import get_settings
+
+            monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+            task = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}")).json()
+            assert task["agent_stranded"] is None
+
+    async def test_another_org_never_sees_the_strand(self, w):
+        """R5: the strand of org A's run never reaches a row of org B."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            _strand(w, rid)
+            other = await call(w.b, "GET", f"/projects/tasks/{w.task_a}")
+            assert other.status_code in (403, 404)
+            listed = await call(w.b, "GET", "/projects/tasks?q=extruder")
+            assert all(r.get("agent_stranded") is None for r in listed.json()["rows"])
+
+
+@_DB_GATE
+class TestChildRunsBesideTheRunRoutes:
+    """WS-MCP SW-39 (``agent_coordination.md`` §3.11.9). A child run has no
+    task, so the run routes and the sweep never meet one. The rest of SW-39
+    is ``test_agent_child_runs_r8.py``."""
+
+    async def _parent_and_child(self, w: Any, call: Any) -> tuple[str, str]:
+        rid = (await _start(w, call, idempotency_key=_key()))["id"]
+        made = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/children",
+                          {"agent_label": "implementer"})
+        assert made.status_code == 201, made.text
+        return rid, made.json()["run"]["id"]
+
+    async def test_the_run_wire_says_run_and_names_no_parent(self, w):
+        async with _session(w.p) as call:
+            run = await _start(w, call, idempotency_key=_key())
+            listed = (await call(w.a, "GET", f"/projects/tasks/{w.task_a}/agent-runs")).json()
+        assert (run["kind"], run["parent_run_id"]) == ("run", None)
+        assert [(r["kind"], r["parent_run_id"]) for r in listed["rows"]] == [("run", None)]
+
+    async def test_a_child_id_is_no_run_on_the_run_routes(self, w):
+        """A child takes no activity, no finish, no release and no read of its
+        own (§3.12.7 rule 8: a person steers the parent). Each route loads a
+        task run, so a child id is 404, as an unknown id is."""
+        async with _session(w.p) as call:
+            _rid, child = await self._parent_and_child(w, call)
+            answers = [
+                await _act(call, w.agent_a, child, type="thought", body="hi"),
+                await _act(call, w.a, child, type="prompt", body="stop"),
+                await call(w.agent_a, "POST", f"/projects/agent-runs/{child}/finish", {}),
+                await call(w.agent_a, "POST", f"/projects/agent-runs/{child}/release", {}),
+                await call(w.a, "GET", f"/projects/agent-runs/{child}"),
+            ]
+        assert [a.status_code for a in answers] == [404] * 5, [a.text for a in answers]
+        [row] = _rows(w.p, "SELECT status FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=child)
+        assert row.status == "in_progress"
+        assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities"
+                           " WHERE run_id = CAST(:i AS uuid)", i=child) == 0
+
+    async def test_the_sweep_never_reads_a_quiet_child(self, w):
+        """The stranded read of the sweep names the task subject. A child
+        that is as quiet as its parent is never stranded, so it gets no
+        nudge and no recovery record."""
+        from gateway import agent_run_sweep
+
+        async with _session(w.p) as call:
+            rid, child = await self._parent_and_child(w, call)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                " last_agent_activity_at = now() - interval '3 hours'"
+                " WHERE id IN (CAST(:r AS uuid), CAST(:c AS uuid))"), {"r": rid, "c": child})
+        stranded = {str(r.id) for r in _rows(
+            w.p, agent_run_sweep._stranded_sql(), n=50, window=600)}
+        assert rid in stranded and child not in stranded
