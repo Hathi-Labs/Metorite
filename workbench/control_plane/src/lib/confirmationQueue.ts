@@ -30,6 +30,7 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/archiveUndo";
 import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
@@ -379,6 +380,9 @@ export interface ConfirmationReceipt {
   /** A held Reject (`lib/rejectHold.ts`): the POST has not gone, and the line
    *  offers Undo. `released` clears it once the POST goes. */
   undo?: boolean;
+  /** WT-6a: the archive that this approved card made, and where its Undo is
+   *  (`lib/archiveUndo.ts`). Only the server's `confirmation_undo` sets it. */
+  archive?: ArchiveUndo & { state: ArchiveUndoState };
 }
 
 export interface ConfirmationQueueState {
@@ -423,6 +427,9 @@ export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" 
 }
 
 export function receiptText(r: ConfirmationReceipt): string {
+  // WT-6a: an archive line says what its Undo did.
+  const undone = r.archive ? archiveUndoText(r.archive.state, r.label) : null;
+  if (undone) return undone;
   switch (r.kind) {
     case "applying":
       // A held Reject already reads as done, and offers Undo (#916).
@@ -493,6 +500,10 @@ export type ConfirmationAction =
     }
   /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
   | { type: "released"; key: string }
+  /** WT-6a: the server's `confirmation_undo` for an approved archive card. */
+  | { type: "undoOffered"; requestId: string; undo: ArchiveUndo }
+  /** WT-6a: where the Undo of an archive line is now. */
+  | { type: "undoState"; key: string; state: ArchiveUndoState }
   | { type: "answered"; key: string }
   /** Task 3827: the tool refused the approved card because the object changed
    *  after it. `confirmation_not_done` carries the card's `request_id`, so the
@@ -739,6 +750,23 @@ export function confirmationReducer(
       return {
         ...state,
         receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, undo: undefined })),
+      };
+    case "undoOffered":
+      // Only a line of THIS chat that the member approved, and only once. A
+      // request id that no line here holds (another chat) attaches nothing.
+      // A "Not done" line (task 3827) wrote nothing, so it offers no Undo.
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent !== "approved" || r.kind === "refused" || r.kind === "notDone" || r.archive
+            ? r
+            : { ...r, archive: { ...action.undo, state: "ready" } }),
+      };
+    case "undoState":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          r.archive ? { ...r, archive: { ...r.archive, state: action.state } } : r),
       };
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and

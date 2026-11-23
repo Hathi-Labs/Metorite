@@ -2491,6 +2491,10 @@ async def archive_task(
     The work is :func:`archive_task_in`, the one core that the archive
     approval of WS-55 EA-6g calls too.
 
+    The reply carries ``was_archived`` (WT-6a). True means the task was on
+    the shelf before this call, so this call wrote nothing, and the reply's
+    ``updated_at`` is the version of the earlier archive.
+
     H-409 item 1: the archive ends the task's open agent run in the same
     transaction. A run that an agent write holds at that moment refuses the
     lock, and ``transient_as_409`` answers 409 with nothing written.
@@ -2503,6 +2507,10 @@ async def archive_task(
             db, vis, task, user, include_subtasks=include_subtasks, end_runs=True,
         )
         result = outcome.row
+        # WT-6a: true when the task was archived before this call, which then
+        # wrote nothing. Its `updated_at` is the version of THAT archive, so
+        # the chat tool offers no Undo for it (`guarded.archive_task`).
+        result["was_archived"] = outcome.was_archived
         cascade = outcome.cascade
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
@@ -2535,6 +2543,7 @@ async def _reopen_after_unarchive(db: Any, row: Any) -> list[str]:
 @transient_as_409
 async def unarchive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Bring an archived task back onto its board.
 
@@ -2549,6 +2558,11 @@ async def unarchive_task(
     parent took it there. The client restores the exact ids an archive
     cascade reported, and nothing else.
 
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is
+    :func:`_check_version`. The Undo of a chat receipt sends the version that
+    the archive answered, so a change since answers 412 and restores nothing.
+    An absent header passes (D-PM-20), so each app call is unchanged.
+
     H-409 fix round 1 (task 748). The archive ended the task's open agent
     run, so the unarchive puts that run back inside the undo window, in any
     lane (the marker decides, fix round 2; ``agent_runs.reopen_run_of_reopened_task``).
@@ -2558,6 +2572,8 @@ async def unarchive_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # After the visibility load, so a hidden task stays a 404 (R5).
+        _check_version(task, if_match)
         await assert_task_project_open(db, task)
         if getattr(task, "archived_at", None) is None:
             return await _with_agent_state(db, row_to_dict(task, TaskModel))
