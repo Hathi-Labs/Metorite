@@ -1100,6 +1100,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # under an open run of the same member and connection. Class X in the
     # chat manifest: only a signed agent sends it, and a person gets 422.
     ("POST", "/projects/agent-runs/{run_id}/children"),
+    # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
+    # run, and it writes one `action` activity as a heartbeat.
+    ("PUT", "/projects/agent-runs/{run_id}/plan"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
     # WS-39 LP-1a: `post_project_update`. The route needs the right of a task

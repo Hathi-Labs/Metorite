@@ -575,6 +575,10 @@ MANIFEST: tuple[Route, ...] = (
     # member answers the question on the task, so the chat waits for EA-12e.
     Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
           "record_outside_decision", "B"),
+    # WS-MCP SW-32 (task 1049). An outside agent sets the checklist of its own
+    # run. It writes a plan on the run and an action line, and changes no
+    # task, so class B. The chat has no run of its own, so it gets no tool.
+    Route("PUT", "/projects/agent-runs/{run_id}/plan", "set_run_plan", "B"),
     # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
     # request writes a question and archives nothing, so it is class B. The
     # run's member answers on the task. The approval archives, so it is
@@ -698,6 +702,9 @@ PLANNED: dict[str, str] = {
     # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
     # agent. The chat acts as the member, who answers on the task.
     "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
+    # WS-MCP SW-32 (2026-11-11) added the run plan for an outside agent. The
+    # chat has no run of its own.
+    "set_run_plan": "WS-MCP SW-32, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1716,6 +1723,19 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "write reads the row first."
         ),
     },
+    # one_assistant_context.md §9.4 WT-6a: the browser's Undo of a chat receipt.
+    ("POST", "/projects/tasks/{task_id}/unarchive"): {
+        "If-Match": (
+            "The Undo of an archive receipt in the chat (WT-6a). The browser sends "
+            "the version that the archive gave. The unarchive tool reads the row first."
+        ),
+    },
+    ("POST", "/projects/nodes/{project_id}/unarchive"): {
+        "If-Match": (
+            "The Undo of an archive receipt in the chat (WT-6a). The browser sends "
+            "the version after the archive. The unarchive tool reads the row first."
+        ),
+    },
     ("POST", "/projects/tasks/move/preview"): {
         "status_map": _MAPPING_CARD_REASON,
         "field_map": _MAPPING_CARD_REASON,
@@ -1922,6 +1942,8 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
         "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
     },
+    # WS-MCP SW-32: the run plan, with the other run tools.
+    ("PUT", "/projects/agent-runs/{run_id}/plan"): {"steps": "G23"},
 }
 
 
