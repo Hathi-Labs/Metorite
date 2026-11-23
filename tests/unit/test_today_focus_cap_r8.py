@@ -115,7 +115,7 @@ def test_the_bulk_route_refuses_a_mark_and_a_clear() -> None:
 async def test_the_bulk_tool_refuses_focus_before_the_card() -> None:
     from skill_projects import guarded
 
-    out = await guarded._bulk_personal(["a", "b"], json.dumps({"focus": "yes"}))
+    out = await guarded._bulk_personal(["a", "b"], json.dumps({"todays_focus": "yes"}))
     assert "one task at a time" in out
 
 

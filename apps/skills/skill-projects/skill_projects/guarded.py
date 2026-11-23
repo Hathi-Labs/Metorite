@@ -1275,9 +1275,9 @@ def _overlay_shown(value: Any) -> str:
     return data(value)
 
 
-#: The arguments of ``personal``: set_my_overlay's, less ``focus``. The cap of
+#: The arguments of ``personal``: set_my_overlay's, less ``todays_focus``. The cap of
 #: today's focus holds for one mark at a time, so the bulk route takes none.
-_BULK_OVERLAY_ARGUMENTS = tuple(a for a in OVERLAY_ARGUMENTS if a != "focus")
+_BULK_OVERLAY_ARGUMENTS = tuple(a for a in OVERLAY_ARGUMENTS if a != "todays_focus")
 
 
 async def _bulk_personal(ids: list[str], personal: str) -> str:
@@ -1292,10 +1292,10 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
             "personal is a JSON object with set_my_overlay's arguments, for example "
             f'{{"disposition": "someday"}}. The arguments are {", ".join(_BULK_OVERLAY_ARGUMENTS)}.'
         )
-    if "focus" in given:
+    if "todays_focus" in given:
         # WS-MDC CC-2: the bulk route takes no mark, because the cap of
         # today's focus holds for one mark at a time.
-        return "Mark today's focus on one task at a time, with set_my_overlay focus."
+        return "Mark today's focus on one task at a time, with set_my_overlay todays_focus."
     values = await _overlay_values(given, {})
     if isinstance(values, str):
         return values

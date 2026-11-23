@@ -1252,7 +1252,7 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "delegated_at": "set_my_overlay.waiting_since",
         "expected_by": "set_my_overlay.expected_by",
         # WS-MDC CC-2: today's focus, the member's today or null.
-        "focus_on": "set_my_overlay.focus",
+        "focus_on": "set_my_overlay.todays_focus",
     },
     ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
     ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
