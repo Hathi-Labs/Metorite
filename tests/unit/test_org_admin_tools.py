@@ -428,3 +428,59 @@ async def test_the_status_card_of_a_suspend_is_unchanged(gw, card) -> None:
     out = await oa.set_member_status(MEMBER, "suspended")
     assert out["ok"] is True
     assert card.shown[0]["title"].startswith("Suspend")
+
+
+# ── The held chat (owner decision of 2026-11-23, task 3102) ────────────────
+
+_WRITES = ("set_member_roles", "set_member_status", "answer_access_request")
+
+
+def _switch(monkeypatch, orgs: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", orgs)
+
+
+def test_org_admin_is_a_held_write_owner() -> None:
+    """Mutation: take ``org-admin`` out of ``HELD_WRITE_OWNERS`` -> red."""
+    from acb_skills import egress
+
+    assert "org-admin" in egress.HELD_WRITE_OWNERS
+    assert set(_WRITES) | {"list_members"} <= egress._owner_tool_names()
+    assert not set(_WRITES) & set(egress.HELD_CARD_WRITE_TOOLS)
+
+
+@pytest.mark.parametrize("owner", [None, "org-admin"])
+def test_a_held_chat_holds_off_each_write_and_keeps_the_list(monkeypatch, owner) -> None:
+    """With the switch on, a held chat holds no role grant, status change or
+    answer to a sign-in request. The list is a read and stays. *owner* None is
+    the call of the pack builder. Mutation: drop ``org-admin`` from
+    ``HELD_WRITE_OWNERS`` -> each write stays -> red."""
+    from acb_skills import egress
+
+    _switch(monkeypatch, "*")
+    assert egress.held_card_writes_on() is True
+    tools = {fn.__name__: fn for fn in oa.ORG_ADMIN_TOOLS}
+    for name in _WRITES:
+        for item in (tools[name], name):
+            assert egress.is_egress_tool(item) is False, name
+            assert egress.is_held_off_write(item, owner=owner) is True, name
+            assert egress.is_held_chat_off(item, owner=owner) is True, name
+    for item in (tools["list_members"], "list_members"):
+        assert egress.is_held_off_write(item, owner=owner) is False
+        assert egress.is_held_chat_off(item, owner=owner) is False
+
+
+@pytest.mark.parametrize("owner", [None, "org-admin"])
+def test_with_the_switch_off_a_held_chat_keeps_each_tool(monkeypatch, owner) -> None:
+    """With ``HELD_CARD_WRITES_ORGS`` empty, the rule before the slice binds:
+    a held chat drops only what leaves Metorite, and no org-admin tool does.
+    Mutation: let ``is_held_off_write`` skip the switch -> red."""
+    from acb_skills import egress
+
+    _switch(monkeypatch, "")
+    assert egress.held_card_writes_on() is False
+    for fn in oa.ORG_ADMIN_TOOLS:
+        for item in (fn, fn.__name__):
+            assert egress.is_held_off_write(item, owner=owner) is False, fn.__name__
+            assert egress.is_held_chat_off(item, owner=owner) is False, fn.__name__

@@ -1555,7 +1555,17 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
 #: A pack family is one way to know a tool of an owner, and a run of the owner's
 #: own agent is the other: its own tool list can hold a write that no family
 #: names, so the rule reads that too (the ``owner`` of :func:`is_held_off_write`).
-HELD_WRITE_OWNERS: frozenset[str] = frozenset({"projects-assistant", "crm-assistant"})
+#:
+#: ``org-admin`` (PAR-2a, owner decision of 2026-11-23, task 3102). Its writes
+#: grant roles and admit outside addresses to the org, so mail that a held
+#: chat read must not steer them. Each says ``open_world=False`` and shows a
+#: card, and none is on :data:`HELD_CARD_WRITE_TOOLS`. So a held chat holds off
+#: ``set_member_roles``, ``set_member_status`` and ``answer_access_request``.
+#: ``list_members`` says ``read_only=True`` and stays. The owner never runs as
+#: an agent, so only its pack family reaches the rule. Fence:
+#: ``tests/unit/test_org_admin_tools.py``.
+HELD_WRITE_OWNERS: frozenset[str] = frozenset(
+    {"projects-assistant", "crm-assistant", "org-admin"})
 #: The tools of an owner's own agent that stay though no pack family names them:
 #: each sends only reads, and writes only a file of the chat, as
 #: ``tool_packs.CHAT_FILE_TOOLS``. ``crm_report`` says ``read_only=False`` so that
