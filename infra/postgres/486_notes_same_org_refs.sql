@@ -1,5 +1,5 @@
 -- ============================================================================
--- 479_notes_same_org_refs.sql — a notes key that names a row of another
+-- 486_notes_same_org_refs.sql — a notes key that names a row of another
 -- tenant is refused, for the 10 keys between the notes tables (Metorite task
 -- 3845).
 --
@@ -135,7 +135,8 @@
 --
 -- The number is taken at build time (R1). The lane booked 473 for task 3845
 -- on 2026-11-21. Main reached 474 first (PR 2719) on 2026-11-22, so the file
--- became 479 (booked on the box ledger). Task 3846 holds 476 (472 went to
+-- became 479. Main reached 481 first (PR 2774) on 2026-11-23, so the file
+-- became 486 (booked on the box ledger). Task 3846 holds 476 (472 went to
 -- SW-107). Check it again at merge.
 --
 -- Depends on: 01_schema.sql, 95, 118, 120, 121 (the tables), and the

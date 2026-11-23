@@ -722,7 +722,7 @@ Stated plainly, so nobody reads silence as clearance.
    bound to org A could insert a child that named a meeting that org B owns. The child took
    org A from the DEFAULT, and RLS accepted it.
 
-   Migration 479 (473 at build time) adds the check-only function
+   Migration 486 (473 at build time, then 479) adds the check-only function
    `notes_same_org_ref()` and one attachment for each key. It refuses a parent of another org
    with SQLSTATE 23503, for each role. It keeps the rule of 471, so the delete of a meeting
    or a recording still works.
