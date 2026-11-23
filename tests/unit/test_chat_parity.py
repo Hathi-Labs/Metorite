@@ -690,8 +690,9 @@ def test_eight_ceilings_went_up_since_p0() -> None:
     """The count that the owner met on 2026-11-13. A ceiling may go down, and one that
     goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
+    # PAR-8b (task 3903) took the shell below its baseline (16 to 7).
     assert up == ["calendar", "chat", "email", "integrations", "knowledge", "settings",
-                  "shell", "studio"]
+                  "studio"]
 
 
 def test_a_raise_with_no_task_in_its_comment_is_found() -> None:

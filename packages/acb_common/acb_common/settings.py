@@ -1772,6 +1772,23 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_chat_pin_tool.py, tests/unit/test_flag_reload.py.
     chat_pin_tool_orgs: str = ""
 
+    # ── Home and the shell from the chat (chat_parity.md §6.4, PAR-8b) ──────
+    #
+    # `home_tools_orgs` lists the organization ids where the orchestrator
+    # holds the five Home tools of `acb_skills.home_tools`, or `*` for each
+    # one. They read the Home feed, Needs you, the brief, the quick find and
+    # the Home settings. They change a Home card, a Home
+    # setting and the default sidebar, and they send a test notification.
+    # Empty means off: no chat holds them, and the tool count does not move.
+    # The one reader is `acb_skills.home_tools.home_tools_on`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change at the
+    # next run (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-GATE: any value other than empty on a box. Only the owner flips
+    # it, because the five tools join each request and move the tool cap.
+    # Fence: tests/unit/test_home_tools.py.
+    home_tools_orgs: str = ""
+
     # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
     #
     # `chat_card_record_orgs` lists the organization ids where a write card

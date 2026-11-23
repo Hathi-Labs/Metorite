@@ -588,6 +588,31 @@ def _chat_pin_enabled(org: str | None = None) -> bool:
         return False
 
 
+def _home_tools_enabled(org: str | None = None) -> bool:
+    """True when the Home tools are on for this assistant's org.
+
+    PAR-8b (``chat_parity.md`` §6.4, task 3903). The rule is the one reader of
+    ``HOME_TOOLS_ORGS``, ``acb_skills.home_tools.home_tools_on``. The org is
+    found as :func:`_spawn_subagents_enabled` finds it, and a caller with none
+    fails closed. Each route asks its own gates again at each call. Never
+    raises.
+    """
+    try:
+        from acb_skills.home_tools import home_tools_on
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return home_tools_on(org)
+    except Exception:
+        return False
+
+
 def _find_enabled(org: str | None = None) -> bool:
     """True when ``FIND_ORGS`` names this assistant's organization (WS-FIND
     FIND-5). The rule is ``acb_skills.company_search_tools.find_on`` (FIND-6),
@@ -1351,6 +1376,14 @@ def build_orchestrator_agent(
         from acb_skills.chat_pin_tools import TOOLS as _PIN_TOOLS
 
         pin_tools = list(_PIN_TOOLS)
+    # PAR-8b (chat_parity.md §6.4, task 3903): the Home page, Needs you and the
+    # shell, the orchestrator's own, on this one path. Dark until
+    # HOME_TOOLS_ORGS names the org. Fence: tests/unit/test_home_tools.py.
+    home_tools: list[Any] = []
+    if _home_tools_enabled(organization_id):
+        from acb_skills.home_tools import HOME_TOOLS as _HOME_TOOLS
+
+        home_tools = list(_HOME_TOOLS)
     core_tools: list[Any] = [
         *retrieval_tools,
         *profile_tools,
@@ -1361,6 +1394,7 @@ def build_orchestrator_agent(
         *guide_tool_list,
         *spawn_tools,
         *pin_tools,
+        *home_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
