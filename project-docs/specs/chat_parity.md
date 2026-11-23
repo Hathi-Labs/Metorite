@@ -25,11 +25,11 @@ ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
 From that point they only go down.
 
 **PAR-8b (task 3903, rung 5) is BUILT, 2026-11-23, dark.** It takes the
-shell debt from 16 rows to 1. Five tools of the orchestrator do the shell acts
+shell debt from 16 rows to 2. Five tools of the orchestrator do the shell acts
 from the chat (`acb_skills/home_tools.py`).
 
-`home_read` reads the Home feed, Needs you, the brief, the quick find, the
-approval queue and the Home settings. `home_card` changes how one Home card shows. `home_prefs` saves one
+`home_read` reads the Home feed, Needs you, the brief, the quick find and the
+Home settings. `home_card` changes how one Home card shows. `home_prefs` saves one
 Home setting. `home_layout` sets the default sidebar of a role.
 `home_test_push` sends a test notification.
 
@@ -52,10 +52,12 @@ refuses a character that no person sees, with the one rule of
   routes subscribe the browser of one device, and only that browser holds the
   push address and its secret. No kind fits a device exactly. The rows use
   `session` and `secret`. A new kind needs the owner (§2).
-- **One row stays debt.** The decision on a pending action waits for §7,
-  item 6. `pending_actions` has no requester column, so a tool cannot tell an
-  action that the chat itself asked for. `home_read` lists the queue, and the
-  member decides on the Approvals page.
+- **Two rows stay debt: the approval queue and its decision.** The safety
+  fence `test_no_person_present.py` refuses a tool that names
+  `/actions/pending`, a read too. The decision waits for §7, item 6.
+  `pending_actions` has no requester column, so a tool cannot tell an action
+  that the chat itself asked for. The member reads and decides on the
+  Approvals page.
 
 **Epic:** Metorite task 1238. Written 2026-11-01.
 
@@ -217,7 +219,7 @@ table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
 | apps | 29 | 28 | P-6 | 3115 |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 1 | P-7 | 3115, 3903 (PAR-8b built) |
+| shell | 15 | 2 | P-7 | 3115, 3903 (PAR-8b built) |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -329,7 +331,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, 3112 | 3904 | 14 and 14 | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
-| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 1 (PAR-8b built) and 18 | Four most-used actions are here. |
+| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 2 (PAR-8b built) and 18 | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |

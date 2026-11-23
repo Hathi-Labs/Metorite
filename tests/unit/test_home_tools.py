@@ -2,11 +2,11 @@
 
 Spec: ``project-docs/specs/chat_parity.md`` §6.4, rung 5. Module:
 ``packages/acb_skills/acb_skills/home_tools.py``. The five tools send the
-shell routes, the brief, the approval queue and the test push over HTTP as
+shell routes, the brief and the test push over HTTP as
 the member of the run. So each route keeps its own gates and checks.
 
 Hermetic. Each request of a tool goes through an ASGI app that mounts the REAL
-gateway routers (``/shell``, ``/brief``, ``/actions``, ``/push``). The REAL
+gateway routers (``/shell``, ``/brief``, ``/push``). The REAL
 handler runs, with its REAL body model and its REAL gates. Only the reads and
 the writes under it are fakes: no database, no Redis, no real push, no mail
 and no model. ``GET /auth/me`` is a small stub that reports the rights of the
@@ -34,9 +34,9 @@ The fences (R7), each with its mutation:
 * ``home-dark``: the orchestrator holds the tools only for an org on
   ``HOME_TOOLS_ORGS``. Mutation: give the build the tools with no flag test
   -> red.
-* ``home-parity``: 10 shell rows are ``COVERED`` by a Home tool, 5 are
-  ``EXEMPT``, the decision on a pending action stays ``DEBT``, the ceiling of
-  the shell is 1, and the wave P-7 names task 3903. Mutation: drop 3903 from
+* ``home-parity``: 9 shell rows are ``COVERED`` by a Home tool, 5 are
+  ``EXEMPT``, the two rows of the approval queue stay ``DEBT``, the ceiling of
+  the shell is 2, and the wave P-7 names task 3903. Mutation: drop 3903 from
   ``WAVES["P-7"]`` -> red.
 
 Run: ``uv run pytest tests/unit/test_home_tools.py -q``.
@@ -132,7 +132,6 @@ def _card(**over: Any) -> dict[str, Any]:
 def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (one fake for each route)
     """A FastAPI app with the real routers. The fakes stand under the
     handlers, so each real gate and each real body model runs."""
-    import action_broker
     from acb_auth import get_current_user
     from fastapi import FastAPI
     from gateway import my_day_loop
@@ -140,7 +139,7 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
     from gateway.push import flags as push_flags
     from gateway.push import routes as push_routes
     from gateway.push import sender
-    from gateway.routes import actions, brief_today
+    from gateway.routes import brief_today
     from gateway.routes import shell as shell_pkg
     from gateway.routes.shell import cache, feed, needs, prefs, search, state
 
@@ -208,13 +207,6 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
                                   source_app="tasks", source_kind="task", href="/projects")]
         return run, claims
 
-    def _pending() -> list[dict[str, Any]]:
-        return [{"id": f"p{i}", "actor": "orchestrator", "action": "email.send",
-                 "target": f"bo@out.test {PLANTED}", "payload": {"body": "x" * 1000},
-                 "authority": "member", "destructive": True, "disposition": "ask",
-                 "status": "pending", "created_at": "2026-11-22T10:00:00+00:00"}
-                for i in range(25)]
-
     async def _send_push(_org: str, _email: str, _msg: Any) -> Any:
         gw.pushes += 1
         return SimpleNamespace(devices=2, sent=2, removed=0, failed=0)
@@ -234,7 +226,6 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
     monkeypatch.setattr(acb_common, "save_org_setting", _save, raising=False)
     monkeypatch.setattr(brief_today.flags, "in_app", lambda _org: True)
     monkeypatch.setattr(brief_today, "read_today", _read_today)
-    monkeypatch.setattr(action_broker, "list_pending", _pending)
     monkeypatch.setattr(push_flags, "enabled", lambda: True)
     monkeypatch.setattr(push_flags, "configured", lambda: True)
     monkeypatch.setattr(sender, "send_to_member", _send_push)
@@ -242,7 +233,6 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
     app = FastAPI()
     app.include_router(shell_pkg.router)
     app.include_router(brief_today.router)
-    app.include_router(actions.router)
     app.include_router(push_routes.router)
 
     @app.get("/auth/me")
@@ -343,7 +333,7 @@ async def test_each_request_carries_the_run_member_and_no_org(gw: Gateway, cards
     """Mutation: send ``X-Organization-Id`` -> red. Mutation: read the memory id
     for the header -> red."""
     with _run():
-        for view in ("feed", "needs", "brief", "prefs", "approvals"):
+        for view in ("feed", "needs", "brief", "prefs"):
             assert (await ht.home_read(view))["ok"], view
         assert (await ht.home_read("find", words="rent"))["ok"]
         assert (await ht.home_card(CARD_ID, "dismiss"))["ok"]
@@ -416,25 +406,6 @@ async def test_the_quick_find_reaches_the_real_route(gw: Gateway) -> None:
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
     assert short["message"] == ht.BAD_WORDS
     assert not hidden["ok"] and "U+200B" in hidden["message"]
-
-
-async def test_the_approval_queue_is_read_and_capped(gw: Gateway) -> None:
-    with _run():
-        got = await ht.home_read("approvals")
-    assert gw.handlers() == ["list_pending_actions"]
-    assert got["ok"] and got["count"] == ht.MAX_APPROVAL_ROWS and got["total"] == 25
-    assert got["decide"] == ht.APPROVALS_DECIDE and got["page"] == "/approvals"
-    rows = [json.loads(line) for line in got["block"].splitlines()[1:-1]]
-    assert all(len(r["payload"]) <= ht.MAX_PAYLOAD_CHARS for r in rows)
-    assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
-
-
-async def test_a_member_who_is_no_admin_reads_no_queue(gw: Gateway) -> None:
-    """The route's own gate: ``admin:members:read`` (AP-BUG-2)."""
-    gw.perms = frozenset({"feature:chat", "feature:approvals"})
-    with _run():
-        got = await ht.home_read("approvals")
-    assert gw.calls[0]["status"] == 403 and got["message"] == ht.APPROVALS_FORBIDDEN
 
 
 async def test_the_prefs_read_and_a_bad_view(gw: Gateway) -> None:
@@ -754,14 +725,13 @@ def test_the_reader_of_the_flag(monkeypatch, orgs: str, org: Any, want: bool) ->
 # -- home-parity --------------------------------------------------------------------------------
 
 
-#: The 10 rows that a Home tool pays, and the tool of each.
+#: The 9 rows that a Home tool pays, and the tool of each.
 PAID = {
     "GET /api/shell/feed": "home_read",
     "GET /api/shell/needs": "home_read",
     "GET /api/shell/search": "home_read",
     "GET /api/shell/feed/prefs": "home_read",
     "GET /api/brief/today": "home_read",
-    "GET /api/actions/pending": "home_read",
     "POST /api/shell/feed/state": "home_card",
     "PUT /api/shell/feed/prefs": "home_prefs",
     "PUT /api/shell/layout": "home_layout",
@@ -783,8 +753,8 @@ def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
     for key, kind in EXEMPTED.items():
         assert cp.EXEMPT[key][0] == kind and key not in cp.DEBT, key
     shell_debt = [k for k in cp.DEBT if cp.app_of(k.split(" ", 1)[1]) == "shell"]
-    assert shell_debt == ["POST /api/actions/pending/{}/{}"]
-    assert cp.DEBT_CEILING["shell"] == 1
+    assert sorted(shell_debt) == ["GET /api/actions/pending", "POST /api/actions/pending/{}/{}"]
+    assert cp.DEBT_CEILING["shell"] == 2
     assert "packages/acb_skills/acb_skills/home_tools.py" in cp.TOOL_SOURCES
 
 

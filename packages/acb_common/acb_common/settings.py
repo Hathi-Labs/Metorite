@@ -1738,8 +1738,8 @@ class Settings(BaseSettings):
     #
     # `home_tools_orgs` lists the organization ids where the orchestrator
     # holds the five Home tools of `acb_skills.home_tools`, or `*` for each
-    # one. They read the Home feed, Needs you, the brief, the quick find, the
-    # approval queue and the Home settings. They change a Home card, a Home
+    # one. They read the Home feed, Needs you, the brief, the quick find and
+    # the Home settings. They change a Home card, a Home
     # setting and the default sidebar, and they send a test notification.
     # Empty means off: no chat holds them, and the tool count does not move.
     # The one reader is `acb_skills.home_tools.home_tools_on`, and it fails

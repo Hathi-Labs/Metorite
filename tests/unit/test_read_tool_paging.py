@@ -100,6 +100,8 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    "packages/acb_skills/acb_skills/home_tools.py::_clip::value[:limit - 1]":
+        "Text, not rows: the cut shortens one title or why line of a Home read (PAR-8b).",
     "packages/acb_skills/acb_skills/crm_tools.py::find_line::near[:10]":
         "Names, not rows: the line names at most 10 near spellings that a q counted. "
         "The list under it holds every row, with its total (CRM-Q34-7).",
@@ -338,8 +340,9 @@ ALLOWED: dict[str, str] = {
 #: says 'and N more' (89). SEM-8 added one: the member's words, cut as one string (91).
 #: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
-#: and cuts one text of the member to 120 characters (94).
-ALLOWED_CEILING = 94
+#: and cuts one text of the member to 120 characters (94). PAR-8b added one: a Home title
+#: or why line, cut as one string (95).
+ALLOWED_CEILING = 95
 
 
 def _stringy(node: ast.AST) -> bool:

@@ -225,7 +225,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
-    # PAR-8b: the Home tools send the shell routes, the brief, the approval queue and the test push.
+    # PAR-8b: the Home tools send the shell routes, the brief and the test push.
     "packages/acb_skills/acb_skills/home_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
     "packages/acb_skills/acb_skills/org_facts_tools.py",
@@ -374,7 +374,6 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/shell/search": "home_read",
     "GET /api/shell/feed/prefs": "home_read",
     "GET /api/brief/today": "home_read",
-    "GET /api/actions/pending": "home_read",
     "POST /api/shell/feed/state": "home_card",
     "PUT /api/shell/feed/prefs": "home_prefs",
     "PUT /api/shell/layout": "home_layout",
@@ -1079,10 +1078,12 @@ DEBT: dict[str, str] = {
     "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
-    # PAR-8b (task 3903) paid 15 of the 16 shell rows. The decision on a pending action
-    # waits for the owner (chat_parity.md section 7, item 6): can the chat approve an action
-    # that the chat itself asked for? pending_actions has no requester column, so a tool
-    # cannot tell. The member decides on the Approvals page, and home_read lists the queue.
+    # PAR-8b (task 3903) paid or exempted 14 of the 16 shell rows. The two rows of the
+    # approval queue stay: the safety fence test_no_person_present.py refuses a tool that
+    # names /actions/pending, a read too, and the decision waits for the owner
+    # (chat_parity.md section 7, item 6). pending_actions has no requester column, so a
+    # tool cannot tell an action that the chat itself asked for.
+    "GET /api/actions/pending": "P-7",
     "POST /api/actions/pending/{}/{}": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
@@ -1216,7 +1217,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
-    "shell": 1,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 10 rows with the Home tools and exempted 5 (16 to 1). The decision on a pending action waits for the owner (chat_parity.md section 7, item 6).
+    "shell": 2,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools and exempted 5 (16 to 2). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
