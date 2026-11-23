@@ -6,6 +6,12 @@ built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. TS-5b is BUILT (2026-11-15, task 3289, stacked on TS-2a PR 3): the `find_tools` plans, the scripted pass of the `search` arm and the cap chat `stu_cap`. No live run, no spend.
 
+**As built, task 3649 (2026-11-17).** The measure holds a tune split and a held-out split. The tag `holdout` marks a held-out chat. A results file keeps counts only for the held-out rows. The rows go to a sibling file, and no fixer brief names it. `run --compare B.json,A.json` prints the flips and the noise of B. It exits 0 only when A wins.
+
+A wins when each `case:<k>` chat passes both repeats of A and the tune gain on `t2874` is at least `max(2, n + 1)`. Neither the held-out count nor the email count may fall by more than the noise `n`. The README of `evals/one_assistant_measure` holds the rule.
+
+Task 2874 adds seven chats of the owner chat of 2026-11-11, with their checks, in `evals/one_assistant_measure`. The switch `--mirror-prod` sets the chat flags of production in the eval process only. Scripted only, no live run, no spend.
+
 §9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-6a is BUILT, dark behind `HELD_CLASS_C_ORGS` (2026-11-07, task 1690). WT-1b, WT-4, WT-5 and WT-6b are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
