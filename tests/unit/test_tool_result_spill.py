@@ -374,9 +374,9 @@ class TestTheReadTool:
 
     def test_the_store_keeps_at_most_max_entries(self, as_run) -> None:
         as_run()
-        for _ in range(trs.MAX_ENTRIES + 5):
+        for _ in range(trs.MAX_OWNER_ENTRIES + 5):  # SBX-19: the owner's cap binds first
             self._spill("x" * 10)
-        assert len(trs._STORE) == trs.MAX_ENTRIES
+        assert len(trs._STORE) == trs.MAX_OWNER_ENTRIES
 
     def test_the_total_cap_evicts_the_least_recently_used(self, as_run, monkeypatch) -> None:
         as_run()

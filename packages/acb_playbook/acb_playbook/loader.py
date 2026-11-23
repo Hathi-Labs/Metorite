@@ -74,8 +74,8 @@ def load_all(root: Path | None = None) -> list[Topic]:
     """Every topic, sorted by slug. A bad file raises PlaybookError with its path."""
     base = root or CONTENT_DIR
     topics: list[Topic] = []
-    for path in sorted(base.rglob("*.md")):
-        slug = path.relative_to(base).with_suffix("").as_posix()
+    found = {p.relative_to(base).with_suffix("").as_posix(): p for p in base.rglob("*.md")}
+    for slug, path in sorted(found.items()):  # sort by slug text, so a capital letter sorts alike on every OS
         try:
             topics.append(parse_topic(path.read_text(encoding="utf-8"), expected_slug=slug))
         except PlaybookError as exc:

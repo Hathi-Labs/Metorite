@@ -36,7 +36,9 @@ Usage by agents:
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
+from collections.abc import Iterator
 
 from acb_common import get_logger
 
@@ -175,6 +177,42 @@ def _set_memory_permission(predicate) -> None:
     _memory_permission.set(predicate)
 
 
+def enter_memory_permission() -> contextvars.Token:
+    """Open a scope of the memory gate. Pass the token to
+    :func:`reset_memory_permission` when the run ends.
+
+    MCP-C3 review: a delegated run awaits on its parent's task, and its own
+    access lookup arms this gate there. Without a scope, the parent kept the
+    child's gate after the hand-off. In a shared room whose participant read
+    failed in the child, that gate was the typer's alone, which is wider than
+    the room. Fence: ``tests/unit/test_delegated_integration_filter.py``.
+    """
+    return _memory_permission.set(_memory_permission.get())
+
+
+def reset_memory_permission(token: contextvars.Token) -> None:
+    """Close a :func:`enter_memory_permission` scope. Never raises.
+
+    A token of another context does not apply. The gate of this frame then
+    goes back to the value that the scope opened with.
+    """
+    try:
+        _memory_permission.reset(token)
+    except (ValueError, RuntimeError):
+        old = token.old_value
+        _memory_permission.set(None if old is contextvars.Token.MISSING else old)
+
+
+@contextlib.contextmanager
+def memory_permission_scope() -> Iterator[None]:
+    """Give this frame its memory gate back when the block ends."""
+    token = enter_memory_permission()
+    try:
+        yield
+    finally:
+        reset_memory_permission(token)
+
+
 def _may(permission: str) -> bool:
     """True when the acting member holds *permission* (or none is attached)."""
     predicate = _memory_permission.get()
@@ -256,10 +294,6 @@ async def recall_timeline(entity_name: str, query: str) -> str:
         "2026-05-12: Deal Acme-ABC moved to Awaiting PO [source: agent-sales]"
         "2026-05-28: Follow-up sent by Vijay after 16 days stale"
         Returns "(no timeline facts found)" if Graphiti is disabled or nothing matches.
-
-    Examples:
-        history = await recall_timeline("ABC Corp", "all deal stage changes")
-        history = await recall_timeline("Rahul Kumar", "meetings and follow-ups")
     """
     _close_profile_writes()
     try:
@@ -303,14 +337,10 @@ async def save_memory(fact: str) -> str:
 
     Returns:
         "Memory saved." on success. MEMORY_OFF when Mem0 is off, because then
-        nothing is kept (personalization.md §2.1, WS-63 PZ-1). Otherwise an
-        error description. The tool never says "Memory saved." when Mem0 is
-        off. Fence: ``tests/unit/test_memory_tools_dark.py``.
-
-    Examples:
-        await save_memory("Vijay wants all financial figures in INR lakhs, not crores")
-        await save_memory("ABC Corp prefers communication via WhatsApp, not email")
+        nothing is kept. Otherwise an error description. The tool never says
+        "Memory saved." when Mem0 is off.
     """
+    # personalization.md §2.1, WS-63 PZ-1. Fence: tests/unit/test_memory_tools_dark.py.
     try:
         from acb_memory import add_memories_background  # noqa: PLC0415
 
@@ -366,18 +396,6 @@ async def save_episode(
 
     Returns:
         "Episode recorded." on success, or an error description on failure.
-
-    Examples:
-        await save_episode(
-            "Deal closed",
-            "ABC Corp signed the PO worth ₹50L for 10 printers. Contact: Rahul Kumar.",
-            source="agent-sales",
-        )
-        await save_episode(
-            "Meeting follow-up",
-            "Meeting with Delhi NCR prospects on June 14. Action items: send quotes to 3 companies.",
-            source="agent-meeting-notes",
-        )
     """
     try:
         from acb_memory import add_episode  # noqa: PLC0415

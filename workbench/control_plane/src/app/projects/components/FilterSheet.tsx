@@ -18,6 +18,7 @@
 import Button from "@/components/ui/Button";
 import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 
+import { HOLD_FILTERS, type HoldFocus } from "../lib/agentRuns";
 import type { TagRow } from "../lib/api";
 import { filtersButtonLabel } from "../lib/compactChrome";
 import { type Filters, UNSET, labelWith } from "../lib/grouping";
@@ -35,8 +36,15 @@ export interface FilterSheetProps {
   archivedCount?: number | null;
   waitingOnMe?: boolean;
   onWaitingOnMe?: (next: boolean) => void;
+  /** SP-2a — the Epic filter, as in `FilterBar`. */
+  epic?: string;
+  epics?: readonly { value: string; label: string }[];
+  onEpic?: (next: string) => void;
   agentWork?: boolean;
   onAgentWork?: (next: boolean) => void;
+  /** SW-5: "Held by an agent" and "Free". See `FilterBar`. */
+  holdFocus?: HoldFocus | null;
+  onHoldFocus?: (next: HoldFocus | null) => void;
   /** How many tasks the filters now match, for "Show N tasks". */
   resultCount: number | null;
   /** How many filters are on, for the button and for Clear. */
@@ -55,8 +63,13 @@ export function FilterSheetBody({
   archivedCount,
   waitingOnMe = false,
   onWaitingOnMe,
+  epic = "",
+  epics = [],
+  onEpic,
   agentWork = false,
   onAgentWork,
+  holdFocus = null,
+  onHoldFocus,
   resultCount,
   activeCount,
   onClearAll,
@@ -106,6 +119,16 @@ export function FilterSheetBody({
             : []),
         ]}
       />
+      {onEpic && epics.length ? (
+        <SelectButton
+          label="Epic"
+          widthClass="w-full"
+          className={epic ? OFF_DEFAULT : AT_DEFAULT}
+          value={epic}
+          onChange={onEpic}
+          options={[{ value: "", label: "Any epic" }, ...epics]}
+        />
+      ) : null}
 
       <div className="flex flex-wrap gap-2" role="group" aria-label="Quick filters">
         <Button
@@ -149,6 +172,22 @@ export function FilterSheetBody({
             Agent work
           </Button>
         ) : null}
+        {onHoldFocus
+          ? HOLD_FILTERS.map((item) => (
+              <Button
+                key={item.focus}
+                variant={holdFocus === item.focus ? "primary" : "secondary"}
+                size="sm"
+                icon={item.icon}
+                aria-pressed={holdFocus === item.focus}
+                title={item.title}
+                data-hold-filter={item.focus}
+                onClick={() => onHoldFocus(holdFocus === item.focus ? null : item.focus)}
+              >
+                {item.label}
+              </Button>
+            ))
+          : null}
         <Button
           variant={filters.archived ? "primary" : "secondary"}
           size="sm"

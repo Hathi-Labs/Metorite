@@ -53,7 +53,7 @@ import {
   type RulesStepApi,
   type SortEstimate,
 } from "./onboarding";
-import type { AssistantSettings, EmailAccount } from "./types";
+import type { AssistantSettings, AssistantSettingsSave, EmailAccount } from "./types";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -248,6 +248,8 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
     const saved = calls[1][1] as Record<string, unknown>;
     expect(saved).toEqual({ ...SETTINGS, draft_replies: true });
+    // Task 2305: a save of the drafting switch records no Auto-run choice.
+    expect("auto_run_choice" in saved).toBe(false);
     for (const k of Object.keys(SETTINGS)) {
       if (k !== "draft_replies") expect(saved[k], k).toEqual((SETTINGS as unknown as Record<string, unknown>)[k]);
     }
@@ -302,7 +304,14 @@ describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
     const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false });
     await setAutoRun(api, "acc-1", true);
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
-    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true });
+    // Task 2305: the member's own act carries the marker of the choice.
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true, auto_run_choice: true });
+  });
+
+  it("a move to OFF is a choice too, and sends the marker (task 2305)", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true });
+    await setAutoRun(api, "acc-1", false);
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: false, auto_run_choice: true });
   });
 
   it("draws the stored value, and only a stored true reads ON", async () => {
@@ -349,6 +358,8 @@ describe("the Auto-run switch starts ON with no stored choice (task 2267)", () =
     expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(true);
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "getAssistantSettings", "saveAssistantSettings"]);
     expect((calls[2][1] as AssistantSettings).auto_run).toBe(true);
+    // Task 2305: Done is the member's act, so the server stamps the choice.
+    expect((calls[2][1] as AssistantSettingsSave).auto_run_choice).toBe(true);
   });
 
   it("OFF before Done: the move saves false, and Done then saves nothing new", async () => {

@@ -820,6 +820,12 @@ class FakeProjectsDB:
         # A lock returns nothing that a route reads, and one process holds it.
         if "pg_advisory_xact_lock" in statement:
             return _Result([])
+        # WS-39 SP-1: the cycle rows that a move can break
+        # (`cycles.detach_moved_tasks`). A JOIN over three tables, and the
+        # node form adds two walks. The fake holds no cycle, so no row. The
+        # real queries run in `test_sprint_store_r8.py` (R8).
+        if "AS cycle_node" in statement:
+            return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`
         # (`routes/workflows/service._workflow_organization`). Taught

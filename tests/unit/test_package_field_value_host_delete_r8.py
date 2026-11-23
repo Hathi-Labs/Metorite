@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/package_host.md`` §8.3, the PKG-14a-3 row of §10
 and PKG-Q30. Migration: the file that creates the function
-``package_field_value_host_delete`` (372 at build). The hermetic fence is
+``package_field_value_host_delete`` (484, 372 at build). The hermetic fence is
 ``tests/unit/test_package_field_value_host_delete.py``.
 
 Each host delete runs as the app role ``acb_app_h3rls``, bound to one org,

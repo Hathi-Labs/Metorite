@@ -60,12 +60,15 @@ import httpx
 from acb_common import get_logger, get_settings
 from acb_common.card_body import CARD_CLIP, CUT_MARK, card_body, cut_refusal, is_cut, one_line
 from acb_common.paging import bounds, page_line
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
+    data,
     refusals_as_text,
     response_body,
     route_template,
     safe_detail,
+    strip_kind_prefix,
 )
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
@@ -127,18 +130,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
-
-    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
-    no longer accepts the LLM key as service identity, so that rung would only
-    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
-    """
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -164,7 +155,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         # WS-CRM CRM-M3a: the Change history row says `chat` for a change
@@ -206,12 +197,47 @@ _MIRROR_ADVICE = (
 )
 
 
-class _MirrorBlocked(RuntimeError):
-    """The gateway refused a write because the record or the create is Zoho's."""
+class _MirrorBlocked(GatewayRefusal):
+    """The gateway refused a write because the record or the create is Zoho's.
+
+    The gateway answers it with a 409. It is a ``GatewayRefusal`` that keeps
+    that status, so the C1 skip rule of the failure log reads it as an
+    answer (``tool_failure_log.md`` §4.2, TOF-2c). The message is the route's
+    sentence, which :func:`_mirror_message` shows as before."""
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message, status=status)
 
 
 def _mirror_message(exc: _MirrorBlocked) -> str:
     return f"Nothing was changed. {exc} {_MIRROR_ADVICE}"
+
+
+class _PreconditionFailed(GatewayRefusal):
+    """A 412 of ``projects.core.require_precondition`` on a CRM route: the
+    record changed since the read that gave the ``If-Match`` token (HRD-10c).
+
+    The same shape as ``skill_projects.client.PreconditionFailed`` (HRD-10a).
+    ``current`` is the route's ``detail.current``, the record as it is now, or
+    ``{}``. Its values can hold words of other people, mail-fed text too, so a
+    caller fences each value that it shows."""
+
+    def __init__(self, message: str, *, current: dict[str, Any], **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.current = current
+
+
+def _changed_since(status: int, body: Any) -> dict[str, Any] | None:
+    """The record of a precondition 412 (``detail.error`` is
+    ``precondition_failed``), ``{}`` when it has no record, or None for each
+    other response. Any other 412 or 428 keeps its own path."""
+    if status != 412 or not isinstance(body, dict):
+        return None
+    raw = body.get("detail")
+    if not isinstance(raw, dict) or raw.get("error") != "precondition_failed":
+        return None
+    current = raw.get("current")
+    return dict(current) if isinstance(current, dict) else {}
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
@@ -224,13 +250,21 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     detail = ""
     try:
         body = resp.json()
+        current = _changed_since(resp.status_code, body)
+        if current is not None:
+            # HRD-10c. The message names no value of the record.
+            raise _PreconditionFailed(
+                f"CRM {method} {path} failed (412): the record changed.",
+                current=current, status=412, route=route_template(path),
+            )
         if resp.status_code == 409 and isinstance(body, dict):
             blocked = body.get("detail")
             if isinstance(blocked, dict) and blocked.get("code") in _MIRROR_CODES:
-                raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."))
+                raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."),
+                                     resp.status_code)
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("error") or "")
-    except _MirrorBlocked:
+    except (_MirrorBlocked, _PreconditionFailed):
         raise
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
@@ -247,13 +281,17 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
 
 
 async def _request(
-    method: str, path: str, *, timeout: float = 30.0, **kwargs: Any,
+    method: str, path: str, *, timeout: float = 30.0, if_match: str = "",
+    **kwargs: Any,
 ) -> httpx.Response:
     """Single gateway round-trip: URL + auth headers, fire, normalize errors.
 
     Refuses any verb outside :data:`_ALLOWED_METHODS` before the request is
     built, so the verb doctrine cannot be broken by a caller passing a
     different method — including one this module grows later.
+
+    *if_match* (HRD-10c) adds the ``If-Match`` header. Empty adds nothing, so
+    the headers are the headers of before.
     """
     if method.upper() not in _ALLOWED_METHODS:
         raise RuntimeError(
@@ -261,9 +299,12 @@ async def _request(
             f"are {sorted(_ALLOWED_METHODS)}. Deleting or replacing a CRM "
             "record is not something this agent can do."
         )
+    headers = _headers()
+    if if_match:
+        headers["If-Match"] = if_match
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
-            method, f"{_gateway_url()}{path}", headers=_headers(), **kwargs
+            method, f"{_gateway_url()}{path}", headers=headers, **kwargs
         )
         _raise_if_error(resp, method, path)
         return resp
@@ -283,8 +324,8 @@ async def _post(path: str, payload: dict[str, Any] | None = None) -> Any:
     return (await _request("POST", path, json=payload or {})).json()
 
 
-async def _patch(path: str, payload: dict[str, Any]) -> Any:
-    return (await _request("PATCH", path, json=payload)).json()
+async def _patch(path: str, payload: dict[str, Any], *, if_match: str = "") -> Any:
+    return (await _request("PATCH", path, json=payload, if_match=if_match)).json()
 
 
 # ── The four record types ────────────────────────────────────────────────────
@@ -373,12 +414,18 @@ def _record_uuid(record_id: str) -> str:
     normalises every one of them to 36 characters that cannot hold a path
     separator or a dot segment.
     """
+    # HRD-2: `search_company` prints `deal:<id>`. A CRM kind is cut. Another
+    # kind (`task:`, `email:`) is refused with its name.
+    cut = strip_kind_prefix(
+        record_id, "lead", "deal", "contact", "company", read_tool="search_crm or get_pipeline"
+    )
     try:
-        return str(UUID(str(record_id).strip()))
+        return str(UUID(cut))
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use the "
-            "id returned by search_crm or get_pipeline, not a name or a code."
+            "id returned by search_crm or get_pipeline, not a name or a code. "
+            "A task's activity_id comes from get_timeline."
         ) from None
 
 
@@ -442,31 +489,113 @@ async def search_crm(
     one type, or omit it to search all four. Returns each match with the id you
     pass to get_record / get_timeline.
 
-    This is substring (ILIKE) matching over each type's own searchable columns —
-    lead name/email/company, deal name and next step, contact names and email,
-    organization name/email/website — not semantic search. Converted leads are
+    Each word of the query must match one searchable column (a substring,
+    ILIKE): lead name/email/company, deal name, next step and company, the
+    names of a deal's contacts and of its source lead, contact names and
+    email, organization name/email/website. So put the person and the thing
+    in one query ("Sharath 3D printer"). It is not semantic search. The
+    answer also lists NEAR SPELLINGS ("Sharat" for "Sharath") after the
+    matches, and says so: they are not matches. Converted leads are
     excluded, matching the app's own lead list."""
     slugs = [_entity_slug(entity)] if entity else list(ENTITY_LABELS)
     # D1 (CRM-C7): a tool answer holds at most 50 rows.
     capped = max(1, min(int(limit or 10), 50))
     sections: list[str] = []
+    near_sections: list[str] = []
+    near_lines: list[str] = []
     total = 0
     for slug in slugs:
-        data = await _get(f"/crm/{slug}", {"q": query, "page_size": capped})
-        rows = (data or {}).get("rows") or []
-        found = int((data or {}).get("total") or len(rows))
-        total += found
-        if not rows:
-            continue
-        header = f"{ENTITY_LABELS[slug]}s ({found}"
-        header += f", showing {len(rows)})" if found > len(rows) else ")"
-        sections.append(
-            header + ":\n" + "\n".join(_row_line(slug, r) for r in rows)
+        # HRD-18a: `also` adds the near spellings after the exact rows, and
+        # answers them alone when nothing matches. A wrong exact hit
+        # ("Sharath .") must not hide the record the member meant ("Sharat").
+        data = await _get(
+            f"/crm/{slug}", {"q": query, "page_size": capped, "near": "also"},
         )
-    if not sections:
+        rows = (data or {}).get("rows") or []
+        exact = [r for r in rows if r.get("near") is not True]
+        near = [r for r in rows if r.get("near") is True]
+        found = int((data or {}).get("total") or len(rows))
+        for shown, r in enumerate(near):
+            if shown == NEAR_SHOWN:
+                # The model reads how many it did not see, so no row is lost silently.
+                near_lines.append(f"• {len(near) - NEAR_SHOWN} more near "
+                                  f"{ENTITY_LABELS[slug].lower()}s. Narrow the words to see them.")
+                break
+            near_lines.append(_near_line(slug, r))
+        if near and not exact:
+            header = f"{ENTITY_LABELS[slug]}s{NEAR_SECTION} ({found}"
+            header += f", showing {len(near)})" if found > len(near) else ")"
+            near_sections.append(
+                header + ":\n" + "\n".join(_row_line(slug, r) for r in near)
+            )
+        if not exact:
+            continue
+        total += found
+        header = f"{ENTITY_LABELS[slug]}s ({found}"
+        header += f", showing {len(exact)})" if found > len(exact) else ")"
+        sections.append(
+            header + ":\n" + "\n".join(_row_line(slug, r) for r in exact)
+        )
+    if not sections and not near_sections:
         scope = ENTITY_LABELS[slugs[0]].lower() + "s" if entity else "the CRM"
-        return f"Nothing in {scope} matches '{query}'."
-    return f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+        # WS-FIND FIND-6 (§5.3): a zero ends with the fixed pointer to
+        # search_company, only in a pack call of an org of FIND_ORGS. A failure
+        # raises before this line, so it never gets the pointer.
+        from acb_skills.company_search_tools import with_zero_pointer
+
+        return with_zero_pointer(f"Nothing in {scope} matches '{query}'.")
+    if not sections:
+        return _near_answer(query) + "\n\n" + "\n\n".join(near_sections)
+    out = f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+    if near_lines:
+        out += "\n\n" + NEAR_ALSO + "\n" + "\n".join(near_lines) + "\n" + NEAR_NOTE
+    return out
+
+
+#: The mark of a section of near spellings when nothing matches (HRD-18a).
+NEAR_SECTION = ", near spellings only"
+
+#: The most near rows of one record type in the near section of an answer
+#: that holds matches. The gateway sends 5 at most in the ``also`` mode.
+NEAR_SHOWN = 5
+
+#: The head of the near section after the matches (HRD-18a repair round).
+NEAR_ALSO = "Near spellings (may be the person you mean):"
+
+#: The last line of an answer that holds matches and near spellings.
+NEAR_NOTE = (
+    "The matches above hold the exact spelling. If they do not fit the "
+    "member's words, ask the member which record they mean before you "
+    "answer. A near spelling is not a match."
+)
+
+
+def _near_line(slug: str, row: dict[str, Any]) -> str:
+    """One near spelling: the name, the type and the company, and the id."""
+    title = _row_title(slug, row).replace("«", "").replace("»", "")
+    if slug in ("leads", "deals"):
+        where = row.get("organization_name")
+    elif slug == "contacts":
+        where = row.get("email")
+    else:
+        where = row.get("website")
+    kind = ENTITY_LABELS[slug].lower()
+    label = f"{kind} · {where}" if where else kind
+    return f"• «{title}» ({label}) (id={row.get('id')})"
+
+
+def _near_answer(query: str) -> str:
+    """The first lines of an answer that holds near spellings only (HRD-18a).
+
+    The model must read it as: the exact spelling found nothing, these
+    records hold a near spelling, and the member confirms one when it matters.
+    """
+    asked = " ".join(str(query or "").replace("«", "").replace("»", "").split())
+    return (
+        f"No record holds «{asked}». Near spellings: the records below hold a "
+        "similar spelling, not the exact one. Do not treat one as a match. If "
+        "it matters, ask the member whether one of them is the record they mean."
+    )
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
@@ -646,6 +775,8 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20,
         out.append(
             f"• {when}{inherited} — {act.get('type') or entry.get('kind')}: "
             f"{act.get('subject') or '(no subject)'}"
+            # HRD-2: the id that crm_update_task takes.
+            + (f" (activity id {act['id']})" if act.get("id") else "")
             + (f" — {body[:160]}" if body else "")
             + (f" (by {act['created_by']})" if act.get("created_by") else "")
         )
@@ -747,6 +878,34 @@ async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) ->
     return body
 
 
+def _closed_by_chat(unchanged: str) -> str:
+    """The answer of a card that a chat message of the member closed (task 2494).
+
+    The words are ``ask_tools.CLOSED_BY_YOUR_MESSAGE`` of the one table of card
+    outcomes (HRD-7). It is not a decline: the member did not answer the card,
+    and their words come next as their own turn. *unchanged* says what was not
+    written, for example "No lead was created for Veena Rao."
+    """
+    from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, card_outcome_text
+
+    return card_outcome_text(CLOSED_BY_YOUR_MESSAGE, unchanged)
+
+
+def _not_written(answer: Any, *, unchanged: str) -> str:
+    """The answer of a CRM card that wrote nothing (task 2494, HRD-7).
+
+    :func:`_closed_by_chat` when a chat message of the member closed it
+    (``ask_tools.is_revised``). Else the words of the one table of card
+    outcomes for the last card (``ask_tools.card_not_done_text``): declined,
+    timed out, no card, or another member answered, each with *unchanged*. A
+    closed card is no decline, and a timeout is no "no", so the model must not
+    read "that wasn't approved" and drop the member's change.
+    """
+    from acb_skills.ask_tools import card_not_done_text, is_revised
+
+    return _closed_by_chat(unchanged) if is_revised(answer) else card_not_done_text(unchanged)
+
+
 def _names(rows: Any, field: str) -> list[str]:
     """Each row's human-facing name, verbatim — spacing and casing preserved."""
     return [
@@ -837,12 +996,19 @@ async def create_lead(
 
     from acb_skills.ask_tools import request_confirmation
     _where = f" at {payload['organization_name']}" if organization_name else ""
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Create this CRM lead?",
         detail=f"{name}{_where}" + (f" · {payload['email']}" if email else ""),
         context=await _held_fields_block(payload),
-    ):
-        return f"Cancelled — no lead was created for {name}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"No lead was created for {name}.",
+        )
     try:
         row = await _post("/crm/leads", payload)
     except _MirrorBlocked as blocked:
@@ -855,17 +1021,27 @@ async def create_lead(
     )
 
 
-# ── A new pipeline (WS-CRM CRM-M3a) ──────────────────────────────────────────
+# ── A new pipeline (WS-CRM CRM-M3a, CRM-M4a) ─────────────────────────────────
 
 #: A new stage with its type: "Contract signed (won)". A name with no type is
 #: a stage that the CRM holds, or a new open stage.
 _TYPED_STAGE = re.compile(r"^(?P<name>.*?)\s*\((?P<type>open|won|lost)\)\s*$", re.IGNORECASE)
 
-#: What each stage of the plan is, in the words of the card.
+#: The words of each kind of pipeline on the card (CRM-M4a). A lead pipeline's
+#: stages are lead statuses, and a record in it is a lead.
+_PIPELINE_WORDS: dict[str, dict[str, str]] = {
+    "deal": {"pipeline": "deal pipeline", "stage": "stage", "stages": "stages",
+             "record": "deal"},
+    "lead": {"pipeline": "lead pipeline", "stage": "status", "stages": "statuses",
+             "record": "lead"},
+}
+
+#: What each stage of the plan is, in the words of the card. ``{stage}`` and
+#: ``{record}`` take the words of the kind.
 _STAGE_SOURCE_WORDS: dict[str, str] = {
-    "existing": "a stage the CRM has",
+    "existing": "a {stage} the CRM has",
     "new": "new",
-    "added": "added, so that a deal can close",
+    "added": "added, so that a {record} can close",
 }
 
 #: The first line of the card of a new pipeline. A pipeline is the set-up of
@@ -873,6 +1049,12 @@ _STAGE_SOURCE_WORDS: dict[str, str] = {
 _PIPELINE_NOTE = (
     "A new pipeline changes the set-up of the whole CRM. Change history keeps "
     "it, and its Undo removes the pipeline while no deal is in it."
+)
+
+#: The same note for a lead pipeline (CRM-M4a).
+_LEAD_PIPELINE_NOTE = (
+    "A new lead pipeline changes the set-up of the whole CRM. Change history "
+    "keeps it, and its Undo removes the pipeline while no lead is in it."
 )
 
 _PIPELINES_OFF = (
@@ -910,23 +1092,31 @@ _PLAN_CHANGED = (
     "Nothing was changed. The stages changed after the card showed them. "
     "Read the plan again, and ask the member once more."
 )
+#: CRM-M4a repair 2: the deal pipeline that the card named as the feed is
+#: another one now, or none (409 ``plan_changed`` with ``changed: feeds``).
+_FEED_CHANGED = (
+    "Nothing was changed. The deal pipeline that this lead pipeline feeds changed "
+    "after the card showed it. Read the plan again, and ask the member once more."
+)
 
 
-def _plan_lines(plan: dict[str, Any]) -> list[tuple[str, str]]:
+def _plan_lines(plan: dict[str, Any], kind: str = "deal") -> list[tuple[str, str]]:
     """One card line for each stage of the plan, in order: the name, the type
-    of the stage, new or reused, and where it comes from."""
+    of the stage, new or reused, and where it comes from. A lead pipeline's
+    lines name a status (CRM-M4a)."""
+    words = _PIPELINE_WORDS[kind]
     lines: list[tuple[str, str]] = []
     for index, stage in enumerate(plan.get("stages") or [], start=1):
         if not isinstance(stage, dict):
             continue
-        kind = str(stage.get("type") or "")
-        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(kind, kind)]
+        typed = str(stage.get("type") or "")
+        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(typed, typed)]
         where = _STAGE_SOURCE_WORDS.get(str(stage.get("source") or ""), "")
         if where:
-            parts.append(where)
+            parts.append(where.format(stage=words["stage"], record=words["record"]))
         if stage.get("hidden"):
             parts.append("hidden")
-        lines.append((f"stage {index}", " · ".join(parts)))
+        lines.append((f"{words['stage']} {index}", " · ".join(parts)))
     return lines
 
 
@@ -939,8 +1129,34 @@ def _off_or_raise(refused: GatewayRefusal) -> str:
     if refused.status == 404 and "no_pipeline" not in str(refused):
         return _PIPELINES_OFF
     if refused.status == 409 and "plan_changed" in str(refused):
-        return _PLAN_CHANGED
+        # The route says what changed in `changed` (CRM-M4a repair 2).
+        return _FEED_CHANGED if "'changed': 'feeds'" in str(refused) else _PLAN_CHANGED
     raise refused
+
+
+async def _one_pipeline(
+    wanted: str, kind: str, noun: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The one pipeline of *kind* called *wanted*, or the words of a refusal.
+
+    A lead pipeline is read with ``kind=lead`` (CRM-M4a). The read of the deal
+    pipelines sends no query, as before. *noun* names the pipeline in the
+    refusal."""
+    pipelines = await (_get("/crm/pipelines", {"kind": kind}) if kind == "lead"
+                       else _get("/crm/pipelines"))
+    found = _matches_by_name(pipelines, "name", wanted)
+    if not found:
+        return None, (
+            f"There is no {noun} called '{wanted}', so nothing was changed. "
+            f"The {noun}s are: {_name_list(pipelines, 'name')}."
+        )
+    if len(found) > 1:
+        return None, (
+            f"'{wanted}' matches more than one {noun} — "
+            f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
+            "which one is meant."
+        )
+    return found[0], None
 
 
 # `open_world=True`, as each CRM write says: a pipeline never queues for Zoho,
@@ -951,54 +1167,49 @@ async def crm_create_pipeline(
     name: str,
     stages: list[str] | None = None,
     copy_from: str | None = None,
+    kind: str = "deal",
+    feeds: str | None = None,
 ) -> str:
-    """Create a new deal pipeline: a name, and its stages in order. Only a CRM
-    admin can, and the person you act for approves it on a card first.
+    """Create a new deal pipeline or lead pipeline: a name, and its stages in
+    order. Only a CRM admin can, and the person you act for approves it on a
+    card first.
+
+    ``kind`` is "deal" (the default) or "lead". Send kind="lead" when the
+    person asks for a LEAD pipeline: the statuses that leads of one source or
+    campaign move through before they convert, such as "Trade show", "Web" or
+    "Outbound". Its stages are lead statuses, such as "New", "Contacted" and
+    "Converted (won)". A pipeline of deals, of products or of contracts is
+    kind="deal".
 
     Give EITHER ``stages`` OR ``copy_from``, never both. ``stages`` is the
     stage names in order, as a person says them. A name that the CRM has
     already is that same stage, so two pipelines can share "Proposal". A new
     name becomes a new open stage. Add "(won)" or "(lost)" after a new name
-    to make a closing stage, such as "Contract signed (won)". ``copy_from``
-    is the NAME of a pipeline whose stages the new one takes, in order.
+    to make a closing stage, such as "Contract signed (won)". For a lead, won
+    means the lead converted. ``copy_from`` is the NAME of a pipeline of the
+    same kind whose stages the new one takes, in order.
+
+    ``feeds`` is for a lead pipeline only: the NAME of the deal pipeline where
+    the deal of a converted lead goes. Leave it out for the default deal
+    pipeline, and never send it for a deal pipeline.
 
     When the list has no won stage or no lost stage, the CRM adds its own, so
-    that a deal in the new pipeline can close. The card shows each stage
-    before anything is made. Use crm_list_pipelines to read the pipelines
-    and get_pipeline to read the stages."""
+    that a deal or a lead in the new pipeline can close. The card shows each
+    stage before anything is made. Use crm_list_pipelines to read the
+    pipelines and get_pipeline to read the stages."""
     wanted = str(name or "").strip()
     if not wanted:
         return "A pipeline needs a name. Ask what to call it. Nothing was changed."
-    has_stages = any(str(s or "").strip() for s in stages or [])
-    source = str(copy_from or "").strip()
-    if has_stages and source:
+    which = str(kind or "deal").strip().lower()
+    if which not in _PIPELINE_WORDS:
         return (
-            "Give the stages of the new pipeline, or the pipeline to copy, and "
-            "not both. Ask which one is meant. Nothing was changed."
+            f"'{kind}' is not a kind of pipeline. Use kind='deal' or kind='lead'. "
+            "Nothing was changed."
         )
-    body: dict[str, Any] = {"name": wanted}
-    if source:
-        pipelines = await _get("/crm/pipelines")
-        found = _matches_by_name(pipelines, "name", source)
-        if not found:
-            return (
-                f"There is no pipeline called '{source}', so nothing was changed. "
-                f"The pipelines are: {_name_list(pipelines, 'name')}."
-            )
-        if len(found) > 1:
-            return (
-                f"'{source}' matches more than one pipeline — "
-                f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
-                "which one is meant."
-            )
-        body["copy_from"] = str(found[0].get("id") or "")
-    elif has_stages:
-        body["stages"] = _stage_items(stages or [])
-    else:
-        return (
-            "Which stages should the new pipeline have? Name them in order, or "
-            "name a pipeline to copy. Nothing was changed."
-        )
+    words = _PIPELINE_WORDS[which]
+    body, refusal = await _pipeline_request(wanted, which, stages, copy_from, feeds)
+    if body is None:
+        return str(refusal)
     # Read before asking: the gateway plans the pipeline with every check of
     # the create, and reads only. So the card shows what Apply makes.
     query = {k: v for k, v in body.items() if k != "stages"}
@@ -1015,28 +1226,109 @@ async def crm_create_pipeline(
     copy_of = planned.get("copy_of")
     start = f"a copy of {copy_of}" if copy_of else "new"
     count = len(planned.get("stages") or [])
-    card = {"pipeline": title, "starts from": start, **dict(_plan_lines(planned))}
+    card: dict[str, Any] = {"pipeline": title, "kind": words["pipeline"], "starts from": start}
+    if which == "lead":
+        card["feeds deals into"] = planned.get("feeds") or _default_feed_words(planned)
+    card.update(dict(_plan_lines(planned, which)))
     # The create plans again. With the ids that the card showed, it refuses
     # (409 `plan_changed`) when that plan differs, so Apply makes the card.
     body["planned"] = [
         stage.get("id") for stage in planned.get("stages") or [] if isinstance(stage, dict)
     ]
+    # CRM-M4a repair 1: the feed that the card showed, by id. A rename between
+    # the card and Apply then refuses (409 `plan_changed`).
+    if body.get("feeds") and planned.get("feeds_id"):
+        body["planned_feeds"] = str(planned["feeds_id"])
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
-        title=f"Create the pipeline {title}?",
-        detail=f"{title} · {start} · {count} stages",
-        context=await _held_fields_block(card, note=_PIPELINE_NOTE),
-    ):
-        return f"Cancelled — no pipeline was created. {title} does not exist."
+    note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
+        title=f"Create the {words['pipeline']} {title}?",
+        detail=f"{title} · {words['pipeline']} · {start} · {count} {words['stages']}",
+        context=await _held_fields_block(card, note=note),
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"No pipeline was created. {title} does not exist.",
+        )
     try:
         made = await _post("/crm/pipelines", body)
     except _MirrorBlocked as blocked:
         return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
     except GatewayRefusal as refused:
         return _off_or_raise(refused)
-    row = made if isinstance(made, dict) else {}
+    return _pipeline_made(made if isinstance(made, dict) else {}, which, title, planned)
+
+
+def _default_feed_words(planned: dict[str, Any]) -> str:
+    """A lead pipeline with no feed follows the org's default deal pipeline.
+    The words of the Settings dialog and the read-only list, the same."""
+    now = planned.get("default_deal_pipeline")
+    return f"the default deal pipeline (now {now})" if now else "the default deal pipeline"
+
+
+async def _pipeline_request(
+    wanted: str, which: str, stages: list[str] | None, copy_from: str | None,
+    feeds: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The body of the create, or the words of a refusal before any card.
+
+    The body of a deal pipeline names no kind, as before CRM-M4a. A lead
+    pipeline names ``kind`` and, when the member names one, ``feeds``: the
+    name of the deal pipeline as the CRM holds it."""
+    words = _PIPELINE_WORDS[which]
+    fed = str(feeds or "").strip()
+    if fed and which != "lead":
+        return None, (
+            "Only a lead pipeline feeds a deal pipeline. Leave out feeds for a "
+            "deal pipeline, or use kind='lead'. Nothing was changed."
+        )
+    has_stages = any(str(s or "").strip() for s in stages or [])
+    source = str(copy_from or "").strip()
+    if has_stages and source:
+        return None, (
+            f"Give the {words['stages']} of the new pipeline, or the pipeline to "
+            "copy, and not both. Ask which one is meant. Nothing was changed."
+        )
+    if not has_stages and not source:
+        return None, (
+            f"Which {words['stages']} should the new pipeline have? Name them in "
+            "order, or name a pipeline to copy. Nothing was changed."
+        )
+    body: dict[str, Any] = {"name": wanted}
+    if which == "lead":
+        body["kind"] = "lead"
+    if source:
+        noun = "lead pipeline" if which == "lead" else "pipeline"
+        found, refusal = await _one_pipeline(source, which, noun)
+        if found is None:
+            return None, refusal
+        body["copy_from"] = str(found.get("id") or "")
+    else:
+        body["stages"] = _stage_items(stages or [])
+    if fed:
+        target, refusal = await _one_pipeline(fed, "deal", "deal pipeline")
+        if target is None:
+            return None, refusal
+        body["feeds"] = str(target.get("name") or fed)
+    return body, None
+
+
+def _pipeline_made(row: dict[str, Any], which: str, title: str, planned: dict[str, Any]) -> str:
+    """The answer after the create: what was made, and where it shows."""
     names = [str(s.get("name")) for s in row.get("stages") or [] if isinstance(s, dict)]
+    if which == "lead":
+        into = planned.get("feeds") or _default_feed_words(planned)
+        return (
+            f"Created the lead pipeline {row.get('name') or title} (id={row.get('id')}) "
+            f"with {len(names)} statuses: {', '.join(names)}. A converted lead's "
+            f"deal goes to {into}. CRM settings lists it under Lead statuses. "
+            "Change history keeps the change, with Undo."
+        )
     return (
         f"Created the pipeline {row.get('name') or title} (id={row.get('id')}) "
         f"with {len(names)} stages: {', '.join(names)}. The Deals board shows it "
@@ -1111,16 +1403,27 @@ async def update_deal_status(
 
     title = _row_title("deals", deal if isinstance(deal, dict) else {})
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Move this deal to {lane}?",
         detail=f"{title} → {lane}",
         context=await _held_fields_block({"deal": title, "stage": lane, **payload}),
-    ):
-        return f"Cancelled — {title} was not moved to {lane}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{title} was not moved to {lane}.",
+        )
     try:
         await _patch(f"/crm/deals/{record}", payload)
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
+    # Task 3595 (PARK-LINE): the move landed, so the park line may name it.
+    from acb_skills.ask_tools import act_ran
+
+    act_ran()
     return f"Moved {title} to {lane}."
 
 
@@ -1187,12 +1490,19 @@ async def log_activity(
 
     from acb_skills.ask_tools import request_confirmation
     label = ENTITY_LABELS[slug].lower()
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Log this {kind} on {target}?",
         detail=f"{target} ({label}) · {kind}: {line}",
         context=await _held_fields_block({label: target, **payload}),
-    ):
-        return f"Cancelled — nothing was logged on {target}: {line}"
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"Nothing was logged on {target}.",
+        )
     try:
         await _post(f"/crm/{slug}/{record}/activities", payload)
     except _MirrorBlocked as blocked:
@@ -1247,12 +1557,19 @@ async def convert_lead(
     payload: dict[str, Any] = {"deal": deal} if deal else {}
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Convert this lead into a deal?",
         detail=f"{title} → {deal.get('name') or title}",
         context=await _held_fields_block({"lead": title, **deal}),
-    ):
-        return f"Cancelled — {title} was not converted."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{title} was not converted.",
+        )
     try:
         result = await _post(f"/crm/leads/{record}/convert", payload)
     except _MirrorBlocked as blocked:
@@ -1365,6 +1682,153 @@ async def _company_name(company_id: Any) -> str:
     return name or "(unnamed company)"
 
 
+# ── HRD-10c: changed since the card ─────────────────────────────────────────
+#
+# `chat_failure_modes.md` §4 class C3, §6 row HRD-10c. Behind
+# `CHAT_CARD_PRECONDITION_ORGS` (`ask_tools.card_precondition_on`, the flag of
+# HRD-10a), `crm_update_record` sends the `updated_at` of the read that the
+# card shows as `If-Match`. A record that changed while the card waited is a
+# 412, and the route writes nothing. Owner decision A (2026-11-16): the tool
+# answers with text, and no new card shows unless the member asks.
+
+#: The record types whose PATCH route reads ``If-Match`` (HRD-10c). Only a
+#: deal in this slice. The other three send the PATCH of before.
+_PRECONDITION_SLUGS: frozenset[str] = frozenset({"deals"})
+
+#: The most characters of one value in the changed-since text. The same cap
+#: as HRD-10a (``skill_projects.writes._DETAIL_NAME_MAX``).
+_CHANGED_MAX = 120
+
+
+def _card_version(slug: str, row: dict[str, Any]) -> str:
+    """The ``If-Match`` token of *row*: its ``updated_at``. ``""`` when the
+    route of *slug* reads no ``If-Match``, when the flag is off for the run's
+    org, or when the row has no stamp. The org comes from the run binding
+    inside the reader, never from an argument (R5)."""
+    if slug not in _PRECONDITION_SLUGS:
+        return ""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if not card_precondition_on():
+        return ""
+    return str(row.get("updated_at") or "").strip()
+
+
+def _bind_card_facts(**facts: Any) -> None:
+    """Bind facts that the next card does not show (WS-47 WAC-4, HRD-22).
+
+    ``acb_skills.whatsapp_acts.card_facts``: the facts go into the text that a
+    late approve and a stored call match on, so a replay of a card whose
+    record changed gets no grant. The card that the member sees never changes.
+    """
+    try:
+        from acb_skills.whatsapp_acts import card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    card_facts(**facts)
+
+
+def _bind_card_version(version: str) -> None:
+    """Put *version* into the facts of the next card (HRD-10c), or nothing
+    when it is ``""``.
+
+    The text of a late approve (HRD-22) or a stored call (RESUME-2a) then
+    holds it. A replay meets a changed record as a card with another text,
+    and the grant does not match. Flag off: no fact, the card of before."""
+    if version:
+        _bind_card_facts(record_version=version)
+
+
+def _changed_value(value: Any) -> str:
+    """One value of the changed-since text. A CRM value can hold the words of
+    a stranger (mail feeds the CRM), so it goes into a « » fence on one line
+    (``tool_refusals.data``) and is capped at :data:`_CHANGED_MAX`."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value is None or value == "" or value == [] or value == {}:
+        return "(empty)"
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = " ".join(str(value).split())
+    if len(text) > _CHANGED_MAX:
+        text = f"{text[:_CHANGED_MAX - 1]}…"
+    return data(text)
+
+
+async def _changed_since_card(
+    slug: str, record: str, target: str, before: dict[str, Any],
+    columns: list[str], customs: list[str], now: dict[str, Any],
+) -> str:
+    """The answer of ``crm_update_record`` to a 412 (HRD-10c). Nothing was
+    written.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``). Then one
+    line for each field on the card that another writer changed: the value of
+    the read that the card showed (*before*), then the value of the 412 row
+    (*now*, ``detail.current``). Only the fields on the card. The rest of the
+    record is never shown."""
+    from acb_skills.ask_tools import CARD_CHANGED_SINCE, card_outcome_text
+
+    label = ENTITY_LABELS[slug].lower()
+    lines = [card_outcome_text(
+        CARD_CHANGED_SINCE, f"The {label} {_changed_value(target)} was not changed.")]
+    if not now:
+        lines.append("The new values could not be read.")
+        lines.append(f"  id: {record}")
+        return "\n".join(lines)
+    rows: list[str] = []
+    for key in columns:
+        old, new = before.get(key), now.get(key)
+        if _shown(old) == _shown(new):
+            continue
+        if key == "company_id":
+            # A company shows by its name, never by its id.
+            old = await _company_name(old) if old not in (None, "") else None
+            new = await _company_name(new) if new not in (None, "") else None
+        rows.append(f"  {_human(key)}: {_changed_value(old)} → {_changed_value(new)}")
+    held = before.get("custom") if isinstance(before.get("custom"), dict) else {}
+    fresh = now.get("custom") if isinstance(now.get("custom"), dict) else {}
+    for key in customs:
+        old, new = held.get(key), fresh.get(key)
+        if _shown(old) != _shown(new):
+            rows.append(
+                f"  field {_changed_value(key)}: {_changed_value(old)} → {_changed_value(new)}")
+    if rows:
+        lines.append("These fields on the card changed (on the card → now):")
+        lines.extend(rows)
+    else:
+        lines.append(f"No field on the card changed. Another part of the {label} changed.")
+    lines.append(f"  id: {record}")
+    return "\n".join(lines)
+
+
+def _record_diff(
+    asked: dict[str, Any], asked_custom: dict[str, Any], current: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, tuple[str, str]]]:
+    """The columns and the custom keys of an edit that differ from *current*,
+    and their old and new values for the card. Only the fields that differ go
+    on the card and on the wire."""
+    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
+    changed: dict[str, Any] = {}
+    changed_custom: dict[str, Any] = {}
+    shown: dict[str, tuple[str, str]] = {}
+    for name, new in asked.items():
+        old = current.get(name)
+        if _shown(old) != _shown(new):
+            changed[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    for name, new in asked_custom.items():
+        old = held.get(name)
+        if _shown(old) != _shown(new):
+            changed_custom[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    return changed, changed_custom, shown
+
+
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def crm_update_record(
     entity: str, record_id: str, fields: dict[str, Any],
@@ -1399,21 +1863,10 @@ async def crm_update_record(
     # Read first: the card shows the old value beside the new one.
     row = await _get(f"/crm/{slug}/{record}")
     current = row if isinstance(row, dict) else {}
-    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
-    # Only the fields that differ go on the card and on the wire.
-    changed: dict[str, Any] = {}
-    changed_custom: dict[str, Any] = {}
-    shown: dict[str, tuple[str, str]] = {}
-    for name, new in asked.items():
-        old = current.get(name)
-        if _shown(old) != _shown(new):
-            changed[name] = new
-            shown[name] = (_shown(old), _shown(new))
-    for name, new in asked_custom.items():
-        old = held.get(name)
-        if _shown(old) != _shown(new):
-            changed_custom[name] = new
-            shown[name] = (_shown(old), _shown(new))
+    # HRD-10c: the version of the read that the card shows. Taken BEFORE the
+    # card, from the same read, so a change while the card waits is a 412.
+    version = _card_version(slug, current)
+    changed, changed_custom, shown = _record_diff(asked, asked_custom, current)
     if not shown:
         return "Those fields already hold those values, so nothing was changed."
     if "company_id" in shown:
@@ -1427,21 +1880,39 @@ async def crm_update_record(
 
     target = _row_title(slug, current)
     label = ENTITY_LABELS[slug].lower()
+    context = await _held_fields_block({
+        label: target,
+        # `field <Name>` is the card's key for a field it has no line for.
+        **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
+    })
+    # HRD-10c: bound after the body, so a refused cut body leaves no fact.
+    _bind_card_version(version)
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Change this {label}?",
         detail=f"{target} · " + ", ".join(_human(k) for k in shown),
-        context=await _held_fields_block({
-            label: target,
-            # `field <Name>` is the card's key for a field it has no line for.
-            **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
-        }),
-    ):
-        return f"Cancelled — {target} was not changed."
+        context=context,
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{target} was not changed.",
+        )
     try:
-        await _patch(f"/crm/{slug}/{record}", payload)
+        # With no version (the flag is off, or the route reads no If-Match)
+        # `_request` adds no header: the request of before, byte for byte.
+        await _patch(f"/crm/{slug}/{record}", payload, if_match=version)
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
+    except _PreconditionFailed as stale:
+        # HRD-10c: a 412 wrote nothing. Each other refusal keeps its own path.
+        return await _changed_since_card(
+            slug, record, target, current, list(changed), list(changed_custom),
+            stale.current,
+        )
     return f"Changed {target}: " + "; ".join(
         f"{_human(k)} {o} → {n}" for k, (o, n) in shown.items()
     ) + "."
@@ -1516,12 +1987,19 @@ async def crm_update_task(
     link = await _linked_title(task)
     names = {"field Done": "Done", "field Due date": "Due date"}
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Change this CRM task?",
         detail=f"{subject} · " + ", ".join(names[k] for k in lines),
         context=await _held_fields_block({"field Task": subject, **link, **lines}),
-    ):
-        return f"Cancelled — {subject} was not changed."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{subject} was not changed.",
+        )
     try:
         await _patch(f"/crm/activities/{record}", payload)
     except _MirrorBlocked as blocked:

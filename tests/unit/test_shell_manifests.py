@@ -392,6 +392,9 @@ FROZEN_HREF_FEATURES = {
     "/build/agents": "build.agents",
     "/build/apps": "build.apps",
     "/apps": "studio",  # PKG-8a added this pair: the sidebar path of an installed Studio app
+    # WS-AGA AGA-6 added this pair: the member view of agents, a part of Projects
+    # with no nav entry. No role holds `agents_view` yet, so the route is dark.
+    "/projects/agents": "agents_view",
 }
 #: ALWAYS_ALLOWED as it stood at acc5188d9, FROZEN. EXACT match. A wrong entry widens access.
 FROZEN_ALWAYS_ALLOWED = {
@@ -402,7 +405,7 @@ FROZEN_ALWAYS_ALLOWED = {
 
 def test_href_features_equal_the_pre_slice_pairs():
     gates = load_gates()
-    assert len(gates.href_features) == 25
+    assert len(gates.href_features) == 26
     assert dict(gates.href_features) == FROZEN_HREF_FEATURES
     assert set(gates.href_features) == set(FROZEN_HREF_FEATURES.items())
 
@@ -560,3 +563,24 @@ def test_anchors_loader_rejects_bad_files(tmp_path):
         attempt(a={"anchors": [{**good, "route": "/a?x=1"}]})
     with pytest.raises(ShellManifestError, match="lower-case"):
         attempt(a={"anchors": [{**good, "id": "Bad Id"}]})
+
+
+# --- WS-AGA AGA-6: the member view of agents adds no nav entry -----------------
+
+
+def test_the_agents_view_is_a_projects_gate_and_no_nav_entry():
+    """AGA-6 (``agents_view.md`` §6.1). The member view of agents is a part of
+    Projects. ``projects.json`` holds its gate, and no file holds a nav entry
+    for it. ``agents.json`` keeps the one nav entry of the Agent Registry, as
+    it was. A second file or a nav entry turns this red."""
+    gated = dict(load_gates().href_features)
+    assert gated["/projects/agents"] == "agents_view"
+    nav = load_contributes()["nav"]
+    assert [(c.key, c.package, c.feature) for c in nav if c.package == "agents"] == [
+        ("/agents", "agents", "agents")
+    ]
+    assert not [c for c in nav if c.feature == "agents_view" or c.key.startswith("/projects/agents")]
+    assert "/projects/agents" not in load_vocabulary().panes
+    projects = json.loads((shell_manifest.SHELL_DIR / "projects.json").read_text(encoding="utf-8"))
+    assert projects["contributes"]["gates"] == [{"href": "/projects/agents", "feature": "agents_view"}]
+    assert not list(shell_manifest.SHELL_DIR.glob("agents_view*.json"))

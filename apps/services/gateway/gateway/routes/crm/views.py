@@ -53,6 +53,7 @@ from gateway.routes.crm.core import (
     actor,
     checked_uuid,
     from_jsonb,
+    require_deal_pipeline,
     router,
 )
 from pydantic import BaseModel, field_validator
@@ -332,6 +333,10 @@ async def create_view(
         payload.pipeline_id,
     )
     async with _tenant_session() as db:
+        if pipeline:
+            # CRM-M4a repair 1: a deals view names a deal pipeline only. The
+            # board of a lead pipeline answers 404, so the save refuses it.
+            await require_deal_pipeline(db, pipeline)
         nxt = (await db.execute(
             text("SELECT coalesce(max(position), -1) + 1 FROM crm_views "
                  "WHERE entity = :entity"),
@@ -453,6 +458,8 @@ async def patch_view_in(
         payload.columns if "columns" in given else None,
         payload.pipeline_id if "pipeline_id" in given else None,
     )
+    if pipeline:
+        await require_deal_pipeline(db, pipeline)  # CRM-M4a repair 1, as the create
     if "layout" in given and payload.layout is not None:
         sets.append("layout = :layout")
         bound["layout"] = payload.layout

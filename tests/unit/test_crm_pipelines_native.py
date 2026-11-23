@@ -27,12 +27,13 @@ on that skip.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -228,9 +229,7 @@ def test_a_run_with_no_org_holds_no_tool(monkeypatch) -> None:
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
     """An R8 suite that CI does not list skips in silence when the database
     gate is disarmed. ``deploy.yml`` copies the list of ``pr-check.yml``."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_crm_pipelines_native\.py \\?$", workflow, re.M), name
+    assert "tests/unit/test_crm_pipelines_native.py" in r8_lists.must_run()
 
 
 # ── The database tests ──────────────────────────────────────────────────────
@@ -407,7 +406,8 @@ async def test_each_refusal_writes_nothing_and_says_what_to_do(pns) -> None:
         ({"name": "X", "copy_from": str(uuid4())}, 404, "no_pipeline"),
         ({"name": "X", "copy_from": "not-an-id"}, 422, None),
         ({"name": "X", "stages": [{"name": "A"}], "via": "chat"}, 422, None),
-        ({"name": "X", "kind": "lead", "stages": [{"name": "A"}]}, 422, None),
+        # CRM-M4a: `lead` is a kind now. Another word is not.
+        ({"name": "X", "kind": "contact", "stages": [{"name": "A"}]}, 422, None),
     ]
     for body, status, code in cases:
         r = await _call(pns, admin, "POST", "/crm/pipelines", body)

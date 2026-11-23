@@ -133,6 +133,39 @@ export async function callConsole(
   return { status: res.status, body: await res.text() };
 }
 
+// A multipart call: the body is a `FormData`, and `fetch` writes the
+// `Content-Type` with its boundary. The JSON content type is therefore
+// removed, and the rest of the headers are the ones `callConsole` sends.
+// ⚠️ The same credential rule as `callConsole`: the caller's session replaces
+// the shared token, and nothing here puts either in a response.
+export type FormFetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: FormData },
+) => Promise<FetchResponse>;
+
+export async function callConsoleForm(
+  path: string,
+  form: FormData,
+  deps: { env?: ConsoleEnv; fetchImpl?: FetchLike; authToken?: string } = {},
+): Promise<ConsoleResult> {
+  const env = deps.env ?? readConsoleEnv();
+  const headers = deps.authToken
+    ? sessionHeaders(env, deps.authToken)
+    : operatorHeaders(env);
+  delete headers["Content-Type"];
+  // `FetchLike` carries a string body for every JSON call. A multipart call
+  // sends the same shape of request with a `FormData`, so the type is widened
+  // here and nowhere else.
+  const fetchImpl = (deps.fetchImpl ??
+    (globalThis.fetch as unknown)) as unknown as FormFetchLike;
+  const res = await fetchImpl(`${env.url}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  return { status: res.status, body: await res.text() };
+}
+
 // ── The operator API surface the console consumes ───────────────────────────
 //
 // Reuse the Console routes that already exist and are PROVEN LIVE — never a
@@ -442,6 +475,15 @@ export const setModelProfile = (body: unknown, d?: Deps) =>
 // key on one vendor call, writes one audit row, and writes no usage row.
 export const tryDecision = (body: unknown, d?: Deps) =>
   callConsole("/catalog/decide/try", { method: "POST", body }, d ?? {});
+
+// "Try speech to text" and "Try image analysis" (VOX-4, §31.5). Admin, no
+// window, the same rule as "Try a decision": the PLATFORM key, one audit row,
+// no usage row. The body is multipart: a `file`, and for vision a `question`.
+export const tryTranscription = (form: FormData, d?: Deps) =>
+  callConsoleForm("/catalog/transcribe/try", form, d ?? {});
+
+export const tryVision = (form: FormData, d?: Deps) =>
+  callConsoleForm("/catalog/vision/try", form, d ?? {});
 
 // Pull the vendor feed (migration 014) — litellm's price map — into
 // `vendor_price_feed` NOW. Reference data only: nothing billing reads moves.

@@ -54,7 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -69,6 +69,8 @@ from acb_common.priority import (
     level_names,
     task_cell,
 )
+from acb_common.settings import internal_auth_headers
+from acb_common.tool_refusals import GatewayRefusal, response_body, route_template, safe_detail
 
 try:
     # MCP-style risk annotations (HH-2): the risk-aware permission handler and
@@ -117,6 +119,9 @@ def _data(s: Any) -> str:
     as one. Guillemets are a firmer boundary than quotes (which a title can
     itself contain); any embedded guillemets are stripped so the delimiter
     stays unambiguous. Pairs with _DATA_LEGEND / the persona's fencing note."""
+    if isinstance(s, dict):
+        # A person ({"name", "email", "provider_user_id"}): show the name only.
+        s = s.get("name") or s.get("email") or ""
     return "«" + str(s or "").replace("«", "").replace("»", "") + "»"
 
 
@@ -137,16 +142,6 @@ def _current_user_email() -> str:
         return _get_memory_user_id() or ""
     except Exception:
         return ""
-
-
-def _internal_token() -> str:
-    try:
-        from acb_common import get_settings
-        settings = get_settings()
-        return (getattr(settings, "gateway_internal_token", "") or "").strip()
-    except Exception:
-        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
-
 
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
@@ -172,19 +167,27 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
 
 
-class _GatewayError(RuntimeError):
+class _GatewayError(GatewayRefusal):
     """A gateway answer of 400 or more. ``status`` is the code, so a tool can
-    tell a 412 (a stale ``If-Match``) from a fault."""
+    tell a 412 (a stale ``If-Match``) from a fault.
 
-    def __init__(self, message: str, status: int) -> None:
-        super().__init__(message)
-        self.status = status
+    It is the shared ``GatewayRefusal`` (``acb_common.tool_refusals``), as
+    ``acb_skills.crm_tools._GatewayError`` is. So the C1 skip rule of the
+    failure log reads the status (``tool_failure_log.md`` §4.2, TOF-2c), and
+    a tool that ``refusals_as_text`` wraps answers it as "Refused:" text.
+    ``detail`` is the SAFE detail of the route (``safe_detail``). The message
+    keeps the route's words for a caller that reads it in code."""
+
+    def __init__(self, message: str, status: int, *, detail: str = "",
+                 fields: tuple[str, ...] = (), route: str = "") -> None:
+        super().__init__(message, status=status, detail=detail, fields=fields,
+                         route=route)
 
 
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
@@ -203,10 +206,13 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
                 detail = str(body.get("detail") or "")
         except Exception:
             detail = (resp.text or "")[:200]
+        safe, fields = safe_detail(
+            resp.status_code, response_body(resp), member=_current_user_email())
         raise _GatewayError(
             f"Tasks {method} {path} failed ({resp.status_code})"
             + (f": {detail}" if detail else ""),
             resp.status_code,
+            detail=safe, fields=fields, route=route_template(path),
         )
     return resp.json() if resp.text else None
 
@@ -892,6 +898,74 @@ async def my_tasks_clarify(item_id: str) -> str:
     return json.dumps(p, indent=1)
 
 
+# ── Two proposals of the task page (P-1a, task 3112) ─────────────────────────
+#
+# The "Improve title" and the fill-in buttons of a task (`chat_parity.md` §6.4).
+# Each tool asks the AI door for a PROPOSAL and writes nothing. The member
+# agrees first, and then the task edit tool saves the change. The door reads
+# through `item_source()`, as the clarify door does. A proposal is AI text made
+# from the task, and another member can write the task, so it shows in
+# «guillemets» under `_DATA_LEGEND`. Fence: tests/unit/test_my_tasks_p1a_tools.py.
+
+#: The line of both proposals: nothing changed, and how a change happens.
+_PROPOSAL_ONLY = (
+    "This is a proposal. Nothing changed. Show it to the member. After the "
+    "member agrees, save a title, a due date or a time estimate with "
+    "update_task, and an assignee with assign. Find the task with find_tasks. "
+    "No chat tool saves context or energy: the member saves those on the task page."
+)
+#: The fields that the enrich door can propose, in the order of the task page.
+_ENRICH_FIELDS = ("context", "energy", "time_estimate_mins", "due_at", "assignee")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_suggest_title(item_id: str, title: str = "") -> str:
+    """Propose a clearer title for one task, and say if the title is vague.
+    Read only: it changes no task. Show the proposal to the member. Save it
+    with update_task only after the member agrees.
+
+    Args:
+        item_id: The task's full UUID (find it with find_tasks).
+        title: A draft title to judge in place of the saved one (empty = the
+            saved title).
+    """
+    params = {"title": title.strip()} if title.strip() else None
+    p = await _request(
+        "POST", f"/tasks/items/{item_id}/suggest-title", params=params) or {}
+    suggested = str(p.get("suggested_title") or "").strip()
+    if not suggested:
+        # The route also sends this when the member's AI clarify setting is off
+        # or the model call failed, so it says nothing about the title.
+        return "No better title was proposed. Nothing changed."
+    vague = "The title is vague." if p.get("is_vague") else "The title is clear enough."
+    return (f"{_DATA_LEGEND}\n{vague}\nProposed title: {_data(suggested)}\n"
+            f"{_PROPOSAL_ONLY}")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_enrich(item_id: str) -> str:
+    """Propose values for the MISSING fields of one task: context, energy, time
+    estimate, due date and assignee. Read only: it changes no task and never
+    overwrites a field that has a value. Show the proposal to the member. Save
+    a due date or time estimate with update_task, and an assignee with assign,
+    only after the member agrees. Context and energy: the member saves them on
+    the task page.
+
+    Args:
+        item_id: The task's full UUID (find it with find_tasks).
+    """
+    p = await _request("POST", f"/tasks/items/{item_id}/enrich") or {}
+    fields = p.get("fields") if isinstance(p, dict) else None
+    fields = fields if isinstance(fields, dict) else {}
+    lines = [f"• {k}: {_data(fields[k])}" for k in _ENRICH_FIELDS
+             if fields.get(k) not in (None, "")]
+    if not lines:
+        return ("No field to fill: the task has none missing, or no value was "
+                "sure. Nothing changed.")
+    return (f"{_DATA_LEGEND}\nProposed values for the missing fields:\n"
+            + "\n".join(lines) + f"\n{_PROPOSAL_ONLY}")
+
+
 @_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_organize(
     item_id: str,
@@ -1558,7 +1632,6 @@ async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
             the current local time + offset), e.g. 2026-07-18T14:00:00+05:30.
         end: ISO 8601 end datetime; empty = start + 30 minutes.
     """
-    from datetime import timedelta
     s = start.strip()
     if not s:
         return "A start time (ISO 8601) is required to schedule."
@@ -1625,6 +1698,240 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
     if page.line:
         lines.append(page.line)
     return ("Scheduled (🔒 = fixed, never move it):\n" + "\n".join(lines))
+
+
+# ── The events of my calendars (WS-CAL CE-15, task 3463) ─────────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §3.4 and §6.7. The read is the same
+# route as the schedule read, ``GET /projects/my/calendar``. With
+# ``CALENDAR_EVENTS`` on and ``feature:tasks``, its body holds the key
+# ``entries``: the synced Google and Outlook events and my own events. This
+# tool adds no SQL, no route and no flag. Fence:
+# ``tests/unit/test_calendar_events_tool.py``.
+
+#: THE switch of the open ruling of task 3463. The owner has not ruled. Until
+#: the owner rules, the code uses the safe default, True.
+#:
+#: True: each read that shows an event marks the chat as one that holds
+#: untrusted input (``acb_skills.egress.mark_untrusted_answer``). In a marked
+#: chat, each egress tool (``fetch_page`` and each other tool that sends data
+#: out) asks for the member's card, for up to 400 days. With no card channel
+#: it is refused. The twelve writes of the ``calendar-day`` pack leave that
+#: chat ONLY where ``HELD_CARD_WRITES_ORGS`` names the org
+#: (``egress.is_held_off_pack_write``). That list is empty by default, so
+#: today no write leaves.
+#:
+#: False: no mark. After a read of a hostile title, ``fetch_page`` runs with
+#: no card.
+#:
+#: In both cases, none of the twelve writes asks for a card. The other ruling
+#: is this one line, and ``test_calendar_events_tool.py`` tests both values.
+EVENTS_MARK_UNTRUSTED = True
+
+#: The one line when the body has no ``entries`` key: ``CALENDAR_EVENTS`` is
+#: off, or the member does not hold ``feature:tasks`` (§3.4). The pack is on
+#: in production while the flag is off, so the line says what still shows.
+EVENTS_OFF = (
+    "Synced calendar events are not available here. Only the task blocks of "
+    "my_tasks_list_schedule show."
+)
+#: The widest window of one read, in days. A month.
+EVENTS_WINDOW_MAX_DAYS = 31
+#: The cut of the stranger text of one event, in characters.
+EVENT_TITLE_MAX = 120
+EVENT_PLACE_MAX = 80
+#: The label of the one frame block that holds the events.
+EVENTS_FRAME_LABEL = "CALENDAR EVENTS"
+_EVENTS_NOTE = (
+    "Anyone can send an invite, so the title and the place of an event are text "
+    "that a stranger wrote."
+)
+#: The provider of an entry, from its ``source`` (migration 331's CHECK).
+_EVENT_PROVIDERS: dict[str, str] = {
+    "google": "Google", "outlook": "Outlook", "metorite": "Metorite",
+}
+
+
+def _calendar_entries(res: Any) -> list[dict[str, Any]] | None:
+    """The ``entries`` of a ``/my/calendar`` body, or None when the body has
+    no such key. The rows (the task blocks) stay with the schedule read."""
+    entries = res.get("entries") if isinstance(res, dict) else None
+    if entries is None:
+        return None
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _aware(value: str) -> datetime:
+    """An ISO 8601 time. A time with no offset counts as UTC, as the route
+    reads it."""
+    when = datetime.fromisoformat(str(value or "").strip())
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _events_window_refusal(from_iso: str, to_iso: str) -> str | None:
+    """One line when the window cannot be read, before any request."""
+    try:
+        start, end = _aware(from_iso), _aware(to_iso)
+        days = (end - start).total_seconds() / 86400
+    except (TypeError, ValueError, OverflowError):
+        return ("from_iso and to_iso must be ISO 8601 times, such as "
+                "2026-11-16T00:00:00+05:30. Nothing was read.")
+    if days <= 0:
+        return "to_iso must be after from_iso. Nothing was read."
+    if days > EVENTS_WINDOW_MAX_DAYS:
+        return (f"The window is longer than {EVENTS_WINDOW_MAX_DAYS} days. Nothing "
+                f"was read. Read {EVENTS_WINDOW_MAX_DAYS} days or less in one call, "
+                "and read a longer time in parts.")
+    return None
+
+
+def _window_days(from_iso: str, to_iso: str) -> tuple[date, date]:
+    """The first and the last calendar date of the window ``[from, to)``.
+
+    Each end reads in ITS OWN offset, and an end with no offset counts as
+    UTC. The last date is the date of ``to`` less one microsecond, so a
+    window that ends at midnight does not reach the next day. Call it only
+    after :func:`_events_window_refusal` passed."""
+    first = _aware(from_iso).date()
+    last = (_aware(to_iso) - timedelta(microseconds=1)).date()
+    return first, last
+
+
+def _in_window_days(entry: dict[str, Any], first: date, last: date) -> bool:
+    """False for an all-day entry that does not touch a date of the window.
+
+    The route reads all-day entries on the UTC dates of the window with one
+    day of slack on each side (``tasks/entries.py``, ``_ALL_DAY_SQL``), because
+    only the client knows the zone. So the body can hold an entry of the day
+    before or the day after. An all-day entry covers ``[start_date,
+    end_date)``, because ``end_date`` is EXCLUSIVE (migration 331). A timed
+    entry, and an entry whose dates do not read, stay as the route sent them."""
+    if not (entry.get("all_day") or entry.get("start_date")):
+        return True
+    try:
+        start = date.fromisoformat(str(entry.get("start_date")))
+        end = date.fromisoformat(str(entry.get("end_date")))
+    except (TypeError, ValueError):
+        return True
+    return start <= last and end > first
+
+
+def _stranger_text(value: Any, limit: int) -> str:
+    """Text that a stranger wrote, as one line of at most *limit* characters.
+    It drops each character that a person cannot see (``untrusted.is_invisible``,
+    the one rule). The frame makes the rest data."""
+    from acb_skills.untrusted import is_invisible
+
+    text = " ".join(
+        "".join(ch for ch in str(value or "") if not is_invisible(ch)).split())
+    if len(text) <= limit:
+        return text
+    return str(text)[: limit - 1].rstrip() + "…"
+
+
+def _utc_minute(value: Any) -> datetime | None:
+    try:
+        return _aware(str(value)).astimezone(UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _event_when(entry: dict[str, Any]) -> str:
+    """The time of an entry. A timed entry gives its start and end in UTC. An
+    all-day entry gives its days: ``end_date`` is EXCLUSIVE (migration 331),
+    so a one-day entry shows its one date."""
+    if entry.get("all_day") or entry.get("start_date"):
+        first = str(entry.get("start_date") or "?")
+        try:
+            last = (date.fromisoformat(str(entry.get("end_date")))
+                    - timedelta(days=1)).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            last = first
+        return f"{first}, all day" if last <= first else f"{first} to {last}, all day"
+    start, end = _utc_minute(entry.get("starts_at")), _utc_minute(entry.get("ends_at"))
+    if start is None:
+        return "no time"
+    head = start.strftime("%Y-%m-%d %H:%M")
+    if end is None or end == start:
+        return f"{head} UTC"
+    if end.date() == start.date():
+        return f"{head}-{end.strftime('%H:%M')} UTC"
+    return f"{head} to {end.strftime('%Y-%m-%d %H:%M')} UTC"
+
+
+def _event_line(entry: dict[str, Any]) -> str:
+    """One entry: the provider, the time, the status, then the title and the
+    place. Never the notes, the join link or the provider link."""
+    source = str(entry.get("source") or "")
+    provider = _EVENT_PROVIDERS.get(source, "Other calendar")
+    state = str(entry.get("status") or "confirmed")
+    if entry.get("busy") is False:
+        state += ", free"
+    title = _stranger_text(entry.get("title"), EVENT_TITLE_MAX) or "(no title)"
+    line = f"- {provider} | {_event_when(entry)} | {state} | Title: {title}"
+    place = _stranger_text(entry.get("location"), EVENT_PLACE_MAX)
+    return f"{line} | Place: {place}" if place else line
+
+
+async def _mark_events_read() -> None:
+    """The ruling of :data:`EVENTS_MARK_UNTRUSTED`, in this one place. True
+    marks the chat of the run on this frame, as ``tool_result_spill`` does.
+    The tenant and the session come from the run binding only."""
+    if not EVENTS_MARK_UNTRUSTED:
+        return
+    from acb_skills.egress import mark_untrusted_answer
+
+    await mark_untrusted_answer()
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_events(from_iso: str, to_iso: str, offset: int = 0,
+                               limit: int = 50) -> str:
+    """List the events of the member's calendars in a window. They are the
+    synced Google and Outlook events and the member's own events. Read only.
+    Each event names its calendar, its time, its status, its title and its
+    place. The day planner does not read these events. Check each block that
+    it proposes against them before you apply the plan. The window is
+    half-open, [from, to), at most 31 days.
+
+    Args:
+        from_iso: ISO 8601 start of the window (inclusive).
+        to_iso: ISO 8601 end of the window (exclusive).
+        offset: Where the page starts. 0 is the first event.
+        limit: Events per page, 50 by default and 100 at most.
+    """
+    refusal = _events_window_refusal(from_iso, to_iso)
+    if refusal:
+        return refusal
+    entries = _calendar_entries(await _request(
+        "GET", _MY_CALENDAR,
+        params={"start": from_iso, "end": to_iso, "include_done": "true"}))
+    if entries is None:
+        return EVENTS_OFF
+    # The route's all-day slack, out before the count and the page (P1-1).
+    first, last = _window_days(from_iso, to_iso)
+    entries = [e for e in entries if _in_window_days(e, first, last)]
+    if not entries:
+        return "No calendar events are in that window."
+    # The route sends the window in the order of the day, the start, the
+    # creation and the id, so a page cut here is the same on every call.
+    page = paged(entries, offset, limit, default=50, noun="events")
+    if not page.items:
+        return page.line
+    from acb_skills.untrusted import UntrustedFrame
+
+    await _mark_events_read()
+    frame = UntrustedFrame.new()
+    body = "\n".join(_event_line(e) for e in page.items)
+    out = [
+        f"Calendar events ({page.total} in the window). Times are UTC. A free "
+        "event does not block the time.",
+        frame.note(_EVENTS_NOTE),
+        frame.wrap(EVENTS_FRAME_LABEL, body),
+    ]
+    if page.line:
+        out.append(page.line)
+    return "\n".join(out)
 
 
 # ── AI day planning (the planner, callable by chat) ──────────────────────────
@@ -1757,6 +2064,62 @@ async def my_tasks_get_calendar_settings() -> str:
     s = await _request("GET", _CAL_SETTINGS_PATH) or {}
     return "Calendar settings:\n" + "\n".join(
         f"• {k}: {v}" for k, v in _cal_view(s).items())
+
+
+# ── The connected calendars (P-1a, task 3112) ────────────────────────────────
+#
+# The read of the Connected calendars section of Calendar settings (CE-10c).
+# The route answers the member's own rows only, and 404 unless
+# ``CALENDAR_SYNC_READ`` names the org. The tool shows ONLY the fields of
+# :data:`_CONNECTION_FIELDS`, so a token or a secret never shows, whatever the
+# body holds. Sync now, the switch and Disconnect are task 3923 (P-1c). The day
+# acts of My Day (capture, focus, plan and close the day) are CC-10's (task
+# 1978): this module builds no day flow for them. Fence:
+# tests/unit/test_my_tasks_p1a_tools.py.
+
+_CAL_CONNECTIONS_PATH = "/tasks/calendar/connections"
+#: The one line when the route answers 404: calendar sync is off for the org.
+CONNECTIONS_OFF = "Calendar sync is not available in your organization yet."
+#: The cut of the last error of a connection, in characters.
+CONNECTION_ERROR_MAX = 120
+
+
+def _connection_line(c: dict[str, Any]) -> str:
+    """One connection, from an allow-list of fields only."""
+    provider = {"google": "Google", "outlook": "Outlook"}.get(
+        str(c.get("provider") or ""), "Other calendar")
+    parts = [f"- {provider}", str(c.get("account_email") or "(no address)"),
+             str(c.get("status") or "unknown")]
+    parts.append(f"last sync {c.get('last_sync_at') or 'never'}")
+    parts.append(f"{int(c.get('entry_count') or 0)} events")
+    parts.append("tasks shown in it: " + ("on" if c.get("push_tasks") else "off"))
+    error = _stranger_text(c.get("last_error"), CONNECTION_ERROR_MAX)
+    if error:
+        parts.append(f"last error {_data(error)}")
+    return " | ".join(parts)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_calendar_connections() -> str:
+    """List the member's own connected calendars (Google or Outlook): the
+    address, the state, the last sync, the count of events and the task
+    switch. It also lists the own mailboxes that can connect. Read only. It
+    shows no token and no secret. Connect happens in Calendar settings.
+    """
+    try:
+        d = await _request("GET", _CAL_CONNECTIONS_PATH) or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return CONNECTIONS_OFF
+        raise
+    rows = [c for c in d.get("connections") or () if isinstance(c, dict)]
+    offers = [o for o in d.get("mailbox_offers") or () if isinstance(o, dict)]
+    out = ([f"Connected calendars ({len(rows)}):", *map(_connection_line, rows)]
+           if rows else ["No calendar is connected."])
+    if offers:
+        out.append("Mailboxes that can connect their calendar in Calendar settings: "
+                   + ", ".join(f"{o.get('provider')} {o.get('address')}" for o in offers))
+    return "\n".join(out)
 
 
 def _cal_patch(
@@ -2232,6 +2595,11 @@ async def my_tasks_day_digest() -> str:
     d = await _request("GET", "/tasks/calendar/day-summary")
     if not d:
         return "Couldn't read the day summary."
+    return _fmt_digest(d)
+
+
+def _fmt_digest(d: dict[str, Any]) -> str:
+    """The text of ``my_tasks_day_digest``, from the answer of ``day-summary``."""
     lines = [f"Day summary for {d.get('day', 'today')}:"]
     one = d.get("one_thing")
     if one and one.get("title"):
@@ -2306,3 +2674,195 @@ async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     if not item_id.strip():
         return f"Cleared the One Thing for {day}."
     return f"Set the One Thing for {day}. The planner will protect it."
+
+
+# ── The two day flows (CAL-4, task 1678) ─────────────────────────────────────
+#
+# "Start my day" and "close my day" in ONE reply, as the Calendar app does them
+# in ``StartupRitual.tsx`` and ``EndOfDayReview.tsx``. Each flow only reads or
+# proposes: it calls ``GET`` routes and the ``apply=False`` calls, so the member
+# agrees before any write. The day is the day of the server (``day-summary``
+# answers ``day``). A step that fails shows its own line and the rest stays.
+
+_NEXT_AFTER_AGREE = (
+    "The server keeps ONE pending proposal for the day: the last one. In the start "
+    "flow the rebuild was proposed last, so it is pending and the rollover proposal "
+    "was replaced. After the member agrees to a step, call that tool with "
+    "apply=False first and show it, then with apply=True. Say that it is done "
+    "only after the tool says so.")
+_CANDIDATES = 5
+
+
+def _page_lines(lines: list[str], noun: str) -> list[str]:
+    """The first ``_DIGEST_BLOCKS`` lines, and a line that says how many are left out."""
+    page = paged(lines, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS, noun=noun)
+    out = list(page.items)
+    if page.line:
+        out.append(f"{len(lines) - len(page.items)} more {noun}: my_tasks_list_schedule lists them all.")
+    return out
+
+
+def _why(exc: BaseException) -> str:
+    """A short reason for a failed step, one line."""
+    return " ".join(str(exc).split())[:120] or type(exc).__name__
+
+
+async def _flow_step(failed: list[str], what: str, run: Any) -> str | None:
+    """Run one step. A failure becomes a line and the flow goes on."""
+    try:
+        return await run()
+    except Exception as exc:  # a step must not break the reply
+        failed.append(f"{what} is not available now: {_why(exc)}")
+        return None
+
+
+async def _plan_proposal(path: str, body: dict[str, Any]) -> str:
+    plan = await _request("POST", path, json={**body, "apply": False})
+    # The call is a proposal. Whatever the server says, the text says "proposed".
+    return _fmt_plan(plan or {}, applied=False)
+
+
+async def _one_thing_candidates() -> str:
+    """The ritual's pool: next actions with no block yet, in the order of the list."""
+    rows = await _fetch_all(_MY_INBOX, {"include_deferred": "true", "disposition": "NEXT"})
+    pool = [r for r in _ordered(rows)
+            if not r.get("scheduled_start") and not r.get("archived_at")]
+    if not pool:
+        return "No unscheduled tasks to pick from. Plan or capture first."
+    page = paged(pool, 0, _CANDIDATES, default=_CANDIDATES, noun="tasks")
+    lines = [f"• {_data(r.get('title', '?'))}"
+             + (f" ({r['time_estimate_mins']} min)" if r.get("time_estimate_mins") else "")
+             + f" (id: {r.get('id', '')})"
+             for r in page.items]
+    if page.line:
+        lines.append(f"{len(pool) - len(page.items)} more: my_tasks_list (view next) lists them.")
+    return "\n".join(lines)
+
+
+def _flow_reply(title: str, sections: list[tuple[str, str | None]],
+                failed: list[str], notes: list[str], next_steps: list[str]) -> str:
+    out = [title]
+    for head, body in sections:
+        if body:
+            out.append(f"\n{head}\n{body}")
+    if failed:
+        out.append("\nNot available:\n" + "\n".join(f"• {f}" for f in failed))
+    for n in notes:
+        out.append(f"\n{n}")
+    out.append("\nNext steps, only after the member agrees (nothing is changed yet):\n"
+               + "\n".join(f"• {n}" for n in next_steps) + f"\n{_NEXT_AFTER_AGREE}")
+    return "\n".join(out)
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_start_my_day(energy_note: str = "") -> str:
+    """Start the member's day in ONE reply, as the Start your day ritual does:
+    the digest of today, a PROPOSAL to roll over overdue work, the tasks to pick
+    the ★ One Thing from, and a PROPOSAL to rebuild the day. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps".
+
+    Args:
+        energy_note: optional words of the member about their state, e.g. "low
+            energy, lots of meetings". They steer the rebuild proposal. Pass
+            them unchanged.
+    """
+    failed: list[str] = []
+    digest = await _flow_step(failed, "The day digest", lambda: _digest_text())
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    candidates = await _flow_step(
+        failed, "The list of tasks for the One Thing", _one_thing_candidates)
+    rebuild = await _flow_step(
+        failed, "The rebuild proposal",
+        lambda: _plan_proposal("/tasks/calendar/plan-today",
+                               {"energy_note": energy_note or None}))
+    return _flow_reply(
+        "Start your day. This is a proposal: nothing is changed yet.",
+        [("Your day so far", digest),
+         ("Roll over overdue work (proposal)", rollover),
+         ("Pick the ★ One Thing (if only one thing gets done today, it should be...)",
+          candidates),
+         ("Rebuild my day (proposal)", rebuild)],
+        failed, [],
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the overdue work back to the list.",
+         "One Thing: my_tasks_set_one_thing with the id the member picks.",
+         "Rebuild: my_tasks_plan_day (apply=False, then apply=True, same energy_note) places the day. "
+         "Propose it again after a rollover, because the rollover changes the list."])
+
+
+async def _digest_text() -> str:
+    d = await _request("GET", "/tasks/calendar/day-summary")
+    if not d:
+        raise RuntimeError("the server sent no day summary")
+    return _fmt_digest(d)
+
+
+def _tomorrow(day: str) -> str:
+    """The day after ``day`` (YYYY-MM-DD, from the server), or "" if unreadable."""
+    try:
+        return (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_close_my_day() -> str:
+    """Close the member's day in ONE reply, as the Day review does: what got
+    done today, what is left (not done), a PROPOSAL to roll the leftover work
+    back to the list, and the tasks to seed tomorrow with. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps". The server plans TODAY only: it cannot
+    fit tomorrow, so the reply says so.
+    """
+    failed: list[str] = []
+    day = ""
+    done_lines: list[str] = []
+    left_lines: list[str] = []
+    summary_text: str | None = None
+    one_thing_line = ""
+
+    async def _summary() -> str:
+        nonlocal day, one_thing_line
+        d = await _request("GET", "/tasks/calendar/day-summary")
+        if not d:
+            raise RuntimeError("the server sent no day summary")
+        day = str(d.get("day") or "")
+        sched = d.get("scheduled") or []
+        for b in sched:
+            title = _data(b.get("title", "?"))
+            (done_lines if b.get("done") else left_lines).append(f"• {title}")
+        one = d.get("one_thing") or {}
+        if one.get("title"):
+            one_thing_line = f"★ One Thing: {_data(one['title'])}"
+        out = [f"Done today: {len(done_lines)}", *_page_lines(done_lines, "blocks")]
+        out.append(f"Not done today: {len(left_lines)}")
+        out.extend(_page_lines(left_lines, "blocks"))
+        if d.get("overdue_count"):
+            out.append(f"Overdue from earlier days: {d['overdue_count']}")
+        if one_thing_line:
+            out.append(one_thing_line)
+        return "\n".join(out)
+
+    summary_text = await _flow_step(failed, "The summary of today", _summary)
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    seeds = await _flow_step(
+        failed, "The list of tasks for tomorrow", _one_thing_candidates)
+    tomorrow = _tomorrow(day)
+    notes = [
+        "Fit tomorrow: not available here. The day planner tools plan TODAY only, "
+        "so no proposal for tomorrow's calendar exists. What the member can do now "
+        "is leave unfinished work on the list (the rollover above) and pick the "
+        "★ One Thing for tomorrow from the tasks above."]
+    return _flow_reply(
+        "Close your day. This is a proposal: nothing is changed yet.",
+        [("What got done, and what did not", summary_text),
+         ("Move what is not done back to the list (proposal)", rollover),
+         ("Candidates for tomorrow's ★ One Thing", seeds)],
+        failed, notes,
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the work that is not done back to the list.",
+         "Tomorrow's One Thing: my_tasks_set_one_thing with the id the member picks"
+         + (f" and date {tomorrow}." if tomorrow else " and tomorrow's date.")])

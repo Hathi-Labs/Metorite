@@ -1,0 +1,197 @@
+{
+  "studio": 1,
+  "id": "purchase-requests",
+  "name": "Purchase requests",
+  "purpose": "Ask to buy an item and follow the request to a decision.",
+  "team": "operations",
+  "objects": [
+    {
+      "name": "request",
+      "fields": [
+        {
+          "key": "item",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "requester",
+          "type": "person"
+        },
+        {
+          "key": "vendor",
+          "type": "text"
+        },
+        {
+          "key": "quantity",
+          "type": "number"
+        },
+        {
+          "key": "amount",
+          "type": "number"
+        },
+        {
+          "key": "needed_by",
+          "type": "date"
+        },
+        {
+          "key": "status",
+          "type": "select",
+          "hot": true,
+          "options": [
+            "draft",
+            "submitted",
+            "approved",
+            "rejected",
+            "ordered"
+          ]
+        },
+        {
+          "key": "reason",
+          "type": "longText"
+        },
+        {
+          "key": "quote",
+          "type": "file",
+          "many": true
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "find",
+      "uses": "object:request.list"
+    },
+    {
+      "id": "request_get",
+      "uses": "object:request.get"
+    },
+    {
+      "id": "request_create",
+      "uses": "object:request.create"
+    },
+    {
+      "id": "request_update",
+      "uses": "object:request.update"
+    },
+    {
+      "id": "request_delete",
+      "uses": "object:request.delete"
+    },
+    {"id": "request_aggregate", "uses": "object:request.aggregate"}
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {
+        "object": "request"
+      },
+      "group_by": "status",
+      "card": {
+        "title": "item",
+        "meta": [
+          "requester",
+          "amount"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {
+        "object": "request"
+      },
+      "columns": [
+        "item",
+        "requester",
+        "vendor",
+        "amount",
+        "needed_by",
+        "status"
+      ]
+    },
+    {"id": "mine", "block": "table", "title": "My requests", "source": {"object": "request", "args": {"filter": [{"field": "requester", "op": "eq", "value": "me"}]}}, "columns": ["item", "requester", "vendor", "amount", "needed_by", "status"]},
+    {"id": "open", "block": "table", "title": "Open requests", "source": {"object": "request", "args": {"filter": [{"field": "status", "op": "in", "value": ["draft", "submitted", "approved"]}]}}, "columns": ["item", "requester", "vendor", "amount", "needed_by", "status"]},
+    {"id": "open_total", "block": "stat", "title": "Open requests", "source": {"object": "request", "action": "request_aggregate", "args": {"filter": [{"field": "status", "op": "in", "value": ["draft", "submitted", "approved"]}], "measures": [{"op": "count"}], "good": "down"}}},
+    {"id": "by_status", "block": "chart", "title": "By status", "source": {"object": "request", "action": "request_aggregate", "args": {"kind": "donut", "group_by": {"field": "status"}, "measures": [{"op": "count"}]}}},
+    {
+      "id": "request_page",
+      "block": "detail",
+      "object": "request",
+      "fields": [
+        "item",
+        "requester",
+        "vendor",
+        "quantity",
+        "amount",
+        "needed_by",
+        "status",
+        "reason",
+        "quote"
+      ]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "object": "request",
+      "fields": [
+        "item",
+        "vendor",
+        "quantity",
+        "amount",
+        "needed_by",
+        "reason",
+        "quote"
+      ],
+      "submit": "request_create"
+    }
+  ],
+  "skill": {
+    "description": "Use for purchase requests: raise one, find one, see its status.",
+    "instructions": "Ask for the item and the amount first. Show the board card. Do not change the status for the member.",
+    "actions": [
+      "object:request.create"
+    ],
+    "cards": [
+      "board",
+      "new"
+    ]
+  },
+  "shell": {
+    "jobs": [
+      {
+        "verb": "Ask to buy an item",
+        "view": "new"
+      }
+    ],
+    "needs": [
+      {
+        "object": "request",
+        "where": {
+          "requester": "$me",
+          "status": "submitted"
+        }
+      }
+    ],
+    "search": [
+      "request"
+    ]
+  },
+  "pages": [
+    {"id": "dashboard", "title": "Dashboard", "cols": 2, "cells": [{"view": "open_total"}, {"view": "by_status"}]},
+    {"id": "all", "title": "All requests", "cols": 1, "cells": [{"view": "list"}], "side": {"view": "new"}},
+    {"id": "mine", "title": "My requests", "cols": 1, "cells": [{"view": "mine"}], "side": {"view": "new"}},
+    {"id": "open", "title": "Open requests", "cols": 1, "cells": [{"view": "open"}], "side": {"view": "new"}},
+    {"id": "board", "title": "Board", "cols": 1, "cells": [{"view": "board"}], "side": {"view": "new"}}
+  ],
+  "nav": [
+    {"title": "Requests", "rows": [
+      {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
+      {"page": "all", "icon": "List", "label": "All requests"},
+      {"page": "mine", "icon": "User", "label": "My requests", "count": true},
+      {"page": "open", "icon": "Inbox", "label": "Open requests", "count": true},
+      {"page": "board", "icon": "Kanban", "label": "Board"}
+    ]}
+  ]
+}

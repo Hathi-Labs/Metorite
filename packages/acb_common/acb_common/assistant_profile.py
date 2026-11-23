@@ -383,7 +383,7 @@ def _clean_address(value: Any) -> dict[str, Any]:
 
 
 def _clean_style(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("length", "language", "notes"), "the style")
+    raw = _object(value, ("length", "language", "language_fixed", "notes"), "the style")
     out: dict[str, Any] = {}
     if "length" in raw:
         out["length"] = _choice(raw["length"], LENGTH, "style.length")
@@ -394,6 +394,11 @@ def _clean_style(value: Any) -> dict[str, Any]:
         if not _LANGUAGE.match(lang) or _language_has_number(lang):
             raise ValueError("style.language is a BCP 47 tag")
         out["language"] = lang
+    if "language_fixed" in raw:
+        # The member's order about the answer language (personalization.md 5.3).
+        if raw["language_fixed"] is not True:
+            raise ValueError("style.language_fixed is true, or null to clear it")
+        out["language_fixed"] = True
     if "notes" in raw:
         notes = raw["notes"]
         if not isinstance(notes, list):
@@ -1066,8 +1071,8 @@ def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
     * *author* is the run member. Another member's steer never grounds a
       write.
 
-    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
-    carries a steer to the model. Never raises.
+    ``orchestrator.steer.take_steer_turns`` calls it when a model call reads
+    a steer as a user turn (task 2494). Never raises.
     """
     holder = _STEERS.get()
     if holder is None or typed is not True or not holder.member:
@@ -1102,8 +1107,11 @@ def sent_words() -> str:
 
     That is the sent text of the request (:data:`MEMBER_SENT`), then the
     member's own typed steers that the run read, as :func:`typed_words` reads
-    them. Only the tool-pack chooser reads it (D-PZ-37). ⚠️ Never ground a
-    write in it: a tapped pill holds words that the member did not type.
+    them. Only the tool-pack chooser reads it (D-PZ-37). TOF-3a F12b: the
+    live writer of skill runs reads the same words through ``PackTurn.words``,
+    and keeps only their hash (``orchestrator._tool_injection``). ⚠️ Never
+    ground a write in it: a tapped pill holds words that the member did not
+    type.
     :func:`typed_words` is the one value that grounds a write."""
     own = MEMBER_SENT.get()
     holder = _STEERS.get()
@@ -1948,7 +1956,34 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True,
     return " ".join(bits)
 
 
-_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+# Language names for the style line. Same nine as ``LANGUAGES`` in
+# ``settings/assistant/lib/profile.ts``. ``test_assistant_profile_language.py``
+# keeps the two maps equal. A tag outside the map stays a bare tag.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "hi": "Hindi", "kn": "Kannada", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati",
+    "ml": "Malayalam",
+}
+
+# The one language rule of every chat turn (PZ-51, personalization.md 5.3).
+# ``executor._context_preamble_parts`` adds it to each turn, with or without
+# a profile block. Owner, 2026-11-09: the core truth is saved in English, and
+# the language of the message wins over the profile language.
+LANGUAGE_RULE_LINE = (
+    "Language rule: answer in the language that the member uses in this "
+    "message, also when it differs from their profile language. Use the "
+    "profile language only when the language of the message is unclear. "
+    "A profile line that says to answer in a language even when the member "
+    "writes in another one wins over this: the member ordered it. "
+    "Write every saved record in English: task and project titles and "
+    "descriptions, comments, notes, CRM records, calendar events, and email "
+    "or message drafts. Do this even when the member writes in another "
+    "language. The one exception is a member's explicit request for another "
+    "language in that record, such as \"write this email in Hindi\"."
+)
+
+# Accepts "kn" and "Kannada (kn)". The group is always the TAG.
+_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in ")
 
 
 def block_language(block: str) -> str | None:
@@ -1964,8 +1999,24 @@ def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
     if style.get("language"):
-        bits.append(f"Language: {_one_line(style['language'])}. Answer in it, "
-                    "unless they write in another language.")
+        tag = _one_line(style["language"])
+        name = LANGUAGE_NAMES.get(tag.lower())
+        label = f"{name} ({tag})" if name else tag
+        if style.get("language_fixed") is True:
+            # The member ordered this language (personalization.md 5.3). It
+            # holds when they write in another one.
+            answer = LANGUAGE_NAMES.get(tag.lower().split("-")[0], label)
+            if answer == "English":
+                tail = "writes in Hindi or another language"
+            elif answer == "Hindi":
+                tail = "writes in English or another language"
+            else:
+                tail = "writes in another language"
+            bits.append(f"Language: {label}. Answer in {answer}, even when "
+                        f"the member {tail}.")
+        else:
+            bits.append(f"Language: {label}. Answer in it, "
+                        "unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))
     return " ".join(bits)
@@ -2275,6 +2326,8 @@ def render_export(raw: Any) -> str:
         for key, label in (("length", "Answer length"), ("language", "Language")):
             if style.get(key):
                 lines.append(f"- {label}: {_one_line(style[key])}")
+        if style.get("language_fixed") is True and style.get("language"):
+            lines.append("- The language holds even when you write in another one")
         lines += [f"- Note: {n}" for n in notes]
     if profile["facts"]:
         lines += ["", "What you asked the assistant to remember"]

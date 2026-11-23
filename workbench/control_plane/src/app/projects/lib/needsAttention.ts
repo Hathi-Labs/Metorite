@@ -9,8 +9,9 @@
  * rule of its own, so the board and the chat read one answer.
  *
  * ⚠️ **`can_act` is the server's.** It is the rule of Release (EA-14a). The
- * run panel's own Release button still reads `access.is_admin` (HANDOFF
- * H-409 item 2), and this list does not add a third rule.
+ * run panel's own Release button reads the same permission slug
+ * (`agentRuns.RELEASE_ADMIN_PERMISSION`, H-409 item 2), and this list does
+ * not add a third rule.
  *
  * Fence: `needsAttention.test.ts`.
  */
@@ -27,6 +28,12 @@ export type AttentionKind = (typeof ATTENTION_KINDS)[number];
 export type AttentionAction = "resume" | "close_run" | "open_blocker";
 
 /** One row of `GET /projects/needs-attention`. A field that does not apply is null. */
+export interface AttentionBlocker {
+  id: string;
+  number: number | null;
+  title: string | null;
+}
+
 export interface AttentionRow {
   kind: AttentionKind;
   task_id: string;
@@ -50,6 +57,9 @@ export interface AttentionRow {
   blocker_id: string | null;
   blocker_number: number | null;
   blocker_title: string | null;
+  /** Every parked blocker of a blocked row, the oldest link first. The `blocker_*` fields name the first. */
+  blockers?: AttentionBlocker[] | null;
+  blocker_count?: number | null;
   action: AttentionAction;
   actions: AttentionAction[];
   /** The rule of Release, decided by the server. */
@@ -127,7 +137,7 @@ export const ACTION_ICON: Readonly<Record<AttentionAction, string>> = {
  */
 export const ACTION_HINT: Readonly<Record<AttentionAction, string>> = {
   resume: "Ask the same agent client to continue this run. The run keeps the task.",
-  close_run: "End this run and free the task for anyone. The task keeps its status.",
+  close_run: "End this run and free the task for anyone. The task moves to its lane.",
   open_blocker: "Open the task that blocks this one.",
 };
 
@@ -231,6 +241,13 @@ export function rowDetail(row: AttentionRow): string {
       row.reason === "archived" ? "archived" : row.reason === "cancelled" ? "cancelled" : "done";
     return `The task is ${why}. The run of ${client(row)} is still open, quiet for ${age}.`;
   }
+  const all = row.blockers ?? [];
+  if (all.length > 1) {
+    const list = all
+      .map((b) => taskLabel({ task_number: b.number, title: b.title ?? "a task" }))
+      .join(", ");
+    return `Blocked by ${all.length} tasks for ${age}: ${list}. They are in the backlog, and nobody holds them.`;
+  }
   const blocker = taskLabel({
     task_number: row.blocker_number,
     title: row.blocker_title ?? "a task",
@@ -274,7 +291,7 @@ export function closeRunCopy(row: AttentionRow): {
 } {
   return {
     title: "Close this agent run?",
-    body: `The run of ${client(row)} ends, and the agent stops on this task. The task keeps its status and its assignees.`,
+    body: `The run of ${client(row)} ends, and the agent stops on this task. The assignees stay. The task moves to its lane: To Do, or In progress while a pull request is open.`,
     confirm: ACTION_LABEL.close_run,
   };
 }

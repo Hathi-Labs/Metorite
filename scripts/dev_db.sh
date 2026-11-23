@@ -69,7 +69,15 @@ start_one() {
         return
     fi
     docker rm -f "$name" >/dev/null 2>&1 || true
-    docker run -d --name "$name" \
+    # PGDATA on tmpfs: a commit costs ~0.05 ms and not ~2.5 ms on the WSL disk
+    # (task 2304). The data is throwaway by design. A container restart loses
+    # it, and the next run lays the ladder down again. Set
+    # METORITE_SCRATCH_TMPFS=0 to keep the data on disk.
+    local tmpfs=()
+    if [ "${METORITE_SCRATCH_TMPFS:-1}" != "0" ]; then
+        tmpfs=(--tmpfs /var/lib/postgresql/data:size=1g)
+    fi
+    docker run -d --name "$name" "${tmpfs[@]}" \
         -e POSTGRES_USER="$user" -e POSTGRES_PASSWORD="$user" -e POSTGRES_DB="$db" \
         -p "127.0.0.1:${port}:5432" "$image" >/dev/null
     say "  started $name on :$port"

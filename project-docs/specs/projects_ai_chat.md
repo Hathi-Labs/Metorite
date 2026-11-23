@@ -137,7 +137,7 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Show me open tasks due this week for Ayush" | `list_tasks` | `GET /projects/tasks` with the filter set the app uses |
 | "Tell me about #142" | `task_detail` | `GET /projects/tasks/{id}` + `/timeline` + `/relations` |
 | "What is mine?" | `my_work` | `GET /projects/assigned-to-me`, `GET /projects/my/inbox` |
-| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names` |
+| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names`, `GET /projects/people/reach` (a card reads it, task 3636) |
 | "What statuses does this project use?" | `vocabulary` | `GET /nodes/{id}/statuses`, `/types`, `/tags`, `/fields` |
 | "Where is work stuck?" | `analytics_stuck` | `GET /projects/analytics/stuck` |
 | "Who is overloaded?" | `analytics_load` | `GET /projects/analytics/load` |
@@ -4056,8 +4056,9 @@ The first production run PASSED on 2026-09-29, all four steps, on
 
 **Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
 observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).
-The expand half of the `agent_avatars` key BUILT 2026-11-07 (H-201d, task
-1719, migration 354). The contract half is OPEN (HANDOFF H-443).** This part binds the readers
+The expand half of the `agent_avatars` key MERGED 2026-11-07 (H-201d, task
+1719, migration 354). The contract half BUILT 2026-11-22 (migration 474), and
+it merges only after 354 is in the production ledger from an earlier release.** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4090,8 +4091,9 @@ migrations before it restarts the services.
    the old key. `_save_avatar` names the new index in `ON CONFLICT`. A
    same-org save updates the row. A save of a name that another org holds
    still fails, on `agent_avatars_pkey`, and never reaches the other row.
-2. **Contract, a later release (open, HANDOFF H-443).** It drops
-   `agent_avatars_pkey`. Then each org keeps its own avatar for one name.
+2. **Contract, migration 474 (built 2026-11-22, a later release than 354).** It
+   re-points the primary key from `agent_name` alone to `(organization_id,
+   agent_name)`. Then each org keeps its own avatar for one name.
    It cannot ship with 354. The old gateway runs on the new schema until the
    restart, and its `ON CONFLICT (agent_name)` needs a unique rule on
    exactly `(agent_name)`.
@@ -4099,8 +4101,9 @@ migrations before it restarts the services.
 Production holds no row with a NULL `organization_id`, because tenancy
 phase 3 sets the column NOT NULL. A unique index treats each NULL as
 distinct, so on a database without the tenancy phases it does not constrain
-a NULL row. `tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves both
-states as the app role under FORCE RLS.
+a NULL row, and 474 refuses to run while one exists.
+`tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves the contract state
+as the app role under FORCE RLS.
 
 **The rules.**
 
@@ -4358,6 +4361,12 @@ import needs no mail account.
 
 `tests/unit/test_h201_email_artifact_sources.py` is the fence. It reads
 the disk only, so no database is involved.
+
+Task 3598 (2026-11-17) gives the attach one more source, and the import
+none. That source is a file of a chat folder in a shared agent's tenant
+dir, for a chat that the sender can write to. A chat file attaches only by
+an `artifact:<agent>:<path>` ref, because only that ref pins a digest. The
+bare path refuses it. `email_app_master_plan.md` §21.11 holds the rule.
 
 | Mutation | Tests that fail |
 |---|---|
@@ -5292,8 +5301,9 @@ sandbox suite.
 
 ### 22.9 H-227 — the uploads and the documents of one thread
 
-**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
-prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+**Status: BUILT 2026-10-04. Fix round 4 (HANDOFF H-242, task 689) built
+2026-11-22, in review.** HANDOFF H-227. It is a prerequisite of the owner
+flip WS-43w (`maf_coding_engine.md` §16.3).
 
 **The gap.** Every session of projects-assistant in one organization opens
 the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
@@ -5589,14 +5599,18 @@ mutation of one layer alone stays green. The table shows those too.
    none of these doors. An existing row keeps its id.
 3. **An older batch document is the organization's again.** Rule 8 and the
    who-loses-what line above. `workspace._is_batch_row` and
-   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
-   the purge and `session_paths` use it.
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree and
+   `session_paths` use it. The purge deletes each row at a path that the chat
+   began, a batch row too. A new batch run cannot add such a row.
+   `write_artifact._take_batch_name` skips each name that `_path_has_history`
+   finds written. So this touches legacy rows only.
 4. **The run doors with no stream check the room.** `POST /agent/run` and
    `/agent/run/async` took a client thread id with no room check. So a
    member who knew the id of another member's chat ran a shared agent in it
    and read its folders. They now refuse a caller who may not send in the
    room, as the stream door does (`agent._guard_run_thread`).
-5. **The purge keeps a file that another session rewrote.** Main let any
+5. **The purge keeps a file that another session rewrote.** ⚠️ Fix round 4
+   replaces this item: the purge now deletes such a file. Main let any
    session change a loose file. When the newest write of a loose file that
    the chat began is another session's, the purge keeps the file and its
    other rows. It deletes only the rows of the chat. Then the oldest
@@ -5621,10 +5635,80 @@ mutation of one layer alone stays green. The table shows those too.
 | the SQL rule knows only the actor `batch` | 1 |
 | the purge deletes an older batch row | 1 |
 | the tree finds a batch file by the actor alone | 1 |
-| the purge deletes a file that another session rewrote | 1 |
+| the purge deletes a file that another session rewrote (fix round 4 made this the rule) | 1 |
 | the containment check runs first (Windows only) | 1 |
 | the run doors with no stream drop the room check | 1 |
 | the run doors with no stream skip the guard | 2 |
+
+**Fix round 4 (HANDOFF H-242, task 689, 2026-11-22).** The round 3 review
+of PR #616 found three edges of the new-chat step. Seven R8 tests failed
+on the box at `9d0ea8444`: the tests alone, on main `66766ecf9`. The box went offline before the run
+after the fix, so pr-check must show them green. The hermetic fences pass.
+
+1. **A room of `None` no longer skips the step** (residual 8). A run door
+   read a room of `None` as "not new". `_resolve_room` gives `None` to a
+   caller with no email, and when the lookup raises. Now only the internal
+   service caller skips the step (`workspace._is_service_caller`). Each
+   other caller goes through it, and the step checks for the row under its
+   lock. So the step purges a new id, and removes nothing of a chat that
+   exists.
+2. **The purge deletes a file that the chat began** (residual 9). The lead
+   of task 689 decided it on 2026-11-22, in review by the owner through the
+   PR. The decision: delete, and do not keep the file with no owner. Another
+   session's newest bytes can still hold the chat's text, as a `save_note`
+   append of main did. To keep the file with no owner, a row must name the
+   chat as the first writer. A new chat can take that id, so such a row
+   gives the file back to it. A tombstone is a new mechanism. The delete
+   needs none, and it cannot hand one chat's text to another session. The
+   cost: the other session loses its later bytes at that path. Fix round 3
+   item 5 is gone (`workspace._last_write`).
+3. **The check, the purge and the new row are one step** (residual 6).
+   `chat.open_new_session` does all of it in one transaction. It takes
+   `pg_advisory_xact_lock(hashtextextended('chat_new:' || id, 0))`, and it checks again that
+   the tenant has no row. Then it purges and inserts the row.
+   `POST /chat/sessions` and the three run doors call it. A door that comes
+   second waits on the lock, then finds the row, and purges nothing. A run
+   door now makes the row before the run, so no run writes with no row. A
+   failed purge or insert answers 503, and the run does not start. The
+   mint then finds the row and changes nothing.
+4. **One connection for the step.** The sync pool holds 2 + 1 connections
+   by default. So the purge runs in the session of the step, and takes no
+   second connection. `purge_thread_files`, `session_paths`, `file_history`
+   and `purge_files` take that session as `db=`. The step runs its
+   transaction inside one `with` block in one worker thread, so a cancelled
+   request never leaves the lock held. The store calls go through
+   `asyncio.to_thread`. So
+   the one session crosses threads, one call after another and never at the
+   same time. No code may run two calls on the session at once, for example
+   with `asyncio.gather`. A wait for the lock of more than 10 s answers 503.
+   Advisory: no test fences the 10 s wait.
+
+Each mutation below turned the hermetic fences of
+`tests/unit/test_h227_thread_scope.py` red on the PC, on 2026-11-22. The
+home box went offline after the red run on main. So the R8 tests have no
+mutation count yet, and pr-check runs them.
+
+| Mutation | Hermetic tests that fail |
+|---|---|
+| a room of `None` skips the step for every caller again | 1 |
+| the purge keeps a file that another session rewrote again | 1 |
+| the step takes no advisory lock | 1 |
+| the step does not check again for the row under the lock | 2 |
+| the purge runs in a session of its own | 1 |
+| a failed insert only logs, and the run goes on | 1 |
+| the store commits the caller's session | 1 |
+
+A pause hook holds door A in the purge. The
+test starts door B only then. The hook is a monkeypatch of the test, and
+not product code. So the order is fixed, and the test does not
+depend on timing.
+
+A second agent did these checks again on the PC on 2026-11-22, after
+the merge of main. Each mutation of the table gave the same count. On the
+product files of main `66766ecf9`, the hermetic fence of step 2 fails on its
+assert. The fences of steps 1 and 3 fail there on a name that main does not
+have. So for steps 1 and 3, the mutations and the R8 tests give the red that
+counts. The R8 race test is the only fence of the lock on Postgres.
 
 **Residuals, named.**
 
@@ -5648,21 +5732,35 @@ mutation of one layer alone stays green. The table shows those too.
    So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
    that thread, and it passes the rules. Production runs on Linux. There
    that path names another folder, and no route lists it.
-6. **A slow mint and a late create.** A run door purges a new id, and then
-   the run's mint makes the row. When the mint times out, the run goes on
-   with no row. A `POST /chat/sessions` that arrives then sees no row, and
-   its purge can remove the first files of that run. HANDOFF H-242 step 3.
+6. **Closed by fix round 4 (item 3).** A run door makes the row in the
+   step that purges. So no create purges the first files of a run.
 7. **The stream door with no thread id** mints the thread `<agent>:<run
    id>` from a run id that the client may choose. It makes no batch run.
    Its documents go in its own thread folder, never in a loose file, so it
-   cannot forge an older batch row. The purge never deletes one.
-8. **A null room skips the purge.** A run door reads a room of `None` as
-   "not new". `_resolve_room` gives `None` on an exception, or when the
-   caller has no email. HANDOFF H-242 step 1.
-9. **The next writer can own the deleted chat's text** (fix round 3 item
-   5). The bytes that another session wrote can still hold the text of the
-   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
-   file, or keep it with no owner.
+   cannot forge an older batch row.
+8. **Closed by fix round 4 (item 1).** A room of `None` skips the step only
+   for the internal service caller.
+9. **Closed by fix round 4 (item 2).** The purge deletes a file that the
+   chat began.
+10. **A room of `None` checks no room** (older than H-242). The run doors
+    skip the room check when `_resolve_room` gives `None`. So a caller with
+    no email, or a run while the room layer raises, can run in a chat that
+    exists. The step purges nothing of it. A fix refuses such a run.
+11. **The second pass of the delete route** runs after the row is gone, with
+    no row check and no lock. A new chat with the same id that starts in
+    that moment can lose its first files. The pass only logs.
+12. **A run with no row.** The internal service caller makes no row, so a
+    run of its own on a chat id has none. A run that started before this
+    change has none either. A new chat with that id purges its files.
+13. **A refused run leaves a row.** The step runs before the run cap and
+    the live-run refusal of the stream door. So a refused first run of a
+    new chat leaves an empty chat row. The browser makes that row first in
+    most cases (`sessions.ts`).
+14. **The continue route keeps the two-step form.** The server mints its id
+    (`uuid4`), so no client can race it.
+15. **Two writers have no new-chat step.** `/copilot/chat` (`main.py`) and the
+    upsert of `_store_session_id` in the executor still write chat rows with
+    no new-chat step. The web shell no longer calls `/copilot/chat`.
 
 **Verification.**
 
@@ -7040,9 +7138,14 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** VOX-1, VOX-2 and VOX-3 BUILT 2026-11-08, dark (§31.9). VOX-4 and
-VOX-5 are not built. Epic: Metorite task 2240. The owner decided the four
-calls of §31.6 on 2026-11-08. No migration.
+**Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
+first live run (task 2265).
+
+**VOX-7 status.** BUILT 2026-11-09 on branch `mt-ae7b5305-wave`. It waits for
+its pull request.
+
+Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
+2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7381,28 +7484,45 @@ edits.
   - `uv run python scripts/affected_tests.py --run`.
 
 **VOX-4 (task 2264). Set up and try the models in the operator console.**
-STANDARD.
+STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 
 - **Files:** `workbench/operator_console/src/lib/providerGuides.ts`, the Tiers
-  page (`tiers/TierBoard`, `TryDecision`), and an operator API route that
-  calls the two doors with the operator's own org.
+  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`). Add two BFF routes under
+  `api/operator/catalog/`. Add two Console routes in `customer_console/main.py`.
 - **Do:**
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
-     ElevenLabs Scribe (speech-to-text).
-  2. A note on the vision models that read images.
-  3. A key that does not work shows the provider's error in the Try box.
+     ElevenLabs Scribe (speech-to-text). VOX-2 wrote the Sarvam card. The
+     ElevenLabs card declares `elevenlabs/scribe_v2` with the verb
+     `atranscription`.
+  2. A note on the vision models that read images. It names
+     `gemini/gemini-3.1-flash-lite` and `anthropic/claude-haiku-5-5`.
+  3. A key that does not work shows the provider's error in the Try box. The
+     Console removes the key from that text and cuts it to 300 characters.
   4. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
-     transcript and the minutes) and for `tier-vision` (upload an image and
-     a question, read the answer). The Console meters each try to the
-     operator's org.
+     transcript and the seconds) and for `tier-vision` (upload an image and
+     a question, read the answer).
+- **How the tries are metered (the CP-13b rule, `customer_console.md`
+  §6A.14).** No platform organization exists, and `usage_event.organization_id`
+  is NOT NULL. So a try never calls the customer door and writes no
+  `usage_event` row. The route resolves the chain itself. It reads the platform
+  credential only (`organization_id IS NULL`), so a key that belongs to an org
+  is never spent. It calls the provider through `router.call_chain`. It writes
+  one `control_audit` row for each call that reached the vendor, served or
+  failed. The two routes are `POST /catalog/transcribe/try` and
+  `POST /catalog/vision/try`. Both need the `admin` role.
+- **Limits of a try.** A clip is WAV only, and it takes 10 MB and 60 seconds.
+  A clip of another type gets a 415. An image takes 4 MB (png, jpeg, gif or
+  webp, read from the first bytes). A question takes 500 characters.
 - **Done when:** an operator binds Sarvam to `tier-stt` and a vision model to
   `tier-vision`, and tries both from the Tiers page.
-- **Fence (R7):** operator console unit tests of the cards and the Try box.
+- **Fence (R7):** `tests/unit/test_customer_console_try_voice.py` (R8, the
+  routes), `workbench/operator_console/src/lib/voiceTry.test.ts` and
+  `providerGuides.test.ts`.
 
 **VOX-5 (task 2265). Prove "only when needed".** STANDARD.
 
-- **Files:** `evals/trajectories/` (beside the attachment scope trajectory).
-- **Do:** trajectory cases with an attached image.
+- **Files:** `evals/image_need/`, built on the pattern of `evals/routing/`. The trajectory folder never calls a model, so it cannot test the choice of the model.
+- **Do:** cases with an attached image.
   - No `analyze_image` call: "attach this to task X", "make a task with this
     screenshot", "email this to Priya", "put it in the Files".
   - One call: "what does this screenshot say", "read the invoice number",
@@ -7410,8 +7530,88 @@ STANDARD.
     (the description needs what the image shows).
 - **Done when:** the cases pass on the default chat tier. An eval run that
   costs over USD 0.50 waits for the owner's OK.
-- **Fence (R7):** the trajectory file runs in the eval suite. It is advisory
-  until the owner sets its schedule.
+- **Fence (R7):** `tests/unit/test_image_need_eval.py` and the `--scripted` line of
+  `skill-eval.yml`. The live run is manual and advisory until the owner sets its schedule.
+
+**VOX-6 (task 2448). AssemblyAI in the transcribe door.** HIGH, because it is
+the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-12.
+
+- **Why:** the owner's rule of 2026-11-08 is that every model and speech call
+  goes through the operator console, and nothing reads a provider key
+  directly. The owner installed an AssemblyAI key there. litellm 1.103.0
+  cannot call the Sync API. Three routes failed on 2026-11-08:
+  - `assemblyai/best` answers "Unmapped provider passed in".
+  - `openrouter/assemblyai/universal-3-5-pro` gives the same answer.
+  - The generic OpenAI route answers 404.
+- **Files:** a new `customer_console/stt_assemblyai.py`, and edits to
+  `handlers.py`, `catalog.py` and `router.py`. In the operator console:
+  `src/lib/invocation.ts` and `providerGuides.ts`.
+- **Do:** copy the VOX-2 pattern.
+  - Add the verb `native_assemblyai` for `transcribe` only. The `assemblyai/`
+    prefix ties to it, and the credential provider is `assemblyai`.
+  - The id is `assemblyai/universal-3-5-pro` or
+    `assemblyai/universal-3-5-pro/hi,en`. The declare route refuses an unknown
+    language code.
+  - Send one `POST https://sync.assemblyai.com/v1/transcribe` for each clip,
+    with the header `X-AAI-Model`. Send the `config` part only when the id
+    names languages.
+  - Bill the seconds that the Console measures from the WAV bytes. Never bill
+    `audio_duration_ms`. Answer 415 for a clip that is not WAV.
+  - Fail over on a 5xx, a 504 and a network error. Do not fail over on a 400.
+    A 401 strikes the vendor, as the router does for every vendor.
+  - Update the `assemblyai` card. It says that Notes keeps its own AssemblyAI
+    client until task 2449.
+- **Done when:** a WAV clip on a `tier-stt` chain with the AssemblyAI model
+  writes one `transcribe` row with the measured minutes.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
+  `test_operator_console_invocations.py` and `providerGuides.test.ts`.
+
+**VOX-7 (task 2501). The layered wave.** STANDARD. A front-end slice with no
+migration, no flag and no new route. BUILT 2026-11-09 on branch
+`mt-ae7b5305-wave`, and it waits for the pull request.
+
+- **Why:** the owner asked for a better recording state than a bar, on
+  2026-11-09: "can you think of a better animation for the voice input mode
+  instead of just a bar? Maybe like a sound wave … do something a little bit
+  more tasteful with fun UI/UX for sound input. Since the main way to stop
+  talking is just by clicking on the mic button again, ensure that the UI/UX is
+  clean and clear to indicate that the mic button has to be pressed to stop the
+  voice input." The owner then chose variant B: "i prefer the layered wave as
+  the audio input animation." The owner also set one rule for the box: "ensure
+  that I'm able to append to previously transcribed sections. For example, I
+  might turn on audio transcription, say something, and then turn it off. Then
+  type something manually … and then do auto transcription again. The system
+  should allow me to do that."
+- **Files:** `components/VoiceInputButton.tsx`, a new `components/VoiceWave.tsx`,
+  a new `lib/voiceWave.ts`, and `hooks/useVoiceDictation.ts`.
+- **Do:**
+  - Draw three sine lines in a band of the bar row, between the timer and the
+    pickers. The lines stroke `currentColor` in a `text-primary` box, with
+    three opacities and three weights. No status token and no hex literal.
+  - Keep the level in a ref (`levelRef`). A `requestAnimationFrame` loop reads it
+    and writes the `d` of each path. No React state changes on an audio block.
+    The loop stops when the recording ends or the chat unmounts.
+  - While it records, the mic is a filled round Stop button in the accent
+    colour, named "Stop recording". A ring follows the voice and takes no click. The first
+    recording of a browser shows "Tap ■ to finish" for 4.5 s. The mark is in
+    `localStorage`.
+  - Show a mono timer. In the last 15 s it turns to the warning token and shows
+    "N s left". A cross, "Discard recording", calls the cancel. Enter finishes,
+    and Esc discards.
+  - Keep the box mounted and visible. The wave never covers the draft, and the
+    composer keeps its height in every phase. The words go in at the caret, as
+    in VOX-1.
+  - With `prefers-reduced-motion`, the lines do not move. A static meter of 10
+    segments shows the level.
+- **Done when:** a draft of text stays in view while the mic records, and a
+  second dictation lands at the caret after a typed edit.
+- **Fence (R7):** `src/lib/voiceWave.test.ts` and
+  `src/lib/voiceDictation.test.ts`.
+  - `voiceWave.test.ts` tests the lines, the timer rule and the hint.
+  - It tests reduced motion, the colour fence and the box kept mounted.
+  - It tests the order of "hello", "world" and "again" at the caret.
+  - `voiceDictation.test.ts` tests the label of the Stop button.
+  - `src/lib/theme/conformance.test.ts` holds the colour rules.
 
 ### 31.6 Owner calls
 
@@ -7431,6 +7631,8 @@ VOX-4 (the cards) and VOX-1 go first. VOX-1 works at once with ElevenLabs,
 Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
+VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
+the chat mic (VOX-1) and the operator Try box (VOX-4).
 
 ### 31.8 What §31 does not do
 
@@ -7452,6 +7654,17 @@ its tier and its flag turns on.
 | VOX-1 | https://github.com/Hathi-Labs/Metorite/pull/1965 | 2ffe78dc3 | `CHAT_VOICE_ORGS` |
 | VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
 | VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
+| VOX-4 | https://github.com/Hathi-Labs/Metorite/pull/1994 | 4439b200f | None. ADMIN staff only |
+| VOX-5 | https://github.com/Hathi-Labs/Metorite/pull/1993 | fa5643fb5 | None. An eval |
+
+VOX-4 adds the two operator tries, `POST /catalog/transcribe/try` and
+`POST /catalog/vision/try`. They follow CP-13b: the platform key only, one
+audit row, and no usage row (§31.5 VOX-4, `customer_console.md` §6A.14).
+
+VOX-5 adds `evals/image_need/`. Its 12 cases go through the real one-assistant
+run. `--scripted` runs in CI, and `--live` is a manual run with a budget of
+USD 0.50. The one assistant gets no addendum section for `analyze_image`. So
+it reads the rule of the tool from the tool description only.
 
 The code is the fact. The build differs from §31.5 in these places.
 
@@ -7502,4 +7715,369 @@ The code is the fact. The build differs from §31.5 in these places.
   Scribe v2 rank 2) and `tier-vision` in the operator console.
 - Before either flag turns on, one live clip and one live image analysis on
   production, each with its `usage_event` row.
-- VOX-4 (task 2264) and VOX-5 (task 2265).
+- The first live run of VOX-5 (task 2265). It costs about USD 0.25.
+- Two small fixes to the vendor text of the VOX-4 tries (task 2428).
+
+## 32. Editable approval cards (task 2493)
+
+**Status (2026-11-16): EAC-1 built dark (task 3468).  EAC-2 built dark (task
+3469, the client half: due date and people). EAC-3a built dark (task 3470, the
+client half: start date, status, priority flags and description). EAC-3b and
+EAC-4 to EAC-8 stay in the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
+Metorite task 2493. The first demo is on Rung 2 of the ladder (D211, task 2927,
+`orchestration_playbook.md` §6d).
+
+**EAC-1b (2026-11-17).** Built dark (task 3645). The receipt line of an edited card ships with it.
+
+### 32.1 Scope
+
+A Projects card for `create_task` and `update_task` shows its values as a form.
+The member edits the values, then presses Approve. The write uses the edited
+values. The email cards already work this way (`email_app_master_plan.md`
+§18.10). This section brings the same idea to Projects.
+
+### 32.2 Non-goals
+
+- The chat writes no grants (D-PM-40). An edit card is never a door to a grant.
+- This section holds no persona text and no tool text. Cal-tasks owns both.
+- CRM cards are slice EAC-8, with its own row.
+- Email cards stay in `email_app_master_plan.md` §18.10 and §18.11. HRD-8 and
+  HRD-8b of `chat_failure_modes.md` keep their held-card rules.
+- A WhatsApp chat and a held chat get no edit card.
+
+### 32.3 What exists
+
+- A Projects card answer is plain `APPROVE` or `APPROVE {"rows":[...]}`.
+  `ask_tools.ticked_rows` refuses other shapes. `writes._confirm` returns a bool
+  or a set of row ids.
+- An email card carries edits as `APPROVE {"reply":{...}}`. `lib/replyCard.ts`
+  builds it. `reply_card.parse_new_mail_answer` parses it strictly.
+  `lib/respondInput.ts` sends it to `/agent/respond-input`.
+- The edits survive a tab change and a replay. `FormEdits`
+  (`confirmationQueue.ts`) and the thread store (`chatStore.ts`, task 1893) keep them.
+- `create_task` builds its card from values that `_prepare_new_task`
+  (`writes.py`) made before the card. `_create_new_task` writes after Approve.
+- `egress.HELD_REFUSED_PARAMS` refuses `files` on `create_task` in a held chat.
+- `_write_assignees` (`routes/projects/tasks.py`) refuses no person for a member
+  caller. `set_assignees` returns `not_notified` for a person outside the grant
+  closure of the project. The picker `GET /projects/assignees` lists every active
+  person of the org.
+
+### 32.4 The contract
+
+**Answer shape.**
+
+- The new answer key is `edit`. It never reuses `reply`.
+- A new strict parser, `parse_task_edit_answer`, lives in the new module
+  `packages/acb_skills/acb_skills/task_card.py`. It holds a whitelist of keys.
+- An extra key reads as no answer. The parser trims nothing. The responder comes
+  from the session, never from the answer.
+- It never calls `parse_new_mail_answer`.
+- `request_confirmation` (`ask_tools.py`) gets a new `edit=` argument.
+- Plain `APPROVE` on an edit card approves the original values.
+
+**The write.**
+
+- The edit path resolves each CHANGED value again, AFTER the answer, with the
+  checks of `_prepare_new_task`. A changed lane or person resolves by exact name
+  only, with no `decide` call and no question after the Approve. Each value that
+  the member did not change stays as the card showed it. The path never trusts
+  an id from the card.
+- The write goes through the gateway routes under the session of the member.
+  Route grants apply to every field.
+- The edit card refuses `files` in a held chat.
+
+**The project (EAC-3b).** The Opus audit of 2026-11-17 closed these points. The
+owner question on task 3470 holds the cascade rule (§32.9, Q4). The text below
+is the default until the owner answers.
+
+- **The key.** The answer gets an eighth key, `project`. Its value is the id of
+  a project row. A subproject is a project row with a parent, so one key
+  covers both. This replaces the "no id" rule for THIS key only. The id is a
+  request value, so the server never trusts it. It resolves the id again under
+  the member's session, with the read that the create route uses
+  (`load_visible_project` with the share lock, `assert_holds_tasks`,
+  `assert_not_archived`). RLS, the org predicate and the grant closure apply.
+  A project that the member cannot open, a space, a folder, an archived
+  project and a project of another org each write nothing. The member sees
+  the standard decline line.
+- **The key is optional.** The parser accepts the seven old keys, and the
+  seven plus `project`. A missing `project` means the card's project. So the
+  server half and the client half can land in either order, and the
+  client of EAC-3a keeps working.
+- **The list.** The form lists the projects and subprojects of the member's
+  visible tree (`GET /projects/tree`, `rows`). It uses `ProjectSelect` with
+  the task `PickRule`, so a folder and a space are refused on the client too.
+  Personal projects are NOT on the list in this slice. A personal project
+  allows only its owner as assignee, and the card would break.
+- **The cascade.** A change of project resets what belongs to the old project.
+  `status` becomes the default lane of the new project. `type_id`,
+  `custom_fields` and `parent_task_id` are cleared. The title, the assignees,
+  the dates, the flags and the description stay. An assignee who cannot be
+  written in the new project makes the server refuse the write, with a line
+  that names the person. The form reloads the lanes of the new project
+  (`useLanes`) before the member can press Approve.
+- **The model's own proposal.** It needs no new check. It goes through
+  `_project_ref`, `space_refusal` and the route, as before.
+- **The receipt.** The receipt names the project when the member changed it.
+  EAC-3b lands AFTER PR 2547 (EAC-1b, the "edited the card" note), and it adds
+  the project to that note.
+
+**The flag.** `PROJECT_EDIT_CARD_ORGS` is new. The default is empty, and it fails
+closed. A value is `*` or a list of org ids. The code reads it on each call, and
+a SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
+`EMAIL_EDIT_CARD_ORGS`, and in `docs/flag_reload.md` and the settings.
+
+**The assignee.** Today a member may assign any person that the picker lists.
+The rule "refuse an assignee that the member cannot see" is NEW and HIGH. The
+owner decides it (§32.9, Q1). Until then the form lists the org directory.
+
+**Late Approve.** A late answer reaches a card whose run ended (a parked card or
+a dead run).
+
+- A plain late `APPROVE` writes the original values once. The HRD-22 grant takes
+  the same card by its digest (`late_approve`), and RESUME-2a resumes the stored
+  call (`stored_call`, migration 448). Both take the exact word `APPROVE` only.
+- An edit answer that comes late writes nothing. `task_card.is_late_edit_answer`
+  finds it.
+  The card is a confirmation card with an edit form, or a card that the route
+  does not know. A card that the park shrank (`truncated`, over 64 KiB) is a
+  card that the route does not know. The body decodes, by the one decode of the parser, to an
+  object with the key `edit`. So an escaped key counts. A free-text note with
+  the word `"edit"` does not count.
+- `chat_recovery.card_resend` then sends `task_card.LATE_EDIT_ANSWER` in place
+  of that answer. The line holds no value, and it asks the member to show the
+  card again. The display shows the same line. So no edited value, and no text
+  that the model wrote into the form, reaches the next run as the member's
+  words.
+- An answer of an `ask_user` card, and of a plain card, goes as before.
+- The client line that says the edits were not used is EAC-2.
+
+**Known edges.**
+
+- An edit Approve marks the act SPENT (`ask_tools.py`, `stored_call.py`) before
+  `_card_edit` resolves a changed name. A name that no lane or person has
+  exactly then refuses AFTER the Approve, and the tool writes nothing.
+- So EAC-2 shows the exact-name rule on the form, before the Approve.
+- A card event over 64 KiB (`pending_ask._PAYLOAD_BYTES`) parks with a shrunk
+  payload, and its edit form is gone. A long description of non-ASCII text
+  can do it, because JSON writes each such character as 6 or 12 characters.
+  The late route then reads the card as not known, and it fails closed.
+
+**Receipts and declines.**
+
+- The receipt after an approved edit card is the receipt of the write itself.
+  It comes from `ask_tools.CARD_OUTCOMES` and `lib/cardOutcomes.ts` (HRD-7).
+  EAC-1b adds one line to it, and only when the answer changed a value. The line
+  is result text of ours in `writes._CardEdit.lines`. It reads: "The member
+  edited the card before they approved it. These are the approved values. Treat
+  them as final:" and then each changed key with the written value. It never
+  states an original value. It names a changed description and never quotes it.
+  It fences member text with `data()`. A plain approve, a no-change edit, a late
+  approve and the card off give the receipt of before, byte for byte.
+- A declined edit card shows "You said no, so nothing was changed." through
+  `memberLineOf`. This section adds NO new decline string.
+- When the member types in the chat while an edit card is open, the card closes
+  by message. The model text is `card_outcome_text(CARD_CLOSED_BY_MESSAGE)`. The
+  unsent edit values stay OUT of the model text. They are not facts until the
+  member approves.
+
+**Held-card record (agreed with stu-r3, 2026-11-16).**
+
+- The held-card record keeps an act kind.
+- A check can compare the act kind and the To and Cc fields of a card with the
+  card that it replaces (HRD-8b, task 3459).
+- HRD-10 (task 2989) is the `If-Match` check of `update_task`. It is not built.
+  Its split slice HRD-10a (stu-r3) plans the flag `CHAT_CARD_PRECONDITION_ORGS`.
+  The check compares against what the member SAW before the edit. It never
+  compares against the edited values.
+- Neither lane touches the tool text of the other.
+
+**Client.**
+
+- `FormEdits` (`confirmationQueue.ts`) is `ReadonlyMap<string, NewMailEdits>`.
+  It becomes the union `NewMailEdits | TaskCardEdits`, in one small PR.
+- Two fences assert source text: `src/lib/cardEditsKept.test.ts` and
+  `src/components/redraftCard.test.ts`.
+- Reuse `app/projects/components/AssigneePicker.tsx` with `AssigneeChips`.
+- Reuse `ProjectSelect.tsx` over `ProjectPicker.tsx`. A `PickRule` limits it to
+  the projects of the member.
+- Reuse `components/ui/StatusMenu.tsx`, the `PriorityChip` in
+  `components/TaskMeta.tsx`, and `components/ui/Input.tsx`.
+- Priority has two fields (D78). An Important toggle writes `importance` as 2 or 0.
+  A second toggle writes `leveraged`. A due date sets Urgent, so the form has
+  no Urgent control.
+- No shared date picker exists. Use `ui/Input` with `type=date`, or open a small
+  task for the ui seam. Do not hand-roll a picker.
+
+**Ownership.** Any new Projects tool argument or tool text belongs to cal-tasks.
+This section does not edit `agent-crm/instructions.md`,
+`agent-email-assistant/instructions.md`, `agent-projects/instructions.md`,
+`tool_packs.py`, `orchestrator/agents.py` or the docstrings of `create_task` and
+`update_task`. EAC-1b needs no change of tool text. The line that tells the model
+about an edited card is result text of ours in `writes.py`, and cal-tasks owns
+none of it. A tool description cannot carry it (cal-tasks refused the change).
+
+### 32.5 Slices
+
+Every task is a Metorite task under task 2493. All slices ship dark behind
+`PROJECT_EDIT_CARD_ORGS`.
+
+| Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
+|---|---|---|---|---|---|---|---|
+| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
+| **EAC-1b** | 3645 | STANDARD, dark | 2 | `writes.py` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-17.** An approved edit card whose answer changes a value ends its receipt with the sentence and the changed keys with the written values. It names only changed keys, never an original value, and fences member text. A plain approve, a no-change edit, a late approve and the flag-off card give the receipt of before, byte for byte. Nothing the approve writes changes. The HRD-7 leads and `test_card_outcome_vocabulary.py` stay as they are. |
+| **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `ConfirmationQueue.tsx`, `confirmationQueue.ts`, `lib/taskEditCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts`, `taskEditCard.test.ts`, `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
+| **EAC-3a** | 3470 | STANDARD, dark, client only | 2 | `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `taskEditCard.test.ts` (the parity of the status and description rules with `task_card.py`), `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** The form edits the start date, the status (a lane of the project, by exact name), the `important` and `leveraged` flags and the description. The answer keeps the seven keys. A start date after the due date warns and does not hold Approve. |
+| **EAC-3b** | 3470 (the task of EAC-3 holds both parts) | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `tests/unit/test_task_card_project.py` (new, hermetic), `tests/unit/test_task_edit_card_r8.py` (extended: it replaces `test_r8_a_forged_project_id_writes_nothing`), `taskEditCard.test.ts`, `taskCardForm.test.ts` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card (§32.4, "The project"). The answer gets the optional key `project`. After PR 2547. |
+| **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus `tests/unit/test_task_edit_card_precondition.py` (needs HRD-10) | AGENT-SAFE | An `update_task` card edits the changed fields. |
+| **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
+| **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
+| **EAC-7** | none | none | 2 | none | none | OWNER-GATE (`enforcement-flip`) | The owner, or a dated grant, flips `PROJECT_EDIT_CARD_ORGS`. The report names the flag and the box. |
+| **EAC-8** | 3473 | HIGH | 3 | its own spec row | Check D-CRM-9 and `_not_written` first | OWNER-GATE for scope | CRM cards get the same contract, or the owner declines. |
+
+**EAC-1 as built (2026-11-16).** The card event carries `edit`: `{kind,
+project_id, values}`, and `kind` is `create_task`. `values` holds each answer
+key. `status` is a lane name, or empty for the default. `important` is null for
+a task that nobody judged. The client sends all the keys back, and it never
+sends `project_id`.
+
+A repeating task keeps the card of before, because its rule reads the due
+date. The client draws the line about a late Approve (EAC-2).
+
+**EAC-2 as built (2026-11-16).** The file is `lib/taskEditCard.ts`, because
+`lib/taskCard.ts` is the task chip vocabulary of the boards. The form edits the
+due date and the people. The card still shows start, status, priority and the
+description as read-only rows. The answer sends them back as the card showed
+them, and EAC-3a edits them.
+
+The card hides its own `due_at`, `assignees` and `not in the directory` rows,
+because the form draws them. No change sends a plain `APPROVE`. A change sends
+`APPROVE {"edit":...}` through plain `JSON.stringify`. A person typed by name
+must match one person exactly, and the form says so before the Approve. An
+address that the directory does not know shows a warning before the Approve
+(H-162).
+
+The late line is the existing `ask_user` display with
+`task_card.LATE_EDIT_ANSWER`. The decline line is the existing outcome table.
+Fences: `taskEditCard.test.ts`, `taskCardForm.test.ts`,
+`cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts` and
+`e2e/task-edit-card.spec.ts`. A live `dev_up` stack cannot draw the card,
+because Mira chat has no model there. The e2e file is the preview.
+
+EAC-2 needs a Visual review: light mode, compact density, a changed accent, and
+390 px. `redraftCard.ts` holds no reader of `FormEdits` and no import of the
+task card. The test `redraftCard-reads-no-form-edits` in `taskCardForm.test.ts`
+pins this. The queue gives the mail form only the kept edits that pass
+`asNewMailEdits`, a type guard and not a cast (HRD-8b needs this).
+
+**EAC-3a as built (2026-11-16).** The form edits the start date, the status,
+the two priority flags and the description. The card hides its own rows for
+them, and for the computed `priority` line, and it keeps the project row.
+
+- The status is the shared `SelectButton`. It lists the lanes of the project of
+  the card (`projectsApi.statuses`), and the answer holds the exact lane name,
+  or "" for the default lane. A name that two lanes share is off the list,
+  because the server refuses it (`_one_named`). When the lanes do not load, the
+  status shows as text with a line that says so.
+- Important has three picks: not judged (null), important and not important.
+  `leveraged` is the shared `Switch`. The server writes `importance` 2 or 0 and
+  keeps null as not judged.
+- The description is the shared `Textarea`. The form trims nothing. A control
+  character other than a line break or a tab, or more than 20000 characters,
+  holds Approve with a reason, as `task_card._text` reads such a value as no
+  answer.
+- A start date after the due date warns and holds nothing. The create route and
+  `_date_arg` check each date alone, and `forms.py` refuses the pair only for a
+  plan of many tasks.
+
+For a subtask, the empty status still reads "Default lane" on the form. The
+server then uses the lane of the parent. The card event carries no parent flag,
+so the form cannot say it. A later slice may add the flag.
+
+The limits sit in `lib/taskEditCard.ts` only, and `taskEditCard.test.ts` reads
+`task_card.py` to hold them equal. Fences: `taskEditCard.test.ts`,
+`taskCardForm.test.ts` and `e2e/task-edit-card.spec.ts`. EAC-3a needs the same
+Visual review as EAC-2. The touch targets of the shared controls at 390 px
+belong to task 3559.
+
+### 32.6 Acceptance
+
+- **EAC-1.** `parse_task_edit_answer` accepts a whitelisted `edit` object. An
+  extra key reads as no answer. A value is not trimmed. A plain `APPROVE` writes
+  the original values. A changed value goes through the checks of the tool
+  again, by exact name. A value that the member did not change stays as the card
+  showed it. An id on the card has no effect. A late edit answer writes nothing
+  and carries no value. An R8 test shows that route grants refuse a field that
+  the member may not write.
+- **EAC-1b.** An edit answer that changes a value ends the receipt with the
+  sentence of §32.4. After it come the changed keys, each with the value that
+  the write sent. The keys are `due`, `start`, `status`, `important`,
+  `leveraged`, `description` and `assignees`. A cleared value reads `none`, and
+  a cleared judgement reads `not judged`. The note names a changed description
+  and never quotes it. No original value appears. Member text goes through
+  `data()`, and each item stops at 120 characters. The note shows 10 people and
+  then "and N more". A default-lane edit names the lane that the row landed in.
+  The stranger line follows the sentence. The tests prove the text only. They
+  do not prove how a model behaves.
+- **EAC-2.** The card shows a form for `create_task` when the flag is on for the
+  org. The edits survive a tab change and a replay. The receipt is the receipt of
+  the write. A decline shows the standard decline line. The form warns of an
+  edited address that the directory does not know, before the Approve (H-162).
+  A name typed into the form matches a person or a lane exactly, or the form
+  asks for another.
+- **EAC-3a.** Each of the four fields edits and writes through the answer of
+  EAC-1. A change reaches the server as the exact lane name, a flag, a date or
+  the text byte for byte.
+- **EAC-3b.** A project that the member cannot open is not on the list. On the
+  server, each case below writes nothing and shows the decline line:
+  a project that the member cannot open, a space, a folder, an archived
+  project, a project of another org, and a bad id.
+  A visible subproject gets the task, with its own default lane.
+  A plain `APPROVE` keeps the card's project.
+  A change of project clears `type_id`, `custom_fields` and `parent_task_id`.
+  It also sets the default lane.
+  An assignee who cannot be written in the new project makes the server refuse.
+  The refusal names the person.
+  An answer with the seven old keys still works. The receipt names the project.
+  The test `test_r8_a_forged_project_id_writes_nothing` becomes the tests
+  `test_r8_an_edited_project_*` in `test_task_edit_card_r8.py`, on purpose.
+- **EAC-4.** An edit that changes `due`, then a change by a teammate between the
+  card and Approve, gives "changed since the card" and does not overwrite. The
+  `If-Match` check of HRD-10 (task 2989, not built) compares against the
+  `updated_at` that the member SAW before the edit. EAC-4 waits for HRD-10. The
+  test `tests/unit/test_task_edit_card_precondition.py` covers this case.
+- **EAC-5.** A held chat refuses `files` on the edit card.
+  `tests/unit/test_task_edit_card_files.py` covers this case.
+- **EAC-6 and EAC-7.** The owner answers in Metorite on the task.
+
+### 32.7 Verify
+
+- `uv run pytest tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_late.py tests/unit/test_task_edit_card_r8.py`
+  (the R8 file needs a database: `bash scripts/dev_db.sh` first)
+- `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts`
+- EAC-3b: `uv run pytest tests/unit/test_task_card_project.py tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_late.py tests/unit/test_task_edit_card_r8.py`
+  and `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/taskEditCard.test.ts src/components/taskCardForm.test.ts src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts src/app/projects/lib/pickerTree.test.ts`
+- `uv run python scripts/affected_tests.py --run`
+- `bash scripts/dev_up.sh`, then the demo of task 2927 on the local stack.
+
+### 32.8 Rules this section keeps
+
+R5 (tenant-ready), R6 (no migration is planned), R7 (each fence is named above)
+and R8 (a real database for the write path).
+
+### 32.9 Open owner questions
+
+1. **Who may a member assign on an edit card?** The org directory first (the
+   recommendation, no new rule), or only people who can open the project. The
+   second choice is a new HIGH server rule and changes the form too. Asked on
+   task 2493, 2026-11-16.
+2. **A late Approve after a chat resume.** The default, as built: a plain late
+   `APPROVE` writes the original values once. A late edit answer writes nothing,
+   and the member shows the card again. The owner may choose a different rule.
+3. **Plain Approve.** The default is to approve the original values.
+4. **What a change of project does to the other values (EAC-3b).** The default
+   resets the status, the type, the custom fields and the parent, and keeps the
+   rest (§32.4). The other choices are: refuse the change when anything else was
+   edited, or offer subprojects only. Asked on task 3470, 2026-11-17. Personal
+   projects stay off the list in this slice.

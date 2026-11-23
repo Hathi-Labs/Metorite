@@ -27,6 +27,7 @@ from customer_console import catalog
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import apply_ladder
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -168,6 +169,9 @@ class TestTheWriteContractIsInsertOnly:
         "/catalog/tier-rates",
         "/catalog/tier-margins",
         "/catalog/credit-price",
+        # MS-1 (§6A.18, 2026-11-09). A health fix writes a tier chain, so it
+        # is a bind: a NEW chain row, never an update.
+        "/catalog/health/fix",
     )
 
     #: ⚠️ **NOT insert-only, and never was.** These write FACTS about a model
@@ -192,6 +196,10 @@ class TestTheWriteContractIsInsertOnly:
         # all: it calls the vendor and writes one audit row. No commercial
         # term moves, so it is filed here, not under INSERT_ONLY.
         "/catalog/decide/try",
+        # VOX-4 (2026-11-08). The two voice tries write no catalog row
+        # either: they call the vendor and write one audit row.
+        "/catalog/transcribe/try",
+        "/catalog/vision/try",
     )
 
     def _catalog_routes(self) -> list[tuple[str, str]]:
@@ -288,7 +296,8 @@ class TestTheWriteContractIsInsertOnly:
         from customer_console.operator_roles import MATRIX
 
         for route in ("/catalog/bindings", "/catalog/rates",
-                      "/catalog/tier-rates", "/catalog/credit-price"):
+                      "/catalog/tier-rates", "/catalog/credit-price",
+                      "/catalog/health/fix"):
             rule = MATRIX[("POST", route)]
             assert rule.elevated is True, route
         # And reading is not a privilege.
@@ -558,8 +567,7 @@ class TestTheCatalogWrites:
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
     """The hand-maintained R8 list defends itself, the way the others do."""
-    ci = (ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_customer_console_catalog.py" in ci
+    assert "tests/unit/test_customer_console_catalog.py" in r8_lists.must_run()
 
 
 @_DB

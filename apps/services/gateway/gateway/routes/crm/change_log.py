@@ -65,6 +65,7 @@ from gateway.routes.crm.core import (
     checked_uuid,
     current_tenant,
     from_jsonb,
+    lock_pipeline_creates,
     router,
     wire,
 )
@@ -654,6 +655,11 @@ async def undo_change(
     params = {"id": wanted, "organization_id": org, "me": me, "admin": admin}
     after_commit: AfterCommit | None = None
     async with _tenant_session() as db:
+        # CRM-M4a repair 3: the pipeline create lock FIRST, before the row
+        # lock below. The Undo of a pipeline updates the row of each stage
+        # that it removes, under this lock. An Undo of a stage that locked its
+        # row first, and then waited on this lock, closed a cycle (40P01).
+        await lock_pipeline_creates(db)
         # FOR UPDATE: a second Undo of the same row waits here, then reads
         # `undone_by` and gets its 409.
         row = (await db.execute(

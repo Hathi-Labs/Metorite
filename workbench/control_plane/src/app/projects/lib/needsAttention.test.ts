@@ -174,6 +174,18 @@ describe("the words of a row", () => {
     expect(rowDetail(blocked)).toBe(
       "Blocked by #9 Design the bracket for under an hour. It is in the backlog, and nobody holds it.",
     );
+    const many = row({
+      ...blocked,
+      blockers: [
+        { id: "b1", number: 9, title: "Design the bracket" },
+        { id: "b2", number: 10, title: "Order steel" },
+      ],
+      blocker_count: 2,
+    });
+    const text = rowDetail(many);
+    expect(text).toContain("Blocked by 2 tasks");
+    expect(text).toContain("Design the bracket");
+    expect(text).toContain("Order steel");
   });
 
   it("names the owner, the caller as You, and no owner", () => {
@@ -217,13 +229,14 @@ describe("the acts of a row", () => {
     expect(ACTION_HINT.resume).toContain("same agent client");
     expect(ACTION_HINT.resume).toContain("keeps the task");
     expect(ACTION_HINT.close_run).toContain("free the task for anyone");
+    expect(ACTION_HINT.close_run).toContain("moves to its lane");
   });
 
-  it("asks before it closes a run, and says that the task stays", () => {
+  it("asks before it closes a run, and says that the assignees stay and the task moves to its lane", () => {
     const copy = closeRunCopy(dangling);
     expect(copy.title).toBe("Close this agent run?");
     expect(copy.body).toContain("Claude Code");
-    expect(copy.body).toContain("The task keeps its status and its assignees.");
+    expect(copy.body).toContain("The assignees stay. The task moves to its lane");
     expect(copy.confirm).toBe(ACTION_LABEL.close_run);
   });
 
@@ -315,7 +328,7 @@ describe("the page wires the lens", () => {
   });
 
   it("selects no view mode while the lens is on, on both switches", () => {
-    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \? null : mode;/);
+    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \|\| agentsLens \? null : mode;/);
     expect(src.match(/mode=\{shownMode\}/g)?.length).toBe(2);
     const html = renderToStaticMarkup(
       createElement(ModeSwitch<"board" | "list">, {

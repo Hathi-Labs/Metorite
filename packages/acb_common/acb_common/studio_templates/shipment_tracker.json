@@ -1,0 +1,147 @@
+{
+  "studio": 1,
+  "id": "shipment-tracker",
+  "name": "Shipment tracker",
+  "purpose": "Track each shipment from booking to delivery, with its stage, due time, events and proof files.",
+  "team": "logistics",
+  "objects": [
+    {
+      "name": "shipment",
+      "fields": [
+        {"key": "reference", "type": "text", "required": true},
+        {"key": "customer", "type": "text"},
+        {"key": "carrier", "type": "text"},
+        {"key": "origin", "type": "text"},
+        {"key": "destination", "type": "text"},
+        {
+          "key": "stage",
+          "type": "select",
+          "options": ["booked", "picked up", "in transit", "customs", "out for delivery", "delivered", "exception"],
+          "hot": true
+        },
+        {"key": "due", "type": "datetime", "hot": true},
+        {"key": "proof", "type": "file", "many": true},
+        {"key": "signature_scan", "type": "file", "many": true},
+        {"key": "notes", "type": "longText"}
+      ]
+    },
+    {
+      "name": "shipment_event",
+      "fields": [
+        {"key": "shipment", "type": "relation", "to": "shipment"},
+        {"key": "note", "type": "text"},
+        {"key": "at", "type": "datetime"},
+        {
+          "key": "stage",
+          "type": "select",
+          "options": ["booked", "picked up", "in transit", "customs", "out for delivery", "delivered", "exception"]
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {"id": "find", "uses": "object:shipment.list"},
+    {"id": "shipment_get", "uses": "object:shipment.get"},
+    {"id": "shipment_create", "uses": "object:shipment.create"},
+    {"id": "shipment_update", "uses": "object:shipment.update"},
+    {"id": "shipment_delete", "uses": "object:shipment.delete"},
+    {"id": "shipment_aggregate", "uses": "object:shipment.aggregate", "title": "Count shipments"},
+    {"id": "shipment_event_create", "uses": "object:shipment_event.create"},
+    {"id": "shipment_event_list", "uses": "object:shipment_event.list"},
+    {"id": "mark_delivered", "uses": "object:shipment.update", "set": {"stage": "delivered"}}
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "title": "Shipments by stage",
+      "source": {"object": "shipment"},
+      "group_by": "stage",
+      "card": {"title": "reference", "meta": ["customer", "due"]}
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "title": "All shipments",
+      "source": {"object": "shipment"},
+      "columns": ["reference", "customer", "stage", "due"]
+    },
+    {
+      "id": "shipments_by_stage",
+      "block": "stat",
+      "title": "Shipments",
+      "source": {"action": "shipment_aggregate", "args": {"group_by": {"field": "stage"}, "measures": [{"op": "count"}]}}
+    },
+    {
+      "id": "shipment_page",
+      "block": "detail",
+      "title": "Shipment",
+      "object": "shipment",
+      "fields": ["reference", "customer", "carrier", "origin", "destination", "stage", "due", "proof", "signature_scan", "notes"]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "title": "New shipment",
+      "object": "shipment",
+      "fields": ["reference", "customer", "carrier", "origin", "destination", "stage", "due", "notes"],
+      "submit": "shipment_create"
+    },
+    {
+      "id": "events",
+      "block": "table",
+      "title": "Events",
+      "source": {"object": "shipment_event"},
+      "columns": ["shipment", "stage", "note", "at"]
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "cols": 3,
+      "cells": [
+        {"view": "shipments_by_stage"},
+        {"view": "board", "span": 3}
+      ]
+    },
+    {
+      "id": "all-shipments",
+      "title": "All shipments",
+      "cols": 3,
+      "side": {"view": "shipment_page"},
+      "cells": [
+        {"view": "list", "span": 3}
+      ]
+    },
+    {
+      "id": "events",
+      "title": "Events",
+      "cols": 3,
+      "cells": [
+        {"view": "events", "span": 3}
+      ]
+    }
+  ],
+  "nav": [
+    {
+      "title": "Shipments",
+      "rows": [
+        {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
+        {"page": "all-shipments", "icon": "Truck", "label": "All shipments"},
+        {"page": "events", "icon": "Activity", "label": "Events"}
+      ]
+    }
+  ],
+  "skill": {
+    "description": "Use for shipments: book one, find one, see the stage, mark one delivered.",
+    "instructions": "Ask for the reference first. Show the board card. Mark a shipment delivered only on the member's request.",
+    "actions": ["object:shipment.create", "mark_delivered"],
+    "cards": ["board", "new"]
+  },
+  "shell": {
+    "jobs": [{"verb": "Book a shipment", "view": "new"}],
+    "needs": [{"object": "shipment", "where": {"stage": "exception"}}],
+    "search": ["shipment"]
+  }
+}

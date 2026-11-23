@@ -53,6 +53,7 @@ import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { usePinOpenCount } from "@/lib/shell/usePinOpenCount";
 import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
 import { closeAssistant, openAssistant, useAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
@@ -73,6 +74,7 @@ import {
   shellSidebar,
 } from "@/lib/shell/shellNav";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
+import { useAgentGuidanceEnabled } from "@/lib/useAgentGuidanceEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { canUseFeature, hasCapability, shouldPollWorkspace } from "@/lib/access";
@@ -168,6 +170,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // section in the same tab. An unknown org (the access read has not
   // answered) changes nothing, so the first load does not empty it twice.
   const cacheOrg = access.organization?.id ?? null;
+  // PKG-19a-2: one pane open for each route change, behind its own flag.
+  usePinOpenCount(pathname, signedInAs);
   useEffect(() => {
     bindIdentity(signedInAs, cacheOrg);
   }, [signedInAs, cacheOrg]);
@@ -507,6 +511,7 @@ function MobileBottomNavInner({
   const [shellNav] = useState(() => shellNavOn());
   // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
   const assistant = useAssistantProfileEnabled();
+  const agents = useAgentGuidanceEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -528,6 +533,7 @@ function MobileBottomNavInner({
   const drawerSections = useInstallNav(
     shellNav ? shellSidebar(navSections, shell.loading ? undefined : shell.layout) : navSections,
     access.features,
+    shellNav ? { held: navSections, layout: shell.loading ? undefined : shell.layout } : undefined,
   );
   // The skeleton holds the place while the first layout read is out, as on
   // the desktop sidebar (`useShellPending`).
@@ -714,7 +720,7 @@ function MobileBottomNavInner({
       {/* The rare acts, after the apps: the member's pages, the settings and
           sign-out, in one list (owner review, 2026-10-09). */}
       <div className="mt-auto border-t border-border px-2 py-3">
-        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant }) : undefined} onNavigate={close}>
+        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant, agents }) : undefined} onNavigate={close}>
           <ThemeToggleMenuItem onClick={close} />
           <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
             <AppIcon name="Monitor" size={16} className="shrink-0" />
@@ -778,6 +784,18 @@ function MobileBottomNavInner({
     window.addEventListener(GUIDE_MENU_EVENT, h);
     return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
   }, [open, close]);
+
+  // The drawer holds a SNAPSHOT: `open` keeps the node of the tap. So the open
+  // Menu takes the new content when the list it draws changes (task 3587). A
+  // tap while the first layout read was out caught the skeleton, and the
+  // drawer kept it until it closed. The key holds only strings and booleans,
+  // so a re-inject cannot loop through the drawer's context.
+  // Fences: `e2e/shell-presets.spec.ts`, "a tap before the layout read
+  // answers", and `appShellMenuLive.test.ts`.
+  const menuShape = `${navWaiting}|${drawerKey}|${assistant}|${agents}`;
+  useEffect(() => {
+    if (menuOpen) open(menuRef.current, "menu");
+  }, [menuShape, menuOpen, open]);
 
   // MOB-9 (task 2002): a tap on a bar tab first closes what is open, then
   // does its job. The assistant's sheet always closes. The drawer closes too,

@@ -58,6 +58,7 @@ from gateway.routes.crm.core import (
     MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
     STATUS_TYPES,
+    Holder,
     LostReasonModel,
     StatusModel,
     _tenant_session,
@@ -67,6 +68,8 @@ from gateway.routes.crm.core import (
     insert_row,
     is_mirror_mode,
     load_row,
+    lock_pipeline_creates,
+    pipelines_holding,
     read_status,
     read_statuses,
     require_row,
@@ -691,11 +694,53 @@ async def status_in_use(db: Any, kind: str, status_id: str) -> int:
     )).scalar() or 0)
 
 
-async def delete_status_in(db: Any, kind: str, status_id: str) -> Any:
+def _names(names: list[str]) -> str:
+    """'"A"', '"A" and "B"', or '"A", "B" and "C"'."""
+    shown = [quoted(n) for n in names]
+    return shown[0] if len(shown) == 1 else f"{', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _held_by_pipelines(
+    kind: str, name: Any, holders: list[Holder], *, undo: bool,
+) -> HTTPException:
+    """409 ``in_use``: pipelines hold the status, so it stays (CRM-M4a repair 4).
+
+    The words name each pipeline by its name now and say what did not happen.
+    Each holder has an open change that names the status
+    (``core.pipelines_holding``), so the step is always true: undo the
+    changes to that pipeline, newest first. A take-out is newer than the
+    create, so its Undo comes first."""
+    names = [h.name for h in holders]
+    many = len(names) > 1
+    noun = _STATUS_NOUNS[kind]
+    pipeline = ("lead pipeline" if kind == "lead" else "deal pipeline") + ("s" if many else "")
+    which = f"the {pipeline} {_names(names)}"
+    outcome = "nothing was undone" if undo else "it was not deleted"
+    then = "undo this" if undo else f"delete the {noun}"
+    return change_log.in_use(
+        f"{which[0].upper()}{which[1:]} {'use' if many else 'uses'} the {noun} "
+        f"{quoted(name)}, so {outcome}. Undo the changes to {which}, newest first, "
+        f"and then {then}."
+    )
+
+
+async def delete_status_in(db: Any, kind: str, status_id: str, *, undo: bool = False) -> Any:
     """The body of ``DELETE /crm/statuses/{kind}/{id}``. Returns the row that
-    went. The Undo of a create calls it too."""
+    went. The Undo of a create calls it too, with *undo* for its words.
+
+    CRM-M4a repairs 2 and 3: it takes the pipeline create lock, then the row
+    ``FOR UPDATE``, as a pipeline create does. It refuses (409 ``in_use``)
+    while a pipeline holds the status (``core.pipelines_holding``). The
+    cascade would take the status out of that pipeline, and then the Undo of
+    the pipeline answers 409 ``changed_since`` for ever. Each read after the
+    row uses the id of the row, so an id of the path in upper case reads the
+    same as in lower case."""
     table, _ = _kind(kind)
-    row = await require_row(db, table, status_id, "Status")
+    await lock_pipeline_creates(db)
+    row = await load_row(db, table, status_id, lock=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Status not found")
+    status_id = str(row.id)
     in_use = await status_in_use(db, kind, status_id)
     if in_use:
         raise HTTPException(
@@ -706,6 +751,9 @@ async def delete_status_in(db: Any, kind: str, status_id: str) -> Any:
             ),
         )
     await assert_writable(db, current_tenant(), table)
+    holders = await pipelines_holding(db, table, status_id)
+    if holders:
+        raise _held_by_pipelines(kind, row.name, holders, undo=undo)
     await db.execute(
         text(f"DELETE FROM {table} WHERE id = CAST(:id AS uuid)"),
         {"id": status_id},
@@ -876,22 +924,30 @@ async def _current(db: Any, table: str, record_id: str | None, area: str) -> Any
 
 @change_log.undoes("deal_stage", "lead_status")
 async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
-    """A create goes, unless records sit in it. A PATCH goes back. Each path
-    first checks that the status still holds the values of this change: a
-    status that changed again since is a 409, and the create stays."""
+    """A create goes, unless records sit in it or a pipeline holds it. A PATCH
+    goes back. Each path first checks that the status still holds the values
+    of this change: a status that changed again since is a 409, and the
+    create stays."""
     kind = _KIND_OF_AREA[logged.area]
     table, _ = _kind(kind)
+    creates = logged.action == change_log.CREATE
+    if creates:
+        # CRM-M4a repair 2: the pipeline create lock before the row lock, in
+        # the order of a pipeline create. A create that reuses this status
+        # then never passes between the check and the delete.
+        await lock_pipeline_creates(db)
     row = await _current(db, table, logged.entity_id, logged.area)
     if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
         raise change_log.changed_since()
-    if logged.action == change_log.CREATE:
+    if creates:
         held = await status_in_use(db, kind, str(row.id))
         if held:
             raise change_log.in_use(
                 f"The {_STATUS_NOUNS[kind]} {quoted(row.name)} now holds {held} "
                 "record(s). Move them to another stage first."
             )
-        await delete_status_in(db, kind, str(row.id))
+        # It refuses while a pipeline holds the status, and names it.
+        await delete_status_in(db, kind, str(row.id), undo=True)
         await log_change(db, user, Change(
             area=logged.area, action=change_log.DELETE,
             summary=f"Removed the {_STATUS_NOUNS[kind]} {quoted(row.name)}",
