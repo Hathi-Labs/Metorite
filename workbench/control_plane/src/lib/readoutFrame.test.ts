@@ -5,6 +5,8 @@
  * frame stays in the tool result, and no card shows it. Each test names the
  * mutation that breaks it.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -32,6 +34,14 @@ const LABELS = [
 ].join("\n");
 
 const html = (result: string) => renderToStaticMarkup(createElement(Readout, { result }));
+
+describe("the expanded step rows (task 3920)", () => {
+  it("draw a result through withoutFrame: RunDetail and ArgsDetail", () => {
+    const src = readFileSync(join(__dirname, "../components/ThinkingContainer.tsx"), "utf8");
+    expect(src).toContain("capOutput(withoutFrame(String(event.result)))");
+    expect(src).toContain("memberLineOf(withoutFrame(String(event.result)))");
+  });
+});
 
 describe("the data frame never reaches a card (task 3920)", () => {
   it("shows no marker and no note in the Readout of a framed result", () => {

@@ -47,6 +47,7 @@ import { WRITING_STEP } from "@/lib/runStep";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
 import { memberLineOf } from "@/lib/cardOutcomes";
+import { withoutFrame } from "@/lib/readout";
 import { argFields, needsClamp } from "@/lib/toolArgs";
 import {
   COMMAND_CAP,
@@ -321,7 +322,7 @@ function CutNote({ cut }: { cut: number }) {
 
 /** The terminal a script step expands into: the command, then its output. */
 function RunDetail({ event, running, dur }: { event: ToolEvent; running: boolean; dur?: number }) {
-  const out = event.result ? capOutput(String(event.result)) : null;
+  const out = event.result ? capOutput(withoutFrame(String(event.result))) : null;
   // A running row opens by itself, so a long script body must not draw whole.
   const cmd = capOutput(commandOf(event.args, event.name), COMMAND_CAP);
   return (
@@ -418,7 +419,7 @@ export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
 /** Any other step expands into its arguments and its result. */
 function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; dur?: number }) {
   // HRD-7: a card outcome shows its head only. Its next step is for the model.
-  const out = event.result ? capOutput(memberLineOf(String(event.result)), 2000) : null;
+  const out = event.result ? capOutput(memberLineOf(withoutFrame(String(event.result))), 2000) : null;
   // Each key in product words (`fieldSpec`, the one map of a key to its
   // label), and each value in full. The keys that the row already shows are
   // left out.
