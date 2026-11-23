@@ -35,6 +35,7 @@ from acb_auth import (
     require_role,
 )
 from acb_common import env_guard, get_logger, get_settings
+from acb_common.api_connections_flag import api_connections_allowed
 from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway import outbound_guard
@@ -900,7 +901,10 @@ async def integration_status(
         for row in custom_rows:
             if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
-            result.append(_custom_status_row(row, custom_keys_by_service))
+            status_row = _custom_status_row(row, custom_keys_by_service)
+            if api_connections_allowed(current_tenant()):
+                status_row["chat_use"] = dict(CUSTOM_ROW_CHAT_USE)
+            result.append(status_row)
     except Exception:
         pass  # graceful degradation if table doesn't exist yet
 
@@ -920,6 +924,15 @@ async def _stored_custom_keys(store: Any) -> dict[str, list[str]]:
         if len(parts) == 3 and parts[0] == "custom":
             keys.setdefault(parts[1], []).append(parts[2])
     return keys
+
+
+#: API-6 (task 3792, bug 3766). A custom row from "Add API" stores keys, and no
+#: chat path reads them. With API connections on for the org, the row says so.
+#: The text names the way that works: a connection from the templates.
+CUSTOM_ROW_CHAT_USE: dict[str, Any] = {
+    "usable": False,
+    "note": "The chat cannot use this yet. A connected API from the template list works in the chat.",
+}
 
 
 def _custom_status_row(

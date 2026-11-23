@@ -42,7 +42,8 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
-import { agentCardLook } from "../lib/agentCardLook";
+import { agentCardLook, splitPlanProgress } from "../lib/agentCardLook";
+import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -57,7 +58,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, isHeldByAgent, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -909,6 +910,7 @@ export function TaskBoard({
       memberEmail: task.agent_member_email,
       note: task.agent_note,
       waiting: task.agent_waiting,
+      plan: task.agent_plan,
       viewerEmail: me,
       labels: personLabels,
     });
@@ -1101,7 +1103,31 @@ export function TaskBoard({
             {agentLook.edge === "live" ? (
               <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
             ) : null}
-            <span className="truncate">{agentLook.line}</span>
+            {/* SW-32: the count "3 of 7" never truncates, the step does. */}
+            {(() => {
+              const split = splitPlanProgress(agentLook.line, task.agent_plan);
+              return split ? (
+                <>
+                  <span className="truncate">{split.head}</span>
+                  <span className="shrink-0 whitespace-nowrap">{split.tail}</span>
+                </>
+              ) : (
+                <span className="truncate">{agentLook.line}</span>
+              );
+            })()}
+          </p>
+        ) : null}
+        {/* SW-5: who holds the task, and since when. */}
+        {task.held_by && isHeldByAgent(task) ? (
+          <p
+            data-agent-holder
+            className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            // The live line above already names the session. The tooltip keeps
+            // the session label too, and the visible text keeps the part that
+            // truncation must not cut: who holds the task, and since when.
+            title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
+          >
+            {holderLine(task.held_by, personLabels)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />

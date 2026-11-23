@@ -343,6 +343,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- calendar-day events (CE-15, task 3463) --
     "my_tasks_list_events": ("what is on my calendar this week?",
                              "which meetings are on my calendar tomorrow?"),
+    # -- calendar-day P-1a (task 3112) --
+    "my_tasks_list_calendar_connections": ("what calendars are connected",
+                                           "which calendars do I have connected",
+                                           "list my calendar connections"),
+    "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
+    "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
