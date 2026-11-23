@@ -803,8 +803,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules. "
-            "It also lists the connected calendars, and proposes a clearer title or the missing fields of a task."
+            "set the One Thing, block or release time, read or change the calendar settings, keep the day rules, "
+            "list the connected calendars, and propose a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
