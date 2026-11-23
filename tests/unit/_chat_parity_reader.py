@@ -1174,18 +1174,28 @@ def _seg_match(pattern: list[str], segs: list[str]) -> bool:
     return all(p == "{}" or p == s or s == "{}" for p, s in zip(pattern, segs, strict=True))
 
 
-def bff_route_for(path: str, routes: tuple[BffRoute, ...]) -> BffRoute | None:
+def bff_route_for(
+    path: str, routes: tuple[BffRoute, ...], verb: str | None = None
+) -> BffRoute | None:
+    """The BFF route that serves ``path``. With a ``verb``, a route whose
+    handlers the reader read, and none of them for that verb, is passed over
+    when a later route also matches. An id segment of the UI (``{}``) matches
+    each static segment, so ``/api/workflows/{}/runs`` also fits
+    ``/api/workflows/hooks/{}``, which has a POST and no GET. Next.js sends an
+    id there to the catch-all (PAR-8a)."""
     segs = path.strip("/").split("/")
-    for route in routes:
-        if _seg_match(route.template.strip("/").split("/"), segs):
-            return route
-    return None
+    found = [r for r in routes if _seg_match(r.template.strip("/").split("/"), segs)]
+    if verb is not None:
+        for route in found:
+            if not route.gateway or verb in route.gateway:
+                return route
+    return found[0] if found else None
 
 
 def gateway_paths(verb: str, path: str, routes: tuple[BffRoute, ...]) -> tuple[str, ...] | None:
     """The gateway paths that a BFF request reaches, or ``None`` when no BFF
     route serves it."""
-    route = bff_route_for(path, routes)
+    route = bff_route_for(path, routes, verb)
     if route is None:
         return None
     if route.template.endswith("/**"):

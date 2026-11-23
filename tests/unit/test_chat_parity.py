@@ -175,7 +175,7 @@ def false_also_claims(
 def _bff_names(act: r.Action, gateway: str) -> bool:
     """Does the BFF route file, or a file that it imports by a relative
     path, name each static segment of ``gateway``?"""
-    route = r.bff_route_for(act.path, r.bff_routes())
+    route = r.bff_route_for(act.path, r.bff_routes(), act.verb)
     if route is None:
         return False
     path = r.SRC / route.file
@@ -414,6 +414,19 @@ def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
     # 1 after A5c-2 paid the two delete requests, plus Keep and Restore of PKG-10e-2 (task 2971, paid by P-9).
     # STU-K1a-ui (task 1203) added the template list and the one-step install (3 to 5). STU-K1d (task 2967) pays both with chat tools (5 to 3).
     assert cp.DEBT_CEILING["studio"] == 3
+
+
+def test_an_id_segment_passes_over_a_static_route_with_no_handler_for_its_verb() -> None:
+    """PAR-8a. ``/api/workflows/{}/runs`` also fits the hooks route, which has a
+    POST and no GET. The GET goes to the catch-all, as Next.js sends it. A POST
+    of the same shape still finds the hooks route, as before. Mutation: drop the
+    verb from ``gateway_paths`` -> the runs row has no gateway route -> red."""
+    routes = r.bff_routes()
+    assert r.gateway_paths("GET", "/api/workflows/{}/runs", routes) == ("/workflows/{}/runs",)
+    hooks = r.bff_route_for("/api/workflows/{}/runs", routes)
+    assert hooks is not None and hooks.template == "/api/workflows/hooks/{}"
+    assert hooks.gateway and "GET" not in hooks.gateway
+    assert r.bff_route_for("/api/workflows/{}/runs", routes, "POST") is hooks
 
 
 def test_a_false_also_claim_fails() -> None:
