@@ -97,8 +97,8 @@ def test_with_no_new_number_it_books_one(repo: Path) -> None:
 
 
 def test_with_no_new_number_and_no_lane_it_says_how_to_book(repo: Path) -> None:
-    out = _run(repo, "480", env={"RENUMBER_BOOK_CMD": "", "LANE": "", "TASK": ""})
-    assert out.returncode == 2 and "LANE and TASK" in out.stderr
+    out = _run(repo, "480", env={"RENUMBER_BOOK_CMD": ""})
+    assert out.returncode == 2 and "--lane and --task" in out.stderr
 
 
 def test_the_width_of_the_old_number_is_kept(repo: Path) -> None:
@@ -125,5 +125,5 @@ def test_a_longer_name_that_ends_like_the_old_one_is_not_rewritten(repo: Path) -
 
 
 def test_a_lane_with_a_shell_character_is_refused(repo: Path) -> None:
-    out = _run(repo, "480", env={"RENUMBER_BOOK_CMD": "", "LANE": "x; touch /tmp/p", "TASK": "1"})
+    out = _run(repo, "480", "--lane", "x; touch /tmp/p", "--task", "1", env={"RENUMBER_BOOK_CMD": ""})
     assert out.returncode == 2 and "letters, digits" in out.stderr

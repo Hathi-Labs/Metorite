@@ -13,7 +13,7 @@ main's top. Run it through ``scripts/renumber_migration.sh``.
   bare number in prose is left alone. It lists those lines for you to check.
 * It runs ``tests/unit/test_migration_prefixes.py``, unless ``--no-test``.
 * With no new number it books one through the box ledger:
-  ``LANE=<lane> TASK=<task> scripts/renumber_migration.sh <old>``. It runs
+  ``scripts/renumber_migration.sh <old> --lane <lane> --task <task>``. It runs
   ``ssh metorite-home '~/lanes/reserve_migration.sh <lane> <task>'``.
   ``RENUMBER_BOOK_CMD`` replaces that command (the test uses it).
 
@@ -58,18 +58,17 @@ def find_migration(repo: Path, folder: str, number: int) -> Path:
     return Path(hits[0])
 
 
-def book_number() -> int:
+def book_number(lane: str | None = None, task: str | None = None) -> int:
     """Book the next number through the box ledger, or the test's replacement."""
     cmd = os.environ.get("RENUMBER_BOOK_CMD")
     if not cmd:
-        lane, task = os.environ.get("LANE"), os.environ.get("TASK")
         if not lane or not task:
             raise RenumberError(
-                "no new number. Give one, or set LANE and TASK to book one "
+                "no new number. Give one, or pass --lane and --task to book one "
                 "(~/lanes/reserve_migration.sh <lane> <task>)."
             )
         if not (re.fullmatch(r"[A-Za-z0-9_.-]+", lane) and re.fullmatch(r"[A-Za-z0-9_.-]+", task)):
-            raise RenumberError("LANE and TASK may hold letters, digits, dot, dash and underscore only")
+            raise RenumberError("--lane and --task may hold letters, digits, dot, dash and underscore only")
         cmd = f"ssh metorite-home '~/lanes/reserve_migration.sh {lane} {task}'"
     out = subprocess.run(cmd, shell=True, capture_output=True, check=False)
     text = out.stdout.decode("utf-8", "replace").strip().splitlines()
@@ -78,12 +77,12 @@ def book_number() -> int:
     return int(text[-1].strip())
 
 
-def renumber(repo: Path, folder: str, old: int, new: int | None) -> tuple[Path, Path, list[str], list[str]]:
+def renumber(repo: Path, folder: str, old: int, new: int | None, lane: str | None = None, task: str | None = None) -> tuple[Path, Path, list[str], list[str]]:
     """Move the file and rewrite its references. Returns (old, new, changed, review)."""
     src = find_migration(repo, folder, old)
     width = len(re.match(r"^(\d+)_", src.name).group(1))  # type: ignore[union-attr]
     if new is None:
-        new = book_number()
+        new = book_number(lane, task)
     if new == old:
         raise RenumberError("the new number equals the old one")
     new_name = f"{str(new).zfill(width)}_{src.name.split('_', 1)[1]}"
@@ -129,13 +128,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("old", type=int, help="the migration number to move")
     ap.add_argument("new", type=int, nargs="?", help="the new number (books one when absent)")
+    ap.add_argument("--lane", help="your lane, to book a number")
+    ap.add_argument("--task", help="your task number, to book a number")
     ap.add_argument("--dir", default="infra/postgres", help="the migration folder")
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
     ap.add_argument("--no-test", action="store_true", help="skip test_migration_prefixes.py")
     args = ap.parse_args(argv)
     repo = Path(args.repo)
     try:
-        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new)
+        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new, args.lane, args.task)
     except RenumberError as err:
         print(f"renumber_migration: {err}", file=sys.stderr)
         return 2
