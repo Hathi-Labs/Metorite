@@ -19,6 +19,11 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-1a (task 3112) is BUILT, 2026-11-22, with no flag.** The chat lists the
+connected calendars, and proposes a clearer title or the missing fields of a
+task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
+P-1 slices.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -166,13 +171,14 @@ file that a member gave to the chat could not go on an email.
 
 `DEBT_CEILING` and `P0_CEILING` in the parity module own these numbers. This
 table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
-412 at P-0, and it is 427 today. Eight ceilings went up, and four went down.
+412 at P-0, and it was 427 at that reading. Eight ceilings went up, and four
+went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 
 | App | P-0 | Today | Wave | Task |
 |---|---|---|---|---|
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
-| tasks | 11 | 9 | P-1 | 3112 |
-| calendar | 1 | 5 | P-1 | 3112 |
+| tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
+| calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 14 | P-2 | 3111 |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
@@ -221,18 +227,53 @@ task of each wave.
 
 | Order | Slice | Task | Tier | State |
 |---|---|---|---|---|
-| 1 | PAR-2: the `org-admin` pack | 3102 | HIGH | To do |
-| 2 | The demo of rung 1 | 3104 | none | To do |
+| 1 | PAR-2a: the `org-admin` pack, with list, roles, status and access requests | 3102 | HIGH | In progress |
+| 2 | PAR-2b: the invite card | 3925 | HIGH | Waits for the owner (the mail) |
+| 3 | The demo of rung 1 | 3104 | none | To do |
 
-- **PAR-2 holds five jobs.** It lists the members and invites a person. It
-  sets a role and a status, and it answers an access request.
+- **The split (owner, 2026-11-23, answer on task 3102).** The audit of PAR-2
+  found the slice too big for one HIGH pull request, and the invite mail open.
+  So PAR-2a takes four jobs, and PAR-2b takes the invite after the owner
+  decides the mail.
+- **PAR-2a, four tools.** Each tool calls the gateway as the member. The
+  gateway guard stays the only check.
+
+  | Tool | Card | Gateway route | Guard |
+  |---|---|---|---|
+  | `list_members` | no | `GET /admin/members`, `GET /admin/members/requests` | `require_admin_user` |
+  | `set_member_roles` | yes | `PUT /admin/members/{email}/roles`, after `GET /admin/roles` | `admin:members:manage` |
+  | `set_member_status` | yes | `PATCH /admin/members/{email}` | `admin:members:manage` |
+  | `answer_access_request` | yes | `POST /admin/members/requests/{email}/approve` or `/deny` | `admin:members:invite` |
+
+  An access request takes the email as its key, not an id. The verb is
+  `deny`, not `decline`.
+- **PAR-2a pays six debt rows** of `chat_parity.py`: `GET /api/admin/members`,
+  `GET /api/admin/members/requests`, `GET /api/admin/roles`,
+  `PATCH /api/admin/members/{}`, `PUT /api/admin/members/{}/roles` and
+  `POST /api/admin/members/requests/{}/{}`. The admin ceiling goes from 36 to
+  30. A BFF path that differs from the gateway path takes the tuple form of
+  `COVERED`.
+- **PAR-2b pays two rows:** `POST /api/admin/members/invite` and
+  `GET /api/org/seats`. The gateway invite route is `POST /admin/members`. The
+  seats read is `GET /seats/overview`, and it answers 503 when no Customer
+  Console is wired, as in `dev_up` and the tests. The card then says that the
+  seat count is not known.
+- **The owner of the pack.** A pack needs an owner agent in
+  `_PACK_OWNER_AGENTS` (`gateway/routes/agent.py`). PAR-2a adds `org-admin`.
+  It owns the pack and never runs as an agent, as `studio-builder` does.
+- **The fences of PAR-2a.** They are `tests/unit/test_chat_parity.py`,
+  `tests/unit/test_tool_packs_registry.py` and the new unit tests of the
+  module. An R8 test also runs roles, status and access requests for two orgs
+  on a private database. `_KIND_TOOLS` and the class C rows of
+  `test_held_card_writes.py` hold Projects tools only, so they do not bind
+  this pack.
 - **Demo (task 3104).** An admin invites a person from the chat with one card.
   The person then shows as invited on Organisation.
 - **Who sends the mail.** The gateway route `POST /admin/members` sends
   nothing. The notice mail comes from the Next hop `api/admin/members/invite`,
   and only when `MEMBER_INVITE_EMAIL_ENABLED` is on. A chat tool calls the
   gateway, so it would send no mail, and a chat invite would differ from a UI
-  invite. PAR-2 must make the two do the same (D-PAR-3), and its card must say
+  invite. PAR-2b must make the two do the same (D-PAR-3), and its card must say
   that a mail goes to an outside person (D131.7).
 - **Reason.** It is the act that the member of §6.1 wanted to do.
 - **The owner does this.** He approves the preview of the invite card, and
@@ -295,15 +336,42 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
-| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, 3112 | 3904 | 14 and 14 | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
+| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 16 and 18 | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
-  day state. Task 3111 also puts a file from the chat on an email. Both tasks
-  are STANDARD on the board.
+  day state. Task 3111 also puts a file from the chat on an email. Task 3111 is
+  STANDARD on the board. P-1 has three slices, and two of them are HIGH (the
+  table below).
+
+**The P-1 slices (rung 4).** Calendar and Tasks held 14 debt rows before P-1a.
+P-1 does not take all 14. The table names the owner of each row.
+
+| Slice | Task | Tier | Rows | State |
+|---|---|---|---|---|
+| P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
+| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
+| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
+| The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
+| Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
+
+- **P-1a.** The three tools are reads of `skill_my_tasks`, in the
+  `calendar-day` pack. They need no new `TOOL_PACKS` line and no new `FOLLOWS`
+  entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
+  it answers in one line. Each proposal changes nothing. The member applies
+  a field with the task edit tool. A held chat keeps all three.
+- **The day acts of My Day are not P-1.** CC-10 (task 1978) owns the capture,
+  the focus start and stop, and the plan and the close of the day. P-1 builds
+  no day flow, and no second read of the day state.
+- **Verify P-1a.** Run these commands in the worktree.
+
+```bash
+timeout 900 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_calendar_settings_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider
+uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1a_tools.py
+```
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
@@ -345,7 +413,7 @@ he approves the merge.
 
 **Open for the owner.**
 
-1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2 merges and before
+1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2a merges and before
    the demo of rung 1. Say which pack holds the tools of PAR-5 and PAR-6: a new
    slug needs its own line before the demo of rung 3.
 2. **The previews.** Approve the preview of each new card: the invite, the
