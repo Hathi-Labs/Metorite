@@ -176,7 +176,7 @@ EXPECTED_SCOPED = {
     "pm_project_updates",
     # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
     "pm_templates", "pm_template_applies",
-    # H-312b (2026-11-22, task 1646): migration 481 puts `organization_id` on
+    # H-312b (2026-11-22, task 1646): migration 489 puts `organization_id` on
     # the numbered ladder for three member tables of the task routes, so each
     # statement there can name the bound org.
     "calendar_day_state", "calendar_rollover_log", "task_accounts",
@@ -241,7 +241,7 @@ BASELINE_UNSCOPED = {
 # gtd_*
     "attachments",
     # ⚠️ `calendar_day_state`, `calendar_rollover_log` and `task_accounts`
-    # LEFT this list on 2026-11-22. Migration 481 (H-312b) put
+    # LEFT this list on 2026-11-22. Migration 489 (H-312b) put
     # `organization_id` on the numbered ladder for the three tables.
     # ⚠️ `people` LEFT this list on 2026-09-21. Migration 209 put
     # `organization_id` on the NUMBERED ladder for that one table, because
@@ -498,7 +498,7 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
     # 89 since 2026-11-22: `calendar_day_state`, `calendar_rollover_log` and
-    # `task_accounts` left with migration 481 (H-312b, the task routes name
+    # `task_accounts` left with migration 489 (H-312b, the task routes name
     # the bound org).
     # 92 since 2026-11-07: `agent_avatars` left with migration 354 (H-201d,
     # the per-tenant key of an avatar override).

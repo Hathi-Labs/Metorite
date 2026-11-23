@@ -410,7 +410,7 @@ def _body() -> str:
     """489 without its own BEGIN and COMMIT, so a test can roll it back."""
     lines = _migration().read_text(encoding="utf-8").splitlines()
     kept = [ln for ln in lines if ln.strip() not in ("BEGIN;", "COMMIT;")]
-    assert len(kept) == len(lines) - 2, "481 lost its one transaction"
+    assert len(kept) == len(lines) - 2, "489 lost its one transaction"
     return "\n".join(kept)
 
 
@@ -513,7 +513,7 @@ def test_481_tenants_old_rows_from_app_user_and_leaves_the_rest_null(db) -> None
         first = _warnings(notices)
         assert len(first) == 3
         for table, warning in zip(_TABLES, first, strict=True):
-            assert warning.startswith(f"481: {table} has 2 row(s)"), warning
+            assert warning.startswith(f"489: {table} has 2 row(s)"), warning
 
         _run(conn, _body())
         for table in _TABLES:
