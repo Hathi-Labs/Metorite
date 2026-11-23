@@ -12,6 +12,7 @@ edge started under ``enforce`` with no signing key and said nothing.
 from __future__ import annotations
 
 import ast
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -520,3 +521,112 @@ def test_the_edge_app_runs_the_check_at_start():
     src = (ROOT / "apps/services/agent_edge/agent_edge/app.py").read_text(encoding="utf-8")
     calls = [n for n in ast.walk(ast.parse(src)) if _is_check(n)]
     assert [_call_args(c) for c in calls] == [["agent_edge"]]
+
+
+# ── Fences: the mode has one reader (R7) ──────────────────────────────────────
+
+#: The Python source trees. A test may set the mode, so the tests are out.
+_SOURCE_ROOTS = ("apps", "packages", "scripts", "evals")
+_SKIP_DIRS = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".next", "tests"})
+_MODE = "secret_startup_check"
+
+#: Each site that may name the mode, as (file, scope). The scope is the
+#: innermost function or class, else the module name that the line assigns.
+#: Only the first site reads the mode. The other two only list its name.
+_MODE_SITES = frozenset({
+    # The one reader.
+    ("packages/acb_common/acb_common/settings.py", "secret_startup_check_mode"),
+    # A name in the table of settings that no service needs. It reads no value.
+    ("packages/acb_auth/acb_auth/secret_check.py", "OPTIONAL"),
+    # A name that no tenant route may write. It reads no value.
+    ("packages/acb_common/acb_common/env_guard.py", "PLATFORM_ENV_NAMES"),
+})
+
+
+def _names_the_mode(node: ast.AST) -> bool:
+    """``x.secret_startup_check``, or the name as a string in either case.
+
+    The string form covers ``getattr``, ``os.getenv``, ``os.environ.get`` and
+    ``os.environ[...]``. A docstring that only mentions the name is longer.
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr.lower() == _MODE
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.strip().lower() == _MODE
+    return False
+
+
+def _mode_scopes(tree: ast.AST) -> set[str]:
+    found: set[str] = set()
+
+    def walk(node: ast.AST, scope: str) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scope = node.name
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and scope == "<module>":
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [t.id for t in targets if isinstance(t, ast.Name)]
+            scope = names[0] if names else scope
+        if _names_the_mode(node):
+            found.add(scope)
+        for child in ast.iter_child_nodes(node):
+            walk(child, scope)
+
+    walk(tree, "<module>")
+    return found
+
+
+def _mode_sites(base: Path, roots: tuple[str, ...]) -> set[tuple[str, str]]:
+    """Each (file, scope) under *roots* that names the mode. Tests are out."""
+    sites: set[tuple[str, str]] = set()
+    for root in roots:
+        for here, dirs, files in os.walk(base / root):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for name in files:
+                if not name.endswith(".py") or name.startswith("test_") or name == "conftest.py":
+                    continue
+                path = Path(here) / name
+                text = path.read_text(encoding="utf-8", errors="replace")
+                if _MODE not in text.lower():
+                    continue
+                rel = path.relative_to(base).as_posix()
+                sites |= {(rel, scope) for scope in _mode_scopes(ast.parse(text))}
+    return sites
+
+
+def test_the_mode_has_one_reader():
+    """``secret_startup_check_mode`` is the one reader of the mode.
+
+    A second reader can disagree with it: a typo reads as ``shadow`` in one
+    place and as ``enforce`` in another. The rule is in ``acb_common/settings.py``.
+    """
+    found = _mode_sites(ROOT, _SOURCE_ROOTS)
+    assert found == _MODE_SITES, (
+        "only acb_common.settings.secret_startup_check_mode may read "
+        f"SECRET_STARTUP_CHECK. Extra: {sorted(found - _MODE_SITES)}. "
+        f"Gone: {sorted(_MODE_SITES - found)}")
+
+
+@pytest.mark.parametrize(("source", "scope"), [
+    ("def f(s):\n    return s.secret_startup_check\n", "f"),
+    ("def f(s):\n    return getattr(s, 'secret_startup_check', 'shadow')\n", "f"),
+    ("import os\ndef f():\n    return os.getenv('SECRET_STARTUP_CHECK')\n", "f"),
+    ("import os\ndef f():\n    return os.environ.get('SECRET_STARTUP_CHECK', 'shadow')\n", "f"),
+    ("import os\nMODE = os.environ['SECRET_STARTUP_CHECK']\n", "MODE"),
+    # A second reader in a file that also holds an allowed site.
+    ("OPTIONAL = {'secret_startup_check': 'x'}\n"
+     "async def check(s):\n    return s.secret_startup_check\n", "check"),
+])
+def test_the_one_reader_fence_sees_a_second_reader(tmp_path, source, scope):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "plant.py").write_text(source, encoding="utf-8")
+    assert ("src/plant.py", scope) in _mode_sites(tmp_path, ("src",))
+
+
+def test_the_one_reader_fence_skips_a_docstring_and_a_test(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "doc.py").write_text(
+        '"""Set ``SECRET_STARTUP_CHECK=enforce`` to refuse."""\n', encoding="utf-8")
+    (src / "test_plant.py").write_text(
+        "def f(s):\n    return s.secret_startup_check\n", encoding="utf-8")
+    assert _mode_sites(tmp_path, ("src",)) == set()

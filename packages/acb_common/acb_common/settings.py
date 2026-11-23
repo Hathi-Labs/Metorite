@@ -146,7 +146,8 @@ class Settings(BaseSettings):
     # so a change needs a restart of each unit (`docs/flag_reload.md`). A flip
     # to `enforce` on a box is the grant `enforcement-flip`, and only after
     # that unit's shadow line reads `unusable=0`.
-    # Fence: tests/unit/test_secret_startup_check.py.
+    # Fence: tests/unit/test_secret_startup_check.py. In that file,
+    # `test_the_mode_has_one_reader` fails when another module reads the mode.
     secret_startup_check: str = "shadow"
 
     # The pool of the sync `acb_graph` engine. It counts against the SAME

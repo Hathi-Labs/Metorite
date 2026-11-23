@@ -288,8 +288,12 @@ Follow these steps for each unit.
 3. Read the summary line. The console form writes `unusable=0`, and it can put colour codes in the line. Add `| sed 's/\x1b\[[0-9;]*m//g'` to remove them.
 4. Under `LOG_FORMAT=json` the gateway line holds `"unusable": 0`. The edge does not call `configure_logging`, so its line is always the console form.
 5. Set each named secret in the env file of the unit. Then restart the unit, and read its line again.
-6. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
-7. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+6. If you set `LITELLM_MASTER_KEY`, copy the same value to `/opt/acb/app/workbench/control_plane/.env.local`. Then restart `acb-workbench`.
+   The workbench reads the key from that file only, and `scripts/vps_apply.sh` does not copy it. If you do not copy it, each call from the workbench to `/v1` gets 401.
+7. When the line reads `unusable=0`, set `SECRET_STARTUP_CHECK=enforce` in the env file of that unit.
+8. Restart the unit. The flag does not reload (`docs/flag_reload.md`).
+9. Read the line of the new start again, as in step 2. Make sure that it reads `mode=enforce` and `unusable=0`.
+   Under `LOG_FORMAT=json` the gateway line holds `"mode": "enforce"`. A line with `mode=shadow` shows a bad value, because the check reads each unknown value as `shadow`. Correct the value, and restart the unit again.
 
 Each unit has its own env file. `acb-gateway` reads `/opt/acb/app/.env`.
 `acb-agent-edge` reads `/opt/acb/app/apps/services/agent_edge/.env`.
