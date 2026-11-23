@@ -185,7 +185,7 @@ def app_of(path: str) -> str | None:
 #: The epic sets the order of the waves after it.
 WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112, 3922, 3923)),
-    "P-2": ("Email", ("email",), (3111,)),
+    "P-2": ("Email", ("email",), (3111, 3919)),
     "P-3": ("CRM", ("crm",), (3678,)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
