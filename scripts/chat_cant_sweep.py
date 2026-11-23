@@ -87,6 +87,7 @@ import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
+from acb_common.secret_shapes import JWT_SHAPE, REDACTION_BEARER, REDACTION_SHAPES
 from acb_skills.chat_parity import APPS
 
 DEFAULT_DAYS = 7
@@ -185,10 +186,9 @@ _MASKS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(rf"(?<![\w@.])(?://)?(?:[\w-]+\.)+(?:{_TLDS})\b(?:/\S*)?", re.IGNORECASE),
         "{url}",
     ),
-    (
-        re.compile(r"\b(?:sk-|sk_|ghp_|gho_|ghs_|github_pat_|xox[a-z]?-|eyJ|AKIA|AIza)[\w\-./+=]*"),
-        "{secret}",
-    ),
+    # Keys and tokens: the ONE list of the repo (task 1272). A second credential list
+    # fails tests/unit/test_secret_shapes_one_list.py.
+    *((shape, "{secret}") for shape in (*REDACTION_SHAPES, JWT_SHAPE, REDACTION_BEARER)),
     (
         re.compile(
             r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
