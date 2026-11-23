@@ -187,6 +187,19 @@ gives the answer to the client as `chat_pin`. So a tab shows a change at its
 next shell read. A reload applies a change. The flip stays OWNER-GATE
 (`enforcement-flip`), after the owner preview.
 
+`CHAT_PIN_TOOL_ORGS` gives the chat of each listed org the tool `pin_chat`
+(`chat_organization.md` §18, CO-11b). The owner gave the tool its own flag on
+2026-11-21 (task 3563). `*` lists every org, and the default is empty. Empty
+means no chat holds the tool, and the tool count does not move. The tool acts
+only for an org on the pin list too, because the pin routes answer 404 with
+the pin off.
+
+Its one reader is `gateway.chat_session_member.pin_tool_allowed`, and it asks
+`pin_allowed` first. The build of the orchestrator asks it at the start of
+each run, so a reload applies to the next run. Any value other than empty is
+OWNER-GATE, and only the owner flips it. The tool joins each request, so the
+flip takes the trade of the tool cap in §18.
+
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
 runs past 6 s sends the member one line. A WhatsApp run of a listed org
@@ -343,6 +356,18 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`CRM_MIRROR_AGE_ORGS` turns on the age line of the CRM read tools
+(`crm_platform.md` §18.11.2, CRM-Q30c). For each listed org, a read of one
+module or core entity adds one line when its Zoho mirror is held, not
+available in Zoho, or last read 2 hours ago or more. `*` lists every org, and
+the default is empty. Empty keeps each answer byte for byte, and the tools
+send no request for the age.
+
+Its one reader is `gateway.routes.crm.flags.mirror_age_allowed`.
+`GET /crm/sync/mirror-age` asks it, and the tools ask it through
+`crm_tools.mirror_age_on`. A reload applies a change. A name in the list
+spends nothing, so the flip is `enforcement-flip`.
+
 `CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
 (`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
 module list and on a module total. It finds each word in the record name, a
@@ -466,6 +491,18 @@ read. The edge reads its flags at
 start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
+
+`MCP_MAIL_PRECEDENCE_ORGS` turns on the precedence rule of a connected server
+over a sticky mail pack (`chat_connected_systems.md` §3.4, CSY-4). For each
+listed org, a turn whose words name an attachable MCP server evicts each sticky
+mail pack, so the server attaches. It acts only when the chat's mail mark reads
+set. `*` lists every org, and the default is empty. Empty keeps the choice of
+main.
+
+Its one reader is `acb_skills.egress.mcp_mail_precedence_on`, which
+`tool_packs.choose` and `_tool_injection._with_server_words` ask on each turn,
+on the run's org. A reload applies a change. Any value other than empty is
+owner-only (`work_plan.md` §6 D4), and the §3a window does not open it.
 
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of

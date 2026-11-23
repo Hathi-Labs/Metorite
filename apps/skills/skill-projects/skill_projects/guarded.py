@@ -32,6 +32,7 @@ who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -96,6 +97,8 @@ from skill_projects.writes import (
     _date_arg,
     _field_of,
     _fields_block,
+    _held_chat,
+    _held_param_refusal,
     _int_or_none,
     _my_reminder,
     _node,
@@ -261,10 +264,33 @@ def _short_ref(task: dict[str, Any]) -> str:
     return f"#{number} {data(title)}" if number is not None else data(title)
 
 
+async def _offer_undo(kind: str, row_id: str, version: Any) -> None:
+    """Offer Undo on the receipt of the archive card just approved (WT-6a).
+
+    Only while ``HELD_CLASS_C_ORGS`` holds the org, so the receipt line stays
+    dark with the flag. The Undo line reads that flag only, and not
+    ``HELD_CARD_WRITES_ORGS``. So it shows in a held chat and in an open chat
+    alike. ``ask_tools.publish_card_undo`` sends the row and its
+    version on the card's own channel. The browser then calls the unarchive
+    route under the member's session, with ``If-Match``. Nothing here writes,
+    and no fault of it changes the answer of the tool."""
+    try:
+        from acb_skills.ask_tools import publish_card_undo
+        from acb_skills.egress import held_class_c_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return
+    if held_class_c_on():
+        await publish_card_undo(kind, row_id, None if version is None else str(version))
+
+
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+# WT-6a: ``card_write`` lets a held chat keep it while HELD_CARD_WRITES_ORGS
+# and HELD_CLASS_C_ORGS both hold the org (``egress.HELD_CLASS_C_TOOLS``). The
+# Undo line of its receipt is gated on HELD_CLASS_C_ORGS only (``_offer_undo``).
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False,
+           card_write=True)
 async def archive_project(project_id: str) -> str:
     """File a project and its whole subtree out of the default surfaces.
     ONE project per call. The card leads with how many projects the archive
@@ -300,6 +326,12 @@ async def archive_project(project_id: str) -> str:
     ):
         return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/archive")) or {}
+    if result.get("updated_at"):
+        # The stamp that THIS archive wrote on the root row. A read after the
+        # archive could see a later archive by another member, and its Undo
+        # would then clear that one. No stamp (an older gateway) means no Undo.
+        with contextlib.suppress(Exception):
+            await _offer_undo("project", pid, result.get("updated_at"))
     return (
         f"Archived {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
         f"filed, {_plural(int(result.get('open_tasks') or 0), 'open task')} out of view."
@@ -642,10 +674,12 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         chosen = frozenset(answer - {tid})
     elif not answer:
         return _not_confirmed()
-    if len(chosen) > DELETE_QUERY_IDS:
-        # Only "all" gets here: a card with tick boxes holds under 100 rows,
-        # and a wider tree refuses any list above. A flag has no id list to
-        # overrun the URL.
+    if len(chosen) > DELETE_QUERY_IDS or (chosen and chosen == frozenset(offered)):
+        # "All" sends the flag, as the app does. A named list that holds a
+        # subtask of an archived project gets a 409 (ARC-2b), and "all" keeps
+        # that subtask. A flag has no id list to overrun the URL either: a card
+        # with tick boxes holds under 100 rows, and a wider tree refuses any
+        # list above.
         params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
     else:
         params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
@@ -924,7 +958,9 @@ async def _status_name(task: dict[str, Any]) -> str:
     return "(unknown)"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+# WT-6a: as ``archive_project``, behind HELD_CLASS_C_ORGS.
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False,
+           card_write=True)
 async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
@@ -935,13 +971,23 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     unarchive_task is the undo, and it restores one task."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
+    # WT-6a: a held chat archives ONE task, with Undo, and never a subtree.
+    # The Undo restores one row, so a cascade there would have none.
+    if str(include_subtasks or "").strip():
+        refused = await _held_param_refusal("archive_task", "include_subtasks")
+        if refused:
+            return refused
     wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
     count = await _subtask_counts(tid)
     if wanted is None and count.total:
-        return ask_about_subtasks(task, count.total, "archive", count.capped)
+        if not await _held_chat():
+            return ask_about_subtasks(task, count.total, "archive", count.capped)
+        # A held chat cannot answer yes, so it does not ask. The card says
+        # that the subtasks stay on the board.
+        wanted = False
     lane = await _status_name(task)
     if wanted and count.total:
         tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
@@ -958,6 +1004,21 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     params = {"include_subtasks": True} if wanted else None
     row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
+    # Undo restores ONE task, as the unarchive route does. An archive that
+    # filed subtasks too offers no Undo, because the receipt could not put
+    # each of them back under its own version. Only an open chat can file
+    # them: a held chat refuses include_subtasks above.
+    # ``was_archived`` true: another member archived the task after the read
+    # above, and this call wrote nothing. Its ``updated_at`` is THAT archive's
+    # version, so an Undo would clear the other member's archive. A reply with
+    # no ``was_archived`` (an older gateway) offers none either, as
+    # ``archive_project`` reads a reply with no stamp.
+    if (
+        isinstance(row, dict)
+        and row.get("was_archived") is False
+        and not row.get("subtask_ids")
+    ):
+        await _offer_undo("task", tid, row.get("updated_at"))
     return "\n".join(
         ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]
     )

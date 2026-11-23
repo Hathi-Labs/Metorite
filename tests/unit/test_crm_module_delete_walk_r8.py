@@ -16,7 +16,7 @@ delete door all run on Postgres under FORCE row level security.
    nothing. The next complete read deletes it.
 4. The walk of org A never touches a row of org B, also a row with the same
    ``ext_id`` and a row that org B's Zoho does not hold.
-5. Migration 477 adds ``ext_seen_at`` as a nullable column with no default.
+5. Migration 499 adds ``ext_seen_at`` as a nullable column with no default.
    A second run changes nothing, and the table keeps FORCE row level security.
 
 Each test turns ``CRM_MODULE_REREAD_ORGS`` on for org A only. The 24-hour gap

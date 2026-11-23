@@ -1,5 +1,5 @@
 -- ============================================================================
--- 477_crm_module_records_seen.sql - the seen stamp of a generic mirror record
+-- 499_crm_module_records_seen.sql - the seen stamp of a generic mirror record
 -- (WS-53 CRM-Q6a, Metorite task 3870)
 -- ============================================================================
 -- Spec: project-docs/specs/crm_platform.md §18.7 (the delete walk of a

@@ -365,7 +365,7 @@ authority: the route still checks the member's own access.
 | Agent runs | `waiting_agent_requests` (BUILT, OP-6e). The other `PLANNED` tools wait for EA-12e | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
-| Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
+| Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact`, `POST /tasks/{id}/agent-delete` and `POST /nodes/{id}/sequences/{name}/reserve` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`). So is the reserve door (SW-27a): an agent reserves a number, and SW-27b gives it the MCP tool |
 
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 29
 routes that stay class X. OP-11 added `GET /projects/my/summary` to the
@@ -1541,7 +1541,7 @@ Each fence is advisory until its slice builds.
 
 ### 9b.6 An archived project opens read-only (2026-11-09)
 
-**Status:** ARC-2a BUILT 2026-11-09. ARC-2b and ARC-2c are 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
+**Status:** ARC-2a BUILT 2026-11-09. ARC-2b BUILT 2026-11-22 (PR pending). ARC-2c is 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
 
 On 2026-11-08 the owner asked whether the archive design was settled. A review found that an archived project opened from the rail's Archived section gave no sign that it was archived. Its board also kept every edit control. The rail itself drew a filed project twice (ARC-BUG-1, task 2325, merged 69c40d08e).
 
@@ -1554,8 +1554,11 @@ On 2026-11-08 the owner asked whether the archive design was settled. A review f
    - A row that was filed with an ancestor (`archived_root_id` is not its own id) says "Archived with <ancestor name> on <date>."
    - The bar holds one Restore button. Restore runs the unarchive of `archived_root_id`, the same act as Unarchive on the rail menu. The whole filed branch returns.
 2. **Read-only on the server.** A task write into a project with `archived_at` answers 409: "This project is archived. Restore it to change its work."
-   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. A bulk act follows the bulk refusal rule that exists. It names each refused task.
-   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it.
+   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. The server also refuses a task delete, an agent delete, a move OUT of an archived project, a Check result and an epic contract save. A bulk act follows the bulk refusal rule that exists. It names each refused task.
+   - The overlay exception: NEXT, INBOX or WAITING on a closed task reopens it (D77). The reopen changes the status, so the server refuses it. The bulk overlay act names the task as failed.
+   - Subtasks: a parent in a live project can hold a subtask in an archived project. Complete and archive with the subtasks skip that subtask, as they skip a hidden one. Delete all keeps it, and it moves up with the other kept subtasks. The server refuses a delete that names it.
+   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it. The member's own overlay, watch, asks, cycles, tag, field and status registry edits, and the importer stay open. An overlay write that reopens nothing stays open.
+   - Allowed: the purge of a task in the member's own personal tree (`DELETE /projects/my/tasks/{id}`). It ends the member's own TRASH, and no other member is on the task. It is the member's own data, not team work.
    - Chat and MCP reach the same routes. So they show the same words, and no tool needs its own check.
 3. **Read-only in the app.** The views of an archived project draw no write control. That means no New task, no quick add, no drag, no inline edit and no bulk bar. The task panel shows its fields as text. Filters, views, search and export stay. ARC-2c builds after ARC-2b, so a control that the app misses still meets the server's refusal.
 4. **What does not change.** Archive still stamps projects and never tasks. Reports and automation still skip archived work. The rail keeps one Archived section (task 2325).

@@ -129,6 +129,10 @@ class KindDeclaration:
     harm_class: str = "normal"
     prior: int = 0
     lower_after: int = DEFAULT_LOWER_AFTER
+    #: LOOP-9 (§7.6). The precision that the shadow week must reach, written by
+    #: the owner of the kind before that week. ``None`` means no number is
+    #: written yet, and the gate then refuses the kind.
+    gate: float | None = None
 
 
 def _text(value: Any) -> bool:
@@ -137,6 +141,15 @@ def _text(value: Any) -> bool:
 
 def reach_rank(reach_class: str) -> int:
     return REACH_CLASSES.index(reach_class)
+
+
+def _check_gate(gate: Any) -> list[str]:
+    """The gate of §7.6 is empty, or a number above 0 and at most 1."""
+    if gate is None:
+        return []
+    if isinstance(gate, bool) or not isinstance(gate, (int, float)) or not 0 < gate <= 1:
+        return ["gate must be a number above 0 and at most 1"]
+    return []
 
 
 def check_declaration(decl: KindDeclaration) -> list[str]:
@@ -162,6 +175,7 @@ def check_declaration(decl: KindDeclaration) -> list[str]:
     if (isinstance(decl.lower_after, bool) or not isinstance(decl.lower_after, int)
             or decl.lower_after < 1):
         out.append("lower_after must be an integer of 1 or more")
+    out.extend(_check_gate(decl.gate))
     if not decl.why or not all(_text(w) for w in decl.why):
         out.append("why needs at least one template id")
     # ALN-Q5: no kind has a person as the subject of a fault.
@@ -316,6 +330,45 @@ def deliverable(finding: Finding, email: str, groups: Iterable[str], *,
         finding.visibility_scope, email, groups)
 
 
+MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def kind_mode(kind: str, organization_id: str) -> str:
+    """The mode of one kind for one organization (§7.6, D75.7, D100.2).
+
+    ``off`` is the answer for every doubt: no pair for the kind, an unknown
+    mode, no organization, or an organization that the list does not hold.
+    Both settings reload with no restart (``docs/flag_reload.md``).
+    """
+    from acb_common import get_settings
+
+    settings = get_settings()
+    mode = "off"
+    for pair in (getattr(settings, "proactive_kind_modes", "") or "").split(","):
+        name, sep, value = pair.partition("=")
+        if sep and name.strip() == kind:
+            mode = value.strip().lower()  # the last pair of a kind wins
+    if mode not in MODES or not organization_id:
+        return "off"
+    orgs = {o.strip() for o in (getattr(settings, "proactive_kind_orgs", "") or "").split(",")}
+    return mode if "*" in orgs or organization_id in orgs else "off"
+
+
+def _routed(findings: Iterable[Finding], email: str, groups: Iterable[str], *,
+            organization_id: str, registry: Mapping[str, KindDeclaration] | None,
+            now: datetime | None, want: str) -> list[Finding]:
+    reg = REGISTRY if registry is None else registry
+    mine = list(groups)
+    out: list[Finding] = []
+    for f in findings:
+        decl = reg.get(f.kind)
+        if decl is None or kind_mode(f.kind, organization_id) != want:
+            continue
+        if deliverable(f, email, mine, organization_id=organization_id, decl=decl, now=now):
+            out.append(f)
+    return out
+
+
 def deliver(findings: Iterable[Finding], email: str, groups: Iterable[str], *,
             organization_id: str,
             registry: Mapping[str, KindDeclaration] | None = None,
@@ -324,16 +377,25 @@ def deliver(findings: Iterable[Finding], email: str, groups: Iterable[str], *,
 
     A finding of a kind that nobody declared drops (§6.5). *registry* defaults
     to ``REGISTRY``, so no caller can skip the kind check by leaving it out.
+    A kind reaches a member only in the mode ``on`` (§7.6, LOOP-9). A kind in
+    ``off`` or ``shadow`` gives nothing here.
     """
-    reg = REGISTRY if registry is None else registry
-    mine = list(groups)
-    out: list[Finding] = []
-    for f in findings:
-        decl = reg.get(f.kind)
-        if decl is not None and deliverable(
-                f, email, mine, organization_id=organization_id, decl=decl, now=now):
-            out.append(f)
-    return out
+    return _routed(findings, email, groups, organization_id=organization_id,
+                   registry=registry, now=now, want="on")
+
+
+def shadowed(findings: Iterable[Finding], email: str, groups: Iterable[str], *,
+             organization_id: str,
+             registry: Mapping[str, KindDeclaration] | None = None,
+             now: datetime | None = None) -> list[Finding]:
+    """The findings that WOULD have reached this recipient, for kinds in shadow.
+
+    The caller records them for the measure (``finding_shadow.precision``) and
+    shows them to nobody. The same checks as :func:`deliver` apply, so the
+    shadow week measures what delivery would have sent (LOOP-9).
+    """
+    return _routed(findings, email, groups, organization_id=organization_id,
+                   registry=registry, now=now, want="shadow")
 
 
 async def member_groups(db: Any, email: str) -> list[str]:

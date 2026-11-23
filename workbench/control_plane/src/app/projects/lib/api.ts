@@ -10,6 +10,7 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentPlanSummary,
   type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
@@ -27,6 +28,7 @@ import {
   questionsPage,
   questionsQuery,
 } from "./agentQuestions";
+import type { TaskHeldBy } from "./agentHolder";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -38,6 +40,7 @@ import {
 import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
 import { type AgentMap, parseAgentMap } from "./agentMap";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import type { TemplateApplyResult, TemplateRow } from "./templates";
 import { taskVersions } from "./taskUndo";
 
 /**
@@ -55,6 +58,8 @@ export interface ArchiveResult {
   projects: number;
   /** Open tasks in the subtree. Reported, never acted on (D-PM-26). */
   open_tasks: number;
+  /** The root row's new `updated_at`, when an archive stamped the root (WT-6a). */
+  updated_at?: string | null;
 }
 
 /**
@@ -1868,6 +1873,11 @@ export interface TaskRow {
    */
   agent_label?: string | null;
   /**
+   * SW-5 — who holds the task now: the member, the client, since when. The
+   * gateway sets it for an open run (`filters.held_by_of`). Null for a free task.
+   */
+  held_by?: TaskHeldBy | null;
+  /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
    */
@@ -1877,6 +1887,11 @@ export interface TaskRow {
    * `waiting`: what it waits on and when the wait ends. Null in any other state.
    */
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
+   * SW-32 (task 1049) — the plan of the open run, as a count and the step in
+   * progress. Null while the run has no plan.
+   */
+  agent_plan?: AgentPlanSummary | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
@@ -3264,6 +3279,42 @@ export const refsApi = {
 
   remove: (taskId: string, refId: string) =>
     call<{ deleted: string }>(`tasks/${taskId}/refs/${refId}`, { method: "DELETE" }),
+};
+
+/**
+ * WS-39 TPL-1b: project templates (`routes/projects/templates.py`).
+ * `list` gives `null` while `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+ * Every route then answers 404, and the page draws neither the menu item nor
+ * the picker.
+ */
+export const templatesApi = {
+  list: async (): Promise<TemplateRow[] | null> => {
+    try {
+      const res = await call<{ rows: TemplateRow[] }>("templates");
+      return (res.rows ?? []).filter((t) => t.kind === "project");
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  save: (body: { project_id: string; name: string; description?: string | null }) =>
+    call<TemplateRow>("templates", { method: "POST", body: JSON.stringify(body) }),
+
+  apply: (
+    templateId: string,
+    body: {
+      idempotency_key: string;
+      parent_project_id: string;
+      name?: string | null;
+      description?: string | null;
+      start_date: string;
+    },
+  ) =>
+    call<TemplateApplyResult>(`templates/${encodeURIComponent(templateId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 /**

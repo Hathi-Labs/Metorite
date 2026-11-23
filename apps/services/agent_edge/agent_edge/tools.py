@@ -111,6 +111,7 @@ from acb_common.door_values import compact_json as _compact
 from acb_common.door_values import is_number as _number
 from acb_common.image_probe import RASTER_MIMES, looks_like_svg, sniff_image_mime
 from acb_common.priority import importance_for
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL
 
 from agent_edge import cursor as cursor_mod
 from agent_edge import idempotency, prompts
@@ -421,6 +422,10 @@ def task_held_text(detail: Mapping[str, Any]) -> str:
 TEXT_RELEASE_FORBIDDEN = "You can release only your own agent run."
 #: The code of the gateway's 409 for a held task (``agent_runs.TASK_HELD``).
 TASK_HELD_CODE = "task_held"
+
+#: ARC-2b. The 409 detail of a task write into an archived project. One source
+#: with the gateway and the chat: ``acb_common.tool_refusals``.
+TEXT_PROJECT_ARCHIVED = ARCHIVED_PROJECT_REFUSAL
 #: The fixed texts of ``delete_task`` (EA-6h, EA3-51).
 TEXT_DELETE_OFF = (
     "The member has not let agents delete tasks. The member can turn this on"
@@ -709,6 +714,9 @@ def _written(answer: Answer, not_found: str, *,
     CIV-14b: the file write of ``upload_task_image`` sends its own request
     and maps its answer here, so the edge holds one write mapping."""
     detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if answer.status == 409 and detail == TEXT_PROJECT_ARCHIVED:
+        # ARC-2b: before `details` and `texts`, so no per-tool 409 text hides it.
+        raise ToolError(TEXT_PROJECT_ARCHIVED)
     if details and isinstance(detail, str) and (answer.status, detail) in details:
         raise ToolError(details[(answer.status, detail)])
     if prefixes and isinstance(detail, str):
@@ -1975,9 +1983,14 @@ _GET_PLAN_OUTPUT: dict[str, Any] = {
         "finish": {
             "type": ["object", "null"],
             "properties": {
-                "mins": {"type": "integer"},
-                "working_days": {"type": "integer"},
+                "mins": {"type": ["integer", "null"]},
+                "working_days": {"type": ["integer", "null"]},
                 "date": {"type": ["string", "null"]},
+                # Task 2473: slices with no estimate. `unknown` is true when
+                # none has one: no length, no date.
+                "unknown": {"type": "boolean"},
+                "guessed": {"type": "integer"},
+                "words": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -2075,8 +2088,18 @@ def _plan_finish(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     when = value.get("date")
-    return {"mins": _int(value.get("mins")), "working_days": _int(value.get("working_days")),
-            "date": when if isinstance(when, str) else None}
+    if value.get("unknown") is True:
+        # Task 2473: no slice has an estimate, so the finish is unknown.
+        return {"mins": None, "working_days": None, "date": None, "unknown": True,
+                "guessed": _int(value.get("guessed")),
+                "words": (_str_or_none(value.get("words")) or "")}
+    out: dict[str, Any] = {"mins": _int(value.get("mins")),
+                           "working_days": _int(value.get("working_days")),
+                           "date": when if isinstance(when, str) else None}
+    if _int(value.get("guessed")):
+        out["guessed"] = _int(value.get("guessed"))
+        out["words"] = (_str_or_none(value.get("words")) or "")
+    return out
 
 
 async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -2890,6 +2913,8 @@ ARCHIVE_REQUEST_ROUTE = "/projects/tasks/{task_id}/archive-request"
 #: WS-55 MCP-G15. The agent records a decision that its member made outside
 #: Metorite, on its own awaiting run. The gateway writes an agent response.
 OUTSIDE_DECISION_ROUTE = "/projects/agent-runs/{run_id}/outside-decision"
+#: WS-MCP SW-32 (task 1049). The agent replaces the plan of its own run here.
+RUN_PLAN_ROUTE = "/projects/agent-runs/{run_id}/plan"
 
 #: The statuses of a run (§12.1), and `abandoned` and `released` of EA-14a.
 #: The gateway's CHECK holds the same.
@@ -2967,6 +2992,18 @@ _WAITING_SCHEMA = _object({
 #: of a session. ``agent_runs.AGENT_HOST_KINDS`` holds the same, and a pin
 #: test compares the two.
 HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
+
+#: SW-32 (task 1049, D140.7). The plan of a run: at most 30 steps, each of at
+#: most 200 characters, with four statuses. The gateway holds the same
+#: (``agent_runs.MAX_PLAN_STEPS``, ``MAX_PLAN_STEP`` and ``PLAN_STATUSES``),
+#: and a pin test holds the copies. The text of a step is the agent's own, so (U).
+MAX_PLAN_STEPS = 30
+MAX_PLAN_STEP = 200
+PLAN_STATUSES: tuple[str, ...] = ("pending", "inProgress", "completed", "canceled")
+_PLAN_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "array", "items": _object({
+    "content": _UNTRUSTED_SCHEMA,
+    "status": {"type": "string", "enum": list(PLAN_STATUSES)},
+})}, {"type": "null"}]}
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -2987,6 +3024,7 @@ _RUN_SCHEMA = _object({
     # gateway checked, so it leaves as an id (S), never as text.
     "dispatched_by_run_id": _NULLABLE_STRING,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
+    "plan": _PLAN_SCHEMA,
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
 #: key is there only while ``agent_answer_change_enabled`` is on, so it is not
@@ -3123,6 +3161,22 @@ def _waiting(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _plan(raw: Any) -> list[dict[str, Any]] | None:
+    """``plan`` of a run (SW-32): the steps, with the text as untrusted text.
+    ``None`` for a run with no plan. A step with an unknown status or no text
+    is left out, and so is a step past the cap."""
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for step in raw[:MAX_PLAN_STEPS]:
+        if not isinstance(step, dict):
+            continue
+        content, status = step.get("content"), step.get("status")
+        if isinstance(content, str) and content and status in PLAN_STATUSES:
+            out.append({"content": untrusted(content[:MAX_PLAN_STEP]), "status": status})
+    return out
+
+
 def _member_of(value: Any) -> str | dict[str, str] | None:
     """A member address by :func:`assignee`, or ``None``."""
     return assignee(value) if isinstance(value, str) else None
@@ -3172,6 +3226,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "agent_host_kind": kind if kind in HOST_KINDS else None,
         "dispatched_by_run_id": _id(row.get("dispatched_by_run_id")),
         "waiting": _waiting(row.get("waiting")),
+        "plan": _plan(row.get("plan")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
         out["answer"] = _answer(row.get("answer"))
@@ -8021,9 +8076,9 @@ CLAIM_TASK = Tool(
         " [[OWN]] that it found, or null when agent"
         " runs are off. A task with open subtasks still claims, and the result"
         " also has warning and open_subtasks, up to 5 ids: claim the slice,"
-        " not the epic. Only one AI session may hold a task. When another"
-        " session holds it, the tool refuses: pick another task, and do not"
-        " claim this one again.[[SHARED]] Send external_link, an https link to"
+        " not the epic. Only one AI session may hold a task. A 409 means"
+        " another agent holds this task. Do not retry. Pick another"
+        " task.[[SHARED]] Send external_link, an https link to"
         " your session, when you have one. The run then shows it. A new link"
         " replaces the old one. A holder with no activity for 2 hours loses"
         " the task to the next claim. When the organization turned on guidance,"
@@ -9674,8 +9729,8 @@ START_AGENT_RUN = Tool(
         " If this member already has an open run on the task from [[OWN]],"
         " you get that run back, and created is false.[[OTHER]] Only one AI"
         " session may"
-        " hold a task. When another session holds it, the tool refuses: pick"
-        " another task, and do not start this one again. While you work, send a"
+        " hold a task. A 409 means another agent holds this task. Do not retry."
+        " Pick another task. While you work, send a"
         " thought with post_agent_activity at least once a minute. After 5"
         " minutes with no activity, the task shows the run as idle. When you"
         " need a decision from a person, use ask_on_task. When the work is"
@@ -10138,6 +10193,82 @@ RECORD_OUTSIDE_DECISION = Tool(
     not_found=TEXT_RUN_NOT_FOUND,
     run=_record_outside_decision,
     method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
+# ── set_run_plan (WS-MCP SW-32, task 1049) ──────────────────────────────────
+
+_PLAN_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT, "description": "Your own run. An id from"
+                                                   " start_agent_run or my_work."},
+        "steps": {
+            "type": "array", "maxItems": MAX_PLAN_STEPS,
+            "description": ("The whole plan, in order. It replaces the plan that the"
+                            " run holds. An empty list clears the plan."),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "minLength": 1,
+                                "maxLength": MAX_PLAN_STEP,
+                                "description": "One step, in a short line."},
+                    "status": {"type": "string", "enum": list(PLAN_STATUSES),
+                               "description": "pending, inProgress, completed or canceled."},
+                },
+                "required": ["content", "status"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["run_id", "steps"],
+    "additionalProperties": False,
+}
+_PLAN_OUTPUT: dict[str, Any] = _object({
+    "activity": _RUN_ACTIVITY_SCHEMA, "run": _RUN_SCHEMA,
+})
+
+
+async def _set_run_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PUT the whole plan. The gateway replaces the list, checks the caps, and
+    writes one action activity as a heartbeat."""
+    steps = args["steps"]
+    for step in steps:
+        _refuse_nul(step, ("content",))
+    _status, body = await _write(
+        ctx, "PUT", RUN_PLAN_ROUTE, TEXT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body={"steps": steps},
+        texts={409: TEXT_RUN_CONFLICT})
+    activity = body.get("activity") if isinstance(body, dict) else None
+    if not isinstance(activity, dict):
+        raise ToolError(TEXT_BUSY)
+    return {"activity": run_activity(activity), "run": agent_run(_run_body(body))}
+
+
+SET_RUN_PLAN = Tool(
+    name="set_run_plan",
+    title="Set the plan of your run",
+    description=(
+        "Keep a checklist on your own run. Each call replaces the whole plan, so"
+        " send every step each time, with its new status. A step has a short"
+        " content line (at most 200 characters) and a status: pending,"
+        " inProgress, completed or canceled. A plan holds at most 30 steps. Mark"
+        " one step inProgress while you work on it. The task card then shows it,"
+        " with a count such as 3 of 7, and the run panel shows the list. Each"
+        " call also counts as a thought: it keeps the run active. It also ends"
+        " a wait, so post the wait after the plan. Send [] to"
+        " clear the plan. Use it only on your own open run." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_PLAN_INPUT,
+    output_schema=_PLAN_OUTPUT,
+    route=RUN_PLAN_ROUTE,
+    params={"run_id": "run_id", "steps": "steps"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_set_run_plan,
+    method="PUT",
     annotations=dict(WRITE_ANNOTATIONS),
     runs=True,
 )
@@ -11753,7 +11884,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     REPORT_CHECK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
-    RELEASE_TASK, DELETE_TASK,
+    RELEASE_TASK, SET_RUN_PLAN, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
     READ_PLAYBOOK,
 )}

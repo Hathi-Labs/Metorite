@@ -112,6 +112,16 @@ gateway reads them.
   A mirror row that two complete weekly reads missed is DELETED, with the
   guards of the core walk. It deletes mirror rows only, never a Zoho record.
   Fence: ``tests/unit/test_crm_module_delete_walk.py``.
+* ``CRM_MIRROR_AGE_ORGS`` — the organization ids whose CRM read tools say
+  how old the Zoho mirror of a module is (WS-53 CRM-Q30c, task 3868,
+  ``crm_platform.md`` §18.11.2). The grammar is the one of ``CRM_ORGS``. An
+  empty list allows no organization: ``GET /crm/sync/mirror-age`` answers an
+  empty list and sends no SQL, and the tools send no request for it.
+  :func:`mirror_age_allowed` is the one check, and the tools ask it through
+  ``crm_tools.mirror_age_on``. A name in the list spends nothing, so its
+  flip is gate ``enforcement-flip``. Fences:
+  ``tests/unit/test_crm_mirror_age.py`` and
+  ``tests/unit/test_crm_mirror_age_note.py``.
 * ``SEMANTIC_MODEL_ORGS`` — the organization ids whose CRM plan takes the
   semantic kinds ``measure``, ``join`` and ``query`` (WS-SEM SEM-7, task
   3737, ``semantic_model.md`` §3.4). The grammar is the one of ``CRM_ORGS``.
@@ -440,6 +450,26 @@ def module_reread_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_module_reread_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_mirror_age_orgs() -> frozenset[str]:
+    """The organization ids whose read tools say how old the mirror is
+    (CRM-Q30c). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_mirror_age_orgs or ""))
+
+
+def mirror_age_allowed(organization_id: str | None) -> bool:
+    """True when the age of the mirror may serve this org (CRM-Q30c, task 3868).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_MIRROR_AGE_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_mirror_age_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

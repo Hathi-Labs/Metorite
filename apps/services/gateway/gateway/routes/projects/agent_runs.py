@@ -17,6 +17,7 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
                                                   → {activity, run, created, archived}
     POST /projects/agent-runs/{run_id}/outside-decision
                                                   → {activity, run, created}  (MCP-G15)
+    PUT  /projects/agent-runs/{run_id}/plan       → {activity, run}           (SW-32)
 
 An outside agent works on a task inside a RUN. The run holds typed
 ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
@@ -532,6 +533,35 @@ class OutsideDecisionIn(BaseModel):
     where: str = Field(min_length=1, max_length=MAX_WHERE)
     selected: list[str] | None = Field(default=None, min_length=1, max_length=10)
     idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+#: SW-32 (task 1049). The most steps of a run plan, the most characters of one
+#: step, and the four statuses of a step. The edge holds copies, and
+#: ``test_agent_runs_r8.py`` pins them. The migration CHECK holds the 30.
+MAX_PLAN_STEPS = 30
+MAX_PLAN_STEP = 200
+PLAN_STATUSES: tuple[str, ...] = ("pending", "inProgress", "completed", "canceled")
+#: The action name of the activity that each plan write leaves on the run.
+PLAN_ACTION = "set_run_plan"
+
+
+class PlanStepIn(BaseModel):
+    """One step of a run plan. ``content`` is untrusted text: the gateway
+    stores it as a JSON string and no reader runs it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=MAX_PLAN_STEP)
+    status: Literal["pending", "inProgress", "completed", "canceled"]
+
+
+class PlanIn(BaseModel):
+    """``PUT /projects/agent-runs/{id}/plan`` (SW-32, D140.7). The list
+    replaces the whole plan. An empty list clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[PlanStepIn] = Field(max_length=MAX_PLAN_STEPS)
 
 
 #: The two options of every typed archive request. The server fixes them,
@@ -1113,6 +1143,11 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # SW-107: the run that dispatched this one, an id or None. The
             # gateway checked it on the write. Display data only.
             "dispatched_by_run_id": wire(getattr(row, "dispatched_by_run_id", None)),
+            # SW-39: `run`, or `child` for a sub-agent, and its parent run.
+            # A task run is always `run` with no parent: a child has no task,
+            # so no task-run read returns one (`child_run_out` shows it).
+            "kind": getattr(row, "kind", None) or "run",
+            "parent_run_id": wire(getattr(row, "parent_run_id", None)),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -1135,6 +1170,8 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # Task 1045a (agent_coordination.md §3.2): the wait of a run that
             # reads `waiting`, else null.
             "waiting": _waiting_out(row, notes),
+            # SW-32 (task 1049): the checklist that the agent keeps, or null.
+            "plan": from_jsonb(getattr(row, "plan", None)),
         })
         if answer_change_enabled():
             # SW-43. Only with the flag on, so a flag-off wire is unchanged.
@@ -1793,6 +1830,36 @@ async def _task_creator(db: Any, task_id: str) -> str | None:
     )).scalar()
 
 
+#: SW-39 (``agent_coordination.md`` §3.11.9). The end of each open child of
+#: one run. A child takes the status of its parent. The index
+#: ``pm_agent_runs_parent`` serves the read. A child has no task and no app,
+#: so it names its own subject: ``kind = 'child'``.
+_END_CHILDREN_SQL = (
+    "UPDATE pm_agent_runs SET status = :status, ended_at = :ts, last_activity_at = :ts,"
+    " waiting_on = NULL, waiting_until = NULL"
+    " WHERE parent_run_id = CAST(:rid AS uuid) AND kind = 'child'"
+    "   AND status = ANY(:open)"
+)
+
+
+async def _end_children(db: Any, run_id: str, new_status: str, ts: Any) -> None:
+    """SW-39. A child ends when its parent ends. Each move of a run to a
+    terminal status calls this, in the caller's transaction:
+    :func:`_move_run` (finish, release, stop, the sweeps, the task close, an
+    app request) and :func:`_take_over`. Each child that is still open takes
+    the parent's terminal status. A move to an open status ends nothing.
+
+    No race with a new child: :func:`start_child_run` locks the parent row
+    before it reads the parent's status, and each move holds the parent row
+    from its UPDATE to the commit. So a new child sees the closed parent, or
+    this UPDATE sees the new child."""
+    if new_status not in TERMINAL_STATUSES:
+        return
+    await db.execute(text(_END_CHILDREN_SQL), {
+        "rid": str(run_id), "status": new_status, "ts": ts,
+        "open": list(AGENT_RUN_OPEN_STATUSES)})
+
+
 async def _move_run(
     db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
     via: str | None,
@@ -1877,6 +1944,8 @@ async def _move_run(
     update = text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)")
     if not (run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES):
         await db.execute(update, params)
+        # SW-39: the open children of the run end with it.
+        await _end_children(db, str(run.id), new_status, ts)
         return await _close_question_bells(db, run, new_status)
     # A reopen starts from a terminal status, never from `awaiting`, so it
     # closes no question and returns `[]` below.
@@ -2163,6 +2232,8 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     )).fetchone()
     if moved is None:
         return False
+    # SW-39: the open children of the old run end with it.
+    await _end_children(db, str(holder.id), to, ts)
     await _close_question_bells(db, holder, to)
     client = agent_oauth.client_label(via) if via else "the app"
     await _system_activity(
@@ -2668,6 +2739,168 @@ async def start_agent_run(
     result: dict[str, Any] = {"run": out, "created": created}
     warn_dispatch(result, dropped)
     return result
+
+
+# ── Child runs (WS-MCP SW-39) ───────────────────────────────────────────────
+
+#: SW-39. The ONE refusal of a child start. An unknown run, a run of another
+#: organization (RLS hides it), a closed run, a child, a run of another
+#: member or connection, and a run that no longer holds its task all read the
+#: same, so the answer tells nothing about another organization.
+CHILD_PARENT_REFUSED = "No open run of yours holds a task with that id."
+#: SW-39. A person never starts a child run: a hook of the agent reports it.
+CHILD_PERSON_REFUSED = "Only an agent starts a child run, for one of its sub-agents."
+
+
+class ChildIn(BaseModel):
+    """``POST /projects/agent-runs/{run_id}/children`` (SW-39, §3.12.7 rule
+    11). One sub-agent under an open run of the caller. ``agent_label`` is the
+    name of its agent type, and ``host``, ``model`` and ``host_kind`` are its
+    place (SW-104). The parent, the member, the connection and the tenant
+    come from the path and the signed context, never from this body (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_label: str = Field(min_length=1, max_length=AGENT_LABEL_INPUT_MAX)
+    host: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                             pattern=AGENT_PLACE_PATTERN)
+    model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                              pattern=AGENT_PLACE_PATTERN)
+    host_kind: HostKind | None = None
+
+
+#: SW-39. The one writer of a child run. No task, no app, no lease, no
+#: session key and no idempotency key: a child shows only under its parent.
+#: ``organization_id`` takes the default of the bound tenant.
+_INSERT_CHILD_SQL = (
+    "INSERT INTO pm_agent_runs "
+    "(task_id, app, kind, parent_run_id, member_email, connection_id, client_via,"
+    " status, started_by, started_at, last_activity_at, last_agent_activity_at,"
+    " session_key, agent_label, agent_host, agent_model, agent_host_kind) "
+    "VALUES (NULL, NULL, 'child', CAST(:parent AS uuid), :me, CAST(:cid AS uuid), :via,"
+    "        'in_progress', :via, :ts, :ts, :ts, NULL, CAST(:label AS text),"
+    "        CAST(:host AS text), CAST(:model AS text), CAST(:kind AS text)) "
+    "RETURNING id"
+)
+
+#: SW-39. The children of one run, newest first, in the org of the bound
+#: session (``filters.BOUND_ORG_SQL``) beside FORCE RLS. The caller reads
+#: the parent first, with the visibility of its task.
+_CHILDREN_SQL = (
+    "SELECT c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
+    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
+    " c.last_activity_at"
+    " FROM pm_agent_runs c"
+    f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON c.organization_id = bound_org.id"
+    " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
+    "   AND (CAST(:child AS uuid) IS NULL OR c.id = CAST(:child AS uuid))"
+    " ORDER BY c.created_at DESC, c.id DESC LIMIT :limit"
+)
+#: SW-39. The most children that one read returns.
+MAX_CHILDREN = 100
+
+
+def child_run_out(row: Any) -> dict[str, Any]:
+    """The wire shape of one child run (SW-39). The name, the place and the
+    model are the agent's own text: display data only."""
+    return {
+        "id": str(row.id),
+        "parent_run_id": wire(row.parent_run_id),
+        "kind": row.kind,
+        "status": row.status,
+        "agent_label": row.agent_label,
+        "agent_host": row.agent_host,
+        "agent_model": row.agent_model,
+        "agent_host_kind": row.agent_host_kind,
+        "created_at": wire(row.created_at),
+        "started_at": wire(row.started_at),
+        "ended_at": wire(row.ended_at),
+        "last_activity_at": wire(row.last_activity_at),
+    }
+
+
+async def _parent_for_child(db: Any, user: UserContext, parent_id: str) -> Any:
+    """SW-39. The parent of a new child: a task run of the caller's member
+    and connection that is open and holds its task, on a task that the caller
+    still sees. It locks the parent row first, so a parent that ends at the
+    same time either ends before this read or sees the new child
+    (:func:`_end_children`). Any miss is 404 :data:`CHILD_PARENT_REFUSED`.
+
+    The read runs in the caller's tenant session, so RLS hides a run of
+    another organization. A child has no task, so the task-run lock and load
+    never find one, and a child is never a parent (no grandchildren)."""
+    refused = HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
+    await db.execute(text(_LOCK_TASK_RUN_SQL), {"rid": parent_id})
+    parent = (await db.execute(text(_LOAD_TASK_RUN_SQL), {"rid": parent_id})).fetchone()
+    if (parent is None or getattr(parent, "kind", "run") != "run"
+            or parent.status not in OPEN_STATUSES
+            or parent.member_email != _member(user)
+            or str(parent.connection_id or "") != (_agent_connection(user) or "")):
+        raise refused
+    holder = (await db.execute(
+        text(_HOLDER_SQL), {"tid": str(parent.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone()
+    if holder is None or str(holder.id) != str(parent.id):
+        raise refused
+    try:
+        await load_visible_task(db, await resolve_visibility(db, user), str(parent.task_id))
+    except HTTPException as exc:
+        raise refused from exc
+    return parent
+
+
+@router.post("/agent-runs/{run_id}/children", status_code=201, dependencies=_ENABLED)
+async def start_child_run(
+    run_id: str, payload: ChildIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """SW-39 (``agent_coordination.md`` §3.11.9, §3.12.7 rule 11). Start one
+    child run under the caller's open run *run_id*: a sub-agent of that
+    session. The child holds no lease and no claim, so a second normal run
+    on the task still meets ``task_held``. It has no session key of its own.
+    It ends when its parent ends (:func:`_end_children`), and a delete of the
+    parent deletes it (ON DELETE CASCADE).
+
+    Only a signed agent starts one: a person's call is 422. SW-114 adds the
+    edge tool, the replay key and the cap."""
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(status_code=422, detail=CHILD_PERSON_REFUSED)
+    _require_write_scope(user)
+    _agent_via(user)  # 403 for a connection with no client stamp
+    label = clean_agent_label(payload.agent_label)
+    if label is None:
+        raise HTTPException(status_code=422, detail="agent_label names the agent type.")
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    try:
+        parent_id = str(uuid.UUID(str(run_id)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED) from exc
+    async with _tenant_session() as db:
+        parent = await _parent_for_child(db, user, parent_id)
+        place = await _box_place(db, user, place)
+        ts = await _clock(db)
+        made = (await db.execute(text(_INSERT_CHILD_SQL), {
+            "parent": parent_id, "me": parent.member_email, "cid": _agent_connection(user),
+            "via": parent.client_via, "ts": ts, "label": label,
+            **_place_binds(place),
+        })).fetchone()
+        row = (await db.execute(text(_CHILDREN_SQL), {
+            "rid": parent_id, "child": str(made.id), "limit": 1})).fetchone()
+    return {"run": child_run_out(row)}
+
+
+@router.get("/agent-runs/{run_id}/children", dependencies=_ENABLED)
+async def list_child_runs(
+    run_id: str, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """SW-39. The child runs of one run, newest first. A viewer sees a child
+    only under a parent that the viewer can see: the parent loads with the
+    visibility of its task (D12), else 404, as ``get_agent_run`` does."""
+    run_id = _parse_uuid(run_id, "Agent run")
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        rows = (await db.execute(text(_CHILDREN_SQL), {
+            "rid": run_id, "child": None, "limit": MAX_CHILDREN})).fetchall()
+    return {"rows": [child_run_out(r) for r in rows]}
 
 
 @router.get("/agent-runs", dependencies=_ENABLED)
@@ -4633,6 +4866,71 @@ async def record_outside_decision(
     # move out of `awaiting`. A replay clears nothing, so it moves no My Day.
     await _bump_cleared(user, written.cleared)
     return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _plan_steps(payload: PlanIn) -> list[dict[str, str]]:
+    """The steps as stored: the text with no NUL and no edge space. A step
+    that is empty after that is 422."""
+    steps: list[dict[str, str]] = []
+    for step in payload.steps:
+        content = " ".join(step.content.replace("\x00", "").split())
+        if not content:
+            raise HTTPException(status_code=422, detail="Each plan step needs text.")
+        steps.append({"content": content, "status": step.status})
+    return steps
+
+
+@router.put("/agent-runs/{run_id}/plan", dependencies=_ENABLED)
+async def set_run_plan(
+    run_id: str, payload: PlanIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The agent sets the plan of its run (SW-32, task 1049, D140.7).
+
+    * **Replace.** The list is the whole plan. An empty list clears it. Over
+      30 steps, a step over 200 characters or an unknown status is 422.
+    * **The agent's OWN run.** Only an agent writes it, and
+      :func:`may_end_run` refuses another member or another client stamp
+      with 403.
+      A run that ended is 409, by the status machine. A person gets 403.
+    * **A wait.** The activity carries no ``waiting``, so a plan write ends a
+      wait of the run (task 1045a). The agent posts its wait after the plan.
+    * **A heartbeat.** The call writes one ``action`` activity, with the
+      counts as its parameters. The plan itself stays in ``plan``, so the
+      step text is in no activity and in no comment.
+
+    Fence: ``tests/unit/test_agent_runs_r8.py`` (the plan tests).
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    if _agent_via(user) is None:
+        raise HTTPException(
+            status_code=403, detail="Only the agent of a run sets its plan.",
+        )
+    steps = _plan_steps(payload)
+    counts = {
+        "steps": str(len(steps)),
+        "completed": str(sum(1 for s in steps if s["status"] == "completed")),
+        "in_progress": str(sum(1 for s in steps if s["status"] == "inProgress")),
+    }
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(
+                status_code=403,
+                detail="This agent run belongs to another member or another agent client.")
+        written = await _write_activity(
+            db, run, user, kind="action", key=None, body=None,
+            action=PLAN_ACTION, parameters=counts,
+        )
+        await db.execute(
+            text("UPDATE pm_agent_runs SET plan = CAST(:plan AS jsonb)"
+                 " WHERE id = CAST(:rid AS uuid)"),
+            {"plan": _jsonb(steps), "rid": run_id},
+        )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        out_activity = _activity_out(written.activity)
+    return {"activity": out_activity, "run": out_run}
 
 
 def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
