@@ -46,6 +46,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from textwrap import wrap
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -91,6 +92,8 @@ MAX_ROWS = 50
 MAX_NAME_CHARS = 80
 #: The most characters of an address. RFC 5321 gives 254.
 MAX_EMAIL_CHARS = 254
+#: The most characters of the text of a route in a refusal.
+MAX_DETAIL_CHARS = 400
 #: The most roles in one change.
 MAX_ROLES = 20
 
@@ -212,10 +215,19 @@ def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error": message, **extra}
 
 
+def _cut(text: str, limit: int) -> str:
+    """*text* as one line of at most *limit* characters. A cut line ends with
+    "...". A long word is cut too, so a name never vanishes."""
+    lines = wrap(" ".join(text.split()), limit - 3)
+    if not lines:
+        return ""
+    return lines[0] + ("..." if len(lines) > 1 else "")
+
+
 def _detail(reply: _Reply) -> str:
     raw = reply.data.get("detail") if isinstance(reply.data, dict) else None
     if isinstance(raw, str):
-        return " ".join(raw.split())[:400]
+        return _cut(raw, MAX_DETAIL_CHARS)
     return ""
 
 
@@ -303,10 +315,7 @@ def _roles_arg(raw: Any) -> list[str] | None:
 def _name(value: Any) -> str:
     """A display name as one line with no hidden character, cut."""
     text = strip_hidden(value) if isinstance(value, str) else ""
-    one = " ".join(text.split())
-    if len(one) > MAX_NAME_CHARS:
-        one = one[: MAX_NAME_CHARS - 3] + "..."
-    return one
+    return _cut(text, MAX_NAME_CHARS)
 
 
 def _fence(value: Any) -> str:
@@ -468,7 +477,8 @@ async def list_members(offset: int = 0, limit: int = MAX_ROWS) -> dict[str, Any]
     from acb_skills.untrusted import UntrustedFrame
 
     page = paged(rows, offset, limit, default=MAX_ROWS, maximum=MAX_ROWS, noun="members")
-    shown = waiting[:MAX_ROWS]
+    asks = paged(waiting, 0, MAX_ROWS, default=MAX_ROWS, maximum=MAX_ROWS, noun="requests")
+    shown = asks.items
     frame = UntrustedFrame.new()
     block = json.dumps({"members": [_member_row(r) for r in page.items],
                         "requests": [_request_row(r) for r in shown]},
@@ -481,6 +491,7 @@ async def list_members(offset: int = 0, limit: int = MAX_ROWS) -> dict[str, Any]
         "page": page.line,
         "requests_total": len(waiting),
         "requests_shown": len(shown),
+        "requests_page": asks.line,
         "note": frame.note(_LIST_NOTE),
     }
 
