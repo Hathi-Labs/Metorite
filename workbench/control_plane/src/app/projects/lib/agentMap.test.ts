@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   type AgentMap,
+  CHILD_STEP,
+  CHILD_TOGGLE_H,
   DEPTH_STEP,
   MAX_DISPATCH_DEPTH,
   NODE_H,
   agentMapOutline,
+  childToggleLabel,
   dispatchGraph,
   groupByMachine,
   layoutAgentMap,
@@ -663,3 +666,201 @@ describe("agentMapOutline: dispatched by", () => {
     expect(outline.find((p) => p.person === ANA)!.sessions[0].dispatchedBy).toEqual([]);
   });
 });
+
+/* ── SW-110: the sub-agents of a session ───────────────────────────────── */
+
+const child = (over: Record<string, unknown> = {}) => ({
+  child_id: "c1",
+  run_id: "r1",
+  session_id: "s1",
+  name: "implementer",
+  state: "working",
+  model: "Sonnet 5.5",
+  age: 300,
+  last_at: "2026-11-21T11:59:00Z",
+  ...over,
+});
+const withChildren = (sessions: unknown[], runs: unknown[], children: unknown[], lines: unknown[] = []): AgentMap =>
+  parseAgentMap({ ...answer(sessions, runs, lines), children }) as AgentMap;
+const open = (...ids: string[]) => ({ expanded: new Set(ids) });
+
+describe("parseAgentMap: children", () => {
+  it("keeps a child of a listed run, and drops a child it cannot place", () => {
+    const map = withChildren(
+      [session()],
+      [run()],
+      [
+        child(),
+        child({ child_id: "c2", run_id: "ghost" }),
+        child({ child_id: "c3", session_id: "other" }),
+        child({ child_id: "" }),
+        child({ child_id: "c1" }),
+        { nope: 1 },
+      ],
+    );
+    expect(map.children.map((c) => c.child_id)).toEqual(["c1"]);
+  });
+  it("reads an empty list when the answer has no children", () => {
+    expect(parse([session()], [run()]).children).toEqual([]);
+  });
+  it("keeps a null model as null, and names an unnamed child Sub-agent", () => {
+    const map = withChildren([session()], [run()], [child({ model: null, name: "" })]);
+    expect(map.children[0].model).toBeNull();
+    expect(map.children[0].name).toBe("Sub-agent");
+  });
+});
+
+describe("layoutAgentMap: children", () => {
+  const map = withChildren(
+    [session(), session({ id: "s2", name: "Other" })],
+    [run(), run({ run_id: "r2", task_id: "t2" }), run({ run_id: "r3", session_id: "s2", task_id: "t3" })],
+    [
+      child(),
+      child({ child_id: "c2", name: "verifier", model: null, age: null }),
+      child({ child_id: "c3", run_id: "r2", name: "reviewer" }),
+    ],
+  );
+
+  it("a session with no child has no control, and its height does not change", () => {
+    const { nodes } = layoutAgentMap(map, NOW, open("s2"));
+    const s2 = nodes.find((n) => n.id === "s:s2")!;
+    expect(s2.childCount).toBeUndefined();
+    expect(s2.expanded).toBeUndefined();
+    expect(s2.h).toBe(NODE_H.session);
+  });
+
+  it("collapsed is the default: a control, and no child node", () => {
+    const { nodes, edges } = layoutAgentMap(map, NOW);
+    const s1 = nodes.find((n) => n.id === "s:s1")!;
+    expect(s1.childCount).toBe(3);
+    expect(s1.expanded).toBe(false);
+    expect(s1.h).toBe(NODE_H.session + CHILD_TOGGLE_H);
+    expect(nodes.some((n) => n.kind === "child")).toBe(false);
+    expect(edges.some((e) => e.to.startsWith("c:"))).toBe(false);
+  });
+
+  it("the layout with no children equals the layout before SW-110", () => {
+    const bare = parse([session()], [run()]);
+    const withNone = withChildren([session()], [run()], []);
+    expect(layoutAgentMap(withNone, NOW, open("s1"))).toEqual(layoutAgentMap(bare, NOW));
+  });
+
+  it("expanded, each child sits one column right of its task, with an edge from that task", () => {
+    const { nodes, edges } = layoutAgentMap(map, NOW, open("s1"));
+    const task = (id: string) => nodes.find((n) => n.id === `t:${id}`)!;
+    const kids = nodes.filter((n) => n.kind === "child");
+    expect(kids.map((n) => n.id).sort()).toEqual(["c:c1", "c:c2", "c:c3"]);
+    for (const kid of kids) {
+      const parent = task(kid.runId!);
+      expect(kid.x).toBe(parent.x + CHILD_STEP);
+      expect(kid.x).toBeGreaterThanOrEqual(parent.x + parent.w);
+      expect(edges).toContainEqual({ id: `${parent.id}>${kid.id}`, from: parent.id, to: kid.id, kind: "tree" });
+    }
+    // A child sits beside its own task: the first at the y of the task.
+    const first = childrenSorted(kids, "r1");
+    expect(first[0].y).toBe(task("r1").y);
+    expect(nodes.find((n) => n.id === "c:c3")!.y).toBe(task("r2").y);
+    // The task below the two children of r1 moves down, so nothing overlaps.
+    expect(task("r2").y).toBeGreaterThanOrEqual(first[1].y + NODE_H.child);
+    expectNoOverlap(map, open("s1"));
+  });
+
+  it("a child shows its name, its state, its own model and its age, and no model text for null", () => {
+    const { nodes } = layoutAgentMap(map, NOW, open("s1"));
+    const c1 = nodes.find((n) => n.id === "c:c1")!;
+    expect(c1.label).toBe("implementer");
+    expect(c1.runState).toBe("working");
+    expect(c1.model).toBe("Sonnet 5.5");
+    expect(c1.detail).toBe("Started 5m ago");
+    const c2 = nodes.find((n) => n.id === "c:c2")!;
+    expect(c2.model).toBeNull();
+    expect(c2.detail).toBe("");
+    // The model of a child is never the model of its session.
+    const opus = withChildren([session({ model: "Opus 5.5" })], [run()], [child({ model: null })]);
+    const only = layoutAgentMap(opus, NOW, open("s1")).nodes.find((n) => n.kind === "child")!;
+    expect(opus.sessions[0].model).toBe("Opus 5.5");
+    expect(only.model).toBeNull();
+  });
+
+  it("many children stack beside their task with no overlap", () => {
+    const many = withChildren(
+      [session()],
+      [run(), run({ run_id: "r2", task_id: "t2" })],
+      Array.from({ length: 12 }, (_, i) => child({ child_id: `c${String(i).padStart(2, "0")}`, name: `agent ${i}` })),
+    );
+    const { nodes } = layoutAgentMap(many, NOW, open("s1"));
+    expect(nodes.filter((n) => n.kind === "child")).toHaveLength(12);
+    expectNoOverlap(many, open("s1"));
+  });
+
+  it("works when grouped by machine, with the children right of the task column", () => {
+    const { nodes, edges } = layoutAgentMap(map, NOW, { groupByMachine: true, expanded: new Set(["s1"]) });
+    const kids = nodes.filter((n) => n.kind === "child");
+    expect(kids).toHaveLength(3);
+    for (const kid of kids) {
+      const parent = nodes.find((n) => n.id === `t:${kid.runId}`)!;
+      expect(kid.x).toBe(parent.x + CHILD_STEP);
+      expect(edges.some((e) => e.from === parent.id && e.to === kid.id)).toBe(true);
+    }
+    expect(nodes.some((n) => n.kind === "machine")).toBe(true);
+    expectNoOverlap(map, { groupByMachine: true, expanded: new Set(["s1"]) });
+  });
+
+  it("works beside the dispatch columns, with no overlap", () => {
+    const lanes = withChildren(
+      [session(), session({ id: "s2", name: "Lane" })],
+      [run(), run({ run_id: "r3", session_id: "s2", task_id: "t3" })],
+      [child({ child_id: "c9", run_id: "r3", session_id: "s2" }), child()],
+      [{ from: "s1", to: "s2" }],
+    );
+    expectNoOverlap(lanes, open("s1", "s2"));
+  });
+
+  it("the node ids are stable, and the order never depends on the input order", () => {
+    const shuffled = withChildren(
+      [session(), session({ id: "s2", name: "Other" })],
+      [run(), run({ run_id: "r2", task_id: "t2" }), run({ run_id: "r3", session_id: "s2", task_id: "t3" })],
+      [child({ child_id: "c3", run_id: "r2", name: "reviewer" }), child({ child_id: "c2", name: "verifier", model: null, age: null }), child()],
+    );
+    const a = layoutAgentMap(map, NOW, open("s1"));
+    const b = layoutAgentMap(shuffled, NOW, open("s1"));
+    expect(b).toEqual(a);
+  });
+
+  it("is pure: the same input gives the same output", () => {
+    expect(layoutAgentMap(map, NOW, open("s1"))).toEqual(layoutAgentMap(map, NOW, open("s1")));
+  });
+
+  it("an open id of a session with no child changes nothing", () => {
+    expect(layoutAgentMap(map, NOW, open("s2"))).toEqual(layoutAgentMap(map, NOW));
+  });
+});
+
+describe("agentMapOutline: children", () => {
+  it("lists each child under its task, with the same words and no model text for null", () => {
+    const map = withChildren(
+      [session()],
+      [run(), run({ run_id: "r2", task_id: "t2" })],
+      [child(), child({ child_id: "c2", name: "verifier", model: null })],
+    );
+    const [person] = agentMapOutline(map, NOW);
+    const [first, second] = person.sessions[0].tasks;
+    expect(first.children.map((c) => c.name)).toEqual(["implementer", "verifier"]);
+    expect(first.children[0]).toMatchObject({ word: "Working", model: "Sonnet 5.5", age: "Started 5m ago" });
+    expect(first.children[0].chip).toBe(sessionStateChip("working"));
+    expect(first.children[1].model).toBeNull();
+    expect(second.children).toEqual([]);
+  });
+});
+
+describe("childToggleLabel", () => {
+  it("names the count and the act", () => {
+    expect(childToggleLabel(1, false)).toBe("Show 1 sub-agent");
+    expect(childToggleLabel(3, false)).toBe("Show 3 sub-agents");
+    expect(childToggleLabel(3, true)).toBe("Hide 3 sub-agents");
+  });
+});
+
+function childrenSorted(nodes: { runId?: string; y: number; id: string }[], runId: string) {
+  return nodes.filter((n) => n.runId === runId).sort((a, b) => a.y - b.y);
+}

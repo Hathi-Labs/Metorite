@@ -10,6 +10,10 @@
  *
  * ⚠️ One colour vocabulary. A state becomes a chip through `agentStateChip`
  * of `lib/statusAccent.ts`, and through nothing else.
+ *
+ * SW-110: a session opens into the sub-agents (child runs of SW-39) of its
+ * runs. The gateway lists a child only under a run that the viewer may see.
+ * Collapsed is the default, and the view keeps the open sessions in local state.
  */
 import { agentStateChip, agentStateVisual } from "@/lib/statusAccent";
 import { relativeTime } from "@/lib/taskCard";
@@ -69,11 +73,29 @@ export interface MapLine {
   to: string;
 }
 
+/**
+ * SW-110. One sub-agent (a child run of SW-39) of a listed run. `run_id` is
+ * the parent run, as in `runs`. The name and the model are untrusted text.
+ * `model` is the child's own model, or `null` when it reported none.
+ */
+export interface MapChild {
+  child_id: string;
+  run_id: string;
+  session_id: string;
+  name: string;
+  state: string;
+  model: string | null;
+  age: number | null;
+  last_at: string | null;
+}
+
 export interface AgentMap {
   people: MapPerson[];
   sessions: MapSession[];
   runs: MapRun[];
   lines: MapLine[];
+  /** SW-110. The open sub-agents of the listed runs. Not in `count`. */
+  children: MapChild[];
   count: number;
   truncated: boolean;
   viewer: string;
@@ -100,6 +122,26 @@ export const GROUP_BY_MACHINE_LABEL = "Group by machine";
 export const DISPATCHED_BY_LABEL = "Dispatched by";
 export const DISPATCHED_LABEL = "Dispatched";
 export const OPEN_TASK_LABEL = "Open task";
+/** SW-110. The name of a sub-agent that reported no name. */
+export const UNNAMED_CHILD = "Sub-agent";
+
+/** SW-110. The words of the control that opens the sub-agents of a session. */
+export function childToggleLabel(count: number, expanded: boolean): string {
+  const noun = count === 1 ? "sub-agent" : "sub-agents";
+  return `${expanded ? "Hide" : "Show"} ${count} ${noun}`;
+}
+
+/** SW-110. "5m ago", from the age of a sub-agent in seconds. Empty for none. */
+export function childStartedWhen(age: number | null, nowMs: number): string {
+  if (age === null) return "";
+  return relativeTime(new Date(nowMs - age * 1000).toISOString(), nowMs);
+}
+
+/** SW-110. "Started 5m ago". Empty for none. */
+export function childAgeWord(age: number | null, nowMs: number): string {
+  const when = childStartedWhen(age, nowMs);
+  return when ? `Started ${when}` : "";
+}
 
 const SESSION_STATES: readonly MapSessionState[] = ["waiting_on_person", "waiting", "working", "quiet"];
 
@@ -163,6 +205,19 @@ export function runStateChip(run: Pick<MapRun, "state" | "quiet">): string {
 
 export function runStateIcon(run: Pick<MapRun, "state" | "quiet">): string {
   return agentStateVisual(run.quiet ? "stale" : run.state)?.icon ?? "Bot";
+}
+
+/** SW-110. The word, the chip and the icon of a sub-agent: the words of a run that is not quiet. */
+export function childStateWord(child: Pick<MapChild, "state">): string {
+  return runStateWord({ state: child.state, quiet: false });
+}
+
+export function childStateChip(child: Pick<MapChild, "state">): string {
+  return runStateChip({ state: child.state, quiet: false });
+}
+
+export function childStateIcon(child: Pick<MapChild, "state">): string {
+  return runStateIcon({ state: child.state, quiet: false });
 }
 
 function text(value: unknown): string {
@@ -244,6 +299,30 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
     });
   }
 
+  // SW-110. A child must name a listed run, and the session of that run.
+  const sessionOfRun = new Map(runs.map((r) => [r.run_id, r.session_id]));
+  const children: MapChild[] = [];
+  const seenChildren = new Set<string>();
+  for (const item of rows(body.children)) {
+    const row = record(item);
+    if (!row) continue;
+    const child_id = text(row.child_id);
+    const run_id = text(row.run_id);
+    const session_id = sessionOfRun.get(run_id);
+    if (!child_id || !session_id || text(row.session_id) !== session_id || seenChildren.has(child_id)) continue;
+    seenChildren.add(child_id);
+    children.push({
+      child_id,
+      run_id,
+      session_id,
+      name: text(row.name) || UNNAMED_CHILD,
+      state: text(row.state) || "working",
+      model: text(row.model) || null,
+      age: typeof row.age === "number" && Number.isFinite(row.age) && row.age >= 0 ? Math.floor(row.age) : null,
+      last_at: text(row.last_at) || null,
+    });
+  }
+
   const lines: MapLine[] = [];
   for (const item of rows(body.lines)) {
     const row = record(item);
@@ -262,6 +341,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
     sessions,
     runs,
     lines,
+    children,
     count: whole(body.count),
     truncated: body.truncated === true,
     viewer: text(body.viewer),
@@ -270,7 +350,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
 
 /* ── The layout ─────────────────────────────────────────────────────────── */
 
-export type MapNodeKind = "person" | "machine" | "session" | "task" | "quiet";
+export type MapNodeKind = "person" | "machine" | "session" | "task" | "quiet" | "child";
 
 export interface MapNode {
   id: string;
@@ -297,6 +377,14 @@ export interface MapNode {
   place?: Place;
   /** SW-109. True for a quiet session node that waits on a lane that is not quiet. It reads "Waiting". */
   quietWait?: boolean;
+  /** SW-110. On a session node: how many sub-agents its listed runs hold. */
+  childCount?: number;
+  /** SW-110. On a session node with sub-agents: true when they show. */
+  expanded?: boolean;
+  /** SW-110. On a child node: its own model, or `null` for none. */
+  model?: string | null;
+  /** SW-110. On a child node: the parent run. */
+  runId?: string;
 }
 
 export interface MapEdge {
@@ -314,6 +402,8 @@ export interface MapLayout {
 export interface MapLayoutOptions {
   /** SW-106. Group the sessions under a machine node. The default is off. */
   groupByMachine?: boolean;
+  /** SW-110. The ids of the sessions whose sub-agents show. The default is none. */
+  expanded?: ReadonlySet<string>;
 }
 
 export const COLUMN_X = { person: 0, session: 300, task: 640 } as const;
@@ -334,9 +424,13 @@ export const COLUMN_X_BY_MACHINE = { machine: 0, session: 280, task: 620 } as co
  */
 export const MAX_DISPATCH_DEPTH = 4;
 export const DEPTH_STEP = 340;
-export const NODE_W = { person: 220, machine: 220, session: 280, task: 300, quiet: 300 } as const;
+export const NODE_W = { person: 220, machine: 220, session: 280, task: 300, quiet: 300, child: 260 } as const;
 /** Each height is fixed. A session holds four lines: name, state, machine, model. */
-export const NODE_H = { person: 48, machine: 48, session: 96, task: 52, quiet: 32 } as const;
+export const NODE_H = { person: 48, machine: 48, session: 96, task: 52, quiet: 32, child: 52 } as const;
+/** SW-110. A session with sub-agents is this much taller: the row of its control. */
+export const CHILD_TOGGLE_H = 32;
+/** SW-110. The sub-agents sit one column to the right of the tasks of their session. */
+export const CHILD_STEP = DEPTH_STEP;
 const GAP = 12;
 const BLOCK_GAP = 24;
 
@@ -364,6 +458,18 @@ function runsOf(map: AgentMap, sessionId: string): MapRun[] {
   return map.runs
     .filter((r) => r.session_id === sessionId)
     .sort((a, b) => Number(a.quiet) - Number(b.quiet) || compareText(a.run_id, b.run_id));
+}
+
+/** SW-110. The sub-agents of one run, by name and then by id, so the order never depends on the input. */
+export function childrenOf(map: Pick<AgentMap, "children">, runId: string): MapChild[] {
+  return map.children
+    .filter((c) => c.run_id === runId)
+    .sort((a, b) => compareText(a.name.toLowerCase(), b.name.toLowerCase()) || compareText(a.child_id, b.child_id));
+}
+
+/** SW-110. How many sub-agents the listed runs of a session hold. */
+export function childCountOf(map: Pick<AgentMap, "children">, sessionId: string): number {
+  return map.children.filter((c) => c.session_id === sessionId).length;
 }
 
 /** How many quiet runs a session holds that the answer does not list. */
@@ -603,6 +709,10 @@ export function layoutAgentMap(
     const sid = `s:${session.id}`;
     const runs = runsOf(map, session.id);
     const hidden = hiddenQuiet(session, runs);
+    // SW-110. The control row makes a session with sub-agents taller. Expanded, the sub-agents show.
+    const childCount = runs.reduce((n, run) => n + childrenOf(map, run.run_id).length, 0);
+    const expanded = childCount > 0 && options.expanded?.has(session.id) === true;
+    const sessionH = childCount > 0 ? NODE_H.session + CHILD_TOGGLE_H : NODE_H.session;
     let ty = y;
     for (const run of runs) {
       const tid = `t:${run.run_id}`;
@@ -623,7 +733,31 @@ export function layoutAgentMap(
         sessionId: session.id,
       });
       edges.push({ id: `${sid}>${tid}`, from: sid, to: tid, kind: "tree" });
-      ty += NODE_H.task + GAP;
+      const kids = expanded ? childrenOf(map, run.run_id) : [];
+      kids.forEach((child, i) => {
+        const cid = `c:${child.child_id}`;
+        nodes.push({
+          id: cid,
+          kind: "child",
+          x: taskX(session.id) + CHILD_STEP,
+          y: ty + i * (NODE_H.child + GAP),
+          w: NODE_W.child,
+          h: NODE_H.child,
+          label: child.name,
+          detail: childAgeWord(child.age, nowMs),
+          state: null,
+          runState: child.state,
+          ref: child.child_id,
+          taskId: run.task_id,
+          sessionId: session.id,
+          runId: run.run_id,
+          model: child.model,
+        });
+        edges.push({ id: `${tid}>${cid}`, from: tid, to: cid, kind: "tree" });
+      });
+      // Each task keeps the height of its sub-agents, so a sub-agent sits beside its task.
+      const kidsH = kids.length * (NODE_H.child + GAP) - GAP;
+      ty += Math.max(NODE_H.task, kidsH) + GAP;
     }
     if (hidden > 0) {
       const qid = `q:${session.id}`;
@@ -649,7 +783,7 @@ export function layoutAgentMap(
       x: sessionX(session.id),
       y,
       w: NODE_W.session,
-      h: NODE_H.session,
+      h: sessionH,
       label: session.name,
       detail: detailOf(session),
       state: session.state,
@@ -657,13 +791,14 @@ export function layoutAgentMap(
       sessionId: session.id,
       place: sessionPlace(session),
       quietWait: waits(session.id),
+      ...(childCount > 0 ? { childCount, expanded } : {}),
     });
     // A lane that a session dispatched hangs from that session, and not from a person.
     if (personId && !dispatch.dispatchers.has(session.id)) {
       edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
     }
     if (machineId) edges.push({ id: `${machineId}>${sid}`, from: machineId, to: sid, kind: "tree" });
-    y += Math.max(NODE_H.session, ty - y - GAP) + BLOCK_GAP;
+    y += Math.max(sessionH, ty - y - GAP) + BLOCK_GAP;
   };
 
   const personNode = (person: string, count: number, at: number): MapNode => ({
@@ -715,6 +850,18 @@ export function layoutAgentMap(
 
 /* ── The outline for a phone ────────────────────────────────────────────── */
 
+/** SW-110. One sub-agent under its task in the outline. */
+export interface OutlineChild {
+  id: string;
+  name: string;
+  word: string;
+  chip: string;
+  /** Its own model, or `null`: the outline then shows no model text. */
+  model: string | null;
+  /** "Started 5m ago", or empty. */
+  age: string;
+}
+
 export interface OutlineTask {
   runId: string;
   taskId: string;
@@ -722,6 +869,8 @@ export interface OutlineTask {
   number: number | null;
   word: string;
   chip: string;
+  /** SW-110. The sub-agents of the run. The outline always lists them. */
+  children: OutlineChild[];
 }
 
 export interface OutlineSession {
@@ -776,6 +925,14 @@ export function agentMapOutline(map: AgentMap, nowMs: number = Date.now()): Outl
           number: r.task_number,
           word: runStateWord(r),
           chip: runStateChip(r),
+          children: childrenOf(map, r.run_id).map((c) => ({
+            id: c.child_id,
+            name: c.name,
+            word: childStateWord(c),
+            chip: childStateChip(c),
+            model: c.model,
+            age: childAgeWord(c.age, nowMs),
+          })),
         })),
         quiet: hidden > 0 ? quietLine(hidden, s.quiet_last_at, nowMs) : null,
       };

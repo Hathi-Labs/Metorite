@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AgentMapView } from "./AgentMapView";
+import { AgentMapView, SubAgentToggle } from "./AgentMapView";
 import { AgentsAtWorkView } from "./AgentsAtWork";
 import { type AgentMapRead, parseAgentMap } from "../lib/agentMap";
 import type { AgentsAtWorkRead } from "../lib/agentsAtWork";
@@ -104,6 +104,68 @@ describe("AgentMapView", () => {
     expect(view({ phone: false })).toContain("Group by machine");
     expect(view({ phone: false })).toContain("data-agent-map-group");
     expect(view({ phone: true })).not.toContain("Group by machine");
+  });
+});
+
+describe("the sub-agents of a session (SW-110)", () => {
+  const kids = parseAgentMap({
+    sessions: [
+      { id: "s1", person: "ana@example.com", name: "Fix login", client: "Claude Code", state: "working", model: "Opus 5.5" },
+    ],
+    runs: [
+      { run_id: "r1", session_id: "s1", task_id: "t1", task_number: 7, title: "Fix it", state: "working" },
+      { run_id: "r2", session_id: "s1", task_id: "t2", task_number: 8, title: "Test it", state: "working" },
+    ],
+    children: [
+      { child_id: "c1", run_id: "r1", session_id: "s1", name: "implementer", state: "working", model: "Haiku 5", age: 120 },
+      { child_id: "c2", run_id: "r1", session_id: "s1", name: "verifier", state: "working", model: null, age: null },
+    ],
+    lines: [],
+    count: 2,
+    truncated: false,
+    viewer: "admin",
+  });
+  const render = (phone: boolean, map = kids!) =>
+    renderToStaticMarkup(
+      createElement(AgentMapView, {
+        read: { kind: "ready", map },
+        showQuiet: false,
+        onShowQuiet: () => {},
+        phone,
+        nowMs: Date.now(),
+      }),
+    );
+  const toggle = (expanded: boolean, count = 2) =>
+    renderToStaticMarkup(createElement(SubAgentToggle, { count, expanded, onToggle: () => {} }));
+
+  it("the control is a real button with its count, its act and aria-expanded", () => {
+    const closed = toggle(false);
+    expect(closed).toMatch(/^<button /);
+    expect(closed).toContain('type="button"');
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).toContain("Show 2 sub-agents");
+    expect(closed).toContain("pointer-events-auto");
+    const opened = toggle(true, 1);
+    expect(opened).toContain('aria-expanded="true"');
+    expect(opened).toContain("Hide 1 sub-agent");
+  });
+
+  it("the outline of a phone lists each sub-agent under its task, with no model text for none", () => {
+    const out = render(true);
+    expect(out.match(/data-outline-child=""/g)).toHaveLength(2);
+    expect(out).toContain("implementer");
+    expect(out).toContain("Haiku 5");
+    expect(out).toContain("Started 2m ago");
+    // The verifier has no model: its row holds no model text, and never the model of its session.
+    const verifier = out.slice(out.indexOf("verifier"));
+    expect(verifier.slice(0, verifier.indexOf("</li>"))).not.toContain("Opus 5.5");
+    expect(out).not.toContain("data-map-children-toggle");
+  });
+
+  it("a map with no sub-agent draws no sub-agent row and no control", () => {
+    const out = render(true, map!);
+    expect(out).not.toContain("data-outline-child");
+    expect(out).not.toContain("sub-agent");
   });
 });
 
