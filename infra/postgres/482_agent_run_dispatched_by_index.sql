@@ -11,14 +11,15 @@
 --
 -- Why: 472 added `dispatched_by_run_id`, a self key with ON DELETE SET NULL,
 --   and no index. So each delete of a run makes Postgres run
---   `UPDATE ONLY pm_agent_runs ... WHERE dispatched_by_run_id = $1` with a
---   scan of the whole table, rows of other organizations too. An organization
---   delete (acb_auth/offboard.py) removes each run of the organization, so it
---   makes one scan for each run.
+--   `UPDATE ONLY pm_agent_runs ... WHERE dispatched_by_run_id = $1`. That
+--   update scans the whole table, with the rows of all organizations. An
+--   organization delete (acb_auth/offboard.py) removes each run of the
+--   organization, so it makes one scan for each run.
 --
 -- The decision (owner, board answer 2026-11-23): a plain partial index in a
---   migration, with a lock_timeout, and one narrow exemption for this index
---   in tests/unit/test_agent_label_fence.py. Not CONCURRENTLY.
+--   migration, with a lock_timeout. The label fence
+--   (tests/unit/test_agent_label_fence.py) gets one narrow exemption for this
+--   index. Not CONCURRENTLY.
 --
 -- Why a plain build is safe here: the table holds some thousands of rows, so
 --   the build reads it in milliseconds. A plain build takes a SHARE lock:
