@@ -1,5 +1,5 @@
 -- ============================================================================
--- 492_package_field_value_host_delete.sql — a host delete takes its package
+-- 495_package_field_value_host_delete.sql — a host delete takes its package
 -- field values (WS-PKG PKG-14a-3, Metorite task 2320).
 --
 -- What: one trigger function and five AFTER DELETE triggers. When a row of a
@@ -61,7 +61,7 @@
 -- lock_timeout stops the file from waiting long on a busy table.
 --
 -- The number was 372 at build time. Main took 372 for 372_pm_cycles.sql
--- first, so the merge of 2026-11-23 moved this file to 492, the number
+-- first, so the merge of 2026-11-23 moved this file to 495, the number
 -- booked for task 2320. Main then ended at 486. Check it again at merge
 -- (R1). Both tests of this slice find this file by CONTENT, never by
 -- number.
