@@ -65,6 +65,15 @@ connected calendars, and proposes a clearer title or the missing fields of a
 task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
 P-1 slices.
 
+**P-2c (task 3919) is BUILT, 2026-11-23, with no flag.** It takes the email
+debt from 14 rows to 10. Three buttons of the chat's own draft and reply cards
+are EXEMPT rows of the kind `chat`: `drafts/save`, `reply-card/bcc` and
+`reply-card/discard`. `forget_pattern(action="review")` approves or rejects one
+learned rule pattern behind one card. `POST /api/email/rules/generate` stays
+debt. That route runs the model again and saves the result with no card, so the
+card of `create_rules_from_prompt` would not show the saved rules. The owner
+accepts that debt, or the gateway changes.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -271,7 +280,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
-| email | 13 | 14 | P-2 | 3111 |
+| email | 13 | 10 | P-2 | 3111, 3919 (P-2c built) |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |

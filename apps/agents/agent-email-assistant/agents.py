@@ -10617,8 +10617,9 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
       • ``rule``  — sender/subject pins learned for RULES from your Fix
         corrections ("mail from X should / shouldn't match rule Z").
 
-    Forget any pattern with forget_pattern(pattern_id, kind). offset reads
-    the next page."""
+    Forget any pattern with forget_pattern(pattern_id, kind). Approve or
+    reject a rule pattern with forget_pattern(pattern_id, action="review",
+    approve=…). offset reads the next page."""
     k = (kind or "draft").strip().lower()
     if k in ("rule", "rules", "classification"):
         data = await _get("/email/rules/patterns", {"account_id": account_id})
@@ -10657,9 +10658,10 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
 
 async def _pattern_row(
     pattern_id: str, is_rule: bool,
-) -> tuple[dict[str, Any], str] | None:
-    """The learned pattern with *pattern_id*, and "label · address" of its
-    mailbox, or None when no mailbox of the member has it."""
+) -> tuple[dict[str, Any], str, str] | None:
+    """The learned pattern with *pattern_id*, "label · address" of its
+    mailbox and the id of that mailbox, or None when no mailbox of the
+    member has it."""
     path = "/email/rules/patterns" if is_rule else "/email/learned-patterns"
     try:
         accounts = await _accounts()
@@ -10672,7 +10674,7 @@ async def _pattern_row(
             continue
         for row in (data or {}).get("patterns") or []:
             if isinstance(row, dict) and str(row.get("id")) == str(pattern_id):
-                return row, _mailbox_text(a)
+                return row, _mailbox_text(a), str(a["id"])
     return None
 
 
@@ -10697,10 +10699,22 @@ async def _rule_by_id(rule_id: str) -> dict[str, Any] | None:
 
 
 @_annotate_risk(open_world=False)
-async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
-    """Forget a learned pattern by id. ``kind`` selects which store it's from:
-    ``draft`` (writing preferences) or ``rule`` (rule-classification pins) —
-    matching the id you got from list_patterns(kind=…)."""
+async def forget_pattern(
+    pattern_id: str, kind: str = "draft", action: str = "forget", approve: bool = True,
+) -> str:
+    """Forget a learned pattern by id, or review a learned rule pattern.
+    ``kind`` selects which store it's from: ``draft`` (writing preferences)
+    or ``rule`` (rule-classification pins) — matching the id you got from
+    list_patterns(kind=…).
+
+    ``action``: ``forget`` (default) deletes the pattern. ``review`` approves
+    (``approve=true``) or rejects (``approve=false``) a learned RULE pattern,
+    as the Approve and Reject buttons of the Rules tab do. The Email Cleaner
+    uses an approved pattern. A rejected pattern stays on the list, and the
+    assistant does not learn it again. A review always reads the rule store,
+    whatever ``kind`` says."""
+    if (action or "forget").strip().lower() == "review":
+        return await _review_pattern(pattern_id, bool(approve))
     k = (kind or "draft").strip().lower()
     is_rule = k in ("rule", "rules", "classification")
     # EM-G11c1: a learned pattern shapes each later draft or match. Fix round
@@ -10712,7 +10726,7 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
             f"Nothing changed. No learned {'rule' if is_rule else 'draft'} pattern "
             f"of yours has the id {pattern_id}. Call list_patterns for the id."
         )
-    row, box = found
+    row, box, _account = found
     # Re-review of #1173: a "never match" pin narrows its rule, so to forget
     # it widens the rule. A held run refuses that for a rule that it may not
     # save, and also when it cannot read the rule.
@@ -10741,6 +10755,56 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
         return f"Forgot rule pattern {pattern_id}."
     await _delete(f"/email/learned-patterns/{pattern_id}")
     return f"Forgot learned pattern {pattern_id}."
+
+
+async def _review_pattern(pattern_id: str, approve: bool) -> str:
+    """``forget_pattern(action="review")``: approve or reject ONE learned rule
+    pattern behind one card (P-2c, task 3919). It sends the request of the
+    Approve and Reject buttons of the Rules tab,
+    ``POST /email/rules/patterns/review``, for this pattern only.
+
+    A rejected pattern stops matching. The Email Cleaner uses an approved
+    one. So to approve an "always match" pin, or to reject a "never match"
+    pin, widens its rule. A held run refuses that for a rule that sends mail
+    out, and also when it cannot read the rule, as ``forget_pattern`` does."""
+    found = await _pattern_row(pattern_id, True)
+    if found is None:
+        return (
+            f"Nothing changed. No learned rule pattern of yours has the id "
+            f"{pattern_id}. Call list_patterns(kind=\"rule\") for the id."
+        )
+    row, box, account_id = found
+    exclude = bool(row.get("exclude"))
+    widens = approve != exclude
+    if widens and _egress_held():
+        rule = await _rule_by_id(str(row.get("rule_id") or ""))
+        if rule is None or _held_in_no_egress(rule.get("actions")):
+            return _egress_held_answer(
+                "Reviewing a pin so that a rule that sends mail out matches more mail")
+    verb = "never match" if exclude else "always match"
+    shown = (f"{_card_name(row.get('pattern_type'))} "
+             f"\"{_card_text(row.get('value') or '', 120)}\": {verb} the rule "
+             f"\"{_card_name(row.get('rule_name') or row.get('rule_id') or '?')}\"")
+    if approve:
+        title = "Approve this learned rule pattern?"
+        effect = f"The Email Cleaner can then use the learned rule pattern {shown}."
+    else:
+        title = "Reject this learned rule pattern?"
+        effect = (f"The assistant stops using the learned rule pattern {shown}. "
+                  "The pattern stays on the list as rejected, and the assistant "
+                  "does not learn it again.")
+    refusal = await _card_refusal(
+        title, f"{effect} Mailbox: {box}.", "The pattern was not reviewed.",
+    )
+    if refusal:
+        return refusal
+    res = await _post(
+        "/email/rules/patterns/review",
+        {"account_id": account_id, "pattern_ids": [pattern_id], "approve": approve},
+    )
+    if not int((res or {}).get("updated") or 0):
+        return f"Nothing changed. Rule pattern {pattern_id} was not updated."
+    return f"{'Approved' if approve else 'Rejected'} rule pattern {pattern_id}."
 
 
 @_annotate_risk(open_world=False)
