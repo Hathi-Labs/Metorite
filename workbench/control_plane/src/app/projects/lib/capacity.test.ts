@@ -175,11 +175,11 @@ describe("the report section", () => {
 
 describe("the browser counts nothing", () => {
   /**
-   * The operators that would make a figure the browser's own. A `+` is left
-   * out on purpose: every string here is built with it, and a numeric sum
-   * needs one of the others or a `reduce` beside it.
+   * The operators that would make a figure the browser's own. A binary `+`
+   * counts when neither side is a quote (H-184): a sum of two names or
+   * numbers. A string built with `+` has a literal beside it, so it passes.
    */
-  const ARITHMETIC = /\.reduce\(|Math\.|\s[-*/]\s|\+=|-=/;
+  const ARITHMETIC = /\.reduce\(|Math\.|\s[-*/]\s|\+=|-=|[\w)\]]\s\+\s[\w(]/;
 
   function code(source: string): string {
     return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -207,5 +207,7 @@ describe("the browser counts nothing", () => {
   it("would catch a sum if one arrived", () => {
     expect("rows.reduce((n, r) => n + r.open_tasks, 0)").toMatch(ARITHMETIC);
     expect("const spare = working - committed;").toMatch(ARITHMETIC);
+    expect("const all = open + overdue;").toMatch(ARITHMETIC);
+    expect("const label = 'Week ' + week;").not.toMatch(ARITHMETIC);
   });
 });

@@ -1108,3 +1108,27 @@ async def test_p2_4_a_style_guide_that_the_card_would_cut_saves_nothing(gw: Gate
     out = await agents.voice_profile(BOX, action="save", style_guide="word " * 798)
     assert out.startswith("Nothing changed."), out
     assert gw.cards == [] and gw.writes == []
+
+
+# ── LOOP-19: sent mail by recipient and by file name ────────────────────────
+
+async def test_the_chat_search_tools_send_the_recipient_and_the_file_name(gw: Gateway) -> None:
+    """``search_emails`` and ``query_inbox`` carry a recipient and a file-name
+    word to the route that holds the mailbox seam. They send no other route."""
+    await agents.search_emails("NDA", folder="sent", to="Mahesh", attachment="nda")
+    await agents.query_inbox(folder="sent", to_email="mahesh", attachment_name="nda")
+    gets = [(path, params) for method, path, _, params in gw.calls
+            if method == "GET" and path == "/email/messages"]
+    assert len(gets) == 2
+    for _, params in gets:
+        assert params["folder"] == "sent"
+        assert params["to_addr"] in ("Mahesh", "mahesh")
+        assert params["attachment_name"] == "nda"
+
+
+async def test_the_chat_search_tools_send_no_filter_that_was_not_asked(gw: Gateway) -> None:
+    await agents.search_emails("NDA")
+    await agents.query_inbox(query="NDA")
+    for method, path, _, params in gw.calls:
+        if method == "GET" and path == "/email/messages":
+            assert "to_addr" not in params and "attachment_name" not in params

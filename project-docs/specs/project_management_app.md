@@ -5005,6 +5005,10 @@ while every test passed — and no behavioural test can see the read somebody ad
 > * 🔴 **`type_id` is remapped by name into the destination root's registry, and
 >   cleared when there is no match.** This is the §9.13.1 defect and it is fixed
 >   in this slice, because the move is what creates the dangling id.
+> * 🔴 **A hand-supplied `field_map` may not send two source keys to one target.**
+>   `choose_field_map` runs the caller's entries through the same `claim_target`
+>   rule that `resolve_field_map` uses, and refuses the pair with a 422 that names
+>   both keys and the target (H-129, done 2026-11-23).
 > * Every drop, every status change and every type change is one `pm_activities`
 >   row on the task, so a move is legible afterwards. The old `task_number` is
 >   already recorded; this joins it.
