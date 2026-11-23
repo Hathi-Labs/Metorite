@@ -805,3 +805,10 @@ def test_the_wave_p7_names_task_3903_and_the_baseline_table_agrees() -> None:
     cells = [c.strip() for c in row.strip().strip("|").split("|")]
     assert cells[0] == "shell" and cells[2] == str(cp.DEBT_CEILING["shell"]), cells
     assert "3903" in cells[4], cells
+
+
+def test_each_card_act_has_its_answer_and_names_no_tool() -> None:
+    """Each act of a card answers in plain words. No answer names a tool."""
+    assert set(ht.CARD_DONE) == set(ht.CARD_ACTS)
+    texts = [*ht.CARD_DONE.values(), *ht.NOT_DONE.values(), *ht.CARD_NOTE.values()]
+    assert not [t for t in texts if re.search(r"\bhome_[a-z_]+\b", t)]

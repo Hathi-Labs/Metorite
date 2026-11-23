@@ -106,6 +106,12 @@ CARD_ACTS: dict[str, str] = {
     "seen": "seen", "snooze": "snooze", "dismiss": "dismiss",
     "not_useful": "not_useful", "done": "acted", "restore": "restore",
 }
+#: What the answer says after each act.
+CARD_DONE: dict[str, str] = {
+    "seen": "The card is marked as seen.", "snooze": "The card is snoozed.",
+    "dismiss": "The card is dismissed.", "not_useful": "The card is marked as not useful.",
+    "done": "The card is marked as done.", "restore": "The card is back on Home.",
+}
 SNOOZE_UNTIL = ("later_today", "tomorrow", "next_week", "on_change")
 #: The feed preferences that a chat may save, and what each holds. The route
 #: takes ``push_prompt`` too. That key is the record of the browser's own push
@@ -656,7 +662,7 @@ async def _card_after_check(member: str, cid: str, choice: str, when: str,
     if not written:
         out["message"] = "Nothing changed: the card was already in that state."
         return out
-    out["message"] = f"Done. The card is now {CARD_ACTS[choice]}."
+    out["message"] = CARD_DONE[choice]
     if choice in ("snooze", "dismiss", "not_useful"):
         out["undo"] = f"{kind}/{state}"
         out["message"] += " To undo, restore it with the undo value of this answer."
