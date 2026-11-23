@@ -177,6 +177,17 @@ export function backlogOffered(workStyle: string, sprintsOn: boolean | null): bo
   return workStyle === "sprints" && sprintsOn === true;
 }
 
+/**
+ * Does the page offer "How this team works"? Only while the probe says that
+ * `PROJECTS_SPRINTS_ORGS` holds the org. The one live style after Flow is
+ * Sprints, and its Backlog stays dark while the flag is off, so a picker in a
+ * dark org promises a canvas that never comes. An unknown answer hides it too.
+ * The two doors (the row menu and the header menu) both read this answer.
+ */
+export function stylePickerOffered(sprintsOn: boolean | null): boolean {
+  return sprintsOn === true;
+}
+
 /** The canvases a node offers, in the order of `all`. */
 export function canvasesFor<T extends { id: string }>(all: readonly T[], backlog: boolean): T[] {
   return all.filter((canvas) => canvas.id !== BACKLOG_CANVAS || backlog);

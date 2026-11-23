@@ -2,6 +2,10 @@
  * WS-64 OP-12 (D-OP-17): the fold rule of the view tab row. The runner has no
  * layout, so the arithmetic is tested here and the look is a capture.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { VIEW_MODES } from "./commands";
@@ -17,6 +21,7 @@ import {
   canvasesFor,
   foldTabs,
   layoutTabs,
+  stylePickerOffered,
   tabWidth,
   viewTabIcon,
 } from "./viewTabs";
@@ -185,5 +190,26 @@ describe("the Backlog canvas in the tab row", () => {
     expect(canvasOnScreen("backlog", ids(false), "board")).toBe("board");
     expect(canvasOnScreen(null, ids(true), "list")).toBe("list");
     expect(canvasOnScreen("table", ids(false), "board")).toBe("table");
+  });
+});
+
+// ── WS-39 SP-3a: the picker follows the flag (review of PR 2812) ────────────
+
+describe("How this team works", () => {
+  it("shows only while the probe says that the flag holds the org", () => {
+    expect(stylePickerOffered(true)).toBe(true);
+    // The cycle list answered 404: the flag is off, and the Backlog stays dark.
+    expect(stylePickerOffered(false)).toBe(false);
+    // Nobody knows yet: the picker waits, so a dark org never sees it.
+    expect(stylePickerOffered(null)).toBe(false);
+  });
+
+  it("is wired through that answer on both doors of the page", () => {
+    // The row menu (ProjectNav in the rail and in the drawer) and the header menu.
+    const page = readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "page.tsx"), "utf8");
+    expect(page).toContain("const pickerOn = stylePickerOffered(sprintsOn);");
+    expect(page.match(/onWorkStyle=\{pickerOn \? setWorkStyleFor : undefined\}/g)?.length).toBe(2);
+    expect(page).not.toMatch(/onWorkStyle=\{setWorkStyleFor\}/);
+    expect(page).toMatch(/\{pickerOn \? \(\s*<button/);
   });
 });

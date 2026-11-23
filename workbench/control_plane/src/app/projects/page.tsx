@@ -102,8 +102,8 @@ import { BacklogCanvas } from "./components/BacklogCanvas";
 import { WorkStyleDialog } from "./components/WorkStyleDialog";
 import { probeSprints } from "./lib/backlogCanvas";
 import { WORK_STYLE_LABEL } from "./lib/projectMenu";
-import { backlogOffered, canvasOnScreen, canvasesFor } from "./lib/viewTabs";
-import { usesSprints, workStyle, workStyleOf } from "./lib/workStyle";
+import { backlogOffered, canvasOnScreen, canvasesFor, stylePickerOffered } from "./lib/viewTabs";
+import { workStyle, workStyleOf } from "./lib/workStyle";
 import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
@@ -572,8 +572,11 @@ function ProjectNav({
   onManageFields: (space: ProjectRow) => void;
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
-  /** WS-39 SP-3a — "How this team works", on any row. */
-  onWorkStyle: (node: ProjectRow) => void;
+  /**
+   * WS-39 SP-3a — "How this team works", on any row. Absent while the org is
+   * off `PROJECTS_SPRINTS_ORGS` (`stylePickerOffered`), so no row offers it.
+   */
+  onWorkStyle?: (node: ProjectRow) => void;
 }) {
   // Filed work leaves the live tree and waits in one collapsed section at the
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
@@ -834,10 +837,14 @@ function ProjectNav({
               onManageLifecycle(space);
               onPicked?.();
             }}
-            onWorkStyle={(node) => {
-              onWorkStyle(node);
-              onPicked?.();
-            }}
+            onWorkStyle={
+              onWorkStyle
+                ? (node) => {
+                    onWorkStyle(node);
+                    onPicked?.();
+                  }
+                : undefined
+            }
           />
           ) : null}
           {personalSplit.count > 0 ? (
@@ -949,10 +956,14 @@ function ProjectNav({
           onManageLifecycle(space);
           onPicked?.();
         }}
-        onWorkStyle={(node) => {
-          onWorkStyle(node);
-          onPicked?.();
-        }}
+        onWorkStyle={
+          onWorkStyle
+            ? (node) => {
+                onWorkStyle(node);
+                onPicked?.();
+              }
+            : undefined
+        }
       />
 
       {/* Archived — its own section, closed until asked for. No section when
@@ -1204,15 +1215,26 @@ function ProjectsWorkspace() {
    * WS-39 SP-3a — the canvases this node offers. The Backlog shows only on a
    * Sprints node, and only while `PROJECTS_SPRINTS_ORGS` holds the org: the
    * cycle list answers 404 while it does not (`lib/backlogCanvas.probeSprints`).
-   * A Flow node asks nothing. `canvasesFor` is the one answer, and the tab
-   * row, the toolbar, the phone sheet and the palette all read `offeredModes`.
+   * `canvasesFor` is the one answer, and the tab row, the toolbar, the phone
+   * sheet and the palette all read `offeredModes`.
+   *
+   * The flag holds a whole org, so the first answer holds for each node. The
+   * page asks with the selected node, of any style, until one read answers.
+   * The picker "How this team works" reads the same answer
+   * (`stylePickerOffered`), so an org off the flag sees no picker.
    */
-  const sprintsNode = selected && usesSprints(selected) ? selected.id : null;
+  const [sprintsFlag, setSprintsFlag] = useState<boolean | null>(null);
+  const probeNode = selected && sprintsFlag === null ? selected.id : null;
   const sprintsProbe = useCachedResource(
-    sprintsNode ? projectsKey(`nodes/${sprintsNode}/cycles`) : null,
-    () => probeSprints(() => projectsApi.cycles(sprintsNode as string)),
+    probeNode ? projectsKey(`nodes/${probeNode}/cycles`) : null,
+    () => probeSprints(() => projectsApi.cycles(probeNode as string)),
   );
-  const sprintsOn = sprintsNode && sprintsProbe.data ? sprintsProbe.data.on : null;
+  const probed = probeNode && sprintsProbe.data ? sprintsProbe.data.on : null;
+  useEffect(() => {
+    if (probed !== null) setSprintsFlag(probed);
+  }, [probed]);
+  const sprintsOn = sprintsFlag ?? probed;
+  const pickerOn = stylePickerOffered(sprintsOn);
   const offeredModes: ViewMode[] = useMemo(
     () =>
       canvasesFor(VIEW_MODES, backlogOffered(workStyleOf(selected), sprintsOn)).map(
@@ -2331,7 +2353,7 @@ function ProjectsWorkspace() {
             onManageFields={manageRoot(setManagingFields)}
             onManageTags={manageRoot(setManagingTags)}
             onManageLifecycle={manageSpace(setManagingLifecycle)}
-            onWorkStyle={setWorkStyleFor}
+            onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
           />
         ) : (
           <ModeSwitch
@@ -4967,19 +4989,22 @@ function ProjectsWorkspace() {
                 Lifecycle policy
               </button>
             ) : null}
-            {/* WS-39 SP-3a — the work style of this node: any level. */}
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
-              onClick={() => {
-                setManageOpen(false);
-                setWorkStyleFor(selected);
-              }}
-            >
-              <Icon name="Workflow" className="h-3.5 w-3.5 text-muted-foreground" />
-              {WORK_STYLE_LABEL}
-            </button>
+            {/* WS-39 SP-3a — the work style of this node: any level. Only
+                while the org holds PROJECTS_SPRINTS_ORGS (`stylePickerOffered`). */}
+            {pickerOn ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+                onClick={() => {
+                  setManageOpen(false);
+                  setWorkStyleFor(selected);
+                }}
+              >
+                <Icon name="Workflow" className="h-3.5 w-3.5 text-muted-foreground" />
+                {WORK_STYLE_LABEL}
+              </button>
+            ) : null}
             <div className="my-1 h-px bg-border" role="separator" />
             <button
               type="button"
@@ -6461,7 +6486,7 @@ function ProjectsWorkspace() {
               onManageFields={manageSpace(setManagingFields)}
               onManageTags={manageSpace(setManagingTags)}
               onManageLifecycle={manageSpace(setManagingLifecycle)}
-              onWorkStyle={setWorkStyleFor}
+              onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
             />
           </nav>
         ) : null}

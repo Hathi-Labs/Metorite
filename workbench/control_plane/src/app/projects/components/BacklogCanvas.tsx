@@ -489,6 +489,18 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
 
   return (
     <div className="flex flex-col gap-4 p-3 glass:p-4" data-backlog-canvas="">
+      {/* A re-read or a Load more failed. The last read stays on screen, so
+          the line says that it can be out of date, and offers the read again. */}
+      {error ? (
+        <div className="flex flex-wrap items-center gap-2 px-1" role="alert" data-backlog-read-error="">
+          <p className="text-xs text-foreground">
+            Could not read the backlog again, so it can be out of date. {error}
+          </p>
+          <Button size="sm" variant="ghost" onClick={() => void load(pages)}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
       {selectedIds.length > 0 ? (
         <div
           className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm"
