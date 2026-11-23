@@ -1053,6 +1053,11 @@ REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_i
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
 #: MCP-P1b-2 (spec §19.5) adds the ask of ``app_write``,
 #: :data:`REQUEST_ASK_ROUTE`. It opens a request and runs nothing.
+#: WS-MCP SW-114 adds the POST of the children of a run, the route of
+#: ``report_subagent``. It writes or ends one child run under an open run of
+#: the caller's member and connection, at most 20 open children for each run.
+#: The GET of the children stays OFF both sets. Fence:
+#: ``tests/unit/test_agent_child_runs_r8.py`` and the coverage fence.
 #: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
 #: ``upload_task_image``. For a signed agent the route takes only a png,
 #: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
@@ -1091,6 +1096,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/release"),
     # MCP-G15: the decision a member made outside Metorite.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    # WS-MCP SW-114: `report_subagent`. A start or a stop of one sub-agent
+    # under an open run of the same member and connection. Class X in the
+    # chat manifest: only a signed agent sends it, and a person gets 422.
+    ("POST", "/projects/agent-runs/{run_id}/children"),
     # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
     # run, and it writes one `action` activity as a heartbeat.
     ("PUT", "/projects/agent-runs/{run_id}/plan"),
