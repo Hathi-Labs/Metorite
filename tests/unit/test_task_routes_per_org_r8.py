@@ -259,9 +259,12 @@ async def test_a_save_of_a_free_day_writes_a_row_of_the_bound_org(db) -> None:
 
 
 async def test_a_pending_plan_store_never_writes_the_row_of_another_org(db) -> None:
-    """``_store_pending_plan`` upserts on the old key. The WHERE of its DO
-    UPDATE keeps org B off org A's row. Without it, the conflict arm rewrote
-    org A's plan under the owner role."""
+    """``_store_pending_plan`` inserts the bare row with DO NOTHING, and then
+    updates the row of the bound org. Org A holds DAY_A, and org B holds DAY_B.
+    The store of org B leaves DAY_A as it was. It rewrites the plan of its own
+    DAY_B and keeps the rest of that row. It makes its own row on DAY_NEW.
+    Under the owner role only the org filter of the UPDATE keeps org B off the
+    row of org A."""
     from gateway.routes.tasks.calendar import DayPlan, _store_pending_plan
 
     email = _address()
@@ -269,25 +272,34 @@ async def test_a_pending_plan_store_never_writes_the_row_of_another_org(db) -> N
     with db.admin_engine.begin() as c:
         _seed_day(c, email=email, org=db.org_a, day=DAY_A, one=str(uuid.uuid4()),
                   seed=str(uuid.uuid4()), tag="plan-orga")
+        _seed_day(c, email=email, org=db.org_b, day=DAY_B, one=str(uuid.uuid4()),
+                  seed=str(uuid.uuid4()), tag="plan-orgb-old")
     before = _day_rows(db, email)
     plan = DayPlan(blocks=[], unplaced=[], used_mins=0, capacity_mins=60,
                    notes="plan-orgb")
     now = datetime.now(UTC)
 
     async with _as_owner(db, db.org_b), tenant_session() as s:
-        await _store_pending_plan(s, email, DAY_A, "plan", plan, now)
-        await _store_pending_plan(s, email, DAY_NEW, "plan", plan, now)
+        for day in (DAY_A, DAY_B, DAY_NEW):
+            await _store_pending_plan(s, email, day, "plan", plan, now)
 
     rows = _day_rows(db, email)
     assert rows[0] == before[0]
-    assert [(r[0], r[1], r[4]) for r in rows[1:]] == [(DAY_NEW, db.org_b, "plan-orgb")]
+    assert rows[1][:4] == before[1][:4]
+    assert [(r[0], r[1], r[4]) for r in rows[1:]] == [
+        (DAY_B, db.org_b, "plan-orgb"), (DAY_NEW, db.org_b, "plan-orgb")]
 
 
 async def test_the_writes_hold_under_force_rls_as_the_app_role(db) -> None:
     """The same writes as the non-privileged role. Each save stamps its own
-    org. A plan store on a day of the other org skips: the WHERE of the DO
-    UPDATE runs before the RLS check of the conflict, so no error reaches the
-    member. Org A's row stays as it was."""
+    org. Org A holds DAY_A. In org B, a save of DAY_A and a plan store on DAY_A
+    change nothing and raise no error. The store also rewrites the plan of
+    org B's own DAY_B and makes org B's row on DAY_NEW.
+
+    ⚠️ This test caught a fault that a local run missed. The old store was one
+    ON CONFLICT DO UPDATE with a WHERE that named the org. Postgres 16.15 read
+    that WHERE first and skipped the row of org A. Postgres 16.16 checks the
+    RLS USING of the conflict row first, and it raised an error."""
     from gateway.routes.tasks.calendar import (
         DayPlan,
         DayStatePatch,
@@ -305,14 +317,24 @@ async def test_the_writes_hold_under_force_rls_as_the_app_role(db) -> None:
         await put_day_state(DayStatePatch(day=DAY_B.isoformat(), one_thing_id=one_b),
                             _user(email))
     before = _day_rows(db, email)
+    async with _as_member(db, db.org_b):
+        echoed = await put_day_state(
+            DayStatePatch(day=DAY_A.isoformat(), one_thing_id=str(uuid.uuid4())),
+            _user(email))
     plan = DayPlan(blocks=[], unplaced=[], used_mins=0, capacity_mins=60,
                    notes="plan-orgb")
     async with _as_member(db, db.org_b), tenant_session() as s:
-        await _store_pending_plan(s, email, DAY_A, "plan", plan, datetime.now(UTC))
+        for day in (DAY_A, DAY_B, DAY_NEW):
+            await _store_pending_plan(s, email, day, "plan", plan, datetime.now(UTC))
 
     assert before == [(DAY_A, db.org_a, one_a, [], None),
                       (DAY_B, db.org_b, one_b, [], None)]
-    assert _day_rows(db, email) == before
+    assert (echoed.one_thing_id, echoed.seed_ids) == (None, [])
+    assert _day_rows(db, email) == [
+        before[0],
+        (DAY_B, db.org_b, one_b, [], "plan-orgb"),
+        (DAY_NEW, db.org_b, None, [], "plan-orgb"),
+    ]
 
 
 # ── The rollover log ────────────────────────────────────────────────────────

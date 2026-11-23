@@ -1343,16 +1343,23 @@ async def _store_pending_plan(
 ) -> None:
     payload = json.dumps(
         {"kind": kind, "at": now.isoformat(), "plan": plan.model_dump()})
-    # ⚠️ The WHERE of the DO UPDATE keeps the write off the row of another org
-    # that holds this day on the old key (H-312b). Postgres reads it before
-    # the RLS check of the conflict, so under RLS the save skips, not fails.
+    # ⚠️ Two statements, the shape of `put_day_state` (H-312b). Do not fold
+    # them into one upsert. The key is still `(user_id, day)`, so another org
+    # can hold this day. Under RLS, ON CONFLICT DO UPDATE on that row fails,
+    # even with a WHERE that names the org. Postgres 16.16 checks the RLS
+    # USING of the conflict row before it reads that WHERE. 16.15 read the
+    # WHERE first and skipped. DO NOTHING, and an UPDATE that names the org,
+    # skip the row of the other org on both versions.
     await db.execute(
-        text("INSERT INTO calendar_day_state "
-             "(organization_id, user_id, day, pending_plan) "
-             f"VALUES ({_BOUND_ORG}, :uid, :day, CAST(:p AS jsonb)) "
-             "ON CONFLICT (user_id, day) DO UPDATE SET "
-             "pending_plan = CAST(:p AS jsonb), updated_at = now() "
-             f"WHERE calendar_day_state.organization_id = {_BOUND_ORG}"),
+        text("INSERT INTO calendar_day_state (organization_id, user_id, day) "
+             f"VALUES ({_BOUND_ORG}, :uid, :day) "
+             "ON CONFLICT (user_id, day) DO NOTHING"),
+        {"uid": uid, "day": local_day})
+    await db.execute(
+        text("UPDATE calendar_day_state SET pending_plan = CAST(:p AS jsonb), "
+             "updated_at = now() "
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG} "
+             "AND day = :day"),
         {"uid": uid, "day": local_day, "p": payload})
 
 
