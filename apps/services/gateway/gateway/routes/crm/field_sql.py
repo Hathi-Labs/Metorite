@@ -1481,6 +1481,194 @@ def day_sql(scope: FieldScope, ref: FieldRef, *, zone: str) -> GroupSql:
                     source=_source_of(scope.column))
 
 
+# ── The baseline of a date range (NUM-2, number_sense.md §4.2) ──────────────
+
+#: The most periods before the asked range that a baseline reads.
+BASELINE_PERIODS = 6
+#: The longest asked range, in whole months, that gets a baseline. A longer
+#: range would read 6 periods of its own length back, years of records.
+BASELINE_MAX_MONTHS = 3
+#: The most records of a module that a baseline reads (NUM-2). The wider
+#: window costs about 3 times the time of the asked quarter alone: 0.52 s
+#: against 0.19 s over 30,000 rows of 3 KB. So 100,000 records stay near
+#: 2 s, far under the 10 s statement timeout. A larger module, or one with
+#: no size in ``crm_field_fill``, gets no baseline.
+BASELINE_MAX_RECORDS = 100_000
+#: The bound names of :func:`period_sql`.
+_BASE_START = "agf_bs"
+_BASE_MONTHS = "agf_bk"
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """The asked date range of an answer, in whole months, and the start of
+    the wider window that the one statement reads (NUM-2).
+
+    *bound* is the bound name of the ``.from`` value: ``agf_v<i>`` of an
+    old pair, or ``agf_qv<n>_0`` of a ``gte`` leaf of ``query``. So
+    :func:`widen` binds *wide* in place of *start*. Period 0 is the asked
+    range, and periods -1 to -6 are the ones before it, each *months* long."""
+
+    start: date
+    end: date
+    months: int
+    bound: str
+    wide: date
+
+    def label(self, period: int) -> str:
+        """The name of one period: ``2026-10``, or ``2026-08 to 2026-10``."""
+        first = _month_add(self.start, period * self.months)
+        last = _month_add(first, self.months - 1)
+        head = f"{first.year:04d}-{first.month:02d}"
+        return head if self.months == 1 else f"{head} to {last.year:04d}-{last.month:02d}"
+
+
+def _month_add(day: date, months: int) -> date:
+    """The first day of the month *months* after the month of *day*."""
+    index = day.year * 12 + day.month - 1 + months
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _plain_date(value: str) -> date | None:
+    """An ISO date, or None. :func:`module_where` gives the 422 of a bad one."""
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _other_date(ref: FieldRef | None, day: FieldRef) -> bool:
+    """True when *ref* is a date or datetime field other than *day* (NUM-2)."""
+    return ref is not None and ref.key != day.key and ref.type in DATE_TYPES
+
+
+def _day_ends(scope: FieldScope, day: FieldRef, pairs: Sequence[tuple[str, str]],
+              nodes: Sequence[Any], words: bool) -> list[tuple[str, str, str]] | None:
+    """``(end, value, bound name)`` of each filter on the field *day*, or
+    None when the filters would bound the wider window in time (NUM-2).
+
+    The pairs parse through :func:`filter_end`, the one parser, and resolve
+    through :meth:`FieldScope.ref`, as :func:`module_where` does. A query
+    leaf resolves as :func:`query_sql` does. A leaf on *day* counts only
+    alone in its node and with the op ``gte`` or ``lte``.
+
+    None for each of these, because the periods before would read a time
+    bound that the asked range does not have, and their figures would be
+    false: a leaf on *day* in an ``any`` group, an ``eq``, a ``gt`` or a
+    ``lt`` on it, a filter word on it, and ANY filter on another date or
+    datetime field. A filter on a field of another type (a text, a select,
+    a number range) holds each period in the same way, so it stays."""
+    out: list[tuple[str, str, str]] = []
+    for index, (name, value) in enumerate(pairs):
+        key, end = filter_end(name, scope.fields, words)
+        ref = _leaf_ref(scope, key)
+        if _other_date(ref, day):
+            return None
+        if ref is None or ref.key != day.key:
+            continue
+        if end not in RANGE_ENDS:
+            return None
+        out.append((end, value, f"agf_v{index}"))
+    for n, node in enumerate(nodes):
+        for leaf in node:
+            ref = _leaf_ref(scope, leaf.key)
+            if _other_date(ref, day):
+                return None
+            if ref is None or ref.key != day.key:
+                continue
+            if len(node) != 1 or leaf.op not in ("gte", "lte") or isinstance(leaf.value, bool):
+                return None
+            end = ".from" if leaf.op == "gte" else ".to"
+            out.append((end, str(leaf.value), f"{_QUERY_VALUE}{n}_0"))
+    return out
+
+
+def baseline_range(scope: FieldScope | None, day: FieldRef | None,
+                   pairs: Sequence[tuple[str, str]], nodes: Sequence[Any] = (),
+                   *, words: bool = False) -> Baseline | None:
+    """The baseline of an answer, or None (NUM-2).
+
+    An answer gets one when its filters hold exactly one ``.from`` and one
+    ``.to`` on the date field *day*, and no other filter on it. Each may be
+    an old pair ``field.<key>.from`` or a ``gte`` or ``lte`` leaf of
+    ``query`` (SEM-1b, *nodes*). *words* is the flag of the filter words
+    (CRM-Q34-5), as :func:`module_where` takes it. The range is 1 to
+    :data:`BASELINE_MAX_MONTHS` whole months: it starts on the first day of
+    a month and ends on the last day of a month. No date range gives no
+    baseline. Pure, so the hermetic tests call it."""
+    if scope is None or day is None or day.parts:
+        return None
+    ends = _day_ends(scope, day, pairs, nodes, words)
+    starts = [e for e in ends or () if e[0] == ".from"]
+    stops = [e for e in ends or () if e[0] == ".to"]
+    if ends is None or len(starts) != 1 or len(stops) != 1:
+        return None
+    _end, raw_start, bound = starts[0]
+    start, end = _plain_date(raw_start), _plain_date(stops[0][1])
+    if start is None or end is None or start.day != 1 or end < start:
+        return None
+    months = (end.year * 12 + end.month) - (start.year * 12 + start.month) + 1
+    if not 1 <= months <= BASELINE_MAX_MONTHS:
+        return None
+    try:
+        if end.toordinal() + 1 != _month_add(end, 1).toordinal():
+            return None  # the range does not end on the last day of a month
+        wide = _month_add(start, -BASELINE_PERIODS * months)
+    except ValueError:
+        return None  # past the year 9999, or before the year 1
+    return Baseline(start=start, end=end, months=months, bound=bound, wide=wide)
+
+
+def widen(params: dict[str, Any], base: Baseline) -> bool:
+    """Bind the start of the wider window in place of the asked start, in
+    the params of :func:`module_where` or :func:`query_sql`. The WHERE text
+    stays the same. False when *params* binds no such name: then nothing
+    changes, and the caller gives no baseline."""
+    if params.get(base.bound) != base.start:
+        return False
+    params[base.bound] = base.wide
+    return True
+
+
+def period_sql(day_key: str, base: Baseline) -> tuple[str, dict[str, Any]]:
+    """The period of each record: 0 for the asked range, and -1 to -6 for
+    the periods before it. *day_key* is the calendar day of :func:`day_sql`.
+    Both bounds of the window are in the WHERE clause, so the day is never
+    NULL and the period is never past the range."""
+    sql = (
+        f"CAST(floor((CAST(extract(year FROM {day_key}) AS int) * 12 "
+        f"+ CAST(extract(month FROM {day_key}) AS int) - CAST(:{_BASE_START} AS int)) "
+        f"/ CAST(:{_BASE_MONTHS} AS numeric)) AS int)"
+    )
+    return sql, {_BASE_START: base.start.year * 12 + base.start.month,
+                 _BASE_MONTHS: base.months}
+
+
+# ── The count of each status, for the coverage check (NUM-2) ────────────────
+
+#: The bound names of :func:`status_sql`. The status is the key word
+#: :data:`STATUS_WORD` (CRM-Q31-2).
+_STATUS_KEY = "agf_st"
+
+
+def status_sql(scope: FieldScope | None, statuses: Sequence[str]) -> tuple[list[str], dict[str, Any]]:
+    """One ``count(*) FILTER`` for each of *statuses*, over the catalogue
+    status (``@status``) of a module, and its bound names. Empty when the
+    scope has no such field. The value matches in any case, with no white
+    space at its ends. It reads the detoasted copy."""
+    ref = scope.fields.get(STATUS_WORD) if scope is not None else None
+    if scope is None or ref is None or ref.parts or scope.column != MODULE_COLUMN:
+        return [], {}
+    column = _reads(scope.column)
+    params: dict[str, Any] = {_STATUS_KEY: ref.key}
+    out = []
+    for i, status in enumerate(statuses):
+        p = f"{_STATUS_KEY}{i}"
+        params[p] = str(status).strip().lower()
+        out.append(f"count(*) FILTER (WHERE lower(btrim({column} ->> :{_STATUS_KEY})) = :{p})")
+    return out, params
+
+
 def _when(column: str, ref: FieldRef, p: str) -> str:
     """The value of a date or a datetime field as a ``timestamp``. A
     ``date`` keeps the day that Zoho wrote. A ``datetime`` takes its time on
