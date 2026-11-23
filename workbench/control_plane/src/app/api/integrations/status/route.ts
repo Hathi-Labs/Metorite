@@ -48,6 +48,11 @@ export interface IntegrationStatus {
   /** True when this API was added by the user via AI discovery, not built-in. */
   is_custom?: boolean;
   /**
+   * A custom ("Add API") row, when API connections are on for the org (API-6,
+   * bug 3766): the chat cannot read its keys. `note` says so in plain words.
+   */
+  chat_use?: { usable: boolean; note: string };
+  /**
    * GitHub only (WS-54 fix round 1, item 3): what the connection reaches, for
    * each use. The App reads pull requests, but not a private agent repository.
    * `auth` and `agent_repo` come with an agent's status only.
