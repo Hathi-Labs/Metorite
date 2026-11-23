@@ -2286,6 +2286,39 @@ def _first_lines(data: dict[str, Any]) -> list[str]:
     return out
 
 
+#: NUM-2: the one line before the ``warn`` checks of the route. It stands once
+#: for the whole answer, so the model asks the question once (CRM-Q33 allows at
+#: most one follow-up question for each answer).
+CHECK_FIRST = ("FIRST, tell the member each finding in the CHECK blocks below, in one line "
+               "each, before the total. Then ask once: \"Do you want me to check why?\"")
+
+
+def _check_lines(data: dict[str, Any]) -> list[str]:
+    """NUM-2 (``number_sense.md`` §4.2): each ``warn`` check of the route
+    (``acb_common.number_sense``), for the model to say before the total, and
+    the offer to check why. Empty with none.
+
+    A sentence can hold the label of a CRM field, which is text of the org.
+    So each sentence sits in the ONE frame of ``untrusted.py``: the model
+    reads it as data, never as an instruction. Only the sentence is shown,
+    never ``records`` or ``total_records``, so a kind with no records
+    (``parts``, ``grouping``) never reads "0 of 0". Each figure stays as
+    the route gave it."""
+    sentences = [
+        str(found["sentence"]) for found in data.get("checks") or []
+        if isinstance(found, dict) and found.get("severity") == "warn" and found.get("sentence")
+    ]
+    if not sentences:
+        return []
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    out = [frame.note("Each CHECK block is a finding of the number check on this total."),
+           CHECK_FIRST]
+    out.extend(frame.wrap("CHECK", sentence) for sentence in sentences)
+    return out
+
+
 def _display_line(value: Any, *, money: bool, code: str,
                   others: Any = None, key: str = "total") -> str | None:
     """CRM-Q25e part 4: the total in the number system of the run
@@ -2478,7 +2511,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
     mine = [chosen] if chosen else []
     # CRM-Q25e part 4: a finding goes first, and the total gets its display.
-    first = _first_lines(data)
+    # NUM-2: each warn check goes first too, with the offer to check why.
+    first = [*_first_lines(data), *_check_lines(data)]
     split = [s for s in data.get("split") or [] if isinstance(s, dict)]
     display = None if split else _display_line(data.get("total"), money=money, code=code,
                                                others=data.get("others"))
@@ -2635,7 +2669,9 @@ async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any],
         return "\n".join([*lines, *rest, *numbers,
                           *await _revenue_lines(slug, measure, box)])
     if field and data.get("values") == 0 and not split:
-        return "\n".join([f"{lead}: no values recorded for {field}.", *numbers])
+        # NUM-2: a warn check goes first here too. With none, the text of before.
+        return "\n".join([*_check_lines(data), f"{lead}: no values recorded for {field}.",
+                           *numbers])
     return None
 
 

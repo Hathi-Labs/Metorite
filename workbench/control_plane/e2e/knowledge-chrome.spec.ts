@@ -155,7 +155,10 @@ test.describe("Knowledge page chrome", () => {
 
     await pick(page, "Copy as Markdown");
     await expect(page.getByText("Markdown copied")).toBeVisible();
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("# Short note\n\n# Only heading\n\nOne line.\n");
+    // Windows returns the clipboard text with CRLF line ends, so compare with LF.
+    // The poll also covers a read that lands before the clipboard holds the text.
+    const clipboardLf = () => page.evaluate(() => navigator.clipboard.readText()).then((t) => t.replace(/\r\n/g, "\n"));
+    await expect.poll(clipboardLf).toBe("# Short note\n\n# Only heading\n\nOne line.\n");
 
     const download = page.waitForEvent("download");
     await pick(page, "Download as .md");
