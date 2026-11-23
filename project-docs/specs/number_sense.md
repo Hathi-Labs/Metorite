@@ -1,12 +1,14 @@
 # Numbers that make sense — a plausibility check for every total
 
-**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).**
+**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).
+NUM-2 is built dark (2026-11-20, task 3135), behind the answer-first flag.**
 `acb_common/number_sense.py` holds the pure checks `concentration`
 (CRM-Q25e, called by the CRM aggregate), `outlier`, `coverage`, `parts`,
-`part_period` and `grouping`. Only `concentration` has a caller.
+`part_period` and `grouping`. The CRM aggregate calls `concentration`,
+`outlier` and `coverage` (§4.2).
 
-The kinds `jump` (needs NUM-7) and `duplicates` are not built. No tool,
-harness or table exists yet. Epic 3132. NUM-0 is task 3133.
+The kinds `jump` (needs NUM-7) and `duplicates` are not built. No harness
+pass (NUM-3) or table (NUM-7) exists yet. Epic 3132. NUM-0 is task 3133.
 The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
 until the owner answers.
 
@@ -113,6 +115,87 @@ The tool text tells the model to say a `warn` finding first. The CRM
 aggregate is first (NUM-2, after task 3127). Then Projects reports and
 board_stats, email counts, Studio object totals and WhatsApp stats (NUM-9,
 one PR per app).
+
+**Built as (NUM-2, 2026-11-20, task 3135).** NUM-2 ships dark. Only an org
+that the answer-first flag serves gets it (`flags.answer_first_allowed`:
+`CRM_QUESTIONS_ORGS` and `CRM_ANSWER_FIRST_ORGS`). Any other org gets the
+statement and the wire of before, byte for byte. `GET /crm/aggregate` does
+this:
+
+- **The baseline.** A module answer gets one when it has one `.from` and one
+  `.to` on its day field, over 1 to 3 whole months. Each end can be a
+  `field.<key>.from` or `.to` pair, or a `gte` or `lte` leaf of `query`
+  (SEM-1b) alone in its node. The one statement widens the start bound by 6
+  periods, and each row names its period. The answer gives the 6 periods in
+  `baseline`, oldest first.
+- **No baseline: the rule.** The day field may hold only its one `.from`
+  and its one `.to`. Any other filter on the day field gives no baseline.
+  Examples are a third end, a `gt`, a `lt`, an `eq`, a leaf in an `any`
+  group, and a filter word. Any filter on another date or datetime field gives none too,
+  in any form. These filters bound the periods before in time, and their
+  figures would be false. A filter on a field that is no date stays. It
+  holds each period in the same way, for example `.in` or a number range.
+- **The size guard.** The wider window costs about 3 times the asked
+  quarter alone. So a module with more than `BASELINE_MAX_RECORDS`
+  (100,000) records gets no baseline. The size is the `total` of
+  `crm_field_fill`, one read by the key of that table. A module with no
+  fill row gets no baseline either. The coverage and the figure stay.
+  The fill step writes that table only for an org on `CRM_FILL_RANK_ORGS`.
+  So an org needs fill rank on, beside the answer-first flag, to get a
+  baseline. The fill step runs at most once in 24 hours. So a module that
+  grows past the limit can keep its baseline until the next fill. The
+  owner preview before the flip checks both flags and the module size.
+- **A paged answer.** An answer with `group_page` 2 or more, or with
+  `group_field2`, carries no `baseline`, no `checks` and no `coverage`.
+- **The same figure.** The baseline only adds periods before the asked
+  range. The total, the records and the groups of the asked range stay the
+  same with a `query`, the filter words, `q` and a text-number measure. The
+  near pass of `q` keeps the baseline of the pass that the answer keeps.
+- **Coverage.** `coverage` gives the records, the records with no value in
+  the measure field, and the drafts and cancelled records. The status count
+  needs the catalogue status (`@status`) of a module.
+- **`checks`.** It holds the kinds `outlier` (the asked range against the
+  periods before it) and `coverage`. A `concentration` stays in `findings`
+  (CRM-Q25e), so no finding is in both lists. F1 stays an owner point.
+- **A period that is not over.** When the asked range ends on today or
+  later, in the CRM zone, it has only part of its records. Then it gets no
+  `outlier`. A month or a quarter gets the `part_period` of NUM-1 in its
+  place. That is an `info`, and the tool does not say it first. The clock
+  is the one clock of the CRM routes (`core._now`), read in one place.
+- **Which measure.** Only a `count`, a `sum` and a `sum_amount` get an
+  `outlier`. A min, a max or an average of a period is no figure of the same
+  kind. `weighted` reads deals, which get no baseline.
+- **A coverage minimum.** An answer of fewer than 20 records gets no
+  `coverage` check (`COVERAGE_MIN_RECORDS`). That is the minimum of a
+  concentration in NUM-1. The `coverage` counts stay in the answer.
+- **One flag read.** The route reads the flag once for each request. So an
+  answer holds all three fields, or none of them.
+- **The tool text.** `crm_tools._check_lines` puts each `warn` check before
+  the total. The model must say it first and ask "Do you want me to check
+  why?" The sentence can hold a field label, which is org text. So it sits
+  in the one frame of `acb_skills/untrusted.py`, as data and not as an
+  instruction. The text shows the sentence only, never "0 of 0". No tool
+  description or parameter changed. A grouped total whose measure field is
+  empty in each record says its checks first too.
+
+NUM-2 gives no baseline to a core entity or to the overlay of an empty core
+slot. A range that is not whole months gets none either. A core entity gets
+the coverage of its measure field only. The three fields `checks`,
+`baseline` and `coverage` are absent when the route does not compute them.
+
+**The cost.** Over 30,000 rows of 3 KB, one October total took 0.27 s with
+the baseline and 0.16 s without it. One quarter took 0.52 s and 0.19 s. The
+statement timeout is 10 s. The scan reads the same rows. The extra time is
+the grouping of the 6 periods. The time grows with the records, so the
+size guard above holds the baseline to modules of 100,000 records or fewer.
+Before the flag flip, the owner preview checks the size of each module.
+
+Fences: `tests/unit/test_crm_aggregate_checks.py` and
+`tests/unit/test_crm_aggregate_checks_r8.py`. The R8 file proves each
+composed filter against a hand-written SQL oracle, and the dark wire
+against a literal recorded on the files of `main`.
+`evals/crm_founder_questions/recorded_routes.json` is the file of `main`,
+because the founder run reads NUM-2 dark.
 
 ### 4.3 The harness makes sure (NUM-3, NUM-6)
 
@@ -254,7 +337,9 @@ migration).
 
 Each slice names its fence:
 
-- `tests/unit/test_number_sense.py` (exists for the concentration check, NUM-1 extends it).
+- `tests/unit/test_number_sense.py` (NUM-1).
+- `tests/unit/test_crm_aggregate_checks.py` and
+  `tests/unit/test_crm_aggregate_checks_r8.py` (NUM-2).
 - `tests/unit/test_answer_plausibility.py` (NUM-3).
 - An MCP fixture test of a 10 times jump (NUM-6).
 - An R8 test of `answer_figures` on a private database (NUM-7). Until a slice lands, its rule is advisory (R7).

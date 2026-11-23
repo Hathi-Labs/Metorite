@@ -738,6 +738,28 @@ Stated plainly, so nobody reads silence as clearance.
 5. **Meeting bot, Note Taker and `live_session`.** Not examined. `meeting*`, `notes_glossary`,
    `transcript_segment` and `live_session` are all unscoped; whether any of them has a global
    read surface is unknown.
+
+   **Task 3845 (2026-11-22).** Task 2009 proved that the notes tables now have the tenant
+   column and FORCE RLS. But ten keys between them were plain foreign keys, for example the
+   meeting key of a transcript segment. The check of a foreign key ignores RLS. So a session
+   bound to org A could insert a child that named a meeting that org B owns. The child took
+   org A from the DEFAULT, and RLS accepted it.
+
+   Migration 486 (473 at build time, then 479) adds the check-only function
+   `notes_same_org_ref()` and one attachment for each key. It refuses a parent of another org
+   with SQLSTATE 23503, for each role. It keeps the rule of 471, so the delete of a meeting
+   or a recording still works.
+
+   Each request route of `gateway/routes/notes/` that inserts a child loads the meeting under
+   the bound tenant first. Five background writes use `get_db`, which binds no tenant (H4):
+   `enqueue_summary`, `generate_notes`, `run_transcription`, `_ingest_recording` and
+   `copilot._persist`. Under FORCE RLS such a session reads no row and cannot write one. So
+   the guard is defence in depth.
+
+   Fence: `tests/unit/test_notes_fk_same_org_r8.py`. It reads `pg_constraint`, so a new notes
+   key with no guard fails it. Three keys name tables outside the notes set and stay open:
+   `action_item.assignee_id`, `action_item.resulting_task_id` and
+   `transcript_segment.speaker_person_id`.
 6. **The frontend.** `workbench/control_plane` was out of scope; if any org identity is derived
    client-side it would compound S1-1's wrong `/auth/me` answer.
 
