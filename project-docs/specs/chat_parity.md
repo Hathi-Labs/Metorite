@@ -31,10 +31,95 @@ rows, so the admin ceiling went from 36 to 30. Fences:
 `tests/unit/test_org_admin_tools.py` and `tests/unit/test_org_admin_tools_r8.py`
 (R8).
 
+**PAR-8a (task 3903, rung 5) is BUILT, 2026-11-22, dark.** It pays the 18 debt
+rows of Workflows, so the Workflows ceiling is 0. Seven tools join the pack
+`studio-workflows`. They read the runs of a workflow, check a draft and read
+the parts of a step. They run a workflow, and make, rename, copy or delete
+one. The workflow helper changes a draft, and a tool manages the code modules.
+
+A run, a delete, a change by the helper and a save of a module each show one
+card. The pack is not in `FOLLOWS`, so the owner turns it on with a
+`TOOL_PACKS` line. PAR-8b builds the shell rows of rung 5. Fence:
+`tests/unit/test_studio_workflow_acts.py`.
+
+**PAR-8a, the facts for the owner.** Each chat refuses a text that holds a
+character that no person sees, before any card. This covers the input of a
+run, a name, a description, the words to the helper and the code and inputs
+of a module. The check is the one rule of `hidden_text.py`, so an emoji
+and a Persian word pass. So each card shows the text that the route gets. A
+card shows module code with a number for each line.
+
+- The routes that save, change and delete a code module have no author gate
+  (`modules.py`). That was so before PAR-8a, and the chat can now reach them.
+- In a clear chat, the workflow helper and the module writer use model
+  credits with no card, as the UI does. In a chat that read outside mail,
+  each one shows a card first. The helper saves its new modules as ready
+  before the card of the change (`copilot.py`).
+- The cards of a test run and of the helper count the steps by type. They do
+  not show the text of a step.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
+**P-1a (task 3112) is BUILT, 2026-11-22, with no flag.** The chat lists the
+connected calendars, and proposes a clearer title or the missing fields of a
+task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
+P-1 slices.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
 From that point they only go down.
+
+**PAR-8b (task 3903, rung 5) is BUILT, 2026-11-23, dark.** It takes the
+shell debt from 16 rows to 7. Five tools of the orchestrator do the shell acts
+from the chat (`acb_skills/home_tools.py`).
+
+`home_read` reads the Home feed, Needs you, the brief, the quick find and the
+Home settings. `home_card` changes how one Home card shows. `home_prefs` saves one
+Home setting. `home_layout` sets the default sidebar of a role.
+`home_test_push` sends a test notification.
+
+Each tool sends the route of the UI as the member of the run, with no org, so
+each route keeps its gates. The default sidebar always shows one card. The
+other writes show one card only in a chat that must ask first. Each write
+refuses a character that no person sees, with the one rule of
+`hidden_text.py`. Fence: `tests/unit/test_home_tools.py`.
+
+A needs row or a card can hold the subject of an outside mail. So each read
+that shows a row marks the chat as one that read outside text. Then
+each egress tool and each write of a held chat shows a card first. Each read
+says how many rows exist, and how to see the rest.
+
+**PAR-8b, the facts for the owner.**
+
+- **The switch is `HOME_TOOLS_ORGS`, not a `TOOL_PACKS` line.** A pack needs an
+  owner agent. The one owner that never runs as an agent is `studio-builder`,
+  and its packs build no tool for an org without Studio. A pack of
+  `projects-assistant` puts the tools live in that agent at once. So the tools
+  are core tools of the orchestrator, as `pin_chat` is (CO-11b). When the flag
+  is on, the five tools join each request of the org: the base goes from 57 to
+  62 tools.
+- **The trade of the tool cap, with the flag on.** Three of the 16 cases of the
+  golden matrix change. A Studio turn with mail words drops `studio-more` (110
+  to 102 tools). With the flag off, a Studio turn with mail and CRM words
+  already skips `studio-more`. So the flag drops only the core pack `studio`
+  there (109 to 104 tools). A turn with the sticky pack `calendar-day` and mail
+  words drops `calendar-day` (107 to 92 tools). P-1a grew that pack, so this case
+  is new. The other 13 cases keep their packs. Fence:
+  `test_with_the_flag_on_three_cases_of_the_matrix_drop_a_pack`.
+- **Decide (b): five rows wait for a ruling on their kind.** No kind of §2
+  fits them, so they stay debt. `POST /api/shell/intent` is the model step of
+  the command bar, and in the chat the turn of the member does that job. Four
+  push routes subscribe, check or remove the browser of one device, and only
+  that browser holds the push address. A `device` kind and a ruling on the
+  intent row would take the shell debt to 2.
+- **Decide (a): two rows wait for §7, item 6.** They are the approval queue
+  and its decision. With (a) and (b), the shell debt goes to 0. The safety
+  fence `test_no_person_present.py` refuses a tool that names
+  `/actions/pending`, a read too. The decision waits for §7, item 6.
+  `pending_actions` has no requester column, so a tool cannot tell an action
+  that the chat itself asked for. The member reads and decides on the
+  Approvals page.
 
 **Epic:** Metorite task 1238. Written 2026-11-01.
 
@@ -178,13 +263,14 @@ file that a member gave to the chat could not go on an email.
 
 `DEBT_CEILING` and `P0_CEILING` in the parity module own these numbers. This
 table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
-412 at P-0, and it is 427 today. Eight ceilings went up, and four went down.
+412 at P-0, and it was 427 at that reading. Eight ceilings went up, and four
+went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 
 | App | P-0 | Today | Wave | Task |
 |---|---|---|---|---|
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
-| tasks | 11 | 9 | P-1 | 3112 |
-| calendar | 1 | 5 | P-1 | 3112 |
+| tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
+| calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 14 | P-2 | 3111 |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
@@ -192,11 +278,11 @@ table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
 | people | 19 | 19 | P-5 | 3114 |
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
-| workflows | 24 | 18 | P-6 | 3115 |
+| workflows | 24 | 0 | P-6 | 3115, 3903 (PAR-8a built) |
 | apps | 29 | 28 | P-6 | 3115 |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 16 | P-7 | 3115 |
+| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -342,20 +428,51 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
-| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, 3112 | 3904 | 14 and 14 | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
-| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 16 and 18 | Four most-used actions are here. |
+| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
+| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
-  day state. Task 3111 also puts a file from the chat on an email. Both tasks
-  are STANDARD on the board.
+  day state. Task 3111 also puts a file from the chat on an email. Task 3111 is
+  STANDARD on the board. P-1 has three slices, and two of them are HIGH (the
+  table below).
+
+**The P-1 slices (rung 4).** Calendar and Tasks held 14 debt rows before P-1a.
+P-1 does not take all 14. The table names the owner of each row.
+
+| Slice | Task | Tier | Rows | State |
+|---|---|---|---|---|
+| P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
+| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
+| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
+| The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
+| Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
+
+- **P-1a.** The three tools are reads of `skill_my_tasks`, in the
+  `calendar-day` pack. They need no new `TOOL_PACKS` line and no new `FOLLOWS`
+  entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
+  it answers in one line. Each proposal changes nothing. The member applies
+  a field with the task edit tool. A held chat keeps all three.
+- **The day acts of My Day are not P-1.** CC-10 (task 1978) owns the capture,
+  the focus start and stop, and the plan and the close of the day. P-1 builds
+  no day flow, and no second read of the day state.
+- **Verify P-1a.** Run these commands in the worktree.
+
+```bash
+timeout 900 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_calendar_settings_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider
+uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1a_tools.py
+```
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
   leaves out the decision on a pending action until the owner answers §7,
-  item 6.
+  item 6. PAR-8a is BUILT: it pays the 18 Workflows rows, and a run of a
+  workflow from the chat shows one card. PAR-8b is BUILT: the chat reads the
+  Home feed and Needs you, and changes a Home card. The demo needs the owner
+  to add `studio-workflows` to `TOOL_PACKS` and to set `HOME_TOOLS_ORGS` (§7,
+  item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -395,6 +512,10 @@ he approves the merge.
 1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2a merges and before
    the demo of rung 1. Say which pack holds the tools of PAR-5 and PAR-6: a new
    slug needs its own line before the demo of rung 3.
+   Add `studio-workflows` before the demo of rung 5 (task 3905). It holds the
+   run of a workflow and the other tools of PAR-8a.
+   Set `HOME_TOOLS_ORGS` before the demo of rung 5 (task 3905). It holds the
+   Home tools of PAR-8b.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes.
 3. **The flag flips.** Approve each one on its task: `KNOWLEDGE_PROPOSALS` for

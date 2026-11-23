@@ -126,6 +126,9 @@ class Observation:
     #: TS-5a. True when the chat had read outside mail before this turn, so the
     #: packs are held (the mark of ``egress``).
     held: bool = False
+    #: Task 2874. EVERY tool call of the orchestrator's own run in this turn, in order:
+    #: name, arguments, result (:func:`checks_2874.ordered_calls_of`).
+    ordered: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
 
 
 def trace_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
@@ -1404,3 +1407,9 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
 
 def passed(result: dict[str, bool | None]) -> bool:
     return all(v is not False for v in result.values())
+
+
+# Task 2874: the checks of the seven defects of the chat of 2026-11-11.
+from evals.one_assistant_measure import checks_2874 as _checks_2874  # noqa: E402
+
+KINDS.update(_checks_2874.KINDS)
