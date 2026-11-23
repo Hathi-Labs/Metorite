@@ -16,7 +16,7 @@
  * Before the slot of today, the route serves the run of the day before. The
  * card then says so above the title, with the date (`staleLabel`).
  *
- * Fence: `briefCard.test.ts`.
+ * Fence: `briefCardModel.test.ts`.
  */
 import Link from "next/link";
 import { useEffect } from "react";
@@ -24,7 +24,7 @@ import { useEffect } from "react";
 import Icon from "@/components/Icon";
 import { isInAppPath } from "@/lib/inAppLink";
 
-import { type BriefToday, staleLabel } from "./briefCard";
+import { type BriefToday, staleLabel } from "./briefCardModel";
 import { feedAppIcon } from "./feed";
 import { HomeCard } from "./HomeCard";
 
