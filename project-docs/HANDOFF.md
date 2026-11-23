@@ -1351,12 +1351,6 @@ line — never reclaim a number by deleting the other entry.
   → a hit means the first item is still open.
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
-  → no hit means item 1 is still open. Check each other item by hand.
-- **Added:** 2026-09-24 · the WS-27bn R2b session
-
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
@@ -1382,12 +1376,6 @@ line — never reclaim a number by deleting the other entry.
   (the contract, built 2026-11-22). It merges only after the production ledger
   holds 354 from an earlier release.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
-
-### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
-  → a hit in `scopeName` means item 2 is still open.
-- **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
 ### H-206 · A browser that blocks storage breaks the whole app · [AGENT]
 - **Metorite:** #685. The task holds the full entry (moved 2026-10-27, D118).
