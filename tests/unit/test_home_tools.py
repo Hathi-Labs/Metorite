@@ -1004,18 +1004,22 @@ def test_the_roles_equal_the_roles_of_the_route() -> None:
 # -- home-cap: the trade of the five core tools, with the flag on --------------------------
 
 
-def test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack(
+def test_with_the_flag_on_three_cases_of_the_matrix_drop_a_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """P2a of the review. The flag puts 5 tools in the base of each request of
     the org: 57 to 62. The golden matrix runs through its harness (``_row``) at
-    both bases. Two cases of 16 change, and the owner reads this trade before he
-    sets ``HOME_TOOLS_ORGS`` (``chat_parity.md``, PAR-8b facts for the owner):
+    both bases. Three cases of 16 change, and the owner reads this trade before
+    he sets ``HOME_TOOLS_ORGS`` (``chat_parity.md``, PAR-8b facts for the owner):
 
     * ``studio_with_email``: off, email, studio and studio-more, 110 tools. On,
       ``choose`` drops studio-more, 102 tools.
     * ``studio_with_email_and_crm_records``: off, email, crm-records and studio,
       109 tools. On, it drops studio-more and the core pack studio, 104 tools.
+    * ``calendar_projects_and_calendar_day_sticky_with_email``: off, calendar-day
+      and email, 107 tools. On, ``choose`` drops the sticky pack calendar-day,
+      92 tools. P-1a (task 3112) grew calendar-day, so this case is new since the
+      first build of PAR-8b.
 
     With the flag off nothing moves. Mutation: expect no drop -> red."""
     import tests.unit.test_studio_split_matrix as matrix
@@ -1034,5 +1038,7 @@ def test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack(
         "studio_with_email_and_crm_records": (["email", "crm-records", "studio"],
                                               ["email", "crm-records"],
                                               ["studio-more", "studio"], 109, 104),
+        "calendar_projects_and_calendar_day_sticky_with_email": (
+            ["calendar-day", "email"], ["email"], [], 107, 92),
     }, changed
     assert len(rows[0]) == 16

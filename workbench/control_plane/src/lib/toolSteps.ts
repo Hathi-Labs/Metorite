@@ -241,6 +241,14 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   // ── AI Studio (the `studio` pack) ─────────────────────────────────────────
   // STB-6a and STU-E4b: a noun-first name. The derived words would read "Used studio workflow read".
   studio_workflow_read: { kind: "read", verb: V.read, object: "a workflow" },
+  // PAR-8a (task 3903): the other acts of the Workflows app, noun-first names too.
+  studio_workflow_runs: { kind: "read", verb: V.read, object: "the runs of a workflow" },
+  studio_workflow_check: { kind: "read", verb: V.check, object: "a workflow" },
+  studio_workflow_catalog: { kind: "read", verb: V.read, object: "the parts of a workflow" },
+  studio_workflow_run: { kind: "edit", verb: V.ran, object: "a workflow" },
+  studio_workflow_save: { kind: "edit", verb: V.save, object: "a workflow" },
+  studio_workflow_build: { kind: "edit", verb: V.build, object: "a workflow" },
+  studio_workflow_module: { kind: "edit", verb: V.save, object: "a code module" },
 };
 
 /** First word of a verb-first name → its verb and its step kind. */

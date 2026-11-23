@@ -12,6 +12,9 @@ package tools (STU-G1c) save a draft and publish it. The workflow tool
 (STB-6a) lists or reads the workflows of the organization and writes nothing.
 The two workflow writes (STB-6b) publish, roll back, pause and turn on a
 workflow. They form the second pack of this owner, ``studio-workflows``.
+PAR-8a adds seven tools to that pack: the runs, the check and the parts of a
+workflow, a run, the make, rename, copy and delete of a workflow, a change of
+the draft by the workflow helper, and the code modules.
 The share of a skill with the organization (WS-STU J2d) is one tool, in the
 third small pack of this owner, ``studio-share``. The repair of a skill and
 its undo (WS-TOF TOF-3a F12c) are two tools, in the pack ``studio-repair``.
@@ -38,6 +41,7 @@ from acb_skills.studio_tools import (
     STUDIO_SHARE_TOOLS,
     STUDIO_SKILL_TOOLS,
     STUDIO_TOOLS,
+    STUDIO_WORKFLOW_ACT_TOOLS,
     STUDIO_WORKFLOW_TOOLS,
     STUDIO_WORKFLOW_WRITE_TOOLS,
 )
@@ -50,7 +54,8 @@ INSTRUCTIONS = (
 )
 
 _TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
-          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_SHARE_TOOLS,
+          *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_WORKFLOW_ACT_TOOLS,
+          *STUDIO_SHARE_TOOLS,
           *STUDIO_REPAIR_TOOLS]
 
 
