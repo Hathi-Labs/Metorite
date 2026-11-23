@@ -42,10 +42,8 @@ tree. ``F`` is ``apps/services/gateway/gateway/routes/projects/focus_sessions.py
 
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import UTC
-from pathlib import Path
 
 import pytest
 
@@ -56,6 +54,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit.test_focus_sessions_r8 import (
     ALICE,
     BASE,
@@ -82,8 +81,6 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 pytestmark = _DB_GATE
 
-_ROOT = Path(__file__).resolve().parents[2]
-
 #: A role of this run only: the table owner of the FORCE test. A role belongs
 #: to the whole Postgres server, not to one database, so a fixed name lets two
 #: runs on one server drop each other's role (CC-5a re-review P3).
@@ -98,11 +95,9 @@ _SEED_ORG_A_ROW = (
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
-    database gate is disarmed. Match the argument line, not a mention."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(
-            r"^\s+tests/unit/test_focus_session_rls_r8\.py \\?$", workflow, re.M), name
+    database gate is disarmed. ``tests/fences.json`` holds the list of
+    pr-check.yml and deploy.yml (CIV-33c-2)."""
+    assert "tests/unit/test_focus_session_rls_r8.py" in r8_lists.must_run()
 
 
 def _bound(conn, org: str | None) -> None:

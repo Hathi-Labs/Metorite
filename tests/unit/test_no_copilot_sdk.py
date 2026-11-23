@@ -62,7 +62,6 @@ _ALLOWLIST: dict[str, str] = {
     "agents.py": "WS-43q",
     "apps/agents/agent-app-builder/agents.py": "WS-43j",
     "apps/agents/agent-task-manager/agents.py": "WS-8i, after the soak of WS-43t2",
-    "apps/services/gateway/gateway/main.py": "WS-43q",
     "apps/services/orchestrator/mutation_runner.py": "WS-43p",
     "apps/services/orchestrator/orchestrator/_copilot_session.py": "WS-43q",
     "apps/services/orchestrator/orchestrator/copilot_agent.py": "WS-43q",

@@ -51,8 +51,17 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # projects_ai_chat.md §14.10: the same PDF seam, a report file in the
     # chat's outputs and one card. No network, no egress.
     "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # SBX-19: Python over the tool results of this chat, in the `compute` target of
+    # the sandbox broker. No network, no secret, no door. It writes files into
+    # this chat only, so it is no egress tool and it reaches nothing outside.
+    "compute_run":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-VOX VOX-3: an attached image to tier-vision through the Console. It
+    # changes no record, and it reaches only the metered model, so it is no
+    # egress tool. Each call counts against a cap and draws credits, so it is
+    # not idempotent.
+    "analyze_image":         {"read_only": True,  "destructive": False, "idempotent": False, "open_world": False},
     # Memory
     "remember":              {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "recall_timeline":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -167,6 +176,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-FIND FIND-5: one name in every app (`company_search_tools.py`). It
+    # reads `GET /search/names` as the member, and nothing leaves the platform.
+    "resolve_name":          {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
     # `GET /auth/me/assistant-profile/resolve-person` as the member, and
     # nothing leaves the platform.
@@ -201,6 +213,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # words in tenant Redis, and nothing leaves the platform.
     "keep_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     "drop_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-CO CO-11b: the pin of this chat (`chat_pin_tools.py`). It sends the
+    # pin route of the gateway as the member, and changes only the member's
+    # own row. A second pin keeps the first. Nothing leaves the platform.
+    "pin_chat":              {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     # CTX-1 (#825): pages of a stored tool result. It reads an in-process
     # store of this chat and nothing leaves the platform.
     "read_tool_result":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -226,6 +242,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
     "whatsapp_ui",
+    # SBX-19: dark by org (`COMPUTE_RUN_ORGS`), so the risk block of every agent
+    # stays byte-identical.
+    "compute_run",
     # WS-67 OA-9b: only the orchestrator holds it, and only for an org on
     # SPAWN_SUBAGENTS_ORGS. No other agent's block names it, so every block
     # stays byte-identical.
@@ -260,6 +279,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.
     "search_company",
+    # WS-FIND FIND-5: the name lookup only reads, and only the orchestrator
+    # holds it, for an org of FIND_ORGS. So every risk block stays the same.
+    "resolve_name",
     # WS-61 KB-4a: the two Knowledge reads, on the same terms.
     "read_page",
     "list_spaces",
@@ -285,6 +307,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # stays byte-identical.
     "keep_correction",
     "drop_correction",
+    # WS-CO CO-11b: the pin of this chat, on the same terms. Only the
+    # orchestrator holds it, behind CHAT_PIN_TOOL_ORGS. So every risk block stays
+    # byte-identical.
+    "pin_chat",
     # CTX-1 (#825): the page reader of a stored result. It only reads, and
     # only the orchestrator holds it, behind TOOL_RESULT_SPILL `on`.
     "read_tool_result",

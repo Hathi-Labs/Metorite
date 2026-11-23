@@ -350,7 +350,7 @@ async def write_instructions(
         await db.execute(
             text(
                 "INSERT INTO copilot_config (owner_email, instructions) "
-                "VALUES (:e, :i) ON CONFLICT (owner_email) DO UPDATE "
+                "VALUES (:e, :i) ON CONFLICT (organization_id, owner_email) DO UPDATE "
                 "SET instructions = EXCLUDED.instructions, updated_at = now()"
             ),
             {"e": email, "i": value or None},

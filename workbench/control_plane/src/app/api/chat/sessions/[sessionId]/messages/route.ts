@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,8 @@ export async function GET(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     // Forward pagination params for windowed lazy-loading:
     //   ?limit=N        — return only the most recent N messages
     //   ?before=<ms>    — return only messages older than this timestamp_ms
@@ -47,6 +50,8 @@ export async function POST(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     const body = await req.json();
     const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/messages`, {
       method: "POST",

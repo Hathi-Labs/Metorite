@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,8 @@ export async function POST(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     const body = await req.json();
     const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants`,

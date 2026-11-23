@@ -451,7 +451,7 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 2,
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
-    "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
+    "app/email/components/automation/ai-settings/fixDialog.tsx": 2,
     // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
     // review round 1: the banner gives no setup link).
     "app/integrations/components/ApiKeysView.tsx": 43,
@@ -747,7 +747,7 @@ describe("checkboxes go through the Checkbox primitive", () => {
     "app/notes/components/NotesSettingsModal.tsx": 2,
     "app/settings/groups/page.tsx": 1,
     "app/settings/organization/OrganizationAdmin.tsx": 1,
-    "app/workflows/components/TriggerPanel.tsx": 3,
+    "app/workflows/components/TriggerPanel.tsx": 2,
   };
 
   const boxes = (rel: string) =>
@@ -894,7 +894,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/whatsapp/calls/page.tsx": 1,
     "app/whatsapp/settings/categories/page.tsx": 1,
     "app/workflows/components/NodeInspector.tsx": 6,
-    "app/workflows/components/TriggerPanel.tsx": 1,
     "components/genUITemplates.tsx": 1,
     "components/room/ShareSheet.tsx": 1,
     // Added 2026-09-20, when SELECT_TAG widened to catch `<Select>`. These

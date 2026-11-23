@@ -36,6 +36,7 @@ complete, reliable lexical search on its own.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -43,6 +44,7 @@ from fastapi import Depends, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
+    NOT_OUTBOUND_SQL,
     UNCATEGORIZED_SQL,
     _account_scope,
     _row_to_message,
@@ -51,6 +53,10 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.transport.messages import _also_in_by_message
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
@@ -86,9 +92,9 @@ def _parse_dt(value: str | None) -> Any:
     if not value:
         return None
     try:
-        from datetime import datetime  # noqa: PLC0415
+        from datetime import datetime
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -128,16 +134,11 @@ def _address_filters(
         where.append("(LOWER(em.from_address->>'email') LIKE :from_addr"
                      " OR LOWER(em.from_address->>'name') LIKE :from_addr)")
         params["from_addr"] = f"%{from_addr.strip().lower()}%"
-    if to_addr:
-        # to_addresses/cc_addresses are JSONB arrays of {name, email}; match a
-        # substring against any recipient. Cc counts as "to" — a user looking for
-        # mail addressed to someone means it, whichever header carried them.
-        where.append("EXISTS (SELECT 1 FROM jsonb_array_elements("
-                     " COALESCE(em.to_addresses, '[]'::jsonb)"
-                     " || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r"
-                     " WHERE LOWER(r->>'email') LIKE :to_addr"
-                     " OR LOWER(r->>'name') LIKE :to_addr)")
-        params["to_addr"] = f"%{to_addr.strip().lower()}%"
+    clause = recipient_clause(params, to_addr)
+    if clause:
+        # Cc counts as "to": a user looking for mail addressed to someone means
+        # it, whichever header carried them.
+        where.append(clause)
 
 
 def _state_filters(
@@ -170,6 +171,51 @@ def _state_filters(
         params["importance"] = flags["importance"]
 
 
+# ── The text query: prefix forms and the broader retry ──────────────────────
+
+_WORD = re.compile(r"[^\W_]+")
+_MAX_WORDS = 8
+
+
+def _bare_words(q: str) -> list[str]:
+    """The words of a bare-word query, each cut to letters and digits.
+
+    A query with a websearch operator (a quote, ``or``, a leading ``-``) has no
+    bare words: it keeps its ``websearch_to_tsquery`` meaning. A word holds
+    letters and digits only, so no input can raise a tsquery syntax error.
+    """
+    if '"' in q or re.search(r"(?:^|\s)-", q) or re.search(
+            r"(?:^|\s)or(?:\s|$)", q, re.IGNORECASE):
+        return []
+    return _WORD.findall(q)[:_MAX_WORDS]
+
+
+def _broadenable(q: str) -> bool:
+    return len(_bare_words(q)) >= 2
+
+
+def _tsquery_sql(params: dict[str, Any], q: str, broadened: bool) -> tuple[str, str]:
+    """The tsquery SQL for the match, and for the rank and the highlight.
+
+    Normal: ``websearch_to_tsquery(q) || (w1:* & w2:*)``, so "Aroh" finds a mail
+    that holds only the token ``aroh.si``. A mail that the websearch query
+    matches keeps its old rank and highlight. The rest use the prefix query.
+    Broadened: ``w1:* | w2:*`` only. Each prefix form binds as a parameter.
+    """
+    ws = "websearch_to_tsquery('english', :q)"
+    words = _bare_words(q)
+    if not words:
+        return ws, ws
+    if broadened:
+        params["por"] = " | ".join(f"{w}:*" for w in words)
+        both = "to_tsquery('english', :por)"
+        return both, both
+    params["pand"] = " & ".join(f"{w}:*" for w in words)
+    prefix = "to_tsquery('english', :pand)"
+    return (f"({ws} || {prefix})",
+            f"(CASE WHEN {_FTS_MATCH} @@ {ws} THEN {ws} ELSE {prefix} END)")
+
+
 @router.get("/search")
 async def search_messages(
     q: str | None = Query(
@@ -192,6 +238,8 @@ async def search_messages(
     is_starred: bool | None = Query(None),
     has_attachments: bool | None = Query(None),
     sender_category: str | None = Query(None),
+    attachment_name: str | None = Query(
+        None, description="Substring match on a file name of the message"),
     importance: str | None = Query(
         None, description="Provider importance: high | normal | low"),
     hybrid: bool = Query(
@@ -203,6 +251,11 @@ async def search_messages(
                     "of magnitude on HTML-heavy mail."),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    broaden: bool = Query(
+        True,
+        description="When 2 or more bare words find no mail on page 1, search "
+                    "again with ANY word and answer ``broadened: true``. "
+                    "Company retrieval sets it False: KR-ZERO broadens there."),
     with_total: bool = Query(
         True,
         description="Count every match for ``total``. Company retrieval sets "
@@ -223,134 +276,144 @@ async def search_messages(
         uid = user.email or "anonymous"
         account_id = await resolve_account_filter(db, account_id, uid)
         text_q = (q or "").strip()
-        params: dict[str, Any] = {"uid": uid, "q": text_q}
+        broadened = False
+        for attempt in (0, 1):
+            params: dict[str, Any] = {"uid": uid, "q": text_q}
+            match_q, rank_q = _tsquery_sql(params, text_q, broadened)
 
-        # Search in All inboxes leaves out a separate mailbox. Its own
-        # account_id still searches it (EM-T8g-1, D-EM-30).
-        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
-        # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
-        if text_q:
-            where.append(
-                f"{_FTS_MATCH} @@ websearch_to_tsquery('english', :q)")
+            # Search in All inboxes leaves out a separate mailbox. Its own
+            # account_id still searches it (EM-T8g-1, D-EM-30).
+            where = [_account_scope(account_id, params, pooled_only=True, level="read")]
+            # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
+            if text_q:
+                where.append(f"{_FTS_MATCH} @@ {match_q}")
 
-        # Search is the one place "all" spans sent mail too: the browse view
-        # excludes it (All shows what arrived), but "what did I tell them?" is
-        # a routine search, and a scope labelled "All folders" that skipped the
-        # user's own replies would quietly fail the query it exists to serve.
-        folder_sql = folder_scope(folder, params, include_sent=True)
-        if folder_sql:
-            where.append(folder_sql)
-        _tag_filters(where, params, label, labels)
-        if uncategorized:
-            # The complement of every tag pill. Defined in core so the inbox
-            # chip and the Email Cleaner's Uncategorized tab mean the same mail.
-            where.append(UNCATEGORIZED_SQL)
-            params["known_labels"] = KNOWN_LABELS_LOWER
-        _address_filters(where, params, from_addr, to_addr)
-        _state_filters(where, params, {
-            "received_after": received_after,
-            "received_before": received_before,
-            "is_read": is_read,
-            "is_starred": is_starred,
-            "has_attachments": has_attachments,
-            "sender_category": sender_category,
-            "importance": importance,
-        })
+            # Search is the one place "all" spans sent mail too: the browse view
+            # excludes it (All shows what arrived), but "what did I tell them?" is
+            # a routine search, and a scope labelled "All folders" that skipped the
+            # user's own replies would quietly fail the query it exists to serve.
+            folder_sql = folder_scope(folder, params, include_sent=True)
+            if folder_sql:
+                where.append(folder_sql)
+            _tag_filters(where, params, label, labels)
+            if uncategorized:
+                # The complement of every tag pill. Defined in core so the inbox
+                # chip and the Email Cleaner's Uncategorized tab mean the same mail.
+                where.append(UNCATEGORIZED_SQL)
+                params["known_labels"] = KNOWN_LABELS_LOWER
+            _address_filters(where, params, from_addr, to_addr)
+            if clause := attachment_name_clause(params, attachment_name):
+                where.append(clause)
+            _state_filters(where, params, {
+                "received_after": received_after,
+                "received_before": received_before,
+                "is_read": is_read,
+                "is_starred": is_starred,
+                "has_attachments": has_attachments,
+                "sender_category": sender_category,
+                "importance": importance,
+            })
 
-        where_sql = " AND ".join(where)
+            where_sql = " AND ".join(where)
 
-        # The count visits every match. The Email app shows it, so it is on by
-        # default. Company retrieval turns it off (WS-KG KG-3a): it reads k
-        # hits, and the count doubled the time of each search. Off, ``total``
-        # is None.
-        total: int | None = None
-        if with_total:
-            total = (await db.execute(text(
-                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
-            ), params)).scalar() or 0
+            # The count visits every match. The Email app shows it, so it is on by
+            # default. Company retrieval turns it off (WS-KG KG-3a): it reads k
+            # hits, and the count doubled the time of each search. Off, ``total``
+            # is None.
+            total: int | None = None
+            if with_total:
+                total = (await db.execute(text(
+                    f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+                ), params)).scalar() or 0
 
-        params["limit"] = page_size
-        params["offset"] = (page - 1) * page_size
+            params["limit"] = page_size
+            params["offset"] = (page - 1) * page_size
 
-        # Hybrid re-ranking (Phase 2, opt-in): when requested AND semantic search
-        # is enabled AND the query embeds, blend the lexical rank with cosine
-        # similarity to the query vector. Recall stays LEXICAL — every FTS match
-        # is still returned; hybrid only re-ORDERS them by semantic closeness, so
-        # a reliability-first search never drops a keyword hit. If the query can't
-        # be embedded (flag off, embed error), we fall through to pure lexical.
-        semantic_select = "0.0 AS sim"
-        # Filters-only: nothing to rank against, so newest-first is the only
-        # meaningful order (and hybrid re-ranking has no query to embed).
-        order_sql = ("rank DESC, em.received_at DESC" if text_q
-                     else "em.received_at DESC")
-        join_sql = ""
-        if hybrid and text_q:
-            qvec = None
-            try:
-                from email_ingestion.email_embeddings import embed_query
-                qvec = await embed_query(text_q)
-            except Exception:  # noqa: BLE001
+            # Hybrid re-ranking (Phase 2, opt-in): when requested AND semantic search
+            # is enabled AND the query embeds, blend the lexical rank with cosine
+            # similarity to the query vector. Recall stays LEXICAL — every FTS match
+            # is still returned; hybrid only re-ORDERS them by semantic closeness, so
+            # a reliability-first search never drops a keyword hit. If the query can't
+            # be embedded (flag off, embed error), we fall through to pure lexical.
+            semantic_select = "0.0 AS sim"
+            # Filters-only: nothing to rank against, so newest-first is the only
+            # meaningful order (and hybrid re-ranking has no query to embed).
+            order_sql = ("rank DESC, em.received_at DESC" if text_q
+                         else "em.received_at DESC")
+            join_sql = ""
+            if hybrid and text_q:
                 qvec = None
-            if qvec is not None:
-                params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
-                # 0.5·lexical (capped to 1) + 0.5·cosine-similarity. A message
-                # with no embedding yet (sim NULL → 0) still ranks on its lexical
-                # score, so unembedded mail is never hidden.
-                join_sql = ("LEFT JOIN email_embeddings ee "
-                            "ON ee.message_id = em.id")
-                semantic_select = (
-                    "COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)), 0)"
-                    " AS sim")
-                order_sql = (
-                    "(LEAST(ts_rank_cd(" + _FTS_MATCH +
-                    ", websearch_to_tsquery('english', :q)), 1.0) * 0.5"
-                    " + COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)),"
-                    " 0) * 0.5) DESC, em.received_at DESC")
+                try:
+                    from email_ingestion.email_embeddings import embed_query
+                    qvec = await embed_query(text_q)
+                except Exception:
+                    qvec = None
+                if qvec is not None:
+                    params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
+                    # 0.5·lexical (capped to 1) + 0.5·cosine-similarity. A message
+                    # with no embedding yet (sim NULL → 0) still ranks on its lexical
+                    # score, so unembedded mail is never hidden.
+                    join_sql = ("LEFT JOIN email_embeddings ee "
+                                "ON ee.message_id = em.id")
+                    semantic_select = (
+                        "COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)), 0)"
+                        " AS sim")
+                    order_sql = (
+                        "(LEAST(ts_rank_cd(" + _FTS_MATCH +
+                        ", " + rank_q + "), 1.0) * 0.5"
+                        " + COALESCE(1 - (ee.embedding <=> CAST(:qvec AS vector)),"
+                        " 0) * 0.5) DESC, em.received_at DESC")
 
-        # ts_rank_cd rewards cover density (matches close together rank higher);
-        # recency breaks ties so equally-relevant hits surface newest-first.
-        # With no search text there is nothing to rank or highlight: ts_headline
-        # against an empty tsquery would return the head of the body with no
-        # <mark> in it, which the list would render as a "match" snippet that
-        # matched nothing. Emit an empty highlight instead so the card falls back
-        # to its normal preview.
-        rank_select = (f"ts_rank_cd({_FTS_MATCH},"
-                       " websearch_to_tsquery('english', :q)) AS rank"
-                       if text_q else "0.0 AS rank")
-        headline_select = (
-            f"""ts_headline('english', {_HEADLINE_SOURCE},
-                    websearch_to_tsquery('english', :q),
-                    'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, '
-                    'MaxWords=18, MinWords=5, FragmentDelimiter=" … "'
-                ) AS highlight"""
-            if text_q else "'' AS highlight")
-        # ``light``: keep the SELECT's SHAPE (every consumer, _row_to_message
-        # included, reads these two columns) but return empty bodies. A list row
-        # renders subject + snippet only, so shipping body_html for 25 marketing
-        # mails was megabytes of HTML parsed on the main thread and then thrown
-        # away — the Email Cleaner's sender drill-down froze the page on it.
-        body_select = (
-            "'' AS body_text, NULL AS body_html" if light
-            else "em.body_text, em.body_html")
-        rows = (await db.execute(text(
-            f"""SELECT em.id, em.provider_message_id, em.thread_id,
-                       em.account_id, em.folder, em.labels,
-                       em.from_address, em.to_addresses,
-                       em.cc_addresses, em.bcc_addresses,
-                       em.subject, {body_select},
-                       em.snippet, em.has_attachments,
-                       em.is_read, em.is_starred, em.is_flagged,
-                       em.importance, em.categories,
-                       em.received_at, em.synced_at,
-                       {rank_select},
-                       {semantic_select},
-                       {headline_select}
-                  FROM email_messages em
-                  {join_sql}
-                 WHERE {where_sql}
-                 ORDER BY {order_sql}
-                 LIMIT :limit OFFSET :offset"""
-        ), params)).fetchall()
+            # ts_rank_cd rewards cover density (matches close together rank higher);
+            # recency breaks ties so equally-relevant hits surface newest-first.
+            # With no search text there is nothing to rank or highlight: ts_headline
+            # against an empty tsquery would return the head of the body with no
+            # <mark> in it, which the list would render as a "match" snippet that
+            # matched nothing. Emit an empty highlight instead so the card falls back
+            # to its normal preview.
+            rank_select = (f"ts_rank_cd({_FTS_MATCH},"
+                           f" {rank_q}) AS rank"
+                           if text_q else "0.0 AS rank")
+            headline_select = (
+                f"""ts_headline('english', {_HEADLINE_SOURCE},
+                        {rank_q},
+                        'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, '
+                        'MaxWords=18, MinWords=5, FragmentDelimiter=" … "'
+                    ) AS highlight"""
+                if text_q else "'' AS highlight")
+            # ``light``: keep the SELECT's SHAPE (every consumer, _row_to_message
+            # included, reads these two columns) but return empty bodies. A list row
+            # renders subject + snippet only, so shipping body_html for 25 marketing
+            # mails was megabytes of HTML parsed on the main thread and then thrown
+            # away — the Email Cleaner's sender drill-down froze the page on it.
+            body_select = (
+                "'' AS body_text, NULL AS body_html" if light
+                else "em.body_text, em.body_html")
+            rows = (await db.execute(text(
+                f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                           em.account_id, em.folder, em.labels,
+                           em.from_address, em.to_addresses,
+                           em.cc_addresses, em.bcc_addresses,
+                           em.subject, {body_select},
+                           em.snippet, em.has_attachments,
+                           em.is_read, em.is_starred, em.is_flagged,
+                           em.importance, em.categories,
+                           em.received_at, em.synced_at,
+                           {rank_select},
+                           {semantic_select},
+                           {headline_select}
+                      FROM email_messages em
+                      {join_sql}
+                     WHERE {where_sql}
+                     ORDER BY {order_sql}
+                     LIMIT :limit OFFSET :offset"""
+            ), params)).fetchall()
+            # Criterion 3: no mail holds every word, so search again with ANY.
+            if (attempt == 0 and broaden is not False and page == 1 and not rows
+                    and _broadenable(text_q)):
+                broadened = True
+                continue
+            break
 
         # "Also in" (EM-T8g-3 item 1): one read for the page, as in the list.
         also_in = await _also_in_by_message(db, [row.id for row in rows], uid)
@@ -377,7 +440,305 @@ async def search_messages(
             "page_size": page_size,
             "query": text_q,
             "hybrid": bool(join_sql),
+            "broadened": broadened,
         }
+
+
+# ── The vector half of company search (WS-KG KG-3b) ─────────────────────────
+
+#: The lowest cosine similarity of a vector hit. The nearest mail to a query
+#: is always there, even when it has nothing to do with it, so a floor keeps
+#: the unrelated out. A default, tuned by the eval after the KG-2 backfill.
+VECTOR_MIN_SIM = 0.30
+
+
+async def semantic_messages(
+    *, user: UserContext, words: str, k: int, received_after: str | None,
+    embed: Any,
+) -> list[dict[str, Any]]:
+    """The mail nearest in meaning to *words*, as the lexical search shapes it.
+
+    The same account scope, folder scope and date filter as
+    :func:`search_messages` with ``folder="all"``: the vector half adds no read
+    path around the gate. FORCE RLS binds both reads (the tenant session).
+
+    1. A first read asks whether any vector of this member's scope exists. With
+       none, this returns ``[]`` and *embed* is NOT called: an org that was
+       never backfilled costs no model call.
+    2. *embed* (``async (words) -> vector | None``) runs with no session open.
+       ``None`` gives ``[]``.
+    3. A second read orders by cosine distance and keeps the hits at or above
+       :data:`VECTOR_MIN_SIM`.
+    """
+    text_q = (words or "").strip()
+    if not text_q:
+        return []
+    uid = user.email or "anonymous"
+
+    async def scope(db: Any) -> tuple[str, dict[str, Any]]:
+        account_id = await resolve_account_filter(db, None, uid)
+        params: dict[str, Any] = {"uid": uid}
+        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
+        folder_sql = folder_scope("all", params, include_sent=True)
+        if folder_sql:
+            where.append(folder_sql)
+        _state_filters(where, params, {"received_after": received_after})
+        return " AND ".join(where), params
+
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        present = (await db.execute(text(
+            "SELECT 1 FROM email_messages em "
+            "JOIN email_embeddings ee ON ee.message_id = em.id "
+            f"WHERE {where_sql} LIMIT 1"
+        ), params)).first()
+    if present is None:
+        return []
+    qvec = await embed(text_q)
+    if qvec is None:
+        return []
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
+        params["limit"] = max(1, int(k))
+        rows = (await db.execute(text(
+            f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                       em.account_id, em.folder, em.labels,
+                       em.from_address, em.to_addresses,
+                       em.cc_addresses, em.bcc_addresses,
+                       em.subject, '' AS body_text, NULL AS body_html,
+                       em.snippet, em.has_attachments,
+                       em.is_read, em.is_starred, em.is_flagged,
+                       em.importance, em.categories,
+                       em.received_at, em.synced_at,
+                       0.0 AS rank,
+                       1 - (ee.embedding <=> CAST(:qvec AS vector)) AS sim
+                  FROM email_messages em
+                  JOIN email_embeddings ee ON ee.message_id = em.id
+                 WHERE {where_sql}
+                 ORDER BY ee.embedding <=> CAST(:qvec AS vector)
+                 LIMIT :limit"""
+        ), params)).fetchall()
+    # The floor and the tie-break run here: a second sort key or a WHERE on the
+    # distance would stop Postgres from using the ivfflat ordering scan.
+    rows = sorted(
+        (r for r in rows if float(getattr(r, "sim", 0.0) or 0.0) >= VECTOR_MIN_SIM),
+        key=lambda r: (-float(r.sim), -(r.received_at.timestamp() if r.received_at else 0.0),
+                       str(r.id)),
+    )
+    out = []
+    for row in rows:
+        m = _row_to_message(row)
+        m.html_remote = False
+        d = m.model_dump()
+        d["rank"] = 0.0
+        d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)
+        d["highlight"] = ""
+        out.append(d)
+    return out
+
+
+# ── The related mail of company search (WS-FIND FIND-3) ─────────────────────
+
+#: The limit of each read of :func:`related_mail` and :func:`open_mail`, in
+#: milliseconds: a little more than ``RELATED_BUDGET_S`` of the step (1.0 s).
+#: The step stops waiting at its budget. This limit stops the statement, so a
+#: scan of a large mailbox never runs on with no one to read it (FIND-3 fix
+#: round, P2-3).
+RELATED_STATEMENT_MS = 1500
+
+#: ``SET LOCAL``: it ends with the read's transaction. ``set_config`` takes a
+#: bind, and ``SET`` does not (``crm/aggregate.py``, ``shell/feed_measure.py``).
+_RELATED_LIMIT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+
+#: The sender address of the mail ``em``, in its match form: trimmed and in
+#: lower case, as the KG-5 forms compare an address.
+_SENDER_KEY = "lower(btrim(em.from_address->>'email'))"
+#: The host of that sender, after its last ``@``.
+_SENDER_HOST = f"substring({_SENDER_KEY} from '@([^@]+)$')"
+
+#: The mail of each address and of each web domain, in the mailboxes that
+#: ``:uid`` may read: the scope and the folders of :func:`search_messages`
+#: (``{scope}``, ``{folder}``). ``mail_from`` is the mail from an address,
+#: ``mail_to`` the mail to it in To, Cc or Bcc, and ``mail_domain`` the mail
+#: from a host. Each match is exact, never a substring. One mail for each
+#: thread, the newest, and at most ``:per`` of one key and one edge.
+_RELATED_MAIL_SQL = """
+WITH m AS (
+    SELECT em.id, COALESCE(em.thread_id, em.id::text) AS thread, em.received_at,
+           {sender} AS sender, {host} AS host, {recipients} AS rcpt
+      FROM email_messages em
+     WHERE {scope} AND {folder}
+       AND ({sender} = ANY(CAST(:addrs AS text[])) OR {host} = ANY(CAST(:hosts AS text[]))
+            OR EXISTS (SELECT 1 FROM jsonb_array_elements({recipients}) AS r(v)
+                        WHERE jsonb_typeof(r.v) = 'object'
+                          AND lower(btrim(r.v->>'email')) = ANY(CAST(:addrs AS text[]))))
+),
+links AS (
+    SELECT 'address:' || m.sender AS key, 'mail_from' AS edge, m.id, m.thread, m.received_at
+      FROM m WHERE m.sender = ANY(CAST(:addrs AS text[]))
+    UNION ALL
+    SELECT DISTINCT 'address:' || lower(btrim(r.v->>'email')), 'mail_to', m.id, m.thread,
+           m.received_at
+      FROM m CROSS JOIN LATERAL jsonb_array_elements(m.rcpt) AS r(v)
+     WHERE jsonb_typeof(r.v) = 'object' AND lower(btrim(r.v->>'email')) = ANY(CAST(:addrs AS text[]))
+    UNION ALL
+    SELECT 'domain:' || m.host, 'mail_domain', m.id, m.thread, m.received_at
+      FROM m WHERE m.host = ANY(CAST(:hosts AS text[]))
+),
+threads AS (
+    SELECT DISTINCT ON (key, edge, thread) key, edge, id, received_at
+      FROM links ORDER BY key, edge, thread, received_at DESC NULLS LAST, id
+)
+SELECT key, edge, id FROM (
+    SELECT t.key, t.edge, t.id, row_number() OVER (
+        PARTITION BY t.key, t.edge ORDER BY t.received_at DESC NULLS LAST, t.id) AS n
+      FROM threads t
+) x WHERE x.n <= :per ORDER BY key, edge, n
+"""
+
+
+def _clean_keys(addresses: list[str], domains: list[str]) -> tuple[list[str], list[str]]:
+    """The addresses and hosts of a related read, in their match form.
+
+    A host of ``CONSUMER_DOMAINS`` (``mailbox_identity.py``, the one list of
+    KG-5) is left out: a free-mail domain names no company, so its mail is
+    never the mail of one. Pure."""
+    from gateway.routes.email.mailbox_identity import CONSUMER_DOMAINS
+
+    addrs = list(dict.fromkeys(a.strip().lower() for a in addresses if "@" in (a or "")))
+    hosts = list(dict.fromkeys(
+        h.strip().lower() for h in domains
+        if (h or "").strip() and h.strip().lower() not in CONSUMER_DOMAINS
+    ))
+    return addrs, hosts
+
+
+async def related_mail(
+    user: UserContext, addresses: list[str], domains: list[str], per: int,
+) -> list[tuple[str, str, str]]:
+    """The mail of each address and web domain, as triples of the related
+    step of company search (FIND-3, ``find_engine.md`` §3.1 rung 4).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The mailboxes are the ones of :func:`search_messages`:
+    those that the member may read, with no separate mailbox
+    (``pooled_only``), and no junk or trash. So the mail of a contact in the
+    mailbox of another member never answers. Triples of a key, an edge and
+    ``email:<id>``: ids only, no text.
+    """
+    addrs, hosts = _clean_keys(addresses, domains)
+    if not addrs and not hosts:
+        return []
+    from gateway.routes.email.automation.identity import recipient_lists_sql
+
+    uid = user.email or "anonymous"
+    params: dict[str, Any] = {"uid": uid, "addrs": addrs, "hosts": hosts, "per": max(1, per)}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
+    sql = _RELATED_MAIL_SQL.format(
+        sender=_SENDER_KEY, host=_SENDER_HOST, recipients=recipient_lists_sql("em"),
+        scope=scope, folder=folder,
+    )
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
+        rows = (await db.execute(text(sql), params)).fetchall()
+    return [(str(r.key), str(r.edge), f"email:{r.id}") for r in rows]
+
+
+async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
+    """The mails of *ids* that the member may read, in the shape of the
+    search, with no body (FIND-3, ``knowledge_graph.md`` §6).
+
+    The mailboxes are the ones of :func:`related_mail`, the scope of the
+    search: those that the member may read, with no separate mailbox. So
+    ``open`` never shows a mail that the related read could not give. Unlike
+    ``get_message``, it marks nothing read and calls no provider. A mail of
+    another member, or of another tenant, gives no row.
+    """
+    if not ids:
+        return []
+    params: dict[str, Any] = {"uid": user.email or "anonymous", "ids": ids}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
+        rows = (await db.execute(text(
+            f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                       em.account_id, em.folder, em.labels,
+                       em.from_address, em.to_addresses,
+                       em.cc_addresses, em.bcc_addresses,
+                       em.subject, '' AS body_text, NULL AS body_html,
+                       em.snippet, em.has_attachments,
+                       em.is_read, em.is_starred, em.is_flagged,
+                       em.importance, em.categories,
+                       em.received_at, em.synced_at
+                  FROM email_messages em
+                 WHERE em.id = ANY(CAST(:ids AS uuid[])) AND {scope}
+                 ORDER BY em.received_at DESC NULLS LAST, em.id"""
+        ), params)).fetchall()
+    out = []
+    for row in rows:
+        m = _row_to_message(row)
+        m.html_remote = False
+        d = m.model_dump()
+        d["highlight"] = ""
+        out.append(d)
+    return out
+
+
+# ── The mail senders of one name (WS-FIND FIND-5) ───────────────────────────
+
+#: The limit of each read of :func:`named_mail`, in milliseconds: a little more
+#: than the deadline of ``GET /search/names`` (``retrieval.names.
+#: NAMES_BUDGET_S``, 1.0 s). The route stops waiting there. This limit stops
+#: the statement, so a scan of a large mailbox never runs on with no one to
+#: read it.
+NAMED_STATEMENT_MS = 1500
+
+#: The newest mails from a sender whose address or name holds ``:held``, in
+#: the mailboxes that ``:uid`` may read (``{scope}``), with no junk or trash
+#: (``{folder}``) and no outbound mail (``{outbound}``): the member wrote it.
+#: The pattern is plain text: ``ESCAPE`` reads the backslash of ``like_escape``.
+_NAMED_MAIL_SQL = """
+SELECT em.id, em.from_address->>'name' AS name, em.from_address->>'email' AS email
+  FROM email_messages em
+ WHERE {scope} AND {folder} AND {outbound}
+   AND (LOWER(em.from_address->>'email') LIKE :held ESCAPE '\\'
+        OR LOWER(em.from_address->>'name') LIKE :held ESCAPE '\\')
+ ORDER BY em.received_at DESC NULLS LAST, em.id
+ LIMIT :lim
+"""
+
+
+async def named_mail(user: UserContext, word: str, limit: int) -> list[dict[str, str]]:
+    """The newest mails from a sender whose address or name holds *word*, for
+    ``resolve_name`` (FIND-5, ``find_engine.md`` §5.2).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The mailboxes are the ones of :func:`search_messages`:
+    those that the member may read, with no separate mailbox
+    (``pooled_only``), and no junk or trash. Outbound mail
+    (``core.NOT_OUTBOUND_SQL``: sent, drafts, outbox) gives no row, because
+    the member wrote it. ``%`` and ``_`` in *word* match as plain text. The
+    read sets a LOCAL ``statement_timeout`` of :data:`NAMED_STATEMENT_MS`
+    first. Each row holds the id, the sender name and the sender address.
+    :func:`search_messages` does not change for its other callers.
+    """
+    held = " ".join(str(word or "").split()).lower()
+    if not held:
+        return []
+    from gateway.routes.projects.filters import like_escape
+
+    params: dict[str, Any] = {"uid": user.email or "anonymous",
+                              "held": f"%{like_escape(held)}%", "lim": max(1, int(limit))}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
+    sql = _NAMED_MAIL_SQL.format(scope=scope, folder=folder, outbound=NOT_OUTBOUND_SQL)
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(NAMED_STATEMENT_MS)})
+        rows = (await db.execute(text(sql), params)).fetchall()
+    return [{"id": str(r.id), "name": str(r.name or ""), "email": str(r.email or "")}
+            for r in rows]
 
 
 # ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────

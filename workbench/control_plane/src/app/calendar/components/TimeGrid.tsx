@@ -55,6 +55,9 @@ import {
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
+import { STRIP_SHARE_DAY, STRIP_SHARE_WEEK, allDayRow, laneSegments, segmentsForDay, splitByTasks, taskInset, type ExternalView } from "../lib/externalEntries";
+import { ExternalAllDayRow } from "./ExternalAllDayRow";
+import { externalLook } from "./externalLook";
 
 
 // ── the card ─────────────────────────────────────────────────────────────────
@@ -141,6 +144,9 @@ export function TimeGrid({
   onMoveReminder,
   onPickReminderMove,
   onResolveReminder,
+  externals = [],
+  onOpenExternal,
+  reserveAllDay = false,
 }: {
   days: Date[];
   items: MyTask[];
@@ -192,7 +198,14 @@ export function TimeGrid({
   /** "Move to…" opens the date and time form. */
   onPickReminderMove?: (id: string) => void;
   onResolveReminder?: (id: string, action: "done" | "drop") => void;
+  /** Google and Outlook events (CE-5a). Read only: no handle, no lane of a task. */
+  externals?: ExternalView[];
+  onOpenExternal?: (id: string) => void;
+  /** Flag on: keep the all-day row's height, so the body does not jump on a load. */
+  reserveAllDay?: boolean;
 }) {
+  const allDay = allDayRow(externals, days);
+  const hasAllDay = allDay.bars.length > 0 || allDay.more.some(Boolean) || reserveAllDay;
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
   // Where the time pill sits in the gutter: day view, today, inside the grid.
@@ -381,8 +394,10 @@ export function TimeGrid({
       {/* Column headers (week). The grid body below is its own stacking
           context (`relative z-0`), so no pin, now line or block in it can
           draw over this header when the grid scrolls under it. */}
+      {(days.length > 1 || hasAllDay) && (
+        <div className="sticky top-0 z-10 bg-background">
       {days.length > 1 && (
-        <div className="sticky top-0 z-10 flex border-b border-border bg-background">
+        <div className="flex border-b border-border">
           <div className="w-14 shrink-0" />
           {days.map((d) => {
             const today = sameDay(d, now);
@@ -406,6 +421,9 @@ export function TimeGrid({
               </div>
             );
           })}
+        </div>
+      )}
+      {hasAllDay && <ExternalAllDayRow days={days} externals={externals} onOpen={(id) => onOpenExternal?.(id)} />}
         </div>
       )}
 
@@ -476,6 +494,13 @@ export function TimeGrid({
             };
           });
           const dayKey = day.toISOString();
+          // An event that shares time with a task takes a strip on the right.
+          // The task cards give up the same share, so no text is under it.
+          const stripShare = days.length > 1 ? STRIP_SHARE_WEEK : STRIP_SHARE_DAY;
+          const { clear: clearExt, beside: besideExt } = splitByTasks(
+            segmentsForDay(externals, day, reminderZone),
+            spans,
+          );
           const nowTop =
             ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
           return (
@@ -652,6 +677,56 @@ export function TimeGrid({
                 </div>
               )}
 
+              {/* external events (CE-5a) — hatched, read only, no handle. They
+                  take lanes among themselves and never join `blocksForDay`.
+                  They come before the task cards in the DOM, so a card draws
+                  over one. A click opens the sheet and stops here, so it does
+                  not open the schedule-here sheet. */}
+              {(() => {
+                // A task at the same time would cover an event, so an event that
+                // shares time with a task takes a strip on the right edge, above
+                // the cards (z-10, under the pins). The rest keep the column.
+                const clear = clearExt;
+                const beside = besideExt;
+                const draw = (laid: ReturnType<typeof laneSegments>, strip: boolean) =>
+                  laid.map(({ seg, lane, lanes }) => {
+                    const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
+                    const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
+                    if (top + height < 0 || top > gridHeight) return null;
+                    const x = seg.entry;
+                    const span = strip ? stripShare * 100 : 100;
+                    const from = strip ? 100 - span : 0;
+                    return (
+                      <button
+                        key={`ex-${x.id}-${seg.startMin}`}
+                        type="button"
+                        data-external-strip={strip ? "" : undefined}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenExternal?.(x.id);
+                        }}
+                        title={x.title}
+                        aria-label={`${x.source === "google" ? "Google" : "Outlook"} event: ${x.title}`}
+                        className={`absolute overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight focus-visible:ring-2 focus-visible:ring-ring ${strip ? "z-10" : ""} ${externalLook(x)}`}
+                        style={{
+                          top: Math.max(0, top) + 1,
+                          height,
+                          left: `calc(${from + (lane / lanes) * span}% + 2px)`,
+                          width: `calc(${span / lanes}% - 4px)`,
+                        }}
+                      >
+                        <span className="line-clamp-2 break-words font-medium">{x.title}</span>
+                      </button>
+                    );
+                  });
+                return (
+                  <>
+                    {draw(laneSegments(clear), false)}
+                    {draw(laneSegments(beside), true)}
+                  </>
+                );
+              })()}
+
               {/* reminder pins (WS-66 RM-5) — a line with no height at the
                   minute of the reminder. Not a block: no lane, no capacity.
                   The line is pointer-events-none. The button is the handle.
@@ -766,8 +841,13 @@ export function TimeGrid({
                         ),
                       )
                     : null;
-                const leftPct = (lane / lanes) * 100;
-                const widthPct = 100 / lanes;
+                const inset = taskInset(
+                  besideExt,
+                  { start: minutesInto(b.start), end: minutesInto(b.start) + Math.max(mins, (20 / HOUR_PX) * 60) },
+                  stripShare,
+                );
+                const leftPct = (lane / lanes) * 100 * (1 - inset);
+                const widthPct = (100 / lanes) * (1 - inset);
                 // The card's width in px: the column, split by its lanes.
                 const cardW = (colW || 600) * (widthPct / 100) - 4;
                 const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {

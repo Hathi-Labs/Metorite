@@ -41,7 +41,6 @@
  * Fences: `feed.test.ts`, `feedState.test.ts`, `feedHandled.test.ts` and
  * `myDayPage.test.ts`.
  */
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
@@ -56,8 +55,6 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import type { ActivityRow } from "@/lib/runActivity";
 
 import {
-  FEED_APP_NAMES,
-  type FeedApp,
   FEED_SHOWN,
   GROUP_LABELS,
   PENDING,
@@ -65,6 +62,8 @@ import {
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
+  isAgentQuestionsCard,
+  isExpandAct,
   type HandledEntry,
   type Visit,
   actLeavesCard,
@@ -107,9 +106,14 @@ import {
   runMenuAct,
   stateItem,
 } from "./feedState";
+import dynamic from "next/dynamic";
+
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import { AI_TAB, ALL_TAB, appRowCounts, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import NeedsTabBar from "./NeedsTabBar";
+import { useMyDayGo } from "./myDayGo";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
 import { isReminderKind } from "./reminderKinds";
@@ -124,6 +128,12 @@ import {
   subscribeActs,
 } from "./needsActs";
 import { joinNeedsPoll } from "./ShellBell";
+
+/** EA-18e. The question list loads when a card opens it, not with My Day. */
+const QuestionsInCard = dynamic(() => import("./QuestionsInCard"), {
+  ssr: false,
+  loading: () => <Skeleton className="mt-2 h-16 w-full basis-full" />,
+});
 
 const DANGER = accentForHue("red");
 
@@ -151,6 +161,8 @@ const NO_MENU: MenuOverlay = new Map();
 export interface Feed {
   answer: FeedAnswer | undefined;
   loading: boolean;
+  /** A newer answer is on its way over the one shown (`useCachedResource`). Absent reads as false. */
+  refreshing?: boolean;
   error: string | null;
   refresh: () => void;
   /** The needs rows that are off: the one store and the feed's overlay (`feedHiddenRows`). */
@@ -303,6 +315,7 @@ export function useFeed(enabled: boolean): Feed {
   return {
     answer: feed.data,
     loading: feed.loading,
+    refreshing: feed.refreshing,
     error: feed.error,
     refresh,
     marked,
@@ -582,9 +595,12 @@ export function FeedColumn({
   feed,
   now,
   ai = [],
+  onTakeNew,
   className = "",
 }: {
   feed: Feed;
+  /** The member took in the new cards. The Do first band starts a new hold on it (PKG-Q15). */
+  onTakeNew?: () => void;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
   /** The assistant runs that wait on the member (`useAiWaiting`), the first group. */
@@ -614,59 +630,51 @@ export function FeedColumn({
   // "adjust state while rendering" pattern does it.
   if (visit === null && view.visit !== null) setVisit(view.visit);
   const fresh = view.fresh;
-  const takeNew = () => setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+  const takeNew = () => {
+    setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+    onTakeNew?.();
+  };
   const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
-  // One kind at a time (owner, 2026-11-01: "not too cognitively loading").
-  // A chip per kind with its count. "All" is the default. A kind that empties
-  // falls back to All.
-  const [only, setOnly] = useState<string | null>(null);
-  const appCounts = new Map<string, number>();
-  for (const g of groups) for (const c of g.cards) appCounts.set(c.app, (appCounts.get(c.app) ?? 0) + 1);
-  const kinds = [...appCounts.entries()].sort((a, b) => b[1] - a[1]);
-  const active = only === "ai" ? (ai.length > 0 ? "ai" : null) : only !== null && appCounts.has(only) ? only : null;
-  const filtered = active !== null;
+  // One tab at a time (owner, 2026-11-01: "not too cognitively loading"; and
+  // 2026-11-07, CC-11: a tab for each app that can need the member). "All" is
+  // the default. A tab that empties falls back to All. The rules are in
+  // `needsTabs.ts`.
+  const [only, setOnly] = useState<NeedsTabId>(ALL_TAB);
+  // The cut (FEED_SHOWN) belongs to All. A tab counts every row of its app
+  // and shows every row it counts, so the number is a promise it keeps.
+  const full = columnView(feed.answer, visit, { shown: Number.MAX_SAFE_INTEGER, marked: feed.marked, hidden: apart });
+  const fullGroups = full.groups.filter((g) => g.id !== "later");
+  const appCounts = appRowCounts(fullGroups);
+  const bandTotal = bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0).length;
+  const tabs = buildNeedsTabs({ apps: appCounts, ai: ai.length, reminders: bandTotal });
+  const active = activeNeedsTab(tabs, only);
+  const filtered = active !== ALL_TAB;
+  const activeApp = tabs.find((t) => t.id === active)?.app;
   const shownGroups =
-    active === null
-      ? groups
-      : active === "ai"
+    activeApp === undefined
+      ? filtered
         ? []
-        : groups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === active) })).filter((g) => g.cards.length > 0);
-  const chips =
-    kinds.length + (ai.length > 0 ? 1 : 0) > 1 ? (
-      // One line on a phone (task 1898): the chips wrapped to three rows of
-      // 40 px pills above the first card. Below `sm` they scroll sideways,
-      // edge to edge, and from `sm` they wrap as before.
-      <div
-        role="toolbar"
-        aria-label="Show one kind"
-        data-feed-filter=""
-        className="scrollbar-hide -mx-4 flex items-center gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
-      >
-        <FilterChip active={active === null} label="All" onClick={() => setOnly(null)} />
-        {ai.length > 0 ? (
-          <FilterChip
-            active={active === "ai"}
-            icon="Sparkles"
-            iconClass={accentForHue("amber").text}
-            label="AI waiting"
-            count={ai.length}
-            onClick={() => setOnly("ai")}
-          />
-        ) : null}
-        {kinds.map(([app, n]) => (
-          <FilterChip
-            key={app}
-            active={active === app}
-            icon={feedAppIcon(app)}
-            iconClass={appHue(app).text}
-            label={FEED_APP_NAMES[app as FeedApp] ?? app}
-            count={n}
-            onClick={() => setOnly(app)}
-          />
-        ))}
-      </div>
+        : groups
+      : fullGroups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === activeApp) })).filter((g) => g.cards.length > 0);
+  const seeAll = seeAllHref(active);
+  const tabBar =
+    tabs.length > 0 ? (
+      // One line on a phone (task 1898): the tabs scroll sideways inside the
+      // bar, edge to edge, and never wrap.
+      <NeedsTabBar
+        panelId="feed-needs-panel"
+        active={active}
+        onChange={setOnly}
+        tabs={tabs.map((t) => ({
+          id: t.id,
+          label: t.label,
+          icon: t.icon || undefined,
+          iconClass: t.ai ? accentForHue("amber").text : t.app ? appHue(t.app).text : t.id === REMINDERS_TAB ? accentForHue("amber").text : undefined,
+          count: t.count,
+        }))}
+      />
     ) : null;
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
@@ -684,6 +692,7 @@ export function FeedColumn({
         error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
         onAct={(a, from) => feed.act(card, a, from)}
         onMenu={(choice) => feed.menu(card, choice)}
+        renderExpand={(c, close) => (isAgentQuestionsCard(c) ? <QuestionsInCard onChanged={feed.refresh} onClose={close} /> : null)}
         layout="row"
       />
     </div>
@@ -705,7 +714,7 @@ export function FeedColumn({
   } else {
     body = (
       <div className="flex flex-col gap-5">
-        {ai.length > 0 && (active === null || active === "ai") ? <AiWaitingGroup rows={ai} /> : null}
+        {ai.length > 0 && (active === ALL_TAB || active === AI_TAB) ? <AiWaitingGroup rows={ai} /> : null}
         {fresh > 0 ? (
           // §7 rule 4: a new card never moves the cards under the pointer.
           // It waits here, and enters on a click or on the next visit.
@@ -715,7 +724,7 @@ export function FeedColumn({
             </Button>
           </div>
         ) : null}
-        {groups.length === 0 ? (
+        {!filtered && groups.length === 0 ? (
           <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
               <Icon name="Check" size={14} className={accentForHue("green").text} />
@@ -826,9 +835,23 @@ export function FeedColumn({
       </h2>
       {/* The Reminders band (RX-3) is the first thing of the column, above
           every group. The groups leave the reminder cards out. */}
-      <RemindersBand feed={feed} now={now} />
-      {chips}
-      {body}
+      {tabBar}
+      <div
+        id="feed-needs-panel"
+        role="tabpanel"
+        aria-labelledby={tabs.length > 0 ? `feed-needs-panel-tab-${active}` : undefined}
+        className="flex min-w-0 flex-col gap-3"
+      >
+        {active === ALL_TAB || active === REMINDERS_TAB ? <RemindersBand feed={feed} now={now} tabbed={active === REMINDERS_TAB} /> : null}
+        {active === REMINDERS_TAB ? null : body}
+        {seeAll ? (
+          <div className="flex justify-center">
+            <Button href={seeAll} variant="text" size="none" icon="ArrowRight" data-feed-see-all="" className="min-h-8 gap-1 text-xs font-medium">
+              See all
+            </Button>
+          </div>
+        ) : null}
+      </div>
       {failed.length > 0 || stale ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1">
           <div className="flex min-w-0 flex-col gap-0.5">
@@ -885,33 +908,6 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
   );
 }
 
-/** One chip of the column's filter: a kind, its icon and its count. */
-function FilterChip({
-  active,
-  icon,
-  iconClass = "",
-  label,
-  count,
-  onClick,
-}: {
-  active: boolean;
-  icon?: string;
-  /** The kind's hue on its icon (`appHue`). */
-  iconClass?: string;
-  label: string;
-  count?: number;
-  onClick: () => void;
-}) {
-  // `selected` is the pressed state: the theme's soft tint, and aria-pressed.
-  return (
-    <Button variant="secondary" size="sm" selected={active} data-feed-chip="" onClick={onClick} className="shrink-0">
-      {icon ? <Icon name={icon} size={13} className={`shrink-0 ${iconClass}`} /> : null}
-      {label}
-      {count !== undefined ? <span className="tabular-nums opacity-70">{count}</span> : null}
-    </Button>
-  );
-}
-
 /** An id that is safe in `id` and `aria-labelledby`: no spaces, no odd marks. */
 const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 
@@ -942,12 +938,14 @@ export function phoneMenuItems(
   onAct: (act: FeedAct) => void,
   go: (href: string) => void,
   onMenu?: (choice: MenuChoice) => void,
+  /** EA-18e. An act that opens inside its card runs `onAct`, as a tap does. */
+  expandHere: (act: FeedAct) => boolean = () => false,
 ): CtxItem[] {
   const items: CtxItem[] = acts.map((a) => ({
     kind: "item",
     label: a.label,
     icon: themedIcon(a.way === "tap" ? (a.act === "done" ? "Check" : "CheckCheck") : "ArrowRight"),
-    onSelect: () => (a.way === "tap" ? onAct(a) : go(a.href ?? card.href)),
+    onSelect: () => (a.way === "tap" || expandHere(a) ? onAct(a) : go(a.href ?? card.href)),
   }));
   const menu = onMenu ? cardMenuItems(onMenu) : [];
   return items.length > 0 && menu.length > 0 ? [...items, { kind: "sep" }, ...menu] : [...items, ...menu];
@@ -955,7 +953,9 @@ export function phoneMenuItems(
 
 /**
  * The phone's "···" menu of a feed row. It mounts only while it is open, so
- * `useRouter` runs inside the app, and a static render never calls it.
+ * `useRouter` runs inside the app, and a static render never calls it. An
+ * open act goes through `useMyDayGo`, so a task opens in My Day's panel
+ * while that flag is on (PK-1), as a click on the row does.
  */
 function PhoneRowMenu({
   x,
@@ -964,6 +964,7 @@ function PhoneRowMenu({
   acts,
   onAct,
   onMenu,
+  expandHere,
   onClose,
 }: {
   x: number;
@@ -972,15 +973,16 @@ function PhoneRowMenu({
   acts: readonly FeedAct[];
   onAct: (act: FeedAct) => void;
   onMenu?: (choice: MenuChoice) => void;
+  expandHere?: (act: FeedAct) => boolean;
   onClose: () => void;
 }) {
-  const router = useRouter();
+  const go = useMyDayGo();
   return (
     <ContextMenu
       x={x}
       y={y}
       autoFocus
-      items={phoneMenuItems(card, acts, onAct, (href) => router.push(href), onMenu)}
+      items={phoneMenuItems(card, acts, onAct, go, onMenu, expandHere)}
       onClose={onClose}
     />
   );
@@ -1003,6 +1005,7 @@ export function FeedCard({
   onAct,
   onMenu,
   layout = "card",
+  renderExpand,
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
@@ -1019,11 +1022,32 @@ export function FeedCard({
    * one meta line (source and why), and the acts at the row's end.
    */
   layout?: "card" | "row";
+  /**
+   * EA-18e. What an expand act (`isExpandAct`) opens under the card. The
+   * column gives it. With none, the act stays the link it was sent as.
+   */
+  renderExpand?: (card: Card, close: () => void) => React.ReactNode;
 }) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   // Which "···" opened the menu: the phone's holds the row's acts too.
   const [menuPhone, setMenuPhone] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useRef<HTMLElement | null>(null);
+  // A card that leaves with its list open (the last answer) must not drop
+  // focus to the page body: it goes to the column's heading.
+  useEffect(() => {
+    if (!expanded) return;
+    return () => {
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          document.querySelector<HTMLElement>("[data-leave-focus]")?.focus();
+        }
+      });
+    };
+  }, [expanded]);
+  const expandHere = (a: FeedAct) => !!renderExpand && isExpandAct(card, a);
+  const expandedId = `feed-expand-${safeId(card.signal_id)}`;
   const time = nowMs === null ? "" : cardTime(card, nowMs);
   const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
   const mark = stateMark(card);
@@ -1105,7 +1129,7 @@ export function FeedCard({
         data-testid={testId}
         data-home-card=""
         data-feed-row=""
-        className="flex min-w-0 items-center gap-3 px-3 py-2.5"
+        className="flex min-w-0 flex-wrap items-center gap-3 px-3 py-2.5"
       >
         <span aria-hidden className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${appHue(card.app).soft} ${appHue(card.app).text}`}>
           <Icon name={feedAppIcon(card.app)} size={15} />
@@ -1201,6 +1225,24 @@ export function FeedCard({
                 >
                   {a.label}
                 </Button>
+              ) : expandHere(a) ? (
+                <Button
+                  key={a.id}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  icon={expanded ? "ChevronUp" : "ChevronDown"}
+                  data-feed-act={i}
+                  data-feed-expand=""
+                  aria-expanded={expanded}
+                  aria-controls={expandedId}
+                  aria-label={`${a.label}: ${card.title}`}
+                  onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+                >
+                  {a.label}
+                </Button>
               ) : (
                 <Button
                   key={a.id}
@@ -1238,12 +1280,16 @@ export function FeedCard({
             x={menuAt.x}
             y={menuAt.y}
             card={card}
-            acts={phoneActs}
-            onAct={(a) => onAct(a, opener.current ?? document.body)}
+            acts={phoneActs.map((a) => (expanded && expandHere(a) ? { ...a, label: "Hide answers" } : a))}
+            onAct={(a) => (expandHere(a) ? setExpanded((v) => !v) : onAct(a, opener.current ?? document.body))}
+            expandHere={expandHere}
             onMenu={withMenu ? onMenu : undefined}
             onClose={closeMenu}
           />
         ) : null}
+        <div id={expandedId} className="basis-full empty:hidden" hidden={!expanded}>
+          {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+        </div>
       </section>
     );
   }
@@ -1281,6 +1327,24 @@ export function FeedCard({
               >
                 {a.label}
               </Button>
+            ) : expandHere(a) ? (
+              <Button
+                key={a.id}
+                variant={i === 0 ? "primary" : "secondary"}
+                size="sm"
+                icon={expanded ? "ChevronUp" : "ChevronDown"}
+                data-feed-act={i}
+                data-feed-expand=""
+                aria-expanded={expanded}
+                aria-controls={expandedId}
+                aria-label={`${a.label}: ${card.title}`}
+                onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+              >
+                {a.label}
+              </Button>
             ) : (
               <Button
                 key={a.id}
@@ -1296,6 +1360,9 @@ export function FeedCard({
           )}
         </div>
       ) : null}
+      <div id={expandedId} className="px-2 empty:hidden" hidden={!expanded}>
+        {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+      </div>
       {error ? (
         <p role="alert" className={`px-2 pb-1 text-xs ${DANGER.text}`}>
           {error}

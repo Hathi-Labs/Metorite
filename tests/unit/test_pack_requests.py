@@ -16,9 +16,9 @@ Run: ``uv run pytest tests/unit/test_pack_requests.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
+
 from tests.unit.test_tool_packs_choice import EVERY, MEMBER, ORG, SESSION
 
 #: The base of the real run, in tools (the staging shape of OA-8e).
@@ -88,11 +88,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "voice_profile": ("show my writing style",),
     # -- crm-records --
     "convert_lead": ("convert the lead Acme to a deal",),
+    # WS-CRM CRM-M2b: the edit of any field, and the task change.
+    "crm_update_record": ("change the amount of the Acme deal in the crm to 50000",),
+    "crm_update_task": ("mark my crm follow-up task with Acme as done",),
     "create_lead": ("create a lead for Acme",),
     "crm_search_notes": ("search my crm notes for pricing",),
     # WS-CRM CRM-M1: the read of the CRM Change history.
     "crm_change_history": ("what changed in the crm last tuesday",
                            "who changed the crm setup this week"),
+    # WS-CRM CRM-M3a: a new deal pipeline.
+    "crm_create_pipeline": ("create a new crm pipeline for AMC contracts",),
     "get_pipeline": ("show the sales pipeline",),
     "get_record": ("show the Acme record in the crm",),
     "get_timeline": ("show the timeline of the Acme deals",),
@@ -136,6 +141,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "export_tasks": ("export the tasks to CSV",),
     "find_conflicts": ("are there scheduling conflicts in the project plan?",),
     "fit_for_task": ("who is the best fit for this task?",),
+    "get_plan": ("what can start now in this epic?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
@@ -160,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -222,7 +230,39 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- projects-authority (WS-ALN ALN-4) --
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
-    "unpin_authority": ("remove the authority page of the project",),
+    "unpin_authority": ("remove the authority page of the project",
+                        # CO-11b (task 3563): the three phrases that took the
+                        # place of the bare "unpin".
+                        "unpin this page from the project",
+                        "unpin the page from the board", "unpin a page"),
+    # WS-39 LP-1a: the updates of a project sit in the same pack.
+    "list_project_updates": ("show the project updates of Website Relaunch",),
+    "post_project_update": ("post a project update: the vendor slipped a week",),
+    "delete_project_update": ("remove my last project update",),
+    # WS-39 TPL-1a: the project templates of the organization.
+    "list_templates": ("which project templates do we have?",),
+    "save_as_template": ("save this project as a template",),
+    "create_project_from_template": ("use the project template Install kit for the Acme job",
+                                     "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("show the cycles of Website Relaunch",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
+    # WS-55 EA-18d: the authority pack holds the question tools. The phrasings are
+    # the ones of the review: none may load the plan pack alone.
+    "agent_questions": ("what agent questions wait on me?",
+                        "which questions wait on me?"),
+    "answer_agent_question": (
+        "answer the agent question: use the staging box",
+        "give my answer to the agent on the extruder task: use the staging box",
+        "the agent asked me which box to use. tell it the staging box.",
+        "reply to the agent's question: use the staging box",
+    ),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -239,9 +279,48 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio packages (STU-G1c) --
     "studio_save": ("save my studio app",),
     "studio_publish": ("publish my studio app",),
+    # -- studio package delete (STU-A5c-2) --
+    "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
+    # -- studio ready apps (STU-K1d) --
+    "studio_template_list": ("list my studio app templates",),
+    "studio_create_from_template": ("create my studio app from a template",),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
+    # -- studio record writes (STU-B2c-2b) --
+    "studio_record_create": ("add a record to my studio package",),
+    "studio_record_update": ("change a record in my studio package",),
+    "studio_record_delete": ("delete a record from my studio package",),
+    # -- studio door read (STU-B2b-2c) --
+    "studio_app_read": ("read a knowledge page through my studio app",),
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices",
+                             # STU-E4b: the run id mode, the steps of a run.
+                             "list the steps of the playbook run in my studio app"),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
+    # -- studio-workflows: the other Workflows acts (PAR-8a, task 3903) --
+    "studio_workflow_runs": ("show the last run of the workflow that chases invoices",
+                             "why did the workflow run fail?"),
+    "studio_workflow_check": ("check the workflow before I publish it",),
+    "studio_workflow_catalog": ("which code modules can a workflow step use?",
+                                "list the workflow modules"),
+    "studio_workflow_run": ("run the workflow that chases invoices",
+                            "test run the workflow with this lead"),
+    "studio_workflow_save": ("create a workflow called Weekly digest",
+                             "delete the workflow that chases invoices"),
+    "studio_workflow_build": ("change the workflow so it also sends a summary",),
+    "studio_workflow_module": ("write a code module that splits a full name",),
+    # -- studio-share: the share of a skill with the org (WS-STU J2d) --
+    "studio_skill_share": ("share my skill with the team",
+                           "approve the skill share that waits for me"),
+    # -- studio-repair: the repair of a skill (TOF-3a F12c) --
+    "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
+    "studio_skill_undo": ("undo my skill to the version before",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
@@ -250,6 +329,38 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "resolve_reminder": ("mark the reminder as done",),
     "set_reminder": ("remind me to call Ravi at 5pm",),
     "update_reminder": ("change the reminder text",),
+    # -- calendar-day (CAL-1a, task 1675) --
+    "my_tasks_day_digest": ("start my day",),
+    "my_tasks_list_schedule": ("show my calendar for today",),
+    "my_tasks_plan_day": ("rebuild my day",),
+    "my_tasks_replan_day": ("I fell behind, fit what's left",),
+    "my_tasks_rollover": ("roll over my tasks from yesterday",),
+    "my_tasks_schedule": ("block an hour for the report",),
+    "my_tasks_set_one_thing": ("make the report my one thing for today",),
+    "my_tasks_unschedule": ("block an hour, then take that block off",),
+    # -- calendar-day settings (CAL-2, task 1676) --
+    "my_tasks_get_calendar_settings": ("what are my working hours?",),
+    "my_tasks_update_calendar_settings": (
+        "I work 8 to 6", "never book meetings before 10", "I'm sharpest 9 to 12",
+        "turn on auto rollover"),
+    # -- calendar-day rules (CAL-3, task 1677) --
+    "my_tasks_list_day_rules": ("what are my day rules?",),
+    "my_tasks_add_day_rule": ("keep mornings for deep work", "protect my mornings",
+                              "add a focus block on Fridays"),
+    "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
+    "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
+    # -- calendar-day events (CE-15, task 3463) --
+    "my_tasks_list_events": ("what is on my calendar this week?",
+                             "which meetings are on my calendar tomorrow?"),
+    # -- calendar-day P-1a (task 3112) --
+    "my_tasks_list_calendar_connections": ("what calendars are connected",
+                                           "which calendars do I have connected",
+                                           "list my calendar connections"),
+    "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
+    "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -259,8 +370,25 @@ REQUESTS: dict[str, tuple[str, ...]] = {
 #: Projects apps load the core pack by surface, and the offered-pack lines in the
 #: rules of the loader show the member's model where the tools are.
 KNOWN_GAPS: dict[str, str] = {
-    "show my calendar": "bare calendar is out (Google or Notion calendar)",
     "summarise the Website Relaunch project": "a name sits between 'the' and 'project'",
+    # CO-11b (task 3563): the bare "unpin" left the authority words, so "unpin
+    # this chat" loads no pack. cal-tasks approved exactly three phrases:
+    # "unpin this page", "unpin the page" and "unpin a page". These asks of
+    # the authority pack load no pack by their words now.
+    "unpin that page": "only this, the and a stand before 'page' in the words",
+    "unpin the authority": "the bare 'unpin' is out, and 'authority' alone is no word",
+    "unpin the doc from the project": "the bare 'unpin' is out, and 'doc' is no word",
+    "unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin it": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin that": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin this doc": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the spec page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "please unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the project page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin my page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the pinned page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin our page": "the bare 'unpin' is out, and no three-phrase form matches",
 }
 
 #: Ordinary turns and the packs that they load. A change of a word list must
@@ -280,6 +408,10 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("revert that draft", ()),
     ("revert that deal update", ()),
     ("what senders email me most about the crm deals", ("email", "crm-records")),
+    # CO-11b (task 3563): the pin of a chat is a core tool of the orchestrator,
+    # so these turns load no pack. A bare "unpin" once loaded projects-authority.
+    ("unpin this chat", ()),
+    ("pin this chat", ()),
 )
 
 
@@ -325,3 +457,16 @@ def test_the_known_gaps_stay_listed_with_a_reason() -> None:
 def test_an_ordinary_turn_keeps_its_packs(words: str, slugs: tuple[str, ...]) -> None:
     """Mutation: add a bare common word to a pack -> a control gains a pack."""
     assert _chosen(words) == slugs
+
+
+def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses_them() -> None:
+    """EA-18d review. Every phrasing loads ``projects-authority``. The plan rule
+    no longer tells the model to refuse an answer. The authority pack says when
+    to use the tools, and its catalog line names agent questions."""
+    for words in REQUESTS["answer_agent_question"] + REQUESTS["agent_questions"]:
+        assert "projects-authority" in _chosen(words), words
+    plan = tp.PACKS["projects-plan"]
+    assert "Never answer a question" not in plan.rules
+    assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
+    assert "agent" in tp.PACKS["projects-authority"].when
+    assert "answer to an agent" not in plan.when

@@ -6,7 +6,7 @@ Spec: ``project-docs/specs/my_day_command_centre.md`` §9.3 · D188 (D-MD-5).
     PATCH /projects/my/focus-sessions/{session_id}  → pause, resume, extend or end MY session
     GET   /projects/my/focus-sessions?day=          → my sessions of one local day, with minutes
 
-**One row for each session** (migration ``350_focus_sessions.sql``). Before
+**One row for each session** (migration ``501_focus_sessions.sql``). Before
 this module, actual time was one ``actual_start`` and ``actual_end`` pair on
 ``pm_task_personal``, and each session wrote over it. This module is the one
 writer of ``focus_sessions``.
@@ -87,7 +87,7 @@ from sqlalchemy.exc import IntegrityError
 
 _log = get_logger("gateway.projects.focus_sessions")
 
-#: Migration 350's mode CHECK. The focus room's three timers (`FocusMode.tsx`).
+#: Migration 501's mode CHECK. The focus room's three timers (`FocusMode.tsx`).
 MODES: tuple[str, ...] = ("25/5", "50/10", "flow")
 
 #: The work length of a timer, in minutes. Flow has no timer: the room counts
@@ -104,7 +104,7 @@ END_OUTCOMES: tuple[str, ...] = ("done", "almost", "not_now", "blocked")
 #: The outcomes that only the server writes. A body that names one gets 422.
 SERVER_OUTCOMES: tuple[str, ...] = ("replaced", "auto_closed")
 
-#: Migration 350's outcome CHECK.
+#: Migration 501's outcome CHECK.
 OUTCOMES: tuple[str, ...] = END_OUTCOMES + SERVER_OUTCOMES
 
 #: "+10 min moves planned_end" (§9.3).
@@ -114,7 +114,7 @@ EXTEND_MINUTES = 10
 #: read stopped at the cap.
 DAY_CAP = 500
 
-#: The partial unique index of migration 350: one open session for each member.
+#: The partial unique index of migration 501: one open session for each member.
 OPEN_INDEX = "focus_sessions_one_open"
 
 #: How many times a start tries its write: the first try and one more.

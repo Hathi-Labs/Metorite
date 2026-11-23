@@ -7,7 +7,9 @@ import {
   readRemembered,
   remember,
   resolvePipeline,
+  placesOf,
   showPicker,
+  stagesInPlaces,
   stagesOf,
 } from "./pipelines";
 import type { DealPipeline } from "./types";
@@ -200,5 +202,38 @@ describe("the pipelines read", () => {
       "/api/crm/pipeline?owner=vj%40x.in&pipeline_id=p2",
       "/api/crm/pipeline",
     ]);
+  });
+});
+
+// ── The stage menu of a deal lists its own pipeline (CRM-M3) ───────────────
+
+describe("stagesInPlaces", () => {
+  const all = ["a", "b", "c", "d"].map((id) => ({ id }));
+  const std: DealPipeline = {
+    id: "std", name: "Standard", position: 0, is_default: true,
+    stages: [stage("a", 0), stage("b", 1)],
+  } as unknown as DealPipeline;
+  const ren: DealPipeline = {
+    id: "ren", name: "Renewals", position: 1, is_default: false,
+    stages: [stage("c", 0), stage("d", 1)],
+  } as unknown as DealPipeline;
+
+  it("lists only the stages of the deal's pipeline", () => {
+    const ids = (p: string | null) =>
+      stagesInPlaces(all, placesOf([std, ren], p), null).map((s) => s.id);
+    expect(ids("ren")).toEqual(["c", "d"]);
+    expect(ids("std")).toEqual(["a", "b"]);
+  });
+
+  it("lists the stages of the default pipeline for a deal with no pipeline", () => {
+    const places = placesOf([ren, std], null);
+    expect(stagesInPlaces(all, places, null).map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  it("keeps the current stage, and lists everything when no stage is listed", () => {
+    const places = placesOf([std, ren], "std");
+    expect(stagesInPlaces(all, places, "d").map((s) => s.id)).toEqual(["a", "b", "d"]);
+    expect(stagesInPlaces(all, new Map(), null)).toHaveLength(4);
+    expect(stagesInPlaces(all, null, null)).toHaveLength(4);
   });
 });

@@ -130,7 +130,7 @@ async def test_add_episode_noop_when_disabled() -> None:
         name="test:event",
         content="Deal moved to Awaiting PO",
         source_description="test",
-        group_id="test-user",
+        organization_id="00000000-0000-0000-0000-000000000001",
     )
 
 

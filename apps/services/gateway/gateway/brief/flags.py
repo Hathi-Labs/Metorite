@@ -12,6 +12,9 @@ This module is the ONE reader of the ``BRIEF_*`` settings.
 * ``BRIEF_COMPOSE`` — the switch of the phrase step (BR-2a-2), default OFF.
   On, a run with 4 claims or more makes one model call for the lead.
 
+* ``BRIEF_CLOSEOUT`` — the switch of the 18:30 close-out kind (BR-2b-1),
+  default OFF. Off, the planner plans no close-out.
+
 An org gets a brief only when the switch is on AND the org is on the list.
 The org always comes from the worker's own discovery read, never from a
 payload or from request input (R5, R11). The shape is ``reach/flags.py``.
@@ -71,5 +74,14 @@ def in_app(organization_id: str | None) -> bool:
     ``BRIEF_IN_APP`` is on (BR-2c-1). Default OFF. Off, ``GET /brief/today``
     answers 404, and the chat's first turn reads no stored run."""
     if getattr(get_settings(), "brief_in_app", False) is not True:
+        return False
+    return org_allowed(organization_id)
+
+
+def closeout(organization_id: str | None) -> bool:
+    """True when the org gets a brief (:func:`org_allowed`) AND
+    ``BRIEF_CLOSEOUT`` is on (BR-2b-1). Default OFF. Off, the planner plans
+    no close-out run, and the brief path is as before."""
+    if getattr(get_settings(), "brief_closeout", False) is not True:
         return False
     return org_allowed(organization_id)

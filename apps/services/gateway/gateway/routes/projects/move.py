@@ -58,7 +58,8 @@ from gateway.routes.projects.core import (
     actor,
     assert_holds_tasks,
     assert_move_keeps_privacy,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     emit,
     from_jsonb,
     load_visible_project,
@@ -72,6 +73,7 @@ from gateway.routes.projects.core import (
     router,
     status_order_sql,
     status_owner_id,
+    transient_as_409,
     update_row,
     vocabulary_scope,
 )
@@ -79,6 +81,7 @@ from gateway.routes.projects.custom_fields import (
     _is_blank,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.landing import (
     CHOICE_TYPES as _CHOICE_TYPES,
 )
@@ -89,12 +92,13 @@ from gateway.routes.projects.landing import (
     apply_field_map as _apply_field_map,
 )
 from gateway.routes.projects.landing import (
-    compatible as _compatible,
-)
-from gateway.routes.projects.landing import (
+    claim_target,
     completion_correction,
     land_custom_fields,
     record_drops,
+)
+from gateway.routes.projects.landing import (
+    compatible as _compatible,
 )
 from gateway.routes.projects.landing import (
     resolve_field_map as _resolve_field_map,
@@ -295,7 +299,7 @@ async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
     assert_holds_tasks(dest, then="Move into")
-    assert_not_archived(dest, then="Move into")
+    assert_project_open_for_writes(dest)
     return dest
 
 
@@ -378,6 +382,67 @@ async def _type_proposal(
     return out
 
 
+def choose_field_map(
+    auto_fields: dict[str, str],
+    source_defs: list[dict[str, Any]],
+    dest_defs: list[dict[str, Any]],
+    hand_map: dict[str, str] | None,
+) -> dict[str, str]:
+    """The resolved map with the caller's entries laid over it, or a 422."""
+    # ⚠️ A caller-supplied entry clears the SAME bar the resolved ones do.
+    #
+    # `chosen` used to merge `payload.field_map` straight over the resolved
+    # map, and `apply_field_map` only ever checks `target in dest_keys`. So a
+    # client could post `{"<a number key>": "<a boolean key>"}` and write a
+    # value the destination's own coercer refuses — the exact hole closed for
+    # `status_map` in the same commit that left this one open.
+    src_by_key = {str(d["field_key"]): d for d in source_defs}
+    dst_by_key = {str(d["field_key"]): d for d in dest_defs}
+    chosen = dict(auto_fields)
+    for raw_from, raw_to in (hand_map or {}).items():
+        src = src_by_key.get(str(raw_from))
+        dst = dst_by_key.get(str(raw_to))
+        if src is None or dst is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {raw_from!r} to {raw_to!r}: one of them is "
+                    "not a field of its project."
+                ),
+            )
+        if not compatible(
+            str(src["field_type"]), str(dst["field_type"]),
+            src.get("options"), dst.get("options"),
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {src['name']!r} to {dst['name']!r}: a "
+                    f"{src['field_type']} value does not fit a "
+                    f"{dst['field_type']} field."
+                ),
+            )
+        chosen[str(raw_from)] = str(raw_to)
+    # ⚠️ Two source keys may not share one destination key. The resolved map
+    # already obeys this, so only a hand entry can break it. Without the check
+    # `apply_field_map` keeps whichever key comes first in each task's JSONB, so
+    # the winner differs task by task in one bulk move (H-129). Sorted, so the
+    # refusal and its message do not depend on the order the client posted.
+    claimed: dict[str, str] = {}
+    for src_key, dst_key in sorted(chosen.items()):
+        holder = claim_target(claimed, dst_key, src_key)
+        if holder is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map both {holder!r} and {src_key!r} to "
+                    f"{dst_key!r}: one destination field takes one source "
+                    "field. Pick one."
+                ),
+            )
+    return chosen
+
+
 async def _plan(
     db: Any, vis: Any, payload: MoveIn, user: Any,
 ) -> dict[str, Any]:
@@ -388,6 +453,10 @@ async def _plan(
     than two that drift apart.
     """
     tasks = await _selection(db, vis, payload.task_ids)
+    # ARC-2b: a move OUT of an archived project is refused (409). The
+    # destination check is in `_destination`. The preview refuses too.
+    for task in tasks:
+        await assert_task_project_open(db, task)
     source_project_id = shared_source(tasks)          # D-PM-30
     dest = await _destination(db, vis, payload.destination_project_id)
     dest_id = str(dest.id)
@@ -460,40 +529,9 @@ async def _plan(
     source_defs = await load_definitions(db, source_root)
     dest_defs = await load_definitions(db, dest_root)
     auto_fields, orphan_defs = resolve_field_map(source_defs, dest_defs)
-    # ⚠️ A caller-supplied entry clears the SAME bar the resolved ones do.
-    #
-    # `chosen` used to merge `payload.field_map` straight over the resolved
-    # map, and `apply_field_map` only ever checks `target in dest_keys`. So a
-    # client could post `{"<a number key>": "<a boolean key>"}` and write a
-    # value the destination's own coercer refuses — the exact hole closed for
-    # `status_map` in the same commit that left this one open.
-    src_by_key = {str(d["field_key"]): d for d in source_defs}
-    dst_by_key = {str(d["field_key"]): d for d in dest_defs}
-    chosen = dict(auto_fields)
-    for raw_from, raw_to in (payload.field_map or {}).items():
-        src = src_by_key.get(str(raw_from))
-        dst = dst_by_key.get(str(raw_to))
-        if src is None or dst is None:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Cannot map {raw_from!r} to {raw_to!r}: one of them is "
-                    "not a field of its project."
-                ),
-            )
-        if not compatible(
-            str(src["field_type"]), str(dst["field_type"]),
-            src.get("options"), dst.get("options"),
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Cannot map {src['name']!r} to {dst['name']!r}: a "
-                    f"{src['field_type']} value does not fit a "
-                    f"{dst['field_type']} field."
-                ),
-            )
-        chosen[str(raw_from)] = str(raw_to)
+    chosen = choose_field_map(
+        auto_fields, source_defs, dest_defs, payload.field_map,
+    )
     dest_keys = frozenset(str(d["field_key"]) for d in dest_defs)
 
     # What each task would actually lose, which is NOT the same as the orphan
@@ -743,6 +781,7 @@ AGENT_MOVE_NEEDS_DROPS = (
 
 
 @router.post("/tasks/move")
+@transient_as_409
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -933,6 +972,8 @@ async def move_tasks(
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [*moved, *carried], by=actor(user))
 
     for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})

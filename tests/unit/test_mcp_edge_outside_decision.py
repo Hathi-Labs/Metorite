@@ -53,8 +53,12 @@ state of the run and the pill (``filters.AGENT_RUN_STATE_SQL``), the
 ``waiting_agent_requests``), the open question of the run, ``needs_agent``
 and the Needs attention route. Fix round 1 adds the member's bell and the
 reason of the My Day card (``shell.needs._note_signals``).
-``test_d2b_the_act_reads_the_members_bell_row_and_no_other`` holds that the
-act reads the member's bell row only, and that My Day moves once.
+``test_d2b_the_act_reads_every_bell_row_of_the_question`` holds that the act
+reads each bell row of the question, and that each cleared My Day moves once.
+
+**AP-BUG-3 (task 2241).** ``TestTheQuestionBellClosesWithTheRun``: a
+member's own answer, a Release and a Finish read the question's bell rows
+too, so an answered question leaves My Day. A new question rings again.
 """
 from __future__ import annotations
 
@@ -424,18 +428,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcpoutside"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -662,11 +657,13 @@ class TestTheDecision:
                          "needs_attention": False, "state": "working",
                          "open_question": None, "needs_agent": None}
 
-    async def test_d2b_the_act_reads_the_members_bell_row_and_no_other(self, runs, monkeypatch):
-        """Fix round 1 (P2). The bell and My Day of the member stop asking.
-        The bell row of a watcher stays theirs to read. My Day moves once,
-        after the commit. Mutation: no ``_clear_question_bell`` call — the
-        member's row stays unread, and D2 fails too."""
+    async def test_d2b_the_act_reads_every_bell_row_of_the_question(self, runs, monkeypatch):
+        """Fix round 1 (P2), widened by AP-BUG-3 (task 2241). The bell and My
+        Day of the member stop asking, and so do the watcher's:
+        ``waiting_on_me.md`` V10, "the first answer closes it for all of
+        them". Each cleared member's My Day moves once, after the commit.
+        Mutation: no ``_close_question_bells`` call in ``_move_run`` — both
+        rows stay unread, and D2 fails too."""
         from gateway.routes.projects import personal
 
         bumped: list[str] = []
@@ -688,12 +685,12 @@ class TestTheDecision:
         _structured(await _record(runs, run_id, key=key))
         rows = {b.recipient: b.read_at for b in _bell_rows(runs, task)}
         assert rows[MEMBER] is not None
-        assert rows[OTHER] is None
-        assert bumped == [MEMBER]
+        assert rows[OTHER] is not None
+        assert bumped == sorted([MEMBER, OTHER])
         # A replay marks nothing more and moves My Day no more.
         _structured(await _record(runs, run_id, key=key))
         assert {b.recipient: b.read_at for b in _bell_rows(runs, task)} == rows
-        assert bumped == [MEMBER]
+        assert bumped == sorted([MEMBER, OTHER])
 
     async def test_d3_the_members_own_answer_works_as_before(self, runs):
         """The member's real answer path does not change: a prompt with
@@ -731,6 +728,117 @@ class TestTheDecision:
         assert result["run"]["status"] == "in_progress"
         bodies = [c.body for c in _comments(runs, task)]
         assert "Decided outside Metorite (a call): Use the second supplier." in bodies
+
+
+async def _watched_question(world, title: str) -> tuple[str, str]:
+    """A new task that OTHER watches, and an agent question on it:
+    ``(task, run)``. Both bell rows start unread."""
+    task = world.task(world.team, world.s.doing, title)
+    r = await _person(world, OTHER, "PUT", f"/projects/tasks/{task}/watch")
+    assert r.status_code == 200, r.text
+    body = _structured(await _agent(world, "ask_on_task", task_id=task,
+                                    question="Ship on Friday?", idempotency_key=_key()))
+    assert [(b.recipient, b.read_at is None) for b in _bell_rows(world, task)] == [
+        (MEMBER, True), (OTHER, True)]
+    return task, body["run"]["id"]
+
+
+def _unread(world, task: str) -> dict[str, bool]:
+    """Each recipient of the question rows of *task*: is the row unread?"""
+    return {b.recipient: b.read_at is None for b in _bell_rows(world, task)}
+
+
+class TestTheQuestionBellClosesWithTheRun:
+    """AP-BUG-3 (owner, 2026-11-08, Metorite task 2241): "Once the questions
+    are answered, shouldn't it automatically be removed from My Day?"
+
+    My Day's "Needs you" reads the UNREAD Projects bell. A member's answer is
+    a ``prompt``, and it never read the bell, so the answered question stayed.
+    Now each move out of ``awaiting`` reads every bell row of the run's
+    questions (``agent_runs._close_question_bells``). Mutation: drop the call
+    in ``_move_run`` — every test here fails."""
+
+    pytestmark = _DB_GATE
+
+    async def test_the_members_answer_reads_every_row_and_leaves_my_day(self, runs,
+                                                                        monkeypatch):
+        from gateway.routes.projects import personal
+
+        bumped: list[str] = []
+
+        async def bump(org: Any, email: str) -> None:
+            bumped.append(email)
+
+        monkeypatch.setattr(personal, "bump_my_day", bump)
+        task, run_id = await _watched_question(runs, "bug3 answer")
+        control, _ = await _watched_question(runs, "bug3 control")
+        assert _my_day_reason(await _bell(runs, MEMBER, task), task) == "agent_question"
+
+        key = _key()
+        r = await _person(runs, MEMBER, "POST", f"/projects/agent-runs/{run_id}/activities",
+                          {"type": "prompt", "body": "Yes, ship it.", "idempotency_key": key})
+        assert r.status_code == 201, r.text
+        assert _unread(runs, task) == {MEMBER: False, OTHER: False}
+        # The question of another run still waits, and still asks.
+        assert _unread(runs, control) == {MEMBER: True, OTHER: True}
+        # My Day of the member shows no card for the task now.
+        assert _my_day_reason(await _bell(runs, MEMBER, task), task) is None
+        # The watcher learns the answer from its comment, not from the question.
+        other_kinds = [row["kind"] for row in await _bell(runs, OTHER, task)]
+        assert "agent_question" not in other_kinds
+        assert "comment" in other_kinds
+        assert bumped == sorted([MEMBER, OTHER])
+
+        # A replay writes nothing, so it moves no My Day.
+        r = await _person(runs, MEMBER, "POST", f"/projects/agent-runs/{run_id}/activities",
+                          {"type": "prompt", "body": "Yes, ship it.", "idempotency_key": key})
+        assert r.status_code == 200, r.text
+        assert bumped == sorted([MEMBER, OTHER])
+
+    async def test_a_release_reads_them_too(self, runs):
+        task, run_id = await _watched_question(runs, "bug3 release")
+        r = await _person(runs, MEMBER, "POST", f"/projects/agent-runs/{run_id}/release", {})
+        assert r.status_code == 200, r.text
+        assert _run_status(runs, run_id) == "released"
+        assert _unread(runs, task) == {MEMBER: False, OTHER: False}
+
+    async def test_a_finish_reads_them_too(self, runs):
+        task, run_id = await _watched_question(runs, "bug3 finish")
+        _structured(await _agent(runs, "finish_agent_run", run_id=run_id,
+                                 idempotency_key=_key()))
+        assert _run_status(runs, run_id) == "completed"
+        assert _unread(runs, task) == {MEMBER: False, OTHER: False}
+
+    async def test_a_takeover_reads_them_too(self, runs):
+        """``_take_over`` is the one move out of ``awaiting`` that skips
+        ``_move_run``. A lease that ended lets another member's agent take
+        the task, and the old question no longer waits on anyone."""
+        task, run_id = await _watched_question(runs, "bug3 takeover")
+        with runs.admin.begin() as c:
+            c.execute(text("UPDATE pm_agent_runs SET last_activity_at = now() - interval '30 days',"
+                           " last_agent_activity_at = now() - interval '30 days'"
+                           " WHERE id = CAST(:r AS uuid)"), {"r": run_id})
+        taken = _structured(await _agent(runs, "start_agent_run", name="other", task_id=task,
+                                         idempotency_key=_key()))
+        assert taken["run"]["id"] != run_id
+        assert _run_status(runs, run_id) == "abandoned"
+        assert _unread(runs, task) == {MEMBER: False, OTHER: False}
+
+    async def test_a_new_question_rings_again(self, runs):
+        """The clear binds the move OUT of ``awaiting`` only. A new question
+        on the same run writes new unread rows, and they stay unread."""
+        task, run_id = await _watched_question(runs, "bug3 again")
+        r = await _person(runs, MEMBER, "POST", f"/projects/agent-runs/{run_id}/activities",
+                          {"type": "prompt", "body": "Yes.", "idempotency_key": _key()})
+        assert r.status_code == 201, r.text
+        again = _structured(await _agent(runs, "ask_on_task", task_id=task,
+                                         question="And the release notes?",
+                                         idempotency_key=_key()))
+        assert again["run"]["id"] == run_id
+        assert again["run"]["status"] == "awaiting"
+        rows = [(b.recipient, b.read_at is None) for b in _bell_rows(runs, task)]
+        assert sorted(rows) == sorted([(MEMBER, False), (OTHER, False),
+                                       (MEMBER, True), (OTHER, True)])
 
 
 class TestTheRefusals:

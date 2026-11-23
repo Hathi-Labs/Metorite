@@ -48,17 +48,20 @@ import FencedText from "@/components/FencedText";
 import NewMailCardForm from "@/components/NewMailCardForm";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import TaskCardForm, { useTaskCardEdits } from "@/components/TaskCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
+import { ASSIGNEE_ROW_MARK, assigneeWarningText, fieldsWithoutStrangers, rowIsStranger, strangerAddresses } from "@/lib/assigneeWarning";
 import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import { slotLine, type CardDraft, type CardText } from "@/lib/redraftCard";
 import { isNewMail, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
+import { TASK_EDITED_HINT, isUnchanged, pendingLine, problemOf, taskApproval, withoutFormRows, type TaskCardEdits, type TaskEditApproval, type TaskEditForm } from "@/lib/taskEditCard";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -300,6 +303,19 @@ interface ConfirmationCardProps {
   savedEdits?: NewMailEdits;
   /** A new-mail card reports the member's edits, for `savedEdits`. */
   onEdits?: (edits: NewMailEdits) => void;
+  /**
+   * EAC-2 (`projects_ai_chat.md` §32): the edit form of a `create_task` card.
+   * The card draws `TaskCardForm` only with `edit` AND `onEditAnswer`, and its
+   * Approve then sends `onEditAnswer` with the plain APPROVE (no change) or
+   * the edit answer. Without `edit`, the card is the card of before.
+   */
+  edit?: TaskEditForm;
+  /** The member's edits of a task card, from before a change of tab. */
+  savedTaskEdits?: TaskCardEdits;
+  /** A task card reports the member's edits, for `savedTaskEdits`. */
+  onTaskEdits?: (edits: TaskCardEdits) => void;
+  /** The Approve of a task card with a form. */
+  onEditAnswer?: (answer: "APPROVE" | TaskEditApproval) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -331,8 +347,15 @@ export default function ConfirmationCard({
   carriesEdits,
   savedEdits,
   onEdits,
+  edit,
+  savedTaskEdits,
+  onTaskEdits,
+  onEditAnswer,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
+  // EAC-2: a form that the card cannot answer for is no form (the card of before).
+  const taskForm = edit && onEditAnswer ? edit : undefined;
+  const task = useTaskCardEdits(taskForm, savedTaskEdits, onTaskEdits);
   useEffect(() => {
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
@@ -344,11 +367,20 @@ export default function ConfirmationCard({
   const base = cardSummary(title, detail);
   const summary = rowsSummary(base.summary, rows);
   const rest = base.rest;
-  const approvable = canApprove(rows);
+  // EAC-2: Approve waits for a due date that the server would refuse, and for a person typed but not added.
+  const formProblem = task.edits ? problemOf(task.edits) || pendingLine(task.typed) : "";
+  const approvable = canApprove(rows) && !formProblem;
   const parsed = parseCardBody(context);
   // A field that repeats the detail or the summary is drawn once (owner
   // report, 2026-10-07: "Impact" restated the detail word for word).
-  const body = { ...parsed, fields: withoutRepeats(parsed.fields, [rest, summary]) };
+  // The form draws the rows that it edits (the due date, the people), so those rows go.
+  const formRows = taskForm ? withoutFormRows(parsed.fields) : parsed.fields;
+  const body = { ...parsed, fields: withoutRepeats(formRows, [rest, summary]) };
+  // Task 3597: an assignee who is not a member draws as a warning, first. The
+  // stranger row and the stranger in "gives access to" leave the rows below it.
+  const strangers = strangerAddresses(body.fields);
+  const strangerWarning = assigneeWarningText(strangers);
+  const shownFields = fieldsWithoutStrangers(body.fields, strangers);
   // A note that ends with a colon leads into the rows ("Each recipient of
   // this draft:"), so it draws above them. Any other note draws after them
   // (the screenshots of follow-up 5 of #766).
@@ -360,8 +392,12 @@ export default function ConfirmationCard({
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
   const approve = () => {
-    if (armed && approvable) onApprove();
+    if (!armed || !approvable) return;
+    // A task card with a form: no change is a plain APPROVE, a change is the edit answer.
+    if (taskForm && task.edits && onEditAnswer) onEditAnswer(taskApproval(taskForm.values, task.edits));
+    else onApprove();
   };
+  const taskEdited = !!(taskForm && task.edits && !isUnchanged(taskForm.values, task.edits));
   const isReply = reply !== undefined;
   const newMail = isNewMail(reply);
   return (
@@ -469,6 +505,12 @@ export default function ConfirmationCard({
       )}
       {!slot && !isReply && hasBody && (
         <div className="space-y-2">
+          {strangerWarning && (
+            <p className="flex items-start gap-1 break-words text-xs text-warning" role="status" data-assignee-warning="">
+              <Icon name="AlertTriangle" size={12} className="mt-0.5 shrink-0" />
+              {strangerWarning}
+            </p>
+          )}
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
               {rows.length === 0 && (
@@ -510,6 +552,13 @@ export default function ConfirmationCard({
                           {r.warning}
                         </span>
                       )}
+                      {rowIsStranger(r.hint, strangers) && (
+                        <span data-assignee-row-mark="">
+                          <Badge tone="warning" size="xs" icon="AlertTriangle">
+                            {ASSIGNEE_ROW_MARK}
+                          </Badge>
+                        </span>
+                      )}
                       {r.hint && r.hint !== rowMark(r.cls) && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
                           <CardText text={r.hint} fenced={fenced} />
@@ -526,9 +575,9 @@ export default function ConfirmationCard({
               <CardText text={note} fenced={fenced} />
             </p>
           ))}
-          {body.fields.length > 0 && (
+          {shownFields.length > 0 && (
             <dl className="@container space-y-1">
-              {body.fields.map((f, i) => {
+              {shownFields.map((f, i) => {
                 const spec = fieldSpec(f.key);
                 // A long value stacks at any width. A short one stacks only in
                 // a narrow card (container query, below 24rem).
@@ -613,6 +662,17 @@ export default function ConfirmationCard({
         </div>
       )}
 
+      {!slot && taskForm && task.edits && (
+        <TaskCardForm
+          form={taskForm}
+          edits={task.edits}
+          onChange={task.setEdits}
+          typed={task.typed}
+          onTyped={task.setTyped}
+          disabled={disabled}
+        />
+      )}
+
       {!slot && !isReply && (
       <div className="flex flex-wrap items-center gap-2">
         <Button
@@ -639,7 +699,9 @@ export default function ConfirmationCard({
             {error}
           </span>
         ) : (
-          <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
+          <span className="text-[10px] text-muted-foreground" data-confirmation-hint="">
+            {formProblem || (taskEdited ? TASK_EDITED_HINT : noRecipientHint(rows) || CONFIRM_HINT)}
+          </span>
         )}
       </div>
       )}

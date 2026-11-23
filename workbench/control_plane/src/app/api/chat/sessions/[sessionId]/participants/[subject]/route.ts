@@ -7,6 +7,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,8 @@ export async function PATCH(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId, subject } = await params;
+    const refused = refuseUnsafePath([sessionId, subject]);
+    if (refused) return refused;
     const body = await req.json();
     const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants/${encodeURIComponent(subject)}`,
@@ -43,6 +46,8 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId, subject } = await params;
+    const refused = refuseUnsafePath([sessionId, subject]);
+    if (refused) return refused;
     const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants/${encodeURIComponent(subject)}`,
       {

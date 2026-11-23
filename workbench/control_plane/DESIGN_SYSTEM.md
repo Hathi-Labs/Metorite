@@ -350,9 +350,10 @@ The rules for NEW motion:
 - **Use a token.** Do not write a new duration or a new curve.
 - **Move `transform` and `opacity`.** Do not animate `width`, `height`,
   `top` or `margin`. Each frame of those lays out the page again.
-  ⚠️ The side panels are the one exception. The sidebar fold and the
-  assistant's spacer animate `width` on purpose, so that the page beside them
-  moves with them. Do not copy that to a surface that does not push the page.
+  ⚠️ The side panels are the one exception. The sidebar fold, the
+  assistant's spacer and the frame of a docked side panel (`.side-panel`)
+  animate `width` on purpose, so that the page beside them moves with them. Do
+  not copy that to a surface that does not push the page.
 - **`tech-transition` moves every property.** Use it for a change of colour
   or opacity. For a new movement, name the property, as in
   `transition-transform`.
@@ -385,6 +386,38 @@ them.
 
 *These values come from a study of four outside design kits on 2026-10-14.
 The "Sources" table in §11 records what we took and what we did not.*
+
+### A side panel has one motion
+
+The owner chose one motion for every right-side panel (task 7, 2026-11-22).
+The assistant's side panel is the reference. A panel that docks at the right
+of a page opens and closes in `SidePanelMotion` (`src/components/ui/`). It
+takes the assistant's dock form on `--panel-duration` and `--panel-easing`.
+
+- The frame eases its width, and the page beside it moves with it.
+- The panel keeps its width and moves with the frame's left edge, so its
+  content does not reflow.
+- A close is the same motion back, on the same token, as the assistant's
+  close is. The panel stays on screen and inert until the motion ends.
+- With reduced motion, the panel shows and goes at once.
+
+Put it round the mount, as in `<SidePanelMotion docked>{taskPanel}</SidePanelMotion>`.
+A record card is a column only at its side stop. So `CardPanel` marks that
+stop with `data-side-docked`, and its host passes no `docked`.
+
+| Panel | Its motion |
+|---|---|
+| The assistant's side panel (`AssistantDock`) | The reference: its spacer and `usePanelPhase` |
+| The Projects task panel, docked | `SidePanelMotion docked` |
+| A record card at the side stop: the CRM records and the My Day panel | `SidePanelMotion`, with the mark of `CardPanel` |
+| A task panel or a record card over the page, or on a phone | None. It is a card or a sheet, not a side panel |
+| `TaskFocusModal`, and the docked detail of `/tasks` | Not changed. `/tasks` is a preview pane, and its detail reads its task from the store |
+| `Modal` at `placement="end"`: a connection, the activity panel and the bell | Not changed. A dialog takes the Grow motion of §4b |
+| `ArtifactSidebar` and `SidePanelEditor` | Not changed. Each one is a column of a chat surface, not a panel of a page. The files column of the assistant's full view still shows and goes at once |
+| The agent drawer of Observability | Not changed. It is a preview pane |
+
+**Fence.** `src/components/ui/SidePanelMotion.test.ts` holds the presence
+rule, the tokens and each docked panel's frame.
 
 ---
 
@@ -907,6 +940,9 @@ dependency and no second look. This changes the two-speed rule of
    `workbench/control_plane/src` without that line. Fence: the "Visual review
    line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
    required check. `tests/unit/test_fence_lists.py` keeps the step there.
+   The step reads the LIVE body (CIV-8). When the line is missing, edit the PR
+   body and run `gh run rerun <run id> --failed`. Do not push a commit for it.
+   A push starts a whole new run of about 17 jobs.
 4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
    the code for the rules that no test sees. For a UI diff it runs in build
    mode too. The full adversarial review still follows the tier of the slice

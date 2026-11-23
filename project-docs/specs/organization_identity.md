@@ -157,7 +157,7 @@ Since OI-1b the editor makes every file fit these rules before it is sent.
 | Aspect | 0.5–8.0 (w/h) | Size alone does not stop a 1:20 sliver that renders as a 2px smear. |
 | Type detection | **magic bytes only** | The declared content type is caller-controlled. The stored `data:` URI is *rebuilt* from the sniffed type — an echoed URI is a stored-XSS sink wearing an image's clothes. |
 
-Header parsing is `apps/services/gateway/gateway/image_probe.py`: fixed offsets
+Header parsing is `packages/acb_common/acb_common/image_probe.py`: fixed offsets
 and length-prefixed chunk walks, **no pixel decoding**, no dependency. The
 trade is explicit — we verify the header, not the body, so a corrupt payload
 renders broken in the browser rather than running a decoder over hostile input
@@ -220,7 +220,7 @@ logo contains that logo and not the fallback caption.
 
 | Path | Role |
 |---|---|
-| `apps/services/gateway/gateway/image_probe.py` | header-only format + dimension probe |
+| `packages/acb_common/acb_common/image_probe.py` | header-only format + dimension probe |
 | `apps/services/gateway/gateway/routes/settings.py` (`_BRANDING_KEY` onward) | `GET`/`PUT`/`DELETE /settings/branding` |
 | `packages/acb_common/acb_common/org_settings.py` | the store — **the OI-2 conversion site** |
 | `infra/postgres/151_org_settings.sql` | the table |

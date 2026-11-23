@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import prefix_limit, prefix_page
+from acb_common.settings import internal_auth_headers
 
 # H-236: every tool states ``open_world``. Each one is a read or a draft over
 # the gateway's own ``/whatsapp/*`` routes, and none sends (the DOCTRINE
@@ -106,25 +107,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token.
-
-    ``gateway_internal_token`` IS a real Settings field
-    (``acb_common/settings.py``) — the service-identity/LLM-key split — and it
-    ships empty, which is why ``litellm_master_key`` is the fallback rather than
-    the primary. The order below is load-bearing in that direction: on a box
-    where the split HAS been provisioned, "simplifying" this to read
-    ``litellm_master_key`` first sends the wrong token and 403s every call.
-    """
-    settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -149,7 +131,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }

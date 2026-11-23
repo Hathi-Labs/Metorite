@@ -41,6 +41,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_common.assistant_profile import LANGUAGE_RULE_LINE
 
 from tests.unit._native_maf_harness import (
     REPO_ROOT,
@@ -75,6 +76,8 @@ _PERSONA = "PERSONA-OMEGA: you are the inbox persona for ops@x.io."
 #: ``integrations = {"gmail": ...}`` and no run model bound. Captured, never
 #: derived from the current code: a value derived from the code under test
 #: agrees with whatever that code now says.
+#: PZ-51: the language rule ends the per-turn context, before the history.
+_RULE = LANGUAGE_RULE_LINE + "\n"
 _INTEGRATIONS: dict[str, Any] = {"gmail": {"token": "x"}}
 _GOLDEN: dict[str, tuple[dict[str, Any], str]] = {
     "full": (
@@ -94,17 +97,20 @@ _GOLDEN: dict[str, tuple[dict[str, Any], str]] = {
         " <<<SETUP:service_name:ENV_VAR_NAME=value>>>\n"
         "## Memory from past conversations\nThe member prefers short answers.\n"
         "## Current context\nYou are the inbox persona. The open mailbox is ops@x.io.\n"
+        + _RULE +
         "Conversation history:\nUser: Process my inbox.\n"
         "Assistant: Apply itm-1 and itm-2?\n"
         "Apply itm-1 and itm-2",
     ),
     "no_history": (
         {"message": "hi", "memory_context": "Likes tea."},
-        "Connected integrations: gmail.\n## Memory from past conversations\nLikes tea.\nhi",
+        "Connected integrations: gmail.\n## Memory from past conversations\nLikes tea.\n"
+        + _RULE + "hi",
     ),
     "webhook": (
         {"event": "deal.updated", "deal_id": 7},
-        'Connected integrations: gmail.\nEvent payload: {"event": "deal.updated", "deal_id": 7}',
+        "Connected integrations: gmail.\n" + _RULE +
+        'Event payload: {"event": "deal.updated", "deal_id": 7}',
     ),
 }
 

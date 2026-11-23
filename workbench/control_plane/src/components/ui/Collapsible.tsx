@@ -56,7 +56,8 @@ export interface CollapsibleSectionProps {
    * ⚠️ Base UI's panel UNMOUNTS a closed panel by default. A report's table
    * sits folded under its chart, and an unmounted table is gone from the
    * page: find-in-page cannot reach it, and a render test cannot see it.
-   * With this on, the folded content stays in the markup and is hidden.
+   * With this on, the folded content stays in the markup, and the panel is
+   * `hidden="until-found"` too. Find-in-page then reaches it and opens it.
    */
   keepMounted?: boolean;
   /**
@@ -133,7 +134,11 @@ export function CollapsibleSection({
           the same amount: the content does not move, and the ring has room.
           1.5, not 1, because compact density shrinks a unit below 4px.
           Fence: `src/components/ui/collapsible.test.ts`. */}
-      <Base.Panel className={PANEL_CLASS} keepMounted={keepMounted}>
+      <Base.Panel
+        className={PANEL_CLASS}
+        keepMounted={keepMounted}
+        hiddenUntilFound={keepMounted}
+      >
         <div className="pt-1.5">{children}</div>
       </Base.Panel>
     </Base.Root>
@@ -207,6 +212,14 @@ export interface CardFoldState {
 
 const CardFoldContext = createContext<CardFoldState | null>(null);
 
+/**
+ * True inside a card that draws a dismiss "×" over its top right corner
+ * (`DismissableCard`, task 1007). The header row then keeps a right gutter the
+ * width of the "×", so a cut summary ends in a visible ellipsis before it. A
+ * context, so no card hand-places a margin.
+ */
+export const CardDismissGutterContext = createContext(false);
+
 /** The state of the folding card this element sits in, or null. */
 export function useCardFold(): CardFoldState | null {
   return useContext(CardFoldContext);
@@ -264,6 +277,7 @@ export function CollapsibleCardHeader({
   lead,
 }: CollapsibleCardHeaderProps) {
   const fold = useCardFold();
+  const gutter = useContext(CardDismissGutterContext) ? " pr-6" : "";
   if (!fold) return null;
   const { toggle, open, label, icon, count, summary, panelId } = fold;
   const counted = typeof count === "number" && count > 0;
@@ -300,7 +314,7 @@ export function CollapsibleCardHeader({
   );
   if (!toggle) {
     if (quiet) return null;
-    return <div className={`flex min-w-0 items-center gap-2 ${className}`}>{words}</div>;
+    return <div className={`flex min-w-0 items-center gap-2 ${className}${gutter}`}>{words}</div>;
   }
   return (
     <Base.Trigger
@@ -309,7 +323,7 @@ export function CollapsibleCardHeader({
       // The substrate names the panel only while it is open. The panel stays
       // mounted while shut, so the toggle names it in both states.
       aria-controls={panelId}
-      className={`cc-control group -mx-1 -my-0.5 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left ${className}`}
+      className={`cc-control group -mx-1 -my-0.5 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left ${className}${gutter}`}
     >
       {/* One icon for both states, turned: a swap of glyph would jump by a
           pixel. `motion-reduce` keeps it still for a member who asked. */}

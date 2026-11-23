@@ -31,6 +31,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { CARD_PAGE_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -150,6 +151,8 @@ import {
   useFieldDefs,
   useFieldLayout,
   useOwners,
+  useLeadPipelines,
+  usePipelineCreate,
   usePipelines,
   useSyncStatus,
 } from "./lib/useCrmMode";
@@ -226,6 +229,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
   // has no pipelines route: then there is one implicit pipeline and no picker.
   const { pipelines, loading: pipelinesLoading } = usePipelines(true);
+  // CRM-M3a: "New pipeline" for an admin of a Native CRM on the flag.
+  const pipelineCreate = usePipelineCreate(ctx.isAdmin && ctx.mode === "native");
+  // CRM-M4a: the lead pipelines of a Native CRM, for the Lead statuses card
+  // of CRM settings. No other tab reads them yet.
+  const { pipelines: leadPipelines } = useLeadPipelines(
+    ctx.mode === "native" && view.tab === "settings",
+  );
   const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
@@ -543,8 +553,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       ? (store.record as { pipeline_id?: string | null } | null)?.pipeline_id ?? null
       : null;
   const recordPlaces = useMemo(
-    () => placesOf(pipelines, recordPipeline ?? pipelineId),
-    [pipelines, recordPipeline, pipelineId],
+    // A deal with no pipeline is in the default one, not in the board's (CRM-M3).
+    () => placesOf(pipelines, view.record?.entity === "deals" ? recordPipeline : pipelineId),
+    [pipelines, recordPipeline, pipelineId, view.record?.entity],
   );
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view, ctx.mode, places)
@@ -648,7 +659,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
-    const result = await store.convertLead(converting.id, body);
+    const result = await store.convertLead(
+      converting.id,
+      // The deal joins the pipeline on screen (CRM-M3). None: the default one.
+      pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+    );
     const dealId = result?.deal.id ?? null;
     setConverting(null);
     // CRM-C6a: say which lead values the conversion mapping did not copy.
@@ -1138,8 +1153,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
               rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
               pipelines={pipelines}
+              leadPipelines={leadPipelines}
               pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
+              pipelineCreate={ctx.isAdmin && pipelineCreate}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
@@ -1195,7 +1212,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
         {/* The record card (ORC-1, D181): one mount, here in the row. At the
             side stop it is a column beside `<main>`. At the full stop and on
-            a phone it stands over the page, and it keeps its state. */}
+            a phone it stands over the page, and it keeps its state. At the
+            side stop it opens and closes with the one side-panel motion
+            (task 7). */}
+        <SidePanelMotion>
         {view.record && (
           <RecordSheet
             entity={view.record.entity}
@@ -1281,7 +1301,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
           />
         )}
+        </SidePanelMotion>
 
+        <SidePanelMotion>
         {view.moduleRecord && (
           // A generic record (CRM-Q6b), on the same record page shell.
           <ModuleRecordSheet
@@ -1294,6 +1316,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             onOpenLink={openLink}
           />
         )}
+        </SidePanelMotion>
       </div>
 
       <ShellJob
@@ -1326,7 +1349,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onClose={() => setCreating(null)}
           onCreate={async (body) => {
             const entity = creating;
-            const id = await store.createRecord(entity, body);
+            // A new deal joins the pipeline on screen (CRM-M3). None: the default one.
+            const id = await store.createRecord(
+              entity,
+              entity === "deals" && pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+            );
             // The 422 rule (CRM-C4b): a refused save keeps the form open, with
             // the typed values and the message beside its field.
             if (!id) return;

@@ -102,6 +102,7 @@ from gateway.routes.projects import focus_sessions as fs
 from gateway.routes.projects import personal
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -113,7 +114,7 @@ pytestmark = _DB_GATE
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-#: Migration 350, found by CONTENT, never by number (R1).
+#: Migration 501, found by CONTENT, never by number (R1).
 MIGRATION = next(
     p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
     if "CREATE TABLE IF NOT EXISTS focus_sessions (" in p.read_text(encoding="utf-8"))
@@ -314,10 +315,11 @@ def shift(world: Any, sid: str, sets: str) -> None:
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
-    database gate is disarmed. Match the argument line, not a mention."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_focus_sessions_r8\.py \\?$", workflow, re.M), name
+    database gate is disarmed. ``tests/fences.json`` holds the list of
+    pr-check.yml and deploy.yml (CIV-33c-2)."""
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_focus_sessions_r8.py" in must_run
+    assert "tests/unit/test_focus_session_rls_r8.py" in must_run
 
 
 def test_the_auto_close_is_one_update_with_literal_intervals() -> None:
@@ -363,7 +365,7 @@ def test_the_integrity_errors_are_told_apart() -> None:
 
 def test_the_migration_has_the_shape_of_section_9_3() -> None:
     sql = MIGRATION.read_text(encoding="utf-8")
-    assert MIGRATION.name == "350_focus_sessions.sql"
+    assert MIGRATION.name == "501_focus_sessions.sql"
     flat = " ".join(sql.split())
     assert ("organization_id UUID NOT NULL REFERENCES organization (id) ON DELETE CASCADE "
             "DEFAULT current_setting('app.tenant_id', true)::uuid") in flat

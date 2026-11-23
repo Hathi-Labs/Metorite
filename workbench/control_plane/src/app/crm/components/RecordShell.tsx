@@ -11,11 +11,13 @@
  *   panel, a centered card, or the whole screen on a phone. Its header is the
  *   Projects header, with the noun of the record, "Open in Zoho" and the title.
  * - `RecordFacts`: the facts of the summary header.
- * - `RecordTabBar`: the tabs under the header, drawn with the shared `Tabs`.
+ * - `RecordTabBar`: the tabs under the header. It passes the CRM's words to
+ *   the shared bar (`components/RecordTabBar.tsx`, ORC-3), which the task card
+ *   draws too.
  */
 
 import CardPanel, { useCardStop } from "@/components/CardPanel";
-import Tabs from "@/components/Tabs";
+import SharedRecordTabBar from "@/components/RecordTabBar";
 import { TaskHeaderRow } from "@/components/TaskPanelHeader";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -125,7 +127,10 @@ export function RecordFacts({ facts }: { facts: FieldRow[] }) {
   );
 }
 
-/** The tabs of the record page, kept in `?rtab=`. */
+/**
+ * The tabs of the record page, kept in `?rtab=`. The CRM's words on the one
+ * shared bar, so there is no second tab bar (ORC-3).
+ */
 export function RecordTabBar<T extends ShellTab>({
   tabs,
   active,
@@ -136,14 +141,10 @@ export function RecordTabBar<T extends ShellTab>({
   onTab: (tab: T) => void;
 }) {
   return (
-    <div className="shrink-0 border-b border-border px-2">
-      <Tabs
-        chrome="inline"
-        variant="underline"
-        tabs={tabs.map((t) => ({ id: t, label: TAB_LABEL[t], guideAnchor: t === "timeline" }))}
-        activeTab={active}
-        onTabChange={(t) => onTab(t as T)}
-      />
-    </div>
+    <SharedRecordTabBar
+      tabs={tabs.map((t) => ({ id: t, label: TAB_LABEL[t], guideAnchor: t === "timeline" }))}
+      active={active}
+      onTab={onTab}
+    />
   );
 }

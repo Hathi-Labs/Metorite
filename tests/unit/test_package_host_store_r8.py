@@ -29,9 +29,10 @@ a. An install writes one ``package_install`` row and its claims. The org
    passes, and one byte more is refused before the database.
 b. A duplicate claim raises ``ClaimTaken`` with the point, the key and the
    holder, and writes nothing. ``triggers`` and ``slot`` allow many claims.
-   The overlap of org, group and private claims follows §4, from both sides.
-   A key that a system package holds is refused. A claim of org B never
-   conflicts with org A.
+   The overlap of org, group and private claims follows §4. A private claim
+   never blocks an org or a group claim (PKG-Q6, the org wins), and an org or
+   a group claim still blocks a private claim. A key that a system package
+   holds is refused. A claim of org B never conflicts with org A.
 c. Two installs of one key at once give one winner and one ``ClaimTaken``.
    The second install waits on the advisory lock of the org. Two installs
    of one key in two orgs at once both pass, and neither waits.
@@ -65,9 +66,8 @@ with git after. Each mutation ran on 2026-11-01 and gave the result below.
   ``test_r8_the_kind_comes_from_the_normalised_scope`` go red, and so do
   three cases of the hermetic twin.
 * M5. ``store.py``: drop the group rule of a new private claim. The case
-  ``ops`` then ``ana`` of the overlap test goes red. Drop the private rule of
-  a new group claim instead, and the cases ``ana`` then ``ops`` and ``cat``
-  then ``eng`` go red.
+  ``ops`` then ``ana`` of the overlap test goes red. (Before PKG-8b a new
+  group claim had a private rule too. PKG-Q6 removed it on purpose.)
 
 Repair round 1 (2026-11-01) adds these. The results are in the report of
 the round.
@@ -78,14 +78,24 @@ the round.
 * M7. ``routes/projects/core.py``: drop ``AND au.status = 'active'`` from
   ``_MY_GROUPS_SQL``. ``test_r8_a_removed_member_is_in_no_group`` goes red.
 * M8. ``routes/projects/core.py``: drop the ``lower()`` of ``au.email`` in
-  ``_MY_GROUPS_SQL``. The cases ``dan`` then ``ops`` and ``ops`` then
-  ``dan`` of the overlap test go red.
+  ``_MY_GROUPS_SQL``. The case ``ops`` then ``dan`` of the overlap test goes
+  red. (``dan`` then ``ops`` read the group of the holder before PKG-8b.)
 * M9. ``store.py``: make ``holder_for`` answer the whole holder.
   ``test_r8_the_409_hides_the_private_install_of_another_member`` goes red.
 * M10. ``store.py``: lock ``package_install`` with no org in the key.
   ``test_r8_two_orgs_install_one_key_at_once_and_neither_waits`` goes red.
 * M11. ``store.py``: drop the check of the isolation level.
   ``test_r8_the_store_refuses_repeatable_read`` goes red.
+
+PKG-8b (2026-11-07) adds this. The build report of task 1963 holds the
+result.
+
+* M12. ``store.py``: set ``OVERLAP["org"]`` back to ``TRUE``, so a private
+  claim blocks an org install again. The cases ``ana`` then ``org`` and
+  ``dan`` then ``org`` of the overlap test go red.
+* M13. ``store.set_version``: check the overlap of every claim again, not
+  only of a new key. Both cases of
+  ``test_r8_a_kept_key_moves_and_a_new_key_meets_the_overlap`` go red.
 """
 
 from __future__ import annotations
@@ -319,7 +329,9 @@ _SCOPES = {"org": "org", "ops": OPS, "eng": ENG, "ana": ANA, "ben": BEN, "cat": 
 
 #: (the scope of the claim that exists, the scope of the new claim, conflict).
 #: Ana, Ben and Dan are in ops, and Cat is in eng (the world fixture). The
-#: two cases of Dan fold a mixed-case address in each direction (M8).
+#: case ``ops`` then ``dan`` folds a mixed-case address (M8). PKG-Q6 (the
+#: org wins): a private claim never blocks an org or a group claim, so the
+#: cases of a private holder and a new org or group claim are no conflict.
 _OVERLAP = [
     ("org", "org", True),
     ("org", "ops", True),
@@ -329,13 +341,14 @@ _OVERLAP = [
     ("ops", "eng", False),
     ("ops", "ana", True),
     ("ops", "cat", False),
-    ("ana", "org", True),
+    ("ana", "org", False),
     ("ana", "ana", True),
     ("ana", "ben", False),
-    ("ana", "ops", True),
+    ("ana", "ops", False),
     ("ana", "eng", False),
-    ("cat", "eng", True),
-    ("dan", "ops", True),
+    ("cat", "eng", False),
+    ("dan", "ops", False),
+    ("dan", "org", False),
     ("ops", "dan", True),
 ]
 
@@ -344,8 +357,9 @@ _OVERLAP = [
 def test_r8_the_overlap_of_two_scopes_follows_section_4(
     world, held: str, new: str, conflict: bool,
 ) -> None:
-    """§4 from both sides. A private claim of Ana and an ops claim conflict
-    in either order of install, because Ana is in ops."""
+    """§4 with PKG-Q6. An ops claim refuses a later private claim of Ana,
+    because Ana is in ops. A private claim of Ana never refuses a later org
+    or ops claim: the org wins, and the resolve shows the wider claim."""
     held, new = _SCOPES[held], _SCOPES[new]
     first = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(held)))
     assert isinstance(first, store.Install), first
@@ -357,6 +371,47 @@ def test_r8_the_overlap_of_two_scopes_follows_section_4(
     else:
         assert isinstance(got, store.Install), got
         assert _installs_of(world, "p2") == 1
+
+
+def _move(world: Any, app: str, who: str, keys: list[str], version: int) -> Any:
+    """``set_version`` of the private install of *app* by *who*, with one
+    claim on ``jobs`` for each of *keys*. Answers the install or the
+    refusal."""
+    async def go() -> Any:
+        try:
+            async with tenant_session(world.p.org_a) as db:
+                return await store.set_version(
+                    db, app_id=world.apps[app], version=version, scope_subject=who,
+                    scope_kind="private", contributions=[_claim(k) for k in keys])
+        except store.InstallError as exc:
+            return exc
+    return _go(world.p.app_url, go)
+
+
+@pytest.mark.parametrize("wider", ["org", "ops"])
+def test_r8_a_kept_key_moves_and_a_new_key_meets_the_overlap(world, wider: str) -> None:
+    """PKG-8b fix round 1 (M13). Ana holds ``k`` privately. A wider install of
+    another app takes ``k``, as the org wins, and a third holds ``k2``. Her
+    move with ``k`` alone goes in, and her claim of ``k`` stays. Her move that
+    adds ``k2`` meets the full overlap: 409, and nothing changes."""
+    mine = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(ANA)))
+    assert isinstance(mine, store.Install), mine
+    subject = "org" if wider == "org" else OPS
+    for app, key in (("p2", "k"), ("p3", "k2")):
+        got = _run(world, **_args(world, app, installed_by=BEN, contributions=[_claim(key)],
+                                  **_scope(subject)))
+        assert isinstance(got, store.Install), (app, got)
+    moved = _move(world, "p1", ANA, ["k"], 2)
+    assert isinstance(moved, store.Install), moved
+    assert (moved.id, moved.version) == (mine.id, 2)
+    refused = _move(world, "p1", ANA, ["k", "k2"], 3)
+    assert isinstance(refused, ClaimTaken), refused
+    assert (refused.key, refused.holder.source) == ("k2", "org" if wider == "org" else "group")
+    assert _admin(world, "SELECT version FROM package_install WHERE id = CAST(:i AS uuid)",
+                  {"i": mine.id})[0][0] == 2
+    assert [r[0] for r in _admin(world, "SELECT key FROM package_contribution "
+                                        "WHERE install_id = CAST(:i AS uuid)",
+                                 {"i": mine.id})] == ["k"]
 
 
 @pytest.mark.parametrize("point", ["triggers", "slot"])
@@ -644,9 +699,11 @@ def test_r8_app_grants_is_tenant_scoped(world) -> None:
 
 
 #: (the scope of the first install of p1, the scope of the second install of
-#: p1). Each pair overlaps under §4. Ben holds p1 privately before Ana
-#: installs it for the org, and Ana holds it privately before she installs
-#: it for the org or for ops.
+#: p1). Ben holds p1 privately before Ana installs it for the org, and Ana
+#: holds it privately before she installs it for the org or for ops. Under
+#: PKG-Q6 those three pairs do not meet, so the exemption (M6) has its fence
+#: in the pairs ``org`` then ``ana``, ``ops`` then ``ana`` and ``ops`` then
+#: ``org``.
 _SAME_APP = [
     ("ben", "org"),
     ("ana", "org"),
@@ -679,13 +736,14 @@ def test_r8_two_installs_of_one_app_never_conflict(world, first: str, second: st
 def test_r8_a_removed_member_is_in_no_group(world) -> None:
     """The remove route keeps the rows of ``org_group_member`` and sets
     ``app_user.status`` to ``removed``. The one group query then puts Ben in
-    no group, and so does the store. His private claim does not block an
-    install for ops (M7)."""
-    ben = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(BEN)))
-    assert isinstance(ben, store.Install), ben
+    no group, and so does the store. So an ops claim does not block his
+    private claim (M7). Before PKG-8b this case ran the other way round, but
+    a private claim no longer blocks a group install (PKG-Q6)."""
+    ops = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(OPS)))
+    assert isinstance(ops, store.Install), ops
     with world.p.admin_engine.begin() as c:
         c.execute(text("UPDATE app_user SET status = 'removed' WHERE email = :e"), {"e": BEN})
-    got = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(OPS)))
+    got = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(BEN)))
     assert isinstance(got, store.Install), got
 
 
@@ -693,11 +751,13 @@ def test_r8_a_removed_member_is_in_no_group(world) -> None:
 
 
 def test_r8_the_409_hides_the_private_install_of_another_member(world) -> None:
-    """Ben holds the key privately, and Ana's org install meets it. The view
-    for Ana names the point, the key and a private install. It never names
-    Ben, his app or his install. The view for Ben names them (M9)."""
+    """Ben holds the key privately, and his own private install of a second
+    app meets it. The view of that refusal for Ana names the point, the key
+    and a private install. It never names Ben, his app or his install. The
+    view for Ben names them (M9). Under PKG-Q6 an org install never meets a
+    private claim, so this view is the guard for each later caller."""
     ben = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(BEN)))
-    taken = _run(world, **_args(world, "p2", contributions=[_claim("k")]))
+    taken = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(BEN)))
     assert isinstance(taken, ClaimTaken), taken
     seen = json.dumps(taken.detail_for(ANA))
     for secret in (BEN, world.apps["p1"], ben.id):

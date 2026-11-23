@@ -1,0 +1,10 @@
+# Runs the lane keeper every 10 minutes (CIV-19). NOT installed, see the service file.
+[Unit]
+Description=Metorite lane keeper, every 10 minutes (CIV-19)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

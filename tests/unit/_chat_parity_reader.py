@@ -1174,18 +1174,42 @@ def _seg_match(pattern: list[str], segs: list[str]) -> bool:
     return all(p == "{}" or p == s or s == "{}" for p, s in zip(pattern, segs, strict=True))
 
 
-def bff_route_for(path: str, routes: tuple[BffRoute, ...]) -> BffRoute | None:
+def _strict(pattern: list[str], segs: list[str]) -> bool:
+    """True when no id segment of the UI (``{}``) stands on a static segment
+    of the BFF template. Only the literal text of the UI path matches a
+    static segment, as in Next.js."""
+    head = pattern[:-1] if pattern and pattern[-1] == "**" else pattern
+    return not any(s == "{}" and p not in ("{}", "**") for p, s in zip(head, segs, strict=False))
+
+
+def bff_route_for(
+    path: str, routes: tuple[BffRoute, ...], verb: str | None = None
+) -> BffRoute | None:
+    """The BFF route that serves ``path``.
+
+    An id segment of the UI (``{}``) matches a static segment of a BFF route
+    only when no dynamic or catch-all route also matches (PAR-8a). So
+    ``POST /api/workflows/{}/run`` goes to the catch-all, as Next.js sends
+    it, and not to ``/api/workflows/hooks/{}``. A UI segment that code fills,
+    such as ``${kind}`` for approve or reject, still finds the static routes
+    when nothing else matches. With a ``verb``, a route whose handlers the
+    reader read, and none of them for that verb, is passed over when a later
+    route also matches."""
     segs = path.strip("/").split("/")
-    for route in routes:
-        if _seg_match(route.template.strip("/").split("/"), segs):
-            return route
-    return None
+    found = [r for r in routes if _seg_match(r.template.strip("/").split("/"), segs)]
+    strict = [r for r in found if _strict(r.template.strip("/").split("/"), segs)]
+    found = strict or found
+    if verb is not None:
+        for route in found:
+            if not route.gateway or verb in route.gateway:
+                return route
+    return found[0] if found else None
 
 
 def gateway_paths(verb: str, path: str, routes: tuple[BffRoute, ...]) -> tuple[str, ...] | None:
     """The gateway paths that a BFF request reaches, or ``None`` when no BFF
     route serves it."""
-    route = bff_route_for(path, routes)
+    route = bff_route_for(path, routes, verb)
     if route is None:
         return None
     if route.template.endswith("/**"):
@@ -1410,7 +1434,7 @@ def registered_tools() -> set[str]:
 
     import skill_my_tasks
     import skill_projects
-    from acb_skills import knowledge_tools, profile_tools
+    from acb_skills import chat_pin_tools, knowledge_tools, profile_tools
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names: set[str] = set()
@@ -1422,6 +1446,12 @@ def registered_tools() -> set[str]:
     names |= set(skill_projects.__all__) | set(skill_my_tasks.__all__)
     names |= set(knowledge_tools.__all__)
     names |= {fn.__name__ for fn in profile_tools.WRITE_TOOLS} | {"resolve_person"}
+    # CO-11b (task 3563): the pin of this chat, a core tool of the orchestrator.
+    names |= {fn.__name__ for fn in chat_pin_tools.TOOLS}
+    # PAR-8b (task 3903): the Home tools, core tools of the orchestrator.
+    from acb_skills import home_tools
+
+    names |= {fn.__name__ for fn in home_tools.HOME_TOOLS}
     return names
 
 
@@ -1479,7 +1509,7 @@ def inventory(project: Project, skip: tuple[str, ...]) -> tuple[dict[str, Action
 class Decision:
     #: ``covered``, ``exempt`` or ``debt``.
     state: str
-    #: ``table``, ``projects manifest`` or ``knowledge manifest``.
+    #: ``table``, ``projects manifest``, ``knowledge manifest`` or ``crm manifest``.
     source: str
     #: The tool, the kind and reason, or the wave.
     detail: str
@@ -1489,11 +1519,70 @@ def _concrete(path: str) -> str:
     return path.replace("{}", "_")
 
 
+#: The record kinds of the CRM. A UI path writes them as one ``{}``.
+CRM_KINDS = ("leads", "deals", "contacts", "organizations")
+
+
+def crm_rows(verb: str, gateway: str):
+    """The rows of the CRM manifest that one UI gateway path reaches.
+
+    ``{}`` in the UI path stands for an id, or for a record kind in the
+    first place after ``/crm`` and in the name of an export file. A path that
+    names no row exactly may be the start of a longer route whose rest is ids
+    only: the Field Studio writes ``/crm/fields`` and the gateway serves
+    ``/crm/fields/{entity}/{key}``. An exact match wins over that fallback.
+    """
+    from acb_common.app_manifests.crm import CRM
+
+    ui = gateway.strip("/").split("/")
+
+    def seg_ok(want: str, have: str) -> bool:
+        if have.startswith("{"):
+            return True
+        if want == "{}":
+            return have in CRM_KINDS or (have.endswith(".csv") and have[:-4] in CRM_KINDS)
+        return want == have
+
+    exact, longer = [], []
+    for row in CRM.routes:
+        if row.method != verb:
+            continue
+        segs = row.path.strip("/").split("/")
+        head = segs[: len(ui)]
+        if len(head) < len(ui) or not all(seg_ok(w, h) for w, h in zip(ui, head, strict=True)):
+            continue
+        rest = segs[len(ui) :]
+        if not rest:
+            exact.append(row)
+        elif all(x.startswith("{") for x in rest):
+            longer.append(row)
+    return exact or longer
+
+
+def _crm_decision(act: Action) -> Decision:
+    """The decision of the CRM manifest. A row with a built tool covers the
+    action. The planned count of the manifest keeps the other rows honest."""
+    rows = [row for gw in act.gateway or () for row in crm_rows(act.verb, gw)]
+    if not rows:
+        return Decision("unrouted", "crm manifest", f"no row for {act.verb} {act.gateway}")
+    registered = registered_tools()
+    for row in rows:
+        built = [t for t in (row.tool, *row.also) if t and t in registered]
+        if built:
+            return Decision("covered", "crm manifest", built[0])
+    if all(row.cls == "X" for row in rows):
+        return Decision("exempt", "crm manifest", f"class X: {rows[0].reason}")
+    planned = next((row.planned for row in rows if row.planned), "?")
+    return Decision("debt", "crm manifest", f"planned in {planned}")
+
+
 def derived(act: Action) -> Decision | None:
-    """The decision that the Projects or the Knowledge manifest gives."""
+    """The decision that the Projects, the Knowledge or the CRM manifest gives."""
     if not act.gateway:
         return None
     gw = act.gateway[0]
+    if gw == "/crm" or gw.startswith("/crm/"):
+        return _crm_decision(act)
     if gw.startswith("/projects/"):
         import skill_projects
         from skill_projects import manifest as pm

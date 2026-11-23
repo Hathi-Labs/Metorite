@@ -23,6 +23,9 @@ from litellm import (  # type: ignore[import-untyped]
     get_supported_openai_params,
 )
 
+# Task 3554: the guard of the direct arm loads with the client, so it is in
+# place before the first call of any seam. Its module imports only acb_common.
+from acb_llm import routed as _routed
 from acb_llm.model_limits import STUB_MARKER
 from acb_llm.prompt_cache import apply_prompt_caching
 
@@ -171,7 +174,7 @@ def _init_tier_models() -> None:
         return
 
     try:
-        with config_path.open() as f:
+        with config_path.open(encoding="utf-8") as f:
             cfg: dict[str, Any] = yaml.safe_load(f) or {}
     except Exception as exc:
         _log.warning(
@@ -207,7 +210,7 @@ def _init_tier_models() -> None:
         overrides_path = root / "infra" / "litellm" / "tier_overrides.yaml"
         if overrides_path.exists():
             try:
-                with overrides_path.open() as f:
+                with overrides_path.open(encoding="utf-8") as f:
                     overrides = yaml.safe_load(f) or {}
             except Exception as exc:
                 _log.warning(
@@ -691,24 +694,35 @@ def _emit_usage(
     if os.environ.get("LLM_USAGE_AUDIT", "0") != "1":
         return
     try:
-        from acb_audit import AuditEvent, record
+        from acb_audit import AuditEvent, record, refuse_tenantless
+        from acb_common.db import current_tenant
 
         _actor_agent = agent or _run_ctx.get("agent")
+        # Task 2189: the row belongs to the tenant of the run. Read it HERE, on
+        # the calling frame: ``run_in_executor`` below does not copy
+        # contextvars. Never from the request or the run context fields (R5).
+        _org = current_tenant()
+        event = AuditEvent(
+            actor=f"agent:{_actor_agent}" if _actor_agent
+            else "system:acb_llm",
+            action="llm_completion",
+            target=f"model:{model}",
+            # _stamp last: an explicitly-passed attribution outranks the
+            # ambient run context (they agree for an in-run call, and only
+            # an out-of-run caller passes anything at all).
+            payload={
+                "tier": tier, "cost_usd": cost,
+                **stats, **_run_ctx, **_stamp,
+            },
+            organization_id=str(_org) if _org else None,
+        )
+        # No tenant with the bind on (the master-key ``/v1`` route, H4): skip
+        # the row, never the operator org. The usage log line above stays.
+        if refuse_tenantless(event):
+            return
 
         def _persist() -> None:
-            record(AuditEvent(
-                actor=f"agent:{_actor_agent}" if _actor_agent
-                else "system:acb_llm",
-                action="llm_completion",
-                target=f"model:{model}",
-                # _stamp last: an explicitly-passed attribution outranks the
-                # ambient run context (they agree for an in-run call, and only
-                # an out-of-run caller passes anything at all).
-                payload={
-                    "tier": tier, "cost_usd": cost,
-                    **stats, **_run_ctx, **_stamp,
-                },
-            ))
+            record(event)
 
         try:
             loop = asyncio.get_running_loop()
@@ -795,7 +809,6 @@ async def complete(
 
     max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
     messages = ensure_json_word(messages, extra.get("response_format"))
-    await _ensure_keys_loaded()
 
     # ── H-171: the AGENT path bills too, or nothing does ──────────────
     #
@@ -813,6 +826,12 @@ async def complete(
             tier=tier.value, messages=messages, temperature=temperature,
             max_tokens=max_tokens, extra=extra, job=job,
         )
+
+    # Task 3554: the direct arm runs on a dev box only. The refusal comes
+    # before the key load, so a refused call loads no vendor key. A routed
+    # call loads none either (§6B.5 hazard 3).
+    _routed.refuse_direct_arm("complete")
+    await _ensure_keys_loaded()
 
     model = _TIER_MODEL[tier.value]
 
@@ -905,8 +924,6 @@ async def complete_with_tools(
     For Anthropic tiers the ``tools`` array's last entry is marked
     ``cache_control`` so the whole (byte-stable) schema block is cached.
     """
-    await _ensure_keys_loaded()
-
     # ── H-171 ── and the Router DOES take tools ───────────────────
     #
     # ⚠️ A first pass left this on the direct path, on the belief that
@@ -931,6 +948,10 @@ async def complete_with_tools(
         # so. Handing back a litellm object would break the *next* turn, which
         # feeds this straight into `messages`.
         return message.model_dump() if hasattr(message, "model_dump") else dict(message)
+
+    # Task 3554: as in `complete`, the refusal and then the key load.
+    _routed.refuse_direct_arm("complete_with_tools")
+    await _ensure_keys_loaded()
 
     model = _TIER_MODEL[tier.value]
     ensure_model_registered(model)

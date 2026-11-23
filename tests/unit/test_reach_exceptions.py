@@ -9,6 +9,12 @@ Code: ``gateway/reach/exceptions.py``, ``plan.interrupt_candidates(rules=)``,
   ``test_a_young_approval_holds`` goes red.
 * M2. ``plan.interrupt_candidates``: ignore ``rules``.
   ``test_the_switch_changes_who_may_interrupt`` goes red.
+* M3. ``exceptions.with_notify``: return *cards* unchanged.
+  ``test_the_setting_on_lets_rule_3_fire`` goes red (row 13).
+* M4. ``loop.block_notify``: drop the ``BRIEF_EXCEPTIONS`` gate.
+  ``test_dark_reads_no_block_notify`` goes red.
+* M5. ``plan.interrupt_candidates``: drop the rule id from the copy.
+  ``test_a_candidate_carries_its_rule_id`` goes red (row 12).
 """
 
 from __future__ import annotations
@@ -167,3 +173,113 @@ def test_the_switch_is_dark_by_default_and_needs_the_org(monkeypatch) -> None:
     assert flags.exceptions(ORG) is False
     _settings(monkeypatch, brief_exceptions="true")
     assert flags.exceptions(ORG) is False
+
+
+# ── BR-5 slice 2b-2: the ``block_notify`` setting (row 13, Q8 "One setting") ──
+
+
+def test_the_setting_on_lets_rule_3_fire() -> None:
+    cards = [card("block_soon", cid="1"), card("agent_asks", cid="2")]
+    marked = exceptions.with_notify(cards, True)
+    assert marked[0]["facts"]["notify_me"] is True
+    assert "notify_me" not in marked[1]["facts"]
+    assert exceptions.decide(marked[0], NOW).rule_id == "block_soon_asked"
+    got = plan.interrupt_candidates(marked, set(), NOW, rules=True)
+    assert {c["signal_id"] for c in got} == {"block_soon:1", "agent_asks:2"}
+    # The feed's own card does not change.
+    assert cards[0]["facts"] == {}
+
+
+def test_the_setting_off_lets_rule_3_match_nothing() -> None:
+    cards = [card("block_soon", cid="1")]
+    assert exceptions.with_notify(cards, False) is cards
+    assert exceptions.decide(cards[0], NOW) == exceptions.HOLD
+    assert plan.interrupt_candidates(exceptions.with_notify(cards, False), set(), NOW,
+                                     rules=True) == []
+
+
+def test_the_setting_marks_a_folded_block_soon() -> None:
+    folded = card("overdue", folded=("block_soon",))
+    assert exceptions.decide(exceptions.with_notify([folded], True)[0], NOW).rule_id == \
+        "block_soon_asked"
+
+
+def test_a_muted_rule_3_holds_with_the_setting_on() -> None:
+    marked = exceptions.with_notify([card("block_soon")], True)
+    assert not exceptions.may_interrupt(marked[0], NOW,
+                                        muted=frozenset({"block_soon_asked"}))
+
+
+def test_block_notify_is_a_strict_boolean_pref() -> None:
+    from gateway.routes.shell import prefs
+
+    assert prefs._CLEAN["block_notify"](True) is True
+    assert prefs._CLEAN["block_notify"](False) is False
+    for bad in ("true", 1, None, []):
+        with pytest.raises(ValueError):
+            prefs._CLEAN["block_notify"](bad)
+    assert prefs.stored_prefs({"block_notify": True}) == {"block_notify": True}
+    assert prefs.stored_prefs({"block_notify": "yes"}) == {}
+
+
+async def test_dark_reads_no_block_notify(monkeypatch) -> None:
+    from gateway.reach import loop, outbox
+
+    async def boom(org, member):
+        raise AssertionError("read while dark")
+
+    monkeypatch.setattr(outbox, "block_notify", boom)
+    _settings(monkeypatch, brief_exceptions=False)
+    assert await loop.block_notify(ORG, "a@b.test") is False
+
+
+async def test_on_reads_block_notify(monkeypatch) -> None:
+    from gateway.reach import loop, outbox
+
+    async def yes(org, member):
+        return True
+
+    monkeypatch.setattr(outbox, "block_notify", yes)
+    _settings(monkeypatch)
+    assert await loop.block_notify(ORG, "a@b.test") is True
+
+
+async def test_a_failed_read_of_block_notify_is_off(monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from gateway.reach import outbox
+
+    @asynccontextmanager
+    async def broken(org):
+        raise RuntimeError("db down")
+        yield
+
+    monkeypatch.setattr(outbox, "tenant_session", broken)
+    assert await outbox.block_notify(ORG, "a@b.test") is False
+
+
+# ── BR-5 slice 2b-1: the rule id of an alert (row 12, no database) ──────────
+
+
+def test_a_candidate_carries_its_rule_id() -> None:
+    cards = [card("agent_asks", cid="2"), card("notify_me", cid="3")]
+    got = {c["signal_id"]: c for c in plan.interrupt_candidates(cards, set(), NOW, rules=True)}
+    assert plan.entry(got["agent_asks:2"])[2] == "agent_asks"
+    assert plan.entry(got["notify_me:3"])[2] is None
+    assert plan.entry(got["agent_asks:2"])[:2] == plan.pair(cards[0])
+    # Rules off, no card carries a rule id.
+    off = plan.interrupt_candidates([card("agent_asks")], set(), NOW)
+    assert all(plan.entry(c)[2] is None for c in off)
+
+
+async def test_a_bad_rating_runs_no_sql(monkeypatch) -> None:
+    from gateway.reach import outbox
+
+    def boom(org):
+        raise AssertionError("SQL ran")
+
+    monkeypatch.setattr(outbox, "tenant_session", boom)
+    for args in (("s", "agent_asks", "great"), ("s", "nope", "useful"),
+                 ("", "agent_asks", "useful")):
+        with pytest.raises(ValueError):
+            await outbox.rate_alert(ORG, "a@b.test", *args)

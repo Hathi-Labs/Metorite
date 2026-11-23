@@ -296,5 +296,16 @@ describe("the run pill", () => {
       }),
     ).toBe("evil.example");
   });
+
+  it("a box reads its label only, with no host (EA-19b)", () => {
+    expect(
+      runIdentity({
+        client_via: "mcp:box:metorite-home-0a1b2c3d",
+        client_name: "Box metorite-home",
+        client_host: "box",
+      }),
+    ).toBe("Box metorite-home");
+    expect(runIdentity({ client_via: "mcp:box:0a1b2c3d" })).toBe("Box");
+  });
 });
 

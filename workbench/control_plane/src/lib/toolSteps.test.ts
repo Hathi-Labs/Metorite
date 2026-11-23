@@ -107,6 +107,10 @@ describe("describeToolStep — a step in words", () => {
     expect(step("create_task", { title: "Ship it" }).label).toBe("Created a task");
     expect(step("update_task").label).toBe("Updated a task");
     expect(step("create_personal_task").label).toBe("Created a personal task");
+    // WS-39 TPL-1a repair (P2-e): the template acts have their own words.
+    expect(step("save_as_template").label).toBe("Saved a project as a template");
+    expect(step("create_project_from_template").label).toBe("Created a project from a template");
+    expect(step("list_templates").label).toBe("Read the project templates");
     expect(step("list_tasks").label).toBe("Listed tasks");
     expect(step("task_detail").label).toBe("Read a task");
     expect(step("analytics_stuck").label).toBe("Checked what is stuck");
@@ -119,6 +123,14 @@ describe("describeToolStep — a step in words", () => {
     expect(step("create_tasks", {}, "running").label).toBe("Adding tasks to a project");
     expect(step("create_tags").label).toBe("Added tags to a project");
     expect(step("create_types", {}, "running").label).toBe("Adding task types to a project");
+  });
+
+  it("names the Home tools in plain words, never by the tool name (PAR-8b)", () => {
+    expect(step("home_read").label).toBe("Read your Home page");
+    expect(step("home_card").label).toBe("Updated a Home card");
+    expect(step("home_prefs", {}, "running").label).toBe("Saving a Home setting");
+    expect(step("home_layout").label).toBe("Set the default sidebar");
+    expect(step("home_test_push").label).toBe("Checked your notifications");
   });
 
   it("keys on the bare name when a runtime prefixes it", () => {

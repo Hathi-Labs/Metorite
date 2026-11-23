@@ -28,6 +28,7 @@ missed run is recoverable; a missed notification is invisible.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -462,8 +463,10 @@ async def list_notifications(
             ),
             {"me": me, **vis.params},
         )).fetchone()
+        wire = [_row(r) for r in rows]
+        await _name_actors(db, wire)
     return {
-        "rows": [_row(r) for r in rows],
+        "rows": wire,
         "total": len(rows),
         # `{total, mentions}`, not a bare number: "you were named" is a
         # stronger claim on attention than "something you follow moved", and
@@ -475,16 +478,43 @@ async def list_notifications(
     }
 
 
+async def _name_actors(db: Any, wire: list[dict]) -> None:
+    """Task 1574: each row gets ``actor_name``, the directory name of its actor,
+    from the one resolver (``people.core.names_of``, as the decision card does).
+    An actor with no directory row (an agent, a system actor) has none, and the
+    caller keeps its own label. A fault of the read leaves every name out: the
+    list must never fail for a label."""
+    emails = {str(r.get("actor") or "") for r in wire if "@" in str(r.get("actor") or "")}
+    names: dict[str, str] = {}
+    if emails:
+        try:
+            from gateway.routes.people.core import names_of
+
+            # A savepoint: a failed statement must not abort the caller's
+            # transaction (``tenant_session``, ``db.py`` docstring).
+            async with db.begin_nested():
+                names = await names_of(db, emails)
+        except Exception as exc:  # noqa: BLE001 - a label never fails the list
+            logging.getLogger(__name__).warning(
+                "notifications.actor_names_unavailable class=%s", type(exc).__name__)
+    for r in wire:
+        name = names.get(str(r.get("actor") or "").strip().lower())
+        # A directory name that is itself an address names nobody: the caller's
+        # label (the local part) reads better.
+        r["actor_name"] = None if name and "@" in name else name
+
+
 async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
     """The ONE write of ``read_at``: mark the unread rows of the recipient
     *me* read, in the caller's transaction. *ids* names the rows, and
     ``None`` marks every unread row of *me*. The count of rows it marked.
 
-    Two callers: :func:`mark_read`, the member's own click, and the outside
-    decision of an agent (WS-55 MCP-G15, ``agent_runs.record_outside_decision``),
-    which marks the member's bell row of the question that the member
-    answered outside Metorite. It does not commit, and it does not move My
-    Day. Each caller calls ``personal.bump_my_day`` after its commit.
+    Two callers: :func:`mark_read`, the member's own click, and the close of
+    an agent question (AP-BUG-3, ``agent_runs._close_question_bells``). A run
+    that leaves ``awaiting`` marks each recipient's bell row of its questions
+    read: an answer, an outside decision (WS-55 MCP-G15), Stop, Release or
+    Finish. It does not commit, and it does not move My Day. Each caller
+    calls ``personal.bump_my_day`` after its commit.
     """
     if ids is None:
         sql = (
@@ -501,6 +531,24 @@ async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
         params = {"me": me, "ids": list(ids)}
     result = await db.execute(text(sql), params)
     return int(getattr(result, "rowcount", 0) or 0)
+
+
+async def mark_rows_unread(db: Any, ids: list[str]) -> list[str]:
+    """The one narrow way back of :func:`mark_rows_read` (H-409 fix round 2,
+    task 748). A put-back of a task reopens an agent run to ``awaiting``, so
+    the bell rows of its question that the CLOSE marked read are unread
+    again (``agent_runs.reopen_run_of_reopened_task``). The caller names the
+    exact rows that the close itself marked, and the write touches only an
+    ``agent_question`` row that is read. It does not commit. It returns the
+    recipients, sorted, so the caller moves their My Day after its commit.
+    """
+    if not ids:
+        return []
+    rows = (await db.execute(text(
+        "UPDATE pm_notifications SET read_at = NULL "
+        "WHERE id = ANY(CAST(:ids AS uuid[])) AND kind = 'agent_question' "
+        "AND read_at IS NOT NULL RETURNING recipient"), {"ids": list(ids)})).fetchall()
+    return sorted({str(r.recipient) for r in rows})
 
 
 @router.post("/notifications/read")

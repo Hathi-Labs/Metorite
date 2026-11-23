@@ -73,8 +73,11 @@ ssh: connect to host ***: Connection timed out
 not healthy yet (gateway_ok=0 workbench=000000, poll 24/24)
 ```
 
-`000000` is curl's no-response code: the runner's **HTTPS** probe also got nothing.
-So this is not SSH-specific.
+`000000` is curl's no-response code `000`, two times. The runner's **HTTPS**
+probe also got nothing, so this is not SSH-specific. The second `000` came from
+`|| echo 000` inside the capture. Since 2026-10-03, each probe gives a single
+code, and `tests/unit/test_vps_health_probe.py` refuses a new use of the idiom
+in any workflow or script.
 
 **The box was healthy throughout.** During the 55-minute window 06:28–07:23 UTC,
 `journalctl -u ssh` logged **four** lines total — one accepted key login from the

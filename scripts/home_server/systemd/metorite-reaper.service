@@ -1,5 +1,6 @@
 [Unit]
-Description=Metorite reaper: stop orphan dev stacks, remove merged worktrees (CIV-14j)
+Description=Metorite reaper: stop orphan dev stacks, remove merged worktrees, list left loops (CIV-14j, CIV-16)
+# Add --apply to ExecStart to stop the left wait loops and test runs too.
 
 [Service]
 Type=oneshot

@@ -1,0 +1,552 @@
+"""WS-17 SG-2 — the signature settings table and the resolver under FORCE RLS (R8).
+
+Spec: ``project-docs/specs/email_app_master_plan.md`` §23.2 (D-EM-64,
+D-EM-66, D-EM-71), §23.3.3, §23.4 and §23.7.
+
+Runs against a REAL Postgres, through the phase-4-promoted catalog of
+``test_h3_rls_promotion_rehearsal.py``, as the non-privileged app role (no
+superuser, no BYPASSRLS). It pins:
+
+* ``email_signature_settings`` has ENABLE and FORCE row level security and one
+  policy. Organization B cannot read a row of organization A, and the table
+  refuses a row stamped with another org (WITH CHECK).
+* The CHECKs hold the modes, the layouts and the reply modes, and a row goes
+  with its mailbox (ON DELETE CASCADE).
+* The resolver's SQL on a real database: a mailbox with no row gives the
+  stored bytes unchanged, with the flag off and on (rule 7). A template row
+  renders while the flag holds the org, and a row of another org is never
+  read. The settings GET and the PUT answer carry the same bytes as main.
+* The writer of SG-3a (``signature_settings.py``, §23.3.10) on a real
+  database. Organization A cannot write or read a row of organization B. A
+  ``send`` grantee of a shared mailbox reads the row and cannot write it. The
+  writer refuses an image address of another org, and a value that a CHECK
+  refuses is a 422 that writes nothing. The tenant comes from the bound
+  session, and the send carries what the PUT answered.
+
+Each database class skips cleanly without ``TENANT_LADDER_DATABASE_URL``
+(``_DB_GATE``). The migration check and the CI list check need no database.
+The migration is found by CONTENT, never by number (R1).
+"""
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+
+import pytest
+from acb_auth.permissions import EffectiveAccess
+from acb_auth.roles import UserContext, UserRole
+from acb_common import get_settings
+from acb_common.db import bind_tenant, release_tenant
+from fastapi import HTTPException
+from gateway.routes.email import AssistantSettingsModel, signature_render
+from gateway.routes.email import signature as sig
+from gateway.routes.email import signature_settings as writer
+from gateway.routes.email.automation import assistant as assistant_mod
+from gateway.routes.email.automation import drafting
+from gateway.routes.email.core import _tenant_session
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
+from tests.unit import _r8_lists as r8_lists
+from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _seed_account
+
+# ``promoted`` and ``app_engine`` are used by name for fixture injection, so
+# the import is load-bearing even though it reads as unused.
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+_ROOT = Path(__file__).resolve().parents[2]
+_FIELDS = {"name": "Jane Doe", "title": "Head of Sales", "company": "Acme Works",
+           "phone": "+91 98450 12345"}
+_STORED = "-- \nJane Doe\nAcme Works ✓"
+
+
+def _migration() -> str:
+    [path] = [
+        p for p in (_ROOT / "infra" / "postgres").glob("[0-9]*_*.sql")
+        if "CREATE TABLE IF NOT EXISTS email_signature_settings"
+        in p.read_text(encoding="utf-8")
+    ]
+    return path.read_text(encoding="utf-8")
+
+
+def test_the_migration_is_tenant_scoped_with_force_rls() -> None:
+    body = _migration()
+    assert "ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY" in body
+    assert "ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY" in body
+    assert "USING      (organization_id = current_setting('app.tenant_id', true)::uuid)" in body
+    assert "WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid)" in body
+    assert "account_id       UUID NOT NULL REFERENCES email_accounts (id) ON DELETE CASCADE" in body
+    assert "mode IN ('custom', 'template', 'company')" in body
+    assert "reply_mode IN ('full', 'short', 'none')" in body
+    assert "reply_mode       TEXT NOT NULL DEFAULT 'full'" in body
+    # Rule 7: no backfill, and the old store stays as it is.
+    assert "INSERT INTO" not in body and "UPDATE " not in body
+    assert "email_assistant_settings ADD" not in body and "DROP COLUMN" not in body
+
+
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention. The
+    release gate in deploy.yml holds a copy of the list."""
+    for name in ("pr-check.yml", "deploy.yml"):
+        assert "tests/unit/test_email_signature_settings_r8.py" in r8_lists.must_run(), name
+
+
+def _app_dsn(promoted) -> str:  # noqa: F811
+    return promoted.app_url.render_as_string(hide_password=False)
+
+
+def _seed_settings(admin_engine, *, org: str, account_id: str, mode: str = "template",
+                   layout: str | None = "classic", reply_mode: str = "full",
+                   fields: dict | None = None) -> None:
+    with admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_signature_settings (account_id, organization_id, mode, "
+            "layout, fields, reply_mode) VALUES (CAST(:a AS uuid), CAST(:o AS uuid), "
+            ":m, :l, CAST(:f AS jsonb), :r)"),
+            {"a": account_id, "o": org, "m": mode, "l": layout,
+             "f": json.dumps(_FIELDS if fields is None else fields), "r": reply_mode})
+
+
+def _seed_stored(admin_engine, *, org: str, account_id: str, signature: str | None) -> None:
+    with admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_assistant_settings (account_id, signature, organization_id) "
+            "VALUES (CAST(:a AS uuid), :s, CAST(:o AS uuid))"),
+            {"a": account_id, "s": signature, "o": org})
+
+
+def _box(promoted) -> tuple[str, str]:  # noqa: F811
+    owner = f"owner-{uuid.uuid4().hex[:8]}@sg2.test"
+    return owner, _seed_account(promoted.admin_engine, org=promoted.org_b, owner=owner)
+
+
+def _flag(monkeypatch, value: str) -> None:
+    monkeypatch.setattr(get_settings(), "email_signature_templates_orgs", value,
+                        raising=False)
+
+
+async def _resolve(promoted, org: str, account_id: str, kind: str) -> str:  # noqa: F811
+    token = bind_tenant(org)
+    try:
+        async with tenant_engine_scope(_app_dsn(promoted)), _tenant_session() as db:
+            return await sig.resolve_signature(db, account_id, kind)
+    finally:
+        release_tenant(token)
+
+
+@_DB_GATE
+class TestTheTableUnderForceRls:
+
+    def test_the_catalog_forces_rls_with_one_policy(self, promoted, app_engine):  # noqa: F811
+        with promoted.admin_engine.connect() as c:
+            row = c.execute(text(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE oid = 'email_signature_settings'::regclass")).one()
+            policies = c.execute(text(
+                "SELECT policyname FROM pg_policies "
+                "WHERE tablename = 'email_signature_settings'")).scalars().all()
+        assert tuple(row) == (True, True)
+        assert policies == ["email_signature_settings_tenant_isolation"]
+
+    def test_org_b_cannot_read_a_row_of_org_a(self, promoted, app_engine):  # noqa: F811
+        _assert_non_priv(app_engine)
+        owner = f"owner-{uuid.uuid4().hex[:8]}@sg2.test"
+        acc = _seed_account(promoted.admin_engine, org=promoted.org_a, owner=owner)
+        _seed_settings(promoted.admin_engine, org=promoted.org_a, account_id=acc)
+        query = text("SELECT count(*) FROM email_signature_settings "
+                     "WHERE account_id = CAST(:a AS uuid)")
+        for org, want in ((promoted.org_b, 0), (promoted.org_a, 1)):
+            with app_engine.begin() as c:
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+                assert c.execute(query, {"a": acc}).scalar_one() == want, org
+
+    def test_a_row_stamped_with_another_org_is_refused(self, promoted, app_engine):  # noqa: F811
+        _, acc = _box(promoted)
+        with app_engine.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": promoted.org_b})
+            with pytest.raises(DBAPIError):
+                c.execute(text(
+                    "INSERT INTO email_signature_settings (account_id, organization_id) "
+                    "VALUES (CAST(:a AS uuid), CAST(:o AS uuid))"),
+                    {"a": acc, "o": promoted.org_a})
+
+    def test_a_new_row_is_custom_and_full_by_default(self, promoted, app_engine):  # noqa: F811
+        _, acc = _box(promoted)
+        with app_engine.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": promoted.org_b})
+            c.execute(text("INSERT INTO email_signature_settings (account_id) "
+                           "VALUES (CAST(:a AS uuid))"), {"a": acc})
+            row = c.execute(text(
+                "SELECT organization_id::text, mode, layout, fields, reply_mode "
+                "FROM email_signature_settings WHERE account_id = CAST(:a AS uuid)"),
+                {"a": acc}).one()
+        assert tuple(row) == (promoted.org_b, "custom", None, {}, "full")
+
+    @pytest.mark.parametrize(("column", "value"), [
+        ("mode", "'html'"), ("reply_mode", "'half'"), ("layout", "'fancy'"),
+        ("fields", "'[]'::jsonb"), ("fields", "'\"x\"'::jsonb"),
+    ])
+    def test_the_checks_refuse_a_bad_row(self, promoted, app_engine, column, value):  # noqa: F811
+        _, acc = _box(promoted)
+        with promoted.admin_engine.begin() as c, pytest.raises(DBAPIError):
+            c.execute(text(
+                f"INSERT INTO email_signature_settings (account_id, organization_id, "
+                f"{column}) VALUES (CAST(:a AS uuid), CAST(:o AS uuid), {value})"),
+                {"a": acc, "o": promoted.org_b})
+
+    def test_a_template_needs_a_layout(self, promoted, app_engine):  # noqa: F811
+        _, acc = _box(promoted)
+        with pytest.raises(DBAPIError):
+            _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                           layout=None)
+
+    def test_the_row_goes_with_its_mailbox(self, promoted, app_engine):  # noqa: F811
+        _, acc = _box(promoted)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc)
+        with promoted.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                      {"a": acc})
+            left = c.execute(text(
+                "SELECT count(*) FROM email_signature_settings "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": acc}).scalar_one()
+        assert left == 0
+
+
+@_DB_GATE
+class TestTheResolverOnRealSql:
+
+    @pytest.mark.parametrize("flag", ["", "*"])
+    async def test_no_row_resolves_to_the_stored_bytes(
+        self, promoted, app_engine, monkeypatch, flag,  # noqa: F811
+    ):
+        _flag(monkeypatch, flag)
+        _, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        for kind in sig.SIGNATURE_KINDS:
+            assert await _resolve(promoted, promoted.org_b, acc, kind) == _STORED
+        _, bare = _box(promoted)
+        assert await _resolve(promoted, promoted.org_b, bare, "new") == ""
+
+    async def test_with_the_flag_off_a_template_row_is_not_read(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "")
+        _, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                       reply_mode="none")
+        for kind in sig.SIGNATURE_KINDS:
+            assert await _resolve(promoted, promoted.org_b, acc, kind) == _STORED
+
+    async def test_a_template_row_renders_while_the_flag_holds_the_org(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, promoted.org_b)
+        _, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                       reply_mode="short")
+        full = signature_render.render("classic", _FIELDS)[0]
+        short = signature_render.render("compact", _FIELDS)[0]
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == full
+        assert await _resolve(promoted, promoted.org_b, acc, "reply") == short
+        assert await _resolve(promoted, promoted.org_b, acc, "forward") == short
+        # The flag names org B only, so org A reads the stored bytes.
+        _flag(monkeypatch, promoted.org_a)
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == _STORED
+
+    async def test_a_row_of_another_org_is_never_read(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "*")
+        owner = f"owner-{uuid.uuid4().hex[:8]}@sg2.test"
+        acc = _seed_account(promoted.admin_engine, org=promoted.org_a, owner=owner)
+        _seed_stored(promoted.admin_engine, org=promoted.org_a, account_id=acc,
+                     signature=_STORED)
+        _seed_settings(promoted.admin_engine, org=promoted.org_a, account_id=acc)
+        assert await _resolve(promoted, promoted.org_a, acc, "new") == (
+            signature_render.render("classic", _FIELDS)[0])
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == ""
+
+    @pytest.mark.parametrize("stored", [None, "", _STORED, "<p>Jane <b>Doe</b></p>"])
+    async def test_rule_7_the_draft_readers_and_the_settings_answers(
+        self, promoted, app_engine, monkeypatch, stored,  # noqa: F811
+    ):
+        """No row and the flag off: each reader gets the stored bytes, as on
+        main. The GET and the PUT answer carry them too. One change from main:
+        for a NULL signature the GET answers ``""``, where main answered
+        ``null``. Every reader maps both to ``""`` (§23.6)."""
+        _flag(monkeypatch, "")
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=stored)
+        main = stored or ""
+        user = UserContext(
+            email=owner, role=UserRole.EMPLOYEE, organization_id=promoted.org_b,
+            access=EffectiveAccess(role_granted=frozenset({"feature:email"})))
+        token = bind_tenant(promoted.org_b)
+        try:
+            async with tenant_engine_scope(_app_dsn(promoted)):
+                async with _tenant_session() as db:
+                    drafted = await drafting._account_signature(db, acc)
+                    _, about_sig = await assistant_mod._load_assistant_about(db, acc)
+                got = await assistant_mod.get_assistant_settings(account_id=acc, user=user)
+                put = await assistant_mod.put_assistant_settings(
+                    AssistantSettingsModel(account_id=acc, signature=main), user=user)
+        finally:
+            release_tenant(token)
+        assert drafted == about_sig == main
+        assert got["signature"] == main
+        assert got["signature_text"] == put["signature_text"] == sig.signature_text(main)
+
+    async def test_the_settings_answers_seed_the_template_text(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """With the flag on, the editor keeps the stored free HTML, and the
+        composer seeds the text of the layout signature."""
+        _flag(monkeypatch, "*")
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc)
+        user = UserContext(
+            email=owner, role=UserRole.EMPLOYEE, organization_id=promoted.org_b,
+            access=EffectiveAccess(role_granted=frozenset({"feature:email"})))
+        token = bind_tenant(promoted.org_b)
+        try:
+            async with tenant_engine_scope(_app_dsn(promoted)):
+                got = await assistant_mod.get_assistant_settings(account_id=acc, user=user)
+        finally:
+            release_tenant(token)
+        assert got["signature"] == _STORED
+        assert got["signature_text"] == signature_render.render("classic", _FIELDS)[1]
+
+
+# ── The writer of SG-3a (§23.3.10) ──────────────────────────────────────────
+
+_BASE = "https://api.sg3a.test"
+_TOKEN = "B" * 43
+
+
+def _member(owner: str, org: str) -> UserContext:
+    return UserContext(
+        email=owner, role=UserRole.EMPLOYEE, organization_id=org,
+        access=EffectiveAccess(role_granted=frozenset({"feature:email"})))
+
+
+def _body(account_id: str, **over) -> writer.SignatureSettingsRequest:
+    return writer.SignatureSettingsRequest(**{
+        "account_id": account_id, "mode": "template", "layout": "classic",
+        "fields": dict(_FIELDS), "reply_mode": "full", **over})
+
+
+def _logo(org: str) -> dict:
+    return {"url": f"{_BASE}/email/signature-image/{org}/{_TOKEN}.png",
+            "width": 120, "height": 60}
+
+
+async def _as(promoted, org: str, call):  # noqa: F811
+    """Run ``call`` as a request bound to ``org``, through the app role."""
+    token = bind_tenant(org)
+    try:
+        async with tenant_engine_scope(_app_dsn(promoted)):
+            return await call()
+    finally:
+        release_tenant(token)
+
+
+def _row(admin_engine, account_id: str):
+    with admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT organization_id::text, mode, layout, fields, reply_mode, "
+            "created_at, updated_at FROM email_signature_settings "
+            "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).first()
+    return tuple(row) if row else None
+
+
+@_DB_GATE
+class TestTheWriterOnRealSql:
+
+    async def test_a_put_stores_the_row_of_the_bound_tenant_and_the_send_carries_it(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        _flag(monkeypatch, promoted.org_b)
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        me = _member(owner, promoted.org_b)
+        fields = {**_FIELDS, "logo": _logo(promoted.org_b)}
+        put = await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+            _body(acc, fields=fields, reply_mode="short"), user=me))
+        html, text_form = signature_render.render("classic", fields)
+        assert (put["html"], put["text"]) == (html, text_form)
+        assert _logo(promoted.org_b)["url"] in put["html"]
+        org, mode, layout, stored, reply_mode, created, updated = _row(
+            promoted.admin_engine, acc)
+        assert (org, mode, layout, stored, reply_mode) == (
+            promoted.org_b, "template", "classic", fields, "short")
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == put["html"]
+        got = await _as(promoted, promoted.org_b, lambda: writer.get_signature_settings(
+            account_id=acc, user=me))
+        assert (got["mode"], got["layout"], got["fields"], got["reply_mode"]) == (
+            "template", "classic", fields, "short")
+        assert got["image_upload"] is True
+        # A second PUT updates the one row, and moves updated_at only.
+        await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+            _body(acc, mode="custom", reply_mode="none"), user=me))
+        after = _row(promoted.admin_engine, acc)
+        assert after[1] == "custom" and after[4] == "none"
+        assert after[5] == created and after[6] >= updated
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == _STORED
+
+    async def test_org_a_cannot_write_or_read_a_row_of_org_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The same member in two organizations. Bound to A, a PUT and a GET
+        of the mailbox of B answer 404, and B's row does not change. A PUT
+        of the member's mailbox in A writes a row of A only."""
+        _flag(monkeypatch, "*")
+        owner, acc_b = _box(promoted)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc_b,
+                       reply_mode="short")
+        acc_a = _seed_account(promoted.admin_engine, org=promoted.org_a, owner=owner)
+        before = _row(promoted.admin_engine, acc_b)
+        me_in_a = _member(owner, promoted.org_a)
+        for call in (
+            lambda: writer.put_signature_settings(
+                _body(acc_b, mode="custom", reply_mode="none"), user=me_in_a),
+            lambda: writer.get_signature_settings(account_id=acc_b, user=me_in_a),
+        ):
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_a, call)
+            assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc_b) == before
+        put = await _as(promoted, promoted.org_a, lambda: writer.put_signature_settings(
+            _body(acc_a), user=me_in_a))
+        assert put["account_id"] == acc_a
+        assert _row(promoted.admin_engine, acc_a)[0] == promoted.org_a
+        assert _row(promoted.admin_engine, acc_b) == before
+
+    async def test_a_member_with_no_send_access_gets_404(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "*")
+        _, acc = _box(promoted)
+        stranger = _member(f"stranger-{uuid.uuid4().hex[:8]}@sg2.test", promoted.org_b)
+        for call in (
+            lambda: writer.put_signature_settings(_body(acc), user=stranger),
+            lambda: writer.get_signature_settings(account_id=acc, user=stranger),
+        ):
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b, call)
+            assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_a_send_grantee_of_a_shared_mailbox_reads_but_cannot_write(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """``shared_mailbox.md`` §4.3: a ``send`` member may not change the
+        signature. The PUT needs ``manage``, so the ``send`` grantee gets 404
+        and the row does not change. The GET needs ``send``, so the same
+        grantee reads the row. A ``manage`` grantee writes it."""
+        _flag(monkeypatch, "*")
+        monkeypatch.setattr(get_settings(), "email_shared_mailbox", True, raising=False)
+        tag = uuid.uuid4().hex[:8]
+        sender, manager = f"sam-{tag}@sg3a.test", f"mia-{tag}@sg3a.test"
+        with promoted.admin_engine.begin() as c:
+            acc = str(c.execute(text(
+                "INSERT INTO email_accounts (user_id, provider, email_address, "
+                "credentials_encrypted, initial_sync_done, organization_id, shared_since) "
+                "VALUES (:u, 'microsoft', :a, 'x', true, CAST(:o AS uuid), now()) "
+                "RETURNING id"),
+                {"u": f"own-{tag}@sg3a.test", "a": f"sales-{tag}@sg3a.test",
+                 "o": promoted.org_b}).scalar_one())
+            for subject, level in ((sender, "send"), (manager, "manage")):
+                c.execute(text(
+                    "INSERT INTO email_mailbox_grants (organization_id, account_id, "
+                    "subject, level, created_by) VALUES (CAST(:o AS uuid), "
+                    "CAST(:a AS uuid), :s, :l, 'admin@sg3a.test')"),
+                    {"o": promoted.org_b, "a": acc, "s": subject, "l": level})
+        try:
+            _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                           reply_mode="short")
+            before = _row(promoted.admin_engine, acc)
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                    _body(acc, mode="custom", reply_mode="none"),
+                    user=_member(sender, promoted.org_b)))
+            assert caught.value.status_code == 404
+            assert _row(promoted.admin_engine, acc) == before
+            got = await _as(promoted, promoted.org_b, lambda: writer.get_signature_settings(
+                account_id=acc, user=_member(sender, promoted.org_b)))
+            assert (got["mode"], got["reply_mode"]) == ("template", "short")
+            put = await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                _body(acc, mode="custom", reply_mode="none"),
+                user=_member(manager, promoted.org_b)))
+            assert (put["mode"], put["reply_mode"]) == ("custom", "none")
+            assert _row(promoted.admin_engine, acc)[1:5] == (
+                "custom", "classic", _FIELDS, "none")
+        finally:
+            # The grants and the signature row go with the mailbox (ON DELETE CASCADE).
+            with promoted.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                          {"a": acc})
+
+    async def test_an_image_address_of_another_org_is_a_422(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "*")
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner, acc = _box(promoted)
+        me = _member(owner, promoted.org_b)
+        for key in ("logo", "photo"):
+            body = _body(acc, fields={**_FIELDS, key: _logo(promoted.org_a)})
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b,
+                          lambda body=body: writer.put_signature_settings(body, user=me))
+            assert caught.value.status_code == 422
+            assert "not an image of your organization" in caught.value.detail
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_a_value_that_a_check_refuses_is_a_422_that_writes_nothing(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Postgres writes ``1e300`` with every digit, so 60 of them pass the
+        bound of the model and fail the CHECK on ``octet_length(fields::text)``."""
+        _flag(monkeypatch, "*")
+        owner, acc = _box(promoted)
+        body = _body(acc, mode="custom", layout=None, fields={"x": [1e300] * 60})
+        with pytest.raises(HTTPException) as caught:
+            await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                body, user=_member(owner, promoted.org_b)))
+        assert (caught.value.status_code, caught.value.detail) == (422, writer.TOO_LARGE)
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_with_the_flag_off_nothing_writes_the_table(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, promoted.org_a)
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        with pytest.raises(HTTPException) as caught:
+            await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                _body(acc), user=_member(owner, promoted.org_b)))
+        assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc) is None
+        for kind in sig.SIGNATURE_KINDS:
+            assert await _resolve(promoted, promoted.org_b, acc, kind) == _STORED

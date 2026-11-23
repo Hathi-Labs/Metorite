@@ -1,7 +1,7 @@
 {
   "name": "Studio Builder",
   "app": "studio",
-  "description": "The owner of the studio tool pack. It holds the builder tools of AI Studio: draft an app manifest from a brief, patch it, validate it, outline it, list the actions an app may use, and save and publish the app. It also holds the skill tools: save, publish, pause and list the skills of a member. Two read tools list the packages of a member and read the records of an object. The main assistant loads these tools in a Studio turn. This agent is not a second assistant, and a hand-off to it is refused.",
+  "description": "The owner of the studio tool pack. It holds the builder tools of AI Studio: draft an app manifest from a brief, patch it, validate it, outline it, list the actions an app may use, and save, publish and delete the app. It also holds the skill tools: save, publish, pause and list the skills of a member. Two read tools list the packages of a member and read the records of an object. Three write tools add, change and delete a record, and each asks the member first. One read tool lists the workflows of the organization, reads one, or lists the human steps of one run. Two write tools publish, roll back, pause and turn on a workflow. Seven more tools read the runs, the check and the parts of a workflow, run it, make, rename, copy and delete it, change its draft with the workflow helper, and manage its code modules. The main assistant loads these tools in a Studio turn. This agent is not a second assistant, and a hand-off to it is refused.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -28,6 +28,9 @@
     "make_report"
   ],
   "own_tool_scope": [
+    "studio_app_read",
+    "studio_create_from_template",
+    "studio_delete_package",
     "studio_describe",
     "studio_draft",
     "studio_interview",
@@ -37,11 +40,28 @@
     "studio_patch",
     "studio_plan",
     "studio_publish",
+    "studio_record_create",
+    "studio_record_delete",
     "studio_record_list",
+    "studio_record_update",
     "studio_save",
     "studio_skill_list",
+    "studio_skill_repair",
     "studio_skill_save",
+    "studio_skill_share",
     "studio_skill_state",
-    "studio_validate"
+    "studio_skill_undo",
+    "studio_template_list",
+    "studio_validate",
+    "studio_workflow_build",
+    "studio_workflow_catalog",
+    "studio_workflow_check",
+    "studio_workflow_live",
+    "studio_workflow_module",
+    "studio_workflow_publish",
+    "studio_workflow_read",
+    "studio_workflow_run",
+    "studio_workflow_runs",
+    "studio_workflow_save"
   ]
 }
