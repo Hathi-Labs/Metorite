@@ -6449,6 +6449,23 @@ Ishaan: "Dev box approved"
 
 Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D230 entries merge. **Re-check this number at merge.**
 
+### D231 — The sandbox box is `aroh-sandbox-1` on Google Cloud, not a Hostinger KVM 2 (DECIDED, 2026-11-23)
+
+Ishaan Pilar asked on task 3912. Vijay Varada chose this option on the task on 2026-11-23 (answer `1c3ee034`):
+
+```text
+"Approve GCP: Ishaan's session may create aroh-sandbox-1 on the GCP bill"
+```
+
+1. **The box.** `aroh-sandbox-1` in `asia-south1-a`, `n2d-standard-2` (2 vCPU, 8 GB), in `aroh-vpc` on the subnet `aroh-sandbox` (`10.40.32.0/20`). It has no external IP and no service account.
+2. **This amends D187 decision 5 and D130.7 for the sandbox box only.** Production stays on Hostinger, so member data that a sandbox run reads also goes to Google. It replaces the Hostinger KVM 2 of task 3786.
+3. **SBX-G9 is done.** SBX-G10, SBX-G11, WS43-G1, WS43-G2 and SBX-G13 stay owner gates. The answer opens none of them.
+4. **The patch route is open.** The box has no route out to the internet. The owner chooses Cloud NAT on `aroh-sandbox`, or a temporary external IP for each patch window.
+
+`docs/gcp_aroh.md` §4a holds the settings. `specs/agent_sandbox.md` §4.6 points to it.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D231 entries merge. **Re-check this number at merge.**
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

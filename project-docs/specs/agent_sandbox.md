@@ -505,12 +505,12 @@ that lives on a box is "not verified", because this slice reads no box.
 | BH-3, the broker unit (WS43-G1) | Not built. The install on the box is an owner gate, not verified | `git ls-files` lists no `acb-sandbox-broker` unit, and `tests/unit/test_sandbox_broker_socket.py` is absent. `box_hardening.md` §5 BH-3 specifies both |
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
-| WS43-G5 | Owner gate. Not verified | `maf_coding_engine.md` line 1677 |
+| WS43-G5 | Owner gate. Task 3912 installed `runsc` on `aroh-sandbox-1` (2026-11-23). Production use is not verified | `maf_coding_engine.md` line 1677. `docs/gcp_aroh.md` §4a |
 | WS-43g, the egress proxy | Not built | `maf_coding_engine.md` line 2162 says `grant_egress()` is not built. `git grep grant_egress` finds no code |
 | `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
 | `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
 | `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
-| SBX-G9, buy the box | **Owner only, and it costs money.** Not done | §13. No agent buys, rents or picks a plan |
+| SBX-G9, buy the box | **Done (D231, 2026-11-23).** The owner approved `aroh-sandbox-1` on GCP on task 3912 | §4.6. `docs/gcp_aroh.md` §4a |
 | SBX-G10, the private network | Owner only. Not done | §13 |
 | SBX-G11, `sandbox_backend=docker-remote` | Owner only. Not done | §13 |
 | SBX-G13, the `compute:` flip | Owner only. Not done | §13. Gate id `ws43-sandbox-flip` |

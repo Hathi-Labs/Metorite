@@ -177,12 +177,16 @@ on Hostinger, so member data that a run reads also goes to Google.
 ```bash
 gcloud compute instances describe aroh-sandbox-1 --project=metorite-513907 --zone=asia-south1-a \
   --format='yaml(status,machineType.basename(),labels,serviceAccounts,networkInterfaces[0].accessConfigs)'
-ssh aroh-sandbox-1-iap 'sudo docker run --rm --runtime=runsc hello-world; sudo ss -ltnp'
+ssh aroh-sandbox-1-iap "sudo docker info --format '{{json .Runtimes}}' | grep -c runsc; sudo runsc --version | head -1; sudo ss -ltnp"
 ```
 
 The first command must show no `serviceAccounts` and no `accessConfigs`.
-The `hello-world` image is gone, so the second command can run only while
-the box has a way out (see the patch choice below).
+The second command needs no network. It must count 1 `runsc` runtime, and
+`ss` must show no Docker TCP port such as 2375 or 2376.
+
+**Cost, estimate.** The list price is about USD 47 a month. The machine
+`n2d-standard-2` is about USD 41, half of the `n2d-standard-4` price in §4.
+The disk adds about USD 6. Nobody read this figure from the console. Check it there.
 
 **How to reach it.** Through IAP only, as in §5. The `~/.ssh/config` host is
 `aroh-sandbox-1-iap`, with the same lines as `aroh-dev-1-iap` and the
