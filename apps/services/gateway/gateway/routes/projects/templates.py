@@ -41,21 +41,35 @@ save and on each apply: ``schema_version`` 1, no extra key, and the caps of
 :data:`CAPS`. It holds no id of the source, no person, no comment and no
 activity. Text in it leaves the MCP edge as ``untrusted_text``.
 
-**The apply** runs in ONE transaction. It claims the idempotency key first
-(``INSERT … ON CONFLICT DO NOTHING`` on the unique index), so a second apply
-with the same key waits for the first, then returns its project. Then it makes
-the project through ``tree.create_node_in``, gives it the template's statuses
-(it inherits its parent's set when the two sets match, else it owns a copy),
-adds each missing task type, field and tag to the space, and makes the task
-tree through ``tasks.create_task_in``. A date is the start date plus the
-offset, in calendar days. The apply is quiet, as the file import is: it emits
-``pm.project.created`` once, and no event, link or check job for each task.
+**The apply** runs in three transactions (task 2454).
+
+1. :func:`_reserve` runs each check that can refuse the apply, and reserves
+   the task numbers. A refused apply spends no number.
+2. :func:`_make_node` claims the idempotency key (``INSERT … ON CONFLICT DO
+   NOTHING`` on the unique index), makes the empty project through
+   ``tree.create_node_in``, links it to the claim, and commits at once. So the
+   share locks that ``create_node_in`` takes on the parent and on each node
+   above it end before the long fill.
+3. :func:`_fill` holds the claim ``FOR UPDATE`` and fills the project. It gives
+   the project the template's statuses (it inherits its parent's set when the
+   two sets match, else the caller's right decides), adds each missing task
+   type, field and tag to the space, makes the task tree through
+   ``tasks.create_task_in``, and marks the claim settled as its last write.
+
+A replay of the key during a fill waits for the fill, then returns its
+project. A fill that fails removes the empty project and gives the key back,
+so a refused apply leaves nothing. A fill that dies with its process leaves a
+claim with no mark, and a replay of the key fills the same project. A date is
+the start date plus the offset, in calendar days. The apply is quiet, as the
+file import is: it emits ``pm.project.created`` once, and no event, link or
+check job for each task.
 
 Fence: ``tests/unit/test_pm_templates_r8.py`` (R8).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -63,7 +77,7 @@ from datetime import date, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from acb_common import get_settings
+from acb_common import get_logger, get_settings
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -112,12 +126,16 @@ from gateway.routes.projects.tasks import check_task_values, create_task_in
 from gateway.routes.projects.tree import (
     TREE_RACE_DETAIL,
     _tree_race_as_409,
+    check_new_child,
     check_node_values,
     create_node_in,
+    hold_ancestor_keys,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+
+_log = get_logger("gateway.projects.templates")
 
 # ── The bounds ──────────────────────────────────────────────────────────────
 
@@ -688,9 +706,11 @@ async def build_payload(
         anchor = min(days) if days else None
 
     def offset(day: date | None) -> int | None:
+        # Clamped to the bound of `TaskSpec`, so a source date far from the
+        # anchor gives the farthest offset and never refuses the save.
         if day is None or anchor is None:
             return None
-        return (day - anchor).days
+        return max(-MAX_OFFSET_DAYS, min(MAX_OFFSET_DAYS, (day - anchor).days))
 
     by_id: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -874,28 +894,65 @@ _CLAIMED_SQL = (
     " WHERE organization_id = CAST(:org AS uuid) AND applied_by = :by"
     "   AND idempotency_key = :key"
 )
+#: The claim as a replay reads it. A fill holds the claim FOR UPDATE, so this
+#: read waits for a running fill, then sees its commit.
+_CLAIMED_SHARE_SQL = _CLAIMED_SQL + " FOR SHARE"
+#: The claim as the fill holds it, to the end of the fill. One fill runs for
+#: a key at a time.
+_CLAIMED_UPDATE_SQL = _CLAIMED_SQL + " FOR UPDATE"
+#: The short transaction links the new, empty project to its claim.
+_LINK_SQL = (
+    "UPDATE pm_template_applies SET project_id = CAST(:pid AS uuid)"
+    " WHERE id = CAST(:id AS uuid)"
+)
+#: The last write of the fill. A claim with its template is settled.
+_SETTLE_SQL = (
+    "UPDATE pm_template_applies SET template_id = CAST(:tid AS uuid)"
+    " WHERE id = CAST(:id AS uuid)"
+)
+#: A failed fill gives the key back, so the same key works again.
+_RELEASE_SQL = "DELETE FROM pm_template_applies WHERE id = CAST(:id AS uuid)"
+#: The row lock of the project before :data:`_DISCARD_SQL`.
+_LOCK_PROJECT_SQL = "SELECT 1 FROM pm_projects WHERE id = CAST(:pid AS uuid) FOR UPDATE"
+#: A failed fill removes the project that the apply made, only while the
+#: project holds no task and no node. The foreign keys take its activity row.
+_DISCARD_SQL = (
+    "DELETE FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+    " AND NOT EXISTS (SELECT 1 FROM pm_tasks WHERE project_id = CAST(:pid AS uuid))"
+    " AND NOT EXISTS (SELECT 1 FROM pm_projects c"
+    "                  WHERE c.parent_project_id = CAST(:pid AS uuid))"
+)
 
 
-async def _replay(db: Any, vis: Visibility, org: str, by: str, key: str, digest: str) -> dict:
-    """The answer to a key that an earlier apply holds.
+def _settled(claim: Any) -> bool:
+    """True when the fill of *claim* committed: the fill writes the template
+    last. A claim with a project and no template is the leftover of a fill
+    that died, and a replay of the key fills that project."""
+    return claim.template_id is not None
 
-    The claim waited for that apply to end, so this read sees its commit.
-    """
-    row = (await db.execute(text(_CLAIMED_SQL), {"org": org, "by": by, "key": key})).first()
-    if row is None or row.request_hash != digest:
+
+def _judge(claim: Any, digest: str) -> None:
+    """409 for a key sent with another body, and for a key whose project is
+    gone. A committed claim names its project from the short transaction on,
+    so a claim with no project lost it to a delete."""
+    if claim.request_hash != digest:
         raise _refusal(
             409, KEY_USED,
             "This idempotency_key was sent with another request. Send a new key.",
         )
-    if row.project_id is None:
+    if claim.project_id is None:
         raise _refusal(
             409, KEY_USED,
             "The project that this idempotency_key made is gone. Send a new key.",
         )
-    project = await load_visible_project(db, vis, str(row.project_id))
+
+
+async def _replay(db: Any, vis: Visibility, claim: Any) -> dict:
+    """The answer to a key whose apply is settled: its project."""
+    project = await load_visible_project(db, vis, str(claim.project_id))
     return {
         "project": row_to_dict(project, ProjectModel),
-        "template_id": str(row.template_id) if row.template_id else None,
+        "template_id": str(claim.template_id) if claim.template_id else None,
         "replayed": True,
         "own_statuses": bool(getattr(project, "owns_statuses", False)),
         "created": None,
@@ -1129,25 +1186,58 @@ _TEMPLATE_OF_SQL = (
 )
 
 
+def _check_dates(payload: PayloadV1, start: date) -> None:
+    """422 when a date of a starter task falls outside the years. A pure walk,
+    so the apply refuses it before it writes anything (task 2454)."""
+    for task, _depth in _walk(payload.tasks):
+        for days in (task.start_offset_days, task.due_offset_days):
+            if days is not None:
+                _offset_day(start, days)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Prepared:
+    """What :func:`_reserve` hands to the two transactions after it."""
+
+    row: Any
+    spec: PayloadV1
+    #: The space whose counter gave *numbers*.
+    root: str
+    numbers: list[int]
+    start: date
+    #: The project of an earlier apply of the key that did not settle. The
+    #: fill fills it, and the apply makes no project.
+    leftover: str | None
+
+
 async def _reserve(
     user: UserContext, tid: str, parent: str, by: str, key: str, digest: str,
-) -> tuple[Any, PayloadV1, str, list[int]] | dict:
+    start_day: date | None,
+) -> _Prepared | dict:
     """The first, short transaction of an apply (repair P1-b).
 
-    It answers a replay of a key at once. Else it reads the template and the
-    parent, and it reserves one task number for each starter task with
+    It answers a replay of a settled key at once. Else it reads the template
+    and the parent, and it runs each check that can refuse the apply: the
+    archived parent, the tree grammar and the dates (task 2454). Then it
+    reserves one task number for each starter task with
     ``core.reserve_task_numbers``, the one allocator, as the file import does.
-    It commits at once, so the lock of the counter row lasts one statement,
-    and a task create in the same space never waits for the long apply.
-    A failed apply leaves a gap in the numbers. Returns ``(template row,
-    payload, root, numbers)``, or the replay answer.
+    So a refused apply spends no number. It commits at once, so the lock of
+    the counter row lasts one statement, and a task create in the same space
+    never waits for the long apply. A failed fill leaves a gap in the numbers.
+
+    The claim is read ``FOR SHARE``, so a replay during a fill waits for the
+    fill, then answers its project.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         org = require_organization(vis)
-        earlier = (await db.execute(text(_CLAIMED_SQL), {"org": org, "by": by, "key": key})).first()
+        earlier = (await db.execute(
+            text(_CLAIMED_SHARE_SQL), {"org": org, "by": by, "key": key},
+        )).first()
         if earlier is not None:
-            return await _replay(db, vis, org, by, key, digest)
+            _judge(earlier, digest)
+            if _settled(earlier):
+                return await _replay(db, vis, earlier)
         reach, params = _reach_clause(vis)
         row = (await db.execute(text(_TEMPLATE_OF_SQL + reach), {**params, "id": tid, "org": org})).first()
         if row is None:
@@ -1155,11 +1245,161 @@ async def _reserve(
         if row.kind != PROJECT_KIND:
             raise _refusal(422, NOT_A_PROJECT_TEMPLATE, "This template makes no project.")
         spec = parse_payload(row.payload)
-        await load_visible_project(db, vis, parent)
-        root = await root_project_id(db, parent)
+        parent_row = await load_visible_project(db, vis, parent)
+        if earlier is None:
+            await check_new_child(db, parent_row, "project")
+            root = await root_project_id(db, parent)
+        else:
+            root = await root_project_id(db, str(earlier.project_id))
+        start = start_day or _in_range(await member_today(db, by))
+        _check_dates(spec, start)
         count = spec.counts.tasks
         first = await reserve_task_numbers(db, root, count) if count else 0
-    return row, spec, root, list(range(first, first + count))
+    return _Prepared(
+        row=row, spec=spec, root=root, numbers=list(range(first, first + count)),
+        start=start, leftover=str(earlier.project_id) if earlier is not None else None,
+    )
+
+
+async def _make_node(
+    user: UserContext, prepared: _Prepared, parent: str, name: str | None,
+    description: str | None, by: str, key: str, digest: str,
+) -> None:
+    """The second, short transaction: claim the key and make the empty project.
+
+    ``tree.create_node_in`` share-locks the parent and each node above it
+    (``tree._lock_ancestor_chain``), and a lock lasts to the commit. So this
+    transaction makes the project and commits at once, and the long fill holds
+    no share lock on the parent. A rename of the parent never waits for an
+    apply (task 2454: it waited 11.0 s for an apply of 500 tasks). This is the ONE
+    caller of ``create_node_in`` here. A fence holds it out of the fill.
+
+    When another apply of the same key claimed it a moment ago, this makes
+    nothing, and :func:`_fill` waits for that apply.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        claim = (await db.execute(
+            text(_CLAIM_SQL), {"by": by, "key": key, "hash": digest},
+        )).first()
+        if claim is None:
+            return
+        values: dict[str, Any] = {
+            "name": name or prepared.row.name,
+            "parent_project_id": parent,
+        }
+        if description is not None:
+            values["description"] = description
+        kind = check_node_values(user, values)
+        node = await create_node_in(db, user, vis, values, kind)
+        project_id = str(node.id)
+        if await root_project_id(db, project_id) != prepared.root:
+            # The parent moved to another space after the reserve. Its numbers
+            # belong to the other counter. The rollback takes the claim back
+            # too, so the client sends the same key again.
+            raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL)
+        await db.execute(text(_LINK_SQL), {"pid": project_id, "id": str(claim.id)})
+
+
+async def _discard(db: Any, project_id: str, claim_id: str) -> None:
+    """Give the key back, and remove the empty project of a failed fill.
+
+    In a savepoint of its own, so a failure here does not abort the commit.
+    Then the claim stays with no mark, and a replay of the key fills the
+    project. The project goes only while it holds no task and no node, so the
+    work of another member who used it during the fill stays. The row lock
+    comes first, in a statement of its own: it waits for a task insert of
+    another member that is not committed yet, and the delete then reads with
+    a new snapshot, which sees that task.
+    """
+    try:
+        async with db.begin_nested():
+            await db.execute(text(_RELEASE_SQL), {"id": claim_id})
+            await db.execute(text(_LOCK_PROJECT_SQL), {"pid": project_id})
+            await db.execute(text(_DISCARD_SQL), {"pid": project_id})
+    except Exception as exc:
+        _log.warning("templates.discard_failed", project_id=project_id, error=str(exc))
+
+
+async def _fill_project(
+    db: Any, user: UserContext, vis: Visibility, org: str, by: str, tid: str,
+    prepared: _Prepared, project_id: str, claim_id: str,
+) -> dict:
+    """The writes of the fill, in order. :func:`_fill` holds the claim."""
+    spec, root = prepared.spec, prepared.root
+    # A move or an archive of the new project waits for the fill.
+    await load_visible_project(db, vis, project_id, lock_share=True)
+    lanes, owns, lanes_made = await _apply_statuses(db, user, project_id, spec)
+    types, types_made = await _apply_types(db, root, org, spec)
+    fields_made = await _apply_fields(db, root, org, by, spec)
+    tags_made = await _apply_tags(db, root, by, spec)
+    tasks_made = await _apply_tasks(
+        db, user, vis, project_id, prepared.start, spec, lanes, types, prepared.numbers)
+    # No lock held the chain during the fill. Lock it now with the weakest row
+    # lock, then read the root again: a move above the project that committed
+    # during the fill took it to another space, and the numbers and the
+    # vocabulary belong to the old one.
+    await hold_ancestor_keys(db, project_id)
+    if await root_project_id(db, project_id) != root:
+        raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL)
+    await db.execute(text(_SETTLE_SQL), {"tid": tid, "id": claim_id})
+    await record_activity(
+        db, activity_type="system", created_by=actor(user), project_id=project_id,
+        body=f"Made from the template '{prepared.row.name}'",
+        meta={"template_id": tid},
+    )
+    project = await load_visible_project(db, vis, project_id)
+    return {
+        "project": row_to_dict(project, ProjectModel),
+        "template_id": tid,
+        "replayed": False,
+        "own_statuses": owns,
+        "created": {
+            "statuses": lanes_made, "types": types_made, "fields": fields_made,
+            "tags": tags_made, "tasks": tasks_made,
+        },
+    }
+
+
+async def _fill(
+    user: UserContext, prepared: _Prepared, tid: str, by: str, key: str, digest: str,
+) -> dict:
+    """The third, long transaction: fill the project of the claim.
+
+    It holds the claim ``FOR UPDATE`` to its end, so one fill runs for a key,
+    and a replay waits for it. It reads the claim again under the lock. A
+    settled claim answers its project. A claim that a failed fill gave back
+    answers 409, and the client sends the same key again.
+
+    The fill runs in a savepoint. When a write fails, the transaction removes
+    the empty project and gives the key back (:func:`_discard`), commits, and
+    raises the error again. So a refused apply leaves nothing, and the same
+    key works again. A fill that dies with its process leaves the claim with
+    no mark, and a replay of the key fills the same project.
+    """
+    failed: Exception | None = None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        org = require_organization(vis)
+        claim = (await db.execute(
+            text(_CLAIMED_UPDATE_SQL), {"org": org, "by": by, "key": key},
+        )).first()
+        if claim is None:
+            raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL)
+        _judge(claim, digest)
+        if _settled(claim):
+            return await _replay(db, vis, claim)
+        project_id = str(claim.project_id)
+        try:
+            async with db.begin_nested():
+                result = await _fill_project(
+                    db, user, vis, org, by, tid, prepared, project_id, str(claim.id))
+        except Exception as exc:
+            failed = exc
+            await _discard(db, project_id, str(claim.id))
+    if failed is not None:
+        raise failed
+    return result
 
 
 @router.post("/templates/{template_id}/apply", status_code=201, dependencies=_ENABLED)
@@ -1170,12 +1410,13 @@ async def apply_template(
 ) -> dict:
     """Make a new project from a template.
 
-    Two transactions. :func:`_reserve` answers a replay, or reserves the task
-    numbers and commits at once. Then ONE transaction claims the key and
-    makes the project, its statuses, the space's missing vocabulary and the
-    task tree. 201 with the new project. The same ``idempotency_key`` with
-    the same body again answers 200 with the first project, ``replayed:
-    true``, and makes nothing. The same key with another body answers 409.
+    Three transactions (task 2454). :func:`_reserve` answers a replay, or runs
+    the checks and reserves the task numbers. :func:`_make_node` claims the
+    key and makes the empty project, and commits at once. :func:`_fill` makes
+    its statuses, the space's missing vocabulary and the task tree. 201 with
+    the new project. The same ``idempotency_key`` with the same body again
+    answers 200 with the first project, ``replayed: true``, and makes nothing.
+    The same key with another body answers 409.
     """
     tid = _uuid_or_404(template_id, "Template")
     parent = _uuid_or_404(payload.parent_project_id, "Project")
@@ -1186,72 +1427,19 @@ async def apply_template(
     digest = request_hash(tid, payload)
     key = payload.idempotency_key
 
-    prepared = await _reserve(user, tid, parent, by, key, digest)
+    prepared = await _reserve(user, tid, parent, by, key, digest, start_day)
     if isinstance(prepared, dict):
         response.status_code = 200
         return prepared
-    row, spec, reserved_root, numbers = prepared
+    if prepared.leftover is None:
+        await _make_node(user, prepared, parent, name, description, by, key, digest)
+    result = await _fill(user, prepared, tid, by, key, digest)
+    if result["replayed"]:
+        response.status_code = 200
+        return result
 
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        org = require_organization(vis)
-        claim = (await db.execute(
-            text(_CLAIM_SQL), {"by": by, "key": key, "hash": digest},
-        )).first()
-        if claim is None:
-            # A second apply of the key won the claim after the reserve. Its
-            # numbers stay unused: a gap, which §14.8 accepts.
-            response.status_code = 200
-            return await _replay(db, vis, org, by, key, digest)
-        start = start_day or _in_range(await member_today(db, by))
-
-        values: dict[str, Any] = {
-            "name": name or row.name,
-            "parent_project_id": parent,
-        }
-        if description is not None:
-            values["description"] = description
-        kind = check_node_values(user, values)
-        node = await create_node_in(db, user, vis, values, kind)
-        project_id = str(node.id)
-        root = await root_project_id(db, project_id)
-        if root != reserved_root:
-            # The parent moved to another space between the two
-            # transactions. Its numbers belong to the other counter.
-            raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL)
-
-        lanes, owns, lanes_made = await _apply_statuses(db, user, project_id, spec)
-        types, types_made = await _apply_types(db, root, org, spec)
-        fields_made = await _apply_fields(db, root, org, by, spec)
-        tags_made = await _apply_tags(db, root, by, spec)
-        tasks_made = await _apply_tasks(
-            db, user, vis, project_id, start, spec, lanes, types, numbers)
-
-        await db.execute(
-            text(
-                "UPDATE pm_template_applies SET template_id = CAST(:tid AS uuid),"
-                " project_id = CAST(:pid AS uuid) WHERE id = CAST(:id AS uuid)"
-            ),
-            {"tid": tid, "pid": project_id, "id": str(claim.id)},
-        )
-        await record_activity(
-            db, activity_type="system", created_by=actor(user), project_id=project_id,
-            body=f"Made from the template '{row.name}'",
-            meta={"template_id": tid},
-        )
-        project = await load_visible_project(db, vis, project_id)
-        result = {
-            "project": row_to_dict(project, ProjectModel),
-            "template_id": tid,
-            "replayed": False,
-            "own_statuses": owns,
-            "created": {
-                "statuses": lanes_made, "types": types_made, "fields": fields_made,
-                "tags": tags_made, "tasks": tasks_made,
-            },
-        }
-
-    await emit("pm.project.created", {"project_id": project_id, "name": values["name"]})
+    project = result["project"]
+    await emit("pm.project.created", {"project_id": str(project["id"]), "name": project["name"]})
     return result
 
 

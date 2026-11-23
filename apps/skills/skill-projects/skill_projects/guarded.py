@@ -3376,9 +3376,12 @@ async def create_project_from_template(
     """Make a new project from a template (WS-39 TPL-1a). ONE template per
     call. template_id comes from list_templates. parent_id is the space, the
     folder or the project to make the new project in. A space holds no
-    tasks, so the template always makes a project. The new project gets the
-    template's statuses, and its starter tasks and subtasks with their dates:
-    start_date (YYYY-MM-DD, today when left out) plus the days of each task.
+    tasks, so the template always makes a project. When the statuses that
+    the new project inherits differ from the template's, a member who may
+    change status settings gets a copy of the template's statuses. Else each
+    task takes the inherited lane of its stage. The project gets the starter
+    tasks and subtasks with their dates: start_date (YYYY-MM-DD, today when
+    left out) plus the days of each task.
     A task type, field or tag that the space lacks is added to the whole
     space. name is the project name, the template's name when left out."""
     if _many(template_id) or _many(parent_id):

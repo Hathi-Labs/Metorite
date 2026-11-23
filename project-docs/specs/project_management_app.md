@@ -50,6 +50,10 @@
 > a project as an org-wide template and makes a project from it, through three routes,
 > one MCP read and three chat tools, with no web UI. `PROJECTS_TEMPLATES_ORGS` ships
 > empty. TPL-1b (the project menu and the picker) is built, see above.
+> 🟢 **Task 2454 BUILT 2026-11-23, dark, not merged** (§14.8, "The apply" and "A failed fill"). The
+> apply of a template makes the empty project in a short transaction of its own, then fills it.
+> A rename of the parent no longer waits for the fill. A failed fill leaves nothing, and a
+> refused apply spends no task number. Fence: `test_pm_templates_r8.py` (R8).
 > · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
@@ -9730,7 +9734,7 @@ The file is `project-docs/research/linear_parity_2026-11.md`. The source type is
 
 ### 14.8 The template store (TPL-1a)
 
-**Status: BUILT 2026-11-08, dark, not merged.** This section is the design of the row TPL-1a of §14.2. Code: `apps/services/gateway/gateway/routes/projects/templates.py`. Migration: `infra/postgres/384_pm_templates.sql`. Fence: `tests/unit/test_pm_templates_r8.py` (R8).
+**Status: BUILT 2026-11-08, dark, not merged. Task 2454 (built 2026-11-23, dark) split the apply into three transactions, see "The apply".** This section is the design of the row TPL-1a of §14.2. Code: `apps/services/gateway/gateway/routes/projects/templates.py`. Migration: `infra/postgres/384_pm_templates.sql`. Fence: `tests/unit/test_pm_templates_r8.py` (R8).
 
 **The tables.** Each has the tenant `organization_id` and FORCE RLS, and only `templates.py` writes them.
 
@@ -9770,19 +9774,21 @@ The file is `project-docs/research/linear_parity_2026-11.md`. The source type is
 - Each date of an apply must fall in the years 1900 to 2999: the start date, and each start date and due date of a task. A date outside them answers 422 `date_out_of_range`, never 500, and the apply writes nothing.
 - Each text of the payload leaves the MCP edge as `untrusted_text`.
 
-**The apply.** Two transactions.
+**The apply.** Three transactions (task 2454, built 2026-11-23, dark).
 
-1. A short first transaction answers a replay of the key at once. Else it reads the template and the parent, and it reserves one task number for each starter task with `core.reserve_task_numbers`, the one allocator, as the file import does. It commits at once. So the lock of the counter row of the space lasts one statement, and a task create of another member in the space never waits for the apply. A failed apply, or a replay that wins the claim after the reserve, leaves a gap in the task numbers, and the apply accepts that gap.
-2. The second transaction claims the key with `INSERT … ON CONFLICT DO NOTHING`. A second apply with the same key waits for the first, then answers 200 with the first project and `replayed: true`. The same key with another body answers 409 `key_used`, and so does a key whose project is gone.
-3. It makes the project under the parent through `tree.create_node_in`. A space holds no tasks, so the apply needs `parent_project_id`, and the template always makes a project or a subproject. When the parent moved to another space after the reserve, the apply answers 409 and the client sends the same key again.
+1. A short first transaction answers a replay of a settled key at once. Else it reads the template and the parent. Then it runs each check that can refuse the apply: an archived parent, the tree grammar and the dates. Then it reserves one task number for each starter task with `core.reserve_task_numbers`, the one allocator. The file import does the same. So a refused apply spends no number. It commits at once. So the lock of the counter row of the space lasts one statement. A task create of another member in the space never waits for the apply. A failed apply leaves a gap in the task numbers. So does a replay that wins the claim after the reserve. The apply accepts that gap.
+2. A second, short transaction claims the key with `INSERT … ON CONFLICT DO NOTHING`. It makes the empty project under the parent through `tree.create_node_in`. It writes the project on the claim and commits at once. `create_node_in` holds a share lock on the parent and on each node above it until the commit. So the lock ends before the long fill. A rename of the parent never waits for the apply. Before task 2454 it waited 11.0 s for 500 tasks. A space holds no tasks, so the apply needs `parent_project_id`. The template always makes a project or a subproject. The parent can move to another space after the reserve. Then the apply answers 409 and makes nothing, and the client sends the same key again.
+3. The third transaction fills the project. It holds the claim `FOR UPDATE` to its end, so one fill runs for a key. A replay with the same key waits for the fill. Then it answers 200 with the first project and `replayed: true`. The same key with another body answers 409 `key_used`. So does a key whose project is gone. The fill takes no lock of its own on the chain above the project. Its inserts hold a key share lock on the space through their foreign keys. A key share lock is the weakest row lock, and a rename never waits for it. At its end the fill takes a key share lock on the whole chain. Then it reads the root again. When a move took the project to another space during the fill, the apply answers 409. A fence test refuses a call of `create_node_in` in the fill.
 4. The statuses: when the parent's set holds the same names and stages, the project keeps that set. Else the caller's right decides. With `projects:settings:write`, the project owns a copy of the template's set, as `set_status_set` mode `own` does for an empty node. Without it, the project keeps the parent's set, and each template status maps to the lane of the same name and stage, else to the first lane of the same stage (backlog, to do, in progress), else to the first open lane.
 5. The apply adds to the space each task type, field and tag that the space lacks, by the identity of `core.VOCABULARY_IDENTITY`. Each insert is `ON CONFLICT DO NOTHING`, then a read again, so two applies of the same moment into one space both land with one row of each. A field of the same key and another type answers 409 `field_conflict`. A field that the apply adds is never required, because it lands on the whole space.
 6. It makes the task tree through `tasks.create_task_in`, parents first, and each task takes the next reserved number. A date is the start date plus the offset, in calendar days. The repo has `work_schedule.working_days_between`, which counts working days, and no helper that adds them, so TPL-1a uses calendar days. A due date goes through `personal.stored_due`, so it is noon of that day in the zone of the member.
 7. It writes one activity row on the project, "Made from the template".
 
+**A failed fill.** When a step of the fill fails, the fill removes the empty project and gives the key back. It does both in the same transaction. So a refused apply leaves nothing, and the same key works again. The fill writes the template on the claim as its last write. A claim with a project and no template is the leftover of a fill that died with its process. A replay of its key fills that project and makes no second one.
+
 **What the card approves.** The apply writes the importance, the `leveraged` mark, the estimate, the tags and the custom field values of each task as the template holds them. The chat card names the template and its counts, and the person who approves it approves those values, as a person does who fills the same values in by hand. Each value still passes the checks of `create_task_in` and `custom_fields.apply_values`. The narrowing of an agent's body (EA-6d, MCP-G2) does not apply to them, because the server builds them from the stored template, and no agent sends them.
 
-The apply is quiet, as the file import is (§6.10 of `project_import.md`). It emits `pm.project.created` once, and no event, text link or ALN-1 check job for each task. A deadlock or a lock timeout answers 409, and the client sends the same key again.
+The apply is quiet, as the file import is (§6.10 of `project_import.md`). It emits `pm.project.created` once, and no event, text link or ALN-1 check job for each task. A deadlock or a lock timeout answers 409. A fill gives its key back first, so the client sends the same key again.
 
 **The flag.** `PROJECTS_TEMPLATES_ORGS` is a `*_ORGS` list with the default empty. While it does not hold the org, each route answers 404 and writes nothing. `templates_allowed` is its one reader. A change is a SIGHUP reload (`docs/flag_reload.md`).
 

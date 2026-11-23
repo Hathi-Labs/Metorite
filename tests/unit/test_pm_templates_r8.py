@@ -26,6 +26,13 @@ whole ladder and two organizations. It proves:
   database, and a date past the range is a 422, never a 500;
 * a task create in the same space does not wait for a long apply, because
   the apply reserves its task numbers first (review P1-b);
+* a rename of the parent and of the space does not wait for the fill,
+  because a short transaction of its own makes the project, and a move of
+  the parent during the fill makes the apply answer 409 (task 2454);
+* a replay during the fill waits for it and answers its project, a failed
+  fill leaves nothing and the same key works again, a replay fills the
+  project of a fill that died, and a refused apply spends no task number
+  (task 2454);
 * two applies of the same moment into a space that lacks a type and a field
   both land, with one row of each (review P2-b);
 * a caller without ``projects:settings:write`` keeps the parent's status set,
@@ -54,6 +61,19 @@ whole ladder and two organizations. It proves:
   ``test_without_the_settings_right_the_project_keeps_the_parent_set``.
 * M13. ``_offset_day``: no range check ->
   ``test_a_date_past_the_range_is_a_422``.
+* M14. ``_fill_project``: make the project there with ``create_node_in`` ->
+  ``test_a_rename_above_the_project_does_not_wait_for_the_fill`` and
+  ``test_the_fill_never_makes_the_project``.
+* M15. ``_CLAIMED_UPDATE_SQL``: drop ``FOR UPDATE`` ->
+  ``test_a_replay_during_the_fill_waits_and_answers_its_project``.
+* M16. ``_discard``: do nothing ->
+  ``test_a_failed_fill_leaves_nothing_and_the_key_works_again``.
+* M17. ``_settled``: answer True for a claim with a project ->
+  ``test_a_replay_fills_the_project_of_a_fill_that_died``.
+* M18. ``_reserve``: drop ``check_new_child`` ->
+  ``test_a_refused_apply_spends_no_task_number``.
+* M19. ``_fill_project``: drop the root check at its end ->
+  ``test_a_move_above_the_project_during_the_fill_answers_409``.
 
 Run::
 
@@ -302,6 +322,53 @@ def test_a_payload_nested_past_any_parser_is_refused_by_its_depth() -> None:
     assert detail["error"] == templates.TOO_LARGE
 
 
+def _calls_by_function() -> dict[str, list[tuple[int, str]]]:
+    """Each top-level function of ``templates.py`` with the names it calls,
+    in the order of their lines."""
+    import ast
+
+    tree = ast.parse(Path(templates.__file__).read_text(encoding="utf-8"))
+    out: dict[str, list[tuple[int, str]]] = {}
+    for fn in tree.body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = []
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
+                callee = node.func
+                name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", "")
+                calls.append((node.lineno, name))
+        out[fn.name] = sorted(calls)
+    return out
+
+
+def test_the_fill_never_makes_the_project() -> None:
+    """R7 fence of task 2454. ``create_node_in`` share-locks the parent and
+    each node above it to the end of its transaction. So only the short
+    ``_make_node`` may call it, in a session of its own, and the long fill
+    never does. Before the repair a rename of the parent waited 11.0 s for
+    an apply of 500 tasks."""
+    calls = _calls_by_function()
+    makers = {fn for fn, names in calls.items() if any(n == "create_node_in" for _, n in names)}
+    assert makers == {"_make_node"}, makers
+    node_side = {n for _, n in calls["_make_node"]}
+    assert "_tenant_session" in node_side
+    assert node_side.isdisjoint({"_fill_project", "_apply_tasks", "_apply_statuses",
+                                 "_apply_types", "_apply_fields", "_apply_tags"}), node_side
+    for fill in ("_fill", "_fill_project"):
+        names = {n for _, n in calls[fill]}
+        assert names.isdisjoint({"create_node_in", "check_node_values", "_lock_ancestor_chain",
+                                 "_make_node"}), (fill, names)
+    assert "_tenant_session" in {n for _, n in calls["_fill"]}
+    # The fill holds the chain only at its end, with the weakest lock.
+    fill_order = [n for _, n in calls["_fill_project"]]
+    assert fill_order.index("hold_ancestor_keys") > fill_order.index("_apply_tasks")
+    # The route makes the project first, then fills it, in two sessions.
+    route = [n for _, n in calls["apply_template"]]
+    assert route.index("_reserve") < route.index("_make_node") < route.index("_fill")
+    assert "_tenant_session" not in route
+
+
 # ── R8: the helpers ─────────────────────────────────────────────────────────
 
 
@@ -490,6 +557,76 @@ def _store(p: Any, org: str, by: str, name: str, payload: dict[str, Any]) -> str
 
 def _flat(n: int, **extra: Any) -> list[dict[str, Any]]:
     return [_task(f"Step {i}", **extra) for i in range(n)]
+
+
+def _hold_fill(monkeypatch: Any) -> tuple[asyncio.Event, asyncio.Event]:
+    """Hold each fill after its tasks are made and before its commit, until
+    *release* is set. ``reached`` is set at the first hold."""
+    reached, release = asyncio.Event(), asyncio.Event()
+    real = templates._apply_tasks
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        made = await real(*args, **kwargs)
+        reached.set()
+        await release.wait()
+        return made
+
+    monkeypatch.setattr(templates, "_apply_tasks", held)
+    return reached, release
+
+
+async def _until_held(reached: asyncio.Event, applying: asyncio.Future) -> None:
+    at_hold = asyncio.ensure_future(reached.wait())
+    await asyncio.wait({at_hold, applying}, timeout=_WAIT, return_when=asyncio.FIRST_COMPLETED)
+    at_hold.cancel()
+    assert reached.is_set(), (
+        applying.result().text if applying.done() else "the apply never made its tasks")
+
+
+async def _settle(*futures: Any) -> None:
+    left = [f for f in futures if f is not None and not f.done()]
+    if left:
+        await asyncio.wait(left, timeout=_WAIT)
+
+
+def _fail_first_fill(monkeypatch: Any) -> None:
+    """The first fill makes its tasks, then a statement of it fails, as a
+    deadlock or a lock timeout fails in production. The fill then raises an
+    injected 409. Each later fill runs as it is."""
+    real = templates._apply_tasks
+    seen = {"fills": 0}
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        seen["fills"] += 1
+        made = await real(*args, **kwargs)
+        if seen["fills"] == 1:
+            try:
+                await args[0].execute(text("SELECT 1 / 0"))
+            except DBAPIError as exc:
+                raise HTTPException(status_code=409, detail={
+                    "error": "injected", "message": "The test failed this fill."}) from exc
+        return made
+
+    monkeypatch.setattr(templates, "_apply_tasks", failing)
+
+
+def _children(p: Any, parent: str) -> list[Any]:
+    return _all(p, "SELECT id, name FROM pm_projects WHERE parent_project_id = CAST(:up AS uuid)",
+                up=parent)
+
+
+def _claims(p: Any, key: str) -> list[Any]:
+    return _all(p, "SELECT project_id, template_id FROM pm_template_applies"
+                " WHERE idempotency_key = :k", k=key)
+
+
+def _tasks_of(p: Any, project: str) -> int:
+    return _count(p, "SELECT count(*) FROM pm_tasks WHERE project_id = CAST(:n AS uuid)", n=project)
+
+
+def _counter(p: Any, space: str) -> int:
+    return _count(p, "SELECT coalesce((SELECT last_value FROM pm_task_counters"
+                  " WHERE project_id = CAST(:s AS uuid)), 0)", s=space)
 
 
 @pytest.fixture(scope="module")
@@ -1001,3 +1138,209 @@ class TestTheTemplateStoreOnARealDatabase:
             assert hidden.status_code == 200 and hidden.json()["rows"] == []
             bad = await call(w.u_bob, "GET", "/projects/templates?template_id=not-an-id")
             assert bad.status_code == 422
+
+    # ── The short transaction of the project (task 2454) ────────────────
+
+    async def test_a_rename_above_the_project_does_not_wait_for_the_fill(self, w, monkeypatch):
+        """``create_node_in`` share-locks the parent and the space to the end
+        of its transaction. Before the repair the fill ran in that
+        transaction, so a rename of either waited for the whole apply (11.0 s
+        with 500 tasks). Now a short transaction makes the project and
+        commits, and each rename ends while the fill is held open."""
+        reached, release = _hold_fill(monkeypatch)
+        count = 20
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Calm {tag}")
+            parent = await _project(call, w.u_alice, space, f"Calm parent {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Calm {tag}", _payload(_flat(count)))
+            applying = asyncio.ensure_future(_apply(call, w.u_alice, tid, parent, f"calm-{tag}"))
+            renames: list[asyncio.Future] = []
+            try:
+                await _until_held(reached, applying)
+                renames = [
+                    asyncio.ensure_future(call(w.u_alice, "PATCH", f"/projects/nodes/{node}",
+                                               {"name": f"Renamed {label} {tag}"}))
+                    for node, label in ((parent, "parent"), (space, "space"))
+                ]
+                await asyncio.wait(renames, timeout=_PROBE)
+                finished_first = all(r.done() for r in renames)
+            finally:
+                release.set()
+                await _settle(applying, *renames)
+            assert finished_first, (
+                f"a rename waited more than {_PROBE} s for the open fill of the apply")
+            for renamed in renames:
+                assert renamed.result().status_code == 200, renamed.result().text
+            made = applying.result()
+            assert made.status_code == 201, made.text
+            assert made.json()["created"]["tasks"] == count
+            assert made.json()["project"]["parent_project_id"] == parent
+            assert _tasks_of(w.p, made.json()["project"]["id"]) == count
+            assert {r.name for r in _all(w.p, "SELECT name FROM pm_projects WHERE id ="
+                                         " ANY(CAST(:ids AS uuid[]))", ids=[parent, space])} == {
+                f"Renamed parent {tag}", f"Renamed space {tag}"}
+
+    async def test_a_move_above_the_project_during_the_fill_answers_409(self, w, monkeypatch):
+        """The fill holds no lock on the parent, so a move of the parent to
+        another space ends while the fill is open. The root check at the end
+        of the fill sees the move: the apply answers 409, leaves nothing and
+        gives the key back. The same key then makes the project in the new
+        space, and each task has the new root."""
+        reached, release = _hold_fill(monkeypatch)
+        count = 3
+        async with _session(w.p) as call:
+            tag = _tag()
+            space_a = await _space(call, w.u_alice, f"Move A {tag}")
+            space_b = await _space(call, w.u_alice, f"Move B {tag}")
+            parent = await _project(call, w.u_alice, space_a, f"Move parent {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Move {tag}", _payload(_flat(count)))
+            key = f"move-{tag}"
+            applying = asyncio.ensure_future(_apply(call, w.u_alice, tid, parent, key))
+            moving = None
+            try:
+                await _until_held(reached, applying)
+                # The lead holds the right to re-parent (D-OP-14).
+                moving = asyncio.ensure_future(call(
+                    w.u_lead, "POST", f"/projects/nodes/{parent}/move",
+                    {"parent_project_id": space_b}))
+                await asyncio.wait({moving}, timeout=_PROBE)
+                moved_first = moving.done()
+            finally:
+                release.set()
+                await _settle(applying, moving)
+            assert moved_first, f"the move waited more than {_PROBE} s for the open fill"
+            assert moving.result().status_code == 200, moving.result().text
+            refused = applying.result()
+            assert refused.status_code == 409, refused.text
+            assert refused.json()["detail"] == templates.TREE_RACE_DETAIL
+            assert _children(w.p, parent) == []
+            assert _claims(w.p, key) == []
+            again = await _apply(call, w.u_alice, tid, parent, key)
+            assert again.status_code == 201, again.text
+            new = again.json()["project"]["id"]
+            assert _tasks_of(w.p, new) == count
+            roots = {str(r.root_project_id) for r in _all(
+                w.p, "SELECT root_project_id FROM pm_tasks WHERE project_id = CAST(:n AS uuid)",
+                n=new)}
+            assert roots == {space_b}
+
+    async def test_a_replay_during_the_fill_waits_and_answers_its_project(self, w, monkeypatch):
+        """The claim commits with the project, before the fill. A replay of
+        the key during the fill must wait for it, then answer the one
+        project with every task, and never fill it a second time."""
+        reached, release = _hold_fill(monkeypatch)
+        count = 5
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Replay {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Replay {tag}", _payload(_flat(count)))
+            key = f"replay-{tag}"
+            first = asyncio.ensure_future(_apply(call, w.u_alice, tid, space, key))
+            second = None
+            try:
+                await _until_held(reached, first)
+                second = asyncio.ensure_future(_apply(call, w.u_alice, tid, space, key))
+                await asyncio.wait({second}, timeout=3)
+                early = second.done()
+            finally:
+                release.set()
+                await _settle(first, second)
+            assert not early, second.result().text
+            one, two = first.result(), second.result()
+            assert one.status_code == 201, one.text
+            assert two.status_code == 200, two.text
+            assert two.json()["replayed"] is True
+            assert two.json()["project"]["id"] == one.json()["project"]["id"]
+            assert len(_children(w.p, space)) == 1
+            assert _tasks_of(w.p, one.json()["project"]["id"]) == count
+
+    async def test_a_failed_fill_leaves_nothing_and_the_key_works_again(self, w, monkeypatch):
+        """A fill fails after the short transaction made the project. The
+        fill removes the empty project and gives the key back, so the apply
+        leaves nothing, as before the repair. The same key then makes one
+        project with every task."""
+        _fail_first_fill(monkeypatch)
+        count = 6
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Fail {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Fail {tag}", _payload(_flat(count)))
+            key = f"fail-{tag}"
+            failed = await _apply(call, w.u_alice, tid, space, key)
+            assert failed.status_code == 409 and _error(failed) == "injected", failed.text
+            assert _children(w.p, space) == []
+            assert _claims(w.p, key) == []
+            assert _count(w.p, "SELECT count(*) FROM pm_tasks WHERE root_project_id ="
+                          " CAST(:s AS uuid)", s=space) == 0
+            again = await _apply(call, w.u_alice, tid, space, key)
+            assert again.status_code == 201, again.text
+            assert again.json()["created"]["tasks"] == count
+            [only] = _children(w.p, space)
+            assert str(only.id) == again.json()["project"]["id"]
+            assert _tasks_of(w.p, str(only.id)) == count
+
+    async def test_a_replay_fills_the_project_of_a_fill_that_died(self, w, monkeypatch):
+        """A fill that dies with its process removes nothing: the project
+        stays empty, and its claim has no template. The test makes that
+        state with a failed fill and no clean-up. A replay of the key fills
+        that project once, and makes no second one."""
+        _fail_first_fill(monkeypatch)
+
+        async def no_clean_up(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(templates, "_discard", no_clean_up)
+        count = 4
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Died {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Died {tag}", _payload(_flat(count)))
+            key = f"died-{tag}"
+            failed = await _apply(call, w.u_alice, tid, space, key)
+            assert failed.status_code == 409, failed.text
+            [left] = _children(w.p, space)
+            assert _tasks_of(w.p, str(left.id)) == 0
+            [claim] = _claims(w.p, key)
+            assert str(claim.project_id) == str(left.id) and claim.template_id is None
+            resumed = await _apply(call, w.u_alice, tid, space, key)
+            assert resumed.status_code == 201, resumed.text
+            assert resumed.json()["project"]["id"] == str(left.id)
+            assert resumed.json()["created"]["tasks"] == count
+            assert len(_children(w.p, space)) == 1
+            assert _tasks_of(w.p, str(left.id)) == count
+            [claim] = _claims(w.p, key)
+            assert str(claim.template_id) == tid
+            replay = await _apply(call, w.u_alice, tid, space, key)
+            assert replay.status_code == 200 and replay.json()["replayed"] is True, replay.text
+            assert _tasks_of(w.p, str(left.id)) == count
+
+    async def test_a_refused_apply_spends_no_task_number(self, w):
+        """The archived check, the tree grammar and the dates run before the
+        reserve (task 2454 P3). So an apply that they refuse leaves the
+        counter of the space where it was, and writes no claim."""
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Spend {tag}")
+            project = await _project(call, w.u_alice, space, f"Spend project {tag}")
+            sub = await _project(call, w.u_alice, project, f"Spend sub {tag}")
+            filed = await _project(call, w.u_alice, space, f"Spend filed {tag}")
+            archived = await call(w.u_alice, "POST", f"/projects/nodes/{filed}/archive")
+            assert archived.status_code == 200, archived.text
+            await _make_task(call, w.u_alice, {"project_id": project, "title": "The first"})
+            tid = _store(w.p, w.p.org_a, w.alice, f"Spend {tag}", _payload(_flat(4)))
+            far = _store(w.p, w.p.org_a, w.alice, f"Spend far {tag}",
+                         _payload([_task("Late", due_offset_days=templates.MAX_OFFSET_DAYS)]))
+            before = _counter(w.p, space)
+            assert before >= 1
+            under_filed = await _apply(call, w.u_alice, tid, filed, f"spend-a-{tag}")
+            assert under_filed.status_code == 422 and "archived" in under_filed.text, under_filed.text
+            under_sub = await _apply(call, w.u_alice, tid, sub, f"spend-b-{tag}")
+            assert under_sub.status_code == 422, under_sub.text
+            too_far = await _apply(call, w.u_alice, far, space, f"spend-c-{tag}",
+                                   start_date="2999-06-01")
+            assert too_far.status_code == 422 and _error(too_far) == templates.DATE_OUT_OF_RANGE
+            assert _counter(w.p, space) == before
+            for key in (f"spend-a-{tag}", f"spend-b-{tag}", f"spend-c-{tag}"):
+                assert _claims(w.p, key) == []
+            assert _children(w.p, sub) == [] and _children(w.p, filed) == []
