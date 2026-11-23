@@ -508,7 +508,7 @@ async def test_a_hidden_character_in_the_card_id_is_refused_before_the_post(
     with _run():
         got = await ht.home_card(cid, "dismiss")
     assert not got["ok"] and "U+200B" in got["message"] and "card id" in got["message"]
-    assert "post_feed_state" not in gw.handlers() and _held_cards.shown == []
+    assert gw.calls == [] and _held_cards.shown == []
 
 
 async def test_a_held_chat_shows_one_card_and_reads_again_before_the_post(
@@ -627,6 +627,8 @@ async def test_the_layout_always_shows_one_card_and_sends_the_whole_document(
     assert len(cards.shown) == 1
     context = cards.shown[0]["context"]
     assert "Role: member" in context and "Starred apps after: /projects | /email" in context
+    assert "Sent again for admin: preset founder, starred apps /projects" in context
+    assert ht.LAYOUT_ONLY_THESE in context
     assert gw.handlers() == ["_me", "get_layout", "get_layout", "put_layout"] and got["ok"]
     [saved] = gw.saved_layout
     assert saved["roles"] == {"admin": {"preset": "founder", "pins": ["/projects"]},
@@ -930,12 +932,54 @@ async def test_an_unknown_role_is_refused_before_any_call(gw: Gateway, cards: Ca
     assert cards.shown == []
 
 
-async def test_a_hidden_character_in_the_layout_is_refused_before_any_read(
+@pytest.mark.parametrize("args", [
+    {"role": "member", "pins_json": json.dumps([f"/email{ZWSP}"])},
+    {"role": "member", "preset": f"founder{ZWSP}"},
+    {"role": f"member{ZWSP}", "preset": "founder"},
+])
+async def test_a_hidden_character_in_the_layout_is_refused_before_any_call(
+    gw: Gateway, cards: Cards, args: dict[str, Any],
+) -> None:
+    """F2 of the verifier. Mutation: drop the check -> a read or a card goes
+    out, or the role check answers in its place -> red."""
+    with _run():
+        got = await ht.home_layout(**args)
+    assert not got["ok"] and "U+200B" in got["message"] and "layout" in got["message"]
+    assert gw.calls == [] and cards.shown == []
+
+
+async def test_a_fault_read_of_the_layout_never_writes(
+    gw: Gateway, cards: Cards, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1. ``load_org_setting`` swallows a fault and gives the default, so
+    both reads come back empty. Mutation: write after an empty read -> red."""
+    import acb_common
+
+    def _fault(_key: str, default: Any = None) -> Any:
+        return default  # what the real reader gives after it catches the error
+
+    monkeypatch.setattr(acb_common, "load_org_setting", _fault, raising=False)
+    with _run():
+        got = await ht.home_layout("member", pins_json='["/email"]')
+    assert got["message"] == ht.LAYOUT_EMPTY and cards.shown == []
+    assert gw.saved_layout == [] and "put_layout" not in gw.handlers()
+
+
+async def test_a_role_entry_that_the_route_drops_is_named_as_removed(
     gw: Gateway, cards: Cards,
 ) -> None:
+    """F1. ``coerce_stored`` drops a stored role entry that it cannot read. The
+    card names each role that the save sends, and says that the save sends no
+    other, so the member sees that the dropped entry goes."""
+    gw.layout = {"roles": {"admin": {"preset": "no-such-preset"},
+                           "manager": {"preset": "founder", "pins": ["/email"]}},
+                 "updatedBy": "x@par8b.test", "updatedAt": "2026-11-20T10:00:00+00:00"}
     with _run():
-        got = await ht.home_layout("member", pins_json=json.dumps([f"/email{ZWSP}"]))
-    assert not got["ok"] and "U+200B" in got["message"] and gw.calls == []
+        got = await ht.home_layout("member", pins_json='["/projects"]')
+    context = cards.shown[0]["context"]
+    assert "Sent again for manager: preset founder, starred apps /email" in context
+    assert "admin" not in context and ht.LAYOUT_ONLY_THESE in context
+    assert got["ok"] and set(gw.saved_layout[-1]["roles"]) == {"manager", "member"}
 
 
 def test_the_roles_equal_the_roles_of_the_route() -> None:

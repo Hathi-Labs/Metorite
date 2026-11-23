@@ -153,6 +153,8 @@ CONTROL = ("A line of the value holds a control character, and the route refuses
            "changed.")
 NO_CHANGE = "Send a preset, a list of pinned apps, or reset. Nothing changed."
 BAD_ROLE = "The role must be one of: {roles}. Nothing changed."
+LAYOUT_ONLY_THESE = ("The save sends the roles on this card and no other. A default that the "
+                     "route could not read is not on the card, and the save removes it.")
 LAYOUT_EMPTY = ("The default sidebar came back empty. The route gives the same answer when its "
                 "read fails, so a save here could remove the default of each other role. "
                 "Nothing changed. Set the first default in Settings, Organisation. Then the chat "
@@ -632,6 +634,10 @@ async def home_card(card_id: str, act: str, until: str = "", undo: str = "") -> 
     cid = str(card_id or "").strip()
     if not cid or ":" not in cid or any(ch.isspace() for ch in cid) or len(cid) > 240:
         return _fail(BAD_CARD)
+    # The model's inputs, before any call: the one rule of a hidden character.
+    hidden = _hidden("card id", {"card_id": cid, "undo": str(undo or "")})
+    if hidden is not None:
+        return hidden
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
@@ -665,9 +671,6 @@ async def _card_after_check(member: str, cid: str, choice: str, when: str,
     if when:
         item["until"] = when
     body = {"items": [item]}
-    hidden = _hidden("card id", body)
-    if hidden is not None:
-        return hidden
     if await _must_ask():
         rows = [("act", f"Act: {choice.replace('_', ' ')}"
                         + (f", until {when.replace('_', ' ')}" if when else "")),
@@ -858,11 +861,13 @@ async def home_layout(role: str, preset: str = "", pins_json: str = "",
         style = str(preset or "").strip()
         if not who or (not reset and not style and pins is None):
             return _fail(NO_CHANGE)
-        if who not in layout_roles():
-            return _fail(BAD_ROLE.format(roles=", ".join(layout_roles())))
+        # The model's inputs, before any call: the one rule of a hidden character,
+        # then the roles that the route takes.
         hidden = _hidden("layout", {"role": who, "preset": style, "pins": pins})
         if hidden is not None:
             return hidden
+        if who not in layout_roles():
+            return _fail(BAD_ROLE.format(roles=", ".join(layout_roles())))
         if not await _can_set_layout(member):
             return _fail(NOT_LAYOUT_ADMIN)
         first = await _read_layout(member)
@@ -878,15 +883,19 @@ async def home_layout(role: str, preset: str = "", pins_json: str = "",
             roles[who] = new
         body = {"roles": {k: {"preset": v.get("preset"), "pins": v.get("pins")}
                           for k, v in roles.items()}}
-        hidden = _hidden("layout", body)
-        if hidden is not None:
-            return hidden
         rows = [("role", f"Role: {who}"),
                 ("preset", f"Home preset: {old.get('preset') or 'the system default'} -> "
                            f"{new.get('preset') or 'the system default'}"),
                 ("pins_now", f"Starred apps now: {_shown_list(old.get('pins'))}"),
-                ("pins_after", f"Starred apps after: {_shown_list(new.get('pins'))}"),
-                ("others", "The default of each other role stays as it is.")]
+                ("pins_after", f"Starred apps after: {_shown_list(new.get('pins'))}")]
+        # The route replaces the whole document. So the card names each other
+        # role that the save sends again, and says that it sends no other.
+        for other in sorted(k for k in body["roles"] if k != who):
+            entry = body["roles"][other]
+            rows.append((f"keep_{other}", f"Sent again for {other}: preset "
+                         f"{entry.get('preset') or 'the system default'}, starred apps "
+                         f"{_shown_list(entry.get('pins'))}"))
+        rows.append(("others", LAYOUT_ONLY_THESE))
         decision, context = await _ask("layout", "Change the default sidebar?", rows, member)
         if decision != "approved":
             return _not_done("layout", decision, context)
