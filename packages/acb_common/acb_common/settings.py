@@ -405,6 +405,18 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_fields_search.py.
     crm_module_find_orgs: str = ""
+    # `crm_module_reread_orgs` (WS-53 task 3869, 2026-11-22) lists the
+    # organization ids whose Zoho mirror reads each generic module again in
+    # full once in 7 days, and queues one full read of a module whose stored
+    # pick-list values left the current options (`crm_platform.md` §18.7),
+    # in the grammar of `crm_orgs`. Default empty means NO organization: a
+    # generic module that a cursor reads takes its changes only, as before,
+    # and discovery runs no drift check. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A full read spends Zoho API credits inside
+    # the budget of the sync run, so a flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_module_reread.py.
+    crm_module_reread_orgs: str = ""
     # `semantic_model_orgs` (WS-SEM SEM-7, task 3737, 2026-11-18) lists the
     # organization ids whose CRM plan takes the semantic kinds `measure`,
     # `join` and `query`, in the grammar of `crm_orgs`. Default empty means
@@ -1684,6 +1696,22 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
 
+    # ── The class C archive of a held chat (one_assistant_context.md §9.4 WT-6a) ─
+    #
+    # `held_class_c_orgs` lists the organization ids where a held chat also
+    # keeps `archive_task` and `archive_project`, or `*` for each one. The
+    # receipt of each archive offers Undo. Empty means off, and a held chat
+    # refuses both, as before. Keeping the tool in a held chat needs
+    # `held_card_writes_orgs` too: that flag alone never opens class C (owner,
+    # 2026-11-07). The Undo line needs this flag only, so an open chat of the org
+    # also shows it.
+    # The one reader is `egress.held_class_c_on`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6 D4).
+    # Fence: tests/unit/test_held_card_writes.py.
+    held_class_c_orgs: str = ""
+
     # ── Continue a held chat in a fresh chat (one_assistant_context.md §9, WT-1) ─
     #
     # `chat_continue_orgs` lists the organization ids where
@@ -1743,6 +1771,23 @@ class Settings(BaseSettings):
     # chat_organization.md §18.
     # Fences: tests/unit/test_chat_pin_tool.py, tests/unit/test_flag_reload.py.
     chat_pin_tool_orgs: str = ""
+
+    # ── Home and the shell from the chat (chat_parity.md §6.4, PAR-8b) ──────
+    #
+    # `home_tools_orgs` lists the organization ids where the orchestrator
+    # holds the five Home tools of `acb_skills.home_tools`, or `*` for each
+    # one. They read the Home feed, Needs you, the brief, the quick find and
+    # the Home settings. They change a Home card, a Home
+    # setting and the default sidebar, and they send a test notification.
+    # Empty means off: no chat holds them, and the tool count does not move.
+    # The one reader is `acb_skills.home_tools.home_tools_on`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change at the
+    # next run (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-GATE: any value other than empty on a box. Only the owner flips
+    # it, because the five tools join each request and move the tool cap.
+    # Fence: tests/unit/test_home_tools.py.
+    home_tools_orgs: str = ""
 
     # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
     #

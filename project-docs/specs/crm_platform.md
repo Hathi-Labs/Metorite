@@ -4,6 +4,7 @@
 
 > **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
+> **Built 2026-11-22, task 3869 (not merged):** the mirror reads each generic module in full once in 7 days, and discovery queues one full read of a module whose stored pick-list values left the current options (§18.7, CRM-Q6a). It is dark behind `CRM_MODULE_REREAD_ORGS`, empty by default. No migration.
 > **Built 2026-11-22, CRM-Q30c (task 3868), not merged:** the read tools say how old the Zoho mirror of a module is. `GET /crm/sync/mirror-age` gives the age of each module, and the note of the read tools adds one line when the module of the call is held, not available in Zoho, or read 2 hours ago or more. It is dark behind `CRM_MIRROR_AGE_ORGS`, empty by default. No migration. See §18.11.2.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
@@ -1636,6 +1637,59 @@ each of these on a real database:
 - A module that hides `Modified_Time` is read again in full once in each
   `RECONCILE_EVERY`. The door skips an unchanged record, so that read writes
   nothing.
+- **The weekly full read (task 3869, built 2026-11-22, dark behind
+  `CRM_MODULE_REREAD_ORGS`, default empty).** Zoho can change a status, or
+  rename a pick-list value, and keep `Modified_Time`. An incremental read
+  never lists such a record, so the mirror kept the old value for ever (task
+  3729, causes 3 and 4). For a listed org, `engine._module_reread` is still
+  the one rule of a full read of a generic module, and `_weekly_reread`
+  widens it. A module that a cursor reads (not by offset) is read in full
+  when its last full read (`last_reconciled_at`, which the first import and
+  each full read set) is 7 days old or more (`MODULE_REREAD_EVERY`). The
+  read uses the full-read path of the changed pass, so `MODULES_RESERVE` and
+  the run budget stop it page by page. The next run goes on from its cursor
+  with the mark `reread`. A read in progress goes on as the read that it is,
+  so no second full read starts. A held key is never read in full, also in
+  an "on its own" run. An offset-paged module keeps its 24 h rule.
+- **A weekly read that fails (task 3869, review F1 and F5).** An error that is
+  not fatal keeps the place of the read: the next try goes on at the page
+  that failed, with the mark `reread`, after `UNAVAILABLE_RETRY`. The state
+  counts the failures in a row (`reread_failures`), and a page that lands
+  begins the count again. A tie that is too wide counts too. At
+  `REREAD_MAX_FAILURES` (3) the read ends: the progress goes,
+  `last_reconciled_at` becomes now, so the module is not due for 7 days, and
+  it leaves the label list. One log line, `crm.sync.module_reread_ended`.
+  The read of changes goes on from its cursor. A weekly read in progress
+  stops when the flag goes off or the key is held, and the read of changes
+  goes on from the cursor. A stopped read of an offset-paged module keeps
+  its rule. Every other read keeps the failure rule of before.
+- **Known limits of the weekly read (review F3 and F4).** The first flip
+  of the flag makes each generic module due at once. The reserve and the
+  budget pace the reads, but the full read of an early module can delay
+  the reads of changes of the later modules for a run or more. The final
+  sync of the switch (CRM-Z10b) reads a module whose weekly read is due in
+  full, and a stopped weekly read starts again from page 1 there. So the
+  switch can wait for a full read.
+- **The pick-list drift check (task 3869, same flag).** After discovery
+  stores the profile, `engine._check_label_drift` takes the field rows that
+  it read now. For each select field of a mirrored generic module, one
+  statement (`_LABEL_DRIFT_SQL`) reads the DISTINCT stored values that no
+  current option label lists, at most `LABEL_DRIFT_CAP` (50), in a tenant
+  session under a LOCAL `statement_timeout` of 5 s. A v2 record carries the
+  label of a value, so the label is the test. A missing value queues ONE
+  full read: the module joins the label list of task 1096
+  (`LABEL_REREAD_KEY` in the rules cursor row), and `_weekly_reread` reads
+  it at once. The last page of any full read takes the module off the list.
+  The rules row keeps a hash of each missing value (`LABEL_DRIFT_KEY`, no
+  Zoho text). Only a value with no stored hash queues a read, so a value
+  that a full read cannot repair costs no second read. The check skips a
+  module that is held, that is still in its first import, or that has a
+  read in progress. After a refused discovery the check does nothing, and a
+  module whose fields Zoho refused is not checked. A failed statement, or
+  any other error of the check, queues nothing and never fails the run.
+  Fences: `tests/unit/test_crm_module_reread.py` (hermetic) and
+  `tests/unit/test_crm_label_drift_r8.py` (R8, `_LABEL_DRIFT_SQL` on
+  Postgres). The R8 file ran on a real database (3 passed, 2026-11-23).
 - After its first import, a module reads its changed list at most once an hour
   (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
   import it reads on each run, within the reserve.
