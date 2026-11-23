@@ -88,6 +88,11 @@ def responder(call: dict) -> Any:
             ],
             "counts": {},
         }
+    if method == "GET" and path == "/projects/tasks" and (call["params"] or {}).get("include_descendants"):
+        # H-254: the subtree count is one read of the descendants.
+        parent = str(call["params"]["parent_task_id"])
+        rows = [{"id": CHILD, "status_category": "todo", "depth": 1}] if parent in PARENTS else []
+        return {"rows": rows, "total": len(rows)}
     if method == "GET" and path.endswith("/relations"):
         subs = [{"id": CHILD, "title": "step", "category": "todo"}] if parts[3] in PARENTS else []
         return {"subtasks": subs, "links": [], "blocked_by": []}
