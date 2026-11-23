@@ -27,6 +27,10 @@ CE-15 (task 3463) added one tool, ``my_tasks_list_events``, to the pack
 name and one tool, so its count is one more than the audit's count. No
 other field of a row changed.
 
+PAR-8a (task 3903) added seven tools to the dark pack ``studio-workflows``.
+Each row of BOTH columns that holds that pack gained the seven names and
+seven tools (82 to 89). No other field of a row changed.
+
 P-1a (task 3112) added three more tools to ``calendar-day``:
 ``my_tasks_list_calendar_connections``, ``my_tasks_suggest_title`` and
 ``my_tasks_enrich``. Each row of BOTH columns that holds that pack gained the
