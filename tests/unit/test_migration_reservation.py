@@ -83,3 +83,10 @@ def test_premerge_runs_the_ledger_check_before_its_early_exit() -> None:
     early_exit = PREMERGE.index('if [ "$behind" = 0 ]')
     assert call < early_exit
     assert "PREMERGE_LEDGER" in PREMERGE and "PREMERGE_PR" in PREMERGE
+
+
+def test_ledger_only_leaves_the_main_check_to_premerge(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    out = _run(tmp_path, ledger, "--main-max", "480", "--ledger-only", "479")
+    assert out.returncode == 0, out.stdout
+    assert "--ledger-only" in PREMERGE

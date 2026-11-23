@@ -51,11 +51,13 @@ def next_free(main_max: int, rows: list[dict[str, str]]) -> int:
     return top + 1
 
 
-def check(numbers: list[int], main_max: int, rows: list[dict[str, str]], pr: str | None) -> list[str]:
+def check(
+    numbers: list[int], main_max: int, rows: list[dict[str, str]], pr: str | None, ledger_only: bool = False
+) -> list[str]:
     problems = []
     free = next_free(main_max, rows)
     for n in numbers:
-        if n <= main_max:
+        if n <= main_max and not ledger_only:
             problems.append(
                 f"migration {n} is not above main's highest number ({main_max}). Book {free} "
                 f"(ssh metorite-home '~/lanes/reserve_migration.sh <lane> <task>'), then "
@@ -80,8 +82,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--main-max", type=int, required=True, help="the highest number on main")
     ap.add_argument("--ledger", default=str(DEFAULT_LEDGER))
     ap.add_argument("--pr", default=None, help="the pull request number of this branch")
+    ap.add_argument("--ledger-only", action="store_true", help="skip the main check (premerge.sh does it)")
     args = ap.parse_args(argv)
-    problems = check(args.numbers, args.main_max, read_ledger(Path(args.ledger)), args.pr)
+    problems = check(args.numbers, args.main_max, read_ledger(Path(args.ledger)), args.pr, args.ledger_only)
     for p in problems:
         print(p)
     return 1 if problems else 0

@@ -123,7 +123,7 @@ if [ -n "$added_nums" ]; then
     | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
   say "R1: migration number(s) ${added_nums}against main's highest ${top_now:-0} and the ledger"
   # shellcheck disable=SC2086
-  python3 "$(dirname "${BASH_SOURCE[0]}")/migration_ledger_check.py" --main-max "${top_now:-0}" --ledger "$ledger" \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/migration_ledger_check.py" --main-max "${top_now:-0}" --ledger "$ledger" --ledger-only \
     ${pr_no:+--pr "$pr_no"} $added_nums >&2 \
     || fail "a migration number is taken or too low. Fix it as the lines above say, then run this again."
 fi
