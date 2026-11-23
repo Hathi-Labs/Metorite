@@ -117,7 +117,7 @@ from typing import Any
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import active_runs, get_settings
 from fastapi import Depends, HTTPException
-from gateway.routes.projects.agent_runs import AGENT_HOST_KINDS
+from gateway.routes.projects.agent_runs import AGENT_HOST_KINDS, CHILD_COLUMNS
 from gateway.routes.projects.authority import led_projects
 from gateway.routes.projects.core import (
     _tenant_session,
@@ -133,6 +133,7 @@ from gateway.routes.projects.filters import (
     AGENT_FOCUS_ME,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
+    BOUND_ORG_SQL,
     WORKING_STATES,
     agent_focus_clause,
     agent_runs_enabled,
@@ -633,7 +634,9 @@ MAP_QUIET_AFTER_S = 2 * 60 * 60
 UNNAMED_SESSION = "Unnamed session"
 
 #: The top keys of a map answer, one session node and one listed run.
-MAP_KEYS: tuple[str, ...] = ("people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+MAP_KEYS: tuple[str, ...] = (
+    "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer",
+)
 MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
     "quiet_last_at", "host", "host_kind", "host_source", "model",
@@ -645,6 +648,26 @@ MAP_RUN_KEYS: tuple[str, ...] = (
 #: SW-107. One line of who dispatched whom: from the dispatcher's session
 #: node to the session node of the run that it dispatched.
 MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+#: SW-110. One child run (SW-39) of a listed run: the sub-agent, its state,
+#: its OWN model and its age. ``run_id`` is the parent run, the same id as in
+#: ``runs``, and ``session_id`` is the node of that run. No machine, session
+#: key, connection or address of the child is in it (§3.12.4 rules 4 and 5).
+MAP_CHILD_KEYS: tuple[str, ...] = (
+    "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+)
+
+#: SW-110. The most child runs that one map lists. The read fetches one more,
+#: so the next one sets ``truncated``.
+MAP_CHILDREN_MAX = 200
+
+#: SW-110. The name of a child run with no ``agent_label``.
+UNNAMED_CHILD = "Sub-agent"
+
+#: SW-110. The state of an open child run on the map, in the words of the run
+#: states (``filters.AGENT_RUN_STATE_SQL``). A child has no lease, no wait and
+#: no question of its own, so an open child is working. An ended child is not
+#: on the map.
+MAP_CHILD_STATE = "working"
 
 #: The ``{only}`` of the map with a ``project_id``: the runs on the tasks of
 #: the project and of each project under it (the CTE ``sub`` of
@@ -743,6 +766,29 @@ SELECT DISTINCT d.node_id AS from_id, live.node_id AS to_id
 """
 
 
+#: SW-110 (§3.12.4 rule 1). The child runs of SW-39 under the listed runs.
+#: A child is reachable ONLY through ``live``, the open runs of ``seen``. So a
+#: child shows only under a parent run that the viewer may see, in the scope
+#: of ``project_id``. ``:parents`` holds the ids of the runs that the map
+#: lists, so a child of a folded quiet run is not listed either. The child
+#: names its own subject, ``kind = 'child'``, and the org of the bound session
+#: (``filters.BOUND_ORG_SQL``) beside FORCE RLS. The column list is the one of
+#: ``agent_runs.CHILD_COLUMNS``. No reader puts the machine of a child in the
+#: answer. An ended child is not on the map.
+_MAP_CHILDREN_SQL = _MAP_CTE + """
+SELECT """ + CHILD_COLUMNS + """, live.node_id,
+       """ + run_life_at_sql("c") + """ AS life_at,
+       COALESCE(c.started_at, c.created_at) AS run_at
+  FROM live
+  JOIN pm_agent_runs c ON c.kind = 'child' AND c.parent_run_id = live.id
+   AND c.organization_id = """ + BOUND_ORG_SQL + """
+ WHERE c.status IN ({open})
+   AND CAST(live.id AS text) = ANY(CAST(:parents AS text[]))
+ ORDER BY c.created_at DESC, c.id DESC
+ LIMIT :cap
+"""
+
+
 #: The longest ``project_id`` of the map, in characters. A longer value is
 #: 404 before the parse, as :data:`AGENT_KEY_MAX` does for an agent key.
 MAP_PROJECT_ID_MAX = 64
@@ -822,7 +868,7 @@ def _place_of(row: Any) -> dict[str, str | None]:
 
 
 def _empty_map(viewer: str) -> dict[str, Any]:
-    return {"people": [], "sessions": [], "runs": [], "lines": [],
+    return {"people": [], "sessions": [], "runs": [], "lines": [], "children": [],
             "count": 0, "truncated": False, "viewer": viewer}
 
 
@@ -841,8 +887,13 @@ async def _agent_map(
     (:func:`parse_map_query`). A project that the caller cannot see answers
     the one 404 of :func:`_not_found`.
 
-    ``truncated`` is True when the runs, the session nodes or the lines pass
-    their cap. For the runs it counts the LISTED runs only. When more than
+    SW-110: ``children`` lists the open child runs (SW-39) of the listed
+    runs, each with its own name, state and model (:data:`MAP_CHILD_KEYS`).
+    A child is reachable only through a listed run of ``live``, so a parent
+    that the caller cannot see leaves no child. ``count`` counts no child.
+
+    ``truncated`` is True when the runs, the session nodes, the lines or the
+    children pass their cap. For the runs it counts the LISTED runs only. When more than
     :data:`MAP_RUNS_MAX` runs are quiet and ``show_quiet`` is off,
     ``truncated`` is False while ``count`` is over the cap.
     """
@@ -881,8 +932,14 @@ async def _agent_map(
             text(_map_sql(_MAP_LINES_SQL, vis=vis, admin=admin, scoped=scoped)),
             {**params, "nodes": sorted(nodes), "cap": MAP_RUNS_MAX + 1},
         )).fetchall()) if nodes else []
+        listed = [r for r in runs[:MAP_RUNS_MAX] if str(r.node_id) in nodes]
+        # SW-110: the children of the LISTED runs only, through ``live``.
+        parents = sorted({str(r.id) for r in listed})
+        children = list((await db.execute(
+            text(_map_sql(_MAP_CHILDREN_SQL, vis=vis, admin=admin, scoped=scoped)),
+            {**params, "parents": parents, "cap": MAP_CHILDREN_MAX + 1},
+        )).fetchall()) if parents else []
 
-    listed = [r for r in runs[:MAP_RUNS_MAX] if str(r.node_id) in nodes]
     people: dict[str, int] = {}
     for s in kept:
         people[str(s.person)] = people.get(str(s.person), 0) + 1
@@ -915,9 +972,21 @@ async def _agent_map(
         # SW-107: who dispatched whom, from session node to session node.
         "lines": [{"from": str(x.from_id), "to": str(x.to_id)}
                   for x in lines[:MAP_RUNS_MAX]],
+        # SW-110: the sub-agents of the listed runs. ``count`` counts parent
+        # runs only. The model is the child's own, or None.
+        "children": [{
+            "child_id": str(c.id),
+            "run_id": str(c.parent_run_id),
+            "session_id": str(c.node_id),
+            "name": _line(c.agent_label, UNNAMED_CHILD),
+            "state": MAP_CHILD_STATE,
+            "model": _line(c.agent_model) or None,
+            "age": _age_s(c.run_at),
+            "last_at": _when(c.life_at),
+        } for c in children[:MAP_CHILDREN_MAX]],
         "count": int(sessions[0].total_runs or 0) if sessions else 0,
         "truncated": (len(runs) > MAP_RUNS_MAX or len(sessions) > MAP_SESSIONS_MAX
-                      or len(lines) > MAP_RUNS_MAX),
+                      or len(lines) > MAP_RUNS_MAX or len(children) > MAP_CHILDREN_MAX),
         "viewer": viewer,
     }
 

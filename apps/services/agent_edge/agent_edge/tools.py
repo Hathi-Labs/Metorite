@@ -9350,10 +9350,13 @@ AGENT_MAP_ROUTE = "/projects/agents/overview"
 #: which the edge may not import. ``test_agent_map_r8.py`` pins them equal.
 AGENT_MAP_RUNS_MAX = 300
 AGENT_MAP_SESSIONS_MAX = 300
+#: SW-110. The most child runs that one answer lists. A copy of
+#: ``agent_summary.MAP_CHILDREN_MAX``, pinned equal by ``test_agent_map_r8.py``.
+AGENT_MAP_CHILDREN_MAX = 200
 
 #: The top keys of a map answer, in the order of ``agent_summary.MAP_KEYS``.
 AGENT_MAP_KEYS: tuple[str, ...] = (
-    "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+    "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer")
 AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
     "quiet_last_at", "host", "host_kind", "host_source", "model",
@@ -9367,6 +9370,12 @@ AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
 #: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
 #: SW-107. Any other key of a line never leaves the edge.
 AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
+#: SW-110. The keys of one child run (a sub-agent) of a listed run. A copy of
+#: ``MAP_CHILD_KEYS`` of the gateway. Any other key of a child never leaves.
+AGENT_MAP_CHILD_KEYS: tuple[str, ...] = (
+    "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+)
 
 #: The id of a session node: the first 24 hex characters of a sha256
 #: (``agent_summary._NODE_SQL``). It holds no session key.
@@ -9412,12 +9421,20 @@ _MAP_RUN_SCHEMA = _object({
     "last_at": _NULLABLE_STRING,
 })
 _MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
+# SW-110: a sub-agent. Its name and its model are text that an agent wrote.
+_MAP_CHILD_SCHEMA = _object({
+    "child_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING,
+    "name": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
+    "age": _NULLABLE_INTEGER, "last_at": _NULLABLE_STRING,
+})
 _AGENT_MAP_OUTPUT: dict[str, Any] = _object({
     "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
     "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
     "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
     # SW-107 fills the lines of who dispatched whom: two node ids each.
     "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
+    # SW-110: the sub-agents (child runs) of the listed runs.
+    "children": {"type": "array", "items": _MAP_CHILD_SCHEMA},
     "count": {"type": "integer"},
     "truncated": {"type": "boolean"},
     "viewer": _NULLABLE_STRING,
@@ -9494,6 +9511,23 @@ def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
 
 
+def map_child(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One child run of a listed run (SW-110), with the pinned keys only. The
+    name of the sub-agent and its model are untrusted text (§3.12.4 rule 3).
+    ``run_id`` is the parent run. A machine, a session key or an address of
+    the child does not leave."""
+    return {
+        "child_id": _id(row.get("child_id")),
+        "run_id": _id(row.get("run_id")),
+        "session_id": _map_node(row.get("session_id")),
+        "name": untrusted(row.get("name")),
+        "state": _key(row.get("state")),
+        "model": untrusted(row.get("model")),
+        "age": _int_or_none(row.get("age")),
+        "last_at": _map_time(row.get("last_at")),
+    }
+
+
 def agent_map(body: Any) -> dict[str, Any]:
     """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
     each value in its shape or as untrusted text. At most
@@ -9508,10 +9542,10 @@ def agent_map(body: Any) -> dict[str, Any]:
         return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
 
     people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
-    lines = rows("lines")
+    lines, children = rows("lines"), rows("children")
     viewer = body.get("viewer")
     cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
-           or len(lines) > AGENT_MAP_RUNS_MAX)
+           or len(lines) > AGENT_MAP_RUNS_MAX or len(children) > AGENT_MAP_CHILDREN_MAX)
     return {
         "people": [{"person": untrusted(p.get("person")),
                     "sessions": _map_count(p.get("sessions"))} for p in people],
@@ -9519,6 +9553,8 @@ def agent_map(body: Any) -> dict[str, Any]:
         "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
         # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
         "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        # SW-110: the sub-agents of the listed runs, each under its run_id.
+        "children": [map_child(c) for c in children[:AGENT_MAP_CHILDREN_MAX]],
         "count": _map_count(body.get("count")),
         "truncated": body.get("truncated") is True or cut,
         # The viewer level of ``agents_view.md`` §4. The gateway sets it from
@@ -9549,7 +9585,9 @@ GET_AGENT_MAP = Tool(
         " that project and its sub-projects. A run with no event for 2 hours is"
         " quiet: its session counts it, and show_quiet true lists it. The map"
         " lists at most 300 runs, and truncated is true when it cut some. count"
-        " counts every open run that you can see. The map changes nothing."
+        " counts every open run that you can see. children lists the open"
+        " sub-agents of the listed runs, each under the run_id of its run, with"
+        " its own model; count does not count them. The map changes nothing."
         + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -12186,6 +12224,8 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
+    "AGENT_MAP_CHILDREN_MAX",
+    "AGENT_MAP_CHILD_KEYS",
     "AGENT_MAP_KEYS",
     "AGENT_MAP_LINE_KEYS",
     "AGENT_MAP_ROUTE",
@@ -12629,6 +12669,7 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_child",
     "map_line",
     "map_run",
     "map_session",
