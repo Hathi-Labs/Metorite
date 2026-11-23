@@ -89,14 +89,21 @@ class _Db:
     ``stored`` None is no settings row, and ``"\\x00NULL"`` is a row whose
     signature is NULL. ``settings`` is the ``email_signature_settings`` row."""
 
-    def __init__(self, stored: str | None = None, settings: Any = None) -> None:
+    def __init__(self, stored: str | None = None, settings: Any = None,
+                 draft: Any = None) -> None:
         self.stored = stored
         self.settings = settings
+        #: The draft row that ``/drafts/send`` and the seals read (SG-5a).
+        self.draft = draft
         self.sql: list[str] = []
 
     async def execute(self, statement: Any, params: Any = None) -> _Result:
         sql = " ".join(str(statement).split())
         self.sql.append(sql)
+        if sql.startswith("DELETE"):
+            return _Result(None)
+        if "FROM email_messages" in sql:
+            return _Result(self.draft)
         if "FROM email_signature_settings" in sql:
             return _Result(self.settings)
         if "FROM email_assistant_settings" in sql:
@@ -740,3 +747,142 @@ def test_the_preview_is_a_gated_member_route_that_writes_nothing() -> None:
     source = Path(signature_preview.__file__).read_text(encoding="utf-8")
     for word in ("execute(", "_tenant_session", "get_db", "INSERT", "UPDATE"):
         assert word not in source, word
+
+
+# ── 6. SG-5a: the quote rule and one form for each send (§23.3.6) ───────────
+#
+# Each test of this section drives a real route. The two defects of the SG-5
+# audit went red on main (decisions 2 and 3, done-when a and b):
+#
+# * A reply whose quote holds an earlier compact reply got the table INSIDE
+#   the quote, because ``for_body`` found the compact form there.
+# * A body that holds the compact form, sent by ``/email/drafts/send`` as
+#   ``new``, carried the name two times.
+
+_DRAFT = "0d0d0d0d-0000-4000-8000-0000000005a0"
+_FULL_TEXT = signature_render.render("classic", _FIELDS)[1]
+_SHORT_TEXT = signature_render.render(signature_render.SHORT_LAYOUT, _FIELDS)[1]
+_TABLE = 'role="presentation"'
+_NEW_TEXT = "Hi Kim,\n\nThe quote stands."
+_MARKER = "On Mon, 9 Nov 2026, Kim wrote:"
+#: The quote of a thread whose earlier reply carried the compact form. The
+#: compact form is one line, so it still matches behind the ``> `` mark.
+_QUOTE_WITH_COMPACT = f"{_MARKER}\n> Is the quote fixed?\n>\n> {_SHORT_TEXT}"
+#: An Outlook quote with no ``>`` mark. The full form matches inside it.
+_OUTLOOK_QUOTE = ("From: Kim <kim@client.test>\nSent: Monday, 9 November 2026\n"
+                  f"To: Jane\nSubject: Quote\n\nIs the quote fixed?\n\n{_FULL_TEXT}")
+
+
+def _draft_row(body: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        provider_message_id="pm-d", subject="Re: Quote",
+        to_addresses=[{"email": "kim@client.test"}], cc_addresses=[], bcc_addresses=[],
+        body_text=body, thread_id=None)
+
+
+async def _send_draft(monkeypatch: pytest.MonkeyPatch, db: _Db, body: str,
+                      expect: Any = None) -> dict[str, Any]:
+    """One ``POST /email/drafts/send`` through the real route, with a fake
+    session and a fake provider. Answers the kwargs of the signing update."""
+    sent: dict[str, Any] = {}
+
+    class _Provider:
+        async def update_draft(self, pmid: str, **kw: Any) -> str:
+            sent.update(kw)
+            return pmid
+
+        async def send_draft(self, pmid: str) -> None:
+            sent["sent"] = pmid
+
+        async def get_message_body(self, _pmid: str) -> Any:
+            return SimpleNamespace(body_text=body, body_html="")
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield db
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider())
+
+    async def _owner(*_a: Any, **_k: Any) -> None:
+        return None
+
+    db.draft = _draft_row(body)
+    monkeypatch.setattr(drafting, "_tenant_session", _session)
+    monkeypatch.setattr(drafting, "provider_session", _provider_session)
+    monkeypatch.setattr(drafting, "_assert_account_owner", _owner)
+    await drafting.send_draft_endpoint(drafting.DraftSendRequest(
+        account_id=_ACC, draft_id=_DRAFT, expect=expect), BackgroundTasks(), user=_ME)
+    return sent
+
+
+def _one_table_above(html: str, marker: str) -> None:
+    assert html.count(_TABLE) == 1, html
+    assert html.index(_TABLE) < html.index(marker), html
+
+
+@pytest.mark.parametrize("reply_mode", ["full", "short"])
+async def test_sg5a_a_compact_reply_in_the_quote_keeps_the_table_above_the_quote(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str,
+) -> None:
+    """Defect 1 of the audit (done-when a). A draft path wrote the full form
+    above the quote, and the quote holds an earlier compact reply."""
+    _flag(monkeypatch, "*")
+    body = f"{_NEW_TEXT}\n\n{_FULL_TEXT}\n\n{_QUOTE_WITH_COMPACT}"
+    sent = await _send(monkeypatch, _Db("", _template(reply_mode)), body, "local-1")
+    _one_table_above(sent["body_html"], "Kim wrote:")
+    text = sent["body_text"]
+    # One form above the quote, and the quote stays as it was.
+    assert text.split(_MARKER)[0].count("Jane Doe") == 1, text
+    assert text.endswith(_QUOTE_WITH_COMPACT), text
+
+
+@pytest.mark.parametrize("reply_mode", ["full", "short"])
+async def test_sg5a_a_compact_draft_above_a_compact_quote_is_kept_once(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str,
+) -> None:
+    """Done-when a for ``/drafts/send``: the new text holds the compact form,
+    and so does the quote."""
+    _flag(monkeypatch, "*")
+    body = f"{_NEW_TEXT}\n\n{_SHORT_TEXT}\n\n{_QUOTE_WITH_COMPACT}"
+    sent = await _send_draft(monkeypatch, _Db("", _template(reply_mode)), body)
+    _one_table_above(sent["body_html"], "Kim wrote:")
+    assert sent["body_text"].split(_MARKER)[0].count("Jane Doe") == 1, sent["body_text"]
+    assert sent["sent"] == "pm-d"
+
+
+@pytest.mark.parametrize("reply_mode", sig.REPLY_MODES)
+async def test_sg5a_a_compact_body_sent_as_new_carries_the_name_once(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str,
+) -> None:
+    """Defect 2 of the audit. A body that holds the compact form goes out as
+    ``new`` through ``/email/drafts/send`` and through ``/email/send``."""
+    _flag(monkeypatch, "*")
+    body = f"Hi Kim,\n\nThe plan is attached.\n\n{_SHORT_TEXT}"
+    drafted = await _send_draft(monkeypatch, _Db("", _template(reply_mode)), body)
+    sent = await _send(monkeypatch, _Db("", _template(reply_mode)), body, None)
+    for out in (drafted, sent):
+        assert out["body_text"].count("Jane Doe") == 1, out["body_text"]
+        assert out["body_html"].count("Jane Doe") == 1, out["body_html"]
+        assert out["body_html"].count(_TABLE) == 1
+
+
+@pytest.mark.parametrize("reply_mode", ["full", "short"])
+async def test_sg5a_a_form_only_in_the_quote_gets_the_signature_above_it(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str,
+) -> None:
+    """Done-when b. The quote holds a form and the new text holds none, so
+    the send adds ``of(kind)`` above the quote."""
+    _flag(monkeypatch, "*")
+    forms = await sig.signature_forms(_Db("", _template(reply_mode)), _ACC)
+    body = f"{_NEW_TEXT}\n\n{_QUOTE_WITH_COMPACT}"
+    sent = await _send(monkeypatch, _Db("", _template(reply_mode)), body, "local-1")
+    _one_table_above(sent["body_html"], "Kim wrote:")
+    above = sent["body_text"].split(_MARKER)[0]
+    assert signature_text(forms.of("reply")) in above, sent["body_text"]
+    # /drafts/send asks for ``new``. The Outlook quote holds the full form.
+    body = f"{_NEW_TEXT}\n\n{_OUTLOOK_QUOTE}"
+    sent = await _send_draft(monkeypatch, _Db("", _template(reply_mode)), body)
+    _one_table_above(sent["body_html"], "From: Kim")
+    assert _FULL_TEXT in sent["body_text"].split("From: Kim")[0], sent["body_text"]

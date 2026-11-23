@@ -79,6 +79,7 @@ class _Harness:
         body_html: str | None = "<html><body><p>The <b>BQ</b> quote.</p></body></html>",
         body_text: str = "The BQ quote.", signature: str = "",
         native: bool = False, send_error: BaseException | None = None,
+        settings: Any = None,
     ) -> None:
         self.files = files if files is not None else {PDF: b"%PDF-1.7 quote", SHEET: b"PK sheet"}
         self.sizes = sizes or {}
@@ -107,6 +108,8 @@ class _Harness:
             for aid, data in self.files.items()
         }
         self.signature = signature
+        #: The ``email_signature_settings`` row (WS-17 SG-5a).
+        self.settings = settings
         h = self
 
         class _Result:
@@ -131,6 +134,8 @@ class _Harness:
                     return _Result(row if params["user_id"] == OWNER else None)
                 if hits(sql, "FROM email_assistant_settings"):
                     return _Result(SimpleNamespace(signature=h.signature) if h.signature else None)
+                if hits(sql, "FROM email_signature_settings"):
+                    return _Result(h.settings)
                 raise AssertionError(f"unexpected SQL: {sql}")
 
         @asynccontextmanager
@@ -227,6 +232,33 @@ class TestTheForwardRoute:
         await _forward(note="See below.")
         text = h.sent[0]["body_text"]
         assert text.index("See below.") < text.index("Fracktal Works") < text.index("Forwarded message")
+
+    @pytest.mark.parametrize("reply_mode", ["full", "short"])
+    async def test_a_note_that_holds_a_layout_form_carries_one_signature(
+        self, monkeypatch, reply_mode: str,
+    ) -> None:
+        """WS-17 SG-5a (§23.3.6, done-when a). The flag is on and the row is
+        ``template``. The note holds the compact form or the full form. The
+        forward keeps that form, once in the text and once in the HTML, with
+        the table above the forwarded header. On main a note with the compact
+        form in ``full`` mode carried the name two times."""
+        from acb_common import get_settings
+        from gateway.routes.email import signature_render
+
+        monkeypatch.setattr(get_settings(), "email_signature_templates_orgs", "*",
+                            raising=False)
+        fields = {"name": "Dana Iyer", "title": "Buyer", "company": "Fracktal Works"}
+        row = SimpleNamespace(mode="template", layout="classic", fields=fields,
+                              reply_mode=reply_mode)
+        for layout in ("compact", "classic"):
+            h = _Harness(monkeypatch, settings=row)
+            form = signature_render.render(layout, fields)[1]
+            await _forward(note=f"Geo, see below.\n\n{form}")
+            text, html = h.sent[0]["body_text"], h.sent[0]["body_html"]
+            assert text.count("Dana Iyer") == 1, text
+            assert html.count("Dana Iyer") == 1, html
+            assert html.count('role="presentation"') == 1, html
+            assert html.index('role="presentation"') < html.index("Forwarded message")
 
     async def test_a_mail_of_another_member_is_404_before_any_fetch(self, monkeypatch) -> None:
         h = _Harness(monkeypatch)

@@ -73,7 +73,8 @@ async def _seal(drow: SimpleNamespace, provider: _Provider) -> str:
     return await d.draft_text_seal(provider, "pm-1", drow.subject, drow.body_text, "")
 
 
-async def _send(drow: SimpleNamespace, provider: _Provider, digest: str | None) -> None:
+async def _send(drow: SimpleNamespace, provider: _Provider, digest: str | None,
+                db: Any = None) -> None:
     class _Db:
         async def execute(self, sql: Any, params: Any = None) -> Any:
             q = str(sql)
@@ -85,7 +86,7 @@ async def _send(drow: SimpleNamespace, provider: _Provider, digest: str | None) 
 
     @contextlib.asynccontextmanager
     async def tenant():
-        yield _Db()
+        yield db if db is not None else _Db()
 
     @contextlib.asynccontextmanager
     async def provider_session(*_a: Any, **_k: Any):
@@ -190,6 +191,81 @@ def test_the_schedule_request_stores_the_seal() -> None:
     req = sl.ScheduleRequest(account_id=F.BOX, draft_id=F.DRAFT, send_at="x",
                              expect={"to": [F.KNOWN], "text_digest": "e" * 64})
     assert req.expect.model_dump()["text_digest"] == "e" * 64
+
+
+# ── WS-17 SG-5a: one form for the three seals (§23.3.6 decision 9) ──────────
+#
+# ``/drafts/send``, ``GET /drafts/seal`` and ``held_card.seal_of`` strip one
+# form from the text before they fold it. A draft that holds the compact form
+# must get one digest from all three, or a chat-card send of a compact reply
+# answers 409 (done-when d). Mutation: give one seal ``of("new")`` in place of
+# the shared helper, and this goes red.
+
+_FIELDS = {"name": "Jane Doe", "title": "Head of Sales", "company": "Acme Works",
+           "phone": "+91 98450 12345"}
+
+
+class _TemplateDb:
+    """A session that holds a ``template`` row in ``short`` mode, no stored
+    signature, and one draft row."""
+
+    def __init__(self, drow: SimpleNamespace) -> None:
+        self.drow = drow
+
+    async def execute(self, sql: Any, params: Any = None) -> Any:
+        q = " ".join(str(sql).split())
+        if q.startswith("DELETE"):
+            return SimpleNamespace(fetchone=lambda: None)
+        if "FROM email_signature_settings" in q:
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(
+                mode="template", layout="classic", fields=_FIELDS, reply_mode="short"))
+        if "FROM email_assistant_settings" in q:
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(signature=""))
+        return SimpleNamespace(fetchone=lambda: self.drow)
+
+
+async def test_the_three_seals_agree_on_a_compact_draft_and_its_send_goes(monkeypatch) -> None:
+    from acb_common import get_settings
+    from gateway.routes.email import account_ref, core, signature_render
+    from gateway.routes.email.automation import held_card as hc
+
+    monkeypatch.setattr(get_settings(), "email_signature_templates_orgs", "*",
+                        raising=False)
+    short = signature_render.render(signature_render.SHORT_LAYOUT, _FIELDS)[1]
+    body = f"Hi Kim,\n\nThe quote.\n\n{short}"
+    drow = _drow(body_text=body)
+    p = _Provider(live=body)
+    db = _TemplateDb(drow)
+
+    @contextlib.asynccontextmanager
+    async def tenant():
+        yield db
+
+    @contextlib.asynccontextmanager
+    async def provider_session(*_a: Any, **_k: Any):
+        yield SimpleNamespace(provider=p)
+
+    async def owner(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def account(_db: Any, value: str, *_a: Any, **_k: Any) -> str:
+        return value
+
+    monkeypatch.setattr(d, "_tenant_session", tenant)
+    monkeypatch.setattr(d, "provider_session", provider_session)
+    monkeypatch.setattr(d, "_assert_account_owner", owner)
+    monkeypatch.setattr(account_ref, "resolve_account_filter", account)
+    monkeypatch.setattr(hc, "_tenant_session", tenant)
+    monkeypatch.setattr(core, "provider_session", provider_session)
+    shown = await d.draft_seal(account_id=F.BOX, draft_id=F.DRAFT,
+                               user=SimpleNamespace(email=F.MEMBER))
+    held = await hc.seal_of(F.MEMBER, F.BOX, F.DRAFT)
+    assert shown["text_digest"] == held
+    await _send(drow, p, shown["text_digest"], db=db)
+    assert p.sent == ["pm-1"]
+    [update] = p.updated
+    assert update["body_text"].count("Jane Doe") == 1, update["body_text"]
+    assert update["body_html"].count("Jane Doe") == 1, update["body_html"]
 
 
 # ── The tools ────────────────────────────────────────────────────────────────
