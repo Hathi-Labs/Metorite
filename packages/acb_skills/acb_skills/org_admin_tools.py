@@ -285,11 +285,11 @@ def _path_email(email: str) -> str:
     return quote(email, safe="")
 
 
-#: A role slug, as ``routes/admin/roles.py::_clean_slug`` makes one: 1 to 64
+#: A role slug, as ``routes/admin/roles.py::_clean_slug`` makes one: 1 to 48 (``_SLUG_MAX``)
 #: characters, each ``isalnum()`` or ``_`` or ``-``. The real check against
 #: ``GET /admin/roles`` follows, so this is the shape check only.
 def _slug_shape(slug: str) -> bool:
-    return 1 <= len(slug) <= 64 and all(c.isalnum() or c in "_-" for c in slug)
+    return 1 <= len(slug) <= 48 and all(c.isalnum() or c in "_-" for c in slug)
 
 
 def _roles_arg(raw: Any) -> list[str] | None:
