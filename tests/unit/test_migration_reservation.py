@@ -90,3 +90,11 @@ def test_ledger_only_leaves_the_main_check_to_premerge(tmp_path: Path) -> None:
     out = _run(tmp_path, ledger, "--main-max", "480", "--ledger-only", "479")
     assert out.returncode == 0, out.stdout
     assert "--ledger-only" in PREMERGE
+
+
+def test_premerge_only_warns_on_a_ledger_hit_and_finds_the_checker_after_a_cd() -> None:
+    """Findings of the verifier of PR 2816: a hard fail blocks a good merge."""
+    block = PREMERGE[PREMERGE.index("0b. Migration numbers"):PREMERGE.index('if [ "$behind" = 0 ]')]
+    assert "|| fail" not in block and "WARNING" in block
+    assert PREMERGE.index("LEDGER_CHECK=") < PREMERGE.index('cd "$(git rev-parse --show-toplevel)"')
+    assert "${HOME:-" in block

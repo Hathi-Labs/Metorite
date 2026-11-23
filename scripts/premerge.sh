@@ -67,6 +67,7 @@ FENCES=(
   tests/unit/test_index_union.py
   tests/unit/test_chat_parity.py
 )
+LEDGER_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migration_ledger_check.py"  # before any cd
 BASE="${PREMERGE_BASE:-origin/main}"
 
 say()  { printf 'premerge: %s\n' "$*"; }
@@ -109,9 +110,13 @@ fi
 # This runs on EVERY merge, before the early exit. A branch that contains main
 # can still hold a number that the ledger booked for another pull request. The
 # ledger is ~/lanes/migration-numbers.tsv, written only by reserve_migration.sh.
-# With no ledger (a PC) the check still refuses a number at or below main's top.
-# The message names the next free number. Fence: tests/unit/test_migration_reservation.py.
-ledger="${PREMERGE_LEDGER:-$HOME/lanes/migration-numbers.tsv}"
+# WARNING ONLY, by design. The verifier of PR 2816 proved that a hard fail is wrong:
+# a closed predecessor PR of the same task still owns the row, a row with no PR
+# ("-") never matches, and `gh` may give no PR at all. A false fail blocks a good
+# merge, so this step names the next free number and lets step 1 stay the gate.
+# The number at or below main's top is refused by step 1, with its own message.
+# Fence: tests/unit/test_migration_reservation.py.
+ledger="${PREMERGE_LEDGER:-${HOME:-/nonexistent}/lanes/migration-numbers.tsv}"
 pr_no="${PREMERGE_PR:-}"
 if [ -z "$pr_no" ] && command -v gh >/dev/null 2>&1; then
   pr_no="$(timeout 20 gh pr view --json number --jq .number 2>/dev/null || true)"
@@ -123,9 +128,9 @@ if [ -n "$added_nums" ]; then
     | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
   say "R1: migration number(s) ${added_nums}against main's highest ${top_now:-0} and the ledger"
   # shellcheck disable=SC2086
-  python3 "$(dirname "${BASH_SOURCE[0]}")/migration_ledger_check.py" --main-max "${top_now:-0}" --ledger "$ledger" --ledger-only \
+  python3 "$LEDGER_CHECK" --main-max "${top_now:-0}" --ledger "$ledger" --ledger-only \
     ${pr_no:+--pr "$pr_no"} $added_nums >&2 \
-    || fail "a migration number is taken or too low. Fix it as the lines above say, then run this again."
+    || say "WARNING: the ledger lists a number of this branch for another pull request. It does NOT block the merge: a closed predecessor PR of the same task shows up here too. Check the lines above."
 fi
 
 behind="$(git rev-list --count "HEAD..$BASE")"
