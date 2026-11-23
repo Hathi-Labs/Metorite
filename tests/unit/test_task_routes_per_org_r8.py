@@ -488,7 +488,7 @@ def _warnings(notices: list[tuple[str, str]]) -> list[str]:
     return [m for sev, m in notices if sev == "WARNING"]
 
 
-def test_481_tenants_old_rows_from_app_user_and_leaves_the_rest_null(db) -> None:
+def test_489_tenants_old_rows_from_app_user_and_leaves_the_rest_null(db) -> None:
     """Two orgs, a fresh ladder shape (no column). An address that `app_user`
     holds in one org gives its rows to that org, in any case and with spaces.
     An address in two orgs, and an address that no member has, stay NULL, and
@@ -536,7 +536,7 @@ def test_481_tenants_old_rows_from_app_user_and_leaves_the_rest_null(db) -> None
             assert fks == ["c"], (table, fks)
 
 
-def test_481_gives_each_other_row_to_the_only_org(db) -> None:
+def test_489_gives_each_other_row_to_the_only_org(db) -> None:
     o1 = str(uuid.uuid4())
     with _scratch(db) as (conn, notices, _schema):
         _run(conn, _PRE_TENANCY)
@@ -580,7 +580,7 @@ CREATE TABLE task_accounts (
 """
 
 
-def test_481_on_the_production_shape_changes_nothing(db) -> None:
+def test_489_on_the_production_shape_changes_nothing(db) -> None:
     """Production: the column is there, NOT NULL, with its named foreign key,
     and RLS is forced. The deploy runs the file as an owner that RLS binds,
     with no tenant. The file changes no row and adds no second foreign key."""

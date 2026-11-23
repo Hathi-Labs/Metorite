@@ -1252,7 +1252,7 @@ class ClarifyRequest(BaseModel):
 
 async def _clarify_accounts(db: Any, uid: str) -> list[Any]:
     """The member's connected task accounts in the BOUND org only (H-312b,
-    migration 481). Under the owner role RLS does not apply, so the member
+    migration 489). Under the owner role RLS does not apply, so the member
     filter alone read the accounts of the member's other org too."""
     return list((await db.execute(
         text("SELECT id, label, provider, schema_cache FROM task_accounts "
