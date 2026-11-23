@@ -352,6 +352,7 @@
       "tests/unit/test_owner_bootstrap.py",
       "tests/unit/test_package_disposal_r8.py",
       "tests/unit/test_package_expiry_loop_r8.py",
+      "tests/unit/test_package_field_value_host_delete_r8.py",
       "tests/unit/test_package_field_values_r8.py",
       "tests/unit/test_package_host_store_r8.py",
       "tests/unit/test_package_keep_restore_r8.py",

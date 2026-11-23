@@ -405,6 +405,18 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_fields_search.py.
     crm_module_find_orgs: str = ""
+    # `crm_module_reread_orgs` (WS-53 task 3869, 2026-11-22) lists the
+    # organization ids whose Zoho mirror reads each generic module again in
+    # full once in 7 days, and queues one full read of a module whose stored
+    # pick-list values left the current options (`crm_platform.md` §18.7),
+    # in the grammar of `crm_orgs`. Default empty means NO organization: a
+    # generic module that a cursor reads takes its changes only, as before,
+    # and discovery runs no drift check. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A full read spends Zoho API credits inside
+    # the budget of the sync run, so a flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_module_reread.py.
+    crm_module_reread_orgs: str = ""
     # `semantic_model_orgs` (WS-SEM SEM-7, task 3737, 2026-11-18) lists the
     # organization ids whose CRM plan takes the semantic kinds `measure`,
     # `join` and `query`, in the grammar of `crm_orgs`. Default empty means

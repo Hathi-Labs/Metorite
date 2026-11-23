@@ -99,6 +99,15 @@ gateway reads them.
   ``query`` and answers as before. :func:`module_find_allowed` is the one
   check. A name in the list spends nothing, so its flip is gate
   ``enforcement-flip``. Fence: ``tests/unit/test_crm_fields_search.py``.
+* ``CRM_MODULE_REREAD_ORGS`` — the organization ids whose Zoho mirror reads
+  each generic module again in full once in 7 days, and queues one full read
+  of a module whose stored pick-list values left the current options (WS-53
+  task 3869, ``crm_platform.md`` §18.7). The grammar is the one of
+  ``CRM_ORGS``. An empty list allows no organization: a generic module that
+  a cursor reads takes its changes only, as before, and discovery runs no
+  drift check. :func:`module_reread_allowed` is the one check. A full read
+  spends Zoho API credits inside the budget of the sync run, so its flip is
+  gate ``enforcement-flip``. Fence: ``tests/unit/test_crm_module_reread.py``.
 * ``CRM_MIRROR_AGE_ORGS`` — the organization ids whose CRM read tools say
   how old the Zoho mirror of a module is (WS-53 CRM-Q30c, task 3868,
   ``crm_platform.md`` §18.11.2). The grammar is the one of ``CRM_ORGS``. An
@@ -415,6 +424,28 @@ def module_find_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_module_find_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_module_reread_orgs() -> frozenset[str]:
+    """The organization ids whose mirror reads each generic module in full
+    once in 7 days (task 3869). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_module_reread_orgs or ""))
+
+
+def module_reread_allowed(organization_id: str | None) -> bool:
+    """True when the weekly full read and the pick-list drift check of the
+    generic modules may run for this org (task 3869).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_MODULE_REREAD_ORGS``, or ``*`` there. The sync runs only
+    for an org that the mirror allows, so the mirror list holds too. It reads
+    the settings and nothing else, and no module reads it at import, so a
+    SIGHUP reload applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_module_reread_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 
