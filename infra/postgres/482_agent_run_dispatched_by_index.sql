@@ -1,0 +1,66 @@
+-- ============================================================================
+-- 482_agent_run_dispatched_by_index.sql - the index that serves the SET NULL
+-- of `pm_agent_runs.dispatched_by_run_id` (WS-MCP SW-107b, Metorite task 3860)
+-- ============================================================================
+-- Spec: project-docs/specs/agent_coordination.md SW-107 ("Owner question: the
+--   cost of the delete") · R1 · R5 · R6 · R7.
+--
+-- R1: on 2026-11-23 main held 481. Open pull request 2781 held 481 too, and
+--   no open pull request held a higher number. So this file takes 482. Check
+--   the number again at merge (scripts/premerge.sh).
+--
+-- Why: 472 added `dispatched_by_run_id`, a self key with ON DELETE SET NULL,
+--   and no index. So each delete of a run makes Postgres run
+--   `UPDATE ONLY pm_agent_runs ... WHERE dispatched_by_run_id = $1` with a
+--   scan of the whole table, rows of other organizations too. An organization
+--   delete (acb_auth/offboard.py) removes each run of the organization, so it
+--   makes one scan for each run.
+--
+-- The decision (owner, board answer 2026-11-23): a plain partial index in a
+--   migration, with a lock_timeout, and one narrow exemption for this index
+--   in tests/unit/test_agent_label_fence.py. Not CONCURRENTLY.
+--
+-- Why a plain build is safe here: the table holds some thousands of rows, so
+--   the build reads it in milliseconds. A plain build takes a SHARE lock:
+--   reads pass, and run writes wait only for that short build.
+--   CONCURRENTLY cannot run inside the transaction of the test ladder, and a
+--   failed concurrent build leaves an INVALID index that IF NOT EXISTS then
+--   keeps. A plain build that fails leaves no index, so the next run of the
+--   file builds it again.
+--
+-- What: one partial index, `pm_agent_runs_dispatched_by`, on
+--   `dispatched_by_run_id`, for the rows that have a value. Most runs have no
+--   dispatcher, so the index stays small. The SET NULL lookup
+--   `dispatched_by_run_id = $1` implies `IS NOT NULL`, so the planner can use
+--   the partial index.
+--
+-- The value still grants nothing (§3.12.4 rule 2). The index serves only the
+--   key's own SET NULL action. The fence lets this one index through, with
+--   this exact definition, and refuses every other index of the table that
+--   names a label column.
+--
+-- Expand only (R6): an index changes no row and no column, so old code reads
+--   and writes as before. No data change and no other DDL.
+--   Idempotent: CREATE INDEX IF NOT EXISTS. A second run changes nothing.
+--
+-- RLS (R5): `pm_agent_runs` keeps its FORCE RLS and its policy. An index adds
+--   no table and no policy, so this file adds no
+--   `gen_tenant_migration.EXEMPT` row.
+--
+-- Never wait for the lock: the build takes SHARE, and each run write takes
+--   this table. So the file sets `lock_timeout` first, as 472 and 475 do.
+--   scripts/apply_migrations.sh sets the same value in its prelude. The line
+--   here keeps the limit when another tool feeds the file. On a lock timeout
+--   the runner tries the whole file again.
+--
+-- Depends on: 472_agent_run_dispatched_by.sql (the column).
+-- Pinned by: tests/unit/test_agent_run_dispatch_index_r8.py and
+--   tests/unit/test_agent_label_fence.py, which find this file by CONTENT,
+--   never by number (R1).
+-- ============================================================================
+
+SET lock_timeout = '5s';
+
+CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by
+    ON pm_agent_runs (dispatched_by_run_id)
+    WHERE dispatched_by_run_id IS NOT NULL;

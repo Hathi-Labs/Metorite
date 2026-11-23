@@ -102,6 +102,21 @@ no module outside ``agent_runs.py`` reads them. The R8 half of SW-39 is
   ``test_only_two_indexes_name_the_child_columns``.
 * L21. ``E`` ``tools.py``: read ``parent_run_id``.
   ``test_only_agent_runs_names_the_child_columns``.
+
+**SW-107b makes one exemption** (owner, 2026-11-23). The key of SW-107 sets
+``dispatched_by_run_id`` to NULL on each run delete. The partial index
+``pm_agent_runs_dispatched_by`` serves that lookup, so a delete scans no
+table. The index fence takes this one index, word for word
+(:data:`_DISPATCH_INDEX`), and refuses each other index that names a label
+column. The R8 half is ``test_agent_run_dispatch_index_r8.py``.
+
+* L22. A migration: a second index ``ON pm_agent_runs (dispatched_by_run_id)``
+  with another name. ``test_no_index_of_the_runs_table_names_the_label``.
+* L23. The migration: drop ``WHERE dispatched_by_run_id IS NOT NULL``.
+  ``test_no_index_of_the_runs_table_names_the_label`` and
+  ``test_it_sets_the_lock_timeout_and_builds_one_plain_index``.
+* L24. The migration: add ``CONCURRENTLY``.
+  ``test_it_sets_the_lock_timeout_and_builds_one_plain_index``.
 """
 
 from __future__ import annotations
@@ -162,6 +177,24 @@ _ACB_COMMON = _REPO / "packages" / "acb_common" / "acb_common"
 #: and the model of a session, and SW-107 the dispatcher (§3.12.4 rule 2).
 _LABEL = re.compile(
     r"\b(?:agent_label|agent_host|agent_host_kind|agent_model|dispatched_by_run_id)\b")
+
+
+#: Each ``CREATE INDEX`` of ``pm_agent_runs`` in a migration.
+_RUNS_INDEX = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*?\bON\s+pm_agent_runs\b[^;]*;",
+                         re.IGNORECASE | re.DOTALL)
+
+#: SW-107b, the ONE exemption of the index fence (owner, 2026-11-23). The key
+#: of 472 sets the column to NULL with ON DELETE SET NULL, and without this
+#: index each run delete scans the whole table. The index serves only that
+#: lookup, so it grants nothing. The fence takes it only with this exact text:
+#: this name, this one column and this predicate.
+_DISPATCH_INDEX = ("CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+                   " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;")
+
+
+def _squash(sql: str) -> str:
+    """*sql* with each run of white space as one space, and no outer space."""
+    return " ".join(sql.split())
 
 
 #: SW-39. The two columns of a child run, as code reads them: the parent
@@ -303,17 +336,48 @@ class TestTheLabelGrantsNothing:
 
     def test_no_index_of_the_runs_table_names_the_label(self) -> None:
         """The run slot is ``pm_agent_runs_one_open_per_task`` and
-        ``pm_agent_runs_one_open``. No index of the table names the label."""
-        statement = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*?\bON\s+pm_agent_runs\b[^;]*;",
-                               re.IGNORECASE | re.DOTALL)
-        seen, bad = 0, []
+        ``pm_agent_runs_one_open``. No index of the table names the label.
+        One exemption: :data:`_DISPATCH_INDEX`, word for word, in one file."""
+        seen, bad, exempt = 0, [], []
         for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql")):
-            for found in statement.finditer(_read(path)):
+            for found in _RUNS_INDEX.finditer(_read(path)):
                 seen += 1
                 if _LABEL.search(found.group(0)):
-                    bad.append(f"{path.name}: {found.group(0)[:80]}")
+                    if _squash(found.group(0)) == _DISPATCH_INDEX:
+                        exempt.append(path.name)
+                    else:
+                        bad.append(f"{path.name}: {found.group(0)[:80]}")
         assert seen >= 2, "the fence no longer finds the run-slot indexes"
         assert not bad, f"SW-7b: no index of pm_agent_runs may name agent_label: {bad}"
+        assert len(exempt) <= 1, f"SW-107b: the dispatcher index exists once: {exempt}"
+
+    def test_the_dispatcher_exemption_takes_only_its_exact_text(self) -> None:
+        """SW-107b. The exemption is one statement, word for word. A change of
+        the name, the column, the predicate or the kind of index is a new
+        statement, and the fence above refuses it."""
+        assert _squash(" CREATE  INDEX IF NOT EXISTS pm_agent_runs_dispatched_by\n"
+                       "    ON pm_agent_runs (dispatched_by_run_id)\n"
+                       "    WHERE dispatched_by_run_id IS NOT NULL;") == _DISPATCH_INDEX
+        for other in (
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatcher ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id);",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE status = 'in_progress';",
+            "CREATE UNIQUE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id, member_email) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) INCLUDE (agent_label)"
+            " WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (agent_label) WHERE dispatched_by_run_id IS NOT NULL;",
+        ):
+            [found] = _RUNS_INDEX.finditer(other)
+            assert _LABEL.search(found.group(0)), other
+            assert _squash(found.group(0)) != _DISPATCH_INDEX, other
 
 
 class TestTheMigration:
@@ -418,6 +482,28 @@ class TestTheDispatchMigration:
             assert field.default is None and not field.is_required()
             assert [m.pattern for m in field.metadata if getattr(m, "pattern", None)] == [
                 pattern], model
+
+
+class TestTheDispatchIndexMigration:
+    """SW-107b. Found by CONTENT, never by number (R1)."""
+
+    def _file(self) -> Path:
+        found = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                 if "INDEX IF NOT EXISTS pm_agent_runs_dispatched_by" in _read(p)]
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_it_sets_the_lock_timeout_and_builds_one_plain_index(self) -> None:
+        sql = self._file().read_text(encoding="utf-8")
+        body = "\n".join(line for line in sql.splitlines() if not line.startswith("--"))
+        statements = [_squash(s) + ";" for s in body.split(";") if s.strip()]
+        assert statements == ["SET lock_timeout = '5s';", _DISPATCH_INDEX], statements
+        # The owner's decision: a plain build, never CONCURRENTLY.
+        assert "CONCURRENTLY" not in body
+
+    def test_the_number_is_unique(self) -> None:
+        number = self._file().name.split("_", 1)[0]
+        assert [p.name for p in _MIGRATIONS.glob(f"{number}_*.sql")] == [self._file().name]
 
 
 class TestTheChildGrantsNothing:
