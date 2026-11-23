@@ -115,6 +115,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
     "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
     "SHARED_TOKEN",
+    # LD-8b: the member a local dev_up.sh --data prod stack signs in as. It is read
+    # only when auth is off (gateway.ts), and no chat setup may write it.
+    "DEV_SIGNED_IN_EMAIL",
     # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
     # the directory of the Microsoft app, a per-deployment decision
     # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
@@ -405,6 +408,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # capture run sets them. They choose the look and the size of a capture.
     "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
+    # WS-MDC CC-11: the visual capture of e2e/visual/cc11.visual.ts. Only a
+    # local capture run sets it. It adds the long card lots to the feed.
+    "CC11_LOTS",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
