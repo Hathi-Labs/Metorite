@@ -245,6 +245,32 @@ class TestTheScrub:
         assert said == "The model `whisper-1` does not exist"
 
 
+class TestTheKeyCheck:
+    def test_a_key_that_is_not_ascii_never_reaches_the_vendor(self, caplog):
+        """httpx raises UnicodeEncodeError for such a header, which is not an
+        httpx.HTTPError. The check answers a failed result with fixed words."""
+        caplog.set_level(logging.DEBUG)
+        sent: list[httpx.Request] = []
+
+        def _answer(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200, json={"data": []})
+
+        secret = _key("ascii") + "€"
+        key_check.set_transport(httpx.MockTransport(_answer))
+        try:
+            result = key_check.check(registry.provider("sarvam"), secret)
+        finally:
+            key_check.set_transport(None)
+        assert result.ok is False
+        assert result.status is None
+        assert result.said == (
+            "the key holds a character that is not ASCII, so no provider takes it")
+        assert sent == []
+        assert "€" not in caplog.text
+        assert secret[6:18] not in caplog.text
+
+
 class TestTheMedia:
     def test_the_clip_is_a_three_second_pcm_wav(self):
         clip = try_media.try_clip()
@@ -658,6 +684,27 @@ class TestConnect:
         # The check went to the registry host, once.
         (request,) = vendor.requests
         assert str(request.url) == "https://api.sarvam.ai/speech-to-text"
+
+    def test_a_key_that_is_not_ascii_returns_400_and_stores_nothing(
+            self, client, rig, vendor, caplog):
+        """Before the guard, httpx raised UnicodeEncodeError and connect gave 500."""
+        caplog.set_level(logging.DEBUG)
+        headers, email = _operator(rig.db, "admin")
+        bad = _key("ascii") + "€"
+        before = _rows(rig.db, "sarvam")
+        r = client.post("/catalog/providers/sarvam/connect", headers=headers,
+                        json={"secret": bad, "label": _LABEL})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == (
+            "Metorite could not check the key, and stored nothing: the key holds a "
+            "character that is not ASCII, so no provider takes it")
+        assert _rows(rig.db, "sarvam") == before
+        assert vendor.requests == []
+        audits = _audits(rig.db, email)
+        assert [a for a, _ in audits] == ["refused"]
+        _assert_no_key(r.text, [bad])
+        _assert_no_key(json.dumps([d for _, d in audits]), [bad])
+        _assert_no_key(caplog.text, [bad])
 
     def test_a_good_key_is_stored_and_the_models_come_back(self, client, rig, vendor, caplog):
         caplog.set_level(logging.DEBUG)

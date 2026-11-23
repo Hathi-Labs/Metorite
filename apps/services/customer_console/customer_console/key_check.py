@@ -135,7 +135,18 @@ def check(entry: RegistryProvider, secret: str) -> KeyResult:
     It never raises for a vendor fault: a timeout, a dropped connection and
     a refusal each give ``ok=False``. The caller runs it outside any
     database transaction, because it waits on the network.
+
+    🔴 **A key that is not ASCII never reaches the vendor.** An HTTP header
+    cannot carry it, and httpx raises ``UnicodeEncodeError``, which is not an
+    ``httpx.HTTPError``. Before this guard, connect answered 500 and the
+    error text named a character of the key. The words here are fixed.
     """
+    if not secret.isascii():
+        _log.warning("key_check.not_ascii", extra={"key_provider": entry.id})
+        return KeyResult(
+            False, None, "the key holds a character that is not ASCII, so no provider takes it",
+            None,
+        )
     try:
         return asyncio.run(asyncio.wait_for(_check(entry, secret), LIMIT_SECONDS))
     except TimeoutError:
