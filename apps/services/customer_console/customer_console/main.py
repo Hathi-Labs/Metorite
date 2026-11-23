@@ -3326,6 +3326,7 @@ def _write_chain(
     staff: StaffIdentity,
     audit_extra: dict[str, Any] | None = None,
     guard: Collection[str] = (),
+    audit_date: bool = False,
 ) -> datetime:
     """Write one whole chain on the caller's connection. **INSERT only** (MS-1).
 
@@ -3340,6 +3341,10 @@ def _write_chain(
     *guard* names the steps this write adds (MS-2). Each one must pass rules
     H1 to H4 with its declared verb, or the write is a 400 that names the
     fix. It returns the ``effective_from`` it wrote, which Undo compares.
+
+    *audit_date* puts that ``effective_from`` in the audit row too. Adopt
+    sets it, so Undo can prove that the newest write of a chain was an adopt
+    (PR 2818 review, P3a). The other callers keep their row as it was.
     """
     if not _task_exists(conn, task):
         raise HTTPException(status_code=400, detail=f"unknown task {task!r}")
@@ -3427,13 +3432,10 @@ def _write_chain(
             ),
         ) from None
 
-    _audit(
-        conn,
-        None,
-        "catalog.binding",
-        {"tier": tier, "task": task, "chain": chain, **(audit_extra or {})},
-        actor=staff.actor,
-    )
+    detail: dict[str, Any] = {"tier": tier, "task": task, "chain": chain, **(audit_extra or {})}
+    if audit_date:
+        detail["effective_from"] = _iso(eff)
+    _audit(conn, None, "catalog.binding", detail, actor=staff.actor)
     return eff
 
 
@@ -3762,6 +3764,12 @@ _TRY_CHAT_MAX_TOKENS = 200
 #: The most unknown live models a connect lists.
 _UNKNOWN_MAX = 200
 
+#: The most Tries one adopt runs (PR 2818 review, P2a). Each Try is a paid
+#: vendor call. Six covers every model that one provider offers today, for
+#: Chat and Image understanding both (Anthropic). A larger pick is a 400
+#: before any declare, and the dry run refuses it too.
+_ADOPT_TRIES_MAX = 6
+
 
 class _VendorWords(Exception):
     """The raw words of a key check, so `_try_provider_text` can scrub them."""
@@ -4023,13 +4031,17 @@ def _try_one(model: str, job: str, invocation: str, *, staff: StaffIdentity) -> 
     with get_engine().begin() as conn:
         credentials = _chain_credentials(conn, [step], org_id=None)
     cred = credentials.get(prefix)
-    result: dict[str, Any] = {"job": job, "model": model, "ok": False, "said": "", "error": None}
+    result: dict[str, Any] = {
+        "job": job, "model": model, "ok": False, "said": "", "error": None,
+        "usage": None, "vendor_cost_usd": None,
+    }
     if cred is None:
         result["error"] = f"No platform key sits under '{prefix}'. Connect the provider first"
         return result
 
     action = _TRY_ACTIONS[job]
     request_id = f"try-{uuid.uuid4().hex}"
+    started_at = datetime.now(UTC)
     clock = time.perf_counter()
     try:
         response, _ = asyncio.run(
@@ -4057,18 +4069,81 @@ def _try_one(model: str, job: str, invocation: str, *, staff: StaffIdentity) -> 
         result["error"] = words or status
         return result
 
+    latency_ms = round((time.perf_counter() - clock) * 1000)
     said = _transcript_of(response) if job == TRANSCRIBE_TASK else _completion_text(response)
+    # PR 2818 review, P2a: the Try runs with its cost shown (owner call 3).
+    # 🔴 The served row goes in whatever the usage read does: the measure
+    # never raises, and a field it cannot read is null.
+    usage, cost = _try_one_usage(model, job, response, started_at)
     _audit_try(action, staff.actor, {
         "tier": None,
         "model": model,
         "via": "adopt",
         "outcome": "served",
         "upstream_status": 200,
-        "latency_ms": round((time.perf_counter() - clock) * 1000),
+        **{k: (str(v) if isinstance(v, Decimal) else v) for k, v in usage.items()},
+        "vendor_cost_usd": None if cost is None else str(cost),
+        "latency_ms": latency_ms,
     })
     result["ok"] = True
     result["said"] = " ".join(said.split())[:_TRY_SAID_MAX]
+    result["usage"] = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in usage.items()}
+    result["vendor_cost_usd"] = None if cost is None else str(cost)
     return result
+
+
+def _try_one_usage(
+    model: str, job: str, response: Any, started_at: datetime
+) -> tuple[dict[str, Any], Decimal | None]:
+    """What one served adopt Try used, and what it cost. **Never raises.**
+
+    Chat and Image understanding read the tokens the vendor reported. The
+    cost follows ``try_vision``: the vendor's own figure first, then the
+    profile prices. Speech to text records the seconds of the clip, as the
+    VOX-4 transcribe Try does, and its cost stays None. None means nobody
+    measured it, and never zero (D-AI-7 rule 3).
+    """
+    if job == TRANSCRIBE_TASK:
+        seconds: Decimal | None = None
+        try:
+            seconds = wav_seconds(try_media.try_clip())
+        except Exception:
+            _log.exception("catalog.adopt_try_seconds_failed")
+        return {"seconds": seconds}, None
+    usage: ExtractedUsage | None = None
+    cost: Decimal | None = None
+    try:
+        usage = router_mod.usage_from_response(response)
+    except Exception:
+        _log.exception("catalog.adopt_try_usage_failed")
+    if usage is not None:
+        try:
+            cost = (
+                usage.vendor_reported_cost_usd
+                if usage.vendor_reported_cost_usd is not None
+                else _try_cost_from_profile(model, usage, started_at)
+            )
+        except Exception:
+            _log.exception("catalog.adopt_try_cost_failed")
+    return {
+        "input_tokens": None if usage is None else usage.prompt_tokens,
+        "output_tokens": None if usage is None else usage.completion_tokens,
+    }, cost
+
+
+def _tries_cost(tries: list[dict[str, Any]]) -> dict[str, Any]:
+    """The cost of all the Tries of one adopt, for the answer (P2a).
+
+    ``tries_cost_usd`` sums the costs that are known, or is None when no
+    served Try has one. ``tries_unpriced`` counts the served Tries whose
+    cost is unknown, so a partial sum never reads as the whole.
+    """
+    known = [Decimal(t["vendor_cost_usd"]) for t in tries if t["vendor_cost_usd"] is not None]
+    unpriced = sum(1 for t in tries if t["ok"] and t["vendor_cost_usd"] is None)
+    return {
+        "tries_cost_usd": str(sum(known, Decimal(0))) if known else None,
+        "tries_unpriced": unpriced,
+    }
 
 
 @dataclass(frozen=True)
@@ -4174,6 +4249,7 @@ def _adopt_bind(
                 staff=staff,
                 audit_extra={"via": "adopt", "was": current},
                 guard=new,
+                audit_date=True,
             )
             _, after = _working_window(conn, tier=tier, task=task, models=chain)
             pushed = _pushed_out(before, after, working)
@@ -4211,6 +4287,16 @@ def adopt_models(provider_id: str, req: AdoptRequest, staff: Operator) -> dict[s
     today = datetime.now(UTC).date()
     with get_engine().begin() as conn:
         jobs, skipped = _adopt_jobs(conn, entry, req.models, today)
+        # P2a: each Try is a paid vendor call. The cap holds before any
+        # declare, and the dry run answers the same 400.
+        if len(jobs) > _ADOPT_TRIES_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"One adopt runs at most {_ADOPT_TRIES_MAX} Tries, and this one "
+                    f"needs {len(jobs)}. Pick fewer models, or adopt them in two steps"
+                ),
+            )
         plan: dict[tuple[str, str], list[str]] = {}
         for job in jobs:
             for tier in job.tiers:
@@ -4228,11 +4314,17 @@ def adopt_models(provider_id: str, req: AdoptRequest, staff: Operator) -> dict[s
         for j in jobs
     ]
     if req.dry_run:
+        # P2a: the dry run calls no vendor, so it has no measured cost. Each
+        # Try shows the registry's price hint before the button.
         return {
             "provider": entry.id,
             "dry_run": True,
             "declared": declares,
-            "tries": [{"job": j.model.job, "model": j.model.id} for j in jobs],
+            "tries": [
+                {"job": j.model.job, "model": j.model.id, "price_hint": j.model.price_hint}
+                for j in jobs
+            ],
+            "tries_max": _ADOPT_TRIES_MAX,
             "chains": preview,
             "skipped": skipped,
         }
@@ -4281,6 +4373,7 @@ def adopt_models(provider_id: str, req: AdoptRequest, staff: Operator) -> dict[s
         "dry_run": False,
         "declared": declares,
         "tries": tries,
+        **_tries_cost(tries),
         "bound": bound,
         "skipped": skipped,
         "undo": [
@@ -4298,6 +4391,11 @@ def undo_adopt(req: UndoRequest, staff: Operator) -> dict[str, Any]:
     newest set of the chain, staged sets included, still carries the date
     the adopt wrote. A later write moved it, so Undo answers 409 and changes
     nothing. All named chains or none.
+
+    🔴 **An adopt only** (PR 2818 review, P3a). The newest set must carry the
+    date of an adopt's own ``catalog.binding`` row
+    (:func:`store.adopt_wrote_chain`). A bind, a fix or an earlier Undo is
+    a 409 with fixed words.
 
     The old chain goes back as a NEW set (§6A.5, insert only). A chain that
     had no set, or a tombstone, gets a tombstone. A declare stays: Undo
@@ -4323,6 +4421,17 @@ def undo_adopt(req: UndoRequest, staff: Operator) -> dict[str, Any]:
                         detail=(
                             f"{tier} changed after the adopt, so Undo changes nothing. "
                             "Read the tier again"
+                        ),
+                    )
+                # P3a (PR 2818 review): the date alone names ANY chain write.
+                # Undo reverts an adopt only, so the adopt's own audit row must
+                # carry this date.
+                if not store.adopt_wrote_chain(conn, tier=tier, task=task, at=adopted):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"The newest change to {tier} is not an adopt, so Undo "
+                            "changes nothing. Read the tier again"
                         ),
                     )
                 was = store.in_force_chain(conn, tier=tier, task=task)

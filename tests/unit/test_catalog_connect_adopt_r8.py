@@ -32,6 +32,7 @@ import pathlib
 import textwrap
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -77,11 +78,14 @@ HAIKU = "anthropic/claude-haiku-5-5"
 NANO = "assemblyai/nano"
 SARVAM_ALIAS = "sarvam.ai/saaras:v4"
 
+#: A made-up video model. Video has no row in the jobs table (P2b).
+VIDEO = "openai/ms2-video-fence"
+
 #: The models whose capability rows this suite may write. Each is restored.
 _TOUCHED_MODELS = (TRANSLIT, AAI_EN, AAI_HI_EN, GROQ_STT, HAIKU, NANO, SARVAM_ALIAS,
-                   "gemini/gemini-2.5-flash", "openai/whisper-1")
+                   "gemini/gemini-2.5-flash", "openai/whisper-1", VIDEO)
 #: The tiers whose chains this suite may write. Each new set is removed.
-_TOUCHED_TIERS = ("tier-stt", "tier-vision", "tier-fast")
+_TOUCHED_TIERS = ("tier-stt", "tier-vision", "tier-fast", "tier-video")
 
 
 def _key(name: str) -> str:
@@ -138,6 +142,13 @@ class TestTheGuards:
     def test_no_key_never_refuses_a_declare(self):
         """H8 is a health rule only. A key can come after the declare."""
         assert health.pair_refusal("mistral/mistral-large-latest", "chat", "acompletion") is None
+
+    @pytest.mark.parametrize("task", ["video", "music"])
+    @pytest.mark.parametrize("verb", ["acompletion", "aimage_generation", "aspeech"])
+    def test_a_task_the_jobs_table_does_not_hold_is_not_judged(self, task, verb):
+        """PR 2818 review, P2b. Before, H1 refused every verb on these tasks."""
+        assert task not in registry.JOB_VERBS
+        assert health.pair_refusal(VIDEO, task, verb) is None
 
 
 class TestRuleH7:
@@ -270,6 +281,39 @@ class TestTheKeyCheck:
         assert "€" not in caplog.text
         assert secret[6:18] not in caplog.text
 
+    @pytest.mark.parametrize("bad", ["\x00", "\x1b", "\x7f"])
+    def test_a_key_with_a_control_character_never_reaches_the_vendor(self, caplog, bad):
+        """PR 2818 review, P3b. NUL, ESC and DEL pass the whitespace rule."""
+        caplog.set_level(logging.DEBUG)
+        sent: list[httpx.Request] = []
+
+        def _answer(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200, json={"data": []})
+
+        secret = _key("ctl")[:20] + bad + _key("ctl")[:12]
+        key_check.set_transport(httpx.MockTransport(_answer))
+        try:
+            result = key_check.check(registry.provider("openai"), secret)
+        finally:
+            key_check.set_transport(None)
+        assert result == key_check.KeyResult(
+            False, None, "the key holds a control character, so no provider takes it", None)
+        assert sent == []
+        assert secret[6:18] not in caplog.text
+
+    def test_the_deepgram_check_refuses_a_bad_key(self):
+        """P1, at the key check: the project list reads the key."""
+        vendor = _Vendor()
+        key_check.set_transport(httpx.MockTransport(vendor.check))
+        try:
+            result = key_check.check(registry.provider("deepgram"), _key("dg"))
+        finally:
+            key_check.set_transport(None)
+        assert result.ok is False and result.status == 401
+        (request,) = vendor.requests
+        assert str(request.url) == "https://api.deepgram.com/v1/projects"
+
 
 class TestTheMedia:
     def test_the_clip_is_a_three_second_pcm_wav(self):
@@ -364,6 +408,45 @@ class TestTheSource:
         called = _names_called(main._try_one)
         assert "resolve_chain" not in called
         assert "_try_chain" not in called
+
+    def test_the_tries_cap_fits_every_provider_today(self):
+        """P2a. The cap bounds spend. It must not refuse a full adopt of one
+        provider's offered models, for every job that has a Try."""
+        from customer_console import main
+
+        today = date(2026, 11, 23)
+        for entry in registry.PROVIDERS:
+            offered = [
+                m for m in entry.models
+                if m.job in registry.TRY_JOBS and registry.offer_refusal(m, today) is None
+            ]
+            assert len(offered) <= main._ADOPT_TRIES_MAX, entry.id
+
+    def test_the_usage_read_never_raises(self, monkeypatch):
+        """P2a. A served Try writes its row even when the usage read fails."""
+        from customer_console import main
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("usage shape")
+
+        monkeypatch.setattr(main.router_mod, "usage_from_response", _boom)
+        usage, cost = main._try_one_usage(HAIKU, "chat", {}, datetime.now(UTC))
+        assert usage == {"input_tokens": None, "output_tokens": None}
+        assert cost is None
+        seconds, cost = main._try_one_usage(TRANSLIT, "transcribe", {}, datetime.now(UTC))
+        assert seconds["seconds"] == try_media.CLIP_SECONDS
+        assert cost is None
+
+    def test_the_tries_cost_is_null_when_nothing_is_priced(self):
+        from customer_console import main
+
+        assert main._tries_cost([]) == {"tries_cost_usd": None, "tries_unpriced": 0}
+        tries = [
+            {"ok": True, "vendor_cost_usd": "0.00001"},
+            {"ok": True, "vendor_cost_usd": None},
+            {"ok": False, "vendor_cost_usd": None},
+        ]
+        assert main._tries_cost(tries) == {"tries_cost_usd": "0.00001", "tries_unpriced": 1}
 
 
 class TestARefusalNeedsNoDatabase:
@@ -470,6 +553,15 @@ class _Vendor:
                     {"id": "claude-haiku-5-5"}, {"id": "claude-sonnet-5-5"},
                     {"id": "claude-next-9"}]})
             return httpx.Response(401, json={"error": {"message": f"invalid x-api-key {key}"}})
+        if host == "api.deepgram.com":
+            # As the vendor does: the model list is public and answers 200 for
+            # ANY key. Only the project list reads the key (PR 2818, P1).
+            if request.url.path == "/v1/models":
+                return httpx.Response(200, json={"stt": [{"name": "nova-3"}], "tts": []})
+            key = request.headers.get("authorization", "").removeprefix("Token ")
+            if request.url.path == "/v1/projects" and key in self.good:
+                return httpx.Response(200, json={"projects": []})
+            return httpx.Response(401, json={"err_msg": "Invalid credentials."})
         return httpx.Response(404, json={"message": "no such host in this test"})
 
     async def provider_call(self, **kwargs):
@@ -524,6 +616,9 @@ class _Rig:
         self.caps: dict[tuple[str, str], tuple[str, bool] | None] = {}
         self.orgs: list[str] = []
         self.secrets: list[str] = []
+        #: Each profile a test priced, with the rates it held before (None
+        #: when it had no row).
+        self.profiles: list[tuple[str, tuple | None]] = []
         with db.begin() as c:
             # Only this test's platform keys are live while it runs.
             self.revoked = [str(r[0]) for r in c.execute(text(
@@ -554,6 +649,24 @@ class _Rig:
                 "VALUES (:m, :t, :v, FALSE) ON CONFLICT (model, task) DO UPDATE "
                 "SET invocation = EXCLUDED.invocation"), {"m": model, "t": task, "v": verb})
 
+    def profile(self, model: str, *, input_per_1m: str, output_per_1m: str) -> None:
+        """Price one model in ``model_profile``. ``clean`` puts the old rates back."""
+        with self.db.begin() as c:
+            old = c.execute(text(
+                "SELECT vendor_input_per_1m_usd, vendor_output_per_1m_usd "
+                "FROM model_profile WHERE model = :m"), {"m": model}).first()
+            self.profiles.append((model, None if old is None else (old[0], old[1])))
+            if old is None:
+                c.execute(text(
+                    "INSERT INTO model_profile (model, vendor_input_per_1m_usd, "
+                    " vendor_output_per_1m_usd, context_window) VALUES (:m, :i, :o, 200000)"),
+                    {"m": model, "i": input_per_1m, "o": output_per_1m})
+            else:
+                c.execute(text(
+                    "UPDATE model_profile SET vendor_input_per_1m_usd = :i, "
+                    " vendor_output_per_1m_usd = :o WHERE model = :m"),
+                    {"m": model, "i": input_per_1m, "o": output_per_1m})
+
     def chain(self, tier: str, task: str, models: list[str | None], *, ago: int = 1) -> None:
         when = datetime.now(UTC) - timedelta(seconds=ago)
         with self.db.begin() as c:
@@ -574,6 +687,14 @@ class _Rig:
 
     def clean(self) -> None:
         with self.db.begin() as c:
+            for model, old in reversed(self.profiles):
+                if old is None:
+                    c.execute(text("DELETE FROM model_profile WHERE model = :m"), {"m": model})
+                else:
+                    c.execute(text(
+                        "UPDATE model_profile SET vendor_input_per_1m_usd = :i, "
+                        " vendor_output_per_1m_usd = :o WHERE model = :m"),
+                        {"m": model, "i": old[0], "o": old[1]})
             for tier in _TOUCHED_TIERS:
                 c.execute(text(
                     "DELETE FROM tier_binding WHERE tier = :t AND effective_from >= :f"),
@@ -705,6 +826,44 @@ class TestConnect:
         _assert_no_key(r.text, [bad])
         _assert_no_key(json.dumps([d for _, d in audits]), [bad])
         _assert_no_key(caplog.text, [bad])
+
+    def test_a_key_with_a_nul_returns_400_and_stores_nothing(self, client, rig, vendor, caplog):
+        """PR 2818 review, P3b, through the route."""
+        caplog.set_level(logging.DEBUG)
+        headers, email = _operator(rig.db, "admin")
+        bad = _key("nul")[:20] + "\u0000" + _key("nul")[:12]
+        before = _rows(rig.db, "sarvam")
+        r = client.post("/catalog/providers/sarvam/connect", headers=headers,
+                        json={"secret": bad, "label": _LABEL})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == (
+            "Metorite could not check the key, and stored nothing: the key holds a "
+            "control character, so no provider takes it")
+        assert _rows(rig.db, "sarvam") == before
+        assert vendor.requests == []
+        assert [a for a, _ in _audits(rig.db, email)] == ["refused"]
+        _assert_no_key(r.text + caplog.text, [bad])
+
+    def test_a_bad_deepgram_key_never_replaces_the_live_one(self, client, rig, vendor, caplog):
+        """PR 2818 review, P1. The old check read the public model list, which
+        answers 200 for any key. Connect then stored the bad key and revoked
+        the live one."""
+        caplog.set_level(logging.DEBUG)
+        live = _key("dglive")
+        vendor.good.add(live)
+        live_id = rig.key("deepgram", live)
+        headers, _ = _operator(rig.db, "admin")
+        bad = _key("dgbad")
+        r = client.post("/catalog/providers/deepgram/connect", headers=headers,
+                        json={"secret": bad, "label": _LABEL})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"].startswith("Deepgram did not accept the key: ")
+        assert _live(rig.db, "deepgram") == [live_id]
+        with rig.db.begin() as c:
+            assert router_mod.provider_credential(c, provider="deepgram").secret == live
+        (request,) = vendor.requests
+        assert str(request.url) == "https://api.deepgram.com/v1/projects"
+        _assert_no_key(r.text + caplog.text, [bad, live])
 
     def test_a_good_key_is_stored_and_the_models_come_back(self, client, rig, vendor, caplog):
         caplog.set_level(logging.DEBUG)
@@ -851,7 +1010,12 @@ class TestAdopt:
             {"model": TRANSLIT, "job": "transcribe", "invocation": "native_sarvam"}]
         (tried,) = body["tries"]
         assert tried == {"job": "transcribe", "model": TRANSLIT, "ok": True,
-                         "said": "namaste duniya, yeh ek test hai", "error": None}
+                         "said": "namaste duniya, yeh ek test hai", "error": None,
+                         "usage": {"seconds": float(try_media.CLIP_SECONDS)},
+                         "vendor_cost_usd": None}
+        # P2a: Speech to text records its seconds, and its cost is unknown.
+        assert body["tries_cost_usd"] is None
+        assert body["tries_unpriced"] == 1
         (bound,) = body["bound"]
         assert bound["was"] == [AAI_EN]
         assert bound["chain"] == [TRANSLIT, AAI_EN]
@@ -874,8 +1038,12 @@ class TestAdopt:
         audits = dict(_audits(rig.db, email))
         assert audits["catalog.transcribe_try"]["via"] == "adopt"
         assert audits["catalog.transcribe_try"]["outcome"] == "served"
+        assert float(audits["catalog.transcribe_try"]["seconds"]) == try_media.CLIP_SECONDS
+        assert audits["catalog.transcribe_try"]["vendor_cost_usd"] is None
         assert audits["catalog.binding"]["via"] == "adopt"
         assert audits["catalog.binding"]["was"] == [AAI_EN]
+        # P3a: the adopt's row carries the date it wrote, which Undo reads.
+        assert audits["catalog.binding"]["effective_from"] == bound["effective_from"]
         with rig.db.begin() as c:
             assert c.execute(text("SELECT count(*) FROM usage_event")).scalar_one() == usage
         _assert_no_key(r.text + json.dumps(list(audits.values())) + caplog.text, rig.secrets)
@@ -971,7 +1139,10 @@ class TestAdopt:
         assert body["dry_run"] is True
         assert body["chains"] == [{"tier": "tier-stt", "task": "transcribe",
                                    "was": [AAI_EN], "chain": [TRANSLIT, AAI_EN]}]
-        assert body["tries"] == [{"job": "transcribe", "model": TRANSLIT}]
+        # P2a: no Try runs, so each one shows the registry's price hint.
+        assert body["tries"] == [{"job": "transcribe", "model": TRANSLIT,
+                                  "price_hint": "about INR 0.49 per minute"}]
+        assert body["tries_max"] == 6
         assert vendor.calls == []
         assert _audits(rig.db, email) == []
         assert _chain(rig.db, "tier-stt", "transcribe") == [AAI_EN]
@@ -997,6 +1168,72 @@ class TestAdopt:
         assert r.status_code == 400, r.text
         assert words in r.json()["detail"]
         assert vendor.calls == []
+
+    def test_a_chat_and_a_vision_try_record_tokens_and_cost(self, client, rig, vendor, caplog):
+        """PR 2818 review, P2a: the Try runs with its cost shown (owner call 3).
+        The fake vendor reports 9 tokens in and 7 out. At $1 and $5 for each
+        million, one Try costs 9 * 1 / 1e6 + 7 * 5 / 1e6 = $0.000044."""
+        caplog.set_level(logging.DEBUG)
+        rig.key("anthropic", _key("ant"))
+        rig.profile(HAIKU, input_per_1m="1.00", output_per_1m="5.00")
+        rig.chain("tier-fast", "chat", [None], ago=3)
+        rig.chain("tier-vision", "vision", [None], ago=3)
+        headers, email = _operator(rig.db, "admin")
+        r = client.post("/catalog/providers/anthropic/adopt", headers=headers, json={
+            "models": [{"id": HAIKU, "tiers": ["tier-fast", "tier-vision"]}]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        tries = {t["job"]: t for t in body["tries"]}
+        assert set(tries) == {"chat", "vision"}
+        for tried in tries.values():
+            assert tried["ok"] is True
+            assert tried["usage"] == {"input_tokens": 9, "output_tokens": 7}
+            assert Decimal(tried["vendor_cost_usd"]) == Decimal("0.000044")
+        assert Decimal(body["tries_cost_usd"]) == Decimal("0.000088")
+        assert body["tries_unpriced"] == 0
+        rows = dict(_audits(rig.db, email))
+        for action in ("catalog.chat_try", "catalog.vision_try"):
+            row = rows[action]
+            assert row["via"] == "adopt" and row["outcome"] == "served"
+            assert (row["input_tokens"], row["output_tokens"]) == (9, 7)
+            assert Decimal(row["vendor_cost_usd"]) == Decimal("0.000044")
+        _assert_no_key(r.text + json.dumps(list(rows.values())) + caplog.text, rig.secrets)
+
+    def test_an_unpriced_model_shows_a_null_cost_never_zero(self, client, rig, vendor):
+        rig.key("anthropic", _key("ant"))
+        rig.chain("tier-fast", "chat", [None], ago=3)
+        headers, email = _operator(rig.db, "admin")
+        r = client.post("/catalog/providers/anthropic/adopt", headers=headers, json={
+            "models": [{"id": HAIKU, "tiers": ["tier-fast"]}]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        (tried,) = body["tries"]
+        assert tried["usage"] == {"input_tokens": 9, "output_tokens": 7}
+        assert tried["vendor_cost_usd"] is None
+        assert body["tries_cost_usd"] is None and body["tries_unpriced"] == 1
+        assert dict(_audits(rig.db, email))["catalog.chat_try"]["vendor_cost_usd"] is None
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_more_tries_than_the_cap_is_a_400_before_any_write(
+        self, client, rig, vendor, monkeypatch, dry_run
+    ):
+        """P2a: the cap holds before any declare, and in the dry run too."""
+        from customer_console import main
+
+        monkeypatch.setattr(main, "_ADOPT_TRIES_MAX", 1)
+        rig.key("anthropic", _key("ant"))
+        headers, _ = _operator(rig.db, "admin")
+        r = client.post("/catalog/providers/anthropic/adopt", headers=headers, json={
+            "models": [{"id": HAIKU, "tiers": ["tier-fast", "tier-vision"]}],
+            "dry_run": dry_run})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == (
+            "One adopt runs at most 1 Tries, and this one needs 2. Pick fewer models, "
+            "or adopt them in two steps")
+        assert vendor.calls == []
+        with rig.db.begin() as c:
+            assert c.execute(text("SELECT count(*) FROM model_capability WHERE model = :m"),
+                             {"m": HAIKU}).scalar_one() == 0
 
     def test_a_lock_wait_is_a_409_and_binds_nothing(self, client, rig, vendor, monkeypatch):
         from customer_console import main
@@ -1069,6 +1306,45 @@ class TestUndo:
         assert r.status_code == 409, r.text
         assert "changed after the adopt" in r.json()["detail"]
         assert _chain(rig.db, "tier-stt", "transcribe") == [AAI_EN, TRANSLIT]
+
+    def test_undo_refuses_the_date_of_a_plain_bind(self, client, rig, vendor):
+        """PR 2818 review, P3a. The date alone names ANY chain write. Undo
+        reverts an adopt only."""
+        from customer_console import store
+
+        _seed_stt(rig, chain=[AAI_EN])
+        rig.key("sarvam", _key("sv"))
+        rig.cap(TRANSLIT, "transcribe", "native_sarvam")
+        headers, _ = _operator(rig.db, "admin")
+        bind = client.post("/catalog/bindings", headers=OP, json={
+            "tier": "tier-stt", "task": "transcribe", "models": [TRANSLIT, AAI_EN]})
+        assert bind.status_code == 200, bind.text
+        with rig.db.begin() as c:
+            when = store.newest_chain_date(c, tier="tier-stt", task="transcribe")
+        r = client.post("/catalog/adopt/undo", headers=headers, json={"chains": [
+            {"tier": "tier-stt", "task": "transcribe", "effective_from": when.isoformat()}]})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == (
+            "The newest change to tier-stt is not an adopt, so Undo changes nothing. "
+            "Read the tier again")
+        assert _chain(rig.db, "tier-stt", "transcribe") == [TRANSLIT, AAI_EN]
+
+    def test_undo_refuses_the_date_of_its_own_undo(self, client, rig, vendor):
+        """P3a: an Undo is not an adopt, so the date it returns undoes nothing."""
+        _seed_stt(rig, chain=[AAI_EN])
+        rig.key("sarvam", _key("sv"))
+        headers, _ = _operator(rig.db, "admin")
+        adopted = _adopt(client, headers)
+        first = client.post("/catalog/adopt/undo", headers=headers,
+                            json={"chains": adopted["undo"]})
+        assert first.status_code == 200, first.text
+        (undone,) = first.json()["undone"]
+        r = client.post("/catalog/adopt/undo", headers=headers, json={"chains": [
+            {"tier": "tier-stt", "task": "transcribe",
+             "effective_from": undone["effective_from"]}]})
+        assert r.status_code == 409, r.text
+        assert "is not an adopt" in r.json()["detail"]
+        assert _chain(rig.db, "tier-stt", "transcribe") == [AAI_EN]
 
     def test_undo_of_a_first_bind_takes_the_tier_off_the_air(self, client, rig, vendor):
         rig.key("sarvam", _key("sv"))
@@ -1239,6 +1515,18 @@ class TestTheGuardsOnTheRoutes:
             "tier": "tier-stt", "task": "transcribe", "models": [AAI_EN, NANO]})
         assert r.status_code == 200, r.text
         assert _chain(rig.db, "tier-stt", "transcribe") == [AAI_EN, NANO]
+
+    def test_a_video_model_declares_and_binds(self, client, rig):
+        """PR 2818 review, P2b. Video has no jobs-table row, so the guards
+        leave it alone. Before, H1 refused the declare for every verb."""
+        r = client.post("/catalog/capabilities", headers=OP, json={
+            "model": VIDEO, "task": "video", "invocation": "aimage_generation"})
+        assert r.status_code == 200, r.text
+        rig.chain("tier-video", "video", [None], ago=3)
+        r = client.post("/catalog/bindings", headers=OP, json={
+            "tier": "tier-video", "task": "video", "models": [VIDEO]})
+        assert r.status_code == 200, r.text
+        assert _chain(rig.db, "tier-video", "video") == [VIDEO]
 
 
 @_DB

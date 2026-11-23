@@ -576,7 +576,14 @@ def pair_refusal(model: str, task: str, invocation: str) -> PairRefusal | None:
     and failed at the first customer call. This judges the pair by the rules
     the health list uses. H8 (no key) never refuses: the key can come later.
     The fix ignores the key rule too, because a declare is not a chain.
+
+    🔴 **A task that the jobs table does not hold is not judged** (PR 2818
+    review, P2b). ``video`` and ``music`` have no ``JOB_VERBS`` row, so rule
+    H1 refused every verb for them. The declare, the bind and the chain
+    write all call this function, so this one test covers each of them.
     """
+    if task not in registry.JOB_VERBS:
+        return None
     prefix = _prefix(model)
     diag = _diagnose(model, task, invocation, frozenset({prefix}))
     rules = [r for r in diag.rules if r in _GUARD_RULES]

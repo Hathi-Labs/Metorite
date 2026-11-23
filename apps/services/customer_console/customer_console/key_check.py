@@ -89,11 +89,6 @@ def _ids(entry: RegistryProvider, body: Any) -> frozenset[str]:
         ]
     elif shape == "elevenlabs" and isinstance(body, list):
         found = [m.get("model_id") for m in body if isinstance(m, dict)]
-    elif shape == "deepgram" and isinstance(body, dict):
-        for group in ("stt", "tts"):
-            for m in body.get(group) or []:
-                if isinstance(m, dict):
-                    found += [m.get("name"), m.get("canonical_name"), m.get("architecture")]
     return frozenset(str(i) for i in found if isinstance(i, str) and i)
 
 
@@ -140,12 +135,22 @@ def check(entry: RegistryProvider, secret: str) -> KeyResult:
     cannot carry it, and httpx raises ``UnicodeEncodeError``, which is not an
     ``httpx.HTTPError``. Before this guard, connect answered 500 and the
     error text named a character of the key. The words here are fixed.
+
+    🔴 **A key with a control character never reaches the vendor either**
+    (PR 2818 review, P3b). NUL, the other characters below 0x20 and DEL
+    (0x7f) pass the whitespace rule of ``provider_keys.check_secret``. The
+    words are fixed, and no request goes out.
     """
     if not secret.isascii():
         _log.warning("key_check.not_ascii", extra={"key_provider": entry.id})
         return KeyResult(
             False, None, "the key holds a character that is not ASCII, so no provider takes it",
             None,
+        )
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in secret):
+        _log.warning("key_check.control_character", extra={"key_provider": entry.id})
+        return KeyResult(
+            False, None, "the key holds a control character, so no provider takes it", None,
         )
     try:
         return asyncio.run(asyncio.wait_for(_check(entry, secret), LIMIT_SECONDS))

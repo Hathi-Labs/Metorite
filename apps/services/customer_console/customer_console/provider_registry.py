@@ -37,6 +37,7 @@ __all__ = [
     "JOB_LABELS",
     "JOB_VERBS",
     "PROVIDERS",
+    "PUBLIC_URLS",
     "RETIRES_WITHIN_DAYS",
     "TRY_JOBS",
     "KeyCheck",
@@ -88,6 +89,17 @@ JOB_VERBS: dict[str, frozenset[str]] = {
 #: The prefix of every native verb (``catalog.NATIVE_INVOCATION_PREFIX``).
 _NATIVE = "native_"
 
+#: Vendor addresses that answer 200 with NO key, so a key check there proves
+#: nothing. 🔴 A connect that checks a key at one of them stores a bad key,
+#: and it revokes the live key of the same provider first (PR 2818 review,
+#: P1: Deepgram ``/v1/models``). No ``KeyCheck`` may use one, without its
+#: query. The set holds the known cases only. It does not prove that every
+#: other URL needs a key. Fence: ``test_provider_registry.py``.
+PUBLIC_URLS: frozenset[str] = frozenset({
+    "https://api.deepgram.com/v1/models",
+    "https://openrouter.ai/api/v1/models",
+})
+
 
 @dataclass(frozen=True)
 class KeyCheck:
@@ -113,8 +125,7 @@ class KeyCheck:
     #: The form fields of a ``POST`` that sends the clip.
     form: tuple[tuple[str, str], ...] = ()
     #: Where a list call keeps the model ids: ``data.id`` (the OpenAI shape),
-    #: ``models.name`` (Gemini, with ``models/`` removed), ``deepgram`` or
-    #: ``elevenlabs``.
+    #: ``models.name`` (Gemini, with ``models/`` removed) or ``elevenlabs``.
     ids: str = "data.id"
 
 
@@ -367,9 +378,11 @@ PROVIDERS: tuple[RegistryProvider, ...] = (
         label="Deepgram",
         aliases=(),
         key_url="https://console.deepgram.com/signup",
+        # The model list is public: it answers 200 for any key, so it proves
+        # no key (PR 2818 review, P1). The project list reads the key, as
+        # OpenRouter's key call does.
         key_check=KeyCheck(
-            "list", "https://api.deepgram.com/v1/models", verified=False,
-            auth="token", ids="deepgram",
+            "call", "https://api.deepgram.com/v1/projects", verified=False, auth="token",
         ),
         models=(
             RegistryModel("deepgram/nova-3", "Nova 3",

@@ -289,6 +289,41 @@ def test_every_key_check_and_key_page_is_https():
         assert entry.key_url.startswith("https://"), entry.id
 
 
+def test_no_key_check_uses_a_public_url():
+    """PR 2818 review, P1. A URL that answers 200 with no key proves no key.
+
+    Connect revokes the live key of the provider before it stores the new
+    one, so a check there stores a bad key and drops a good one.
+    ``PUBLIC_URLS`` names the known cases only.
+    """
+    assert "https://api.deepgram.com/v1/models" in registry.PUBLIC_URLS
+    assert "https://openrouter.ai/api/v1/models" in registry.PUBLIC_URLS
+    for entry in registry.PROVIDERS:
+        bare = entry.key_check.url.split("?", 1)[0]
+        assert bare not in registry.PUBLIC_URLS, entry.id
+
+
+def test_deepgram_checks_the_key_at_the_project_list():
+    """P1: Deepgram's model list is public. Its project list reads the key."""
+    check = registry.provider("deepgram").key_check
+    assert check.url == "https://api.deepgram.com/v1/projects"
+    assert check.kind == "call"
+    assert check.auth == "token"
+    assert check.method == "GET"
+
+
+def test_sarvam_checks_the_key_with_a_paid_call():
+    """P1 asked: is the Sarvam check open too? It sends the clip to the
+    speech handler's host with the key header, a call that bills the key.
+    No list call exists for Sarvam, and the entry carries ``no_list``."""
+    entry = registry.provider("sarvam")
+    check = entry.key_check
+    assert check.url == f"{stt_sarvam.SARVAM_API_BASE}/speech-to-text"
+    assert check.method == "POST"
+    assert check.auth == "header:api-subscription-key"
+    assert entry.no_list is True
+
+
 def test_the_module_makes_no_network_call():
     src = SRC.read_text(encoding="utf-8")
     for forbidden in ("import httpx", "import requests", "urllib.request", "socket"):

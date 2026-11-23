@@ -4818,6 +4818,39 @@ def newest_chain_date(conn: Connection, *, tier: str, task: str) -> datetime | N
     ).scalar()
 
 
+def adopt_wrote_chain(conn: Connection, *, tier: str, task: str, at: datetime) -> bool:
+    """Did an adopt write the set of one chain dated *at*? (PR 2818, P3a)
+
+    Adopt's ``catalog.binding`` row carries ``via: adopt`` and the
+    ``effective_from`` it wrote (``main._write_chain``, ``audit_date``). No
+    other caller writes that date into the row. The match is on the instant,
+    as ``timestamptz``, so the zone of the string does not matter. The rows
+    are platform rows (``organization_id IS NULL``), because a chain has no
+    org.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT 1 FROM control_audit
+             WHERE action = 'catalog.binding'
+               AND organization_id IS NULL
+               AND detail->>'via' = 'adopt'
+               AND detail->>'tier' = :tier
+               AND detail->>'task' = :task
+               -- The CASE casts an adopt row's date only. Postgres may test
+               -- the other clauses in any order, and another action may hold
+               -- a value that is not a timestamp under this key.
+               AND CASE WHEN action = 'catalog.binding' AND detail->>'via' = 'adopt'
+                        THEN CAST(detail->>'effective_from' AS timestamptz)
+                   END = :at
+             LIMIT 1
+            """
+        ),
+        {"tier": tier, "task": task, "at": at},
+    ).first()
+    return row is not None
+
+
 def chain_before(conn: Connection, *, tier: str, task: str, before: datetime) -> list[str]:
     """The models of the newest set dated before *before*, in rank order.
 
