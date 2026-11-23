@@ -611,7 +611,7 @@ def _sentence(row: dict[str, Any]) -> str:
     title = str(row.get("task_title") or "").strip() or "a task"
     task = f"#{row['task_number']} {title}" if row.get("task_number") else title
     verb = _VERB.get(str(row.get("kind") or ""), "updated")
-    return f"{_who(row.get('actor'))} {verb} {task}"
+    return f"{row.get('actor_name') or _who(row.get('actor'))} {verb} {task}"
 
 
 async def _projects(user: UserContext) -> Found:
@@ -683,7 +683,9 @@ def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
             signal_id=f"tasks:{task_id}", app="projects", kind="notification",
             entity=entity, title=entity["label"],
             facts={"notification": str(reason.get("kind") or ""),
-                   "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
+                   # Task 1574: the directory name, as the task panel shows it.
+                   "who": reason.get("actor_name") or _who(reason.get("actor")),
+                   "excerpt": reason.get("excerpt"),
                    "at": _iso(reason.get("created_at")), "note_ids": ids,
                    "unread": len(ids),
                    # The newest note, which may not be the reason. The state

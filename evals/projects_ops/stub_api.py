@@ -577,6 +577,10 @@ class OpsStub:
         return rows
 
     def list_tasks(self, q: dict[str, str]) -> dict[str, Any]:
+        # H-254: the subtask count reads `parent_task_id` + `include_descendants` once.
+        # The dataset has no subtasks (its `/relations` answers none), so answer none.
+        if q.get("include_descendants") == "true":
+            return {"rows": [], "total": 0}
         rows = self._matching(q)
         size = max(1, min(50, int(q.get("page_size") or 25)))
         page = max(1, int(q.get("page") or 1))

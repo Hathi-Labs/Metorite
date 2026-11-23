@@ -6,7 +6,7 @@
  * then draws nothing, so `fetchBrief` answers `null` for it. Any other
  * failure throws, and the card draws nothing and logs once.
  *
- * Pure, so node-env vitest can hold it. Fence: `briefCard.test.ts`.
+ * Pure, so node-env vitest can hold it. Fence: `briefCardModel.test.ts`.
  */
 
 export const BRIEF_KEY = "/api/brief/today?kind=brief";
