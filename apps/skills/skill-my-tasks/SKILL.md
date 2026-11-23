@@ -34,6 +34,8 @@ The fence is `tests/unit/test_skill_task_lens.py`.
 | `my_tasks_get_calendar_settings`, `my_tasks_update_calendar_settings` | `/tasks/settings` (calendar fields only) |
 | `my_tasks_start_my_day`, `my_tasks_close_my_day` | `GET /tasks/calendar/day-summary` and `/projects/my/inbox`, `POST /tasks/calendar/rollover-today` and `plan-today` with `apply=false` only. They write nothing |
 | `my_tasks_list_day_rules`, `my_tasks_add_day_rule`, `my_tasks_edit_day_rule`, `my_tasks_delete_day_rule` | `/tasks/settings` (`day_templates`, with `If-Match`) |
+| `my_tasks_list_calendar_connections()` | `GET /tasks/calendar/connections`. It shows no token. A 404 (sync off) gives one line (P-1a) |
+| `my_tasks_suggest_title(item_id, title)`, `my_tasks_enrich(item_id)` | `POST /tasks/items/{id}/suggest-title` and `/enrich`. Proposals only. They write nothing (P-1a) |
 
 The tools apply these five rules.
 

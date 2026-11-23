@@ -45,6 +45,20 @@ untrusted frame (§3.5). Two paths are not covered: the repo `.mcp.json` server
 of a Copilot agent, and the gateway's Studio preview client
 (`connections/mcp_tools.py`). Fence: `test_mcp_result_untrusted_frame.py`.
 
+**Task 3896 is BUILT, 2026-11-22, with no flag.** On the same path, a
+server-side error of an MCP tool reaches the model as text, not as "Error:
+Function failed." (§3.5). The text starts with `Refused:` and names the tool.
+The server's redacted words sit in one `MCP ERROR` block of the frame. The
+gate logs one `mcp.call_error` line, and a transport fault keeps its old path.
+Fence: `test_mcp_tool_error_text.py`.
+
+**Task 3924 is BUILT, 2026-11-23, with no flag.** On the same path, the model
+can call a listed tool of a server before `load_tool`, and the call runs in
+the same step (§3.5). Before, MAF answered "not found", and the chat drew a
+failed step. The call goes through the same gate, so the card, the grant and
+the error text do not change. A name that no server of the run lists keeps the
+unknown-tool answer. Fence: `test_mcp_tool_autoload.py`.
+
 **CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
 `McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
 days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
@@ -393,6 +407,33 @@ then call it". The chat needs that recipe.
   Metorite writes stays outside the frame. The frame changes no card and
   marks no session, so MCP-NC1 stays. Fences:
   `test_mcp_result_untrusted_frame.py`, `test_untrusted_frame.py`.
+- **The error of a tool is data too** (task 3896, 2026-11-22). MAF raises on
+  an `isError` answer and on a JSON-RPC error of the server. Before, the model
+  then read only "Error: Function failed.", and it could not fix its call. The
+  gate now gives text that starts with `Refused:` and names the server and the
+  tool. The server's words sit in one `MCP ERROR` block. A `Next:` line after
+  the END line tells the model to fix its arguments and try once more.
+- **What the error text removes.** The gate removes each link, key, token and
+  header value first, and then it cuts the words to 600 characters. It also
+  removes each value that the run holds for the server, in any case and after
+  a decode of the percent escapes and the escaped slashes. Those values are the
+  header values, the live OAuth bearer, the password of a Basic header, and
+  the key and the password in the server URL. A bare `Zoho-oauthtoken` scheme
+  loses its token, and the one list of `secret_shapes` holds the Zoho token
+  shape. The error marks no session, as an answer marks none.
+- **What the log holds** (fix round 1). The `mcp.call_error` line holds the
+  server, the tool, the class, the kind, the JSON-RPC code and the length of
+  the server's words. It holds no word of the server, because those can hold
+  member data and a changed form of a secret.
+- **The cap** (fix round 1). MAF stops after 3 errors in a row only when a
+  tool raises. The gate counts the errors of each tool in the run. The third
+  error gives a short stop text, and a later call of that tool in the same
+  turn does not reach the server.
+- **What keeps the old path.** A timeout, a closed or lost session, an HTTP
+  status and a fault of the connect still raise, so the model reads "Error:
+  Function failed.". The map of `failure_log.mcp_error_code` decides this. The connect
+  path of rule 9 (`_watch_status` and the two marks) does not change. Fence:
+  `test_mcp_tool_error_text.py`.
 - **What sits after the END line.** Of the lines after a server's answer,
   only the compute marker, in its exact shape, sits after the END line. With
   `TOOL_RESULT_SPILL` `on`, the spill footer sits inside the frame. This is a
@@ -400,6 +441,22 @@ then call it". The chat needs that recipe.
 - **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
   server and the gateway's Studio preview client (`connections/mcp_tools.py`)
   get no frame.
+- **A listed tool loads when the model calls it** (task 3924, 2026-11-23). On
+  2026-11-23, the model listed the tools of a Zoho Books server, and then
+  called `ZohoMCP_listProducts` with no `load_tool`. MAF answered "not found",
+  and the chat drew a failed step. Now `McpAutoload` reads the model's answer
+  before MAF runs the calls. It loads a called tool when the tool is in the
+  own list of a server of this run, through MAF's own load. The call then runs
+  in the same step, through the same gate.
+- **What the autoload does not change.** A server that the member's grant
+  refuses, or that OA-7b held back, is not in the run, so its tools never
+  load. A first-party tool name of the run never loads a server tool, so a
+  server `crm` cannot take `crm_update_record` (review P2). A chat that read
+  mail still asks the card for each call (EM-G11d). A
+  run that withholds the loaders loads nothing. A name that no server of the
+  run lists keeps the unknown-tool answer. The log line is
+  `mcp.loader action=autoload`, with the server and the tool. Fence:
+  `test_mcp_tool_autoload.py`.
 
 ### 3.6 A turn that cannot reach a server says why
 
