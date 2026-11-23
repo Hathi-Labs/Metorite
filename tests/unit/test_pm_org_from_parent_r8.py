@@ -105,11 +105,13 @@ def _migration() -> str:
 # One entry for each attachment: (child table, parent column) -> (parent
 # table, the columns of a minimal row). A value in braces names a seeded row
 # of the BOUND org: {P} project, {CH} child project, {S} status, {T} task,
-# {T2} second task, {V} view, {R} report. The probed column takes the row of
+# {T2} second task, {V} view, {R} report, {SEQ} project sequence, {RUN}
+# agent run (SW-27a, migration 477). The probed column takes the row of
 # the OTHER org. A table with two attachments gives the other column a row of
 # the bound org, so the failure belongs to the probed column.
 
 _P, _T, _T2, _V, _R, _S = "{P}", "{T}", "{T2}", "{V}", "{R}", "{S}"
+_SEQ, _RUN = "{SEQ}", "{RUN}"
 
 PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
     ("pm_activities", "project_id"): ("pm_projects", {
@@ -130,6 +132,17 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
         "project_id": _P, "subject": "user:probe-grant@pmorg.test", "created_by": _ME}),
     ("pm_project_watchers", "project_id"): ("pm_projects", {
         "project_id": _P, "watcher": "probe-watch@pmorg.test"}),
+    # SW-27a (477): a sequence names its project, and a reservation names its
+    # sequence, its task and its run. Each value differs, for the unique
+    # (sequence_id, value) index.
+    ("pm_project_sequences", "project_id"): ("pm_projects", {
+        "project_id": _P, "name": "probe-seq"}),
+    ("pm_sequence_reservations", "sequence_id"): ("pm_project_sequences", {
+        "sequence_id": _SEQ, "value": 101, "task_id": _T, "run_id": _RUN}),
+    ("pm_sequence_reservations", "task_id"): ("pm_tasks", {
+        "sequence_id": _SEQ, "value": 102, "task_id": _T, "run_id": _RUN}),
+    ("pm_sequence_reservations", "run_id"): ("pm_agent_runs", {
+        "sequence_id": _SEQ, "value": 103, "task_id": _T, "run_id": _RUN}),
     ("pm_projects", "parent_project_id"): ("pm_projects", {
         "name": "Probe child", "created_by": _ME, "parent_project_id": _P}),
     ("pm_recurrences", "project_id"): ("pm_projects", {
@@ -175,7 +188,10 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
         "project_id": _P, "name": "Probe view", "created_by": _ME}),
 }
 
-_PARENT_TOKEN = {"pm_projects": _P, "pm_tasks": _T, "pm_views": _V, "pm_reports": _R}
+_PARENT_TOKEN = {
+    "pm_projects": _P, "pm_tasks": _T, "pm_views": _V, "pm_reports": _R,
+    "pm_project_sequences": _SEQ, "pm_agent_runs": _RUN,
+}
 
 
 def _seed_org(conn, org: str) -> dict[str, uuid.UUID]:
@@ -204,6 +220,13 @@ def _seed_org(conn, org: str) -> dict[str, uuid.UUID]:
     rows[_R] = one(
         "INSERT INTO pm_reports (project_id, name, created_by, organization_id) "
         "VALUES (:p, 'Probe report', :me, CAST(:org AS uuid)) RETURNING id", p=rows[_P])
+    rows[_SEQ] = one(
+        "INSERT INTO pm_project_sequences (project_id, name, organization_id) "
+        "VALUES (:p, 'seeded', CAST(:org AS uuid)) RETURNING id", p=rows[_P])
+    rows[_RUN] = one(
+        "INSERT INTO pm_agent_runs (task_id, member_email, client_via, status, started_by, "
+        "organization_id) VALUES (:t, :me, 'mcp:test', 'in_progress', :me, "
+        "CAST(:org AS uuid)) RETURNING id", t=rows[_T])
     return rows
 
 

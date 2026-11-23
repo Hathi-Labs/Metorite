@@ -2,9 +2,10 @@
 
 <!-- ste-tier: strict -->
 
-**Status:** the dev box `aroh-dev-1` runs. Its setup is not finished.
-`project-docs/HANDOFF.md` entries H-445 to H-449 hold the open work.
-**Verified:** 2026-11-19, by `gcloud` reads from the PC of Ishaan Pilar.
+**Status:** the dev box `aroh-dev-1` runs, and its setup is finished
+(2026-11-22, task 3899). `project-docs/HANDOFF.md` entries H-445 (step 4
+only) to H-449 hold the open work.
+**Verified:** 2026-11-22, by `gcloud` reads and checks on the box from the Mac of Ishaan Pilar (task 3899).
 **Decisions:** D229 (the aroh name) and D230 (the dev box), in
 `project-docs/work_plan.md` §3.
 
@@ -70,7 +71,8 @@ workload identity federation. The policy allows a public IP on a VM.
 | VPC | `aroh-vpc`, custom subnets, regional routing |
 | Subnet `aroh-dev` | `asia-south1`, `10.40.0.0/20`, Private Google Access on |
 | Firewall `aroh-vpc-allow-iap-ssh` | TCP 22 from `35.235.240.0/20` (Google IAP) to the tag `dev` |
-| Firewall `aroh-vpc-tmp-ssh-office` | **Temporary.** TCP 22 from the office IP `49.204.144.74/32`. Delete it when Tailscale works (H-445). |
+| Firewall `aroh-vpc-allow-tailscale-udp` | UDP 41641 from anywhere to the tag `dev`, so Tailscale links direct and not through a relay (task 3899) |
+| Firewall `aroh-vpc-tmp-ssh-office` | **Deleted** (2026-11-22). The `ufw` rule for the office IP on the box is gone too. |
 
 **The address plan.** Keep `10.40.0.0/13` for aroh. No range may overlap
 another, now or after a VPN joins a local network.
@@ -143,17 +145,30 @@ release timer. The home server keeps the release timer (`docs/home_box.md`).
 
 ## 5. How to reach the box
 
-**Today**, through the temporary office rule:
+**Through Tailscale.** The box is on the tailnet as `aroh-dev-1`
+(`100.64.118.14`), on the account of the home server. A direct link can
+need 10 to 15 pings to form, so use `tailscale ping --c 15`. From a tailnet
+machine:
+`ssh dev@aroh-dev-1` and `ssh acb@aroh-dev-1`.
 
-```bash
-gcloud compute ssh aroh-dev-1 --project=metorite-513907 --zone=asia-south1-a
+**Through Google IAP**, from a machine that is not on the tailnet. Use plain
+`ssh` with an IAP tunnel. Put this in `~/.ssh/config`:
+
+```
+Host aroh-dev-1-iap
+  HostName aroh-dev-1
+  User dev
+  IdentityFile ~/.ssh/google_compute_engine
+  ProxyCommand gcloud compute start-iap-tunnel aroh-dev-1 22 --listen-on-stdin --zone=asia-south1-a --project=metorite-513907 --verbosity=warning
 ```
 
-`gcloud` adds a key for your local user to the VM. IAP does not work yet
-(error `4033: not authorized`), because the account lacks the IAP role (H-446).
+Then run `ssh aroh-dev-1-iap`. Your account needs the IAP role (H-446).
+Put your public key in the **instance** metadata of `aroh-dev-1`, not in the
+project metadata.
 
-**After H-445**, through Tailscale: `ssh dev@aroh-dev-1` and
-`ssh acb@aroh-dev-1`. Add the entries to `~/.ssh/config` on the PC.
+⚠️ **Do not use `gcloud compute ssh` for this box.** On each run it writes
+your key to the project-wide metadata, so the key opens every VM in the
+project. Task 3899 moved such a key to the instance metadata.
 
 ## 6. Setting up the box
 
@@ -171,7 +186,7 @@ BOX_NAME=aroh-dev-1 SETUP_NO_SIGNIN=1 bash setup.sh
 2. **The firewall.** Its `ufw` step allows SSH from private ranges and
    Tailscale only. A Google Cloud VM sees SSH from IAP and from the office
    as public addresses. The box already holds `ufw` rules for both, added
-   before the script. Keep the IAP rule. Remove the office rule after H-445.
+   before the script. Keep the IAP rule. The office rule is gone (2026-11-22).
 3. **The keys.** It trusts the keys of `github.com/vjvarada.keys`. Add the key
    of each other person who needs `dev` or `acb`.
 

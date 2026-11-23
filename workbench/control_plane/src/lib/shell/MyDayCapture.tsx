@@ -5,7 +5,8 @@
  *
  * The box sits under the greeting. It holds no flow of its own. It is the
  * door to the ONE capture flow of the task store, which Quick Capture also
- * uses (`QuickCapture.tsx`, mounted here for the split's review):
+ * uses (`QuickCapture.tsx`, mounted once for the whole app in `FocusSession`,
+ * which the split's review opens):
  *
  *  - Enter files the text to the Inbox through the store's `captureLine`.
  *    Every capture lands as INBOX (D170). The box clears, and a toast says so.
@@ -26,7 +27,6 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { QuickCapture } from "@/app/tasks/components/QuickCapture";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
 import { projectsApi, projectsKey, type NodeSummary } from "@/app/projects/lib/api";
@@ -234,7 +234,6 @@ export default function MyDayCapture({ className = "" }: { className?: string })
           {error}
         </p>
       ) : null}
-      <QuickCapture />
     </div>
   );
 }
