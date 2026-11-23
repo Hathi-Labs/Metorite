@@ -189,7 +189,8 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-3": ("CRM", ("crm",), (3678,)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
-    "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"), (3115,)),
+    "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
+            (3115, 3903)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115,)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3107, 3108, 3109)),
@@ -440,6 +441,29 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/workflows/{}/versions/{}/rollback": "studio_workflow_publish",
     "POST /api/workflows/{}/disable": "studio_workflow_live",
     "POST /api/workflows/{}/enable": "studio_workflow_live",
+    # PAR-8a (task 3903, chat_parity.md section 6.4 rung 5): the other 18 acts of the
+    # Workflows app, as the member, in the dark pack studio-workflows. Each write that a
+    # card guards sends after approved only.
+    "GET /api/workflows/{}/runs": "studio_workflow_runs",
+    "GET /api/workflows/runs/{}": "studio_workflow_runs",
+    "POST /api/workflows/{}/validate": "studio_workflow_check",
+    "GET /api/workflows/catalog": "studio_workflow_catalog",
+    "GET /api/workflows/catalog/search": "studio_workflow_catalog",
+    "GET /api/workflows/modules": "studio_workflow_catalog",
+    "GET /api/workflows/modules/{}": "studio_workflow_catalog",
+    "POST /api/workflows/{}/run": "studio_workflow_run",
+    "POST /api/workflows": "studio_workflow_save",
+    "PUT /api/workflows/{}": "studio_workflow_save",
+    "POST /api/workflows/{}/duplicate": "studio_workflow_save",
+    "DELETE /api/workflows/{}": "studio_workflow_save",
+    # The Copilot of the editor: the helper gives new steps, and the tool saves them
+    # to the draft with the PUT of the editor after one card.
+    "POST /api/workflows/{}/copilot": "studio_workflow_build",
+    "POST /api/workflows/modules/generate": "studio_workflow_module",
+    "POST /api/workflows/modules/test": "studio_workflow_module",
+    "POST /api/workflows/modules": "studio_workflow_module",
+    "PUT /api/workflows/modules/{}": "studio_workflow_module",
+    "DELETE /api/workflows/modules/{}": "studio_workflow_module",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -456,6 +480,9 @@ ALSO: dict[str, tuple[str, ...]] = {
         # STU-B2b-2c: a read of a door op (<app>.<op>) through the same route.
         "studio_app_read",
     ),
+    # PAR-8a: the change of the draft by the workflow helper saves its steps with the
+    # PUT of the editor too.
+    "PUT /api/workflows/{}": ("studio_workflow_build",),
 }
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
@@ -943,24 +970,7 @@ DEBT: dict[str, str] = {
     "POST /api/chat/memories": "P-5",
     "POST /api/memory/{}/search": "P-5",
     # ── Workflows ──
-    "DELETE /api/workflows/modules/{}": "P-6",
-    "DELETE /api/workflows/{}": "P-6",
-    "GET /api/workflows/catalog": "P-6",
-    "GET /api/workflows/catalog/search": "P-6",
-    "GET /api/workflows/modules": "P-6",
-    "GET /api/workflows/modules/{}": "P-6",
-    "GET /api/workflows/runs/{}": "P-6",
-    "GET /api/workflows/{}/runs": "P-6",
-    "POST /api/workflows": "P-6",
-    "POST /api/workflows/modules": "P-6",
-    "POST /api/workflows/modules/generate": "P-6",
-    "POST /api/workflows/modules/test": "P-6",
-    "POST /api/workflows/{}/copilot": "P-6",
-    "POST /api/workflows/{}/duplicate": "P-6",
-    "POST /api/workflows/{}/run": "P-6",
-    "POST /api/workflows/{}/validate": "P-6",
-    "PUT /api/workflows/modules/{}": "P-6",
-    "PUT /api/workflows/{}": "P-6",
+    # PAR-8a (task 3903) paid each Workflows row. The Workflows app has no debt.
     # ── Custom Apps ──
     "DELETE /api/apps/{}/data/{}/{}": "P-6",
     "DELETE /api/apps/{}/files/content": "P-6",
@@ -1189,7 +1199,7 @@ DEBT_CEILING: dict[str, int] = {
     "people": 19,
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
     "memory": 5,
-    "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
+    "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 28,
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.

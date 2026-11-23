@@ -33,6 +33,7 @@ from acb_common.db import bind_tenant, release_tenant
 
 ORG_A = "0e7a4b5c-1d2e-4f30-8a41-5b6c7d8e9f01"
 ORG_B = "1f8b5c6d-2e3f-4a41-9b52-6c7d8e9f0a12"
+_REAL_DRAIN_FROM_THREAD = fl._drain_from_thread
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +43,10 @@ def clean(monkeypatch):
 
     saved = fl.builtin_names()
     fl._reset_for_tests()
+    # A record made with no running loop starts a real drain thread, which can
+    # empty the queue before a sync test reads it (a flake in the release gate,
+    # TOF-2b). The tests that need a drain run `_drain()` themselves.
+    monkeypatch.setattr(fl, "_drain_from_thread", lambda: None)
     monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", f"{ORG_A},{ORG_B}")
     fl.set_builtin_names({"create_task", "crm_get_record"})
     fl.set_release("abc1234")
@@ -446,11 +451,13 @@ def test_a_hung_redis_costs_one_wait_for_the_whole_org(store, monkeypatch) -> No
     assert len(store.tallies()) >= 1
 
 
-def test_a_record_from_a_thread_with_no_loop_still_drains(store) -> None:
+def test_a_record_from_a_thread_with_no_loop_still_drains(store, monkeypatch) -> None:
     """Review P2: a sync tool in an executor has no running loop."""
     import threading
     import time
 
+    # The `clean` fixture stops the drain thread. This test needs the real one.
+    monkeypatch.setattr(fl, "_drain_from_thread", _REAL_DRAIN_FROM_THREAD)
     t = threading.Thread(target=_fail)
     t.start()
     t.join()
