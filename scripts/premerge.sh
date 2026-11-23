@@ -105,6 +105,29 @@ if [ -n "$mine" ]; then
     | sed -nE 's/^Auto-Revert: ([0-9a-f]{40})[[:space:]]*$/\1/p' | sort -u)
 fi
 
+# ── 0b. Migration numbers against main and the box ledger (SW-PRE-2, R1) ───
+# This runs on EVERY merge, before the early exit. A branch that contains main
+# can still hold a number that the ledger booked for another pull request. The
+# ledger is ~/lanes/migration-numbers.tsv, written only by reserve_migration.sh.
+# With no ledger (a PC) the check still refuses a number at or below main's top.
+# The message names the next free number. Fence: tests/unit/test_migration_reservation.py.
+ledger="${PREMERGE_LEDGER:-$HOME/lanes/migration-numbers.tsv}"
+pr_no="${PREMERGE_PR:-}"
+if [ -z "$pr_no" ] && command -v gh >/dev/null 2>&1; then
+  pr_no="$(timeout 20 gh pr view --json number --jq .number 2>/dev/null || true)"
+fi
+added_nums="$(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ \
+  | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tr '\n' ' ')"
+if [ -n "$added_nums" ]; then
+  top_now="$(git ls-tree --name-only "$BASE" infra/postgres/ \
+    | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
+  say "R1: migration number(s) ${added_nums}against main's highest ${top_now:-0} and the ledger"
+  # shellcheck disable=SC2086
+  python3 "$(dirname "${BASH_SOURCE[0]}")/migration_ledger_check.py" --main-max "${top_now:-0}" --ledger "$ledger" \
+    ${pr_no:+--pr "$pr_no"} $added_nums >&2 \
+    || fail "a migration number is taken or too low. Fix it as the lines above say, then run this again."
+fi
+
 behind="$(git rev-list --count "HEAD..$BASE")"
 if [ "$behind" = 0 ]; then
   say "the branch contains $BASE. pr-check tested what will land. Merge now."
