@@ -383,7 +383,7 @@ async def _find_pm_account_for_person(
     LOCAL task. Matches by provider_user_id first, then email, then name.
     Returns (account_id, normalized-member) or None when no account has them.
 
-    ⚠️ Only the accounts of the BOUND org (H-312b, migration 489). Under the
+    ⚠️ Only the accounts of the BOUND org (H-312b, migration 497). Under the
     owner role RLS does not apply, so the member filter alone could stage a
     task on an account of the member's other org.
     """

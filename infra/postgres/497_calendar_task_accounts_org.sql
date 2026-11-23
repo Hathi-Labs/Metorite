@@ -1,10 +1,10 @@
 -- ============================================================================
--- 489_calendar_task_accounts_org.sql - the tenant column of three member
+-- 497_calendar_task_accounts_org.sql - the tenant column of three member
 -- tables of the task routes, on the numbered ladder. Expand only (H-312b).
 -- ============================================================================
 -- Spec: HANDOFF H-312 · Metorite task 1646 · R1 · R5 · R6 · R8.
--- R1: origin/main held 475 as its highest file on 2026-11-22. Task 1646
--- booked 489. Check the number again at merge.
+-- R1: origin/main held 491 as its highest file on 2026-11-23. Task 1646
+-- booked 497 (it took 481, then 489). Check the number again at merge.
 --
 -- What: `organization_id` on `calendar_day_state`, `calendar_rollover_log`
 --       and `task_accounts`, only where it is missing, and a backfill of
@@ -139,12 +139,12 @@ BEGIN
             INTO orphans;
 
         RAISE NOTICE
-            '489: %: % row(s) tenanted from app_user, % adopted by the only '
+            '497: %: % row(s) tenanted from app_user, % adopted by the only '
             'organization, % left NULL', tbl, by_member, adopted, orphans;
 
         IF orphans > 0 THEN
             RAISE WARNING
-                '489: % has % row(s) that match no member and keep '
+                '497: % has % row(s) that match no member and keep '
                 'organization_id NULL. The task routes filter on the bound '
                 'organization, so no route reads them. Set them by hand.',
                 tbl, orphans;

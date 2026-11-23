@@ -180,7 +180,7 @@ EXPECTED_SCOPED = {
     # numbered ladder for `copilot_config` and `notes_glossary`, because the
     # per-org unique keys need it, as 354 did for `agent_avatars`.
     "copilot_config", "notes_glossary",
-    # H-312b (2026-11-22, task 1646): migration 489 puts `organization_id` on
+    # H-312b (2026-11-22, task 1646): migration 497 puts `organization_id` on
     # the numbered ladder for three member tables of the task routes, so each
     # statement there can name the bound org.
     "calendar_day_state", "calendar_rollover_log", "task_accounts",
@@ -247,7 +247,7 @@ BASELINE_UNSCOPED = {
 # gtd_*
     "attachments",
     # ⚠️ `calendar_day_state`, `calendar_rollover_log` and `task_accounts`
-    # LEFT this list on 2026-11-22. Migration 489 (H-312b) put
+    # LEFT this list on 2026-11-22. Migration 497 (H-312b) put
     # `organization_id` on the numbered ladder for the three tables.
     # ⚠️ `people` LEFT this list on 2026-09-21. Migration 209 put
     # `organization_id` on the NUMBERED ladder for that one table, because
@@ -505,7 +505,7 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
     # 87 since 2026-11-23: `calendar_day_state`, `calendar_rollover_log` and
-    # `task_accounts` left with migration 489 (H-312b, the task routes name
+    # `task_accounts` left with migration 497 (H-312b, the task routes name
     # the bound org).
     # 90 since 2026-11-22: `copilot_config` and `notes_glossary` left with
     # migration 487 (task 3844, the per-org keys of the notes settings and the
