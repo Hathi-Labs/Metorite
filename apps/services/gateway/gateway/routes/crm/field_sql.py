@@ -244,6 +244,12 @@ GROUP2_KEY = "agf_g2"
 _MODULE = "agf_module"
 
 
+def fold_label(text: Any) -> str:
+    """A field label or key in one form: lower case, with no space, ``_``
+    or ``-`` (task 3864). "Rent Basic Amount" and "rent_basic-amount" match."""
+    return "".join(ch for ch in str(text or "").lower() if ch not in " _-\t")
+
+
 @dataclass(frozen=True)
 class FieldRef:
     """One checked field: its key, its stored type, its label, and the label
@@ -268,6 +274,15 @@ class FieldRef:
     #: filter on it stays a text filter. Only a measure and a range read it
     #: as a number, through :data:`TEXT_NUMBER_PATTERN`.
     text_number: bool = False
+    #: Task 3864: the label that the caller wrote as the key, when
+    #: :meth:`FieldScope.ref` resolved it by label. None otherwise.
+    via: str | None = None
+
+
+def label_resolved(*refs: FieldRef | None) -> dict[str, str]:
+    """Task 3864: asked label → the real key, for each of *refs* that the
+    scope resolved by label. Empty when every key was a real key."""
+    return {r.via: r.key for r in refs if r is not None and r.via}
 
 
 @dataclass(frozen=True)
@@ -310,8 +325,14 @@ class FieldScope:
         ``field.<key>`` for a module (:func:`module_where`)."""
         return f"custom.{key}" if self.column == CORE_COLUMN else f"{FIELD_PREFIX}{key}"
 
-    def ref(self, key: str | None) -> FieldRef:
+    def ref(self, key: str | None, *, by_label: bool = False) -> FieldRef:
         """The field named *key*, or a 422 that names the legal keys.
+
+        Task 3864: with *by_label*, a module key that is no key but ONE field
+        label (:meth:`_by_label`) resolves to that field. Only a measure and
+        a group ask for it. A filter name does not, because the readers of
+        the filter probe (``text_matches``, ``lookup_targets``) read the
+        asked name, so a label there would count fewer records than its key.
 
         CRM-Q33: a module also takes the keys of 2 to 5 currency fields
         joined with ``+`` (``IP+Rent+EB_Total_Amount``), as ONE sum of the
@@ -326,6 +347,8 @@ class FieldScope:
                                 detail="'sum_amount' needs deals. A module has no amount.")
         if found is None and (key or "") in KEY_WORDS and self.catalogue:
             raise HTTPException(status_code=422, detail=self._no_key_field(str(key)))
+        if found is None and key and by_label and self.column == MODULE_COLUMN:
+            found = self._by_label(key)
         if found is None:
             close = self.closest(key or "")
             near = f"The closest fields of {self.owner} are: {close}. " if close else ""
@@ -339,6 +362,20 @@ class FieldScope:
                 "key": key or "",
             })
         return found
+
+    def _by_label(self, key: str) -> FieldRef | None:
+        """Task 3864: the ONE field whose LABEL is *key* after :func:`fold_label`
+        (lower case, no space, ``_`` or ``-``), or None. A model that read
+        "Rent Basic Amount" in a field list writes the label as the key. Two
+        labels that fold alike are not guessed, so the 422 lists the fields.
+        A key word and a sum are never a label match. The tool says which
+        key was used (``crm_tools._resolved_note``)."""
+        wanted = fold_label(key)
+        if not wanted:
+            return None
+        hits = [r for k, r in self.fields.items()
+                if k not in KEY_WORDS and not r.parts and fold_label(r.label) == wanted]
+        return replace(hits[0], via=key) if len(hits) == 1 else None
 
     def closest(self, key: str) -> str:
         """At most :data:`CLOSE_MAX` keys of this scope whose key or label is
@@ -732,7 +769,7 @@ def status_field(scope: FieldScope) -> str:
 
 def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
     """The field of a ``sum``, ``avg``, ``min`` or ``max``, or a 422."""
-    ref = scope.ref(key)
+    ref = scope.ref(key, by_label=True)
     # CRM-Q34-11: a text field that holds numbers (`admit_text_numbers`).
     if ref.type not in MEASURE_TYPES and not ref.text_number:
         raise _refuse(
@@ -746,7 +783,7 @@ def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
 def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> FieldRef:
     """The field of ``group_field``, or a 422. A date needs a bucket, and a
     value group takes none."""
-    ref = scope.ref(key)
+    ref = scope.ref(key, by_label=True)
     if ref.parts:
         # CRM-Q32-9: a sum has no single value to group by.
         raise HTTPException(status_code=422, detail={
@@ -780,7 +817,7 @@ def check_groups(scope: FieldScope, key: str | None, key2: str | None,
     """CRM-Q34-10: the two fields of a two-field group, or a 422. The two
     are different fields, and at most one is a date. *bucket* goes to the
     date field. With no date, it goes to the first field, which refuses it."""
-    first, second = scope.ref(key), scope.ref(key2)
+    first, second = scope.ref(key, by_label=True), scope.ref(key2, by_label=True)
     if first.key == second.key:
         raise _refuse("Give two different fields as group_field and group_field2.")
     dated = (first.type in DATE_TYPES, second.type in DATE_TYPES)
@@ -1051,7 +1088,7 @@ def check_split(scope: FieldScope, names: str | None) -> list[FieldRef]:
     ones. A key may be a sum of fields (CRM-Q33), as ``field`` takes."""
     keys = [k.strip() for k in str(names or "").split(SPLIT_JOIN)]
     if (any(not k for k in keys) or not SPLIT_MIN <= len(keys) <= SPLIT_MAX
-            or len(set(keys)) != len(keys)):
+            or len({_real_key(scope, k) for k in keys}) != len(keys)):
         raise _refuse(
             f"'fields' names {SPLIT_MIN} to {SPLIT_MAX} distinct number fields, with a "
             "comma between them. For one field, give field=<key>.",
@@ -1299,6 +1336,18 @@ def _one_value_words(scope: FieldScope, key: str, native: bool = False) -> str:
     return f"To match one value, give {scope.filter_word(key)}=<value>."
 
 
+def _real_key(scope: FieldScope, key: str) -> str:
+    """Task 3864: the key of the field that *key* names, by key or by ONE
+    label. A key word, a sum and an unknown name come back as they are."""
+    if key in scope.fields or key in KEY_WORDS:
+        return key
+    # The order of :meth:`FieldScope.ref`: a sum of fields comes before a label.
+    if scope.column == MODULE_COLUMN and scope._sum_of(key) is not None:
+        return key
+    found = scope._by_label(key) if scope.column == MODULE_COLUMN else None
+    return found.key if found is not None else key
+
+
 async def admit_text_numbers(
     db: Any, scope: FieldScope, keys: Sequence[str],
     measured: Collection[str] | None = None,
@@ -1326,6 +1375,13 @@ async def admit_text_numbers(
     the ``eq`` leaf, not ``field.<key>``."""
     if scope.column != MODULE_COLUMN:
         return scope, {}
+    # Task 3864: a measure written as a LABEL reads the field of that label,
+    # so the text-number pass sees the real key before `check_measure` does.
+    real = {k: _real_key(scope, k) for k in keys}
+    keys = list(dict.fromkeys(real.values()))
+    if measured is not None:
+        measured = {real.get(k, _real_key(scope, k)) for k in measured}
+    queried = {real.get(k, _real_key(scope, k)) for k in queried}
     texts = [
         k for k in keys
         if k not in KEY_WORDS and (ref := scope.fields.get(k)) is not None
@@ -1423,6 +1479,194 @@ def day_sql(scope: FieldScope, ref: FieldRef, *, zone: str) -> GroupSql:
     return GroupSql(key=_calendar_day(_reads(scope.column), ref, _DAY_KEY), label="NULL",
                     params={_DAY_KEY: ref.key, ZONE_PARAM: zone},
                     source=_source_of(scope.column))
+
+
+# ── The baseline of a date range (NUM-2, number_sense.md §4.2) ──────────────
+
+#: The most periods before the asked range that a baseline reads.
+BASELINE_PERIODS = 6
+#: The longest asked range, in whole months, that gets a baseline. A longer
+#: range would read 6 periods of its own length back, years of records.
+BASELINE_MAX_MONTHS = 3
+#: The most records of a module that a baseline reads (NUM-2). The wider
+#: window costs about 3 times the time of the asked quarter alone: 0.52 s
+#: against 0.19 s over 30,000 rows of 3 KB. So 100,000 records stay near
+#: 2 s, far under the 10 s statement timeout. A larger module, or one with
+#: no size in ``crm_field_fill``, gets no baseline.
+BASELINE_MAX_RECORDS = 100_000
+#: The bound names of :func:`period_sql`.
+_BASE_START = "agf_bs"
+_BASE_MONTHS = "agf_bk"
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """The asked date range of an answer, in whole months, and the start of
+    the wider window that the one statement reads (NUM-2).
+
+    *bound* is the bound name of the ``.from`` value: ``agf_v<i>`` of an
+    old pair, or ``agf_qv<n>_0`` of a ``gte`` leaf of ``query``. So
+    :func:`widen` binds *wide* in place of *start*. Period 0 is the asked
+    range, and periods -1 to -6 are the ones before it, each *months* long."""
+
+    start: date
+    end: date
+    months: int
+    bound: str
+    wide: date
+
+    def label(self, period: int) -> str:
+        """The name of one period: ``2026-10``, or ``2026-08 to 2026-10``."""
+        first = _month_add(self.start, period * self.months)
+        last = _month_add(first, self.months - 1)
+        head = f"{first.year:04d}-{first.month:02d}"
+        return head if self.months == 1 else f"{head} to {last.year:04d}-{last.month:02d}"
+
+
+def _month_add(day: date, months: int) -> date:
+    """The first day of the month *months* after the month of *day*."""
+    index = day.year * 12 + day.month - 1 + months
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _plain_date(value: str) -> date | None:
+    """An ISO date, or None. :func:`module_where` gives the 422 of a bad one."""
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def _other_date(ref: FieldRef | None, day: FieldRef) -> bool:
+    """True when *ref* is a date or datetime field other than *day* (NUM-2)."""
+    return ref is not None and ref.key != day.key and ref.type in DATE_TYPES
+
+
+def _day_ends(scope: FieldScope, day: FieldRef, pairs: Sequence[tuple[str, str]],
+              nodes: Sequence[Any], words: bool) -> list[tuple[str, str, str]] | None:
+    """``(end, value, bound name)`` of each filter on the field *day*, or
+    None when the filters would bound the wider window in time (NUM-2).
+
+    The pairs parse through :func:`filter_end`, the one parser, and resolve
+    through :meth:`FieldScope.ref`, as :func:`module_where` does. A query
+    leaf resolves as :func:`query_sql` does. A leaf on *day* counts only
+    alone in its node and with the op ``gte`` or ``lte``.
+
+    None for each of these, because the periods before would read a time
+    bound that the asked range does not have, and their figures would be
+    false: a leaf on *day* in an ``any`` group, an ``eq``, a ``gt`` or a
+    ``lt`` on it, a filter word on it, and ANY filter on another date or
+    datetime field. A filter on a field of another type (a text, a select,
+    a number range) holds each period in the same way, so it stays."""
+    out: list[tuple[str, str, str]] = []
+    for index, (name, value) in enumerate(pairs):
+        key, end = filter_end(name, scope.fields, words)
+        ref = _leaf_ref(scope, key)
+        if _other_date(ref, day):
+            return None
+        if ref is None or ref.key != day.key:
+            continue
+        if end not in RANGE_ENDS:
+            return None
+        out.append((end, value, f"agf_v{index}"))
+    for n, node in enumerate(nodes):
+        for leaf in node:
+            ref = _leaf_ref(scope, leaf.key)
+            if _other_date(ref, day):
+                return None
+            if ref is None or ref.key != day.key:
+                continue
+            if len(node) != 1 or leaf.op not in ("gte", "lte") or isinstance(leaf.value, bool):
+                return None
+            end = ".from" if leaf.op == "gte" else ".to"
+            out.append((end, str(leaf.value), f"{_QUERY_VALUE}{n}_0"))
+    return out
+
+
+def baseline_range(scope: FieldScope | None, day: FieldRef | None,
+                   pairs: Sequence[tuple[str, str]], nodes: Sequence[Any] = (),
+                   *, words: bool = False) -> Baseline | None:
+    """The baseline of an answer, or None (NUM-2).
+
+    An answer gets one when its filters hold exactly one ``.from`` and one
+    ``.to`` on the date field *day*, and no other filter on it. Each may be
+    an old pair ``field.<key>.from`` or a ``gte`` or ``lte`` leaf of
+    ``query`` (SEM-1b, *nodes*). *words* is the flag of the filter words
+    (CRM-Q34-5), as :func:`module_where` takes it. The range is 1 to
+    :data:`BASELINE_MAX_MONTHS` whole months: it starts on the first day of
+    a month and ends on the last day of a month. No date range gives no
+    baseline. Pure, so the hermetic tests call it."""
+    if scope is None or day is None or day.parts:
+        return None
+    ends = _day_ends(scope, day, pairs, nodes, words)
+    starts = [e for e in ends or () if e[0] == ".from"]
+    stops = [e for e in ends or () if e[0] == ".to"]
+    if ends is None or len(starts) != 1 or len(stops) != 1:
+        return None
+    _end, raw_start, bound = starts[0]
+    start, end = _plain_date(raw_start), _plain_date(stops[0][1])
+    if start is None or end is None or start.day != 1 or end < start:
+        return None
+    months = (end.year * 12 + end.month) - (start.year * 12 + start.month) + 1
+    if not 1 <= months <= BASELINE_MAX_MONTHS:
+        return None
+    try:
+        if end.toordinal() + 1 != _month_add(end, 1).toordinal():
+            return None  # the range does not end on the last day of a month
+        wide = _month_add(start, -BASELINE_PERIODS * months)
+    except ValueError:
+        return None  # past the year 9999, or before the year 1
+    return Baseline(start=start, end=end, months=months, bound=bound, wide=wide)
+
+
+def widen(params: dict[str, Any], base: Baseline) -> bool:
+    """Bind the start of the wider window in place of the asked start, in
+    the params of :func:`module_where` or :func:`query_sql`. The WHERE text
+    stays the same. False when *params* binds no such name: then nothing
+    changes, and the caller gives no baseline."""
+    if params.get(base.bound) != base.start:
+        return False
+    params[base.bound] = base.wide
+    return True
+
+
+def period_sql(day_key: str, base: Baseline) -> tuple[str, dict[str, Any]]:
+    """The period of each record: 0 for the asked range, and -1 to -6 for
+    the periods before it. *day_key* is the calendar day of :func:`day_sql`.
+    Both bounds of the window are in the WHERE clause, so the day is never
+    NULL and the period is never past the range."""
+    sql = (
+        f"CAST(floor((CAST(extract(year FROM {day_key}) AS int) * 12 "
+        f"+ CAST(extract(month FROM {day_key}) AS int) - CAST(:{_BASE_START} AS int)) "
+        f"/ CAST(:{_BASE_MONTHS} AS numeric)) AS int)"
+    )
+    return sql, {_BASE_START: base.start.year * 12 + base.start.month,
+                 _BASE_MONTHS: base.months}
+
+
+# ── The count of each status, for the coverage check (NUM-2) ────────────────
+
+#: The bound names of :func:`status_sql`. The status is the key word
+#: :data:`STATUS_WORD` (CRM-Q31-2).
+_STATUS_KEY = "agf_st"
+
+
+def status_sql(scope: FieldScope | None, statuses: Sequence[str]) -> tuple[list[str], dict[str, Any]]:
+    """One ``count(*) FILTER`` for each of *statuses*, over the catalogue
+    status (``@status``) of a module, and its bound names. Empty when the
+    scope has no such field. The value matches in any case, with no white
+    space at its ends. It reads the detoasted copy."""
+    ref = scope.fields.get(STATUS_WORD) if scope is not None else None
+    if scope is None or ref is None or ref.parts or scope.column != MODULE_COLUMN:
+        return [], {}
+    column = _reads(scope.column)
+    params: dict[str, Any] = {_STATUS_KEY: ref.key}
+    out = []
+    for i, status in enumerate(statuses):
+        p = f"{_STATUS_KEY}{i}"
+        params[p] = str(status).strip().lower()
+        out.append(f"count(*) FILTER (WHERE lower(btrim({column} ->> :{_STATUS_KEY})) = :{p})")
+    return out, params
 
 
 def _when(column: str, ref: FieldRef, p: str) -> str:

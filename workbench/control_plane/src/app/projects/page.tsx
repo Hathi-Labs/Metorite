@@ -56,7 +56,17 @@ import {
   projectWatchersApi,
   type ProjectWatchState,
   PROJECTS_CACHE,
+  ProjectsApiError,
+  templatesApi,
 } from "./lib/api";
+import {
+  appliedMessage,
+  newApplyKey,
+  refusalText,
+  type TemplateRow,
+} from "./lib/templates";
+import { NewFromTemplateDialog } from "./components/NewFromTemplateDialog";
+import { SaveAsTemplateDialog } from "./components/SaveAsTemplateDialog";
 import { FieldManager } from "./components/FieldManager";
 import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
@@ -149,6 +159,9 @@ import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
 import {
   type AgentFocus,
+  type AnyAgentFocus,
+  type HoldFocus,
+  isHoldFocus,
   type AgentSummary,
   isAgentWork,
   isWaitingOnMe,
@@ -161,6 +174,7 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import SidePanelEditor from "@/components/SidePanelEditor";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import {
   getState as getSidePanelState,
   subscribe as subscribeSidePanel,
@@ -1306,6 +1320,19 @@ function ProjectsWorkspace() {
   const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
+  //: WS-39 TPL-1b — project templates. `templates` is null while the flag
+  //: `PROJECTS_TEMPLATES_ORGS` does not hold the org (the list answers 404),
+  //: and then the menu item and the picker do not exist. The two dialogs
+  //: hold their own refusal, shown in place.
+  const [templates, setTemplates] = useState<TemplateRow[] | null>(null);
+  const [templatesOn, setTemplatesOn] = useState(false);
+  const [templatesFailed, setTemplatesFailed] = useState(false);
+  const [savingTemplateOf, setSavingTemplateOf] = useState<ProjectRow | null>(null);
+  const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
+  const [saveTemplateError, setSaveTemplateError] = useState<string | null>(null);
+  const [pickingUnder, setPickingUnder] = useState<{ parent: ProjectRow; noun: string } | null>(null);
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -1326,6 +1353,24 @@ function ProjectsWorkspace() {
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
+
+  // TPL-1b — one read tells whether the flag holds the org. A failure other
+  // than 404 leaves the feature hidden: a menu item must not appear on a guess.
+  const loadTemplates = useCallback(async () => {
+    try {
+      const rows = await templatesApi.list();
+      setTemplatesFailed(false);
+      setTemplatesOn(rows !== null);
+      setTemplates(rows);
+    } catch {
+      setTemplatesFailed(true);
+      setTemplatesOn(false);
+      setTemplates(null);
+    }
+  }, []);
+  useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
   // is only a highlight: applying a view copies its config into these two, so
@@ -1366,7 +1411,7 @@ function ProjectsWorkspace() {
    * open "Ask an agent" dialog, or null while it is closed.
    */
   const [agentWork, setAgentWork] = useState(false);
-  const [agentFocus, setAgentFocus] = useState<AgentFocus | null>(null);
+  const [agentFocus, setAgentFocus] = useState<AnyAgentFocus | null>(null);
   const [agentSummary, setAgentSummary] = useState<{
     projectId: string;
     counts: AgentSummary;
@@ -1920,8 +1965,23 @@ function ProjectsWorkspace() {
         setConvertError(null);
         setConvertingNode(project);
       },
+      // WS-39 TPL-1b. Present only with the flag, so the entries are absent
+      // otherwise. Each raises a dialog and writes nothing.
+      ...(templatesOn
+        ? {
+            onSaveAsTemplate: (project: ProjectRow) => {
+              setSaveTemplateError(null);
+              // On a phone the tree sheet would sit over the dialog.
+              setSheet(null);
+              setSavingTemplateOf(project);
+            },
+            // Only a marker: the create option reaches `openTemplatePicker`
+            // through `onAddChild`, with the level's own word.
+            onNewFromTemplate: (parent: ProjectRow) => openTemplatePicker(parent, "project"),
+          }
+        : {}),
     }),
-    [toast]
+    [toast, templatesOn]
   );
 
   /**
@@ -2185,6 +2245,10 @@ function ProjectsWorkspace() {
               setSelected(project);
             }}
             onAddChild={(parent, option) => {
+              if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
               setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
             }}
             onOpenSettings={setSettingsFor}
@@ -3644,7 +3708,9 @@ function ProjectsWorkspace() {
     Boolean(managingFields) ||
     Boolean(managingTags) ||
     Boolean(managingStatuses) ||
-    Boolean(managingLifecycle);
+    Boolean(managingLifecycle) ||
+    Boolean(savingTemplateOf) ||
+    Boolean(pickingUnder);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -3871,6 +3937,75 @@ function ProjectsWorkspace() {
    * because the level of every project inside it changed. A refusal stays in
    * the dialog: the 422 names the projects that are too deep.
    */
+  function openTemplatePicker(parent: ProjectRow, noun: string) {
+    setPickError(null);
+    setSheet(null);
+    setPickingUnder({ parent, noun });
+    void loadTemplates();
+  }
+
+  /** TPL-1b — save a project as a template. A refusal shows in the dialog. */
+  async function saveTemplate(project: ProjectRow, name: string, description: string) {
+    setSaveTemplateBusy(true);
+    setSaveTemplateError(null);
+    try {
+      const saved = await templatesApi.save({
+        project_id: project.id,
+        name,
+        description: description || null,
+      });
+      setSavingTemplateOf(null);
+      void loadTemplates();
+      toast.show({ variant: "success", title: `Saved the template “${saved.name}”` });
+    } catch (err) {
+      setSaveTemplateError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setSaveTemplateBusy(false);
+    }
+  }
+
+  /** TPL-1b — make a project from a template, or a blank one, under `parent`. */
+  async function makeFromPicker(
+    parent: ProjectRow,
+    template: TemplateRow | null,
+    name: string,
+    startDate: string,
+  ) {
+    setPickBusy(true);
+    setPickError(null);
+    try {
+      let createdName = name;
+      if (template) {
+        const res = await templatesApi.apply(template.id, {
+          idempotency_key: newApplyKey(),
+          parent_project_id: parent.id,
+          name: name || null,
+          start_date: startDate,
+        });
+        createdName = res.project.name;
+        toast.show({ variant: "success", title: appliedMessage(res, parent.name) });
+      } else {
+        await projectsApi.createProject({ name, parent_project_id: parent.id });
+        toast.show({ variant: "success", title: `Made “${createdName}”` });
+      }
+      setPickingUnder(null);
+      setTreeKey((k) => k + 1);
+      openFolds([parent.id]);
+    } catch (err) {
+      setPickError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setPickBusy(false);
+    }
+  }
+
   async function convertNode(node: ProjectRow) {
     setConverting(true);
     setConvertError(null);
@@ -4903,6 +5038,13 @@ function ProjectsWorkspace() {
     setWaitingOnMe(next);
     if (next) setAgentFocus(null);
   };
+  // SW-5: "Held by an agent" and "Free" ride the same one focus.
+  const holdFocus = isHoldFocus(agentFocus) ? agentFocus : null;
+  const onHoldFocus = (next: HoldFocus | null) => {
+    if (next) setWaitingOnMe(false);
+    // Clearing the hold filter never clears a strip focus.
+    setAgentFocus((current) => (next === null && !isHoldFocus(current) ? current : next));
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -5168,7 +5310,7 @@ function ProjectsWorkspace() {
           resultCount={taskTotal}
           loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
           agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
-          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          agentFocus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
@@ -5206,6 +5348,8 @@ function ProjectsWorkspace() {
           onEpic={setEpicId}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
+          holdFocus={agentRunsOn ? holdFocus : null}
+          onHoldFocus={agentRunsOn ? onHoldFocus : undefined}
           people={people}
           tags={tags}
           shownFields={shownFields}
@@ -5232,7 +5376,7 @@ function ProjectsWorkspace() {
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
-          focus={waitingOnMe ? "waiting" : agentFocus}
+          focus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onFocus={onAgentFocus}
           hideZero={compactChrome}
         />
@@ -5829,6 +5973,34 @@ function ProjectsWorkspace() {
         }
       />
 
+      <SaveAsTemplateDialog
+        project={savingTemplateOf}
+        error={saveTemplateError}
+        busy={saveTemplateBusy}
+        onClose={() => {
+          setSavingTemplateOf(null);
+          setSaveTemplateError(null);
+        }}
+        onSave={(project, name, description) => void saveTemplate(project, name, description)}
+      />
+
+      <NewFromTemplateDialog
+        parent={pickingUnder?.parent ?? null}
+        noun={pickingUnder?.noun ?? "project"}
+        templates={templates}
+        loadFailed={templatesFailed}
+        error={pickError}
+        busy={pickBusy}
+        onClose={() => {
+          setPickingUnder(null);
+          setPickError(null);
+        }}
+        onBlank={(name) => pickingUnder && void makeFromPicker(pickingUnder.parent, null, name, "")}
+        onTemplate={(template, name, startDate) =>
+          pickingUnder && void makeFromPicker(pickingUnder.parent, template, name, startDate)
+        }
+      />
+
       <ConvertFolderDialog
         project={convertingNode}
         childNames={
@@ -6155,7 +6327,11 @@ function ProjectsWorkspace() {
                 setSelected(project);
               }}
               onAddChild={(parent, option) => {
-                setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
+                if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
+              setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
               }}
               onOpenSettings={setSettingsFor}
               onMove={setMovingNode}
@@ -6307,8 +6483,11 @@ function ProjectsWorkspace() {
 
         {/* Peek and side DOCK — a third column beside the canvas, narrow or
             wide. Full does not: it is mounted over the board below, because a
-            docked column cannot be wider than the space left over. */}
-        {isOverlayMode(panelMode) ? null : taskPanel}
+            docked column cannot be wider than the space left over. The docked
+            panel opens and closes with the one side-panel motion (task 7).
+            A switch to full drops the frame at once, so no second panel stays
+            on screen while it closes. */}
+        {isOverlayMode(panelMode) ? null : <SidePanelMotion docked>{taskPanel}</SidePanelMotion>}
 
         {/* WS-27bm — the AI chat DOCKED beside the canvas (`lib/chatDock.ts`).
             It shares the right-hand column with the docked task panel: while

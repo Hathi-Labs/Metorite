@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult
 from pydantic import Field
 
+from tally_bridge.localcopy.store import CopyStore
 from tally_bridge.reader import TallyReader, envelope, records
 from tally_bridge.reader.values import Amount
 from tally_bridge.settings import Settings
@@ -38,6 +39,7 @@ from tally_bridge.tools.common import (
     pick_company,
     short,
 )
+from tally_bridge.tools.fromcopy import source_of, tally_or_copy
 
 VOUCHER_DAYS = 31
 PL_DAYS = 366
@@ -64,10 +66,12 @@ def _rows(items: list[Any], cap: int) -> tuple[list[Any], bool]:
     return items[:cap], len(items) > cap
 
 
-def register_report_tools(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
+def register_report_tools(
+    mcp: FastMCP, reader: TallyReader, settings: Settings, copy: CopyStore | None = None
+) -> None:
     _balances(mcp, reader, settings)
     _ledgers(mcp, reader, settings)
-    _vouchers(mcp, reader, settings)
+    _vouchers(mcp, reader, settings, copy)
     _stock(mcp, reader, settings)
 
 
@@ -230,7 +234,9 @@ def _ledgers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
         return await guarded(settings, "outstanding", work, company=company)
 
 
-def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
+def _vouchers(
+    mcp: FastMCP, reader: TallyReader, settings: Settings, copy: CopyStore | None
+) -> None:
     @mcp.tool(
         name="list_vouchers",
         description="Vouchers over 31 days or less, one page at a time.",
@@ -249,12 +255,18 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
             start = _cursor(cursor)
             first, last = day_range(from_date, to_date, VOUCHER_DAYS)
             name = pick_company(settings, company)
-            root = await reader.post(
-                envelope.report("Day Book", company=name, from_date=first, to_date=last)
+            root, snap = await tally_or_copy(
+                lambda: reader.post(
+                    envelope.report("Day Book", company=name, from_date=first, to_date=last)
+                ),
+                copy,
+                name,
+                settings.copy_max_age_days,
             )
+            listed = _listed(root, snap, first, last)
             found = [
                 v
-                for v in records.vouchers(root)
+                for v in listed
                 if (voucher_type is None or v.voucher_type.casefold() == voucher_type.casefold())
                 and (party is None or v.party.casefold() == party.casefold())
             ]
@@ -280,6 +292,8 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
             }
             if more:
                 body["next_cursor"] = str(start + PAGE)
+            if snap is not None:
+                body["source"] = source_of(snap)
             return body
 
         return await guarded(settings, "list_vouchers", work, company=company)
@@ -299,7 +313,10 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
     ) -> CallToolResult:
         async def work() -> dict[str, Any]:
             name, request = _voucher_request(guid, voucher_type, number, company)
-            found = records.vouchers(await reader.post(request))
+            root, snap = await tally_or_copy(
+                lambda: reader.post(request), copy, name, settings.copy_max_age_days
+            )
+            found = _found(root, snap, guid, voucher_type, number)
             if not found:
                 raise Refusal("No voucher matches in this company.")
             if len(found) > 1:
@@ -323,6 +340,7 @@ def _vouchers(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
                     {"item": s.item, "quantity": s.quantity, "rate": s.rate, **amount(s.amount)}
                     for s in v.stock
                 ],
+                **({"source": source_of(snap)} if snap is not None else {}),
             }
 
         def _voucher_request(guid, voucher_type, number, company) -> tuple[str, bytes]:
@@ -385,6 +403,29 @@ def _stock(mcp: FastMCP, reader: TallyReader, settings: Settings) -> None:
             }
 
         return await guarded(settings, "stock_summary", work, company=company)
+
+
+def _listed(root: Any, snap: Any, first: date, last: date) -> list[Any]:
+    """The vouchers of [first, last], from TallyPrime or from the local copy."""
+    if root is not None:
+        return records.vouchers(root)
+    return sorted(
+        (v for v in snap.vouchers.values() if v.on and first <= v.on <= last),
+        key=lambda v: (v.on, v.number),
+    )
+
+
+def _found(
+    root: Any, snap: Any, guid: str | None, voucher_type: str | None, number: str | None
+) -> list[Any]:
+    """The vouchers that match, from TallyPrime or from the local copy."""
+    if root is not None:
+        return records.vouchers(root)
+    if guid is not None:
+        return [snap.vouchers[guid]] if guid in snap.vouchers else []
+    return [
+        v for v in snap.vouchers.values() if v.voucher_type == voucher_type and v.number == number
+    ]
 
 
 def _age(since: date | None, on: date) -> int | None:

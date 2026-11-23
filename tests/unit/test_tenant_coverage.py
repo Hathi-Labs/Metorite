@@ -326,12 +326,14 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities",
-                                   "pm_agent_run_strands"])
+                                   "pm_agent_run_strands", "pm_project_sequences",
+                                   "pm_sequence_reservations"])
 def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
     """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
     an outside agent and their activities hold one organization's work. Neither
     may be exempt, and the committed policy phase must carry each (R5). SW-10a
-    (§12.6) adds the strands of a run: a nudge and a recovery record."""
+    (§12.6) adds the strands of a run: a nudge and a recovery record. SW-27a
+    (task 861) adds the project sequences and their reservations."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
@@ -340,6 +342,28 @@ def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_a_child_run_is_a_row_of_the_tenant_scoped_runs_table() -> None:
+    """WS-MCP SW-39 (``agent_coordination.md`` §3.11.9). A child run is a row
+    of ``pm_agent_runs``, so the policy of that table holds it (R5). The
+    migration adds no table, no policy and no exemption. A child takes the
+    ``organization_id`` default of the bound tenant, as every run insert
+    does, and its one writer never names the column."""
+    gen = _generator()
+    assert "pm_agent_runs" in gen.discover_tables()
+    assert "pm_agent_runs" not in gen.EXEMPT
+    found = [p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+             if "ADD COLUMN IF NOT EXISTS parent_run_id" in p.read_text(encoding="utf-8")]
+    assert len(found) == 1, found
+    body = "\n".join(line for line in found[0].read_text(encoding="utf-8").splitlines()
+                     if not line.startswith("--"))
+    for word in ("CREATE TABLE", "POLICY", "ROW LEVEL SECURITY", "organization_id ="):
+        assert word not in body, word
+    from gateway.routes.projects import agent_runs
+
+    assert "organization_id" not in agent_runs._INSERT_CHILD_SQL
+    assert "bound_org" in agent_runs._CHILDREN_SQL
 
 
 def test_the_my_day_card_state_table_is_tenant_scoped() -> None:

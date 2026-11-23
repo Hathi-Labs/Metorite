@@ -8,6 +8,7 @@ dev file store. On Windows it runs against DPAPI in build step 4.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import stat
@@ -364,3 +365,26 @@ def test_live_settings_swap_and_refuse_a_bad_value():
     with pytest.raises(SettingsError):
         live.replace(Settings(bind_host="0.0.0.0"))
     assert live.allowed_companies == ("A",)
+
+
+def test_a_company_that_leaves_the_allow_list_loses_its_local_copy(tmp_path):
+    """TLY-4, §3.8.13 item 6: the save of a new allow-list deletes at once the
+    copy of each company that left it. The copy of a kept company stays."""
+    from datetime import UTC, datetime
+
+    from tally_bridge.localcopy import CopyStore, MemoryKeyProvider
+    from tally_bridge.localcopy.store import Snapshot
+
+    store = FileSettingsStore(tmp_path / "settings.json")
+    store.save(dataclasses.replace(store.load(), allowed_companies=("Alpha Co", "Beta & Sons")))
+    live = LiveSettings(store.load())
+    copy = CopyStore(tmp_path / "copy", MemoryKeyProvider())
+    for name in ("Alpha Co", "Beta & Sons"):
+        copy.save(Snapshot(company=name, copied_at=datetime.now(UTC)))
+    secrets = MemorySecretStore(None, token_sha256(KEY))
+    app = build_address_app(live, secrets, Reader(), store, copy)
+    with TestClient(app, base_url=BASE) as c:
+        r = api(c, "POST", "/setup/api/companies", {"companies": ["Beta & Sons"]})
+    assert r.status_code == 200
+    assert copy.load("Alpha Co") is None
+    assert copy.load("Beta & Sons") is not None

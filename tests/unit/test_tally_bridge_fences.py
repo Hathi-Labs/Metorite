@@ -91,6 +91,22 @@ def test_the_reader_and_the_tools_do_not_import_the_setup_page():
     assert not bad, bad
 
 
+def test_the_local_copy_imports_only_the_reader():
+    """TLY-4. The copy reads Tally through the reader. It never imports the
+    tools, the transport or the setup page, so the tools can import it."""
+    bad = {
+        m
+        for m in _module_imports("localcopy")
+        if m.startswith(("tally_bridge.tools", "tally_bridge.transport", "tally_bridge.setup"))
+    }
+    assert not bad, bad
+
+
+def test_the_reader_does_not_import_the_local_copy():
+    bad = {m for m in _module_imports("reader") if m.startswith("tally_bridge.localcopy")}
+    assert not bad, bad
+
+
 def test_the_tools_do_not_import_the_transport():
     bad = {m for m in _module_imports("tools") if m.startswith("tally_bridge.transport")}
     assert not bad, bad

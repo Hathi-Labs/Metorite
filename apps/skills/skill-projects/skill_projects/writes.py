@@ -442,9 +442,38 @@ async def _named(
         return row
 
 
-async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
-    """The one status row a spoken name means, or a refusal that lists them."""
-    return await _named(await _statuses_of(project_id), status, "status", "statuses")
+async def _lanes_of_task(project_id: str, task_id: str) -> list[dict[str, Any]]:
+    """The lanes a task can be in. The project read first, and the task's own
+    lanes read when the project is not visible (Task 3865).
+
+    A member who holds a task by assignment alone cannot see its project, so
+    ``/nodes/{id}/statuses`` answers 404. ``/my/tasks/{id}/lanes`` is behind
+    the task, and it returns the lanes with no counts and no names of the
+    project. Only a 404 falls back, and a refusal of the task read raises the
+    first refusal, so the member sees one answer.
+    """
+    try:
+        return await _statuses_of(project_id)
+    except GatewayRefusal as first:
+        if first.status != 404 or not str(task_id or "").strip():
+            raise
+        tid = uuid_of(str(task_id), "task_id")
+        try:
+            return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+        except GatewayRefusal:
+            raise first from None
+
+
+async def _resolve_status(
+    project_id: str, status: str, task_id: str = "",
+) -> dict[str, Any]:
+    """The one status row a spoken name means, or a refusal that lists them.
+
+    *task_id* names the task being changed. It lets an assignee who cannot see
+    the project resolve the name through the task's own lanes.
+    """
+    rows = await _lanes_of_task(project_id, task_id) if task_id else await _statuses_of(project_id)
+    return await _named(rows, status, "status", "statuses")
 
 
 #: H-236: the refusal of an agent assignee in a run that may not send. Such a
@@ -523,11 +552,27 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = 
     return _refuse_agent_assignee(resolved)
 
 
+#: One address: one ``@``, a local part and a domain, with no space, no second
+#: ``@`` and no fence mark. It does not prove that the person exists: the card
+#: warns about an unknown address (:func:`_unknown_addresses`).
+_ADDRESS_SHAPE = re.compile(r"[^\s@«»,;<>()]+@[^\s@«»,;<>()]+")
+
+
 async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
-    if "@" in raw or raw.lower().startswith("agent:"):
+    if raw.lower().startswith("agent:"):
+        return raw.lower()
+    if "@" in raw:
+        # H-162 (task 487): an address passes through, but only in the shape of
+        # one. A broken one ("anitha@", "a b@c.io", "a@b@c") would reach the
+        # route as a bare string, so it is refused here, before any card.
+        if not _ADDRESS_SHAPE.fullmatch(raw):
+            raise GatewayRefusal(
+                f"{data(raw)} is not a valid email address. Pass one address, like "
+                "name@company.com, or the person's name."
+            )
         return raw.lower()
     payload = await get("/projects/assignees", {"q": raw})
     people = (payload or {}).get("people") or []
@@ -2371,7 +2416,9 @@ async def _plan_task_edit(
         before["description"] = (task.get("description") or "")[:200]
     lane: dict[str, Any] | None = None
     if status.strip():
-        lane = await _resolve_status(str(task.get("project_id")), status)
+        lane = await _resolve_status(
+            str(task.get("project_id")), status, str(task.get("id") or ""),
+        )
         payload["status_id"] = str(lane.get("id"))
     if due.strip():
         payload["due_at"] = due.strip()
