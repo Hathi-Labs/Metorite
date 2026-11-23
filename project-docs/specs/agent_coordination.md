@@ -18,7 +18,7 @@
 
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
 
-**SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 482.**
+**SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 492.**
 
 **SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475. No agent token reaches the route until SW-114.**
 
@@ -2141,7 +2141,7 @@ They keep their own gates.
 - **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
 - **The cost of the delete (SW-107b, task 3860).** Without an index, each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. An organization delete makes one scan for each run.
 - **Decision (owner, 2026-11-23).** A plain partial index in a migration, with a `lock_timeout`, and one narrow exemption in the label fence. Not `CREATE INDEX CONCURRENTLY`.
-- **Built (task 3860), 2026-11-23.** Migration 482 adds `pm_agent_runs_dispatched_by` on `dispatched_by_run_id`, with `WHERE dispatched_by_run_id IS NOT NULL`. The label fence takes this one index, word for word, and refuses each other index that names a label column. Fence: `tests/unit/test_agent_run_dispatch_index_r8.py` (the plan uses the index, and a run delete scans no table) and `tests/unit/test_agent_label_fence.py` (the exemption).
+- **Built (task 3860), 2026-11-23.** Migration 492 adds `pm_agent_runs_dispatched_by` on `dispatched_by_run_id`, with `WHERE dispatched_by_run_id IS NOT NULL`. The label fence takes this one index, word for word, and refuses each other index that names a label column. Fence: `tests/unit/test_agent_run_dispatch_index_r8.py` (the plan uses the index, and a run delete scans no table) and `tests/unit/test_agent_label_fence.py` (the exemption).
 
 #### SW-108 · The orchestrator holds a run and names it
 

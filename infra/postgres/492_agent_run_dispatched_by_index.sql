@@ -1,13 +1,14 @@
 -- ============================================================================
--- 482_agent_run_dispatched_by_index.sql - the index that serves the SET NULL
+-- 492_agent_run_dispatched_by_index.sql - the index that serves the SET NULL
 -- of `pm_agent_runs.dispatched_by_run_id` (WS-MCP SW-107b, Metorite task 3860)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md SW-107 ("Owner question: the
 --   cost of the delete") · R1 · R5 · R6 · R7.
 --
--- R1: on 2026-11-23 main held 481. Open pull request 2781 held 481 too, and
---   no open pull request held a higher number. So this file takes 482. Check
---   the number again at merge (scripts/premerge.sh).
+-- R1: the first build took 482. By 07:30 UTC on 2026-11-23 main held 486, and
+--   open pull requests held numbers up to 491. So this file takes 492, above
+--   main and above every open pull request. Check the number again at merge
+--   (scripts/premerge.sh).
 --
 -- Why: 472 added `dispatched_by_run_id`, a self key with ON DELETE SET NULL,
 --   and no index. So each delete of a run makes Postgres run
