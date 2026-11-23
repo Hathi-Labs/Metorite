@@ -1,5 +1,5 @@
 -- ============================================================================
--- 482_pm_same_org_refs.sql — a pm_* key that names a row of another tenant
+-- 491_pm_same_org_refs.sql — a pm_* key that names a row of another tenant
 -- is refused, for the 21 keys that had no org guard (Metorite task 3846).
 --
 -- What: one new check-only function `pm_same_org_ref(ref_table, ref_column)`
@@ -155,7 +155,8 @@
 -- box on 2026-11-21. SW-107 merged its own 472 first, so this file collided
 -- with it. The orchestrator renumbered this file to 476 on 2026-11-22. Then
 -- SW-27a (PR 2763, task 861) merged 477 first, so the file became 482 on
--- 2026-11-22. The home box ledger books 482 for task 3846 (PR 2737). Check
+-- 2026-11-22. Then PR 2757 merged 486 first, so the file became 491 on
+-- 2026-11-23. The home box ledger books 491 for task 3846 (PR 2737). Check
 -- it again at merge.
 --
 -- Depends on: 161_projects_tenancy.sql, 471 (the rule), 255, 267, 305, 340,
