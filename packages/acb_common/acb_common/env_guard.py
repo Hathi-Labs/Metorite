@@ -403,6 +403,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # changes what each member of the org sees, so only the operator writes
     # it (proactive_loop.md §7.2).
     "MY_DAY_LEARN_ORGS",
+    # LOOP-9: the shadow gate of a new nudge kind. It decides which kinds reach
+    # a member, so only the operator writes it (proactive_loop.md).
+    "PROACTIVE_KIND_MODES", "PROACTIVE_KIND_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",

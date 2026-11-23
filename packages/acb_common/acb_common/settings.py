@@ -1881,6 +1881,21 @@ class Settings(BaseSettings):
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
 
+    # ── The mode of a proactive nudge kind (LOOP-9, proactive_loop.md §7.6) ──
+    #
+    # `proactive_kind_modes` holds `kind=mode` pairs with a comma between
+    # pairs, for example `metric_moved=shadow`. A mode is `off`, `shadow` or
+    # `on`. A kind with no pair, an unknown mode and a kind that nobody
+    # declared are `off`. In `shadow`, the findings of the kind reach no member.
+    # `proactive_kind_orgs` lists the organization ids that may run a mode
+    # other than `off`, with a comma between ids, and `*` means every one.
+    # Empty means none. The one reader is `kind_mode` in `routes/shell/finding_contract.py`.
+    # The flip to `on` is the owner's, and a kind that spends credits is
+    # always the owner's (CLAUDE.md §3a rule 3).
+    # Fence: tests/unit/test_finding_shadow.py.
+    proactive_kind_modes: str = ""
+    proactive_kind_orgs: str = ""
+
     # ── My Day's `decide` org list and ceiling (WS-58 MD-6a-1) ──────────────
     #
     # `my_day_decide_orgs` lists the organization ids that may run a
