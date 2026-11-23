@@ -32,8 +32,7 @@ Mutations (R7). ``M`` is the migration
 * X3. ``M``: index another column. ``test_the_index_is_a_valid_partial_index``
   and ``test_the_set_null_lookup_uses_the_index``.
 * X4. 472: ``ON DELETE CASCADE`` in place of ``SET NULL``.
-  ``test_a_run_delete_sets_null_and_keeps_the_lane`` and
-  ``test_an_organization_delete_cascades_and_sets_null_across``.
+  ``test_a_run_delete_sets_null_and_keeps_the_lane``.
 * X5. ``M``: a statement that fails on a second run (no ``IF NOT EXISTS``).
   ``test_the_file_runs_twice``.
 """
@@ -219,12 +218,14 @@ class TestTheIndexOnARealDatabase:
                        b=world.boss_b)
         assert kept.n == RUNS_PER_ORG // DISPATCHED_EVERY
 
-    def test_an_organization_delete_cascades_and_sets_null_across(self, world):
+    def test_an_organization_delete_removes_each_run_of_the_organization(self, world):
         """The offboarding statement of ``acb_auth/offboard.py``. Each run of
-        the organization goes with it. A run of another organization that
-        names one of them as its dispatcher stays, with NULL. The foreign key
-        does not hold the organization (472's note on RLS), so such a row can
-        exist."""
+        the organization goes with it, 201 of them, and the delete finishes.
+        Since migration 491 (PR 2737) a run can name a dispatcher of its own
+        organization only, so a run of another organization cannot name one of
+        these runs and the delete has no row of another organization to set to
+        NULL. The first build of this test planted such a row. The insert is
+        refused now, by ``trg_pm_agent_runs_same_org_dispatched_by_run_id``."""
         org_c = str(uuid.uuid4())
         with world.p.admin_engine.begin() as c:
             c.execute(text("INSERT INTO organization (id, slug, display_name)"
@@ -234,14 +235,15 @@ class TestTheIndexOnARealDatabase:
         with world.p.admin_engine.begin() as c:
             boss_c = _one_run(c, org_c, task_c)
             _insert_runs(c, org_c, task_c, 200, boss_c, 2)
-            across = _one_run(c, world.org, world.task, boss_c)
+        [before] = _rows(world.p, "SELECT count(*) AS n FROM pm_agent_runs"
+                                  " WHERE organization_id = CAST(:o AS uuid)", o=org_c)
+        assert before.n == 201
         with world.p.admin_engine.begin() as c:
             c.execute(text("DELETE FROM organization WHERE id = CAST(:o AS uuid)"),
                       {"o": org_c})
         [left] = _rows(world.p, "SELECT count(*) AS n FROM pm_agent_runs"
                                 " WHERE organization_id = CAST(:o AS uuid)", o=org_c)
         assert left.n == 0
-        assert _dispatcher(world.p, across) is None
 
     def test_the_file_runs_twice(self, world):
         """Idempotent (R6): the runner tries a whole file again on a lock
