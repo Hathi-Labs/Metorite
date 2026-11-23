@@ -221,11 +221,46 @@ task of each wave.
 
 | Order | Slice | Task | Tier | State |
 |---|---|---|---|---|
-| 1 | PAR-2: the `org-admin` pack | 3102 | HIGH | To do |
-| 2 | The demo of rung 1 | 3104 | none | To do |
+| 1 | PAR-2a: the `org-admin` pack, with list, roles, status and access requests | 3102 | HIGH | In progress |
+| 2 | PAR-2b: the invite card | 3925 | HIGH | Waits for the owner (the mail) |
+| 3 | The demo of rung 1 | 3104 | none | To do |
 
-- **PAR-2 holds five jobs.** It lists the members and invites a person. It
-  sets a role and a status, and it answers an access request.
+- **The split (owner, 2026-11-23, answer on task 3102).** The audit of PAR-2
+  found the slice too big for one HIGH pull request, and the invite mail open.
+  So PAR-2a takes four jobs, and PAR-2b takes the invite after the owner
+  decides the mail.
+- **PAR-2a, four tools.** Each tool calls the gateway as the member. The
+  gateway guard stays the only check.
+
+  | Tool | Card | Gateway route | Guard |
+  |---|---|---|---|
+  | `list_members` | no | `GET /admin/members`, `GET /admin/members/requests` | `require_admin_user` |
+  | `set_member_roles` | yes | `PUT /admin/members/{email}/roles`, after `GET /admin/roles` | `admin:members:manage` |
+  | `set_member_status` | yes | `PATCH /admin/members/{email}` | `admin:members:manage` |
+  | `answer_access_request` | yes | `POST /admin/members/requests/{email}/approve` or `/deny` | `admin:members:invite` |
+
+  An access request takes the email as its key, not an id. The verb is
+  `deny`, not `decline`.
+- **PAR-2a pays six debt rows** of `chat_parity.py`: `GET /api/admin/members`,
+  `GET /api/admin/members/requests`, `GET /api/admin/roles`,
+  `PATCH /api/admin/members/{}`, `PUT /api/admin/members/{}/roles` and
+  `POST /api/admin/members/requests/{}/{}`. The admin ceiling goes from 36 to
+  30. A BFF path that differs from the gateway path takes the tuple form of
+  `COVERED`.
+- **PAR-2b pays two rows:** `POST /api/admin/members/invite` and
+  `GET /api/org/seats`. The gateway invite route is `POST /admin/members`. The
+  seats read is `GET /seats/overview`, and it answers 503 when no Customer
+  Console is wired, as in `dev_up` and the tests. The card then says that the
+  seat count is not known.
+- **The owner of the pack.** A pack needs an owner agent in
+  `_PACK_OWNER_AGENTS` (`gateway/routes/agent.py`). PAR-2a adds `org-admin`.
+  It owns the pack and never runs as an agent, as `studio-builder` does.
+- **The fences of PAR-2a.** They are `tests/unit/test_chat_parity.py`,
+  `tests/unit/test_tool_packs_registry.py` and the new unit tests of the
+  module. An R8 test also runs roles, status and access requests for two orgs
+  on a private database. `_KIND_TOOLS` and the class C rows of
+  `test_held_card_writes.py` hold Projects tools only, so they do not bind
+  this pack.
 - **Demo (task 3104).** An admin invites a person from the chat with one card.
   The person then shows as invited on Organisation.
 - **Who sends the mail.** The gateway route `POST /admin/members` sends
