@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from textwrap import wrap
 from typing import Any, Literal
