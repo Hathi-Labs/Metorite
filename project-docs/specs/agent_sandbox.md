@@ -851,7 +851,7 @@ waits on WS43-G1.
 tenant data only after a data processing agreement and a region check
 (D130.7).
 
-**What it costs.** The owner picks the plan and buys the box (SBX-G9). This
+**What it costs.** The owner picked the plan and the place (SBX-G9, D231). This
 spec quotes no price.
 
 **Where the box is (task 3912, 2026-11-23).** The owner approved a GCP box
@@ -1881,7 +1881,7 @@ dev-phase window does not open the WS-43 gates, and the same holds here.
 | SBX-G6 | Set a credit price for sandbox time |
 | SBX-G7 | Turn on org sharing of tools |
 | SBX-G8 | Set the `web:` profile policy on production, or the production package-host list (WS43-G4) |
-| SBX-G9 | (D187) Buy or rent the dedicated sandbox box of §4.6, and pick its plan |
+| SBX-G9 | (D187) Buy or rent the dedicated sandbox box of §4.6, and pick its plan. **Done** (D231, task 3912): `aroh-sandbox-1` on GCP |
 | SBX-G10 | (D187) Set up the private network between the gateway box and the sandbox box, and each DNS record or firewall rule of either box |
 | SBX-G11 | (D187) Set `sandbox_backend=docker-remote` on production, or put the key that reaches the sandbox box on a box |
 | SBX-G12 | (D187) Read the code of a tool of a tenant for platform adoption (§6.8). It needs the consent record of the source organization. With no record, refuse it always |
