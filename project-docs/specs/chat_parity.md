@@ -19,6 +19,17 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-8a (task 3903, rung 5) is BUILT, 2026-11-22, dark.** It pays the 18 debt
+rows of Workflows, so the Workflows ceiling is 0. Seven tools join the pack
+`studio-workflows`. They read the runs of a workflow, check a draft and read
+the parts of a step. They run a workflow, and make, rename, copy or delete
+one. The workflow helper changes a draft, and a tool manages the code modules.
+
+A run, a delete, a change by the helper and a save of a module each show one
+card. The pack is not in `FOLLOWS`, so the owner turns it on with a
+`TOOL_PACKS` line. PAR-8b builds the shell rows of rung 5. Fence:
+`tests/unit/test_studio_workflow_acts.py`.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -180,7 +191,7 @@ table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
 | people | 19 | 19 | P-5 | 3114 |
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
-| workflows | 24 | 18 | P-6 | 3115 |
+| workflows | 24 | 0 | P-6 | 3115, 3903 (PAR-8a built) |
 | apps | 29 | 28 | P-6 | 3115 |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
@@ -296,7 +307,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, 3112 | 3904 | 14 and 14 | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
-| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 16 and 18 | Four most-used actions are here. |
+| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 16 and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
@@ -308,7 +319,9 @@ at build. Each of these rungs ends in a demo task, and the table names it.
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
   leaves out the decision on a pending action until the owner answers §7,
-  item 6.
+  item 6. PAR-8a is BUILT: it pays the 18 Workflows rows, and a run of a
+  workflow from the chat shows one card. PAR-8b builds the shell rows. The demo
+  needs the owner to add `studio-workflows` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -348,6 +361,8 @@ he approves the merge.
 1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2 merges and before
    the demo of rung 1. Say which pack holds the tools of PAR-5 and PAR-6: a new
    slug needs its own line before the demo of rung 3.
+   Add `studio-workflows` before the demo of rung 5 (task 3905). It holds the
+   run of a workflow and the other tools of PAR-8a.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes.
 3. **The flag flips.** Approve each one on its task: `KNOWLEDGE_PROPOSALS` for
