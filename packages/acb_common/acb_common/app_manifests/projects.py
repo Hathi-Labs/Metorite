@@ -528,6 +528,10 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B", off_door=TYPED),
         Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B",
               off_door=LATER),
+        # ── sequences.py (SW-27a, task 861) ──
+        Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
+              reason="SW-27a: no tool reaches the reserve route yet. SW-27b (task 3893) adds the "
+              "MCP edge tool reserve_number, behind the owner's seam answer."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),
@@ -548,6 +552,8 @@ PROJECTS_DOOR = App(
               "C", off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
               "record_outside_decision", "B", off_door=TYPED),
+        Route("PUT", "/projects/agent-runs/{run_id}/plan", "set_run_plan", "B",
+              off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B",
               off_door=TYPED),
         Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X",

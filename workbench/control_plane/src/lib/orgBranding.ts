@@ -186,6 +186,21 @@ export function isRenderableLogoUri(uri: unknown): uri is string {
   return typeof uri === "string" && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(uri);
 }
 
+/**
+ * The browser's local storage, or `undefined` when there is none. H-206.
+ * Reading `window.localStorage` itself throws a SecurityError when the browser
+ * blocks site data (a private window, a policy). That throw happened outside
+ * the try/catch of the two helpers below, so the sidebar failed. This getter
+ * catches it, and the helpers already accept `undefined`.
+ */
+export function safeLocalStorage(): Storage | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 export function readCachedBranding(store: Pick<Storage, "getItem"> | undefined): OrgBranding | null {
   try {
     const raw = store?.getItem(BRANDING_CACHE_KEY);
