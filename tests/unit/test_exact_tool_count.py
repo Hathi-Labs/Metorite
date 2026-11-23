@@ -288,6 +288,37 @@ async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
     assert line and line[0]["tools"] == got["sent"], (line, got)
 
 
+@pytest.fixture(params=[False, True], ids=["home-off", "home-on"])
+def home_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``HOME_TOOLS_ORGS`` for the build of the orchestrator (PAR-8b, task
+    3903). The fixture ``orchestrator`` builds with no org, so this sets the
+    one decision of the build, ``agents._home_tools_enabled``. List it before
+    ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_home_tools_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_home_tools_add_five_to_the_base_only_with_their_flag_on(
+    staging_shape, home_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """PAR-8b (task 3903, ``chat_parity.md`` facts for the owner). The five Home
+    tools are core tools of the orchestrator, so they ride in each request of an
+    org on ``HOME_TOOLS_ORGS``. With the flag off, the staging shape does not
+    move: a base of 61, and 59 planned and sent. With it on, each count grows by
+    five: a base of 66, and 64 planned and sent. The packs that then drop at the
+    cap are pinned in ``test_home_tools.py``
+    (``test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack``).
+    Mutation: the build holds the tools with the flag off -> red."""
+    on = home_flag
+    names = set(_names(orchestrator))
+    home = {"home_read", "home_card", "home_prefs", "home_layout", "home_test_push"}
+    assert (home <= names) is on and (not home & names) is (not on)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + 5 * int(on), got
+    assert got["base"] == 61 + 5 * int(on), got
+
+
 def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
     """CO-11b (task 3563): the trade that this slice chose, and that the owner
     accepts before ``CHAT_PIN_TOOL_ORGS`` flips (``chat_organization.md``

@@ -203,9 +203,16 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # PAR-8b (chat_parity.md section 6.4): the orgs whose main assistant holds the
+    # five Home tools. They join each request, so only the owner writes it.
+    "HOME_TOOLS_ORGS",
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9.4 WT-6a: the orgs where a held chat keeps
+    # the two archive tools of class C. It moves a guard, so only the owner
+    # writes it (work_plan.md §6 D4).
+    "HELD_CLASS_C_ORGS",
     # one_assistant_context.md §9 WT-1: the orgs where a member may continue
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
@@ -229,6 +236,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # model of a connection. It changes what the chat may read for the org,
     # so only the operator writes it.
     "CONNECTION_MODEL_ORGS",
+    # crm_platform.md §18.7, task 3869: the orgs whose Zoho mirror reads each
+    # generic module in full once in 7 days. It spends the org's Zoho API
+    # credits, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MODULE_REREAD_ORGS",
     # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
