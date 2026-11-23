@@ -1,5 +1,5 @@
 -- ============================================================================
--- 493_pm_projects_work_style.sql — the work style of a project node (WS-39
+-- 500_pm_projects_work_style.sql — the work style of a project node (WS-39
 -- SP-3a, Metorite task 962, D195).
 --
 -- What: one column on `pm_projects`.
@@ -51,8 +51,8 @@
 -- The number is taken at build time (R1). The build of 2026-11-09 took 400.
 --   Main went past 400 while the branch waited. The merge of 2026-11-22 took
 --   483, and main then reached 486. So on 2026-11-23 the file moved to 493,
---   the number that the owner's fleet booked. On that day origin/main held
---   486 as its highest file, and no open branch held a number in the 490s.
+--   then to 500 (booked), because main reached 495. On that day no open
+--   branch held 500.
 --   Check it again at merge.
 -- Pinned by tests/unit/test_project_work_style.py and
 --   tests/unit/test_project_work_style_r8.py (R8), which find this file by

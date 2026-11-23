@@ -948,7 +948,7 @@ class ProjectModel(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str = "UTC"
-    #: WS-39 SP-3a (migration 493). How the team of this node works: one of
+    #: WS-39 SP-3a (migration 500). How the team of this node works: one of
     #: :data:`WORK_STYLES`. A row from before the column reads the default.
     work_style: str = DEFAULT_WORK_STYLE
     created_by: str | None = None
