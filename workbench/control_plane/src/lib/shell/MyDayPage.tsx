@@ -68,7 +68,7 @@ import AppLauncher from "./AppLauncher";
 import MyDayCapture from "./MyDayCapture";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import BriefCard from "./BriefCard";
-import { BRIEF_KEY, fetchBrief } from "./briefCard";
+import { BRIEF_KEY, fetchBrief } from "./briefCardModel";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
 import NowCard from "./NowCard";

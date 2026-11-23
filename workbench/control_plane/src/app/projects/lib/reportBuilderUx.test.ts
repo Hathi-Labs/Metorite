@@ -445,7 +445,9 @@ describe("(5) the name follows the chips until the member types one", () => {
     expect(newBuilderState().nameTouched).toBe(false);
     expect(builderStateFromTemplate(T6)!.nameTouched).toBe(false);
   });
+});
 
+describe("(12) the rail splits yours from shared", () => {
   it("a card shows the subject and the scope, and the template only when it adds", () => {
     expect(reportCardLine(row(), "Weekly delivery", null, "Whole organization")).toBe(
       "Whole organization"
@@ -461,9 +463,7 @@ describe("(5) the name follows the chips until the member types one", () => {
       reportCardLine(row({ name: "1:1 prep: Meera Iyer" }), "1:1 prep", "Meera Iyer", "Whole organization")
     ).toBe("Whole organization");
   });
-});
 
-describe("(12) the rail splits yours from shared", () => {
   it("splits by the server's mine, newest first", () => {
     const rows = [
       row({ id: "a", mine: true, created_at: "2026-09-01T00:00:00Z" }),

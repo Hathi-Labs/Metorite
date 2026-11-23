@@ -759,6 +759,58 @@ CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
     {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
 )
 
+#: The event that gives the receipt of an approved card its Undo
+#: (one_assistant_context.md §9.4 WT-6a). The value names the card's
+#: ``request_id``, the kind and the id of the row, and the row's version after
+#: the write. The browser then calls the unarchive route itself, under the
+#: member's own session, with that version as ``If-Match``. The event carries
+#: no token. ``workbench/control_plane/src/lib/archiveUndo.ts`` reads it.
+CONFIRMATION_UNDO = "confirmation_undo"
+#: The kinds of row that a receipt can restore, each with its unarchive route.
+UNDO_KINDS: frozenset[str] = frozenset({"task", "project"})
+_UUID_RE = _re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def undo_value(kind: str, row_id: str, version: str | None) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_UNDO` event, or None.
+
+    *kind* is one of :data:`UNDO_KINDS`, *row_id* a UUID and *version* the
+    row's ``updated_at`` with a UTC offset. The Undo sends that version as
+    ``If-Match``, so a missing one gives None too. Any other value gives None,
+    so no line offers an Undo that cannot work."""
+    rid = str(row_id or "").strip().lower()
+    if kind not in UNDO_KINDS or not _UUID_RE.fullmatch(rid):
+        return None
+    stamp = str(version or "").strip()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})", stamp):
+        return None
+    return {"kind": kind, "id": rid, "version": stamp}
+
+
+async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool:
+    """Offer Undo on the receipt of the card that the member just approved.
+
+    WT-6a. A tool calls it after the write that its card approved. It sends
+    one :data:`CONFIRMATION_UNDO` event on the channel that carried the card,
+    keyed by that card's ``request_id``. The tool names no card: the id comes
+    from :data:`_APPROVED_CARD`. True when the event went out. A frame with no
+    approved card, a value that :func:`undo_value` refuses, or a fault gives
+    False, and the receipt then offers no Undo. It never raises."""
+    card = _APPROVED_CARD.get()
+    # One card gives one Undo. A second call names no card.
+    _APPROVED_CARD.set(None)
+    value = undo_value(kind, row_id, version)
+    if card is None or value is None:
+        return False
+    request_id, publish = card
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_UNDO,
+                       "value": {"request_id": request_id, **value}})
+    except Exception:  # the receipt then offers no Undo
+        return False
+    return True
+
 
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
@@ -1571,6 +1623,9 @@ CARD_NOT_DONE_LEADS: tuple[str, ...] = tuple(
 #: publisher of its stream. Only :func:`request_confirmation` writes it, and
 #: only on an APPROVE. :func:`card_outcome_head` reads it once, for a
 #: "Changed since the card" text. The default is None, never a mutable object.
+#: WT-6a: :func:`publish_card_undo` reads it once too, after the write that
+#: the card approved. So one card gives a "Changed since" text or an Undo,
+#: never both. A ContextVar, so two tools that run at once each read their own.
 _APPROVED_CARD: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
     "acb_approved_card", default=None)
 
@@ -2874,6 +2929,8 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    # WT-6a: a card of an earlier call is never the card of this one. A path
+    # with no chat card (WhatsApp, no channel) leaves this None.
     _APPROVED_CARD.set(None)
     # CO-17: a new card ends the hold on the link slot of an earlier one.
     _LAST_APPROVED.set(None)
@@ -3115,6 +3172,7 @@ async def request_confirmation(
             else CARD_OTHER_MEMBER if _other_member
             else CARD_DECLINED)
         # Task 3827: the id of this card, for a "Changed since" text that follows.
+        # WT-6a: only an APPROVE of this card lets a later Undo name it.
         _APPROVED_CARD.set(
             (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
         if _answer == "APPROVE":
