@@ -231,6 +231,13 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   complete: { kind: "edit", verb: V.complete, object: "a task" },
   defer: { kind: "edit", verb: V.defer, object: "a task" },
   watch: { kind: "edit", verb: V.watch, object: "a task" },
+  // ── Home and the shell (PAR-8b, task 3903, `acb_skills/home_tools.py`) ─────
+  // Noun-first names. The derived words would read "Used home read".
+  home_read: { kind: "read", verb: V.read, object: "your Home page" },
+  home_card: { kind: "edit", verb: V.update, object: "a Home card" },
+  home_prefs: { kind: "edit", verb: V.save, object: "a Home setting" },
+  home_layout: { kind: "edit", verb: V.set, object: "the default sidebar" },
+  home_test_push: { kind: "run", verb: V.check, object: "your notifications" },
   // ── AI Studio (the `studio` pack) ─────────────────────────────────────────
   // STB-6a and STU-E4b: a noun-first name. The derived words would read "Used studio workflow read".
   studio_workflow_read: { kind: "read", verb: V.read, object: "a workflow" },
