@@ -183,6 +183,8 @@ The brief holds no secret. The program plan (task 2546) holds the order of the p
 
 **Who writes a hand-off.** The agent that finds the dependency writes both comments and the link. Another project owner needs no permission to read the comment. A change to the other project's own task goes through a comment, and the owner of that project makes the change.
 
+**The dispatcher names its run (SW-108, Q20).** An orchestrator holds an open run on a coordination task of its own. Before a quiet stretch, it posts a `waiting` line with `on` set to `agent`. It puts its run id in each hand-off. The lane that takes the hand-off passes that id as `dispatched_by` on its claim, and writes it in the header of its notes. A lane that restarts then finds its dispatcher. An orchestrator with no run has no node on the map. Fence: advisory (R7). `test_mcp_edge_prompts.py` `TestTheDispatchRule` holds the neutral text of `work_on_task`.
+
 **Fence.** Advisory until KIT-5. The doctor of KIT-5 lists each `blocks` link that crosses a project and has no `Hand-off:` comment on both ends (test `tests/unit/test_handoff_comments.py`, new).
 
 ---

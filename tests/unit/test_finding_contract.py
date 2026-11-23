@@ -12,6 +12,17 @@ import pytest
 from gateway.routes.shell import finding_contract as fc
 
 
+@pytest.fixture(autouse=True)
+def _kind_on(monkeypatch):
+    """LOOP-9: a kind reaches a member only in ``on``. These tests are about
+    the delivery checks, so the kinds they use run ``on`` for every org."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "proactive_kind_modes",
+                        "metric_moved=on,k=on", raising=False)
+    monkeypatch.setattr(get_settings(), "proactive_kind_orgs", "*", raising=False)
+
+
 def _finding(**over):
     base = dict(
         kind="metric_moved", entity={"type": "metric", "id": "m1", "label": "Revenue"},

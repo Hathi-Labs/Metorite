@@ -752,20 +752,23 @@ def test_a_denied_card_reaches_the_model_unframed_end_to_end(monkeypatch):
 
 
 @pytest.mark.usefixtures("_a_tenant")
-def test_the_error_text_of_a_server_never_reaches_the_model_end_to_end(monkeypatch):
+def test_the_error_text_of_a_server_reaches_the_model_inside_one_frame_end_to_end(monkeypatch):
     """An ``isError`` answer raises ``ToolExecutionException`` in MAF, with the
-    server's text. MAF sends its own fixed text, so the server's text never
-    reaches the model, framed or not."""
+    server's text. Task 3896 changed the answer: the gate gives the model the
+    server's text, redacted, in ONE ``MCP ERROR`` block, and never before the
+    block. Before task 3896, MAF sent "Function failed" and no text at all.
+    ``test_mcp_tool_error_text.py`` holds the rest of the contract."""
     from agent_framework import _mcp as maf_mcp
     from agent_framework.exceptions import ToolExecutionException
 
     async def _error(self: Any, tool_name: str, kwargs: dict[str, Any]) -> Any:
-        raise ToolExecutionException(f"SERVER-ERROR-TEXT {INJECTION}")
+        raise ToolExecutionException(f"SERVER-ERROR-TEXT {INJECTION} {FORGED_END}")
 
     monkeypatch.setattr(maf_mcp.MCPTool, "_call_tool", _error)
     with local_mcp_server() as srv:
         model = ScriptedModel([tool_turn("probe-srv_echo", '{"text": "x"}'), text_turn("ok")])
         _drive(monkeypatch, srv, model, payload=_a_member(monkeypatch))
     text = _the_one_result(model)
-    assert "SERVER-ERROR-TEXT" not in text and INJECTION not in text
-    assert _blocks(text) == []
+    assert text.startswith("Refused:") and "Function failed" not in text
+    _assert_one_frame(text, label=_maf_mcp.ERROR_LABEL)
+    assert FORGED_END not in text

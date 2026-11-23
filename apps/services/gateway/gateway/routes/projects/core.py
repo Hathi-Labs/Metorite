@@ -49,6 +49,7 @@ from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -566,6 +567,71 @@ def assert_not_archived(node: Any, *, then: str) -> None:
             detail=f"{name} is archived. {then} an active project, or "
                    f"unarchive this one first.",
         )
+
+
+#: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
+#: task write into an archived project answers, over HTTP 409. Chat and MCP
+#: reach the same routes and so show the same words.
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
+
+
+def assert_project_open_for_writes(project: Any) -> None:
+    """Refuse a task write into a project with ``archived_at`` (ARC-2b).
+
+    ``archive_node`` stamps ``archived_at`` on every project of the subtree,
+    so the project row alone decides. No ancestor walk. Call it AFTER the
+    visibility load, so a caller who cannot see the project gets 404 (R5).
+    It does not live inside ``load_visible_task`` or ``load_visible_project``,
+    because those also serve reads. A member's own overlay
+    (``pm_task_personal``) and the agent-run routes are not project work and
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
+    """
+    if getattr(project, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+
+
+async def project_is_archived(db: Any, project_id: str) -> bool:
+    """True when the project row carries ``archived_at`` (ARC-2b)."""
+    row = (await db.execute(
+        text(
+            "SELECT archived_at FROM pm_projects "
+            "WHERE id = CAST(:project_id AS uuid)"
+        ),
+        {"project_id": str(project_id)},
+    )).fetchone()
+    return row is not None and row.archived_at is not None
+
+
+async def assert_task_id_project_open(db: Any, task_id: str) -> None:
+    """:func:`assert_project_open_for_writes` for the project of a task id.
+
+    For a route that holds a task id and no task row, such as the edit of a
+    comment. The caller has already proved that they may see the task.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT p.archived_at FROM pm_tasks t "
+            "JOIN pm_projects p ON p.id = t.project_id "
+            "WHERE t.id = CAST(:task_id AS uuid)"
+        ),
+        {"task_id": str(task_id)},
+    )).fetchone()
+    if row is not None:
+        assert_project_open_for_writes(row)
+
+
+async def assert_task_project_open(db: Any, task: Any) -> None:
+    """:func:`assert_project_open_for_writes` for the project of *task*.
+
+    *task* is a row that ``load_visible_task`` returned. One extra read of
+    ``archived_at`` on the task's own project, with no visibility clause: the
+    caller already proved they may see the task.
+    """
+    if await project_is_archived(db, str(task.project_id)):
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
 
 
 def assert_holds_tasks(node: Any, *, then: str) -> None:

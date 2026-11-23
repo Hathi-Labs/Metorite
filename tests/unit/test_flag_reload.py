@@ -245,6 +245,27 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_chat_pin_tool_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11b, chat_organization.md §18 (owner, 2026-11-21, task 3563).
+    The reload list holds the key. The one reader of the tool switch sees a
+    change with no restart, and it needs the pin switch too."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert fr.reloadable("CHAT_PIN_TOOL_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    monkeypatch.setenv("CHAT_PIN_TOOL_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme", "CHAT_PIN_TOOL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_TOOL_ORGS",)
+    assert pin_tool_allowed("acme")
+    assert not pin_tool_allowed("globex")
+    assert not pin_tool_allowed(None)
+
+
 def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
     reader of the compute switch sees a change with no restart."""
@@ -307,6 +328,20 @@ def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert fr.reload_flags().applied == ("CORE_EVENTS_ORGS",)
     assert core_events_allowed("acme")
     assert not core_events_allowed("globex")
+
+
+def test_crm_mirror_age_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q30c, crm_platform.md §18.11.2. The reload list holds the
+    key, and the one reader of the age line sees a change with no restart."""
+    assert fr.reloadable("CRM_MIRROR_AGE_ORGS")
+    monkeypatch.setenv("CRM_MIRROR_AGE_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.mirror_age_allowed("acme")
+    env(**{**_START, "CRM_MIRROR_AGE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MIRROR_AGE_ORGS",)
+    assert crm_flags.mirror_age_allowed("ACME ")
+    assert not crm_flags.mirror_age_allowed("globex")
+    assert not crm_flags.mirror_age_allowed(None)
 
 
 def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:

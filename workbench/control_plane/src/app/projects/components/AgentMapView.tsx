@@ -7,7 +7,9 @@
  * right: person, then session, then task. Its neighbour is the List beside
  * it, and it reads the same state chips. SW-106: a session shows its machine
  * and its model, and the switch "Group by machine" puts a machine node
- * between the person and the sessions.
+ * between the person and the sessions. SW-109: a dashed arrow runs from a
+ * session to each session that it dispatched, and the dispatcher sits to the
+ * left of its lanes. The phone outline says "Dispatched by" under a lane.
  *
  * ⚠️ **Read only.** Nothing drags, connects or edits. A click on a node opens
  * a side sheet with its facts. The sheet opens a task, and nothing else acts.
@@ -19,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Handle,
+  MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -41,6 +44,8 @@ import {
   type AgentMap,
   type AgentMapRead,
   CANVAS_LABEL,
+  DISPATCHED_BY_LABEL,
+  DISPATCHED_LABEL,
   GROUP_BY_MACHINE_LABEL,
   MAP_EMPTY_COPY,
   MAP_ERROR_COPY,
@@ -50,6 +55,7 @@ import {
   OUTLINE_LABEL,
   SHOW_QUIET_LABEL,
   agentMapOutline,
+  dispatchGraph,
   groupByMachine,
   layoutAgentMap,
   runStateChip,
@@ -87,9 +93,9 @@ interface NodeData extends Record<string, unknown> {
 function StateChip({ node }: { node: MapNode }) {
   if (node.kind === "session" && node.state) {
     return (
-      <span className={`${CHIP} ${sessionStateChip(node.state)}`}>
-        <Icon name={sessionStateIcon(node.state)} size={12} />
-        {sessionStateWord(node.state)}
+      <span className={`${CHIP} ${sessionStateChip(node.state, node.quietWait)}`}>
+        <Icon name={sessionStateIcon(node.state, node.quietWait)} size={12} />
+        {sessionStateWord(node.state, node.quietWait)}
       </span>
     );
   }
@@ -197,6 +203,8 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
   );
 }
 
+const DISPATCH_LINE = "var(--muted-foreground)";
+
 const NODE_TYPES = { agentMap: MapNodeCard };
 
 /** The fit that every map uses. */
@@ -228,6 +236,24 @@ function RefitOnResize({ box, moved }: { box: React.RefObject<HTMLDivElement | n
   return null;
 }
 
+/**
+ * The width of the map changes with the data, for example when a refresh adds
+ * the first dispatch line. Fit again then, unless the member moved the map.
+ * It never remounts the canvas, so a pan and a zoom stay.
+ */
+function RefitOnWidth({ width, moved }: { width: number; moved: React.RefObject<boolean> }) {
+  const { fitView } = useReactFlow();
+  const last = useRef(width);
+  useEffect(() => {
+    if (last.current === width) return;
+    last.current = width;
+    if (moved.current) return;
+    const timer = window.setTimeout(() => void fitView(FIT_OPTIONS), REFIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [width, moved, fitView]);
+  return null;
+}
+
 function Canvas({
   map,
   onPick,
@@ -243,6 +269,7 @@ function Canvas({
   const box = useRef<HTMLDivElement | null>(null);
   const moved = useRef(false);
   const layout = useMemo(() => layoutAgentMap(map, nowMs, { groupByMachine: byMachine }), [map, nowMs, byMachine]);
+  const width = useMemo(() => layout.nodes.reduce((m, n) => Math.max(m, n.x + n.w), 0), [layout]);
   const nodes: Node<NodeData>[] = useMemo(
     () =>
       layout.nodes.map((node) => ({
@@ -268,7 +295,13 @@ function Canvas({
         focusable: false,
         selectable: false,
         animated: false,
-        style: edge.kind === "line" ? { strokeDasharray: "4 4" } : undefined,
+        // A dispatch line is dashed and points at the lane. It uses the same token as the text.
+        ...(edge.kind === "line"
+          ? {
+              style: { strokeDasharray: "4 4", stroke: DISPATCH_LINE },
+              markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: DISPATCH_LINE },
+            }
+          : {}),
       })),
     [layout],
   );
@@ -307,6 +340,7 @@ function Canvas({
         >
           <Background gap={22} size={1.2} />
           <RefitOnResize box={box} moved={moved} />
+          <RefitOnWidth width={width} moved={moved} />
         </ReactFlow>
       </ReactFlowProvider>
     </div>
@@ -337,11 +371,18 @@ function Outline({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">{session.name}</span>
                     <span className={`${CHIP} ${session.chip}`}>
-                      <Icon name={sessionStateIcon(session.state)} size={12} />
+                      <Icon name={sessionStateIcon(session.state, session.quietWait)} size={12} />
                       {session.word}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">{session.client}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {session.lastEvent ? `${session.client} \u00b7 ${session.lastEvent}` : session.client}
+                  </p>
+                  {session.dispatchedBy.length > 0 ? (
+                    <p data-outline-dispatched-by="" className="text-xs text-muted-foreground">
+                      {DISPATCHED_BY_LABEL} {session.dispatchedBy.join(", ")}
+                    </p>
+                  ) : null}
                   <div data-outline-place="" className="space-y-0.5">
                     <PlaceLines place={session.place} />
                   </div>
@@ -437,14 +478,21 @@ function NodeFacts({
     const session = map.sessions.find((s) => s.id === node.ref);
     if (!session) return null;
     const runs = map.runs.filter((r) => r.session_id === session.id);
+    const dispatch = dispatchGraph(map);
+    const dispatchedBy = (dispatch.dispatchers.get(session.id) ?? []).map(
+      (id) => map.sessions.find((s) => s.id === id)?.name ?? "",
+    );
+    const lanes = dispatch.dispatched.get(session.id)?.length ?? 0;
     return (
       <div className="space-y-3" data-map-facts="session">
         <dl className="space-y-2">
           <Fact term="Person">{session.person}</Fact>
           <Fact term="Client">{session.client}</Fact>
           <PlaceFacts place={sessionPlace(session)} />
-          <Fact term="State">{sessionStateWord(session.state)}</Fact>
+          <Fact term="State">{sessionStateWord(session.state, dispatch.waiting.has(session.id))}</Fact>
           <Fact term="Last active">{relativeTime(session.last_at, nowMs) || "Unknown"}</Fact>
+          {dispatchedBy.length > 0 ? <Fact term={DISPATCHED_BY_LABEL}>{dispatchedBy.join(", ")}</Fact> : null}
+          {lanes > 0 ? <Fact term={DISPATCHED_LABEL}>{lanes === 1 ? "1 session" : `${lanes} sessions`}</Fact> : null}
           <Fact term="Open runs">{session.run_count}</Fact>
           <Fact term="Quiet runs">{session.quiet_count}</Fact>
         </dl>

@@ -37,6 +37,12 @@ root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
 push gate of agent code read the membership and the access in the run's
 org (§15.4).
+**H-245 (task 618) is built (2026-11-22).** It closes the four P3 edges of
+the skill rule that the review of PR #635 left (§16.3), with the review
+repairs of 2026-11-22. The orphan rule and the store ask bind every shared
+dir, and each refusal has its own text. A personal dir is exempt from both,
+for a read and for a write. Three gaps stay open in a team dir, and task 3892
+carries them (§16.3). No team-instanced agent ships today.
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -2389,11 +2395,70 @@ These facts change or add to the text above:
   another member runs it. And the container cannot write a shared folder,
   so a script has no place to put another member's data where its author
   can read it.
-- **Skill privacy holds while the org is covered** (a named residual for the
-  switch-on). A covered run does not hold `recall_notes` or `save_note`, and
-  those tools check no skill owner. So if `MAF_CODING_SCOPE` stops covering
-  an org, a run of that org can read another member's skill with
-  `recall_notes`. This stays open until HANDOFF H-245 step 3 closes.
+- **H-245 closed the four P3 edges of the skill rule** (task 618,
+  2026-11-22). It made four changes:
+  - In a shared dir, the file store of a covered run hides a skill folder
+    that holds files and no marker. A rehydrate that fails part way can bring
+    back a member's files with no marker. No run reads that folder, the
+    author's run too, because `claim_skill` lets no member take it.
+  - The orphan rule and the store ask bind every shared dir: a tenant dir
+    (`o:<org>`) and a team dir (`t:<team>`). A personal dir (`u:<email>`)
+    is exempt from both, for a read and for a write (task 618 review, F1).
+    The Files routes save a skill in a personal dir with no marker. So there
+    the member's run reads that folder, and its first write claims the
+    folder and writes the member's marker. `agent_paths.is_shared_instance`
+    tells the two kinds apart.
+    The store reads the dir kind from the broker's binding, never from the
+    `.cc-instance` marker.
+  - In a shared dir, `claim_skill` asks the blob store before it takes a
+    name. A row under the folder in the store refuses the claim, so a later
+    rehydrate never puts one member's files in a folder that another member
+    owns. The ask reads the keys that a rehydrate of the dir restores
+    (`agent_paths.store_ask_instances`). A tenant dir reads its own key and
+    the older shared rows (`instance=''`). A team dir reads its own key
+    only. A route passes the key `o:<org>` from the session. The file store
+    passes the key of the broker's binding. `claim_skill` takes the key as
+    a required keyword, so a caller that leaves it out fails at once (F3).
+    When the store cannot answer, the claim is refused.
+  - Each refusal of `claim_skill` carries a reason
+    (`agent_paths.SkillClaimRefusal`), and each reason has its own text
+    (`SKILL_REFUSAL_TEXT`). The Files routes answer with these statuses:
+
+    | Reason | Status | Text |
+    |---|---|---|
+    | Another member's marker, or a lost race | 403 | That skill belongs to another member. |
+    | Files and no marker, or rows in the store | 409 | That skill name is in use. Pick another name. |
+    | The store does not answer | 503 | This server cannot check that skill name right now, so nothing was saved. Try again in a minute. |
+
+    The 409 tells the member that another name works. The 503 tells the
+    member to try again. The file store gives the same text to the model,
+    after `Refused:`.
+  - In a shared agent's tenant dir, `recall_notes` and `save_note` refuse
+    each skill folder that is not the member's own. In every other dir, the
+    two tools work as before. The file store writes a marker in every dir,
+    so a personal dir can hold a marker too.
+  - The tree of the Files routes leaves out each path that
+    `_odd_name_form` refuses, so the tree never names a file that GET
+    answers 404 for.
+- **Three gaps of the skill rule stay open in a team dir.** Task 3892 carries
+  the fix of each. No team-instanced agent ships today.
+  - The file-store rules bind a team dir. But a `code_task` container
+    mounts the whole dir read-write. `code_session.py` refuses only a tenant
+    key, and `_build_mounts` gives `code_task` no skill cover. So
+    `run_command` can still read the skill of another member there.
+  - The Files routes save a skill in a team dir with no marker. The file
+    store then hides that folder from every run, the author's run too. This
+    fails closed.
+  - `recall_notes` and `save_note` check the skill owner in a tenant dir
+    only (`note_tools.py` gates on `is_tenant_instance`). In a team dir they
+    can read the skill of another member.
+- **The residual of the skill rule, named.** The disk can lose a skill
+  folder while the store still holds it. Until the marker comes back, a
+  covered run of the author cannot write into that folder. The rehydrate at
+  the next agent load brings the marker back. So does the author's next GET
+  of a file of the folder. When the store holds files of the folder and no
+  marker row, no member can take that name again. Nothing leaks, because
+  each lock fails closed.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
@@ -4544,11 +4609,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4560,8 +4627,11 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-218.** The loader writes the GitHub token into each clone's remote URL
   (`loader.py:78`). The mutation container mounts the clone and has a network,
   so code in it can read the token (§15.3).
-- **H-211's root half** closes with WS-43m. Its external half and H-212 close
-  with the change in the sales-assistant repo (WS43-G11).
+- **H-211's root half** closed with task 560 (2026-11-21). The root factory
+  sets no permission handler, and
+  `tests/unit/test_no_first_party_approve_all.py` fails if one comes back.
+  Its external half and H-212 close with the change in the sales-assistant
+  repo (WS43-G11).
 
 ## 15. D84 — the GitHub Copilot SDK leaves the platform
 
@@ -4663,10 +4733,17 @@ H-218 is fixed.
 
 ### 15.4 The root `metorite` agent
 
-Today it is a `GitHubCopilotAgent` with `approve_all` (root
-`agents.py:102-122`), and its working dir is the platform checkout. So the
-model can run any shell command and write any file there, in every
-permission mode (H-211).
+Today it is a `GitHubCopilotAgent` (root `agents.py`). Until task 560
+(2026-11-21) its factory set `approve_all`, so the model could run any shell
+command and write any file, in every permission mode (H-211). Now the
+executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
+keeps its shell. The denylist and the workspace bounds of
+`permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 

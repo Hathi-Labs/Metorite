@@ -303,7 +303,9 @@ def test_a_studio_tool_belongs_to_the_studio_builder() -> None:
     # WS-STU J2d: the share tool of the fourth pack of the owner.
     # TOF-3a F12c: the two tools of the repair pack.
     assert "studio_skill_share" in names and "studio_skill_repair" in names
-    assert len(names) == 28
+    # PAR-8a: seven more tools of the Workflows app in studio-workflows (28 to 35).
+    assert "studio_workflow_run" in names
+    assert len(names) == 35
     for name in names:
         assert run.owner_of_tool(name) == pack.STUDIO, name
     assert run.owner_of_tool("read_email") == pack.EA

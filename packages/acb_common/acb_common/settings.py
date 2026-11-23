@@ -397,6 +397,16 @@ class Settings(BaseSettings):
     # owner's production run (CRM-Z10-run). Fence:
     # tests/unit/test_crm_cutover_switch_r8.py.
     crm_cutover_orgs: str = ""
+    # `crm_mirror_age_orgs` (WS-53 CRM-Q30c, task 3868, 2026-11-22) lists the
+    # organization ids whose CRM read tools say how old the Zoho mirror of a
+    # module is, in the grammar of `crm_orgs`. Default empty means NO
+    # organization: `GET /crm/sync/mirror-age` answers an empty list and
+    # sends no SQL, and the tools send no request for it. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_mirror_age.py, tests/unit/test_crm_mirror_age_note.py.
+    crm_mirror_age_orgs: str = ""
     # `crm_module_find_orgs` (WS-53 CRM-Q34-6, task 3699, 2026-11-18) lists
     # the organization ids whose chat may find a field by its words, in one
     # module or in each mirrored module, in the grammar of `crm_orgs`.
@@ -1729,6 +1739,24 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
 
+    # ── Pin a chat from the chat (chat_organization.md §18, WS-CO CO-11b) ──
+    #
+    # `chat_pin_tool_orgs` lists the organization ids where the orchestrator
+    # holds the tool `pin_chat`, or `*` for each one. The owner gave the tool
+    # its own flag on 2026-11-21 (task 3563). So the pin of the chat list can
+    # turn on with no change to the tool list. Empty means off: no chat holds
+    # the tool, and the tool count does not move. The one reader is
+    # `gateway.chat_session_member.pin_tool_allowed`. It is true only when
+    # `chat_pin_orgs` holds the org too, because the routes answer 404 with
+    # the pin off. It fails closed. The name ends in `_orgs`, so a SIGHUP
+    # applies a change at the next run (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-GATE: any value other than empty on a box. Only the owner flips
+    # it, because the tool joins each request and moves the tool cap trade of
+    # chat_organization.md §18.
+    # Fences: tests/unit/test_chat_pin_tool.py, tests/unit/test_flag_reload.py.
+    chat_pin_tool_orgs: str = ""
+
     # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
     #
     # `chat_card_record_orgs` lists the organization ids where a write card
@@ -1865,6 +1893,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_email_decide_shadow.py.
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
+
+    # ── The mode of a proactive nudge kind (LOOP-9, proactive_loop.md §7.6) ──
+    #
+    # `proactive_kind_modes` holds `kind=mode` pairs with a comma between
+    # pairs, for example `metric_moved=shadow`. A mode is `off`, `shadow` or
+    # `on`. A kind with no pair, an unknown mode and a kind that nobody
+    # declared are `off`. In `shadow`, the findings of the kind reach no member.
+    # `proactive_kind_orgs` lists the organization ids that may run a mode
+    # other than `off`, with a comma between ids, and `*` means every one.
+    # Empty means none. The one reader is `kind_mode` in `routes/shell/finding_contract.py`.
+    # The flip to `on` is the owner's, and a kind that spends credits is
+    # always the owner's (CLAUDE.md §3a rule 3).
+    # Fence: tests/unit/test_finding_shadow.py.
+    proactive_kind_modes: str = ""
+    proactive_kind_orgs: str = ""
 
     # ── My Day's `decide` org list and ceiling (WS-58 MD-6a-1) ──────────────
     #
@@ -2583,6 +2626,16 @@ class Settings(BaseSettings):
     # run's org. A reload of the gateway applies a change. Flip: `enforcement-flip`.
     # Fence: tests/unit/test_connected_systems_block.py.
     connected_systems_orgs: str = ""
+
+    # `MCP_MAIL_PRECEDENCE_ORGS` (CSY-4, chat_connected_systems.md §3.4) lists
+    # the organization ids where a turn whose words name a connected server
+    # evicts a sticky mail pack, so the server attaches. It acts only when the
+    # chat's mail mark reads set. Comma list, `*` for all, empty (default) for
+    # none. Empty keeps the choice of main. The reader is
+    # `acb_skills.egress.mcp_mail_precedence_on`, on the run's org. A reload of
+    # the gateway applies a change. Any non-empty value is OWNER-ONLY
+    # (work_plan.md §6 D4). Fence: tests/unit/test_pack_choose_server_words.py.
+    mcp_mail_precedence_orgs: str = ""
 
     # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
     #
