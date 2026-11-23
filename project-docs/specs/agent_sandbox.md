@@ -854,6 +854,13 @@ tenant data only after a data processing agreement and a region check
 **What it costs.** The owner picks the plan and buys the box (SBX-G9). This
 spec quotes no price.
 
+**Where the box is (task 3912, 2026-11-23).** The owner approved a GCP box
+in place of the Hostinger KVM 2 of task 3786. `aroh-sandbox-1` is built in
+`aroh-vpc`, with no external IP and no service account. This amends D187
+decision 5 and D130.7 for the sandbox box only.
+
+`docs/gcp_aroh.md` §4a holds its settings. SBX-G9 is done. SBX-G10, SBX-G11 and WS43-G1 are still open.
+
 ---
 
 ## 5. "Full capable" — what the code can reach
