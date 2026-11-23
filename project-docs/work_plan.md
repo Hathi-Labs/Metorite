@@ -6809,6 +6809,11 @@ and one thing that cannot be written until a second person exists.
 > `CRM_MODULE_FIND_ORGS` spends nothing, so it is the grant
 > `enforcement-flip`. The flag reloads with no restart (`docs/flag_reload.md`).
 >
+> **WS-53 — the CRM mirror age.** *(Registered 2026-11-22 with CRM-Q30c,
+> task 3868.)* To build CRM-Q30c is AGENT-SAFE, and it ships dark. A name in
+> `CRM_MIRROR_AGE_ORGS` spends nothing, so it is the grant
+> `enforcement-flip`. The flag reloads with no restart (`docs/flag_reload.md`).
+>
 > **WS-53 — the CRM weekly digest.** *(Registered 2026-10-17 with CRM-Q28.)* To
 > build CRM-Q28 is AGENT-SAFE, and it ships dark. A name in `CRM_DIGEST_ORGS`
 > is an owner flip, because each digest spends the org's credits on
