@@ -1689,8 +1689,7 @@ each of these on a real database:
   any other error of the check, queues nothing and never fails the run.
   Fences: `tests/unit/test_crm_module_reread.py` (hermetic) and
   `tests/unit/test_crm_label_drift_r8.py` (R8, `_LABEL_DRIFT_SQL` on
-  Postgres). ⚠️ The R8 file has not run yet: it waits for a box with a
-  database.
+  Postgres). The R8 file ran on a real database (3 passed, 2026-11-23).
 - After its first import, a module reads its changed list at most once an hour
   (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
   import it reads on each run, within the reserve.

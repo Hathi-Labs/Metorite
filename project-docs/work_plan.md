@@ -6814,6 +6814,8 @@ and one thing that cannot be written until a second person exists.
 > `CRM_MODULE_REREAD_ORGS` makes the mirror read each generic module in full
 > once in 7 days. It spends Zoho API credits of the org, inside the budget and
 > the reserve of the sync run, and no money. So it is the grant
+> `enforcement-flip`. The flag reloads with no restart (`docs/flag_reload.md`).
+>
 > **WS-53 — the CRM mirror age.** *(Registered 2026-11-22 with CRM-Q30c,
 > task 3868.)* To build CRM-Q30c is AGENT-SAFE, and it ships dark. A name in
 > `CRM_MIRROR_AGE_ORGS` spends nothing, so it is the grant
