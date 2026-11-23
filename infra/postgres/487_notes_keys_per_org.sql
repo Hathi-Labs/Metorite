@@ -1,13 +1,12 @@
 -- ============================================================================
--- 480_notes_keys_per_org.sql - one notes settings row and one glossary term
+-- 487_notes_keys_per_org.sql - one notes settings row and one glossary term
 -- per organization. The EXPAND half of an expand/contract change (task 3844).
 -- ============================================================================
 -- Spec: project-docs/specs/multi_tenancy_leak_audit.md · Metorite task 3844 ·
 -- R1 · R5 · R6 · R8.
--- R1: origin/main held 475 as its highest file on 2026-11-22. Open PRs 2737,
--- 2505 and 2757 hold 476, 478 and 479. The box ledger booked 480 for task
--- 3844. So this file is 480. Check the number again at merge
--- (scripts/premerge.sh).
+-- R1: origin/main held 481 as its highest file on 2026-11-23. The box ledger
+-- booked 486 for PR 2757 and 487 for task 3844. So this file is 487 (it was
+-- 475, then 480). Check the number again at merge (scripts/premerge.sh).
 --
 -- What: (1) `organization_id` on `copilot_config` and `notes_glossary` on the
 --       NUMBERED ladder, only where it is missing. (2) the unique index

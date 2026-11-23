@@ -722,7 +722,7 @@ Stated plainly, so nobody reads silence as clearance.
    `(user_id, lower(term))`. RLS hides the row of another org, but a unique index does not. So
    the unique error told a second org that another org held the key.
 
-   Migration `480_notes_keys_per_org.sql` adds the per-org keys (expand, R6). A later release
+   Migration `487_notes_keys_per_org.sql` adds the per-org keys (expand, R6). A later release
    drops the two old keys (contract). Until then the oracle stays open, and the xfail of each
    table stays strict.
 6. **The frontend.** `workbench/control_plane` was out of scope; if any org identity is derived
