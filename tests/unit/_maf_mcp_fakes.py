@@ -176,7 +176,8 @@ def _filler_tool(i: int, calls: list[str]) -> Any:
 
 
 @contextlib.contextmanager
-def local_mcp_server(filler: int = 0, instructions: str | None = None) -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0, instructions: str | None = None,
+                     failing: str | None = None) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
     * ``echo`` says it is read-only, so it runs in every run (H-299).
@@ -189,6 +190,11 @@ def local_mcp_server(filler: int = 0, instructions: str | None = None) -> Iterat
     the server has more than 12 tools, so it gets the index (WS-8c item 23).
 
     *instructions* is the text of the server's ``initialize`` answer (CSY-6).
+
+    *failing* adds one more read-only tool, ``fail_report``, that raises an
+    error with this text (task 3896). The server then answers with
+    ``isError``, as a server does when its tool fails. With no *failing*, the
+    server has its three tools only, so each other suite keeps its count.
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -221,6 +227,13 @@ def local_mcp_server(filler: int = 0, instructions: str | None = None) -> Iterat
         """Write a note."""
         calls.append(f"note:{text}")
         return f"noted:{text}"
+
+    if failing is not None:
+        @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+        def fail_report(period: str) -> str:
+            """Run a report. In this test it always fails."""
+            calls.append(f"fail:{period}")
+            raise ValueError(failing)
 
     inner = server.streamable_http_app()
 
