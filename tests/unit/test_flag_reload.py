@@ -245,6 +245,27 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_chat_pin_tool_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11b, chat_organization.md §18 (owner, 2026-11-21, task 3563).
+    The reload list holds the key. The one reader of the tool switch sees a
+    change with no restart, and it needs the pin switch too."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert fr.reloadable("CHAT_PIN_TOOL_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    monkeypatch.setenv("CHAT_PIN_TOOL_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme", "CHAT_PIN_TOOL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_TOOL_ORGS",)
+    assert pin_tool_allowed("acme")
+    assert not pin_tool_allowed("globex")
+    assert not pin_tool_allowed(None)
+
+
 def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
     reader of the compute switch sees a change with no restart."""
@@ -504,6 +525,21 @@ def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert topics_allowed("ACME ")
     assert not topics_allowed("globex")
     assert not topics_allowed(None)
+
+
+def test_ai_turn_kind_nowait_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """Task 3592, ai_tier_routing.md §4.3. The reload list holds the key, and
+    the one reader of the delegated wait sees a change with no restart."""
+    from acb_skills.tier_policy import turn_kind_nowait_on
+
+    assert fr.reloadable("AI_TURN_KIND_NOWAIT_ORGS")
+    monkeypatch.setenv("AI_TURN_KIND_NOWAIT_ORGS", "")
+    get_settings.cache_clear()
+    assert not turn_kind_nowait_on("acme")
+    env(**{**_START, "AI_TURN_KIND_NOWAIT_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AI_TURN_KIND_NOWAIT_ORGS",)
+    assert turn_kind_nowait_on("ACME ")
+    assert not turn_kind_nowait_on("globex")
 
 
 def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:

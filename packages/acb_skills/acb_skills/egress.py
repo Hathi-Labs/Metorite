@@ -133,6 +133,7 @@ __all__ = [
     "mark_untrusted_answer",
     "mark_untrusted_session",
     "marked_sessions",
+    "mcp_mail_precedence_on",
     "no_egress_for_this_run",
     "offer_continue",
     "read_untrusted_answer",
@@ -1649,15 +1650,19 @@ def is_card_write_tool(item: Any) -> bool:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its seventeen tools are the
+#: slug. The pack is the ``calendar-day`` pack, and its twenty tools are the
 #: My Tasks planner tools, the two calendar settings tools, the four day rule
-#: tools and the read of the synced events (CE-15). The Tasks assistant holds
+#: tools, the read of the synced events (CE-15), and the three reads of P-1a
+#: (task 3112). The Tasks assistant holds
 #: the planner tools too. **The choice.** In a held chat the
 #: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
-#: could steer the apply. The pack keeps its five reads (``my_tasks_day_digest``,
-#: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules``,
-#: ``my_tasks_list_events`` and ``my_tasks_list_schedule``, ``read_only=True``).
+#: could steer the apply. The pack keeps its eight reads (``my_tasks_day_digest``,
+#: ``my_tasks_enrich``, ``my_tasks_get_calendar_settings``,
+#: ``my_tasks_list_calendar_connections``, ``my_tasks_list_day_rules``,
+#: ``my_tasks_list_events``, ``my_tasks_list_schedule`` and
+#: ``my_tasks_suggest_title``, ``read_only=True``). The two P-1a proposals write
+#: nothing, so mail that the chat read cannot steer a write through them.
 #: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
@@ -1877,6 +1882,29 @@ def held_card_writes_on(org: object = None) -> bool:
         except Exception:
             return False
     return str(org or "").strip().lower() in entries
+
+
+def mcp_mail_precedence_on(org: object) -> bool:
+    """True when ``MCP_MAIL_PRECEDENCE_ORGS`` names organization *org* (CSY-4).
+
+    A comma list of organization ids, or ``*`` for each one. Empty, the
+    default, means off. *org* is the bound tenant of the run, never a request
+    field (R5). No org reads as off. It fails closed: a fault of the settings
+    read reads as off, and off is the choice of main. A non-empty value is
+    owner-only (``work_plan.md`` §6 D4). Spec: ``chat_connected_systems.md``
+    §3.4. Fence: ``tests/unit/test_pack_choose_server_words.py``.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "mcp_mail_precedence_orgs", "") or "")
+    except Exception:
+        return False
+    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    want = str(org or "").strip().lower()
+    if not entries or not want:
+        return False
+    return "*" in entries or want in entries
 
 
 async def chat_is_held(ctx: Mapping[str, Any] | None = None) -> bool:

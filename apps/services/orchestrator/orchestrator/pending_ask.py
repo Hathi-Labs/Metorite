@@ -1165,6 +1165,13 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         for event in closed_card_text_events(take_closed_card_line()):
             await stream_relay.push_event(thread_id, event)
     with contextlib.suppress(Exception):
+        # Task 3595 (PARK-LINE): the approved acts that ran in this reply,
+        # in one line, and the card that waits. No act sends nothing.
+        from acb_skills.ask_tools import closed_card_text_events, take_park_line
+
+        for event in closed_card_text_events(take_park_line(str(row.get("question") or ""))):
+            await stream_relay.push_event(thread_id, event)
+    with contextlib.suppress(Exception):
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })

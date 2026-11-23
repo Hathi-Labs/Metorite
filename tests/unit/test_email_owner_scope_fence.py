@@ -261,6 +261,14 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
         "The task-close hop. _closer_owns_mailbox checks that the member who "
         "closes the task owns the mailbox before any write (EM-T2c item 8)."
     ),
+    "apps/services/gateway/gateway/write_check_reader.py": (
+        "The write check (LOOP-18, proactive_loop.md 4.9) reads the sent mail of "
+        "the member and the newer messages of one thread. It joins email_accounts "
+        "and applies private_predicate (own mailboxes) or mailbox_predicate (the "
+        "one mailbox access seam, level read), including the exclusion subquery. "
+        "Fence: test_write_check_r8.py (a colleague, another org and a shared "
+        "mailbox read nothing)."
+    ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "
         "account id, with no member request. Since EM-T6c one route passes a "
@@ -478,6 +486,18 @@ class TestEveryEmailHandlerProvesOwnership:
             path.read_text(encoding="utf-8-sig"))}
         assert routes.get("download_attachment") is True
         assert routes.get("attachment_text") is True
+
+    def test_the_signature_writer_proves_mailbox_access_itself(self):
+        """WS-17 SG-3a (§23.4, §23.3.10). The read and the write of the
+        signature row of one mailbox each call ``_assert_account_owner`` in
+        their own body. They are NOT exempt: the row is keyed by the mailbox.
+        Only a member who may send from it may read it, and only a member who
+        may manage it may change it (``shared_mailbox.md`` §4.3)."""
+        path = _EMAIL / "signature_settings.py"
+        routes = dict(handlers_of(path.read_text(encoding="utf-8-sig")))
+        assert routes == {"get_signature_settings": True,
+                          "put_signature_settings": True}
+        assert not set(routes) & set(OWNER_SCOPE_EXEMPT)
 
 
 class TestTheHandlerScanCanFail:

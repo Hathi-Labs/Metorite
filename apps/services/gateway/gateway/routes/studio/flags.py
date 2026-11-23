@@ -38,7 +38,10 @@ real model turn, so a flip spends credits and stays with the owner.
 default. It opens the record of skill runs: the live writer of the chat run
 and the test writer of the test run route. A writer also needs
 ``STUDIO_ORGS``. :func:`skill_repair_allowed` is its one reader. A flip is
-OWNER-ONLY, because the repair of F12c spends credits.
+OWNER-ONLY, because the repair of F12c spends credits. F12c: it also opens
+the history read, the repair route and the approve route, and the two chat
+tools of the pack ``studio-repair``. With it empty, each route answers 404.
+The flag alone does not offer the tools: the owner pack list must name the pack too.
 
 ``STUDIO_SKILL_TESTS_CAP_CREDITS`` (TOF-3b F4b) is the credit cap of one test
 run. It has no default value. :func:`skill_tests_cap` is its one reader, and

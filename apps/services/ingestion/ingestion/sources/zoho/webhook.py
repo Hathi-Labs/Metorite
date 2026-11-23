@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_common import get_logger, get_settings
 from ingestion.queue import STREAM_ZOHO, enqueue
 
@@ -25,6 +25,22 @@ _log = get_logger("ingestion.zoho")
 #: provider's own value (see `receive`), so this is the whole Zoho vocabulary
 #: prescribed by FOUNDATION_BUILDOUT_CHECKLIST.md §BO-20 (BO-20f).
 SOURCE = "zoho"
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a row with no org and the bind is on.
+
+    Task 2221 slice 2. The receiver checks one shared token for the whole
+    deployment. That proves the push came from Zoho, but it names no
+    org, and no code here maps the module to an org. The row names the CRM event
+    of one tenant. So with no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, and it never lands under the
+    operator org. A payload field never gives the org (R5). With the bind
+    off, the row stays as before. Fence:
+    ``tests/unit/test_audit_tick_writers_org_r8.py`` (R8).
+    """
+    if not refuse_tenantless(event):
+        record(event)
 
 
 def _verify(token: str | None) -> bool:
@@ -71,7 +87,7 @@ async def receive(
     # (the receiver 500'd before this ticket added any code). The retired
     # ClickUp receiver sidestepped it with a `<source>_event=` kwarg; mirror that.
     _log.info("zoho.webhook", zoho_event=event, module=module)
-    record(
+    _audit(
         AuditEvent(
             actor="webhook:zoho",
             action="received",
