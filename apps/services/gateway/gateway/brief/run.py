@@ -287,9 +287,11 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
         claims, lead = await _closeout_reads(org, member, user, run, snap, now, slot_at)
     else:
         claims = gather.claims(snap.cards, now)
+        start = max((c.position for c in claims), default=-1) + 1
+        claims += gather.number_claims(snap.cards, start)
         parts = plan.brief_parts(snap.cards, run.local_date, now=now)
         lead = plan.brief_lead(parts) if parts is not None else None
-    if claims and lead is not None and _composes(org, len(claims), run.kind):
+    if claims and lead is not None and _composes(org, _lines(claims), run.kind):
         return await _gather_and_phrase(org, member, run, claim, claims, lead, now)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
@@ -320,6 +322,12 @@ async def _deliver(db: Any, org: str, member: str, run_id: str) -> str:
             db, member, run_id, "delivered", now=_now(), from_state="ready"):
         return "delivered"
     return "ready"
+
+
+def _lines(claims: list[store.ClaimIn]) -> int:
+    """The claims that count toward the phrase threshold: the lines, and not
+    the counts of the ``numbers`` section (BR-4c). A count adds no line."""
+    return sum(1 for c in claims if c.section != gather.NUMBERS)
 
 
 def _composes(org: str, count: int, kind: str = planner.KIND) -> bool:

@@ -20,6 +20,14 @@ for each ``Closed`` row of Handled, and ``moved`` is one for each shown open
 card. The brief's :func:`claim_of` still refuses a section outside
 ``plan.BRIEF_GROUPS``: the close-out passes its own section as an argument.
 
+**The numbers** (BR-4c, ``core_brief.md`` §4.3) make the section ``numbers``
+with :func:`number_claims`: at most :data:`MAX_NUMBERS` counts of the open
+cards of the snapshot, ``needs_reply`` and ``promise_due``. A count claim
+has ``source_kind`` ``count``, a ``value`` and the ``value_path`` ``count``.
+Its ``source_ids`` hold the counted signal ids, at most 50. Its
+``source_id`` and ``href`` are those of the first counted card. A count
+with no usable card makes no claim.
+
 **The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
 with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
 act (``audit:<id>``) and each sent ``reach_outbox`` row (``reach:<id>``).
@@ -124,6 +132,52 @@ def claims(cards: list[dict[str, Any]], now: datetime) -> list[store.ClaimIn]:
     out: list[store.ClaimIn] = []
     for position, card in enumerate(shown(cards)):
         claim = claim_of(card, position, now)
+        if claim is not None:
+            out.append(claim)
+    return out
+
+
+#: The section, the ``source_kind`` and the ``value_path`` of a count (BR-4c).
+NUMBERS = "numbers"
+COUNT_KIND = "count"
+COUNT_PATH = "count"
+#: At most this many counts (``core_brief.md`` §4.3).
+MAX_NUMBERS = 3
+#: The counts, in order: the card kind, and the line for 1 and for many.
+_COUNTS: tuple[tuple[str, str, str], ...] = (
+    ("needs_reply", "1 thread waits for your reply", "{n} threads wait for your reply"),
+    ("promise_due", "1 promise you made falls due", "{n} promises you made fall due"),
+)
+
+
+def count_claim(cards: list[dict[str, Any]], kind: str, one: str, many: str,
+                position: int) -> store.ClaimIn | None:
+    """The count claim of the open cards of *kind*, or None. A card with no
+    known source prefix or no in-app href is not counted, because the count
+    must open a record. No usable card gives None (``brief.claim_skipped``)."""
+    top = [c for c in cards if c.get("kind") == kind and plan.is_open(c)]
+    usable = [(str(c["signal_id"]), href) for c in top
+              if source_app(c.get("signal_id")) is not None
+              and (href := in_app_href(c.get("href"))) is not None]
+    if not usable:
+        _log.info("brief.claim_skipped", kind=COUNT_KIND, reason="no_source")
+        return None
+    ids = tuple(dict.fromkeys(sid for sid, _ in usable))
+    first = ids[0]
+    href = next(h for sid, h in usable if sid == first)
+    n = len(ids)
+    return store.ClaimIn(
+        position=position, section=NUMBERS, text=(one if n == 1 else many.format(n=n)),
+        source_app=str(source_app(first)), source_kind=COUNT_KIND, source_id=first,
+        source_ids=ids[:store.MAX_SOURCE_IDS], href=href, value=n, value_path=COUNT_PATH)
+
+
+def number_claims(cards: list[dict[str, Any]], start: int) -> list[store.ClaimIn]:
+    """The ``numbers`` claims of *cards*, from position *start*, at most
+    :data:`MAX_NUMBERS`. A retry with the same cards gives the same claims."""
+    out: list[store.ClaimIn] = []
+    for kind, one, many in _COUNTS[:MAX_NUMBERS]:
+        claim = count_claim(cards, kind, one, many, start + len(out))
         if claim is not None:
             out.append(claim)
     return out

@@ -261,11 +261,13 @@ def _runs(world: Any, member: str | None = None) -> list[Any]:
             {"t": LIKE, "m": member}).fetchall())
 
 
-def _claims(world: Any, run_id: str) -> list[Any]:
+def _claims(world: Any, run_id: str, *, numbers: bool = False) -> list[Any]:
+    """The line claims of a run. The ``numbers`` section (BR-4c) is left out
+    unless *numbers* is True: ``test_brief_numbers_r8.py`` reads it."""
     with world.p.admin_engine.connect() as c:
-        return list(c.execute(text(
+        return [r for r in c.execute(text(
             "SELECT * FROM brief_claims WHERE run_id = CAST(:r AS uuid) ORDER BY position"),
-            {"r": run_id}).fetchall())
+            {"r": run_id}).fetchall() if numbers or r.section != "numbers"]
 
 
 def _ledger(world: Any, member: str | None = None) -> list[Any]:
