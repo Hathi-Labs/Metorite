@@ -64,8 +64,6 @@ export default defineConfig({
       // this list only ever grows — that is the failure mode to watch.
       name: "ci",
       testIgnore: [
-        // 10 of 10 failing. Nothing in this file passes.
-        "**/project-state.spec.ts",
         // 9 of 10 failing — a shared primitive, so worth the most attention.
         "**/modal.spec.ts",
         // 6 of 9 failing. `getByText("Memory (2)")` finds nothing: the chat
@@ -77,8 +75,6 @@ export default defineConfig({
         "**/email-search.spec.ts",
         // 1 of 1 failing.
         "**/email.spec.ts",
-        // 1 of 8 failing.
-        "**/project-rename.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],
