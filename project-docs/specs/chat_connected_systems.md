@@ -52,6 +52,13 @@ The server's redacted words sit in one `MCP ERROR` block of the frame. The
 gate logs one `mcp.call_error` line, and a transport fault keeps its old path.
 Fence: `test_mcp_tool_error_text.py`.
 
+**Task 3924 is BUILT, 2026-11-23, with no flag.** On the same path, the model
+can call a listed tool of a server before `load_tool`, and the call runs in
+the same step (§3.5). Before, MAF answered "not found", and the chat drew a
+failed step. The call goes through the same gate, so the card, the grant and
+the error text do not change. A name that no server of the run lists keeps the
+unknown-tool answer. Fence: `test_mcp_tool_autoload.py`.
+
 **CSY-8 (task 3408) is BUILT, 2026-11-20, with no flag.** Each chat call of
 `McpPermissionGate` adds one to `mcp-use:<server>:<date>`, with a TTL of 8
 days. Each left-out turn adds one to `mcp-left-out:<server>:<reason>:<date>`, for an org with
@@ -434,6 +441,20 @@ then call it". The chat needs that recipe.
 - **What the frame does not cover.** A Copilot agent's repo `.mcp.json`
   server and the gateway's Studio preview client (`connections/mcp_tools.py`)
   get no frame.
+- **A listed tool loads when the model calls it** (task 3924, 2026-11-23). On
+  2026-11-23, the model listed the tools of a Zoho Books server, and then
+  called `ZohoMCP_listProducts` with no `load_tool`. MAF answered "not found",
+  and the chat drew a failed step. Now `McpAutoload` reads the model's answer
+  before MAF runs the calls. It loads a called tool when the tool is in the
+  own list of a server of this run, through MAF's own load. The call then runs
+  in the same step, through the same gate.
+- **What the autoload does not change.** A server that the member's grant
+  refuses, or that OA-7b held back, is not in the run, so its tools never
+  load. A chat that read mail still asks the card for each call (EM-G11d). A
+  run that withholds the loaders loads nothing. A name that no server of the
+  run lists keeps the unknown-tool answer. The log line is
+  `mcp.loader action=autoload`, with the server and the tool. Fence:
+  `test_mcp_tool_autoload.py`.
 
 ### 3.6 A turn that cannot reach a server says why
 

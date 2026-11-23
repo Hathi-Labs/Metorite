@@ -78,6 +78,7 @@ The rules:
    loaders carry ``egress.MCP_LOADER_KEY``, so they are egress, and the gate
    lets them pass with no card. A loaded tool is an MCP function, and its
    card rule holds. A run attaches :data:`MAX_SERVERS` servers or fewer.
+   A call of a listed tool before ``load_tool`` loads it (rule 14).
 9. **The 401 of an OAuth server** (WS-54 IN-8b,
    ``integrations_console.md`` §3.6.7). The registry refreshed the token
    BEFORE the connect, so the header is fixed for the run
@@ -143,6 +144,21 @@ The rules:
     closed or lost session, an HTTP status and a connect fault still raise,
     and the attach path (rule 9) does not change. The text marks no session,
     as an answer marks none. Fence: ``tests/unit/test_mcp_tool_error_text.py``.
+14. **A listed tool loads when the model calls it** (task 3924,
+    ``chat_connected_systems.md`` §3.5). The model can call a tool of a server
+    before ``load_tool``. MAF then answers "not found" and runs no middleware,
+    so the chat drew a failed step (2026-11-23, Zoho Books). :class:`McpAutoload`
+    reads the model's answer before MAF builds the tool map of the batch. A
+    called name that the run has not loaded loads through MAF's own load, when
+    the name is a tool in the own list of a server of this run
+    (:func:`_autoload_target`). The call then runs in the same step, through the
+    gate, so each rule of the gate holds. The gate's list of tools is the list
+    of the run, so a server that the grant or OA-7b held back never loads. A
+    server whose load loader the model did not get (an egress hold) loads
+    nothing. The line is ``mcp.loader action=autoload``. Any other name keeps
+    the unknown-tool answer. :func:`attach_mcp_tools` puts the middleware FIRST,
+    so it reads the run's live list before a provider middleware copies it.
+    Fence: ``tests/unit/test_mcp_tool_autoload.py``.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
@@ -1328,10 +1344,12 @@ async def attach_mcp_tools(
     # New lists, so an agent object that another run holds never changes.
     agent.mcp_tools = [*list(getattr(agent, "mcp_tools", None) or []), *tools]
     # One gate, with the facts of THIS attach. An older gate is replaced, so
-    # it never carries the member or the tools of another run.
+    # it never carries the member or the tools of another run. Task 3924: one
+    # autoload with the same tools goes FIRST, so it reads the run's live list
+    # before a provider middleware copies it. An older one is replaced too.
     middleware = [m for m in list(getattr(agent, "middleware", None) or [])
-                  if not isinstance(m, McpPermissionGate)]
-    agent.middleware = [*middleware, McpPermissionGate(
+                  if not isinstance(m, McpPermissionGate | McpAutoload)]
+    agent.middleware = [McpAutoload(tools=list(agent.mcp_tools)), *middleware, McpPermissionGate(
         tools=list(agent.mcp_tools),
         # MCP-NC1: a run that no person watches (AUTO-7a) is not a member's
         # run, also when it names a member, so it asks no card it cannot show.
@@ -2599,6 +2617,133 @@ def _make_gate_class() -> type:
 McpPermissionGate: type = _make_gate_class()
 
 
+# ── Autoload of a listed tool (task 3924) ────────────────────────────────────
+
+
+def _model_calls(response: Any) -> list[Any]:
+    """The function calls that MAF runs from *response*, in order."""
+    return [content for message in getattr(response, "messages", None) or []
+            for content in getattr(message, "contents", None) or []
+            if getattr(content, "type", "") == "function_call"
+            and not getattr(content, "informational_only", False)]
+
+
+def _autoload_target(tools: list[Any], name: str) -> tuple[Any, Any, Any] | None:
+    """The attached server, the listed function and the load loader for the
+    called *name*, or None.
+
+    The server is a ``RunScopedMCPTool`` of *tools* with disclosure on, and
+    *name* starts with its prefix (:func:`tool_prefix`). The function has
+    exactly *name* among the server's own list, the list that :func:`mcp_index`
+    shows. A loader name and a name that no attached server lists give None."""
+    scoped = _run_scoped_tool_class()
+    for tool in tools:
+        if not isinstance(tool, scoped) or getattr(tool, "use_progressive_disclosure", False) is not True:
+            continue
+        prefix = tool_prefix(str(getattr(tool, "tool_name_prefix", None) or getattr(tool, "name", "")))
+        loaders = _loader_functions(tool)
+        if not prefix or not name.startswith(prefix) or len(loaders) != len(LOADER_ACTIONS):
+            continue
+        if name in {getattr(f, "name", "") for f in loaders}:
+            return None
+        hits = [f for f in list(getattr(tool, "_functions", None) or [])
+                if getattr(f, "name", None) == name]
+        if len(hits) == 1:
+            return tool, hits[0], loaders[LOADER_ACTIONS.index("load")]
+    return None
+
+
+async def _autoload_calls(tools: list[Any], live: list[Any], sent: Any, response: Any) -> None:
+    """Load each listed tool that *response* calls and the run has not loaded.
+
+    *live* is the run's live tool list, the list that MAF reads to run the
+    calls. *sent* is the tool list of the request as the model got it. A
+    server whose load loader the model did not get (an egress hold) loads
+    nothing, because the model could not load the tool either. The load is
+    MAF's own (``_load_progressive_mcp_tool``), with a
+    ``FunctionInvocationContext`` over *live*, as the loader gets it. A name
+    that MAF cannot resolve gets MAF's text and no load."""
+    from acb_skills.tool_guard import tool_name
+    from agent_framework import FunctionInvocationContext
+
+    have = {tool_name(item) for item in live}
+    model_got = list(sent) if isinstance(sent, list) else []
+    for call in _model_calls(response):
+        name = str(getattr(call, "name", "") or "")
+        if not name or name in have:
+            continue
+        found = _autoload_target(tools, name)
+        if found is None:
+            continue
+        tool, function, loader = found
+        if not any(item is loader for item in model_got):
+            continue
+        frame = FunctionInvocationContext(function=loader, arguments={"tool": name}, tools=live)
+        await tool._load_progressive_mcp_tool(frame, name)
+        if not any(item is function for item in live):
+            continue
+        have.add(name)
+        props = getattr(function, "additional_properties", None) or {}
+        _log.info("mcp.loader", server=str(getattr(tool, "name", "") or ""), action="autoload",
+                  tool=str(props.get("_mcp_remote_name") or name)[:100])
+
+
+def _make_autoload_class() -> type:
+    from agent_framework import ChatMiddleware, ChatResponse, ResponseStream
+
+    class _McpAutoload(ChatMiddleware):
+        """Loads a listed MCP tool that the model calls before ``load_tool``
+        (task 3924).
+
+        MAF runs no middleware for a called name that the run's tool list
+        lacks: it answers "not found" before the function middleware, so the
+        chat draws a failed step. This middleware reads the model's answer
+        BEFORE MAF builds the tool map of the batch. A called name of a tool in
+        the own list of an attached server (:func:`_autoload_target`) goes into
+        the run's live list through MAF's own load. MAF then runs the call in
+        the same step, through :class:`McpPermissionGate`.
+
+        *tools* are the MCP tools of the run, the gate's own list.
+        :func:`attach_mcp_tools` puts the middleware FIRST among the agent's
+        middleware, so it reads the live list before a provider middleware
+        (``tool_guard.WithholdTools``) puts a copy in the request. A fault
+        loads nothing, and the call keeps the unknown-tool answer."""
+
+        def __init__(self, tools: list[Any] | None = None) -> None:
+            self.tools = list(tools or [])
+
+        async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+            options = getattr(context, "options", None)
+            live = options.get("tools") if isinstance(options, Mapping) else None
+            await call_next()
+            if not self.tools or not isinstance(live, list):
+                return
+            hook = functools.partial(self._after_answer, context, live)
+            try:
+                result = getattr(context, "result", None)
+                if isinstance(result, ResponseStream):
+                    result.with_result_hook(hook)
+                elif isinstance(result, ChatResponse):
+                    await hook(result)
+            except Exception as exc:  # the class only: the turn goes on
+                _log.warning("mcp.autoload_failed", error=type(exc).__name__)
+
+        async def _after_answer(self, context: Any, live: list[Any], response: Any) -> None:
+            try:
+                options = getattr(context, "options", None)
+                sent = options.get("tools") if isinstance(options, Mapping) else None
+                await _autoload_calls(self.tools, live, sent, response)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # the class only: the call keeps today's answer
+                _log.warning("mcp.autoload_failed", error=type(exc).__name__)
+
+    return _McpAutoload
+
+
+McpAutoload: type = _make_autoload_class()
+
+
 __all__ = [
     "ALL_ORGS",
     "CARD_TOO_LONG_TEXT",
@@ -2619,6 +2764,7 @@ __all__ = [
     "RUN_SCHEMA_TOKENS",
     "SERVER_SCHEMA_TOKENS",
     "UNREADABLE_ARGUMENTS_TEXT",
+    "McpAutoload",
     "McpPermissionGate",
     "McpServer",
     "ServerToolError",
