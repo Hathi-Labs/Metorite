@@ -58,6 +58,57 @@ SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
 From that point they only go down.
 
+**PAR-8b (task 3903, rung 5) is BUILT, 2026-11-23, dark.** It takes the
+shell debt from 16 rows to 7. Five tools of the orchestrator do the shell acts
+from the chat (`acb_skills/home_tools.py`).
+
+`home_read` reads the Home feed, Needs you, the brief, the quick find and the
+Home settings. `home_card` changes how one Home card shows. `home_prefs` saves one
+Home setting. `home_layout` sets the default sidebar of a role.
+`home_test_push` sends a test notification.
+
+Each tool sends the route of the UI as the member of the run, with no org, so
+each route keeps its gates. The default sidebar always shows one card. The
+other writes show one card only in a chat that must ask first. Each write
+refuses a character that no person sees, with the one rule of
+`hidden_text.py`. Fence: `tests/unit/test_home_tools.py`.
+
+A needs row or a card can hold the subject of an outside mail. So each read
+that shows a row marks the chat as one that read outside text. Then
+each egress tool and each write of a held chat shows a card first. Each read
+says how many rows exist, and how to see the rest.
+
+**PAR-8b, the facts for the owner.**
+
+- **The switch is `HOME_TOOLS_ORGS`, not a `TOOL_PACKS` line.** A pack needs an
+  owner agent. The one owner that never runs as an agent is `studio-builder`,
+  and its packs build no tool for an org without Studio. A pack of
+  `projects-assistant` puts the tools live in that agent at once. So the tools
+  are core tools of the orchestrator, as `pin_chat` is (CO-11b). When the flag
+  is on, the five tools join each request of the org: the base goes from 57 to
+  62 tools.
+- **The trade of the tool cap, with the flag on.** Three of the 16 cases of the
+  golden matrix change. A Studio turn with mail words drops `studio-more` (110
+  to 102 tools). With the flag off, a Studio turn with mail and CRM words
+  already skips `studio-more`. So the flag drops only the core pack `studio`
+  there (109 to 104 tools). A turn with the sticky pack `calendar-day` and mail
+  words drops `calendar-day` (107 to 92 tools). P-1a grew that pack, so this case
+  is new. The other 13 cases keep their packs. Fence:
+  `test_with_the_flag_on_three_cases_of_the_matrix_drop_a_pack`.
+- **Decide (b): five rows wait for a ruling on their kind.** No kind of §2
+  fits them, so they stay debt. `POST /api/shell/intent` is the model step of
+  the command bar, and in the chat the turn of the member does that job. Four
+  push routes subscribe, check or remove the browser of one device, and only
+  that browser holds the push address. A `device` kind and a ruling on the
+  intent row would take the shell debt to 2.
+- **Decide (a): two rows wait for §7, item 6.** They are the approval queue
+  and its decision. With (a) and (b), the shell debt goes to 0. The safety
+  fence `test_no_person_present.py` refuses a tool that names
+  `/actions/pending`, a read too. The decision waits for §7, item 6.
+  `pending_actions` has no requester column, so a tool cannot tell an action
+  that the chat itself asked for. The member reads and decides on the
+  Approvals page.
+
 **Epic:** Metorite task 1238. Written 2026-11-01.
 
 **Owner rule, 2026-11-01, in chat.** The words are the owner's, so they sit
@@ -219,7 +270,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | apps | 29 | 28 | P-6 | 3115 |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 16 | P-7 | 3115 |
+| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -366,7 +417,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
-| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 16 and 0 (PAR-8a built) | Four most-used actions are here. |
+| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
@@ -406,8 +457,10 @@ uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills test
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
   leaves out the decision on a pending action until the owner answers §7,
   item 6. PAR-8a is BUILT: it pays the 18 Workflows rows, and a run of a
-  workflow from the chat shows one card. PAR-8b builds the shell rows. The demo
-  needs the owner to add `studio-workflows` to `TOOL_PACKS` (§7, item 1).
+  workflow from the chat shows one card. PAR-8b is BUILT: the chat reads the
+  Home feed and Needs you, and changes a Home card. The demo needs the owner
+  to add `studio-workflows` to `TOOL_PACKS` and to set `HOME_TOOLS_ORGS` (§7,
+  item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -449,6 +502,8 @@ he approves the merge.
    slug needs its own line before the demo of rung 3.
    Add `studio-workflows` before the demo of rung 5 (task 3905). It holds the
    run of a workflow and the other tools of PAR-8a.
+   Set `HOME_TOOLS_ORGS` before the demo of rung 5 (task 3905). It holds the
+   Home tools of PAR-8b.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes.
 3. **The flag flips.** Approve each one on its task: `KNOWLEDGE_PROPOSALS` for

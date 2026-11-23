@@ -672,6 +672,8 @@ class TestTheClean:
 
 
 _TAKES_LABEL = ("claim_task", "start_agent_run")
+#: SW-114. The one tool that takes a model and no host: a sub-agent's model.
+_TAKES_MODEL_ONLY = ("report_subagent",)
 
 
 class TestTheEdgeArgument:
@@ -733,8 +735,26 @@ class TestTheEdgeArgument:
         others = sorted(name for name, tool in tools.TOOLS.items()
                         if {"host", "model", "host_kind"} & set(
                             (tool.input_schema or {}).get("properties", {}))
-                        and name not in _TAKES_LABEL)
+                        and name not in _TAKES_LABEL and name not in _TAKES_MODEL_ONLY)
         assert not others, others
+
+    def test_report_subagent_takes_the_type_and_the_model_in_the_same_shape(self) -> None:
+        """SW-114. ``report_subagent`` is the one other tool that takes a
+        model. It takes no host and no kind. Its ``agent_type`` is the label
+        rule and its ``model`` is the model rule, with their own descriptions
+        only, and the gateway gets them as ``agent_label`` and ``model``."""
+        [name] = _TAKES_MODEL_ONLY
+        tool = tools.TOOLS[name]
+        props = tool.input_schema["properties"]
+        assert not {"host", "host_kind", "agent_label"} & set(props), props
+        for key, rule in (("agent_type", tools._LABEL_INPUT), ("model", tools._MODEL_INPUT)):
+            got = props[key]
+            assert {k: v for k, v in got.items() if k != "description"} == {
+                k: v for k, v in rule.items() if k != "description"}, key
+            assert "display data only" in got["description"], key
+            assert not re.search(r"projects:|scope|admin|permission", got["description"])
+        assert "model" not in tool.input_schema["required"]
+        assert tool.params["agent_type"] == "agent_label" and tool.params["model"] == "model"
 
     def test_the_place_schema_caps_it_and_refuses_each_control_character(self) -> None:
         for key, rule in (("host", tools._HOST_INPUT), ("model", tools._MODEL_INPUT)):
