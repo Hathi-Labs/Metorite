@@ -5,7 +5,7 @@ member only (``WHERE user_id = :uid``): the day state of the Calendar, the
 rollover log and the connected task accounts. Under the owner role RLS does not
 apply, so a member of two organizations read and changed the rows of the other
 one too. Each statement now also names ``settings._BOUND_ORG``, and each INSERT
-names the org. Migration 481 puts ``organization_id`` on the numbered ladder
+names the org. Migration 489 puts ``organization_id`` on the numbered ladder
 for the three tables.
 
 The route halves run the REAL functions on the phase-4 catalog of
@@ -21,7 +21,7 @@ different days, and ``test_a_save_of_a_day_that_another_org_holds_*`` pins what
 a save in the second org does today: it changes nothing. The re-key is a later
 contract step.
 
-The replay half runs the body of 481 in a scratch schema, in a transaction that
+The replay half runs the body of 489 in a scratch schema, in a transaction that
 rolls back, on a fresh connection with no tenant bound. A bound tenant would
 fill the old rows through the column default and hide the backfill.
 """
@@ -395,11 +395,11 @@ async def test_the_three_account_reads_return_only_the_bound_orgs_rows_under_the
         [(acct_a, "label-orga")], ["Person orga"], acct_a, None)
 
 
-# ── Migration 481, replayed in a scratch schema ─────────────────────────────
+# ── Migration 489, replayed in a scratch schema ─────────────────────────────
 
 
 def _migration() -> Path:
-    """481, found by content, never by number (R1)."""
+    """489, found by content, never by number (R1)."""
     hits = [p for p in sorted((_ROOT / "infra" / "postgres").glob("[0-9]*_*.sql"))
             if "$h312b_backfill$" in p.read_text(encoding="utf-8")]
     assert len(hits) == 1, hits
@@ -407,7 +407,7 @@ def _migration() -> Path:
 
 
 def _body() -> str:
-    """481 without its own BEGIN and COMMIT, so a test can roll it back."""
+    """489 without its own BEGIN and COMMIT, so a test can roll it back."""
     lines = _migration().read_text(encoding="utf-8").splitlines()
     kept = [ln for ln in lines if ln.strip() not in ("BEGIN;", "COMMIT;")]
     assert len(kept) == len(lines) - 2, "481 lost its one transaction"
