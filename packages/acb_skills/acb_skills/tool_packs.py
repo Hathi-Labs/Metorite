@@ -640,6 +640,12 @@ No Projects agent exists to hand a task to.
   calendars. It shows no token. If it says that calendar sync is not
   available, say so in one line. To connect a calendar, the member uses
   Calendar settings.
+- my_tasks_calendar_connection syncs a connected calendar now (sync), or turns
+  on or off the switch that shows the member's tasks in it (show_tasks,
+  hide_tasks). my_tasks_disconnect_calendar disconnects one. Each takes the
+  provider, google or outlook, and shows one card. Say that it is done only
+  after the tool says so. To connect or reconnect, the member uses Calendar
+  settings.
 - my_tasks_suggest_title proposes a clearer title, and my_tasks_enrich proposes
   the missing fields of a task. Each only proposes. Show the proposal, and
   change the task with the task edit tool only after the member agrees.
@@ -686,6 +692,12 @@ _CALENDAR_DAY_WORDS = (
     "enrich the task", "enrich my task", "fill in the details of this task",
     "fill in the details of the task", "fill in the missing fields of this task",
     "fill in the missing fields of the task",
+    # P-1c (task 3923): Sync now, the task switch and Disconnect of a connected
+    # calendar. Each phrase names the calendar or the tasks. A bare "outlook"
+    # is the mail provider, and a bare "sync" or "disconnect" belongs to the
+    # CRM and the Integrations page (task 3109). Fence: test_my_tasks_p1c_tools.py.
+    "google calendar", "outlook calendar", "my tasks in google calendar",
+    "my tasks in outlook", "tasks to google calendar", "tasks to outlook",
 )
 
 _PROJECTS_REPORTS_RULES = """PROJECTS REPORT TOOLS. You hold the tools to report on projects. Use them yourself.

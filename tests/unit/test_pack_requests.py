@@ -349,6 +349,15 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                            "list my calendar connections"),
     "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # -- calendar-day P-1c (task 3923) --
+    "my_tasks_calendar_connection": ("sync my calendar", "sync my google calendar",
+                                     "sync my outlook calendar",
+                                     "show my tasks in google calendar",
+                                     "show my tasks in outlook",
+                                     "stop sending my tasks to outlook",
+                                     "send my tasks to google calendar"),
+    "my_tasks_disconnect_calendar": ("disconnect my calendar", "disconnect my google calendar",
+                                     "disconnect my outlook calendar"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -400,6 +409,15 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # so these turns load no pack. A bare "unpin" once loaded projects-authority.
     ("unpin this chat", ()),
     ("pin this chat", ()),
+    # P-1c (task 3923): the calendar words name the calendar or the tasks. A
+    # mail, CRM or Integrations turn keeps its packs, and loads no calendar-day.
+    ("connect my outlook mail", ("email",)),
+    ("summarise my outlook inbox", ("email",)),
+    ("disconnect the slack integration", ()),
+    ("disconnect the google drive integration", ()),
+    ("sync the crm", ("crm-records",)),
+    ("reconnect my email account", ("email-setup",)),
+    ("sync my google drive", ()),
 )
 
 

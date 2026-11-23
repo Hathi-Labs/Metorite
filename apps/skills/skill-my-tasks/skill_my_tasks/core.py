@@ -54,6 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -2084,6 +2085,17 @@ CONNECTIONS_OFF = "Calendar sync is not available in your organization yet."
 CONNECTION_ERROR_MAX = 120
 
 
+async def _read_connections() -> dict[str, Any] | None:
+    """The one read of the connections route (P-1a), or None on its 404."""
+    try:
+        d = await _request("GET", _CAL_CONNECTIONS_PATH) or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    return d if isinstance(d, dict) else {}
+
+
 def _connection_line(c: dict[str, Any]) -> str:
     """One connection, from an allow-list of fields only."""
     provider = {"google": "Google", "outlook": "Outlook"}.get(
@@ -2106,12 +2118,9 @@ async def my_tasks_list_calendar_connections() -> str:
     switch. It also lists the own mailboxes that can connect. Read only. It
     shows no token and no secret. Connect happens in Calendar settings.
     """
-    try:
-        d = await _request("GET", _CAL_CONNECTIONS_PATH) or {}
-    except _GatewayError as exc:
-        if exc.status == 404:
-            return CONNECTIONS_OFF
-        raise
+    d = await _read_connections()
+    if d is None:
+        return CONNECTIONS_OFF
     rows = [c for c in d.get("connections") or () if isinstance(c, dict)]
     offers = [o for o in d.get("mailbox_offers") or () if isinstance(o, dict)]
     out = ([f"Connected calendars ({len(rows)}):", *map(_connection_line, rows)]
@@ -2120,6 +2129,213 @@ async def my_tasks_list_calendar_connections() -> str:
         out.append("Mailboxes that can connect their calendar in Calendar settings: "
                    + ", ".join(f"{o.get('provider')} {o.get('address')}" for o in offers))
     return "\n".join(out)
+
+
+# ── Sync now, the switch and Disconnect (P-1c, task 3923) ────────────────────
+#
+# The three acts of the Connected calendars section (CE-10c and CE-13d). A tool
+# takes the provider and no id: it reads the list of P-1a, takes the own row that
+# is not disconnected, shows ONE card, and sends one write after an approve. A
+# deny, a closed card or a run with no person sends nothing. The gateway takes
+# the org and the member from the session, and answers 404 for a row of another
+# member. Each tool is ``open_world=True``, so a held chat drops it
+# (``egress.is_egress_tool``), and ``HELD_OFF_PACK_WRITES`` names it too.
+# Disconnect does not clear ``calendar_task_links``: CE-13 owns that gap.
+# Fence: tests/unit/test_my_tasks_p1c_tools.py.
+
+#: The provider word of the route -> the name that the member reads.
+_CAL_PROVIDERS = {"google": "Google", "outlook": "Outlook"}
+#: The acts of :func:`my_tasks_calendar_connection`.
+_CAL_ACTIONS = ("sync", "show_tasks", "hide_tasks")
+_BAD_PROVIDER = "Name the calendar as google or outlook. Nothing changed."
+_BAD_ACTION = "Name the act as sync, show_tasks or hide_tasks. Nothing changed."
+#: The answer of a write route that found no row, or found the flag off.
+_WRITE_GONE = ("That calendar is no longer connected, or calendar sync is off. "
+               "Nothing changed. Look at Calendar settings.")
+#: What the sync route answers for each state, in the member's words.
+_SYNC_LINES = {
+    "busy": "A sync of this calendar runs now, so no new sync started. Try again in a minute.",
+    "needs_reconnect": ("The calendar needs the member to connect it again, in "
+                        "Calendar settings. The sync did not read new events."),
+}
+_SYNC_FAILED = ("The sync did not work, and no new events came in. The next "
+                "sync tries again in a minute.")
+
+
+def _no_connection(name: str) -> str:
+    return f"No {name} calendar is connected. Nothing changed. Connect happens in Calendar settings."
+
+
+async def _own_connection(provider: str) -> tuple[dict[str, Any] | None, str]:
+    """``(the row, "")`` of the member's own connection of *provider*, or
+    ``(None, the one line)``. Only a row that is not disconnected, and only
+    with an id of the UUID form, because the id goes in the path."""
+    d = await _read_connections()
+    if d is None:
+        return None, CONNECTIONS_OFF
+    for c in d.get("connections") or ():
+        if (isinstance(c, dict) and c.get("provider") == provider
+                and c.get("status") != "disconnected"):
+            try:
+                c = {**c, "id": str(uuid.UUID(str(c.get("id"))))}
+            except ValueError:
+                continue
+            return c, ""
+    return None, _no_connection(_CAL_PROVIDERS[provider])
+
+
+async def _card(title: str, detail: str, context: str = "") -> str:
+    """One card for the run's own member (PZ-32). ``""`` on an approve, else
+    the line of what happened. It fails closed: a missing card door is a
+    deny. A run with no person, and a run inside ``refuse_cards``, deny in
+    ``request_confirmation`` (AUTO-7a)."""
+    try:
+        from acb_skills.ask_tools import (
+            CLOSED_BY_YOUR_MESSAGE,
+            card_not_done_text,
+            card_outcome_text,
+            is_revised,
+            request_confirmation,
+        )
+    except ImportError:  # pragma: no cover - platform package absent in isolation
+        return "No card could show, so nothing changed."
+    answer = await request_confirmation(
+        title=title, detail=detail, context=context, fenced=True,
+        close_on_steer=True, responder=_current_user_email() or None)
+    if is_revised(answer):
+        return card_outcome_text(CLOSED_BY_YOUR_MESSAGE)
+    if answer is not True:
+        return card_not_done_text()
+    return ""
+
+
+async def _send_connection_act(cid: str, action: str) -> Any:
+    """The one write request of an act, or None when the route answered 404."""
+    try:
+        if action == "sync":
+            return await _request("POST", f"/tasks/calendar/connections/{cid}/sync") or {}
+        return await _request("PATCH", f"/tasks/calendar/connections/{cid}",
+                              json={"push_tasks": action == "show_tasks"}) or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def _sync_result(name: str, address: str, d: dict[str, Any]) -> str:
+    status = str(d.get("status") or "")
+    if status == "ok":
+        counts = ", ".join(f"{int(d.get(k) or 0)} {k}" for k in ("added", "updated", "removed"))
+        return f"Synced {name} Calendar {_data(address)}: {counts} events."
+    return _SYNC_LINES.get(status, _SYNC_FAILED)
+
+
+def _switch_result(name: str, address: str, want: bool, d: dict[str, Any]) -> str:
+    if bool(d.get("push_tasks")) is not want:
+        return ("The switch did not change. It is still "
+                f"{'on' if d.get('push_tasks') else 'off'}. Look at Calendar settings.")
+    if want:
+        return (f"The switch is on. Your timed task blocks go to the Metorite calendar "
+                f"of {_data(address)} in {name} when calendar write-out is on.")
+    return (f"The switch is off. Your tasks no longer go to {name} Calendar "
+            f"{_data(address)}. The events already there stay.")
+
+
+@_annotate_risk(idempotent=True, open_world=True)
+async def my_tasks_calendar_connection(provider: str, action: str) -> str:
+    """Act on the member's own connected calendar, after the member approves
+    one card. action "sync" reads the new events now (Sync now). "show_tasks"
+    turns on the switch that shows the member's timed Metorite tasks in that
+    calendar, and "hide_tasks" turns it off. Nothing changes without the
+    approve. Connect and reconnect happen in Calendar settings.
+
+    Args:
+        provider: "google" or "outlook".
+        action: "sync", "show_tasks" or "hide_tasks".
+    """
+    provider = str(provider or "").strip().lower()
+    action = str(action or "").strip().lower()
+    if provider not in _CAL_PROVIDERS:
+        return _BAD_PROVIDER
+    if action not in _CAL_ACTIONS:
+        return _BAD_ACTION
+    c, line = await _own_connection(provider)
+    if c is None:
+        return line
+    name, address = _CAL_PROVIDERS[provider], str(c.get("account_email") or "")
+    if action == "sync":
+        title = f"Sync {name} Calendar now?"
+        detail = (f"Metorite reads your events from {_data(address)}. "
+                  "No data leaves Metorite.")
+    else:
+        want = action == "show_tasks"
+        if bool(c.get("push_tasks")) is want:
+            return (f"The switch for {name} Calendar {_data(address)} is already "
+                    f"{'on' if want else 'off'}. Nothing changed.")
+        if want:
+            title = f"Show your Metorite tasks in {name} Calendar?"
+            detail = (f"Your timed task blocks go to the Metorite calendar of "
+                      f"{_data(address)} when calendar write-out is on.")
+        else:
+            title = f"Stop showing your Metorite tasks in {name} Calendar?"
+            detail = (f"Your tasks no longer go to {_data(address)}. "
+                      "The events already there stay.")
+    refused = await _card(title, detail)
+    if refused:
+        return refused
+    try:
+        d = await _send_connection_act(c["id"], action)
+    except _GatewayError as exc:
+        if exc.status == 503:
+            return (f"Metorite cannot reach {name} Calendar now, so nothing changed. "
+                    "Try again later.")
+        raise
+    if d is None:
+        return _WRITE_GONE
+    d = d if isinstance(d, dict) else {}
+    if action == "sync":
+        return _sync_result(name, address, d)
+    return _switch_result(name, address, action == "show_tasks", d)
+
+
+@_annotate_risk(destructive=True, open_world=True)
+async def my_tasks_disconnect_calendar(provider: str) -> str:
+    """Disconnect the member's own Google or Outlook calendar, after the
+    member approves one card. The synced events of that calendar leave
+    Metorite. The member's tasks stay, and the Metorite calendar in the
+    provider stays. The chat cannot connect it again: the member reconnects
+    in Calendar settings.
+
+    Args:
+        provider: "google" or "outlook".
+    """
+    provider = str(provider or "").strip().lower()
+    if provider not in _CAL_PROVIDERS:
+        return _BAD_PROVIDER
+    c, line = await _own_connection(provider)
+    if c is None:
+        return line
+    name, address = _CAL_PROVIDERS[provider], str(c.get("account_email") or "")
+    count = int(c.get("entry_count") or 0)
+    refused = await _card(
+        f"Disconnect {name} Calendar?",
+        f"{_data(count)} synced events leave Metorite. Your tasks stay. The Metorite "
+        f"calendar in {name} stays until you delete it.",
+        f"Account: {_data(address)}",
+    )
+    if refused:
+        return refused
+    try:
+        d = await _request("DELETE", f"/tasks/calendar/connections/{c['id']}") or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return _WRITE_GONE
+        raise
+    if not (isinstance(d, dict) and d.get("disconnected") is True):
+        return f"{name} Calendar did not disconnect. Look at Calendar settings."
+    removed = int(d.get("removed_entries") or 0)
+    return (f"Disconnected {name} Calendar {_data(address)}. {removed} synced events "
+            "left Metorite. Your tasks stay. To connect it again, use Calendar settings.")
 
 
 def _cal_patch(

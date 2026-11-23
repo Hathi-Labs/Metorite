@@ -28,7 +28,8 @@ P-1 slices.
 owner.** The chat syncs a connected calendar now, turns the task switch of a
 connection on or off, and disconnects a calendar. Each act asks on one card
 first. It pays three calendar rows, 4 to 1. The owner approves the card
-previews (D145) and the merge (D-PAR-4).
+previews (D145) and the merge (D-PAR-4). One reach row of
+`test_pack_requests.py` is red, and §7 item 13 asks the owner to choose.
 
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
@@ -456,3 +457,14 @@ he approves the merge.
     delivery.
 12. **P-1c: Disconnect in a held chat.** Default: a held chat holds off all
     three acts, also while `HELD_CARD_WRITES_ORGS` is empty.
+13. **P-1c: the cap of 110 tools.** The `calendar-day` pack grows from 20 to
+    22 tools. A turn that asks for the day planner and for tasks, such as
+    "block two hours on my calendar for the task", then loads `calendar-day`
+    only. The core `projects` pack steps aside, because a base of 56 leaves
+    no room for a Projects work pack of 11 tools. The loader still reaches
+    the Projects tools, one load later. One tool in place of two makes the
+    same result. `test_pack_requests.py` holds the row of `set_my_overlay`,
+    and the row is red. Choose one: accept the step-aside and move the row to
+    `KNOWN_GAPS`, change a cap (`MAX_REQUEST_TOOLS` or `REACH_MIN_TOOLS`), or
+    put the two acts in a new pack slug. Default: none. The merge waits for
+    this answer.

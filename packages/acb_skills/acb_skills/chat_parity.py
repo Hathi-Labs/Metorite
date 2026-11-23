@@ -257,6 +257,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
     # P-1a (task 3112): the read of the Connected calendars section (CE-10c). No token shows.
     "GET /api/calendar/connections": "my_tasks_list_calendar_connections",
+    # P-1c (task 3923): Sync now, the task switch (CE-13d) and Disconnect. Each
+    # tool takes the provider, reads the list, and sends one write after one card.
+    "POST /api/calendar/connections/{}/sync": "my_tasks_calendar_connection",
+    "PATCH /api/calendar/connections/{}": "my_tasks_calendar_connection",
+    "DELETE /api/calendar/connections/{}": "my_tasks_disconnect_calendar",
     # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
     # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
     # auto rollover, time zone). The model choices, the sync flags and capture_dedup
@@ -813,14 +818,9 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/capture/from-reply/detect": "P-1",
     # ── Calendar ──
     # CE-10c (task 66): the Connected calendars section of Calendar settings. P-1a (task 3112)
-    # paid the list read. P-1c (task 3923) pays Disconnect and Sync now.
-    "DELETE /api/calendar/connections/{}": "P-1",
-    # The read of the day state is task 1680 (PR 1998), not P-1a.
+    # paid the list read, and P-1c (task 3923) paid Sync now, the switch and Disconnect.
+    # The read of the day state is task 1680 (PR 1998), not P-1.
     "GET /api/tasks/calendar/day-state": "P-1",
-    # The switch of CE-10c follow-up (task 66): Show my Metorite tasks in Google Calendar or Outlook.
-    # P-1c (task 3923) pays it.
-    "PATCH /api/calendar/connections/{}": "P-1",
-    "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
     "GET /api/email/accounts/{}/folders": "P-2",
@@ -1181,7 +1181,7 @@ P0_CEILING: dict[str, int] = {
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
-    "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
+    "calendar": 1,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now, the switch and Disconnect (4 to 1). The day-state read is task 1680.
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111.
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,

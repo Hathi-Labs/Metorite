@@ -10,9 +10,11 @@
    },
    "names": [
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -69,7 +71,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 107,
+   "tools": 109,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -82,9 +84,11 @@
    },
    "names": [
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -153,7 +157,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 107,
+   "tools": 109,
    "via_loader": [
     "projects-assistant"
    ]
@@ -729,9 +733,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -758,7 +764,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -806,9 +812,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -846,7 +854,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": [
     "projects-assistant"
    ]
@@ -896,9 +904,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -925,7 +935,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -973,9 +983,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -1013,7 +1025,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": [
     "projects-assistant"
    ]
@@ -1040,9 +1052,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -1092,7 +1106,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -1117,9 +1131,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -1180,7 +1196,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 112,
+   "tools": 114,
    "via_loader": [
     "projects-assistant"
    ]
@@ -2255,9 +2271,11 @@
    },
    "names": [
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -2314,7 +2332,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 107,
+   "tools": 109,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -2327,9 +2345,11 @@
    },
    "names": [
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -2399,7 +2419,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 107,
+   "tools": 109,
    "via_loader": [
     "projects-assistant"
    ]
@@ -2942,9 +2962,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -2971,7 +2993,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 99,
+   "tools": 101,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -3008,9 +3030,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -3049,7 +3073,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 99,
+   "tools": 101,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3091,9 +3115,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -3120,7 +3146,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 102,
+   "tools": 104,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -3160,9 +3186,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -3201,7 +3229,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 102,
+   "tools": 104,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3228,9 +3256,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -3269,7 +3299,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 99,
+   "tools": 101,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -3294,9 +3324,11 @@
     "search_crm",
     "update_deal_status",
     "my_tasks_add_day_rule",
+    "my_tasks_calendar_connection",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
@@ -3347,7 +3379,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 99,
+   "tools": 101,
    "via_loader": [
     "projects-assistant"
    ]
