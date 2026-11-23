@@ -6,7 +6,7 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
-**SW-27a (the project sequences: migration 477 and the reserve route) is built, 2026-11-22. SW-27b, SW-27c and SW-27d are open.**
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is built, 2026-11-23. SW-27c and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
@@ -1387,7 +1387,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Owner answers (task 861, 2026-11-22, prompt e6f9f76c).** The contributor fleet may add the migration. A released number stays burned: no code lowers `last_value`, so no number comes back. A reservation is `used` on the agent's call, or when a pull request that the task references merges.
 - **Slices.**
   - **SW-27a** (this row's first slice): migration `477_pm_project_sequences.sql` (473 went to PR 2757) (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/nodes/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
-  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). A seam: ask first.
+  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). The owner said yes on 2026-11-23. The pair is in `MCP_WRITE_ROUTES`, so `projects:write`, the nonce and the write cap apply. The route reads the reach of the agent through `resolve_visibility`, so a pinned connection reserves only in its pins. Each call takes a new number, so the tool is not idempotent. Fences: `test_mcp_edge_reserve_r8.py` (R8: two calls at once get two numbers, the pins, a read-only token, a second org) and `test_mcp_edge_coverage.py`.
   - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task.
   - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
   - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.

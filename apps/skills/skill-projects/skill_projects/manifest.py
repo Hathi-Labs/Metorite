@@ -538,8 +538,8 @@ MANIFEST: tuple[Route, ...] = (
         "/projects/nodes/{project_id}/sequences/{name}/reserve",
         "",
         "X",
-        "SW-27a: an agent reserves a number over MCP once SW-27b (task 3893) adds "
-        "reserve_number. The chat has no need to reserve a number.",
+        "SW-27b (task 3893): the MCP door only. An outside agent reserves a number "
+        "through reserve_number. The chat has no need to reserve a number.",
     ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
