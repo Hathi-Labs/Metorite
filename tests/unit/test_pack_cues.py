@@ -75,6 +75,10 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-2a (task 3102): the members of the org.
+    "org-admin": (
+        "Load to list the members of the organization, change the roles or the status of a "
+        "member, or answer a sign-in request."),
 }
 
 

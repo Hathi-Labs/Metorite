@@ -1014,6 +1014,16 @@ _PACK_OWNER_AGENTS: list[dict] = [
         "integrations": [],
         "optional_integrations": [],
     },
+    # PAR-2a (chat_parity.md section 6.3, task 3102): the member tools of the
+    # Members tab. The admin routes decide each right.
+    {
+        "name": "org-admin",
+        "description": "Owns the org-admin tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-org-admin",
+        "integrations": [],
+        "optional_integrations": [],
+    },
 ]
 
 

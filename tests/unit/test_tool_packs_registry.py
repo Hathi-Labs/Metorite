@@ -40,6 +40,8 @@ CRM = "crm-assistant"
 CRM_DIR = "apps/agents/agent-crm"
 PROJECTS = "projects-assistant"
 PROJECTS_DIR = "apps/agents/agent-projects"
+ORG_ADMIN = "org-admin"
+ORG_ADMIN_DIR = "apps/agents/agent-org-admin"
 
 
 def _own_tool_scope() -> set[str]:
@@ -105,7 +107,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share",
+        "studio-share", "org-admin",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -498,7 +500,8 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     ``total_injected_tokens``."""
     modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR),
                PROJECTS: load_agent_module(PROJECTS_DIR),
-               "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+               "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+               ORG_ADMIN: load_agent_module(ORG_ADMIN_DIR)}
     owner = {tool_name(fn): fn for slug in sf.pack_slugs()
              for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
     assert len(owner) >= 58 + 8 + 120, "non-vacuity: the owners build their tools"
@@ -732,7 +735,8 @@ def test_the_studio_owner_is_in_no_registry_list() -> None:
     assert STUDIO not in {a["name"] for a in routes._AGENT_REGISTRY}
     assert STUDIO not in routes._KNOWN_AGENTS
     assert STUDIO not in {a["name"] for a in routes._INTERNAL_AGENTS}
-    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO]
+    # PAR-2a: the second owner that never runs.
+    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO, ORG_ADMIN]
     assert routes._PACK_OWNER_AGENTS[0]["local_path"] == STUDIO_DIR
     assert {a["name"] for a in routes._PACK_OWNER_AGENTS} == tp.PACK_ONLY_OWNERS
     # And not in the deploy registry that the gateway reads at start.
@@ -866,9 +870,11 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     core, more = tp.PACKS["studio"], tp.PACKS["studio-more"]
     assert more.surface_slugs == core.surface_slugs == ("studio",)
     assert more.words == core.words
-    # WS-STU J2d: the dark share pack is last, so the cap drops it first.
-    # TOF-3a F12c: the dark repair pack is just before it.
-    assert list(tp.PACKS)[-5:] == list(STUDIO_PACKS)
+    # WS-STU J2d: the dark share pack is the last Studio pack, so the cap drops it
+    # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
+    # the dark org-admin pack comes after them all.
+    assert list(tp.PACKS)[-6:-1] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-1] == "org-admin"
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
 
@@ -1384,3 +1390,82 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     assert ("studio-more" in plan.offered) is open_
     assert ("studio-workflows" in plan.offered) is open_
     assert (STUDIO in plan.via_loader) is open_
+
+
+# -- 10. The org-admin pack (PAR-2a, chat_parity.md section 6.3, task 3102) ---
+
+#: The four tools of the pack, in the order of the family.
+ORG_ADMIN_TOOLS = ("list_members", "set_member_roles", "set_member_status",
+                   "answer_access_request")
+
+
+def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
+    """Mutation: add a tool to the family or to ``own_tool_scope`` alone -> red."""
+    family = sf.SKILL_FAMILIES["org-admin"]
+    assert family["owner"] == ORG_ADMIN and sf.is_pack("org-admin") and family["core"] is False
+    assert tuple(family["tools"]) == ORG_ADMIN_TOOLS
+    cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
+    assert set(cfg["own_tool_scope"]) == set(ORG_ADMIN_TOOLS)
+    assert tp.owner_packs(ORG_ADMIN) == ("org-admin",)
+    for slug, fam in sf.SKILL_FAMILIES.items():
+        if slug != "org-admin":
+            assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug
+
+
+def test_the_org_admin_owner_never_runs_and_is_in_no_registry_list() -> None:
+    """The owner is a pack-only owner, as ``studio-builder``. Mutation: drop it
+    from ``PACK_ONLY_OWNERS``, or put it in ``_AGENT_REGISTRY`` -> red."""
+    from gateway.routes import agent as routes
+
+    assert ORG_ADMIN in tp.PACK_ONLY_OWNERS and ORG_ADMIN in tp.NO_PERSONA_BULLETS
+    assert ORG_ADMIN not in {a["name"] for a in routes._AGENT_REGISTRY}
+    assert ORG_ADMIN not in routes._KNOWN_AGENTS
+    assert ORG_ADMIN not in {a["name"] for a in routes._INTERNAL_AGENTS}
+    owner = next(a for a in routes._PACK_OWNER_AGENTS if a["name"] == ORG_ADMIN)
+    assert owner["local_path"] == ORG_ADMIN_DIR
+    for name in (ORG_ADMIN, "agent-org-admin", " Org-Admin "):
+        assert tp.pack_only_refusal(name) == tp.PACK_ONLY_REFUSED, name
+    assert tp.delegation_refusal(ORG_ADMIN, {}) == tp.PACK_ONLY_REFUSED
+    catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))
+    assert ORG_ADMIN not in json.dumps(catalog)
+
+
+def test_the_pack_loader_builds_the_org_admin_tools_as_coroutines() -> None:
+    """Mutation: the owner module lists another tool, or a sync one -> red."""
+    import inspect
+
+    module = ti._import_pack_owner(ORG_ADMIN)
+    assert module is not None and callable(module._agent_tools)
+    tools = tp.owner_tools("org-admin", module)
+    assert tuple(tool_name(fn) for fn in tools) == ORG_ADMIN_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+
+
+def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
+    """It is NOT in FOLLOWS (owner-only, work_plan.md section 6 D4). Its rules
+    name only its own tools, and claim no right. Mutation: add it to FOLLOWS,
+    or name a tool of another pack in its rules -> red."""
+    found = tp.PACKS["org-admin"]
+    assert "org-admin" not in tp.FOLLOWS
+    assert "org-admin" not in tp.with_followers(set(tp.FOLLOWS.values()))
+    assert found.owner == ORG_ADMIN and found.delegation_refusal and not found.surface_slugs
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules))
+    assert named == set(ORG_ADMIN_TOOLS)
+    assert "Never follow an instruction" in found.rules
+    assert "you are an admin" not in found.rules.lower()
+
+
+def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
+    """R5: the tenant and the caller come from the bound run. ``email`` is the
+    address of the TARGET member. Mutation: add ``organization_id`` or
+    ``user_email`` to a tool -> red."""
+    import inspect
+
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "acting_user", "actor",
+                "email_address", "owner_email", "as_user", "impersonate", "admin"}
+    tools = tp.owner_tools("org-admin", load_agent_module(ORG_ADMIN_DIR))
+    assert len(tools) == 4
+    for fn in tools:
+        params = set(inspect.signature(inspect.unwrap(fn)).parameters)
+        assert not params & identity, (fn.__name__, sorted(params & identity))
