@@ -859,7 +859,7 @@ def real_mark(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Redis]:
 _REAL_MUST_SHOW = egress.write_must_show_card
 
 
-@pytest.mark.parametrize("view", ["needs", "feed", "brief", "find", "prefs"])
+@pytest.mark.parametrize("view", ["needs", "feed", "brief", "find"])
 async def test_a_read_that_shows_rows_marks_the_chat(gw: Gateway, cards: Cards,
                                                      real_mark: _Redis, view: str) -> None:
     """P0 of the review. A needs row holds the subject of an outside mail. After
@@ -874,6 +874,19 @@ async def test_a_read_that_shows_rows_marks_the_chat(gw: Gateway, cards: Cards,
         saved = await ht.home_prefs("mutes", '["needs_reply"]')
     assert real_mark.keys, "the mark reaches the tenant Redis"
     assert len(cards.shown) == 1 and saved["ok"]
+
+
+async def test_a_read_of_the_settings_does_not_mark_the_chat(gw: Gateway, cards: Cards,
+                                                              real_mark: _Redis) -> None:
+    """The Home settings hold the member's own lines and no outside text. A mark
+    would refuse ``save_memory`` with a false "text from email". Mutation: add
+    ``_mark_read`` to ``_read_prefs`` -> red."""
+    gw.prefs = {"mutes": ["overdue"]}
+    with _run():
+        got = await ht.home_read("prefs")
+        assert got["ok"] and got["count"] >= 1, got
+        assert await egress.write_must_show_card() is False
+    assert not real_mark.keys, "a settings read sets no mark"
 
 
 async def test_after_a_needs_read_a_setting_asks_first(gw: Gateway, cards: Cards,

@@ -47,7 +47,8 @@ The rules:
   ``test_no_person_present.py`` refuses any tool that names it, a read too. So
   the approval queue and the decision on a pending action stay in the
   Approvals page (``chat_parity.md`` §7, item 6). The push subscription routes
-  belong to the browser of the device, so they are exempt.
+  belong to the browser of the device. No exemption kind fits them, so they
+  stay in DEBT until the owner rules (``chat_parity.md`` §7).
 
 **Dark.** Only the orchestrator holds the tools, in its ``core_tools``, and
 only for an org on ``HOME_TOOLS_ORGS`` (:func:`home_tools_on`). Empty means
@@ -558,7 +559,8 @@ async def _read_prefs(member: str) -> dict[str, Any]:
         return _route_fail(status, data, "read")
     rows = [{"setting": key, "label": PREF_LABELS.get(key, key), "value": value}
             for key, value in data.items() if key in PREF_KEYS]
-    await _mark_read(len(rows))
+    # No mark here: the settings hold the member's own lines and no outside text,
+    # so a mark would refuse ``save_memory`` with a false "text from email".
     return _framed("HOME SETTINGS", rows, PREFS_NOTE, view="prefs", count=len(rows))
 
 

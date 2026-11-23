@@ -55,8 +55,9 @@ says how many rows exist, and how to see the rest.
   62 tools.
 - **The trade of the tool cap, with the flag on.** Two of the 16 cases of the
   golden matrix change. A Studio turn with mail words drops `studio-more` (110
-  to 102 tools). A Studio turn with mail and CRM words drops `studio-more` and
-  the core pack `studio` (109 to 104 tools). The other 14 cases keep their
+  to 102 tools). With the flag off, a Studio turn with mail and CRM words
+  already skips `studio-more`. So the flag drops only the core pack `studio`
+  there (109 to 104 tools). The other 14 cases keep their
   packs. Fence: `test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack`.
 - **Decide (b): five rows wait for a ruling on their kind.** No kind of §2
   fits them, so they stay debt. `POST /api/shell/intent` is the model step of
