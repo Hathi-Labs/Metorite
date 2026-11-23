@@ -478,7 +478,9 @@ function Node({
   const run = hasRunState(level)
     ? effectiveState(node, inheritedState)
     : { state: inheritedState ?? "active", inherited: Boolean(inheritedState) };
-  const addOptions = onAddChild ? childCreationOptions(kind, gen) : [];
+  const addOptions = onAddChild
+    ? childCreationOptions(kind, gen, Boolean(actions?.onNewFromTemplate))
+    : [];
   // Is the row being named a child of THIS node? If so this node opens,
   // whatever its own fold state said — you cannot name what you cannot see.
   const draftHere = creating != null && creating.parentId === node.id;
@@ -764,7 +766,9 @@ function Node({
           items={addOptions.map((option) => ({
             kind: "item" as const,
             label: option.label,
-            icon: themedIcon(option.kind === "folder" ? "Folder" : "Plus"),
+            icon: themedIcon(
+              option.kind === "folder" ? "Folder" : option.template ? "LayoutTemplate" : "Plus"
+            ),
             onSelect: () => onAddChild(node, option),
           }))}
           onClose={() => setAddMenu(null)}
