@@ -155,7 +155,9 @@ The rules:
     gate, so each rule of the gate holds. The gate's list of tools is the list
     of the run, so a server that the grant or OA-7b held back never loads. A
     server whose load loader the model did not get (an egress hold) loads
-    nothing. The line is ``mcp.loader action=autoload``. Any other name keeps
+    nothing. A first-party tool name of the run (``_reserved_tool_names``)
+    never loads, so a server ``crm`` cannot take ``crm_update_record``. The
+    line is ``mcp.loader action=autoload``. Any other name keeps
     the unknown-tool answer. :func:`attach_mcp_tools` puts the middleware FIRST,
     so it reads the run's live list before a provider middleware copies it.
     Fence: ``tests/unit/test_mcp_tool_autoload.py``.
@@ -181,7 +183,7 @@ import re
 import time
 import unicodedata
 import warnings
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
@@ -1194,6 +1196,7 @@ async def attach_mcp_tools(
     on_unauthorized: Callable[[McpServer], Awaitable[Any]] | None = None,
     on_needs_signin: Callable[[McpServer], Awaitable[Any]] | None = None,
     failures: dict[str, str] | None = None,
+    reserved: Iterable[str] = (),
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
 
@@ -1234,7 +1237,11 @@ async def attach_mcp_tools(
     no stored header, whose connect gets a 401 or 403 with an OAuth challenge
     (:func:`_has_oauth_challenge`). The caller marks the row ``needs_reconnect``,
     and the console then offers Connect. A 401 with no challenge keeps the
-    old path: a key that the server refused is not a sign-in to start."""
+    old path: a key that the server refused is not a sign-in to start.
+
+    *reserved* (task 3924, review P2) is the first-party tool names of the run
+    (``_tool_injection._reserved_tool_names``). :class:`McpAutoload` never
+    loads a server tool of such a name. Empty, the default, reserves none."""
     try:
         tool_cls = _run_scoped_tool_class()
         from agent_framework._feature_stage import ExperimentalWarning
@@ -1349,7 +1356,8 @@ async def attach_mcp_tools(
     # before a provider middleware copies it. An older one is replaced too.
     middleware = [m for m in list(getattr(agent, "middleware", None) or [])
                   if not isinstance(m, McpPermissionGate | McpAutoload)]
-    agent.middleware = [McpAutoload(tools=list(agent.mcp_tools)), *middleware, McpPermissionGate(
+    agent.middleware = [McpAutoload(tools=list(agent.mcp_tools), reserved=reserved),
+                        *middleware, McpPermissionGate(
         tools=list(agent.mcp_tools),
         # MCP-NC1: a run that no person watches (AUTO-7a) is not a member's
         # run, also when it names a member, so it asks no card it cannot show.
@@ -2628,14 +2636,23 @@ def _model_calls(response: Any) -> list[Any]:
             and not getattr(content, "informational_only", False)]
 
 
-def _autoload_target(tools: list[Any], name: str) -> tuple[Any, Any, Any] | None:
+def _autoload_target(tools: list[Any], name: str,
+                     reserved: frozenset[str] = frozenset()) -> tuple[Any, Any, Any] | None:
     """The attached server, the listed function and the load loader for the
     called *name*, or None.
 
     The server is a ``RunScopedMCPTool`` of *tools* with disclosure on, and
     *name* starts with its prefix (:func:`tool_prefix`). The function has
     exactly *name* among the server's own list, the list that :func:`mcp_index`
-    shows. A loader name and a name that no attached server lists give None."""
+    shows. A loader name and a name that no attached server lists give None.
+
+    *reserved* is the first-party tool names of the run
+    (``_tool_injection._reserved_tool_names``). A name of that set gives None
+    (review P2). A server ``crm`` that lists ``update_record`` has the local
+    name of a pack tool, and the model that calls it means the pack tool. The
+    call then keeps the HRD-1 answer, and no data goes to the server."""
+    if name in reserved:
+        return None
     scoped = _run_scoped_tool_class()
     for tool in tools:
         if not isinstance(tool, scoped) or getattr(tool, "use_progressive_disclosure", False) is not True:
@@ -2653,7 +2670,8 @@ def _autoload_target(tools: list[Any], name: str) -> tuple[Any, Any, Any] | None
     return None
 
 
-async def _autoload_calls(tools: list[Any], live: list[Any], sent: Any, response: Any) -> None:
+async def _autoload_calls(tools: list[Any], live: list[Any], sent: Any, response: Any,
+                          reserved: frozenset[str] = frozenset()) -> None:
     """Load each listed tool that *response* calls and the run has not loaded.
 
     *live* is the run's live tool list, the list that MAF reads to run the
@@ -2662,7 +2680,8 @@ async def _autoload_calls(tools: list[Any], live: list[Any], sent: Any, response
     nothing, because the model could not load the tool either. The load is
     MAF's own (``_load_progressive_mcp_tool``), with a
     ``FunctionInvocationContext`` over *live*, as the loader gets it. A name
-    that MAF cannot resolve gets MAF's text and no load."""
+    that MAF cannot resolve gets MAF's text and no load. A name of *reserved*
+    never loads (:func:`_autoload_target`)."""
     from acb_skills.tool_guard import tool_name
     from agent_framework import FunctionInvocationContext
 
@@ -2672,7 +2691,7 @@ async def _autoload_calls(tools: list[Any], live: list[Any], sent: Any, response
         name = str(getattr(call, "name", "") or "")
         if not name or name in have:
             continue
-        found = _autoload_target(tools, name)
+        found = _autoload_target(tools, name, reserved)
         if found is None:
             continue
         tool, function, loader = found
@@ -2703,14 +2722,18 @@ def _make_autoload_class() -> type:
         the run's live list through MAF's own load. MAF then runs the call in
         the same step, through :class:`McpPermissionGate`.
 
-        *tools* are the MCP tools of the run, the gate's own list.
-        :func:`attach_mcp_tools` puts the middleware FIRST among the agent's
-        middleware, so it reads the live list before a provider middleware
-        (``tool_guard.WithholdTools``) puts a copy in the request. A fault
-        loads nothing, and the call keeps the unknown-tool answer."""
+        *tools* are the MCP tools of the run, the gate's own list. *reserved*
+        is the first-party tool names of the run, which never load a server
+        tool (review P2). :func:`attach_mcp_tools` puts the middleware FIRST
+        among the agent's middleware, so it reads the live list before a
+        provider middleware (``tool_guard.WithholdTools``) puts a copy in the
+        request. A fault loads nothing, and the call keeps the unknown-tool
+        answer."""
 
-        def __init__(self, tools: list[Any] | None = None) -> None:
+        def __init__(self, tools: list[Any] | None = None,
+                     reserved: Iterable[str] = ()) -> None:
             self.tools = list(tools or [])
+            self.reserved = frozenset(n for n in reserved if isinstance(n, str))
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
             options = getattr(context, "options", None)
@@ -2732,7 +2755,7 @@ def _make_autoload_class() -> type:
             try:
                 options = getattr(context, "options", None)
                 sent = options.get("tools") if isinstance(options, Mapping) else None
-                await _autoload_calls(self.tools, live, sent, response)
+                await _autoload_calls(self.tools, live, sent, response, self.reserved)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # the class only: the call keeps today's answer

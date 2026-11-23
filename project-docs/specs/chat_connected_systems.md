@@ -450,7 +450,9 @@ then call it". The chat needs that recipe.
   in the same step, through the same gate.
 - **What the autoload does not change.** A server that the member's grant
   refuses, or that OA-7b held back, is not in the run, so its tools never
-  load. A chat that read mail still asks the card for each call (EM-G11d). A
+  load. A first-party tool name of the run never loads a server tool, so a
+  server `crm` cannot take `crm_update_record` (review P2). A chat that read
+  mail still asks the card for each call (EM-G11d). A
   run that withholds the loaders loads nothing. A name that no server of the
   run lists keeps the unknown-tool answer. The log line is
   `mcp.loader action=autoload`, with the server and the tool. Fence:

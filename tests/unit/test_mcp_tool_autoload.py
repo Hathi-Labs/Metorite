@@ -174,6 +174,39 @@ async def test_a_name_that_no_attached_server_lists_loads_nothing(name: str) -> 
     assert _autoloads(logs) == []
 
 
+async def test_a_first_party_tool_name_never_loads_a_server_tool() -> None:
+    """Review P2: a registry server ``crm`` that lists ``update_record`` has the
+    local name ``crm_update_record``, which is a tool of the ``crm-records``
+    pack. The model that calls it means the pack tool. So the name keeps the
+    HRD-1 answer, and no record data goes to the outside server."""
+    from tests.unit._maf_mcp_fakes import native_agent
+
+    reserved = _tool_injection._reserved_tool_names(native_agent())
+    assert "crm_update_record" in reserved, "the pack name left the reserved set"
+    tool = _scoped("crm", ("update_record", "lookup"))
+    assert _maf_mcp._autoload_target([tool], "crm_update_record", reserved) is None
+    live = list(tool.functions)
+    before = list(live)
+    ctx = _request(live)
+
+    async def answer() -> None:
+        ctx.result = _calls("crm_update_record")
+
+    with structlog.testing.capture_logs() as logs:
+        await _bounded(_maf_mcp.McpAutoload(tools=[tool], reserved=reserved).process(ctx, answer))
+    assert live == before, "a first-party name loaded the server's tool"
+    assert _autoloads(logs) == []
+    # A name of the same server that no first-party tool holds still loads.
+    ctx = _request(live)
+
+    async def other() -> None:
+        ctx.result = _calls("crm_lookup")
+
+    with structlog.testing.capture_logs() as logs:
+        await _bounded(_maf_mcp.McpAutoload(tools=[tool], reserved=reserved).process(ctx, other))
+    assert _autoloads(logs) == [("crm", "lookup")]
+
+
 async def test_a_run_that_withholds_the_loader_loads_nothing() -> None:
     """The loader egress rule: a ``no_egress`` run withholds the loaders from
     the model (``WithholdEgressTools``). The model could not load the tool,
@@ -386,6 +419,27 @@ def test_a_name_under_no_attached_prefix_keeps_the_unknown_tool_answer_end_to_en
     with local_mcp_server(filler=10) as srv:
         model = ScriptedModel([tool_turn("other-srv_echo", '{"text": "ping"}'), text_turn("ok")])
         events, _seen, logs = _drive(monkeypatch, srv, model)
+    assert srv.calls == []
+    assert _autoloads(logs) == []
+    assert len(_events(logs, "unknown_tool.answered")) == 1
+    assert (MEMBER_LINE, False) in _steps(events)
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_reserved_name_keeps_the_unknown_tool_answer_end_to_end(monkeypatch) -> None:
+    """Review P2: ``_inject_mcp_servers`` hands the run's first-party names
+    (``_reserved_tool_names``) to the autoload. Here the run reserves the
+    local name of the server's ``echo``, so the call never reaches it."""
+    real = _tool_injection._reserved_tool_names
+
+    def _reserved(agent: Any) -> frozenset[str]:
+        return frozenset(real(agent) | {f"{_SERVER}_echo"})
+
+    monkeypatch.setattr(_tool_injection, "_reserved_tool_names", _reserved)
+    with local_mcp_server(filler=10) as srv:
+        model = ScriptedModel([tool_turn(f"{_SERVER}_echo", '{"text": "ping"}'), text_turn("ok")])
+        events, _seen, logs = _drive(monkeypatch, srv, model)
+    assert _events(logs, "mcp.attached"), "the server did not attach"
     assert srv.calls == []
     assert _autoloads(logs) == []
     assert len(_events(logs, "unknown_tool.answered")) == 1
