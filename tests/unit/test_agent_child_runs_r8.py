@@ -1,7 +1,7 @@
-"""WS-MCP SW-39 — child runs: one sub-agent under an open run (R8).
+"""WS-MCP SW-39 and SW-114 — child runs: one sub-agent under an open run (R8).
 
 Spec: ``project-docs/specs/agent_coordination.md`` §3.11.9, §3.12.7 rule 11
-and the slice SW-39.
+and the slices SW-39 and SW-114.
 
 Migration ``agent_run_child`` adds ``kind`` (``run`` or ``child``) and
 ``parent_run_id`` to ``pm_agent_runs``, with ``ON DELETE CASCADE``. A child
@@ -9,6 +9,12 @@ has no task and no app, so every read of task runs and of app runs leaves it
 out. The lease index ``pm_agent_runs_one_open_per_task`` leaves it out too.
 ``POST /projects/agent-runs/{run_id}/children`` is the one writer, and
 ``GET /projects/agent-runs/{run_id}/children`` is the one read.
+
+SW-114 adds the rest of the writer, for the edge tool ``report_subagent``:
+``agent_id`` is the key of a child (``agent_runs.child_key``), so a replayed
+start writes nothing. ``event: stop`` ends the open child, and a stop of an
+unknown or ended child changes nothing. A run holds at most 20 open
+children, and the 21st start is 429. An own run of another connection is 403.
 
 This file runs on a REAL Postgres, through the real ``/projects`` router,
 under the non-privileged role of the phase-4 rehearsal (R8). The structural
@@ -44,6 +50,32 @@ the migration.
   ``test_a_viewer_who_cannot_see_the_parent_sees_no_child``.
 * C9. ``G`` ``start_child_run``: skip the person check.
   ``test_a_person_body_is_refused``.
+* C10. ``G`` ``start_child_run``: skip the read of ``_CHILD_BY_KEY_SQL``.
+  ``test_a_replayed_start_writes_nothing`` (the insert finds the key and
+  answers 409).
+* C11. ``G`` ``start_child_run``: skip the cap.
+  ``test_the_21st_open_child_is_429_and_a_stop_frees_a_slot``.
+* C12. ``G`` ``_STOP_CHILD_SQL``: drop ``idempotency_key = :key``.
+  ``test_a_stop_ends_one_child_and_a_second_stop_is_quiet``.
+* C13. ``G`` ``_parent_for_child``: give 404 for another connection.
+  ``test_a_run_of_another_member_or_connection_is_refused``.
+* C14. ``G`` ``start_child_run``: drop the ``_child_writes_on`` check.
+  ``TestTheDarkRoute`` (each test).
+* C15. ``G`` ``start_child_run``: move the flag check after the parent lock.
+  ``test_the_flag_off_takes_no_lock``.
+* C16. ``G`` ``_parent_for_child``: drop the execute of ``_LOCK_TASK_RUN_SQL``.
+  ``TestTheRaces``: ``test_21_starts_at_once_give_20_children_and_one_429``,
+  ``test_40_starts_at_once_give_20_children_and_20_429`` and
+  ``test_30_replays_at_once_write_one_child``.
+* C17. ``G`` ``_parent_for_child``: drop the member test before the 403.
+  ``test_a_run_of_another_member_or_connection_is_refused`` (Bob gets 403).
+* C18. ``G`` ``_STOP_CHILD_SQL``: drop ``kind = 'child'``.
+  ``test_the_stop_names_the_child_subject``. The subject fence of
+  ``test_app_requests_r8.py`` does not see it: it reads only a statement
+  with ``FROM`` or ``JOIN pm_agent_runs``, and an UPDATE has neither.
+* C19. ``acb_auth.agent_oauth.MCP_ROUTES``: add the GET of the children.
+  ``test_mcp_edge_coverage.py``
+  ``test_sw114_report_subagent_is_the_one_write_of_the_children_route``.
 """
 
 from __future__ import annotations
@@ -84,6 +116,8 @@ LANE = "sw39-lane@child.test"       # a member of org A who sees only a granted 
 OTHER = "sw39-other@child.test"     # a member of org B
 
 _REFUSED = "No open run of yours holds a task with that id."
+_OTHER_CONNECTION = "That run belongs to another connection of yours."
+_CAP = "This run already has 20 open sub-agents. Stop one before you start another."
 _OPEN = ("created", "in_progress", "awaiting", "stopping")
 
 
@@ -111,7 +145,11 @@ def world(promoted):  # noqa: F811
 
 @pytest.fixture
 def w(world, monkeypatch):
+    """SW-114: the child writes are dark behind ``AGENT_MAP_ORGS``, so each
+    test runs with the flag on for every org. ``TestTheDarkRoute`` turns it
+    off or on for one org."""
     monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    monkeypatch.setattr(get_settings(), "agent_map_orgs", "*")
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs"))
     return world
@@ -138,10 +176,19 @@ async def _claim(call: Any, user: Any, task: str) -> str:
     return str(run_id)
 
 
+_agent_ids = iter(range(1, 1_000_000))
+
+
 async def _child(call: Any, user: Any, parent: str, label: str = "implementer",
                  **extra: Any) -> Any:
+    """One start, with a new ``agent_id`` unless *extra* names one."""
+    body = {"agent_id": f"sub-{next(_agent_ids)}", "agent_label": label, **extra}
+    return await call(user, "POST", f"/projects/agent-runs/{parent}/children", body)
+
+
+async def _stop(call: Any, user: Any, parent: str, agent_id: str) -> Any:
     return await call(user, "POST", f"/projects/agent-runs/{parent}/children",
-                      {"agent_label": label, **extra})
+                      {"agent_id": agent_id, "event": "stop"})
 
 
 def _child_rows(w: Any, parent: str) -> list[Any]:
@@ -249,9 +296,10 @@ class TestTheChildRunOnARealDatabase:
         session = _in_session(w.alice, _key())
         async with _session(w.p) as call:
             parent = await _claim(call, session, task)
-            made = await _child(call, session, parent, "verifier",
+            made = await _child(call, session, parent, "verifier", agent_id="sub-a1",
                                 model="claude-sonnet-5.5", host="box-1", host_kind="server")
         assert made.status_code == 201, made.text
+        assert (made.json()["created"], made.json()["ended"]) == (True, False)
         run = made.json()["run"]
         assert (run["kind"], run["parent_run_id"], run["status"]) == (
             "child", parent, "in_progress")
@@ -260,8 +308,8 @@ class TestTheChildRunOnARealDatabase:
         assert run["started_at"] and run["ended_at"] is None
         [row] = _child_rows(w, parent)
         assert str(row.id) == run["id"]
-        assert (row.task_id, row.app, row.session_key, row.idempotency_key) == (
-            None, None, None, None)
+        assert (row.task_id, row.app, row.session_key) == (None, None, None)
+        assert row.idempotency_key == f"child:{parent}:sub-a1"
         assert (str(row.organization_id), row.member_email, str(row.connection_id)) == (
             w.org, ALICE, w.conn_alice)
         assert row.client_via == R8_VIA
@@ -329,14 +377,24 @@ class TestTheChildRunOnARealDatabase:
         assert _child_rows(w, child) == []
 
     async def test_a_run_of_another_member_or_connection_is_refused(self, w):
+        """SW-114: an own run of another connection of the same member is 403,
+        for a start and for a stop. A run of another member stays the one 404,
+        so the 403 tells a member only about the member's own run."""
         session = _in_session(w.alice, _key())
         async with _session(w.p) as call:
             parent = await _claim(call, session, _fresh(w))
-            by_bob = await _child(call, _in_session(w.bob, _key()), parent)
-            by_other_connection = await _child(call, _in_session(w.alice_2, _key()), parent)
-        for answer in (by_bob, by_other_connection):
+            assert (await _child(call, session, parent, agent_id="mine")).status_code == 201
+            bob = _in_session(w.bob, _key())
+            alice_2 = _in_session(w.alice_2, _key())
+            by_bob = [await _child(call, bob, parent), await _stop(call, bob, parent, "mine")]
+            by_other_connection = [await _child(call, alice_2, parent),
+                                   await _stop(call, alice_2, parent, "mine")]
+        for answer in by_bob:
             assert answer.status_code == 404 and answer.json() == {"detail": _REFUSED}
-        assert _child_rows(w, parent) == []
+        for answer in by_other_connection:
+            assert answer.status_code == 403, answer.text
+            assert answer.json() == {"detail": _OTHER_CONNECTION}
+        assert [r.status for r in _child_rows(w, parent)] == ["in_progress"]
 
     async def test_a_parent_that_lost_its_task_to_a_takeover_is_refused(self, w):
         """A run whose lease ended and that another member took over is
@@ -486,13 +544,20 @@ class TestTheChildRunOnARealDatabase:
         async with _session(w.p) as call:
             parent = await _claim(call, session, _fresh(w))
             person = await _child(call, w.alice_person, parent)
+            person_stop = await _stop(call, w.alice_person, parent, "sub-x")
             no_label = await call(session, "POST", f"/projects/agent-runs/{parent}/children", {})
+            only_id = await call(session, "POST", f"/projects/agent-runs/{parent}/children",
+                                 {"agent_id": "sub-y"})
             blank = await _child(call, session, parent, "​\x07")
             extra = await _child(call, session, parent, task_id=str(uuid.uuid4()))
-        assert person.status_code == 422, person.text
-        assert person.json() == {
-            "detail": "Only an agent starts a child run, for one of its sub-agents."}
-        for answer in (no_label, blank, extra):
+            bad_ids = [await _child(call, session, parent, agent_id=bad)
+                       for bad in ("", "a b", "a/b", "x" * 65)]
+            bad_event = await _child(call, session, parent, event="pause")
+        for answer in (person, person_stop):
+            assert answer.status_code == 422, answer.text
+            assert answer.json() == {
+                "detail": "Only an agent starts a child run, for one of its sub-agents."}
+        for answer in (no_label, only_id, blank, extra, *bad_ids, bad_event):
             assert answer.status_code == 422, answer.text
         assert _child_rows(w, parent) == []
 
@@ -543,6 +608,332 @@ class TestTheChildRunOnARealDatabase:
         assert _child_rows(w, parent) == []
 
 
+@_DB_GATE
+class TestTheSubagentReports:
+    """SW-114 (``agent_coordination.md`` §3.12.7 rule 11). The start and the
+    stop that the edge tool ``report_subagent`` sends."""
+
+    async def test_a_replayed_start_writes_nothing(self, w):
+        """The first and second "Done when" of SW-114. A start writes one
+        child. The same ``agent_id`` again writes none and answers the same
+        child, 200, also after a stop. Another ``agent_id`` is another child."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            first = await _child(call, session, parent, "verifier", agent_id="sub-r1")
+            again = await _child(call, session, parent, "renamed", agent_id="sub-r1",
+                                 model="other-model")
+            other = await _child(call, session, parent, "verifier", agent_id="sub-r2")
+            stopped = await _stop(call, session, parent, "sub-r1")
+            after_stop = await _child(call, session, parent, "verifier", agent_id="sub-r1")
+        assert first.status_code == 201, first.text
+        assert again.status_code == 200, again.text
+        assert again.json()["run"] == first.json()["run"]
+        assert (again.json()["created"], again.json()["ended"]) == (False, False)
+        assert again.json()["run"]["agent_label"] == "verifier"
+        assert other.status_code == 201 and other.json()["run"]["id"] != first.json()["run"]["id"]
+        assert stopped.status_code == 200, stopped.text
+        assert after_stop.status_code == 200, after_stop.text
+        assert after_stop.json()["run"]["id"] == first.json()["run"]["id"]
+        assert after_stop.json()["run"]["status"] == "completed"
+        assert after_stop.json()["created"] is False
+        rows = _child_rows(w, parent)
+        assert len(rows) == 2
+        assert sorted(r.idempotency_key for r in rows) == [
+            f"child:{parent}:sub-r1", f"child:{parent}:sub-r2"]
+
+    async def test_a_stop_ends_one_child_and_a_second_stop_is_quiet(self, w):
+        """The third "Done when" of SW-114. A stop ends the open child of its
+        ``agent_id``: the status ``completed`` and ``ended_at``. A second stop
+        and a stop of an unknown id change nothing and answer 200. A stop
+        never ends the parent or another child."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            one = (await _child(call, session, parent, agent_id="sub-s1")).json()["run"]["id"]
+            two = (await _child(call, session, parent, agent_id="sub-s2")).json()["run"]["id"]
+            stop = await _stop(call, session, parent, "sub-s1")
+            ended_at = _rows(w.p, "SELECT ended_at FROM pm_agent_runs"
+                                  " WHERE id = CAST(:i AS uuid)", i=one)[0].ended_at
+            second = await _stop(call, session, parent, "sub-s1")
+            unknown = await _stop(call, session, parent, "sub-none")
+        assert stop.status_code == 200, stop.text
+        assert (stop.json()["created"], stop.json()["ended"]) == (False, True)
+        assert stop.json()["run"]["id"] == one
+        assert stop.json()["run"]["status"] == "completed"
+        assert stop.json()["run"]["ended_at"]
+        assert second.status_code == 200, second.text
+        assert (second.json()["ended"], second.json()["run"]["id"]) == (False, one)
+        assert unknown.status_code == 200, unknown.text
+        assert unknown.json() == {"run": None, "created": False, "ended": False}
+        assert _status(w, one) == "completed" and _status(w, two) == "in_progress"
+        assert _rows(w.p, "SELECT ended_at FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                     i=one)[0].ended_at == ended_at
+        assert _status(w, parent) == "in_progress"
+
+    async def test_the_21st_open_child_is_429_and_a_stop_frees_a_slot(self, w):
+        """The fifth "Done when" of SW-114. 20 open children fit. The 21st
+        start is 429 with the fixed text, and it writes nothing. A replay of
+        an open child still answers 200. A stop frees a slot."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            for n in range(20):
+                made = await _child(call, session, parent, agent_id=f"cap-{n}")
+                assert made.status_code == 201, (n, made.text)
+            over = await _child(call, session, parent, agent_id="cap-20")
+            replay = await _child(call, session, parent, agent_id="cap-3")
+            assert (await _stop(call, session, parent, "cap-0")).status_code == 200
+            freed = await _child(call, session, parent, agent_id="cap-20")
+            over_again = await _child(call, session, parent, agent_id="cap-21")
+        assert over.status_code == 429, over.text
+        assert over.json() == {"detail": _CAP}
+        assert replay.status_code == 200, replay.text
+        assert freed.status_code == 201, freed.text
+        assert over_again.status_code == 429 and over_again.json() == {"detail": _CAP}
+        rows = _child_rows(w, parent)
+        assert len(rows) == 21
+        assert sum(1 for r in rows if r.status in _OPEN) == 20
+
+    async def test_another_org_and_an_unknown_id_get_the_same_fixed_404(self, w):
+        """A start and a stop under a run of org B, an unknown id and a word
+        all read the same, so the answer names no other organization."""
+        async with _session(w.p) as call:
+            theirs_session = _in_session(w.other, _key())
+            theirs = await _claim(call, theirs_session, _fresh(w, w.org_b, OTHER))
+            assert (await _child(call, theirs_session, theirs,
+                                 agent_id="theirs")).status_code == 201
+            session = _in_session(w.alice, _key())
+            answers = []
+            for target in (theirs, str(uuid.uuid4()), "not-a-run"):
+                answers.append(await _child(call, session, target))
+                answers.append(await _stop(call, session, target, "theirs"))
+        for answer in answers:
+            assert answer.status_code == 404, answer.text
+            assert answer.json() == {"detail": _REFUSED}
+        assert [r.status for r in _child_rows(w, theirs)] == ["in_progress"]
+
+    async def test_a_closed_parent_takes_no_start_and_a_stop_is_quiet(self, w):
+        """A start under a closed parent is the 404. Its children ended with
+        it, so a stop finds no open child and changes nothing."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            assert (await _child(call, session, parent, agent_id="sub-c1")).status_code == 201
+            fin = await call(session, "POST", f"/projects/agent-runs/{parent}/finish", {})
+            assert fin.status_code == 200, fin.text
+            start = await _child(call, session, parent, agent_id="sub-c2")
+            stop = await _stop(call, session, parent, "sub-c1")
+        assert start.status_code == 404 and start.json() == {"detail": _REFUSED}
+        assert stop.status_code == 200, stop.text
+        assert stop.json()["ended"] is False
+        assert stop.json()["run"]["status"] == "completed"
+        assert [r.status for r in _child_rows(w, parent)] == ["completed"]
+
+    async def test_a_key_that_another_run_holds_is_409(self, w):
+        """The unique key of migration 267 is on organization, member and
+        key. When another run of the member holds the key of a child, the
+        start writes nothing and answers 409, never a 500."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            other = await _claim(call, _in_session(w.alice, _key()), _fresh(w))
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET idempotency_key = :k"
+                               " WHERE id = CAST(:i AS uuid)"),
+                          {"k": f"child:{parent}:sub-k1", "i": other})
+            answer = await _child(call, session, parent, agent_id="sub-k1")
+        assert answer.status_code == 409, answer.text
+        assert answer.json() == {"detail": "That agent_id is the key of another run of yours."}
+        assert _child_rows(w, parent) == []
+
+
+async def _all_at_once(calls: list[Any]) -> list[Any]:
+    """Run *calls* at the same time. Each request of the one ASGI client
+    opens its own session from the pool, so the requests overlap in the
+    database. The barrier holds each call until all of them are ready."""
+    import asyncio
+
+    gate = asyncio.Event()
+    waiting = 0
+
+    async def one(make: Any) -> Any:
+        nonlocal waiting
+        waiting += 1
+        if waiting == len(calls):
+            gate.set()
+        await gate.wait()
+        return await make()
+
+    return list(await asyncio.gather(*(one(c) for c in calls)))
+
+
+def _codes(answers: list[Any]) -> dict[int, int]:
+    out: dict[int, int] = {}
+    for a in answers:
+        out[a.status_code] = out.get(a.status_code, 0) + 1
+    return out
+
+
+@_DB_GATE
+class TestTheRaces:
+    """SW-114. The parent lock of ``_parent_for_child`` puts the starts and
+    the stops of one parent in turn. So the cap and the replay hold when the
+    hooks of many sub-agents call at once (C16).
+
+    ``_clock`` runs between the reads (the replay key and the count) and the
+    INSERT. The fixture makes it wait 0.1 s, so each start holds its open
+    transaction across that gap. With the lock the starts wait in turn.
+    Without it, they all read before any of them writes, and the counts
+    break every time, not only on a lucky schedule."""
+
+    @pytest.fixture(autouse=True)
+    def _slow_clock(self, monkeypatch):
+        import asyncio
+
+        from gateway.routes.projects import agent_runs
+
+        real = agent_runs._clock
+
+        async def slow(db: Any) -> Any:
+            await asyncio.sleep(0.1)
+            return await real(db)
+
+        monkeypatch.setattr(agent_runs, "_clock", slow)
+
+    async def _starts(self, w: Any, n: int, ids: list[str] | None = None) -> tuple[
+            str, list[Any]]:
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            names = ids or [f"race-{i}" for i in range(n)]
+            answers = await _all_at_once([
+                (lambda a=a: _child(call, session, parent, agent_id=a)) for a in names])
+        return parent, answers
+
+    def _open(self, w: Any, parent: str) -> int:
+        return sum(1 for r in _child_rows(w, parent) if r.status in _OPEN)
+
+    async def test_21_starts_at_once_give_20_children_and_one_429(self, w):
+        parent, answers = await self._starts(w, 21)
+        assert _codes(answers) == {201: 20, 429: 1}, [a.text for a in answers]
+        assert self._open(w, parent) == 20 and len(_child_rows(w, parent)) == 20
+
+    async def test_40_starts_at_once_give_20_children_and_20_429(self, w):
+        parent, answers = await self._starts(w, 40)
+        assert _codes(answers) == {201: 20, 429: 20}, _codes(answers)
+        assert self._open(w, parent) == 20 and len(_child_rows(w, parent)) == 20
+
+    async def test_30_replays_at_once_write_one_child(self, w):
+        parent, answers = await self._starts(w, 30, ["same-id"] * 30)
+        assert _codes(answers) == {201: 1, 200: 29}, _codes(answers)
+        assert sum(1 for a in answers if a.json()["created"]) == 1
+        assert len({a.json()["run"]["id"] for a in answers}) == 1
+        assert len(_child_rows(w, parent)) == 1
+
+    async def test_a_stop_that_races_starts_at_the_cap(self, w):
+        """20 open children. A stop of one and two new starts go at once.
+        After them, at most 20 are open, at most one start took the freed
+        slot, and the stopped child has the status that its answer gave."""
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            for n in range(20):
+                assert (await _child(call, session, parent,
+                                     agent_id=f"full-{n}")).status_code == 201
+            stop, one, two = await _all_at_once([
+                lambda: _stop(call, session, parent, "full-0"),
+                lambda: _child(call, session, parent, agent_id="late-1"),
+                lambda: _child(call, session, parent, agent_id="late-2"),
+            ])
+        assert stop.status_code == 200 and stop.json()["ended"] is True, stop.text
+        started = [a for a in (one, two) if a.status_code == 201]
+        assert {a.status_code for a in (one, two)} <= {201, 429}
+        assert len(started) <= 1
+        rows = {r.idempotency_key.rsplit(":", 1)[1]: r.status for r in _child_rows(w, parent)}
+        assert rows["full-0"] == stop.json()["run"]["status"] == "completed"
+        assert self._open(w, parent) == 19 + len(started) <= 20
+
+
+def _run_count(w: Any) -> int:
+    return int(_rows(w.p, "SELECT count(*) AS n FROM pm_agent_runs")[0].n)
+
+
+@_DB_GATE
+class TestTheDarkRoute:
+    """SW-114. The child writes are dark behind ``AGENT_MAP_ORGS``. Off for
+    the caller's org, a start and a stop answer the 404 of an unknown run,
+    byte for byte, before any read, lock or write."""
+
+    async def test_the_flag_off_gives_the_unknown_run_404_and_writes_nothing(
+            self, w, monkeypatch):
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            assert (await _child(call, session, parent, agent_id="on-1")).status_code == 201
+            unknown = await _child(call, session, str(uuid.uuid4()))
+            before = _run_count(w)
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", "")
+            off = [await _child(call, session, parent, agent_id="off-1"),
+                   await _child(call, session, parent, agent_id="on-1"),
+                   await _stop(call, session, parent, "on-1"),
+                   await _child(call, w.alice_person, parent),
+                   await _child(call, session, str(uuid.uuid4()))]
+            after = _run_count(w)
+        assert unknown.status_code == 404
+        for answer in off:
+            assert answer.status_code == 404, answer.text
+            assert answer.content == unknown.content
+        assert after == before
+        assert [r.status for r in _child_rows(w, parent)] == ["in_progress"]
+
+    async def test_the_flag_off_takes_no_lock(self, w, monkeypatch):
+        """An admin transaction holds the parent row FOR UPDATE. With the flag
+        off, the start and the stop still answer at once, so the route never
+        asks for the lock. With the flag on the route would wait for it."""
+        import asyncio
+
+        session = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            parent = await _claim(call, session, _fresh(w))
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", "")
+            with w.p.admin_engine.connect() as c:
+                trans = c.begin()
+                c.execute(text("SELECT id FROM pm_agent_runs WHERE id = CAST(:i AS uuid)"
+                               " FOR UPDATE"), {"i": parent})
+                try:
+                    start = await asyncio.wait_for(
+                        _child(call, session, parent, agent_id="lock-1"), 10)
+                    stop = await asyncio.wait_for(
+                        _stop(call, session, parent, "lock-1"), 10)
+                finally:
+                    trans.rollback()
+        assert start.status_code == 404 and stop.status_code == 404
+        assert _child_rows(w, parent) == []
+
+    async def test_the_flag_is_read_for_each_org(self, w, monkeypatch):
+        """On for org A only: org A writes and org B gets the 404. Then on
+        for org B only: the answers swap."""
+        alice = _in_session(w.alice, _key())
+        other = _in_session(w.other, _key())
+        async with _session(w.p) as call:
+            mine = await _claim(call, alice, _fresh(w))
+            theirs = await _claim(call, other, _fresh(w, w.org_b, OTHER))
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", w.org)
+            a_on = await _child(call, alice, mine, agent_id="a-1")
+            b_off = [await _child(call, other, theirs, agent_id="b-1"),
+                     await _stop(call, other, theirs, "b-1")]
+            monkeypatch.setattr(get_settings(), "agent_map_orgs", w.org_b)
+            a_off = [await _child(call, alice, mine, agent_id="a-2"),
+                     await _stop(call, alice, mine, "a-1")]
+            b_on = await _child(call, other, theirs, agent_id="b-1")
+        assert a_on.status_code == 201 and b_on.status_code == 201, (a_on.text, b_on.text)
+        for answer in (*b_off, *a_off):
+            assert answer.status_code == 404 and answer.json() == {"detail": _REFUSED}
+        assert [r.status for r in _child_rows(w, mine)] == ["in_progress"]
+        assert len(_child_rows(w, theirs)) == 1
+
+
 def _open_child_rows(c: Any, parent: str) -> list[Any]:
     return list(c.execute(text(
         "SELECT id FROM pm_agent_runs WHERE parent_run_id = CAST(:p AS uuid)"
@@ -578,6 +969,17 @@ class TestTheEndOfTheChildren:
                 raise AssertionError(str(statement))
 
         await agent_runs._end_children(_Db(), "r1", status, "ts")
+
+    def test_the_stop_names_the_child_subject(self) -> None:
+        """SW-114 (C18). The stop of one child names ``kind = 'child'``, the
+        parent, the key and the member, and only open statuses."""
+        from gateway.routes.projects import agent_runs
+
+        sql = agent_runs._STOP_CHILD_SQL
+        for needed in ("kind = 'child'", "parent_run_id = CAST(:rid AS uuid)",
+                       "idempotency_key = :key", "member_email = :me",
+                       "status = ANY(:open)"):
+            assert needed in sql, needed
 
     def test_the_end_names_the_child_subject_and_the_open_statuses(self) -> None:
         from gateway.routes.projects import agent_runs
