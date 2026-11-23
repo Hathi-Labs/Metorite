@@ -116,7 +116,9 @@ def _parts(tmp_path: Path) -> tuple[Any, Any, list[Any]]:
     from acb_skills.tenant_file_store import WorkspaceFileStore
     from agent_framework import SkillsProvider, tool
 
-    store = WorkspaceFileStore(workspace=tmp_path, guard=_Guard(), member="m@example.com")
+    store = WorkspaceFileStore(
+        workspace=tmp_path, guard=_Guard(), member="m@example.com", instance="u:m@example.com",
+    )
     skills = SkillsProvider(LockedSkillsSource(tmp_path, _Guard(), "m@example.com"))
     return store, skills, [tool(code_task_run_command, name="run_command")]
 

@@ -674,10 +674,12 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         chosen = frozenset(answer - {tid})
     elif not answer:
         return _not_confirmed()
-    if len(chosen) > DELETE_QUERY_IDS:
-        # Only "all" gets here: a card with tick boxes holds under 100 rows,
-        # and a wider tree refuses any list above. A flag has no id list to
-        # overrun the URL.
+    if len(chosen) > DELETE_QUERY_IDS or (chosen and chosen == frozenset(offered)):
+        # "All" sends the flag, as the app does. A named list that holds a
+        # subtask of an archived project gets a 409 (ARC-2b), and "all" keeps
+        # that subtask. A flag has no id list to overrun the URL either: a card
+        # with tick boxes holds under 100 rows, and a wider tree refuses any
+        # list above.
         params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
     else:
         params = {"delete_subtask_ids": sorted(chosen)} if chosen else None

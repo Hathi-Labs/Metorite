@@ -1713,15 +1713,19 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its seventeen tools are the
+#: slug. The pack is the ``calendar-day`` pack, and its twenty tools are the
 #: My Tasks planner tools, the two calendar settings tools, the four day rule
-#: tools and the read of the synced events (CE-15). The Tasks assistant holds
+#: tools, the read of the synced events (CE-15), and the three reads of P-1a
+#: (task 3112). The Tasks assistant holds
 #: the planner tools too. **The choice.** In a held chat the
 #: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
-#: could steer the apply. The pack keeps its five reads (``my_tasks_day_digest``,
-#: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules``,
-#: ``my_tasks_list_events`` and ``my_tasks_list_schedule``, ``read_only=True``).
+#: could steer the apply. The pack keeps its eight reads (``my_tasks_day_digest``,
+#: ``my_tasks_enrich``, ``my_tasks_get_calendar_settings``,
+#: ``my_tasks_list_calendar_connections``, ``my_tasks_list_day_rules``,
+#: ``my_tasks_list_events``, ``my_tasks_list_schedule`` and
+#: ``my_tasks_suggest_title``, ``read_only=True``). The two P-1a proposals write
+#: nothing, so mail that the chat read cannot steer a write through them.
 #: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
