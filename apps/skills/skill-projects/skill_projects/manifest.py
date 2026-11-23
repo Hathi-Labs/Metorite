@@ -637,8 +637,7 @@ MANIFEST: tuple[Route, ...] = (
     # ── templates.py (WS-39 TPL-1a, task 18) ─────────────────────────────
     # Dark behind PROJECTS_TEMPLATES_ORGS. A template is org-wide. The save
     # and the apply are class C: one card each, and neither has an undo in
-    # the app. The MCP edge reaches the list only. The save and the apply
-    # stay off it until each has a preview and a confirm step (§14.8).
+    # the app. The MCP edge reaches the same three routes.
     Route("GET", "/projects/templates", "list_templates", "A"),
     Route("POST", "/projects/templates", "save_as_template", "C"),
     Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),

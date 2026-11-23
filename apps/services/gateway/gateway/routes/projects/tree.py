@@ -296,45 +296,6 @@ async def _lock_ancestor_chain(db, node_id: str) -> None:
     await db.execute(text(_LOCK_ANCESTORS_SQL), {"pid": node_id})
 
 
-#: The same chain as :data:`_LOCK_ANCESTORS_SQL`, with the weakest row lock.
-_KEY_SHARE_ANCESTORS_SQL = _LOCK_ANCESTORS_SQL.replace(" FOR SHARE", " FOR KEY SHARE")
-
-
-async def hold_ancestor_keys(db: Any, node_id: str) -> None:
-    """Hold a key share lock on *node_id* and every node above it.
-
-    A key share lock blocks only ``FOR UPDATE``: the moved row of
-    ``move_node``, the folder of ``convert_node`` and a delete. A rename, an
-    archive and every other plain edit of a node never wait for it.
-
-    The apply of a template (task 2454) takes it at the END of its long fill,
-    then reads the root again. A move above the new project that committed
-    during the fill shows in that read, and a later move waits for the
-    commit. Before that the fill takes no lock of its own on the chain. Its
-    inserts hold only this weakest lock on the space, through their foreign
-    keys. So a rename of the parent never waits for the fill.
-    """
-    await db.execute(text(_KEY_SHARE_ANCESTORS_SQL), {"pid": node_id})
-
-
-async def check_new_child(db: Any, parent_row: Any, kind: str) -> None:
-    """The archived check and the grammar check of :func:`create_node_in`,
-    with no lock.
-
-    A caller that spends something before the create calls it first, so a
-    refused create spends nothing. The apply of a template reserves its task
-    numbers first (task 2454). ``create_node_in`` runs both checks again
-    after its lock, so a pass here only means "not refused yet".
-    """
-    assert_not_archived(parent_row, then="Create it in")
-    assert_node_grammar(
-        kind=kind,
-        parent_kind=node_kind(getattr(parent_row, "kind", None)),
-        parent_generation=await _project_generation(db, str(parent_row.id)),
-        subtree_depth=1 if kind == "project" else 0,
-    )
-
-
 #: The words of the 409 when the database refuses a tree write for a race.
 TREE_RACE_DETAIL = (
     "Someone else changed this part of the tree at the same moment. Try again."
