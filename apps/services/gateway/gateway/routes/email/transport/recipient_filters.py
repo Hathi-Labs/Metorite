@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-#: What the search reads. The stored column first (migration 478), and the
+#: What the search reads. The stored column first (migration 488), and the
 #: sub-select for a row that no trigger has reached. Same answer either way.
 ATTACHMENT_NAMES = (
     "COALESCE(em.attachment_names, (SELECT string_agg(ea.filename, ' ' ORDER BY ea.filename) "

@@ -7,7 +7,7 @@ project "Personalization & Memory System".
 **LOOP-4a is BUILT, 2026-11-16** (task 3444, no migration). The pins of §7.2
 hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
 `my_day_feed.md` records it under MD-9. **LOOP-19 is BUILT, 2026-11-22** (task 3572,
-migration 478): the sent mail is searched by recipient and by file name. Every other
+migration 488): the sent mail is searched by recipient and by file name. Every other
 slice of §10 is not built.
 
 The owner decides LOOP-Q1 to LOOP-Q13 (§12). The defaults hold until the owner
