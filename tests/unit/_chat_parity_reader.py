@@ -1448,6 +1448,10 @@ def registered_tools() -> set[str]:
     names |= {fn.__name__ for fn in profile_tools.WRITE_TOOLS} | {"resolve_person"}
     # CO-11b (task 3563): the pin of this chat, a core tool of the orchestrator.
     names |= {fn.__name__ for fn in chat_pin_tools.TOOLS}
+    # PAR-8b (task 3903): the Home tools, core tools of the orchestrator.
+    from acb_skills import home_tools
+
+    names |= {fn.__name__ for fn in home_tools.HOME_TOOLS}
     return names
 
 
