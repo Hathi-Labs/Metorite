@@ -1,0 +1,1 @@
+{"client": "Claude Code", "client_version": "2.1.322", "scenario": "single", "kit_version": 2, "date": "2026-11-12", "passed_steps": ["claims_slice", "worktree", "heartbeat", "parks_at_wait", "one_disposition"], "score": "5/7", "note": "Live run 2026-11-12, kit zip only, model sonnet, throwaway task 3032. The agent released the task and never called finish_agent_run."}

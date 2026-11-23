@@ -38,6 +38,7 @@ import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useRef, useState } from "react";
 
+import { HOLD_FILTERS, type HoldFocus } from "../lib/agentRuns";
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
 import {
   type BoardLanes,
@@ -235,12 +236,27 @@ export interface Props {
   waitingOnMe?: boolean;
   onWaitingOnMe?: (next: boolean) => void;
   /**
+   * SP-2a — the Epic filter: the epic whose tasks the board shows, or "".
+   * Page state, not a saved-view key. Absent when the project holds no epic,
+   * and then the bar draws no control.
+   */
+  epic?: string;
+  epics?: readonly { value: string; label: string }[];
+  onEpic?: (next: string) => void;
+  /**
    * WS-55 EA-13e (EA3-43, EA3-49) — the "Agent work" filter: tasks that an
    * agent worked on, by the rule of `agent_worked.py`. Page state like
    * "Waiting on me", and it shows with it.
    */
   agentWork?: boolean;
   onAgentWork?: (next: boolean) => void;
+  /**
+   * SW-5 — "Held by an agent" and "Free": who holds the task. The server
+   * filters by the lease (`agent_focus=held|free`). Page state, never a
+   * saved-view key, and it shows with "Waiting on me".
+   */
+  holdFocus?: HoldFocus | null;
+  onHoldFocus?: (next: HoldFocus | null) => void;
 }
 
 export function FilterBar({
@@ -272,8 +288,13 @@ export function FilterBar({
   onExport,
   waitingOnMe = false,
   onWaitingOnMe,
+  epic = "",
+  epics = [],
+  onEpic,
   agentWork = false,
   onAgentWork,
+  holdFocus = null,
+  onHoldFocus,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
 
@@ -476,6 +497,16 @@ export function FilterBar({
               : []),
           ]}
         />
+        {onEpic && epics.length ? (
+          <SelectButton
+            label="Epic"
+            widthClass="w-40"
+            className={epic ? OFF_DEFAULT : AT_DEFAULT}
+            value={epic}
+            onChange={onEpic}
+            options={[{ value: "", label: "Any epic" }, ...epics]}
+          />
+        ) : null}
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"
@@ -529,6 +560,22 @@ export function FilterBar({
             Agent work
           </Button>
         ) : null}
+        {onHoldFocus
+          ? HOLD_FILTERS.map((item) => (
+              <Button
+                key={item.focus}
+                variant={holdFocus === item.focus ? "primary" : "secondary"}
+                size="sm"
+                icon={item.icon}
+                aria-pressed={holdFocus === item.focus}
+                title={item.title}
+                data-hold-filter={item.focus}
+                onClick={() => onHoldFocus(holdFocus === item.focus ? null : item.focus)}
+              >
+                {item.label}
+              </Button>
+            ))
+          : null}
         {/*
           The archive, as a place you can go. Owner request, 2026-09-20.
 

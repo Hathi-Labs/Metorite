@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   OPEN_RUN_STATUSES,
+  RELEASE_ADMIN_PERMISSION,
   RELEASE_COPY,
   STALE_HOLD_TEXT,
   canReleaseRun,
@@ -86,7 +87,7 @@ describe("the words", () => {
   it("say what a release keeps and what it allows", () => {
     const text = releaseBody("Claude Code");
     expect(text).toContain("Claude Code gives this task up");
-    expect(text).toContain("keeps its status and its assignees");
+    expect(text).toContain("The assignees stay. The task moves to its lane");
     expect(text).toContain("Another AI session can then claim it");
     expect(RELEASE_COPY.confirm).toBe("Release task");
     expect(STALE_HOLD_TEXT).toBe("stale");
@@ -110,6 +111,15 @@ describe("AgentRunPanel", () => {
     // The control opens the confirm. It never calls the route itself.
     expect(source).toMatch(/onClick=\{\(\) => setConfirmRelease\(true\)\}/);
     expect(source).toMatch(/onConfirm=\{\(\) => void release\(\)\}/);
+  });
+
+  it("offers Release to an admin by the release permission, not is_admin (H-409 item 2)", () => {
+    // `is_admin` is `admin:members:read`, which a manager holds. Ending the
+    // run of another member is a write, so the panel reads the slug that the
+    // gateway reads. The Python fence holds the two slugs equal.
+    expect(RELEASE_ADMIN_PERMISSION).toBe("admin:members:manage");
+    expect(source).toContain("isAdmin: hasCapability(access, RELEASE_ADMIN_PERMISSION)");
+    expect(source).not.toContain("access.is_admin");
   });
 });
 

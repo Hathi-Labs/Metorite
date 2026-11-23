@@ -109,6 +109,7 @@ import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { useFloor } from "@/lib/floorContext";
 
 /**
  * Reading width. The names are the Tailwind max-widths the six converted
@@ -379,6 +380,14 @@ export default function Modal({
    */
   useCloseOnBarTap(onClose, open);
 
+  /**
+   * The floor view of a Studio app (STU-D23a-2, `lib/floorContext.ts`). The portal puts this
+   * dialog outside the root of the floor view, so its fields would keep the desktop size. Inside
+   * the floor view, the popup takes the same attribute as that root, and each control in it takes
+   * its touch size. With no floor view, the popup has no attribute and its markup does not change.
+   */
+  const floor = useFloor();
+
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {
     if (finalFocus === false) return false;
@@ -428,6 +437,7 @@ export default function Modal({
             // `data-base-ui-inert` marker rather than a real `inert` attribute
             // (see this file's header).
             aria-modal="true"
+            data-floor={floor ? "" : undefined}
             initialFocus={initialFocus}
             finalFocus={returnFocus}
             className={`flex ${

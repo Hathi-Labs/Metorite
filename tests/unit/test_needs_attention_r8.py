@@ -223,9 +223,12 @@ def world(promoted):  # noqa: F811
     ns.bob = b._principal(BOB, ns.b)
     from acb_auth import UserContext, UserRole, build_access
 
+    # H-409 item 2 (task 748): the admin of a release is the holder of
+    # `admin:members:manage` (owner, Q5). A read permission does not give it.
     ns.carol_admin = UserContext(
         email=CAROL, role=UserRole.EMPLOYEE, organization_id=ns.a,
-        access=build_access(["feature:projects", "data:org:read", "admin:members:read"]))
+        access=build_access(["feature:projects", "data:org:read", "admin:members:read",
+                             "admin:members:manage"]))
     return ns
 
 

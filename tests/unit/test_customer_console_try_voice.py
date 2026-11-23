@@ -38,6 +38,7 @@ from customer_console import router as router_mod
 from customer_console.image_sniff import IMAGE_TYPES, sniff_image
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
@@ -206,8 +207,7 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     """A new R8 suite that CI does not name still SKIPS silently and reports
     green. This reads the hand-lists and fails if an entry is gone."""
     for flow in ("pr-check.yml", "deploy.yml"):
-        ci = (ROOT / ".github/workflows" / flow).read_text(encoding="utf-8")
-        assert "tests/unit/test_customer_console_try_voice.py" in ci, flow
+        assert "tests/unit/test_customer_console_try_voice.py" in r8_lists.must_run(), flow
 
 
 # ── The database ────────────────────────────────────────────────────────────

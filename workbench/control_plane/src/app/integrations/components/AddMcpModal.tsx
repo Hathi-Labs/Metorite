@@ -8,6 +8,11 @@
  * form closes, and nothing in the console draws it again. A refusal from the
  * server's URL guard (a private address, a non-https URL) shows as the server
  * wrote it.
+ *
+ * WS-STU I8a: Studio's Connect in place opens the form with the server name
+ * of the draft filled in (`initialName`). The member types the address and
+ * any key here, in this form only. The page then sends the browser back to
+ * Studio (`backToStudio` says so in the form).
  */
 
 import { useId, useState } from "react";
@@ -21,9 +26,11 @@ import * as api from "../lib/api";
 import {
   ALWAYS_CONFIRM_HELP,
   ALWAYS_CONFIRM_LABEL,
+  DESCRIPTION_HINT,
   EMPTY_MCP_FORM,
   mcpBody,
   mcpFormReady,
+  prefilledMcpForm,
   READ_ONLY_KEY_HELP,
   READ_ONLY_KEY_LABEL,
   tickFormSwitch,
@@ -125,7 +132,7 @@ export function McpFormFields({
           <Input value={form.label} onChange={set("label")} placeholder="Brave Search" />
         </Field>
       </div>
-      <Field label="Description (optional)">
+      <Field label="Description (optional)" hint={DESCRIPTION_HINT}>
         <Input value={form.description} onChange={set("description")} placeholder="What the server offers" />
       </Field>
       <Field label="URL" hint="Use an https address. Private and local addresses are refused.">
@@ -169,11 +176,17 @@ export function McpFormFields({
 export default function AddMcpModal({
   onClose,
   onAdded,
+  initialName,
+  backToStudio = false,
 }: {
   onClose: () => void;
   onAdded: () => void;
+  /** I8a: the server name that Studio's draft names. A name off the gateway's rule is dropped. */
+  initialName?: string;
+  /** I8a: the add returns the browser to Studio, so the form says so. */
+  backToStudio?: boolean;
 }) {
-  const [form, setForm] = useState<McpForm>(EMPTY_MCP_FORM);
+  const [form, setForm] = useState<McpForm>(() => prefilledMcpForm(initialName ?? ""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -203,6 +216,11 @@ export default function AddMcpModal({
     >
       <div className="flex flex-col gap-4 p-4">
         <McpFormFields form={form} onChange={setForm} />
+        {backToStudio ? (
+          <p role="note" className="text-xs text-muted-foreground">
+            After you add the server, Metorite takes you back to your app in Studio.
+          </p>
+        ) : null}
         {error ? (
           <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}

@@ -94,7 +94,7 @@ class UserSettingsModel(BaseModel):
     # Recurring day-templates (migration 94): flexible block/focus windows —
     # [{days:[0..6], start_hour, end_hour, kind:'block'|'focus', label, theme}].
     day_templates: list[dict] = []
-    # Today's focus (migration 412, WS-MDC CC-2, D-MD-3): how many tasks the
+    # Today's focus (migration 490, WS-MDC CC-2, D-MD-3): how many tasks the
     # member may mark for one day. NULL reads as 3, and a read clamps to 1..10
     # (`projects.today_rule.clamp_focus_cap`).
     today_focus_cap: int = 3
@@ -537,8 +537,9 @@ async def write_member_settings(
 ) -> None:
     """The one write of a member's settings row (upsert of ``fields``).
 
-    ``PUT /tasks/settings`` and ``PUT /auth/me/zone`` (RX-7) both call it, so
-    a second writer of the row never exists. ``uid`` is the session's address
+    ``PUT /tasks/settings``, ``PUT /auth/me/zone`` (RX-7) and
+    ``PUT /auth/me/appearance`` (PKG-20) call it, so a second writer of the row
+    never exists. ``uid`` is the session's address
     and the tenant is the bound one. Neither comes from a request body.
 
     ``if_match`` (CAL-3, task 1677) is a compare-and-set on ``day_templates``.
@@ -550,8 +551,11 @@ async def write_member_settings(
     if not fields:
         return
     import json
-    _jsonb_cols = {"energy_windows", "day_templates"}
+    _jsonb_cols = {"energy_windows", "day_templates", "appearance"}
     fields = dict(fields)
+    if "appearance" in fields and not isinstance(fields["appearance"], str):
+        # The route gives the whole record as a dict. Encode it for JSONB.
+        fields["appearance"] = json.dumps(fields["appearance"])
     if "day_templates" in fields:
         fields["day_templates"] = json.dumps(
             _day_templates(fields["day_templates"]))

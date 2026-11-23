@@ -19,6 +19,7 @@ people work around for months instead of reporting.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import UTC, datetime
@@ -1003,6 +1004,17 @@ AGENT_RUN_QUESTION_LEASE_FACTOR = 3
 #: The environment variable that overrides the lease, in seconds.
 AGENT_RUN_LEASE_ENV = "AGENT_RUN_LEASE_SECONDS"
 
+#: H-409 item 3 (task 748). The org of the bound tenant session, in SQL. The
+#: seam (``acb_common.db.tenant_session``) sets ``app.tenant_id`` in each
+#: transaction, so this is the session's org and never request input (R5).
+#: An unbound session reads NULL, and a compare with NULL matches no row, so
+#: the predicate fails closed. It is defence in depth beside FORCE RLS: the
+#: holder reads of a run (``agent_runs._HOLDER_SQL`` and ``_RUN_SELECT``) and
+#: the pill (:func:`agent_state_sql`) name the org themselves. The reads over
+#: a task alias (:func:`unheld_clause`, :func:`holder_sql`) derive it from
+#: the task row instead.
+BOUND_ORG_SQL = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
 
 def agent_run_lease_s() -> int:
     """The lease in seconds. The default is two hours. A value that is not a
@@ -1047,6 +1059,28 @@ def lease_expired(status: str, idle_s: float) -> bool:
     return idle_s > agent_run_hold_s(status)
 
 
+def run_life_at_sql(alias: str) -> str:
+    """The life clock of the run *alias*, in SQL (task 1045b): the newer of
+    ``last_activity_at`` and ``last_signal_at``. A linked event (a push to a
+    linked pull request or a check event) moves ``last_signal_at`` only.
+
+    ONE text for every reader of the run clock: the stale band
+    (:data:`AGENT_RUN_STATE_SQL`), the lease (:func:`lease_held_sql`), the
+    idle seconds of each run read, and the strand fit
+    (:func:`strand_fits_sql`). The answered rule
+    (:data:`AGENT_RUN_ANSWER_WAITS_SQL`) does NOT read it, so a linked event
+    never makes a run read ``answered``. ``GREATEST`` skips a NULL, so a run
+    with no linked event reads ``last_activity_at``."""
+    return f"GREATEST({alias}.last_activity_at, {alias}.last_signal_at)"
+
+
+def run_idle_s_sql(alias: str) -> str:
+    """The seconds since the life clock of the run *alias*
+    (:func:`run_life_at_sql`), for the lease rule in Python
+    (:func:`lease_expired`). ONE text for each read that carries ``idle_s``."""
+    return f"EXTRACT(EPOCH FROM (clock_timestamp() - {run_life_at_sql(alias)}))"
+
+
 def connection_gone_sql(alias: str) -> str:
     """SW-13c. True in SQL when the agent connection of the run *alias* is
     revoked or expired (``agent_connection``, migration 248). Such a run can
@@ -1077,8 +1111,9 @@ def lease_held_sql(alias: str) -> str:
     activity is newer than the lease, or three leases while it waits on a
     question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
     ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
-    The idle time is ``last_activity_at``, so ANY activity renews it, a
-    member's answer too.
+    The idle time is the life clock (:func:`run_life_at_sql`), so ANY
+    activity renews it, a member's answer too. Task 1045b: so does a linked
+    event.
 
     The lease is read when the text is built, never at import, so the
     environment override works in a running process.
@@ -1086,7 +1121,7 @@ def lease_held_sql(alias: str) -> str:
     lease = agent_run_lease_s()
     hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
     return (
-        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f"{run_life_at_sql(alias)} >= now() - (CASE WHEN {alias}.status = 'awaiting'"
         f" THEN {hold} ELSE {lease} END) * interval '1 second'"
     )
 
@@ -1104,6 +1139,9 @@ def holder_free_sql(alias: str) -> str:
 #: activity of the run is a member's prompt, and no agent activity followed
 #: it. ONE text: the derived state, the ``needs_agent`` filter
 #: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+#: ⚠️ Task 1045b: it reads ``last_activity_at`` and never
+#: :func:`run_life_at_sql`. A linked event moves ``last_signal_at`` only, so
+#: it never makes a run read ``answered``.
 AGENT_RUN_ANSWER_WAITS_SQL = (
     "(r.last_agent_activity_at IS NULL"
     " OR r.last_activity_at > r.last_agent_activity_at)"
@@ -1128,13 +1166,16 @@ AGENT_RUN_ANSWER_WAITS_SQL = (
 #:   activity clears it (``agent_runs._move_run``), so the rule holds only
 #:   while the waiting line is the newest activity. A wait whose time passed
 #:   reads ``stale`` at once, before the stale band ends.
+#: * Task 1045b: the stale band reads the life clock
+#:   (:func:`run_life_at_sql`), so a linked event refreshes a quiet run to
+#:   ``working``. The answered arm still reads ``last_activity_at`` only.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
     "   WHEN r.waiting_until > now() THEN 'waiting'"
-    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    f"   WHEN {run_life_at_sql('r')} < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
     "     OR r.waiting_until IS NOT NULL"
     "     THEN 'stale'"
     f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
@@ -1200,11 +1241,15 @@ def strand_fits_sql(strand: str, run: str) -> str:
     (SW-10a): the strand is not cleared, the run is still ``in_progress``,
     and no activity came on the run since the first miss. ONE text for
     ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
-    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    wire and ``agent_stranded`` on the task row (:data:`OPEN_STRANDS_SQL`).
+
+    Task 1045b: ``seen_activity_at`` holds the life clock of the run at the
+    first miss (:func:`run_life_at_sql`), so a linked event ends the fit
+    too."""
     return (
         f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
         f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
-        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+        f" AND {strand}.seen_activity_at = {run_life_at_sql(run)})"
     )
 
 
@@ -1217,6 +1262,33 @@ def open_strand_sql(alias: str) -> str:
         "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
         f" WHERE {strand_fits_sql('fs', alias)})"
     )
+
+
+#: SW-10a (spec §12.6). The open strand of each run that still fits it, by
+#: the rule of :func:`strand_fits_sql`. ONE text for ``stranded`` on the runs
+#: wire (``agent_runs._runs_out``) and ``agent_stranded`` on the task row
+#: (:func:`attach_agent_state`, task 1045d), so the card and the run panel
+#: cannot disagree.
+OPEN_STRANDS_SQL = f"""
+SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
+  FROM pm_agent_run_strands s
+  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
+ ORDER BY s.run_id, s.nudged_at DESC
+"""
+
+
+def stranded_of(found: Any, idle_s: Any) -> dict[str, Any]:
+    """The shape of one open strand: the reason, the first miss, the second
+    miss (the recovery record) and the seconds since the last activity. ONE
+    shape for ``stranded`` on the runs wire and ``agent_stranded`` on the
+    task row (task 1045d)."""
+    return {
+        "reason": found.reason,
+        "nudged_at": wire(found.nudged_at),
+        "recovered_at": wire(found.recovered_at),
+        "idle_s": int(float(idle_s)) if idle_s is not None else None,
+    }
 
 
 def open_recovery_sql(strand: str, run: str) -> str:
@@ -1259,11 +1331,16 @@ def unheld_clause() -> str:
     a run whose connection is revoked or expired (:func:`holder_free`). The
     lease is read when the clause is built, never at import, so the
     environment override works in a running process.
+
+    H-409 item 3: the run must be of the task's own org
+    (``h.organization_id = t.organization_id``), as defence in depth beside
+    FORCE RLS.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
         " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
@@ -1273,15 +1350,17 @@ def unheld_clause() -> str:
 def holder_sql() -> str:
     """The member who holds the task now, or null for a free task. The same
     open-run, lease and connection rules as :func:`unheld_clause`, so
-    ``holder`` is null exactly where ``unheld`` is true."""
+    ``holder`` is null exactly where ``unheld`` is true. The org arm is the
+    one of :func:`unheld_clause` (H-409 item 3)."""
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "(SELECT lower(h.member_email) FROM pm_agent_runs h"
         " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        "   AND h.organization_id = t.organization_id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')}"
-        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+        f" ORDER BY {run_life_at_sql('h')} DESC LIMIT 1)"
     )
 
 
@@ -1315,24 +1394,31 @@ def agent_state_sql(task_filter: str) -> str:
     A task with no open run shows a `failed` run that is the newest run of its
     task (EA12-12: the pill stays until a newer run exists). One query for the
     page, as `_ASSIGNEES_SQL` does.
+
+    H-409 item 3: ``held_by`` comes from this text, so it names the org of
+    the bound session (:data:`BOUND_ORG_SQL`), and the newer-run test stays
+    in the org of the run. Defence in depth beside FORCE RLS.
     """
     return f"""
-SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
+SELECT DISTINCT ON (r.task_id) r.task_id, r.id AS run_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
-       r.waiting_on, r.waiting_until,
+       r.agent_label,
+       r.waiting_on, r.waiting_until, r.plan,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
-       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       {run_idle_s_sql('r')} AS idle_s,
        {connection_gone_sql('r')} AS connection_gone,
        (SELECT u.display_name FROM app_user u
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
  WHERE {task_filter}
    AND r.task_id IS NOT NULL
+   AND r.organization_id = {BOUND_ORG_SQL}
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
                              WHERE n.task_id = r.task_id
+                               AND n.organization_id = r.organization_id
                                AND (n.created_at, n.id) > (r.created_at, r.id))))
  ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
           CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
@@ -1441,9 +1527,39 @@ def waiting_of(state: Any, on: Any, until: Any) -> dict[str, Any] | None:
     return {"on": on, "until": wire(until)}
 
 
+#: SW-32 (task 1049). The longest step text on a card line, in characters.
+PLAN_STEP_LINE_MAX = 80
+
+
+def plan_summary_of(plan: Any) -> dict[str, Any] | None:
+    """``{done, total, step}`` of a run plan, else ``None`` for no plan or an
+    empty one (SW-32). ``done`` counts the closed steps, ``completed`` and
+    ``canceled``, so a plan that lost a step can still reach "7 of 7".
+    ``step`` is the first ``inProgress`` step, or ``None``. ONE rule for the
+    card line. The text is the agent's own, so the client draws it as text."""
+    if isinstance(plan, str):
+        try:
+            plan = json.loads(plan)
+        except ValueError:
+            return None
+    if not isinstance(plan, list) or not plan:
+        return None
+    steps = [p for p in plan if isinstance(p, dict)]
+    if not steps:
+        return None
+    current = next((p for p in steps if p.get("status") == "inProgress"), None)
+    text_ = " ".join(str((current or {}).get("content") or "").split())
+    return {
+        "done": sum(1 for p in steps if p.get("status") in ("completed", "canceled")),
+        "total": len(steps),
+        "step": text_[:PLAN_STEP_LINE_MAX] or None,
+    }
+
+
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
-    ``agent_member_email`` and ``agent_note``, mutating and returning the list.
+    ``agent_member_email``, ``agent_note`` and ``agent_label`` (SW-7b, the
+    display name of the agent's session), mutating and returning the list.
 
     ``queued``, ``working``, ``waiting``, ``awaiting``, ``answered``,
     ``stopping``, ``stale`` or ``failed``. ``None`` for a task with no open
@@ -1453,6 +1569,12 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     Task 1045a: ``agent_waiting`` is ``{on, until}`` while the state reads
     ``waiting`` (:func:`waiting_of`), so the card can say "waiting on CI".
 
+    Task 1045d: ``agent_stranded`` is the open strand of the task's open run
+    (:data:`OPEN_STRANDS_SQL`, :func:`stranded_of`), so the card can say
+    "No word since HH:MM". It is ``None`` for a task with no open run, and for
+    a run whose strand the sweep cleared or a new activity ended. One more
+    batched query, only when an open run exists on the page.
+
     EA-13d and EA-13e ride the same call, because every route that hands a
     task row to the client already calls it, and the client merges the row
     over its own copy (a missing ``pr`` would erase the chip). So the call
@@ -1461,7 +1583,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, agent_waiting=None, held_by=None)
+                   agent_note=None, agent_label=None, agent_waiting=None,
+                   agent_plan=None, held_by=None, agent_stranded=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1473,14 +1596,34 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                 row.update(agent_state=hit.state, agent_client_via=hit.client_via,
                            agent_member_email=hit.member_email,
                            agent_note=note[:AGENT_NOTE_MAX] or None,
+                           agent_label=getattr(hit, "agent_label", None),
                            agent_waiting=waiting_of(
                                hit.state, getattr(hit, "waiting_on", None),
-                               getattr(hit, "waiting_until", None)))
+                               getattr(hit, "waiting_until", None)),
+                           agent_plan=plan_summary_of(getattr(hit, "plan", None)))
                 if hit.run_status in AGENT_RUN_OPEN_STATUSES:
                     row["held_by"] = held_by_of(hit)
+        await _attach_stranded(db, rows, by_task)
     await attach_pr_chip(db, rows)
     await attach_agent_worked(db, rows)
     return rows
+
+
+async def _attach_stranded(db: Any, rows: list[dict[str, Any]], by_task: dict[str, Any]) -> None:
+    """Task 1045d. Fill ``agent_stranded`` from the open strand of each row's
+    open run (the run that the pill picked). One query for the page, and none
+    when the page has no open run."""
+    runs = {str(hit.run_id): hit for hit in by_task.values()
+            if hit.run_status in AGENT_RUN_OPEN_STATUSES and getattr(hit, "run_id", None)}
+    if not runs:
+        return
+    strands = {str(f.run_id): f for f in (await db.execute(
+        text(OPEN_STRANDS_SQL), {"ids": list(runs)})).fetchall()}
+    for row in rows:
+        hit = by_task.get(str(row["id"]))
+        found = strands.get(str(getattr(hit, "run_id", ""))) if hit is not None else None
+        if found is not None:
+            row["agent_stranded"] = stranded_of(found, getattr(hit, "idle_s", None))
 
 
 # ── WS-55 EA-13d: the PR chip (external_agent_access.md §12.2 item 2, EA3-48) ──
@@ -1576,6 +1719,12 @@ WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale", "waiting")
 #: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.
 AGENT_FOCI: tuple[str, ...] = ("queued", "working", "waiting", "review", "merged")
 
+#: SW-5. The two hold filters of the board, on the same ``agent_focus``
+#: parameter. ``held``: an open run keeps the task. ``free``: none does, by the
+#: ``unheld`` rule. The strip has no button for them, so they stay out of
+#: :data:`AGENT_FOCI`, which the summary counts.
+HOLD_FOCI: tuple[str, ...] = ("held", "free")
+
 #: The one named parameter of :func:`agent_focus_clause`: the lower-cased
 #: address of the SESSION's member. The route binds it, never the request (R11).
 AGENT_FOCUS_ME = "af_me"
@@ -1620,6 +1769,9 @@ def agent_focus_clause(focus: str) -> str:
       task then counts too. It also reads ``agent_runs.listed_question_sql``
       over the task's one open run. So a closed task counts in neither, and a
       typed archive request counts for the run's member only, in both.
+    * ``held`` and ``free`` (SW-5): the lease. ``free`` is :func:`unheld_clause`,
+      the text of the ``unheld`` filter, and ``held`` is its negation. They read
+      no pill state, so the runs flag does not change them.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1627,8 +1779,13 @@ def agent_focus_clause(focus: str) -> str:
     the cards show no pill. The two pull request foci do not read the flag.
     An unknown focus is a ``ValueError``: the route turns it into a 422.
     """
+    if focus == "free":
+        return unheld_clause()
+    if focus == "held":
+        return f"NOT ({unheld_clause()})"
     if focus not in AGENT_FOCI:
-        raise ValueError(f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI)}.")
+        raise ValueError(
+            f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI + HOLD_FOCI)}.")
     if focus in _RUN_FOCI and not agent_runs_enabled():
         return "false"
     if focus == "queued":
@@ -1685,10 +1842,11 @@ def agent_filter_clauses(
     clauses: list[str] = []
     params: dict[str, Any] = {}
     if agent_focus is not None:
-        if agent_focus not in AGENT_FOCI:
+        if agent_focus not in AGENT_FOCI + HOLD_FOCI:
             raise HTTPException(
                 status_code=422,
-                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+                detail=(f"Unknown agent focus '{agent_focus}'."
+                        f" One of: {list(AGENT_FOCI + HOLD_FOCI)}."),
             )
         clauses.append(agent_focus_clause(agent_focus))
         params[AGENT_FOCUS_ME] = me.strip().lower()

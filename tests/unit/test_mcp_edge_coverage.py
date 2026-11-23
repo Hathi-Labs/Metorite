@@ -108,6 +108,16 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "MCP-P1a. `describe_app` reads the ops of one app and their args schema."
         " It is not a Projects route (spec §19.4)."
     ),
+    # MCP-P1b-2 (spec §19.5, "The new pairs"): the ask and the wait of
+    # `app_write`. Neither is a Projects route, and neither runs a write.
+    ("POST", "/agent-access/apps/{app}/requests"): (
+        "MCP-P1b-2. `app_write` asks the member to approve one door call. The"
+        " route opens a request and runs nothing (spec §19.5, path 2)."
+    ),
+    ("GET", "/agent-access/requests/{request_id}"): (
+        "MCP-P1b-2. `app_write` waits for the member. The route gives an agent"
+        " only a request of its own connection (spec §19.5, AD-16)."
+    ),
 }
 
 #: The tools of the app door whose route is the route of the op in each call
@@ -141,6 +151,13 @@ CLASS_C_WRITES: dict[tuple[str, str], str] = {
         " and its card. A signed agent deletes only a comment that its own client"
         " wrote, on a task in its reach, and the tool has destructiveHint true"
         " (spec §9.2)."
+    ),
+    ("POST", "/projects/tasks/{task_id}/attachments"): (
+        "CIV-14b (spec §12.9). The chat attaches a file of its own chat through"
+        " attach_to_task and its card, so the chat manifest keeps class C. For an"
+        " outside agent the upload is a class B write: one png, jpeg, gif or webp"
+        " image of 3.75 MB at most, dark behind mcp_image_upload_orgs, and the"
+        " author removes it in the Files tab through the detach route."
     ),
 }
 
@@ -229,6 +246,13 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-23: `report_check` (agent_coordination.md SW-23). A pass
         # closes the task only under the rule of a status move.
         ("POST", "/projects/tasks/{task_id}/check-result"),
+        # MCP-P1b-2: the ask of `app_write` (spec §19.5). It runs nothing.
+        ("POST", "/agent-access/apps/{app}/requests"),
+        # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
+        ("POST", "/projects/tasks/{task_id}/attachments"),
+        # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
+        # replaces the plan of the agent's own run.
+        ("PUT", "/projects/agent-runs/{run_id}/plan"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -616,6 +640,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # WS-39 LP-1a. The slot of `add_comment`, keyed by the tool name. The
     # update route takes no such field.
     ("post_project_update", "idempotency_key"),
+    # CIV-14b (spec §12.9). The slot of `add_comment`, keyed by the tool name.
+    # The upload route takes a form with one file and no key.
+    ("upload_task_image", "idempotency_key"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -640,6 +667,28 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
             assert ("GET", route) in MCP_ROUTES, (name, route)
     assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
     assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
+
+
+def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tool
+    reads the map of SW-102 through the overview route, and no other route.
+    It needs ``projects:read``, it has the hints of a read, and it shows with
+    the runs flag off too, as the gateway map answers then. The pair is
+    class A in the Projects manifest, so rule 2 needs no exception. Mutation:
+    drop the pair from ``MCP_ROUTES``, and this test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_agent_map"]
+    pair = ("GET", "/projects/agents/overview")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair not in NAMED_EXCEPTIONS
+    assert tool.required_scope == PROJECTS_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.runs is False and not tool.edge_inputs and not tool.prior_writes
+    assert dict(tool.params) == {"project_id": "project_id", "show_quiet": "show_quiet"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "A"
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():

@@ -291,6 +291,28 @@ def test_sub_agent_wrap_maps_and_drops_correctly():
     assert wrapped[2]["success"] is True and wrapped[2]["content"] == "1 row"
 
 
+def test_an_unknown_tool_shows_the_member_line_on_every_path():
+    """Task 3599 (HRD-1): MAF answers a call of a name that the run did not
+    hold with its own text, and keeps the ``KeyError`` text in ``exception``.
+    The member's step never shows either. It shows the one member line and
+    stays failed, on the parent stream and in the sub-agent envelope."""
+    from acb_skills.unknown_tool import MEMBER_LINE
+
+    events, _ = _drive([
+        _update(_content("function_call", call_id="c1", name="query_inbox",
+                         arguments="{}")),
+        _update(_content("function_result", call_id="c1",
+                         result='Error: Requested function "query_inbox" not found.',
+                         exception=str(KeyError('Function "query_inbox" not found.')))),
+    ])
+    result = next(e for e in events if e["type"] == "TOOL_CALL_RESULT")
+    assert result == {"type": "TOOL_CALL_RESULT", "toolCallId": "c1",
+                      "content": MEMBER_LINE, "success": False}
+    wrapped = wrap_sub_agent_events(events, agent_name="worker", run_id="sub1")
+    sub = next(e for e in wrapped if e["type"] == "SUB_AGENT_TOOL_CALL_RESULT")
+    assert sub["content"] == MEMBER_LINE and sub["success"] is False
+
+
 # ── Tier 2 batch protocol ────────────────────────────────────────────────────
 
 def test_tier2_text_stream_speaks_message_id_protocol():

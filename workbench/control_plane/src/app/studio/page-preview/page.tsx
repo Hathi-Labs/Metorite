@@ -10,7 +10,7 @@
  * it, and the access gate of `/studio` covers it (`page.test.ts` holds that).
  *
  * `renderView` here is a stand-in for the mapper from a view to a block (A5, H1). It knows
- * the five sample views by id. The calendar view has no block yet, so it shows the
+ * the sample views by id. The chart and the stat views go through `chartViewBlock` and `statViewBlock` (D4c). The calendar view has no block yet, so it shows the
  * "not built yet" card.
  */
 import { Suspense, useMemo, useState } from "react";
@@ -24,6 +24,7 @@ import Badge from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
+import { chartViewBlock, statViewBlock } from "@/lib/studio/aggregateModel";
 import { boardBlock } from "@/lib/studio/boardModel";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, sourceKey } from "@/lib/studio/dataDoor";
@@ -50,6 +51,8 @@ function filteredDoor(base: StudioDataDoor, q: string): StudioDataDoor {
     ...base,
     scope: `${base.scope}:q=${q}`,
     async read(source) {
+      // An aggregate is one row, so a title filter would drop it. It reads every sample row.
+      if (source.action.endsWith(".aggregate")) return base.read(source);
       const rows = await base.read(source);
       return rows.filter((r) => String(r.title ?? "").toLowerCase().includes(needle));
     },
@@ -77,6 +80,13 @@ function PreviewBody() {
     switch (id) {
       case "visit-table": return <GenerativeUINode spec={table} />;
       case "visit-board": return <GenerativeUINode spec={board} />;
+      case "visit-chart":
+      case "visit-stat": {
+        const view = MANIFEST.views?.find((v) => v.id === id);
+        if (!view) return null;
+        const built = view.block === "chart" ? chartViewBlock(view, MANIFEST) : statViewBlock(view, MANIFEST);
+        return built.ok ? <GenerativeUINode spec={built.node} /> : <div className={PANEL}><p role="alert" className="text-sm text-muted-foreground">{built.reason}</p></div>;
+      }
       case "visit-form":
         return (
           <div className={PANEL}>

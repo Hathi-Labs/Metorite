@@ -26,8 +26,8 @@ function rollup(over: Partial<EpicRollup>): EpicRollup {
 }
 
 describe("the roll-up line of an epic", () => {
-  it("words the slices and the estimate", () => {
-    expect(rollupLine(rollup({}))).toBe("4 of 12 slices done · 6h of 20h");
+  it("words the tasks and the estimate", () => {
+    expect(rollupLine(rollup({}))).toBe("4 of 12 done · 6h of 20h");
   });
 
   it("draws no wait words and no hidden words when there are none", () => {
@@ -41,11 +41,11 @@ describe("the roll-up line of an epic", () => {
       rollup({ waits: { count: 2, items: [] }, hidden: 3 }),
     );
     expect(line).toBe(
-      "4 of 12 slices done · 6h of 20h · 2 wait on a person · 3 hidden from you",
+      "4 of 12 done · 6h of 20h · 2 wait on a person · 3 hidden from you",
     );
   });
 
-  it("uses the singular for one wait and one slice", () => {
+  it("uses the singular for one wait", () => {
     expect(
       rollupLine(
         rollup({
@@ -54,14 +54,22 @@ describe("the roll-up line of an epic", () => {
           waits: { count: 1, items: [] },
         }),
       ),
-    ).toBe("0 of 1 slice done · 1 waits on a person");
+    ).toBe("0 of 1 done · 1 waits on a person");
   });
 
-  it("says so when the epic has no slices", () => {
+  it("words 2 of 5 done", () => {
+    expect(
+      rollupLine(
+        rollup({ slices: { done: 2, total: 5 }, estimate_mins: { done: 0, total: 0 } }),
+      ),
+    ).toBe("2 of 5 done");
+  });
+
+  it("says so when the epic has no tasks", () => {
     expect(
       rollupLine(
         rollup({ slices: { done: 0, total: 0 }, estimate_mins: { done: 0, total: 0 } }),
       ),
-    ).toBe("No slices yet");
+    ).toBe("No tasks yet");
   });
 });
