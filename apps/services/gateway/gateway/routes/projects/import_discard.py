@@ -145,7 +145,9 @@ EDITED_SQL = (
     "                    WHERE (x.source_task_id = t.id OR x.target_task_id = t.id) "
     "                      AND x.created_at > CAST(:finished AS timestamptz)) "
     "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id) "
-    "        OR EXISTS (SELECT 1 FROM pm_agent_runs x WHERE x.task_id = t.id) "
+    # A task run only (AD-16): an app run and a child run have no task.
+    "        OR EXISTS (SELECT 1 FROM pm_agent_runs x WHERE x.task_id = t.id "
+    "                    AND x.task_id IS NOT NULL) "
     "        OR EXISTS (SELECT 1 FROM pm_cycle_tasks x WHERE x.task_id = t.id)) "
     " LIMIT :n"
 )
