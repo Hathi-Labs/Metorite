@@ -609,7 +609,9 @@ def test_the_pack_holds_the_one_tool_and_stays_dark() -> None:
     assert pack.delegation_refusal == tp.PACKS["studio"].delegation_refusal
     named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", pack.rules))
     assert named == {"studio_skill_share"}
-    assert list(tp.PACKS)[-1] == "studio-share"
+    # PAR-2a: the org-admin pack of another owner comes after it. It is the last
+    # Studio pack.
+    assert [s for s in tp.PACKS if tp.PACKS[s].owner == "studio-builder"][-1] == "studio-share"
 
 
 @pytest.mark.parametrize("words", [

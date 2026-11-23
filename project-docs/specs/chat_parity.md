@@ -19,6 +19,18 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
+`org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
+`list_members`, `set_member_roles`, `set_member_status` and
+`answer_access_request`. Each tool calls the admin routes as the member. Each
+write reads `GET /auth/me` first, so a member without the right gets plain
+words and no card. Each write then shows one card.
+
+The pack is off until the owner names it in `TOOL_PACKS`. PAR-2a paid six debt
+rows, so the admin ceiling went from 36 to 30. Fences:
+`tests/unit/test_org_admin_tools.py` and `tests/unit/test_org_admin_tools_r8.py`
+(R8).
+
 **PAR-8a (task 3903, rung 5) is BUILT, 2026-11-22, dark.** It pays the 18 debt
 rows of Workflows, so the Workflows ceiling is 0. Seven tools join the pack
 `studio-workflows`. They read the runs of a workflow, check a draft and read

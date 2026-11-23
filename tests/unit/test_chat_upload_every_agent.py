@@ -41,6 +41,8 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
     ("agent-crm", "crm", "native"),
     ("agent-email-assistant", "email-assistant", "native"),
     ("agent-orchestrator", "orchestrator", "native"),
+    # PAR-2a: the owner of the org-admin pack, built and never run.
+    ("agent-org-admin", "org-admin", "native"),
     ("agent-projects", "projects-assistant", "native"),
     ("agent-studio-builder", "studio-builder", "native"),
     ("agent-task-manager", "task-manager", "copilot"),
