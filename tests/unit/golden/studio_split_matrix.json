@@ -2134,7 +2134,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -2156,7 +2163,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "crm-assistant",
     "projects-assistant"
@@ -2193,7 +2200,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -2215,7 +2229,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "crm-assistant",
     "projects-assistant"
@@ -4281,7 +4295,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [],
    "packs": [
@@ -4292,7 +4313,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": []
   },
   "studio_with_workflow_words_and_studio_workflows_on|held=on": {
@@ -4327,7 +4348,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -4350,7 +4378,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "projects-assistant"
    ]

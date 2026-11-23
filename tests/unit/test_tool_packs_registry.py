@@ -685,8 +685,11 @@ STUDIO_SHARED_RULES = frozenset({
 RECORD_READS = ("studio_package_get", "studio_record_list")
 DOOR_READ = ("studio_app_read",)
 RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
-#: The two workflow writes of the second pack of the owner (STB-6b).
-WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live")
+#: The tools of the second pack of the owner: the two workflow writes (STB-6b),
+#: then the seven other Workflows acts of PAR-8a (three reads, four writes).
+WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live", "studio_workflow_runs",
+                   "studio_workflow_check", "studio_workflow_catalog", "studio_workflow_run",
+                   "studio_workflow_save", "studio_workflow_build", "studio_workflow_module")
 #: The one tool of the fifth pack of the owner, the share of a skill (WS-STU J2d).
 SHARE_TOOLS = ("studio_skill_share",)
 #: The two tools of the fourth pack of the owner, the repair of a skill (TOF-3a F12c).
