@@ -569,7 +569,8 @@ def test_the_parity_rows_name_the_two_tools() -> None:
     assert cp.COVERED["GET /api/workflows/{}"] == "studio_workflow_read"
     assert "GET /api/workflows" not in cp.DEBT and "GET /api/workflows/{}" not in cp.DEBT
     # STB-6b paid the four live routes (22 to 18): test_studio_workflow_write_tools.py.
-    assert cp.DEBT_CEILING["workflows"] == 18
+    # PAR-8a paid the other 18 (18 to 0): test_studio_workflow_acts.py.
+    assert cp.DEBT_CEILING["workflows"] == 0
 
 
 # -- 10. A blank id lists, and a cut says so -----------------------------------
