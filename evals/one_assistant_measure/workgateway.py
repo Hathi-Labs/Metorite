@@ -608,6 +608,20 @@ class WorkGateway:
 
     @staticmethod
     def _list(params: dict[str, Any]) -> dict[str, Any]:
+        # H-254: the subtask count asks for `parent_task_id` + `include_descendants`.
+        # The route returns the tasks UNDER the parent (never the parent, never the
+        # whole list). This dataset has no task with a parent, so the walk finds none.
+        if params.get("include_descendants") and params.get("parent_task_id"):
+            parent, under, rows = str(params["parent_task_id"]), set(), []
+            grew = True
+            while grew:
+                grew = False
+                for t in TASKS:
+                    if t["id"] not in under and t.get("parent_task_id") in ({parent} | under):
+                        under.add(t["id"])
+                        rows.append(t)
+                        grew = True
+            return {"rows": rows, "total": len(rows)}
         rows = list(TASKS)
         if params.get("project_id") and params["project_id"] != NODE_SPACE:
             rows = [t for t in rows if t["project_id"] == params["project_id"]]
