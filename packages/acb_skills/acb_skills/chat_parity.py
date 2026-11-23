@@ -701,34 +701,6 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "health",
         "The gateway health ping that the chat recovery and the service banner read.",
     ),
-    # PAR-8b (task 3903): the command bar's model step, and the four routes of the push
-    # subscription of a device. A chat sends the test push with home_test_push.
-    "POST /api/shell/intent": (
-        "chat",
-        "The command bar sends the member's words to a model that picks a page to open, or hands "
-        "the words to the assistant (NS-4b). In the chat, the member's turn is the words, and "
-        "show_in_app opens the page.",
-    ),
-    "GET /api/push/public-key": (
-        "session",
-        "The browser reads the server key to subscribe this device to notifications (PN-1). Only "
-        "the browser of the device can subscribe itself. The chat sends a test with home_test_push.",
-    ),
-    "POST /api/push/subscriptions": (
-        "secret",
-        "The browser saves the push address of this device and its own auth secret (PN-1). The "
-        "address and the secret exist only in the browser, and a secret never goes through the chat.",
-    ),
-    "POST /api/push/subscriptions/status": (
-        "session",
-        "The browser asks if the member of this session gets the pushes of this device (PN-1). "
-        "Only the browser knows the push address of its device.",
-    ),
-    "DELETE /api/push/subscriptions": (
-        "session",
-        "The browser removes the push address of this device, at a sign-out or a switch-off "
-        "(PN-1). Only the browser knows the address. The member does it on the device.",
-    ),
     # ── Settings and the assistant profile ──
     "GET /api/accounts": (
         "session",
@@ -1078,13 +1050,24 @@ DEBT: dict[str, str] = {
     "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
-    # PAR-8b (task 3903) paid or exempted 14 of the 16 shell rows. The two rows of the
+    # PAR-8b (task 3903) paid 9 of the 16 shell rows. The two rows of the
     # approval queue stay: the safety fence test_no_person_present.py refuses a tool that
     # names /actions/pending, a read too, and the decision waits for the owner
     # (chat_parity.md section 7, item 6). pending_actions has no requester column, so a
     # tool cannot tell an action that the chat itself asked for.
     "GET /api/actions/pending": "P-7",
     "POST /api/actions/pending/{}/{}": "P-7",
+    # PAR-8b: five rows that no kind of EXEMPT_KINDS fits, so they stay debt until the owner
+    # rules (chat_parity.md section 2: a new kind needs the owner).
+    # The model step of the command bar: the member's own turn does that job in the chat. It
+    # needs an owner ruling on the kind.
+    "POST /api/shell/intent": "P-7",
+    # A device act: only the browser holds the push address of its device and its secret. It
+    # needs a `device` kind, an owner decision of section 2.
+    "GET /api/push/public-key": "P-7",
+    "POST /api/push/subscriptions": "P-7",
+    "POST /api/push/subscriptions/status": "P-7",
+    "DELETE /api/push/subscriptions": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
     # saves a new version. The chat tool is SW-31c (task 1531).
@@ -1217,7 +1200,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
-    "shell": 2,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools and exempted 5 (16 to 2). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6).
+    "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.

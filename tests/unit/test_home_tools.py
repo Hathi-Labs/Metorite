@@ -34,9 +34,9 @@ The fences (R7), each with its mutation:
 * ``home-dark``: the orchestrator holds the tools only for an org on
   ``HOME_TOOLS_ORGS``. Mutation: give the build the tools with no flag test
   -> red.
-* ``home-parity``: 9 shell rows are ``COVERED`` by a Home tool, 5 are
-  ``EXEMPT``, the two rows of the approval queue stay ``DEBT``, the ceiling of
-  the shell is 2, and the wave P-7 names task 3903. Mutation: drop 3903 from
+* ``home-parity``: 9 shell rows are ``COVERED`` by a Home tool, 7 rows wait
+  for the owner as ``DEBT`` (no exempt kind fits 5 of them), the ceiling of
+  the shell is 7, and the wave P-7 names task 3903. Mutation: drop 3903 from
   ``WAVES["P-7"]`` -> red.
 
 Run: ``uv run pytest tests/unit/test_home_tools.py -q``.
@@ -105,7 +105,9 @@ class Gateway:
     calls: list[dict[str, Any]] = field(default_factory=list)
     cards: list[dict[str, Any]] = field(default_factory=list)
     prefs: dict[str, Any] = field(default_factory=dict)
-    layout: dict[str, Any] = field(default_factory=dict)
+    layout: dict[str, Any] = field(default_factory=lambda: {
+        "roles": {}, "updatedBy": "x@par8b.test", "updatedAt": "2026-11-20T10:00:00+00:00"})
+    needs_rows: int = 45
     state_items: list[Any] = field(default_factory=list)
     saved_layout: list[dict[str, Any]] = field(default_factory=list)
     pushes: int = 0
@@ -159,9 +161,9 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
     async def _needs_run(_user: Any) -> Any:
         items = [needs._item(id=f"n{i}", app="email", kind="needs_reply",
                              title=f"Reply {i} {PLANTED}", detail="From Bo", href="/email",
-                             at="2026-11-22T10:00:00+00:00") for i in range(45)]
+                             at="2026-11-22T10:00:00+00:00") for i in range(gw.needs_rows)]
         return needs.Run(items=items, sources={"email": "ok", "crm": "failed"},
-                         totals={"email": 45})
+                         totals={"email": gw.needs_rows})
 
     async def _find(_user: Any, q: str) -> list[dict[str, str]]:
         return [search._item("task", f"{q} {PLANTED}", "Projects", "/projects?task=t1")]
@@ -362,27 +364,54 @@ async def test_with_no_verified_member_nothing_is_sent(gw: Gateway, cards: Cards
 # -- home-real-route: the reads ---------------------------------------------------------
 
 
-async def test_the_feed_read_reaches_the_real_route_and_caps_the_rows(gw: Gateway) -> None:
+async def test_the_feed_read_says_how_many_cards_exist_and_how_to_see_the_rest(
+    gw: Gateway,
+) -> None:
+    """Contract item 2 of ``test_read_tool_paging.py``. Mutation: ask the route
+    for the page size only, or drop the page facts -> red."""
     gw.cards = [_card(signal_id=f"tasks:t{i}") for i in range(30)]
     with _run():
         got = await ht.home_read("feed")
-    assert gw.handlers() == ["shell_feed"] and gw.calls[0]["query"] == {"limit": "20"}, gw.calls
-    assert got["ok"], (got, gw.calls)
-    assert got["ok"] and got["count"] == 20 and got["failed_sources"] == ["email"]
-    assert got["groups"] == {"now": 20} and got["handled"] == 1 and got["needs_total"] == 3
+        rest = await ht.home_read("feed", offset=20)
+        big = await ht.home_read("feed", limit=500)
+    assert gw.handlers() == ["shell_feed"] * 3
+    assert {c["query"]["limit"] for c in gw.calls} == {str(ht.FEED_ROUTE_MAX)}
+    assert got["ok"] and got["count"] == got["shown"] == 20 and got["total"] == 30
+    assert got["more"] is True and "Showing 1-20 of 30" in got["page"], got["page"]
+    assert "offset=20" in got["page"]
+    assert got["failed_sources"] == ["email"] and got["groups"] == {"now": 30}
+    assert got["handled"] == 1 and got["needs_total"] == 3
+    assert rest["shown"] == 10 and rest["more"] is False and rest["offset"] == 20
+    assert big["shown"] == 30 and big["more"] is False and big["page"] == ""
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
+
+
+async def test_a_full_feed_says_that_home_holds_the_rest(gw: Gateway) -> None:
+    gw.cards = [_card(signal_id=f"tasks:t{i}") for i in range(90)]
     with _run():
-        await ht.home_read("feed", limit=500)
-    assert gw.calls[-1]["query"] == {"limit": str(ht.MAX_FEED_ROWS)}
+        got = await ht.home_read("feed", limit=80)
+    assert got["shown"] == 80 and "Open Home for the rest" in got["page"]
 
 
 async def test_the_needs_read_reaches_the_real_route(gw: Gateway) -> None:
     with _run():
         got = await ht.home_read("needs", limit=5)
     assert gw.handlers() == ["shell_needs"]
-    assert got["ok"] and got["count"] == 5 and got["total"] == 45
+    assert gw.calls[0]["query"] == {"limit": str(ht.NEEDS_ROUTE_MAX)}
+    assert got["ok"] and got["count"] == 5 and got["total"] == 45 and got["more"] is True
+    assert "Showing 1-5 of 45" in got["page"], got["page"]
     assert got["failed_sources"] == ["crm"]
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
+
+
+async def test_needs_past_what_the_route_serves_says_so(gw: Gateway) -> None:
+    """The route serves 50 rows and takes no offset. Mutation: hide ``total``
+    -> red."""
+    gw.needs_rows = 60
+    with _run():
+        got = await ht.home_read("needs", limit=50)
+    assert got["shown"] == 50 and got["total"] == 60 and got["more"] is True
+    assert "60 rows exist in all" in got["page"] and "Open Needs you on Home" in got["page"]
 
 
 async def test_the_brief_read_and_a_missing_closeout(gw: Gateway) -> None:
@@ -737,24 +766,26 @@ PAID = {
     "PUT /api/shell/layout": "home_layout",
     "POST /api/push/test": "home_test_push",
 }
-EXEMPTED = {
-    "POST /api/shell/intent": "chat",
-    "GET /api/push/public-key": "session",
-    "POST /api/push/subscriptions": "secret",
-    "POST /api/push/subscriptions/status": "session",
-    "DELETE /api/push/subscriptions": "session",
-}
+
+
+#: The 7 rows that wait for the owner: the approval queue (section 7, item 6),
+#: and five rows that no exempt kind fits (section 2).
+WAIT_FOR_OWNER = (
+    "GET /api/actions/pending", "POST /api/actions/pending/{}/{}",
+    "POST /api/shell/intent", "GET /api/push/public-key", "POST /api/push/subscriptions",
+    "POST /api/push/subscriptions/status", "DELETE /api/push/subscriptions",
+)
 
 
 def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
     """Mutation: put a paid row back in DEBT -> it is in two tables -> red."""
     for key, tool in PAID.items():
         assert cp.COVERED[key] == tool and key not in cp.DEBT, key
-    for key, kind in EXEMPTED.items():
-        assert cp.EXEMPT[key][0] == kind and key not in cp.DEBT, key
     shell_debt = [k for k in cp.DEBT if cp.app_of(k.split(" ", 1)[1]) == "shell"]
-    assert sorted(shell_debt) == ["GET /api/actions/pending", "POST /api/actions/pending/{}/{}"]
-    assert cp.DEBT_CEILING["shell"] == 2
+    assert sorted(shell_debt) == sorted(WAIT_FOR_OWNER), shell_debt
+    for key in WAIT_FOR_OWNER:
+        assert cp.DEBT[key] == "P-7" and key not in cp.EXEMPT, key
+    assert cp.DEBT_CEILING["shell"] == 7
     assert "packages/acb_skills/acb_skills/home_tools.py" in cp.TOOL_SOURCES
 
 
@@ -782,3 +813,169 @@ def test_each_card_act_has_its_answer_and_names_no_tool() -> None:
     assert set(ht.CARD_DONE) == set(ht.CARD_ACTS)
     texts = [*ht.CARD_DONE.values(), *ht.NOT_DONE.values(), *ht.CARD_NOTE.values()]
     assert not [t for t in texts if re.search(r"\bhome_[a-z_]+\b", t)]
+
+
+# -- home-mark: a read of outside text marks the chat (the REAL egress seam) ---------------
+
+
+class _Redis:
+    """The tenant Redis of the mark, in memory."""
+
+    def __init__(self) -> None:
+        self.keys: dict[str, str] = {}
+
+    async def setex(self, name: str, _ttl: int, value: str) -> None:
+        self.keys[name] = value
+
+    async def exists(self, name: str) -> int:
+        return int(name in self.keys)
+
+    async def expire(self, _name: str, _ttl: int) -> None:
+        return None
+
+
+@pytest.fixture
+def real_mark(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Redis]:
+    """The real ``egress`` seam: the real mark, the real mark read and the real
+    ``write_must_show_card``. Only Redis is in memory. The tenant is bound, as a
+    run binds it."""
+    import acb_skills.egress as eg
+    from acb_common.db import bind_tenant, release_tenant
+
+    redis = _Redis()
+    monkeypatch.setattr(eg, "get_tenant_redis", lambda: redis)
+    monkeypatch.setattr(eg, "write_must_show_card", _REAL_MUST_SHOW)
+    eg._MARKED_SESSIONS.clear()
+    token = bind_tenant(ORG)
+    try:
+        yield redis
+    finally:
+        release_tenant(token)
+        eg._MARKED_SESSIONS.clear()
+
+
+_REAL_MUST_SHOW = egress.write_must_show_card
+
+
+@pytest.mark.parametrize("view", ["needs", "feed", "brief", "find", "prefs"])
+async def test_a_read_that_shows_rows_marks_the_chat(gw: Gateway, cards: Cards,
+                                                     real_mark: _Redis, view: str) -> None:
+    """P0 of the review. A needs row holds the subject of an outside mail. After
+    the read, the chat is marked, so a write that asks in a held chat shows its
+    card. Mutation: drop ``_mark_read`` -> red."""
+    gw.prefs = {"mutes": ["overdue"]}
+    with _run():
+        assert await egress.write_must_show_card() is False
+        got = await ht.home_read(view, words="rent")
+        assert got["ok"] and got["count"] >= 1, got
+        assert await egress.write_must_show_card() is True
+        saved = await ht.home_prefs("mutes", '["needs_reply"]')
+    assert real_mark.keys, "the mark reaches the tenant Redis"
+    assert len(cards.shown) == 1 and saved["ok"]
+
+
+async def test_after_a_needs_read_a_setting_asks_first(gw: Gateway, cards: Cards,
+                                                       real_mark: _Redis) -> None:
+    cards.answer = False
+    with _run():
+        before = await ht.home_prefs("mutes", '["overdue"]')
+        assert before["ok"] and cards.shown == []
+        await ht.home_read("needs")
+        after = await ht.home_prefs("mutes", '["needs_reply"]')
+    assert len(cards.shown) == 1 and not after["ok"] and gw.prefs["mutes"] == ["overdue"]
+
+
+async def test_a_read_that_shows_nothing_marks_nothing(gw: Gateway, real_mark: _Redis) -> None:
+    gw.cards = []
+    gw.needs_rows = 0
+    with _run():
+        assert (await ht.home_read("feed"))["count"] == 0
+        assert (await ht.home_read("needs"))["count"] == 0
+        assert await egress.write_must_show_card() is False
+    assert real_mark.keys == {}
+
+
+async def test_a_card_write_marks_the_chat_after_it_reads_the_title(
+    gw: Gateway, cards: Cards, real_mark: _Redis,
+) -> None:
+    with _run():
+        assert (await ht.home_card(CARD_ID, "seen"))["ok"]
+        assert await egress.write_must_show_card() is True
+
+
+# -- home_layout: a fault read never deletes the other roles ----------------------------
+
+
+async def test_an_empty_layout_read_is_refused_before_the_card(gw: Gateway, cards: Cards) -> None:
+    """The route answers the empty default on a read fault. Mutation: write
+    after an empty read -> a PUT goes out -> red."""
+    gw.layout = {}
+    with _run():
+        got = await ht.home_layout("member", pins_json='["/email"]')
+    assert got["message"] == ht.LAYOUT_EMPTY and cards.shown == []
+    assert "put_layout" not in gw.handlers()
+
+
+async def test_a_layout_with_roles_and_no_stamp_still_saves(gw: Gateway, cards: Cards) -> None:
+    gw.layout = {"roles": {"admin": {"preset": "founder", "pins": None}}}
+    with _run():
+        got = await ht.home_layout("member", pins_json='["/email"]')
+    assert got["ok"] and gw.saved_layout[-1]["roles"]["admin"]["preset"] == "founder"
+
+
+async def test_an_unknown_role_is_refused_before_any_call(gw: Gateway, cards: Cards) -> None:
+    with _run():
+        got = await ht.home_layout("intern", pins_json='["/email"]')
+    assert got["message"].startswith("The role must be one of") and gw.calls == []
+    assert cards.shown == []
+
+
+async def test_a_hidden_character_in_the_layout_is_refused_before_any_read(
+    gw: Gateway, cards: Cards,
+) -> None:
+    with _run():
+        got = await ht.home_layout("member", pins_json=json.dumps([f"/email{ZWSP}"]))
+    assert not got["ok"] and "U+200B" in got["message"] and gw.calls == []
+
+
+def test_the_roles_equal_the_roles_of_the_route() -> None:
+    from gateway.package_host.shell_layout import ROLE_ORDER
+
+    assert ht.layout_roles() == ROLE_ORDER
+
+
+# -- home-cap: the trade of the five core tools, with the flag on --------------------------
+
+
+def test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2a of the review. The flag puts 5 tools in the base of each request of
+    the org: 57 to 62. The golden matrix runs through its harness (``_row``) at
+    both bases. Two cases of 16 change, and the owner reads this trade before he
+    sets ``HOME_TOOLS_ORGS`` (``chat_parity.md``, PAR-8b facts for the owner):
+
+    * ``studio_with_email``: off, email, studio and studio-more, 110 tools. On,
+      ``choose`` drops studio-more, 102 tools.
+    * ``studio_with_email_and_crm_records``: off, email, crm-records and studio,
+      109 tools. On, it drops studio-more and the core pack studio, 104 tools.
+
+    With the flag off nothing moves. Mutation: expect no drop -> red."""
+    import tests.unit.test_studio_split_matrix as matrix
+
+    assert matrix.BASE == 57 and len(ht.HOME_TOOLS) == 5
+    rows = {}
+    for extra in (0, len(ht.HOME_TOOLS)):
+        monkeypatch.setattr(matrix, "BASE", 57 + extra)
+        rows[extra] = {name: matrix._row(case) for name, case in matrix.CASES.items()}
+    changed = {name: (rows[0][name]["packs"], rows[5][name]["packs"], rows[5][name]["skipped"],
+                      rows[0][name]["tools"], rows[5][name]["tools"])
+               for name in rows[0] if rows[0][name]["packs"] != rows[5][name]["packs"]}
+    assert changed == {
+        "studio_with_email": (["email", "studio", "studio-more"], ["email", "studio"],
+                              ["studio-more"], 110, 102),
+        "studio_with_email_and_crm_records": (["email", "crm-records", "studio"],
+                                              ["email", "crm-records"],
+                                              ["studio-more", "studio"], 109, 104),
+    }, changed
+    assert len(rows[0]) == 16

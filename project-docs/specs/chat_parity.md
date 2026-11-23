@@ -25,7 +25,7 @@ ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
 From that point they only go down.
 
 **PAR-8b (task 3903, rung 5) is BUILT, 2026-11-23, dark.** It takes the
-shell debt from 16 rows to 2. Five tools of the orchestrator do the shell acts
+shell debt from 16 rows to 7. Five tools of the orchestrator do the shell acts
 from the chat (`acb_skills/home_tools.py`).
 
 `home_read` reads the Home feed, Needs you, the brief, the quick find and the
@@ -39,6 +39,11 @@ other writes show one card only in a chat that must ask first. Each write
 refuses a character that no person sees, with the one rule of
 `hidden_text.py`. Fence: `tests/unit/test_home_tools.py`.
 
+A needs row or a card can hold the subject of an outside mail. So each read
+that shows a row marks the chat as one that read outside text. Then
+each egress tool and each write of a held chat shows a card first. Each read
+says how many rows exist, and how to see the rest.
+
 **PAR-8b, the facts for the owner.**
 
 - **The switch is `HOME_TOOLS_ORGS`, not a `TOOL_PACKS` line.** A pack needs an
@@ -46,13 +51,21 @@ refuses a character that no person sees, with the one rule of
   and its packs build no tool for an org without Studio. A pack of
   `projects-assistant` puts the tools live in that agent at once. So the tools
   are core tools of the orchestrator, as `pin_chat` is (CO-11b). When the flag
-  is on, the five tools join each request of the org and move the tool cap.
-- **Five rows are exempt.** `POST /api/shell/intent` is the model step of the
-  command bar, and in the chat the turn of the member does that job. Four push
-  routes subscribe the browser of one device, and only that browser holds the
-  push address and its secret. No kind fits a device exactly. The rows use
-  `session` and `secret`. A new kind needs the owner (§2).
-- **Two rows stay debt: the approval queue and its decision.** The safety
+  is on, the five tools join each request of the org: the base goes from 57 to
+  62 tools.
+- **The trade of the tool cap, with the flag on.** Two of the 16 cases of the
+  golden matrix change. A Studio turn with mail words drops `studio-more` (110
+  to 102 tools). A Studio turn with mail and CRM words drops `studio-more` and
+  the core pack `studio` (109 to 104 tools). The other 14 cases keep their
+  packs. Fence: `test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack`.
+- **Decide (b): five rows wait for a ruling on their kind.** No kind of §2
+  fits them, so they stay debt. `POST /api/shell/intent` is the model step of
+  the command bar, and in the chat the turn of the member does that job. Four
+  push routes subscribe, check or remove the browser of one device, and only
+  that browser holds the push address. A `device` kind and a ruling on the
+  intent row would take the shell debt to 2.
+- **Decide (a): two rows wait for §7, item 6.** They are the approval queue
+  and its decision. With (a) and (b), the shell debt goes to 0. The safety
   fence `test_no_person_present.py` refuses a tool that names
   `/actions/pending`, a read too. The decision waits for §7, item 6.
   `pending_actions` has no requester column, so a tool cannot tell an action
@@ -219,7 +232,7 @@ table is a reading of 2026-11-22, at `origin/main` `fe0f4aeff`. The total was
 | apps | 29 | 28 | P-6 | 3115 |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 2 | P-7 | 3115, 3903 (PAR-8b built) |
+| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -331,7 +344,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, 3112 | 3904 | 14 and 14 | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
-| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 2 (PAR-8b built) and 18 | Four most-used actions are here. |
+| 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 18 | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
