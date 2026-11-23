@@ -1,6 +1,6 @@
 """R8 — LOOP-19: sent mail by recipient and by file name, on a REAL Postgres.
 
-Spec: ``project-docs/specs/proactive_loop.md`` §4.9.1. Migration 488 adds
+Spec: ``project-docs/specs/proactive_loop.md`` §4.9.1. Migration 496 adds
 ``email_messages.attachment_names`` and a trigger on ``email_attachments``.
 ``/email/messages`` (the chat tools' route) and ``/email/search`` take a
 recipient word and a file-name word. Each test runs as the NON-privileged app
