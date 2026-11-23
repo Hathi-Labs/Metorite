@@ -886,3 +886,182 @@ async def test_sg5a_a_form_only_in_the_quote_gets_the_signature_above_it(
     sent = await _send_draft(monkeypatch, _Db("", _template(reply_mode)), body)
     _one_table_above(sent["body_html"], "From: Kim")
     assert _FULL_TEXT in sent["body_text"].split("From: Kim")[0], sent["body_text"]
+
+
+# ── 7. SG-5a rule 7: the bytes of main are pinned (done-when c and e) ───────
+#
+# The flag is off, or it is on with no row or a ``custom`` row. Each send, the
+# draft backstop and the seal give the bytes that main gave. Each golden below
+# was taken from main at ``f7550b128``, before the SG-5a change. A compare with
+# ``build_signed_bodies`` would move with the code, so the goldens are literal.
+
+#: A stored signature of one line. It still matches behind the ``> `` mark,
+#: so main finds it in the quote and adds no second one.
+_STORED_LINE = "Ravi Kumar | Acme Ltd"
+_QUOTE_WITH_STORED = f"{_MARKER}\n> Is the quote fixed?\n>\n> {_STORED_LINE}"
+#: Done-when c: a stored signature with a line of five underscores, as its
+#: first line and as a middle line. ``split_quoted_text`` reads that line as
+#: the start of a quote.
+_UNDERSCORE_FIRST = "_____\nRavi Kumar\nAcme Ltd"
+_UNDERSCORE_MIDDLE = "Ravi Kumar\n_____\nAcme Ltd"
+
+#: ``(flag, row)`` of each rule 7 case.
+_RULE_7_CASES: dict[str, tuple[str, Any]] = {
+    "flag-off-template-row": ("", _template("short")),
+    "flag-on-no-row": ("*", None),
+    "flag-on-custom-row": ("*", _template("short", mode="custom", layout=None)),
+}
+
+
+async def _backstop(monkeypatch: pytest.MonkeyPatch, db: _Db, body: str) -> str:
+    """The text that ``PUT /email/drafts`` gives the provider for a new draft:
+    the body after the signature backstop."""
+    made: dict[str, Any] = {}
+
+    class _Provider:
+        async def create_draft(self, **kw: Any) -> str:
+            made.update(kw)
+            return "pm-new"
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield db
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider(), owner_email=_ME.email)
+
+    async def _nothing(*_a: Any, **_k: Any) -> Any:
+        return None
+
+    async def _local(*_a: Any, **_k: Any) -> str:
+        return "d-1"
+
+    async def _saved(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(drafting, "_tenant_session", _session)
+    monkeypatch.setattr(drafting, "provider_session", _provider_session)
+    monkeypatch.setattr(drafting, "_assert_account_owner", _nothing)
+    monkeypatch.setattr(drafting, "_upsert_local_draft", _local)
+    monkeypatch.setattr(drafting, "_fetch_message_dict", _saved)
+    monkeypatch.setattr(drafting, "_is_gmail", lambda _p: False)
+    await drafting.upsert_draft(drafting.DraftUpsertRequest(
+        account_id=_ACC, to=["kim@client.test"], subject="Re: Quote", body=body), _ME)
+    return made["body_text"]
+
+
+async def _seal(monkeypatch: pytest.MonkeyPatch, db: _Db, body: str) -> str:
+    """The ``text_digest`` of ``GET /email/drafts/seal`` for a draft of ``body``."""
+    from gateway.routes.email import account_ref
+
+    class _Provider:
+        async def get_message_body(self, _pmid: str) -> Any:
+            return SimpleNamespace(body_text=body, body_html="")
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield db
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider())
+
+    async def _nothing(*_a: Any, **_k: Any) -> Any:
+        return None
+
+    async def _account(_db: Any, value: str, *_a: Any, **_k: Any) -> str:
+        return value
+
+    db.draft = _draft_row(body)
+    monkeypatch.setattr(drafting, "_tenant_session", _session)
+    monkeypatch.setattr(drafting, "provider_session", _provider_session)
+    monkeypatch.setattr(drafting, "_assert_account_owner", _nothing)
+    monkeypatch.setattr(account_ref, "resolve_account_filter", _account)
+    out = await drafting.draft_seal(account_id=_ACC, draft_id=_DRAFT, user=_ME)
+    return out["text_digest"]
+
+
+async def _main_paths(monkeypatch: pytest.MonkeyPatch, case: str, stored: str,
+                      body: str) -> dict[str, Any]:
+    """What each path gives for ``body``, under one rule 7 case."""
+    flag, row = _RULE_7_CASES[case]
+    _flag(monkeypatch, flag)
+    out: dict[str, Any] = {}
+    for name, reply_to in (("send_reply", "local-1"), ("send_new", None)):
+        db = _Db(stored, row)
+        sent = await _send(monkeypatch, db, body, reply_to)
+        out[name] = (sent["body_text"], sent["body_html"])
+        if not flag:
+            assert db.sql == [sig.STORED_SIGNATURE_SQL], db.sql
+    sent = await _send_draft(monkeypatch, _Db(stored, row), body)
+    out["drafts_send"] = (sent["body_text"], sent["body_html"])
+    out["backstop"] = await _backstop(monkeypatch, _Db(stored, row), body)
+    out["seal"] = await _seal(monkeypatch, _Db(stored, row), body)
+    return out
+
+
+#: The SG-5a rule 7 bodies: ``(stored signature, body)``.
+_PINNED_BODIES: dict[str, tuple[str, str]] = {
+    "stored-only-in-the-quote": (_STORED_LINE, f"{_NEW_TEXT}\n\n{_QUOTE_WITH_STORED}"),
+    "underscore-first-above-a-quote": (
+        _UNDERSCORE_FIRST, f"{_NEW_TEXT}\n\n{_UNDERSCORE_FIRST}\n\n{_QUOTE_WITH_STORED}"),
+    "underscore-middle-above-a-quote": (
+        _UNDERSCORE_MIDDLE, f"{_NEW_TEXT}\n\n{_UNDERSCORE_MIDDLE}\n\n{_QUOTE_WITH_STORED}"),
+}
+
+#: Main's HTML part of each send, and main's seal digest, for each body of
+#: :data:`_PINNED_BODIES`. Main sent each text unchanged, and its backstop
+#: gave each body unchanged. Main swapped the stored signature INSIDE the quote
+#: of ``stored-only-in-the-quote``. A ``custom`` form keeps that (decision 3).
+_MAIN_GOLDEN: dict[str, tuple[str, str]] = {
+    "stored-only-in-the-quote": (
+        "Hi Kim,<br><br>The quote stands.<br><br>On Mon, 9 Nov 2026, Kim wrote:<br>"
+        "&gt; Is the quote fixed?<br>&gt;<br>&gt; <br><br>Ravi Kumar | Acme Ltd",
+        "536faffad6595a4f77ee42f897f06e3d579738234c8dfdcb4327dc5564b1f771"),
+    "underscore-first-above-a-quote": (
+        "Hi Kim,<br><br>The quote stands.<br><br>_____<br>Ravi Kumar<br>Acme Ltd<br><br>"
+        "On Mon, 9 Nov 2026, Kim wrote:<br>&gt; Is the quote fixed?<br>&gt;<br>"
+        "&gt; Ravi Kumar | Acme Ltd",
+        "55b36ba341d1e8fe1e9a24fe12bcdc21653ccb0c85dee06438210063f47dea58"),
+    "underscore-middle-above-a-quote": (
+        "Hi Kim,<br><br>The quote stands.<br><br>Ravi Kumar<br>_____<br>Acme Ltd<br><br>"
+        "On Mon, 9 Nov 2026, Kim wrote:<br>&gt; Is the quote fixed?<br>&gt;<br>"
+        "&gt; Ravi Kumar | Acme Ltd",
+        "55b36ba341d1e8fe1e9a24fe12bcdc21653ccb0c85dee06438210063f47dea58"),
+}
+
+
+@pytest.mark.parametrize("body_name", list(_PINNED_BODIES))
+@pytest.mark.parametrize("case", list(_RULE_7_CASES))
+async def test_sg5a_rule_7_each_path_gives_the_bytes_of_main(
+    monkeypatch: pytest.MonkeyPatch, case: str, body_name: str,
+) -> None:
+    """Done-when e, and c for a ``custom`` mailbox. With the flag off, only
+    ``STORED_SIGNATURE_SQL`` runs (``_main_paths`` checks it)."""
+    stored, body = _PINNED_BODIES[body_name]
+    html, seal = _MAIN_GOLDEN[body_name]
+    out = await _main_paths(monkeypatch, case, stored, body)
+    for path in ("send_reply", "send_new", "drafts_send"):
+        assert out[path] == (body, html), (path, out[path])
+    assert out["backstop"] == body
+    assert out["seal"] == seal
+
+
+@pytest.mark.parametrize("stored", [_UNDERSCORE_FIRST, _UNDERSCORE_MIDDLE],
+                         ids=["first-line", "middle-line"])
+async def test_sg5a_a_stored_form_with_an_underscore_line_is_found_once(
+    monkeypatch: pytest.MonkeyPatch, stored: str,
+) -> None:
+    """Done-when c with a ``template`` row: the draft was written in ``custom``
+    mode, and the mode changed before the send. ``split_quoted_text`` cuts at
+    the underscore line, but the form starts above the quote, so it counts."""
+    _flag(monkeypatch, "*")
+    body = f"{_NEW_TEXT}\n\n{stored}\n\n{_QUOTE_WITH_STORED}"
+    sent = await _send(monkeypatch, _Db(stored, _template("short")), body, "local-1")
+    drafted = await _send_draft(monkeypatch, _Db(stored, _template("short")), body)
+    for out in (sent, drafted):
+        assert out["body_text"] == body
+        assert out["body_html"].count("Ravi Kumar<br>") == 1, out["body_html"]
+        assert "Jane Doe" not in out["body_html"]
+        assert out["body_html"].index("Acme Ltd") < out["body_html"].index("Kim wrote:")
