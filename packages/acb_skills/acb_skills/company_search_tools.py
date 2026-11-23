@@ -53,6 +53,35 @@ or found. A zero answer adds the near spellings it tried and at most 3
 argument of the dated tool only: the route answers a trace, and
 :func:`format_trace` prints it with no record. With no mark and no trace, the
 text is the text of KR-ZERO.
+
+**The past chats** (WS-FIND HRD-21, ``find_engine.md`` §3.1 rung 6). Each
+call sends the run's own chat thread as ``current_chat`` (:func:`_current_chat`),
+so the route never shows the chat that asks. A past chat prints like a record:
+its title, "Your chat", the date of its last change and the link that opens
+it. With ``FIND_ORGS`` on it carries "[past chat]". Both docstrings keep their
+list of keys, so the schema that every org reads does not change. A run with
+no chat (a batch run, whose thread the executor made) and a run that is not
+solo send no thread, so their search shows no past chat. Above a past chat, the dated answer does not say
+"No record holds all of the words", because the chat can hold them.
+**One name** (WS-FIND FIND-5, ``find_engine.md`` §5.2). :func:`resolve_name`
+reads ``GET /search/names`` as the run's member. It finds each person,
+contact, lead, company and mail sender that holds one name, exact or near.
+Its answer has the same header, each stored name in guillemets, a sender's
+address after a shape check, a verdict from a closed list, and the fixed
+instruction of that verdict (:data:`NAME_NEXT`). With no member it
+answers a sentence and calls nothing, and each failure is a sentence. The
+orchestrator holds it in ``core_tools`` only for an org of ``FIND_ORGS``,
+so the tool list of every other org does not change.
+
+**The family** (WS-FIND FIND-6, ``find_engine.md`` §5.3 and §5.4).
+:func:`find_on` is the one org rule of ``FIND_ORGS`` outside the gateway.
+:func:`with_zero_pointer` ends a zero answer of ``search_crm``,
+``query_inbox`` and ``find_tasks`` with :data:`FIND_POINTER`, only in a pack
+call of an org of ``FIND_ORGS``, with company search and ``CONTEXT_RECENCY``
+on. The orchestrator
+wraps the core find tools of such an org in the HRD-3 guard
+(``pack_tool_guard.guard``), so a failure is text with a next step. Each
+function of this module still raises as before, so its fences hold.
 """
 
 from __future__ import annotations
@@ -60,10 +89,12 @@ from __future__ import annotations
 import functools
 import os
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+from acb_common.settings import internal_auth_headers
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -96,6 +127,9 @@ WHEN_WORDS: dict[str, str] = {
     "artifacts": "updated",
     "whatsapp": "sent",
     "knowledge": "updated",
+    # HRD-21: a past chat's one date is its last change (`chat_session.updated_at`).
+    # A new row moves it, and so does a rename, so it is not the last message.
+    "chat": "updated",
 }
 
 _SPACE = re.compile(r"\s+")
@@ -130,6 +164,74 @@ def context_recency_enabled() -> bool:
         return False
 
 
+def find_on(org: str | None = None) -> bool:
+    """True when ``FIND_ORGS`` names the organization (WS-FIND). Fails closed.
+
+    The rule is ``gateway.retrieval.find.find_allowed``, the one reader of the
+    flag. *org* is the organization of the caller's server-side
+    ``UserContext``. With none, the bound tenant and then the run's org
+    answer. A caller with none of them gets False. Never raises. The
+    orchestrator (``agents._find_enabled``) and :func:`zero_pointer` ask it.
+    """
+    try:
+        from gateway.retrieval.find import find_allowed
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return find_allowed(org)
+    except Exception:
+        return False
+
+
+#: The zero line of an app search tool (WS-FIND FIND-6, ``find_engine.md``
+#: §5.3), in the words of the spec. Fixed text: it holds no word of the query,
+#: no record and no count.
+FIND_POINTER = "search_company also tries near spellings, linked records and the other apps."
+
+
+def zero_pointer() -> str:
+    """:data:`FIND_POINTER`, or ``""`` (FIND-6, §5.3). Each gate fails closed.
+
+    1. The call is a pack call (``egress._in_pack_call``). So the model that
+       reads the line is the one assistant, which holds ``search_company``. A
+       sub-run of a specialist holds no such tool, and it gets no line. The
+       one exception is a spawn child (OA-9c): it gets a pack call but no
+       ``search_company`` (a limit of ``find_engine.md`` §5.3).
+    2. ``COMPANY_SEARCH_ENABLED`` is on, so the core list holds the tool.
+    3. ``CONTEXT_RECENCY`` is on (:func:`context_recency_enabled`). The route
+       runs the ladder (near spellings, linked records) only then, so only
+       then is the line true.
+    4. ``FIND_ORGS`` names the org of the run (:func:`find_on`).
+    """
+    try:
+        from acb_skills.egress import _in_pack_call
+
+        if not _in_pack_call():
+            return ""
+    except Exception:
+        return ""
+    if not company_search_enabled() or not context_recency_enabled() or not find_on():
+        return ""
+    return FIND_POINTER
+
+
+def with_zero_pointer(zero: str) -> str:
+    """*zero*, the zero answer of ``search_crm``, ``query_inbox`` or
+    ``find_tasks``, with :data:`FIND_POINTER` as its last line when
+    :func:`zero_pointer` gives it. Else *zero* itself, byte for byte.
+
+    A tool calls it only on its zero branch, after a read that answered. A
+    failure raises before that branch, so a failure never gets the line."""
+    pointer = zero_pointer()
+    return f"{zero}\n{pointer}" if pointer else zero
+
+
 # ── Transport (the pattern of crm_tools.py) ────────────────────────────────
 
 def _gateway_url() -> str:
@@ -145,11 +247,52 @@ def _current_user_email() -> str:
         return ""
 
 
-def _internal_token() -> str:
-    from acb_common import get_settings
+#: The most characters of the id of the current chat that the tool sends
+#: (``company.CURRENT_CHAT_MAX`` on the route).
+CURRENT_CHAT_MAX = 200
 
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
+
+def _current_chat() -> str | None:
+    """The chat thread of this run, or ``None`` (WS-FIND HRD-21).
+
+    It comes from the run (``executor.resolve_relay_thread_id``), never from
+    the model. The route uses it only to leave the current chat out of the
+    member's past chats (D-FIND-5). With none, the route shows no past chat.
+    An id longer than :data:`CURRENT_CHAT_MAX` is not sent, so it can never
+    reach the route cut, and the route shows no past chat then too.
+
+    A run with no chat gets a thread that the executor makes
+    (``<agent>:<run id>``), and its bound context says ``batch_thread``
+    (H-227). That thread names no chat, so the tool sends nothing for it, and
+    a batch run shows no past chat. A context that cannot be read sends
+    nothing too.
+
+    Only a solo run sends its thread (``executor.run_is_solo``). A room, and
+    a room of one that other members can read (visibility ``org`` or
+    ``people``), send nothing, so a member's past chats never print into a
+    chat that another person can open."""
+    try:
+        from orchestrator.executor import resolve_relay_thread_id, run_is_solo
+
+        from acb_skills.write_artifact import artifact_context
+    except ImportError:
+        return None
+    try:
+        if not run_is_solo() or (artifact_context() or {}).get("batch_thread") is True:
+            return None
+        thread = str(resolve_relay_thread_id() or "").strip()
+    except Exception:
+        return None
+    return thread if thread and len(thread) <= CURRENT_CHAT_MAX else None
+
+
+def _with_current_chat(params: dict[str, Any]) -> dict[str, Any]:
+    """*params* with ``current_chat`` added when the run has a chat thread.
+    With none, the request is the request of before HRD-21."""
+    chat = _current_chat()
+    if chat is not None:
+        params["current_chat"] = chat
+    return params
 
 
 def _headers() -> dict[str, str]:
@@ -163,7 +306,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -288,6 +431,9 @@ def _how_matched(hit: dict[str, Any]) -> str:
         return "[by meaning]"
     if rung == "related":
         return _related_bracket(hit)
+    if rung == "chat":
+        # HRD-21: a past chat of the member. Its hint and date name the chat.
+        return f"[past chat{count}]"
     return ""
 
 
@@ -504,6 +650,7 @@ def _tried_line(body: dict[str, Any], *, marked: bool = False) -> str:
 #: app only by one of these keys.
 APP_KEYS: tuple[str, ...] = (
     "tasks", "email", "people", "crm", "artifacts", "whatsapp", "knowledge", "studio",
+    "chat",
 )
 #: The "Where else" line of an app that the route skipped, for each reason of
 #: ``find.SKIP_REASONS``.
@@ -515,8 +662,9 @@ WHERE_ELSE_SKIPPED: dict[str, str] = {
     "refused": "Where else: {app} refused this search, so this answer holds none of its "
                "records.",
 }
-#: The "Where else" line when ``CHAT_SEARCH_ORGS`` does not name the org. No
-#: source reads past chats yet (HRD-21).
+#: The "Where else" line when the search did not ask the ``chat`` source:
+#: ``CHAT_SEARCH_ORGS`` does not name the org, or the run named no current
+#: chat (HRD-21). So the line is true each time it prints.
 WHERE_ELSE_PAST_CHATS = "Where else: the member's past chats are not searched."
 #: The "Where else" line of an app that is not open to the member: the member
 #: lacks it, or its switch is off for the org.
@@ -696,7 +844,11 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
             lines.append(line)
             opening += 1
     elif dated and _broadened_line(data):
-        lines.append(_broadened_line(data))
+        # HRD-21: the records hold no hit with every word, but a past chat can.
+        # So the claim of KR-ZERO does not print above a past chat. With no
+        # past chat, the line is the line of KR-ZERO, byte for byte.
+        claim = not any(isinstance(h, dict) and h.get("app") == "chat" for h in hits or [])
+        lines.append(_broadened_line(data, BROADENED_OPENING if claim else EACH_WORD_OPENING))
         opening += 1
     for hit in hits or []:
         if isinstance(hit, dict):
@@ -842,6 +994,62 @@ def format_trace(body: Any) -> str:
     return "\n".join(lines)
 
 
+# ── The second pass, as the answer shows it (FIND-7, ``find_engine.md`` §5.5) ─
+
+#: The first words of the line of a near spelling that the route proved
+#: (:func:`_near_line`).
+NEAR_HELD_OPENING = "No record holds «"
+#: The first words of the line of what a zero answer tried (:func:`_tried_parts`).
+TRIED_OPENING = "Tried: "
+
+
+def ran_second_pass(text: str) -> bool:
+    """True when *text*, an answer of this tool, shows that pass 2 of
+    ``find_engine.md`` §3.2 ran (FIND-7, §5.5).
+
+    It is the ONE reader of the mark, beside the code that writes each line.
+    ``acb_skills.answer_check`` reads it. A line of rung 2 opens with
+    :data:`EACH_WORD_OPENING` or :data:`BROADENED_OPENING`, in an answer and
+    in a trace. A line of rung 3 opens with :data:`NEAR_FOUND` or
+    :data:`NEAR_HELD_OPENING`, or the "Tried:" line ends with
+    :data:`NEAR_TRIED`. A trace (:data:`TRACE_HEADER`) counts too, because
+    the explain mode runs each rung.
+
+    Only the start of a line counts. :func:`_line` folds each line break of a
+    title, a hint, a snippet and the query, for each boundary of
+    ``str.splitlines``, so no text that another person wrote starts a line.
+
+    The "Tried:" line is the one line that holds such text: it quotes the
+    query. :func:`_tried_parts` writes each ``"`` of the query as ``'``, so
+    the first ``"`` after the opening one closes the query. This reads
+    :data:`NEAR_TRIED` only after that close, so a query that holds the
+    words gives no mark (FIND-7 fix round, P2).
+
+    Pass 2 shows nothing for a query of one word whose near lookup found no
+    name, so this gives False there.
+    """
+    lines = str(text or "").splitlines()
+    if lines and lines[0].startswith(TRACE_HEADER):
+        return True
+    for line in lines:
+        if line.startswith((EACH_WORD_OPENING, BROADENED_OPENING, NEAR_FOUND,
+                            NEAR_HELD_OPENING)):
+            return True
+        if line.startswith(TRIED_OPENING) and f" {NEAR_TRIED} " in _after_query(line):
+            return True
+    return False
+
+
+def _after_query(line: str) -> str:
+    """The part of a "Tried:" line after the quoted query, or the whole rest
+    of the line for a line with no query (:func:`_tried_parts`)."""
+    rest = line[len(TRIED_OPENING):]
+    if not rest.startswith('"'):
+        return rest
+    close = rest.find('"', 1)
+    return rest[close + 1:] if close > 0 else ""
+
+
 @_read_tool
 async def search_company(query: str, apps: str | None = None) -> str:
     """Find the company's records that match the words, in every app the member holds.
@@ -868,7 +1076,7 @@ async def search_company(query: str, apps: str | None = None) -> str:
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
     _close_profile_writes()
-    body = await _get("/search/company", {"q": words, "apps": apps or None})
+    body = await _get("/search/company", _with_current_chat({"q": words, "apps": apps or None}))
     return format_answer(body)
 
 
@@ -910,7 +1118,8 @@ async def _search_company_dated(
         return "Give 2 to 300 characters to find."
     since = str(after or "").strip() or None
     _close_profile_writes()
-    params: dict[str, Any] = {"q": words, "apps": apps or None, "after": since}
+    params: dict[str, Any] = _with_current_chat({"q": words, "apps": apps or None,
+                                                 "after": since})
     if verified_only:
         params["verified"] = "true"
     if explain:
@@ -932,17 +1141,340 @@ _search_company_dated.__qualname__ = "search_company"
 search_company_dated = _read_tool(_search_company_dated)
 
 
+# ── resolve_name (WS-FIND FIND-5, ``find_engine.md`` §5.2) ─────────────────
+# It reads `GET /search/names` as the run's member. The answer has the frame
+# of `search_company`: the header, then each record in guillemets. Two values
+# come from data: a stored name, inside the guillemets, and an address that
+# passed the address check (the id of a sender, a member or a saved name, and
+# the colleague address of FIND-6b). An id and a link pass a shape check.
+# Every other word comes from a closed list here.
+#
+# FIND-6b (task 3665, ``find_engine.md`` §5.2): the route also gives a member
+# of the org and the member's own saved names. A person, a member and a saved
+# name print the colleague address after the name, as ``resolve_person``
+# prints it. The address must be plain (`_plain_address`), or it does not
+# print. A saved name prints "(colleague)" and "[your saved name]".
+# ``resolve_person`` stays in the core list. The next PR takes it out
+# (D-FIND-3).
+#
+# The docstring of `resolve_name` is the tool description. Task 3725 caps it
+# at 1082 characters (`test_find_module_source.py`), because the Studio chat
+# sits at its token budget. So it names the saved names and the kinds in short
+# words. The kind `alias` is a name that the member saved for a colleague.
+# The answer prints the colleague address in angle brackets, so the
+# description does not say it. Put new detail here or in `find_engine.md`.
+
+#: The route of :func:`resolve_name`.
+NAMES_ROUTE = "/search/names"
+#: The most characters of the name, as the route takes it.
+NAMES_MAX = 60
+
+NAMES_NO_MEMBER = "No member is bound to this run, so the name lookup did not run."
+NAMES_SHARED_ROOM = "A shared room cannot look up a name. Ask in your own chat."
+NAMES_CLOSED = "The name lookup is not open to you."
+NAMES_OFF = ("The name lookup is not open for this company. Use search_company "
+             "with the name.")
+NAMES_FAILED = ("The name lookup failed, so it found nothing. Try again, or use "
+                "search_company with the name.")
+NAMES_BOUNDS = "Give one name of 2 to 60 characters and at most 3 words."
+#: The 422 of a name with no word of 2 letters or more in a to z or 0 to 9:
+#: initials only, or a name in another script (round 3, P3-c).
+NAMES_LETTERS = ("The name lookup reads a word of 2 letters or more in the letters a to z "
+                 "or the digits 0 to 9. Ask the member to spell the name in those "
+                 "letters, or use search_company.")
+NAMES_KINDS = "The kinds are alias, person, member, contact, lead, company and sender."
+#: A cap of the route left a record out. The record may be a near one.
+NAMES_CUT = "The answer has more records than it shows. Ask the member for the full name."
+
+#: The words of each app, kind, skip reason and verdict of the route. Closed
+#: lists: a value that is not here prints nothing. ``profile`` is the
+#: member's own saved names (FIND-6b, ``sources.ALIAS_KEY``).
+NAME_APPS: dict[str, str] = {"crm": "CRM", "people": "People", "email": "Email",
+                             "profile": "Your saved names"}
+NAME_KINDS: dict[str, str] = {
+    "person": "person", "member": "member", "contact": "contact", "lead": "lead",
+    "company": "company", "sender": "mail sender", "alias": "colleague",
+    "module_record": "record",
+}
+#: The kinds whose id is an address, so the id must pass :data:`_ADDRESS`.
+NAME_ADDRESS_IDS: tuple[str, ...] = ("sender", "member", "alias")
+#: The kinds whose row may print the colleague address (FIND-6b). The route
+#: sends it only where ``resolve_person`` prints it.
+NAME_EMAIL_KINDS: tuple[str, ...] = ("person", "member", "alias")
+NAME_SKIPS: dict[str, str] = {
+    "timed_out": "ran out of time", "failed": "failed", "refused": "not open to you",
+}
+NAME_VERDICTS: dict[str, str] = {
+    "one": "One record holds the name exactly.",
+    "partial": ("One record holds the name exactly, but an app did not answer in "
+                "full, so another record may hold it."),
+    "several": "More than one record may be the one that the member means.",
+    "near": ("Each record above holds a near spelling of the name, or is a mail "
+             "sender. Neither is a sure match: a mail sender writes its own name."),
+}
+#: The fixed instruction that ends each answer, one for each verdict (fix
+#: round, P3-a). Code writes it, never data. Only ``one`` says to use it.
+NAME_NEXT: dict[str, str] = {
+    "one": "One exact match: use it.",
+    "partial": "Ask the member to confirm it before you act.",
+    "several": "Ask the member which one they mean.",
+    "near": "Ask the member to confirm one, and never act on it without a yes.",
+    "none": "Ask the member for the full name or the address.",
+}
+#: The end of an answer whose verdict is off the list.
+NAMES_ASK = "Ask the member before you act."
+#: The line of each app whose page was full (fix round, P3-b).
+NAMES_FULL = "The page was full in: {apps}, so a record past it may hold the name."
+#: The statuses of a person that a row may print (the directory's closed list).
+NAME_STATUSES: tuple[str, ...] = ("active", "contractor", "alumni", "invited")
+#: The end of an answer with no record (the rule of KR-ZERO).
+NAMES_NO_PROOF = "A zero is not proof that no record exists."
+#: An answer with no app to ask.
+NAMES_NO_APP = "No app that holds names is open to you, so nothing was searched."
+
+#: The id of a record of the route: a UUID shape. A sender's id is its address.
+_RECORD_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
+_ADDRESS = re.compile(r"[^\s@<>«»\"'`]{1,64}@[^\s@<>«»\"'`]{1,189}\.[^\s@<>«»\"'`.]{1,63}")
+#: The spelling of a near row: one to three tokens of letters and digits.
+_SPELLING = re.compile(r"[^\W_]{1,40}(?: [^\W_]{1,40}){0,2}")
+
+
+def _name_text(value: Any, cap: int = 80) -> str:
+    """A stored name as one safe line: no hidden character
+    (``hidden_text``, the one rule), no guillemet or angle bracket, one space
+    between words, and at most *cap* characters."""
+    from acb_skills.hidden_text import strip_hidden
+
+    text = strip_hidden(str(value or ""))
+    for mark in ("«", "»", "<", ">"):
+        text = text.replace(mark, " ")
+    # One name, cut as text. Not a list of rows (test_read_tool_paging.py).
+    return " ".join(text.split()).strip()[:cap].rstrip()
+
+
+def _apps(entries: Any) -> list[str]:
+    """The app names of a list of keys, from :data:`NAME_APPS` only."""
+    listed = entries if isinstance(entries, list) else []
+    return [NAME_APPS[k] for k in listed if isinstance(k, str) and k in NAME_APPS]
+
+
+def _skips(entries: Any) -> list[str]:
+    """"CRM (ran out of time)" for each skipped app, from the closed lists."""
+    out = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        app, why = entry.get("app"), entry.get("reason")
+        if isinstance(app, str) and app in NAME_APPS and isinstance(why, str) and why in NAME_SKIPS:
+            out.append(f"{NAME_APPS[app]} ({NAME_SKIPS[why]})")
+    return out
+
+
+def _plain_address(value: Any) -> str:
+    """*value* when it is a plain address with no hidden character, else
+    ``""``: the rule of a sender id (fix round, P2-b). An address prints
+    outside the quotes, so it is never folded. It prints whole, or not."""
+    from acb_skills.hidden_text import strip_hidden
+
+    text = value if isinstance(value, str) else ""
+    if (not _ADDRESS.fullmatch(text) or strip_hidden(text) != text
+            or any(unicodedata.category(ch).startswith("C") for ch in text)):
+        return ""
+    return text
+
+
+def _name_lines(row: Any) -> list[str]:
+    """The two lines of one record, or none for a row off the closed lists.
+
+    A sender's id is an address that the sender wrote, and ``full_id`` prints
+    it outside the quotes. So an address with a hidden character prints
+    nothing (fix round, P2-b). The id of a member and of a saved name is an
+    address too (FIND-6b).
+
+    A person, a member and a saved name print the colleague address after
+    the name, as ``resolve_person`` prints it: ``- «Raj Rao» <raj@acme.test>``.
+    The route sends ``email`` only where ``resolve_person`` prints it. An
+    address that is not plain prints no address, by the same rule. A saved
+    name prints "(colleague)" and "[your saved name]"."""
+    if not isinstance(row, dict):
+        return []
+    app, kind, match = (str(row.get(key) or "") for key in ("app", "kind", "match"))
+    ident = str(row.get("id") or "")
+    if (app not in NAME_APPS or kind not in NAME_KINDS or match not in ("exact", "near", "alias")
+            or (kind == "alias") != (match == "alias") or (kind == "alias") != (app == "profile")
+            or not (_plain_address(ident) if kind in NAME_ADDRESS_IDS
+                    else _RECORD_ID.fullmatch(ident))):
+        return []
+    status = str(row.get("status") or "")
+    noun = NAME_KINDS[kind] + (f", {status}" if kind == "person" and status in NAME_STATUSES
+                               else "")
+    if kind == "module_record" and _name_text(row.get("module"), 40):
+        # FIND-11: the label of the module, as a name, so the member sees where it is.
+        noun += f", {_name_text(row.get('module'), 40)}"
+    label = noun if kind == "alias" else f"{NAME_APPS[app]} {noun}"
+    name = _name_text(row.get("name")) or "(no name)"
+    email = _plain_address(row.get("email")) if kind in NAME_EMAIL_KINDS else ""
+    address = f" <{email}>" if email else ""
+    href = str(row.get("href") or "")
+    link = f" {href}" if href.startswith("/") and not href.startswith("//") \
+        and not any(ch.isspace() or ch in "«»<>\"'" for ch in href) else ""
+    spelt = str(row.get("as") or "")
+    if match == "exact":
+        how = "[exact]"
+    elif match == "alias":
+        how = "[your saved name]"
+    elif _SPELLING.fullmatch(spelt):
+        how = f"[near spelling: {spelt}]"
+    else:
+        how = "[near spelling]"
+    return [f"- «{name}»{address} ({label}){link} {how}",
+            f"  full_id: {kind}:{ident}"]
+
+
+def format_names(body: Any) -> str:
+    """The answer of ``GET /search/names`` as the text that the model reads.
+
+    The header of :data:`HEADER`, the apps that were not searched or read in
+    part, each record, the sentence of the verdict, and the instruction of
+    the verdict from :data:`NAME_NEXT`. Two values come from data: a stored
+    name, inside guillemets, and an address, which must pass
+    :func:`_plain_address`. That is the id of a sender, a member or a saved
+    name in ``full_id``, and the colleague address in angle brackets
+    (FIND-6b). A record id must pass :data:`_RECORD_ID`, and a link must be
+    an in-app path. Every other word comes from a closed list here.
+    """
+    data = body if isinstance(body, dict) else {}
+    verdict = data.get("verdict") if isinstance(data.get("verdict"), str) else ""
+    lines = [HEADER]
+    skipped = _skips(data.get("skipped"))
+    if skipped and verdict != "none":
+        lines.append(f"Not searched: {', '.join(skipped)}.")
+    near_skipped = _skips(data.get("near_skipped"))
+    if near_skipped:
+        lines.append(f"Near spellings not tried in: {', '.join(near_skipped)}.")
+    full = _apps(data.get("full"))
+    if full:
+        lines.append(NAMES_FULL.format(apps=", ".join(full)))
+    rows = data.get("rows")
+    for row in rows if isinstance(rows, list) else []:
+        lines += _name_lines(row)
+    if data.get("cut") is True:
+        lines.append(NAMES_CUT)
+    if verdict in NAME_VERDICTS:
+        lines.append(NAME_VERDICTS[verdict])
+    elif verdict == "none":
+        # An app whose page was full is no "No name matched" app: the line of
+        # NAMES_FULL above says that a record past its page may hold the name.
+        searched = [app for app in _apps(data.get("searched")) if app not in full]
+        if not searched and not skipped and not full:
+            lines.append(NAMES_NO_APP)
+        else:
+            parts = [f"No name matched in: {', '.join(searched)}."] if searched else []
+            if skipped:
+                parts.append(f"Not searched: {', '.join(skipped)}.")
+            parts.append(NAMES_NO_PROOF)
+            lines.append(" ".join(parts))
+    lines.append(NAME_NEXT.get(verdict, NAMES_ASK))
+    return "\n".join(lines)
+
+
+def _names_headers() -> dict[str, str]:
+    """The bearer and the acting member. With no member, a sentence and no call."""
+    user = _current_user_email()
+    if not user:
+        raise _Refused(NAMES_NO_MEMBER)
+    if "@" not in user:
+        raise _Refused(NAMES_SHARED_ROOM)
+    return {
+        **internal_auth_headers(),
+        "Content-Type": "application/json",
+        "X-User-Email": user,
+    }
+
+
+async def _names_get(headers: dict[str, str], params: dict[str, Any]) -> Any:
+    """One GET of :data:`NAMES_ROUTE` as the member. Each failure is a
+    sentence of this module, never the text of the gateway or the error."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(
+                "GET", f"{_gateway_url()}{NAMES_ROUTE}", headers=headers,
+                params={k: v for k, v in params.items() if v is not None},
+            )
+    except httpx.HTTPError:
+        raise _Refused(NAMES_FAILED) from None
+    status = int(resp.status_code)
+    if status < 400:
+        try:
+            return resp.json()
+        except ValueError:
+            raise _Refused(NAMES_FAILED) from None
+    if status == 404:
+        raise _Refused(NAMES_OFF)
+    if status in (401, 403):
+        raise _Refused(NAMES_CLOSED)
+    if status == 422:
+        detail = _detail(resp).lower()
+        if "kinds" in detail:
+            raise _Refused(NAMES_KINDS)
+        raise _Refused(NAMES_LETTERS if "a to z" in detail else NAMES_BOUNDS)
+    raise _Refused(NAMES_FAILED)
+
+
+@_read_tool
+async def resolve_name(name: str, kinds: str | None = None) -> str:
+    """Find each record that holds one name: a person, a member, a CRM contact, lead or company, or a mail sender.
+
+    Call it when the member names someone and you need the record or the
+    address. It asks People, the CRM, the mail and the member's saved names,
+    in each app open to the member. Each record has its app, link, full_id
+    and match: exact, a near spelling or a saved name.
+
+    The answer ends with one instruction for its verdict. Follow it.
+    "one": one sure record, so use it. "partial": one record, but an app did
+    not answer in full, so ask the member to confirm it. "several": more than
+    one record may fit, so ask which. "near": only near spellings or a mail
+    sender, so ask the member to confirm one, and never act without a yes.
+    "none": nothing matched in the apps it names. That is not proof that no
+    record exists.
+
+    Args:
+        name: One name, 2 to 60 characters and at most 3 words, as the member
+            said it.
+        kinds: Optional. A comma list of: alias (a saved name), person,
+            member, contact, lead, company and sender. Leave it out to find
+            every kind.
+    """
+    asked = " ".join(str(name or "").split())
+    if not 2 <= len(asked) <= NAMES_MAX:
+        return NAMES_BOUNDS
+    headers = _names_headers()
+    # PZ-6a: a stored name can be text that another person wrote, so the
+    # run's profile writes close BEFORE the answer reaches the model.
+    _close_profile_writes()
+    body = await _names_get(headers, {"name": asked, "kinds": str(kinds or "").strip() or None})
+    return format_names(body)
+
+
 __all__ = [
     "BROADENED_OPENING",
     "DATED_HEADER",
+    "FIND_POINTER",
     "HEADER",
     "MOST_WORDS",
+    "NAME_NEXT",
     "RELATED_HEADER",
     "TRACE_HEADER",
     "company_search_enabled",
     "context_recency_enabled",
+    "find_on",
     "format_answer",
+    "format_names",
     "format_trace",
+    "ran_second_pass",
+    "resolve_name",
     "search_company",
     "search_company_dated",
+    "with_zero_pointer",
+    "zero_pointer",
 ]

@@ -417,7 +417,8 @@ _NO_PAGE_REASON = (
     "damaged, or its pages use a form that I cannot read."
 )
 _BUSY_REASON = (
-    "I am reading another file for you now. Try again when that read is done."
+    "I am reading another file for you now, and it took too long. "
+    "Try again when that read is done."
 )
 
 
@@ -563,7 +564,35 @@ def _is_database_fault(exc: BaseException) -> bool:
 #: uvicorn with no ``--workers``, ``deploy/hostinger/acb-gateway.service``),
 #: and the parse pool of ``attachment_tools`` is one for each process too. A
 #: second process would need a lock in Redis.
+#: ⚠️ The loop thread changes it and ``_WAITERS`` (task 3888). The parse
+#: worker thread calls ``_ReadHold.release`` (H-253), and the release then
+#: runs on the loop. Only a release after the loop closed drops a key from
+#: another thread. Fence: tests/unit/test_email_attachment_text.py
+#: (``TestTheReleaseFromTheWorkerThread``).
 _READING: set[tuple[str, str]] = set()
+
+
+#: The requests of one member that wait for the hold, oldest first. Each
+#: waiter is a future that ``release`` resolves.
+_WAITERS: dict[tuple[str, str], list[asyncio.Future[None]]] = {}
+
+#: The seconds that a read waits for an earlier read of the same member before
+#: it answers busy (Task 3865). The model asks for the files of one mail at
+#: once, and the parse pool has two slots, so the hold serves one read at a
+#: time. On the OCR path this wait comes after a first fetch of up to
+#: :data:`FETCH_TIMEOUT_S` (30 s), so 20 s keeps the two inside the 60 s that
+#: ``read_email_attachment`` allows for the whole call. Fence:
+#: tests/unit/test_email_attachment_text.py (``TestTheTextRoute``, the tests
+#: whose names say "waits", "wait past the limit" and "cached").
+HOLD_WAIT_S = 20.0
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """The loop that runs in this thread, or ``None`` in a thread with no loop."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 class _ReadHold:
@@ -573,24 +602,103 @@ class _ReadHold:
     member who calls the route in a loop holds both slots, and the
     ``read_attachment`` of every other member answers busy. ``take`` runs on
     the event loop with no ``await`` between the test and the add, so two
-    requests of one member cannot both take it.
+    requests of one member cannot both take it. ``take_waiting`` queues
+    behind the holder for at most :data:`HOLD_WAIT_S`, so a burst of reads
+    runs one after the other and does not refuse. ``release`` is safe from
+    any thread (task 3888).
     """
 
     def __init__(self, user: UserContext) -> None:
         self._key = (str(user.organization_id or ""), (user.email or "").strip().lower())
         self._held = False
+        self._handed = False
+        #: The loop that owns ``_READING`` and ``_WAITERS`` for this hold.
+        self._loop = _running_loop()
 
     def take(self) -> bool:
+        if self._held:
+            return True
         if self._key in _READING:
             return False
         _READING.add(self._key)
         self._held = True
         return True
 
+    async def take_waiting(self, seconds: float | None = None) -> bool:
+        """Take the hold, waiting up to *seconds* (default :data:`HOLD_WAIT_S`)."""
+        if self.take():
+            return True
+        loop = asyncio.get_running_loop()
+        end = loop.time() + (HOLD_WAIT_S if seconds is None else seconds)
+        while True:
+            left = end - loop.time()
+            if left <= 0:
+                return False
+            waiter: asyncio.Future[None] = loop.create_future()
+            _WAITERS.setdefault(self._key, []).append(waiter)
+            woken = False
+            try:
+                await asyncio.wait_for(waiter, left)
+                woken = True
+            except TimeoutError:
+                return False
+            finally:
+                queue = _WAITERS.get(self._key)
+                if queue is not None:
+                    if waiter in queue:
+                        queue.remove(waiter)
+                    if not queue:
+                        _WAITERS.pop(self._key, None)
+                if not woken and waiter.done() and not waiter.cancelled() and not self._held:
+                    # Woken, then cancelled before it could take: pass the
+                    # turn on, so the queue does not stall.
+                    self._wake_next()
+            if self.take():
+                return True
+
+    def _wake_next(self) -> None:
+        for waiter in _WAITERS.get(self._key, ()):
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+
     def release(self) -> None:
+        """Give the hold back and wake the next waiter. Safe from any thread.
+
+        H-253 calls it on the parse worker thread. ``Future.set_result`` from
+        that thread does not wake the loop, and in debug mode it raises. So a
+        call from another thread only sends the release to the loop of the
+        hold (task 3888). A call on that loop releases at once.
+        """
+        loop = self._loop
+        if loop is None or _running_loop() is loop:
+            self._release_here()
+            return
+        try:
+            loop.call_soon_threadsafe(self._release_here)
+        except RuntimeError as exc:
+            # The loop is closed, so no waiter of it is left. Drop the key, so
+            # the hold cannot stay for ever. The log holds no member address.
+            if self._held:
+                _READING.discard(self._key)
+                self._held = False
+            _log.warning("attachment_text.hold_loop_closed", error=type(exc).__name__)
+
+    def _release_here(self) -> None:
+        """The release itself, on the loop thread of the hold."""
         if self._held:
             _READING.discard(self._key)
             self._held = False
+            self._wake_next()
+
+    def hand_off(self) -> None:
+        """``parse_bounded`` now owns the release: it ends with the worker (H-253)."""
+        self._handed = True
+
+    def release_request(self) -> None:
+        """The release at the end of a request. A handed-off hold waits for its worker."""
+        if not self._handed:
+            self.release()
 
 
 #: The fields of a cached answer. The file name and the type come from the
@@ -772,7 +880,7 @@ def _route_reads_with_ocr() -> bool:
 
 
 @router.get("/attachments/{attachment_id}/text", response_model=AttachmentTextModel)
-async def attachment_text(
+async def attachment_text(  # noqa: C901 - one branch over the limit: the hold wait (Task 3865)
     attachment_id: str,
     user: UserContext = Depends(get_current_user),
     offset: int = 0,
@@ -819,6 +927,8 @@ async def attachment_text(
     hold = _ReadHold(user)
     #: The fetch that this request started, if any (fix round 4).
     owned: list[_FetchJob] = []
+    #: Set when ``_answer_first`` found the hold taken by another read.
+    hold_busy: list[bool] = []
 
     async def _answer_first(row: Any) -> AttachmentTextModel | None:
         """An answer with no fetch: a refused type, the cache, or busy."""
@@ -829,6 +939,10 @@ async def attachment_text(
         if cached is not None:
             return cached
         if not hold.take():
+            # Task 3865: busy only AFTER the refusal and the cache, so a cached
+            # file never waits. The route waits for the hold below, with no
+            # session open, and runs the fetch again.
+            hold_busy.append(True)
             return AttachmentTextModel(**_base(row), kind="unreadable", reason=_BUSY_REASON)
         return None
 
@@ -851,23 +965,35 @@ async def attachment_text(
                 BACKGROUND_FETCH_LIMIT_S,
             )
 
-    try:
+    async def _fetch_once() -> Any:
         if use_ocr:
             # P2-2: the route waits FETCH_TIMEOUT_S, and the fetch may go on
             # and end in the bytes cache. A retry of the same read joins the
             # running fetch (fix round 4).
             key = (str(org_id or ""), (user.email or "").strip().lower(), aid)
-            got = await _ocr_fetch(key, _fetch_alone, hold, aid, owned)
-        else:
-            # ⚠️ The session opens OUTSIDE the try (review round 1), so
-            # `TenantUnbound` and a refused connect reach main.py's handlers.
-            async with _tenant_session() as db:
-                got = await _fetch_for_text(
-                    _fetch_owned_attachment(
-                        db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
-                    ),
-                    aid, None,
-                )
+            return await _ocr_fetch(key, _fetch_alone, hold, aid, owned)
+        # ⚠️ The session opens OUTSIDE the try (review round 1), so
+        # `TenantUnbound` and a refused connect reach main.py's handlers.
+        async with _tenant_session() as db:
+            return await _fetch_for_text(
+                _fetch_owned_attachment(
+                    db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
+                ),
+                aid, None,
+            )
+
+    try:
+        got = await _fetch_once()
+        if hold_busy and got.stopped is not None:
+            # Task 3865: another read of this member holds the hold. The
+            # session is closed now, so the wait holds no connection. A read
+            # that ends meanwhile can fill the cache, and the second pass
+            # then answers from it. The OCR deadline started at the top, so
+            # the wait shortens it.
+            hold_busy.clear()
+            owned.clear()
+            if await hold.take_waiting():
+                got = await _fetch_once()
         if got.stopped:
             return _text_part(got.stopped, offset)
         row = got.row
@@ -885,6 +1011,11 @@ async def attachment_text(
             options["deadline"] = deadline
         elif attachment_ocr.ocr_enabled():
             options["ocr"] = False  # the caller asked for no OCR
+        # H-253: the hold ends when the worker gives its parse slot back, and
+        # not when this request answers. A parse past its deadline keeps the slot.
+        # The worker thread calls it, and the release runs on this loop (task 3888).
+        options["on_worker_done"] = hold.release
+        hold.hand_off()
         parsed = await parse_bounded(got.content, suffix, **options)
         if isinstance(parsed, str):
             # Not cached: a busy pool and a deadline pass with time.
@@ -899,7 +1030,7 @@ async def attachment_text(
             # The fetch runs on, and holds the member's hold until it ends.
             owned[0].detached = True
         else:
-            hold.release()
+            hold.release_request()
 
 
 async def _ocr_fetch(
@@ -937,7 +1068,7 @@ async def _ocr_fetch(
         _log.warning("attachment_text.fetch_slow", aid=aid, seconds=FETCH_TIMEOUT_S,
                      joined=True)
         raise HTTPException(status_code=504, detail=_SLOW_FETCH) from None
-    if not got.stopped and not hold.take():
+    if not got.stopped and not await hold.take_waiting():
         busy = AttachmentTextModel(**_base(got.row), kind="unreadable", reason=_BUSY_REASON)
         return _OwnedAttachment(row=got.row, stopped=busy)
     return got

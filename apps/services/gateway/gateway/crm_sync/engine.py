@@ -2481,7 +2481,11 @@ async def _mark_unavailable(
     delete a row.
     """
     now = _now()
-    _log.warning("crm.sync.module_unavailable entity=%s reason=%s", entity, reason)
+    # Task 3864: log the CHANGE only. A module that stays hidden is marked on
+    # every pass (637 lines in 3 days); the saved cursor says it was already.
+    was = row.state or {}
+    if not (was.get("unavailable") and was.get("reason") == reason):
+        _log.warning("crm.sync.module_unavailable entity=%s reason=%s", entity, reason)
     kept = {k: v for k, v in (row.state or {}).items() if k in _KEPT_WHEN_UNAVAILABLE}
     if entity in ctx.recover:
         # A page of this pass may have changed the list since the cursor.

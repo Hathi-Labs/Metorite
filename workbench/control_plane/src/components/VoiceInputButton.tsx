@@ -1,25 +1,34 @@
 "use client";
 
 /**
- * The mic of the chat composer (`projects_ai_chat.md` §31, VOX-1).
+ * The mic of the chat composer (`projects_ai_chat.md` §31, VOX-1, VOX-7 and
+ * hold to talk, owner 2026-11-21, task 2501).
  *
- * A press starts a recording. A second press, or Enter, stops it, and the box
- * shows "Transcribing…". Escape cancels it and keeps nothing. While it
- * records, it shows a timer and a level meter. At 120 s it stops by itself.
- * The text goes to `onText`, and the composer puts it in the box at the
- * caret. A refused mic or a refused clip goes to `onNotice` as one sentence.
+ * HOLD TO TALK. A press starts a recording at once. Letting go stops it, and
+ * the box shows "Transcribing…". A press under 300 ms is a tap: nothing is
+ * kept, and a small popover says "Hold to talk" for 2 s. A pointercancel, a
+ * lost focus, Escape, or a release off the button discards the clip, and no
+ * text is sent. Space and Enter hold the button too, and the key up stops.
+ * While it records, a band of three layered sine lines sits in the bar row
+ * beside a timer. The draft in the box stays in view, and the box stays
+ * mounted. At 120 s the recording stops by itself. The text goes to
+ * `onText`, and the composer puts it in the box at the caret, so a second
+ * clip appends. A refused mic or a refused clip goes to `onNotice`.
  *
  * It sits beside Attach, inside the composer's form, so every button here is
  * `type="button"` (`lib/chatAttachments.test.ts` fences it, as it fences
  * Attach). The composer reaches `stop` and `cancel` through `ref`, so Enter
  * and Escape in the box act on a recording.
  */
-import { useEffect, useImperativeHandle, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import VoiceWave, { usePrefersReducedMotion } from "@/components/VoiceWave";
 import { useVoiceDictation } from "@/hooks/useVoiceDictation";
+import { HOLD_TEXT, isHoldKey, isOffButton, POPOVER_MS, releaseOutcome } from "@/lib/holdToTalk";
 import { formatClock, MAX_SECONDS, type VoiceAvailability, type VoicePhase } from "@/lib/voiceDictation";
+import { secondsLeft } from "@/lib/voiceWave";
 
 export interface VoiceControls {
   stop: () => void;
@@ -30,13 +39,13 @@ export interface VoiceControls {
 export function voiceLabel(phase: VoicePhase): string {
   switch (phase) {
     case "recording":
-      return "Stop recording and transcribe";
+      return `${HOLD_TEXT}. Release to send`;
     case "transcribing":
       return "Transcribing";
     case "asking":
       return "Waiting for the microphone";
     default:
-      return "Dictate a message";
+      return HOLD_TEXT;
   }
 }
 
@@ -58,80 +67,226 @@ export default function VoiceInputButton({
   ref?: Ref<VoiceControls>;
 }) {
   const voice = useVoiceDictation({ onText, onNotice });
-  const { phase, level } = voice.state;
+  const { phase } = voice.state;
   const recording = phase === "recording";
-  const waiting = phase === "asking" || phase === "transcribing";
+  const transcribing = phase === "transcribing";
+  const waiting = phase === "asking" || transcribing;
+  const reduced = usePrefersReducedMotion();
+  const ringRef = useRef<HTMLSpanElement>(null);
+  const wrapRef = useRef<HTMLSpanElement>(null);
 
+  // The press that is held now: when it began, and the pointer that holds it
+  // (null for a key).
+  const held = useRef<{ at: number; pointerId: number | null } | null>(null);
   const { stop, cancel } = voice;
-  useImperativeHandle(ref, () => ({ stop: () => void stop(), cancel }), [stop, cancel]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      stop: () => {
+        held.current = null;
+        void stop();
+      },
+      cancel: () => {
+        held.current = null;
+        cancel();
+      },
+    }),
+    [stop, cancel],
+  );
   useEffect(() => {
     onPhase?.(phase);
   }, [phase, onPhase]);
 
-  const press = () => {
-    if (!availability.ready) {
-      onNotice(availability.message);
-      return;
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  // The "Hold to talk" popover: 2 s, or the next click elsewhere.
+  const [popover, setPopover] = useState(false);
+  useEffect(() => {
+    if (!popover) return;
+    const timer = setTimeout(() => setPopover(false), POPOVER_MS);
+    const away = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setPopover(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", away);
+    };
+  }, [popover]);
+
+  // A mouse press does not focus the button, so Escape reaches the page and
+  // not the button. While a press is held, a page-level Escape discards it.
+  const holding = recording || phase === "asking";
+  useEffect(() => {
+    if (!holding) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      held.current = null;
+      cancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [holding, cancel]);
+
+  const begin = useCallback(
+    (pointerId: number | null) => {
+      if (held.current) return;
+      if (!availability.ready) {
+        onNotice(availability.message);
+        return;
+      }
+      if (phaseRef.current !== "idle") return;
+      held.current = { at: Date.now(), pointerId };
+      setPopover(false);
+      void voice.start();
+    },
+    [availability, onNotice, voice],
+  );
+
+  const end = useCallback(
+    (cancelled: boolean) => {
+      const press = held.current;
+      if (!press) return;
+      held.current = null;
+      const outcome = releaseOutcome({
+        heldMs: Date.now() - press.at,
+        cancelled,
+        recording: phaseRef.current === "recording",
+      });
+      if (outcome === "stop") {
+        void voice.stop();
+        return;
+      }
+      voice.cancel();
+      if (outcome === "tap") setPopover(true);
+    },
+    [voice],
+  );
+
+  const escape = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && (recording || phase === "asking")) {
+      e.preventDefault();
+      e.stopPropagation();
+      held.current = null;
+      voice.cancel();
     }
-    if (recording) void voice.stop();
-    else if (phase === "idle") void voice.start();
   };
 
   const title = recording
-    ? "Stop and transcribe (Enter). Esc cancels."
+    ? "Release to send. Drag off the button or press Esc to discard."
     : !availability.ready && availability.message
       ? availability.message
-      : `Dictate a message. Talk for up to ${MAX_SECONDS / 60} minutes.`;
+      : `${HOLD_TEXT}. Talk for up to ${MAX_SECONDS / 60} minutes.`;
+
+  const left = recording ? secondsLeft(voice.elapsed) : null;
+  const clock = formatClock(voice.elapsed);
 
   return (
-    <span className="flex shrink-0 items-center gap-1.5" data-chat-voice={phase}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="none"
-        radius="keep"
-        selected={recording}
-        disabled={phase === "transcribing"}
-        aria-label={voiceLabel(phase)}
-        aria-busy={waiting || undefined}
-        title={title}
-        onClick={press}
-        onKeyDown={(e) => {
-          if (e.key === "Escape" && (recording || phase === "asking")) {
-            e.preventDefault();
-            e.stopPropagation();
-            voice.cancel();
-          }
-        }}
-        // GL-6: in glass, the mic is a round icon button on the secondary
-        // fill, as Attach beside it is. The size comes from `className`.
-        className={`rounded-lg p-2 glass:rounded-full glass:p-0 ${
-          recording ? "glass:bg-primary/12 glass:text-primary" : "glass:bg-secondary glass:text-foreground glass:hover:bg-muted"
-        } ${className}`}
-      >
-        {waiting ? (
-          <Icon name="Loader2" size={16} className="animate-spin" />
-        ) : recording ? (
-          <Icon name="Square" size={12} strokeWidth={2.5} fill="currentColor" />
-        ) : (
-          <Icon name="Mic" size={18} />
+    // While it records or transcribes, the cluster takes the room that the
+    // pickers leave (`basis-0`), so the bar never wraps to a second line.
+    <span
+      className={waiting || recording ? "flex min-w-fit flex-[3] basis-0 items-center gap-1.5" : "flex shrink-0 items-center gap-1.5"}
+      data-chat-voice={phase}
+    >
+      <span ref={wrapRef} className="relative flex shrink-0">
+        {recording && (
+          <span
+            ref={ringRef}
+            aria-hidden="true"
+            data-chat-voice-ring=""
+            className="pointer-events-none absolute -inset-1 rounded-full border-2 border-primary opacity-30"
+          />
         )}
-      </Button>
+        {popover && (
+          <span
+            role="status"
+            data-chat-voice-popover=""
+            className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 whitespace-nowrap rounded-lg bg-tooltip px-2.5 py-1.5 text-xs font-medium text-tooltip-foreground shadow-lg"
+          >
+            {HOLD_TEXT}
+            <span aria-hidden="true" className="absolute -bottom-1 left-3 h-2 w-2 rotate-45 bg-tooltip" />
+          </span>
+        )}
+        <Button
+          type="button"
+          variant={recording ? "primary" : "ghost"}
+          size="none"
+          radius="keep"
+          disabled={transcribing}
+          aria-label={voiceLabel(phase)}
+          aria-busy={waiting || undefined}
+          title={title}
+          // The press is the pointer or the key. A click that has no press
+          // before it comes from a screen reader, so it shows the popover.
+          onClick={(e) => {
+            if (e.detail === 0 && !held.current && phase === "idle") setPopover(true);
+          }}
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse" && e.button !== 0) return;
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            begin(e.pointerId);
+          }}
+          onPointerUp={(e) => {
+            // Only the pointer that began the hold ends it.
+            if (held.current?.pointerId !== e.pointerId) return;
+            const off = isOffButton(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), 4);
+            end(off);
+          }}
+          onPointerCancel={() => end(true)}
+          onContextMenu={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            escape(e);
+            if (!isHoldKey(e.key)) return;
+            // Space and Enter would click the button. A hold is not a click.
+            e.preventDefault();
+            if (e.repeat) return;
+            begin(null);
+          }}
+          onKeyUp={(e) => {
+            if (!isHoldKey(e.key)) return;
+            e.preventDefault();
+            if (held.current?.pointerId === null) end(false);
+          }}
+          onBlur={() => end(true)}
+          // GL-6: in glass, the mic is a round icon button on the secondary
+          // fill, as Attach beside it is. While it records, it is a filled
+          // round primary button. The size comes from `className`.
+          // Touch: no long-press menu, no text selection, no scroll start.
+          style={{ touchAction: "none", WebkitTouchCallout: "none" }}
+          className={`touch-none select-none ${
+            recording
+              ? "rounded-full"
+              : "rounded-lg p-2 glass:rounded-full glass:p-0 glass:bg-secondary glass:text-foreground glass:hover:bg-muted"
+          } ${className}`}
+        >
+          {waiting ? (
+            <Icon name="Loader2" size={16} className="animate-spin motion-reduce:animate-none" />
+          ) : (
+            <Icon name="Mic" size={recording ? 16 : 18} />
+          )}
+        </Button>
+      </span>
       {recording && (
-        <span className="ml-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground" data-chat-voice-meter="">
-          <span className="font-mono tabular-nums text-foreground" aria-label={`Recording, ${formatClock(voice.elapsed)}`}>
-            {formatClock(voice.elapsed)}
-          </span>
-          <span aria-hidden="true" className="relative h-1.5 w-10 overflow-hidden rounded-full bg-muted">
+        <>
+          <span className="ml-2.5 flex shrink-0 items-center gap-1.5 text-[11px]" data-chat-voice-meter="">
             <span
-              className="absolute inset-0 origin-left rounded-full bg-primary"
-              style={{ transform: `scaleX(${Math.max(0.04, Math.min(1, level))})` }}
-            />
+              className={`font-mono tabular-nums ${left !== null ? "font-semibold text-warning" : "text-foreground"}`}
+              aria-label={left !== null ? `Recording, ${clock}, ${left} seconds left` : `Recording, ${clock}`}
+            >
+              {clock}
+            </span>
+            {left !== null && (
+              <span aria-hidden="true" className="hidden whitespace-nowrap text-warning sm:inline" data-chat-voice-left="">
+                {left} s left
+              </span>
+            )}
           </span>
-        </span>
+          <VoiceWave levelRef={voice.levelRef} reduced={reduced} ringRef={ringRef} />
+        </>
       )}
-      {phase === "transcribing" && (
-        <span role="status" className="text-[11px] text-muted-foreground" data-chat-voice-status="">
+      {transcribing && (
+        <span role="status" className="truncate text-xs text-muted-foreground" data-chat-voice-status="">
           Transcribing…
         </span>
       )}

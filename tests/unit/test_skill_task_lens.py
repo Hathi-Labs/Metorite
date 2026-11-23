@@ -254,6 +254,10 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_list_events",
      {"from_iso": "2026-09-24T00:00:00+05:30", "to_iso": "2026-09-25T00:00:00+05:30"},
      [("GET", "/projects/my/calendar")]),
+    # P-1a (task 3112): the connected calendars and the two task proposals.
+    ("my_tasks_list_calendar_connections", {}, [("GET", "/tasks/calendar/connections")]),
+    ("my_tasks_suggest_title", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/suggest-title")]),
+    ("my_tasks_enrich", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/enrich")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),
@@ -313,6 +317,9 @@ RETIRED = (
 #: store at call time, so this one `/tasks/items/...` path is live under the
 #: lens. It is spelled here in full so nothing broader slips past.
 AI_DOOR = "/tasks/items/{item_id}/clarify"
+#: P-1a (task 3112): the two proposal doors of `ai.py`. They read through
+#: `item_source()` too, and the seam test above checks it.
+AI_DOORS = (AI_DOOR, "/tasks/items/{item_id}/suggest-title", "/tasks/items/{item_id}/enrich")
 
 
 def _string_constants() -> list[str]:
@@ -346,10 +353,16 @@ def _string_constants() -> list[str]:
     return out
 
 
+def _without_ai_doors(s: str) -> str:
+    for door in AI_DOORS:
+        s = s.replace(door, "")
+    return s
+
+
 def test_no_tool_source_names_a_retired_door():
     hits = sorted({
         d for s in _string_constants() for d in RETIRED
-        if d in s.replace(AI_DOOR, "")
+        if d in _without_ai_doors(s)
     })
     assert not hits, (
         f"skill_my_tasks.core still names {hits}. Those routes read gtd_items, "
@@ -359,7 +372,7 @@ def test_no_tool_source_names_a_retired_door():
 
 def test_the_ai_door_is_the_only_items_path_left():
     items = [s for s in _string_constants() if "/tasks/items" in s]
-    assert items == [AI_DOOR], items
+    assert sorted(items) == sorted(AI_DOORS), items
 
 
 def test_the_two_connector_tools_call_nothing(gw: Recorder):
@@ -424,6 +437,7 @@ STORE_NEUTRAL: dict[str, str] = {
     "/tasks/calendar/day-state": "calendar_day_state — the member's day, not a task (D53.6)",
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
     "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
+    "/tasks/calendar/connections": "the member's calendar connections, no task (P-1a, task 3112)",
 }
 
 SEAMS = ("item_source(", "agent_source(")

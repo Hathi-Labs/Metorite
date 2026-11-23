@@ -69,6 +69,8 @@ from acb_common.priority import (
     level_names,
     task_cell,
 )
+from acb_common.settings import internal_auth_headers
+from acb_common.tool_refusals import GatewayRefusal, response_body, route_template, safe_detail
 
 try:
     # MCP-style risk annotations (HH-2): the risk-aware permission handler and
@@ -117,6 +119,9 @@ def _data(s: Any) -> str:
     as one. Guillemets are a firmer boundary than quotes (which a title can
     itself contain); any embedded guillemets are stripped so the delimiter
     stays unambiguous. Pairs with _DATA_LEGEND / the persona's fencing note."""
+    if isinstance(s, dict):
+        # A person ({"name", "email", "provider_user_id"}): show the name only.
+        s = s.get("name") or s.get("email") or ""
     return "«" + str(s or "").replace("«", "").replace("»", "") + "»"
 
 
@@ -137,16 +142,6 @@ def _current_user_email() -> str:
         return _get_memory_user_id() or ""
     except Exception:
         return ""
-
-
-def _internal_token() -> str:
-    try:
-        from acb_common import get_settings
-        settings = get_settings()
-        return (getattr(settings, "gateway_internal_token", "") or "").strip()
-    except Exception:
-        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
-
 
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
@@ -172,19 +167,27 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
 
 
-class _GatewayError(RuntimeError):
+class _GatewayError(GatewayRefusal):
     """A gateway answer of 400 or more. ``status`` is the code, so a tool can
-    tell a 412 (a stale ``If-Match``) from a fault."""
+    tell a 412 (a stale ``If-Match``) from a fault.
 
-    def __init__(self, message: str, status: int) -> None:
-        super().__init__(message)
-        self.status = status
+    It is the shared ``GatewayRefusal`` (``acb_common.tool_refusals``), as
+    ``acb_skills.crm_tools._GatewayError`` is. So the C1 skip rule of the
+    failure log reads the status (``tool_failure_log.md`` §4.2, TOF-2c), and
+    a tool that ``refusals_as_text`` wraps answers it as "Refused:" text.
+    ``detail`` is the SAFE detail of the route (``safe_detail``). The message
+    keeps the route's words for a caller that reads it in code."""
+
+    def __init__(self, message: str, status: int, *, detail: str = "",
+                 fields: tuple[str, ...] = (), route: str = "") -> None:
+        super().__init__(message, status=status, detail=detail, fields=fields,
+                         route=route)
 
 
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
@@ -203,10 +206,13 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
                 detail = str(body.get("detail") or "")
         except Exception:
             detail = (resp.text or "")[:200]
+        safe, fields = safe_detail(
+            resp.status_code, response_body(resp), member=_current_user_email())
         raise _GatewayError(
             f"Tasks {method} {path} failed ({resp.status_code})"
             + (f": {detail}" if detail else ""),
             resp.status_code,
+            detail=safe, fields=fields, route=route_template(path),
         )
     return resp.json() if resp.text else None
 
@@ -890,6 +896,74 @@ async def my_tasks_clarify(item_id: str) -> str:
     """
     p = await _request("POST", f"/tasks/items/{item_id}/clarify")
     return json.dumps(p, indent=1)
+
+
+# ── Two proposals of the task page (P-1a, task 3112) ─────────────────────────
+#
+# The "Improve title" and the fill-in buttons of a task (`chat_parity.md` §6.4).
+# Each tool asks the AI door for a PROPOSAL and writes nothing. The member
+# agrees first, and then the task edit tool saves the change. The door reads
+# through `item_source()`, as the clarify door does. A proposal is AI text made
+# from the task, and another member can write the task, so it shows in
+# «guillemets» under `_DATA_LEGEND`. Fence: tests/unit/test_my_tasks_p1a_tools.py.
+
+#: The line of both proposals: nothing changed, and how a change happens.
+_PROPOSAL_ONLY = (
+    "This is a proposal. Nothing changed. Show it to the member. After the "
+    "member agrees, save a title, a due date or a time estimate with "
+    "update_task, and an assignee with assign. Find the task with find_tasks. "
+    "No chat tool saves context or energy: the member saves those on the task page."
+)
+#: The fields that the enrich door can propose, in the order of the task page.
+_ENRICH_FIELDS = ("context", "energy", "time_estimate_mins", "due_at", "assignee")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_suggest_title(item_id: str, title: str = "") -> str:
+    """Propose a clearer title for one task, and say if the title is vague.
+    Read only: it changes no task. Show the proposal to the member. Save it
+    with update_task only after the member agrees.
+
+    Args:
+        item_id: The task's full UUID (find it with find_tasks).
+        title: A draft title to judge in place of the saved one (empty = the
+            saved title).
+    """
+    params = {"title": title.strip()} if title.strip() else None
+    p = await _request(
+        "POST", f"/tasks/items/{item_id}/suggest-title", params=params) or {}
+    suggested = str(p.get("suggested_title") or "").strip()
+    if not suggested:
+        # The route also sends this when the member's AI clarify setting is off
+        # or the model call failed, so it says nothing about the title.
+        return "No better title was proposed. Nothing changed."
+    vague = "The title is vague." if p.get("is_vague") else "The title is clear enough."
+    return (f"{_DATA_LEGEND}\n{vague}\nProposed title: {_data(suggested)}\n"
+            f"{_PROPOSAL_ONLY}")
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_enrich(item_id: str) -> str:
+    """Propose values for the MISSING fields of one task: context, energy, time
+    estimate, due date and assignee. Read only: it changes no task and never
+    overwrites a field that has a value. Show the proposal to the member. Save
+    a due date or time estimate with update_task, and an assignee with assign,
+    only after the member agrees. Context and energy: the member saves them on
+    the task page.
+
+    Args:
+        item_id: The task's full UUID (find it with find_tasks).
+    """
+    p = await _request("POST", f"/tasks/items/{item_id}/enrich") or {}
+    fields = p.get("fields") if isinstance(p, dict) else None
+    fields = fields if isinstance(fields, dict) else {}
+    lines = [f"• {k}: {_data(fields[k])}" for k in _ENRICH_FIELDS
+             if fields.get(k) not in (None, "")]
+    if not lines:
+        return ("No field to fill: the task has none missing, or no value was "
+                "sure. Nothing changed.")
+    return (f"{_DATA_LEGEND}\nProposed values for the missing fields:\n"
+            + "\n".join(lines) + f"\n{_PROPOSAL_ONLY}")
 
 
 @_annotate_risk(idempotent=True, open_world=False)
@@ -1990,6 +2064,62 @@ async def my_tasks_get_calendar_settings() -> str:
     s = await _request("GET", _CAL_SETTINGS_PATH) or {}
     return "Calendar settings:\n" + "\n".join(
         f"• {k}: {v}" for k, v in _cal_view(s).items())
+
+
+# ── The connected calendars (P-1a, task 3112) ────────────────────────────────
+#
+# The read of the Connected calendars section of Calendar settings (CE-10c).
+# The route answers the member's own rows only, and 404 unless
+# ``CALENDAR_SYNC_READ`` names the org. The tool shows ONLY the fields of
+# :data:`_CONNECTION_FIELDS`, so a token or a secret never shows, whatever the
+# body holds. Sync now, the switch and Disconnect are task 3923 (P-1c). The day
+# acts of My Day (capture, focus, plan and close the day) are CC-10's (task
+# 1978): this module builds no day flow for them. Fence:
+# tests/unit/test_my_tasks_p1a_tools.py.
+
+_CAL_CONNECTIONS_PATH = "/tasks/calendar/connections"
+#: The one line when the route answers 404: calendar sync is off for the org.
+CONNECTIONS_OFF = "Calendar sync is not available in your organization yet."
+#: The cut of the last error of a connection, in characters.
+CONNECTION_ERROR_MAX = 120
+
+
+def _connection_line(c: dict[str, Any]) -> str:
+    """One connection, from an allow-list of fields only."""
+    provider = {"google": "Google", "outlook": "Outlook"}.get(
+        str(c.get("provider") or ""), "Other calendar")
+    parts = [f"- {provider}", str(c.get("account_email") or "(no address)"),
+             str(c.get("status") or "unknown")]
+    parts.append(f"last sync {c.get('last_sync_at') or 'never'}")
+    parts.append(f"{int(c.get('entry_count') or 0)} events")
+    parts.append("tasks shown in it: " + ("on" if c.get("push_tasks") else "off"))
+    error = _stranger_text(c.get("last_error"), CONNECTION_ERROR_MAX)
+    if error:
+        parts.append(f"last error {_data(error)}")
+    return " | ".join(parts)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_calendar_connections() -> str:
+    """List the member's own connected calendars (Google or Outlook): the
+    address, the state, the last sync, the count of events and the task
+    switch. It also lists the own mailboxes that can connect. Read only. It
+    shows no token and no secret. Connect happens in Calendar settings.
+    """
+    try:
+        d = await _request("GET", _CAL_CONNECTIONS_PATH) or {}
+    except _GatewayError as exc:
+        if exc.status == 404:
+            return CONNECTIONS_OFF
+        raise
+    rows = [c for c in d.get("connections") or () if isinstance(c, dict)]
+    offers = [o for o in d.get("mailbox_offers") or () if isinstance(o, dict)]
+    out = ([f"Connected calendars ({len(rows)}):", *map(_connection_line, rows)]
+           if rows else ["No calendar is connected."])
+    if offers:
+        out.append("Mailboxes that can connect their calendar in Calendar settings: "
+                   + ", ".join(f"{o.get('provider')} {o.get('address')}" for o in offers))
+    return "\n".join(out)
 
 
 def _cal_patch(

@@ -171,6 +171,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # SBX-19 (agent_sandbox.md rung 6a'): Python over the tool results of the
+    # chat, in the sealed `compute` target. A family that no org toggles: the
+    # flag COMPUTE_RUN_ORGS decides, and `_tool_injection._compute_withheld`
+    # drops the tool for an org that is off.
+    "compute": {
+        "label": "Compute",
+        "summary": "Run Python over the tool results of this chat, with no network.",
+        "description": (
+            "compute_run writes Python and runs it on tool results that the "
+            "chat already holds, by reference. The code has no network, no "
+            "secret and no access to Metorite. Files it writes show as cards."
+        ),
+        "tools": ("compute_run",),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "history": {
         "label": "Conversation history",
         "summary": (
@@ -786,7 +803,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
+            "set the One Thing, block or release time, read or change the calendar settings, keep the day rules, "
+            "list the connected calendars, and propose a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -794,7 +812,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
@@ -804,7 +822,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_day_digest",
             "my_tasks_delete_day_rule",
             "my_tasks_edit_day_rule",
+            "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
+            "my_tasks_list_calendar_connections",
             "my_tasks_list_day_rules",
             "my_tasks_list_events",
             "my_tasks_list_schedule",
@@ -814,6 +834,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
             "my_tasks_start_my_day",
+            "my_tasks_suggest_title",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
         ),
@@ -948,25 +969,82 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # they form a small pack of the same owner, after it. It is NOT in
     # tool_packs.FOLLOWS: it ships dark, and it is on only where the tool-pack flag
     # names it (an owner-only line). Fence: test_studio_workflow_write_tools.py.
+    # PAR-8a (chat_parity.md section 6.4, rung 5, task 3903): seven more tools of the
+    # Workflows app join this pack, so it stays the one dark pack of workflow acts.
     "studio-workflows": {
-        "label": "AI Studio workflow publish",
+        "label": "AI Studio workflows",
         "summary": (
-            "Make a workflow live: publish its draft, roll it back to a version, "
-            "pause it or turn it on again."
+            "Run a workflow and read its runs, check it, read the parts of a step, "
+            "make, rename, copy or delete it, change its draft with the workflow helper, "
+            "manage its code modules, publish it, roll it back, pause it or turn it on again."
         ),
         "description": (
-            "A tool pack: the tools that make a workflow live, for the main "
-            "assistant to load when a turn asks to publish, roll back, pause or "
-            "turn on a workflow. Each tool needs the right to publish workflows. "
-            "A publish, a roll back and a turn on show one card with the version, "
-            "the triggers that are on and whether the organization runs workflows "
-            "with no person present. A run loads a pack only where tool packs are "
-            "on, so until then this switch has no effect."
+            "A tool pack: the acts of the Workflows app, for the main assistant to "
+            "load when a turn asks to run, change, publish or pause a workflow. A "
+            "run, a delete, a change of the draft by the workflow helper and a save "
+            "of a code module each show one card. A publish, a roll back and a turn "
+            "on need the right to publish workflows, and show one card with the "
+            "version, the triggers that are on and whether the organization runs "
+            "workflows with no person present. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "studio_workflow_publish",
             "studio_workflow_live",
+            "studio_workflow_runs",
+            "studio_workflow_check",
+            "studio_workflow_catalog",
+            "studio_workflow_run",
+            "studio_workflow_save",
+            "studio_workflow_build",
+            "studio_workflow_module",
         ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-TOF TOF-3a F12c: the repair of a skill and its undo, two tools in a
+    # small pack of the same owner. The spec placed them in ``studio-more``, but
+    # that pack counts against the cap of a request (MAX_REQUEST_TOOLS), and two
+    # more tools there drop ``studio-more`` from a Studio turn with email words
+    # (test_exact_tool_count.py, D222 decision 13). So, as ``studio-share``, the
+    # pack has no surface and is not in FOLLOWS. The pack filter of the owner
+    # also drops both tools while the org is off STUDIO_SKILL_REPAIR_ORGS
+    # (_tool_injection._drop_studio_repair_unless_open).
+    "studio-repair": {
+        "label": "AI Studio skill repair",
+        "summary": "Fix a skill that failed, with nothing saved until you approve, or undo a version.",
+        "description": (
+            "A tool pack: the tools that try a fix of a skill of a member on a "
+            "failed run, with each change held, and save it after one card. The "
+            "undo goes back one version. A run loads a pack only where tool packs "
+            "are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_repair", "studio_skill_undo"),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
+    # small pack of the same owner. It has no surface, so a plain Studio turn
+    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on).
+    "studio-share": {
+        "label": "AI Studio skill share",
+        "summary": (
+            "Share a skill with the organization, read or end its share, or approve or "
+            "reject a skill share that waits for you."
+        ),
+        "description": (
+            "A tool pack: the one tool that shares a skill of a member with the "
+            "organization, for the main assistant to load when a turn asks to share a "
+            "skill. The owner asks, and a holder of studio:publish approves or rejects "
+            "the ask. Each write shows one card first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_share",),
         "owner": "studio-builder",
         "core": False,
         "scope_governed": True,

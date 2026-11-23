@@ -42,7 +42,10 @@ import {
 } from "../lib/connections";
 import { Textarea } from "@/components/ui/Input";
 
+import { usedBy } from "../lib/apiConnect";
+
 import { AlwaysConfirmField, ReadOnlyKeyField } from "./AddMcpModal";
+import { UsedBySection } from "./ApiConnect";
 import { ConnectionState } from "./ConnectionList";
 
 /**
@@ -152,6 +155,8 @@ export function SheetBody({
   const switches = row.kind === "mcp" && heldPair ? heldPair : mcpSwitches(row);
   const switchLocked = !onSwitches || savingSwitches;
   const error = errorMessage(row.last_error);
+  // API-5 (IN-10): an API connection lists what uses it.
+  const uses = usedBy(row);
   const fields = [
     { label: "App", value: APP_LABEL[row.owning_app] },
     { label: "Scope", value: scopeLabel(row) },
@@ -183,6 +188,7 @@ export function SheetBody({
           </div>
         ))}
       </dl>
+      {uses ? <UsedBySection usedBy={uses} /> : null}
       {row.kind === "mcp" ? (
         <DescriptionEditor
           key={`${row.id}:${mcpDescription(row)}`}

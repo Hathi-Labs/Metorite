@@ -141,7 +141,8 @@ async def test_another_organization_never_reads_the_layout(db) -> None:
     assert b == {"preset": None, "answered": None, "pins": None, "known": None,
                  "cardOrder": None, "newOrder": None, "chat_first_message_at": None,
                  "tour_seen_at": None, "buddy_hello_at": None, "guide": False,
-                 "module_runs": False, "skill_offer": False, "chat_pin": False}
+                 "module_runs": False, "skill_offer": False, "chat_pin": False,
+                 "chat_topics": False}
 
 
 async def test_the_tour_mark_merges_with_the_server_s_time_and_each_save_keeps_it(db) -> None:

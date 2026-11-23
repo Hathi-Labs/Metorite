@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -48,6 +49,7 @@ from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -565,6 +567,71 @@ def assert_not_archived(node: Any, *, then: str) -> None:
             detail=f"{name} is archived. {then} an active project, or "
                    f"unarchive this one first.",
         )
+
+
+#: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
+#: task write into an archived project answers, over HTTP 409. Chat and MCP
+#: reach the same routes and so show the same words.
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
+
+
+def assert_project_open_for_writes(project: Any) -> None:
+    """Refuse a task write into a project with ``archived_at`` (ARC-2b).
+
+    ``archive_node`` stamps ``archived_at`` on every project of the subtree,
+    so the project row alone decides. No ancestor walk. Call it AFTER the
+    visibility load, so a caller who cannot see the project gets 404 (R5).
+    It does not live inside ``load_visible_task`` or ``load_visible_project``,
+    because those also serve reads. A member's own overlay
+    (``pm_task_personal``) and the agent-run routes are not project work and
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
+    """
+    if getattr(project, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+
+
+async def project_is_archived(db: Any, project_id: str) -> bool:
+    """True when the project row carries ``archived_at`` (ARC-2b)."""
+    row = (await db.execute(
+        text(
+            "SELECT archived_at FROM pm_projects "
+            "WHERE id = CAST(:project_id AS uuid)"
+        ),
+        {"project_id": str(project_id)},
+    )).fetchone()
+    return row is not None and row.archived_at is not None
+
+
+async def assert_task_id_project_open(db: Any, task_id: str) -> None:
+    """:func:`assert_project_open_for_writes` for the project of a task id.
+
+    For a route that holds a task id and no task row, such as the edit of a
+    comment. The caller has already proved that they may see the task.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT p.archived_at FROM pm_tasks t "
+            "JOIN pm_projects p ON p.id = t.project_id "
+            "WHERE t.id = CAST(:task_id AS uuid)"
+        ),
+        {"task_id": str(task_id)},
+    )).fetchone()
+    if row is not None:
+        assert_project_open_for_writes(row)
+
+
+async def assert_task_project_open(db: Any, task: Any) -> None:
+    """:func:`assert_project_open_for_writes` for the project of *task*.
+
+    *task* is a row that ``load_visible_task`` returned. One extra read of
+    ``archived_at`` on the task's own project, with no visibility clause: the
+    caller already proved they may see the task.
+    """
+    if await project_is_archived(db, str(task.project_id)):
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
 
 
 def assert_holds_tasks(node: Any, *, then: str) -> None:
@@ -3851,6 +3918,83 @@ async def apply_status_transition(
     }
 
 
+# ── The lane of a stage (task 3648) ─────────────────────────────────────────
+
+#: The owner's four stages, as the categories a lane holds. ``lane_for_stage``
+#: picks ONE lane of the project for a stage, by the category first and then
+#: by the NAME of the lane. A board may hold several lanes in one category
+#: (task 3648): "To do" and "Ready" are both ``todo``. This is the one helper
+#: for it. ``claim_task`` picks the started lane by position with
+#: :func:`load_default_status`, and the release of an agent run picks the
+#: others here.
+LANE_STAGE_TODO = "todo"
+LANE_STAGE_REVIEW = "review"
+
+#: A ``todo`` lane named "To do", "Todo", "To-do", "Ready" or "Next".
+_TODO_LANE_NAME = re.compile(r"^\s*(?:to[\s_-]?do|ready|next)(?:\W|$)", re.IGNORECASE)
+#: An in-progress lane named "Review", "In review" or "Code review". The
+#: board has no review CATEGORY, so a review lane is a started lane by name.
+_REVIEW_LANE_NAME = re.compile(r"\breview", re.IGNORECASE)
+
+
+def pick_lane(lanes: Sequence[Any], stage: str) -> Any | None:
+    """The lane of *stage* among *lanes*, or ``None``. Pure.
+
+    *lanes* are rows of ``pm_task_statuses`` of ONE board, in lane order
+    (:func:`status_order_sql`). For ``todo``: a ``todo`` lane named like "To
+    do", "Ready" or "Next", else the first ``todo`` lane. A board with no
+    ``todo`` lane gives ``None``: the caller keeps the task where it is, and
+    never falls back to backlog. For ``review``: an in-progress lane named
+    like "Review", else ``None`` (a board with no review lane has none)."""
+    if stage == LANE_STAGE_TODO:
+        pool = [lane for lane in lanes if lane.category == "todo"]
+        named = [lane for lane in pool if _TODO_LANE_NAME.match(str(lane.name or ""))]
+        return (named or pool or [None])[0]
+    if stage == LANE_STAGE_REVIEW:
+        for lane in lanes:
+            if lane.category == STARTED_CATEGORY and _REVIEW_LANE_NAME.search(
+                str(lane.name or ""),
+            ):
+                return lane
+        return None
+    raise ValueError(f"unknown stage: {stage!r}")
+
+
+async def board_lanes(db: Any, project_id: str) -> list[Any]:
+    """The lanes of the board of *project_id* (the owner of its statuses), in
+    lane order."""
+    home = await status_owner_id(db, str(project_id))
+    return list((await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid)"
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"root": home},
+    )).fetchall())
+
+
+async def lane_for_stage(db: Any, project_id: str, stage: str) -> Any | None:
+    """The lane of *stage* on the board of *project_id*, or ``None``."""
+    return pick_lane(await board_lanes(db, project_id), stage)
+
+
+def lane_like(lanes: Sequence[Any], name: str | None, category: str | None) -> Any | None:
+    """The lane that a task LEFT, found again: the lane of that name in that
+    category, else :func:`pick_lane` for a ``todo`` category, else the first
+    lane of the category. ``None`` when the category holds no lane or is
+    unknown. Never a closing or triage lane."""
+    if not category or category in CLOSING_CATEGORIES or category == TRIAGE_CATEGORY:
+        return None
+    pool = [lane for lane in lanes if lane.category == category]
+    wanted = str(name or "").strip().lower()
+    for lane in pool:
+        if wanted and str(lane.name or "").strip().lower() == wanted:
+            return lane
+    if category == "todo":
+        return pick_lane(lanes, LANE_STAGE_TODO)
+    return pool[0] if pool else None
+
+
 async def _runs_follow_the_task(
     db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
 ) -> list[str]:
@@ -3902,7 +4046,9 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Four callers, each after its own visibility load, so
+    the lock read it. Task 3648: ``agent_runs._settle_task_lane`` is a fifth
+    caller, in the release of a run (a member's "Close the run" too), after
+    the run lock. Four more callers, each after its own visibility load, so
     the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
     (WS-55 EA-6h, so the version and title checks hold until the delete);
     ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new

@@ -207,6 +207,11 @@ _ARCHIVE_ANSWER = (
     "§19.11: only the member of the run answers the request of an agent, on "
     "the task card (EA3-40, D-OP-13)."
 )
+_CHILD_RUN = (
+    "SW-39: a child run is a sub-agent of an open run. Only a signed agent "
+    "starts one, through its hook. SW-114 adds the edge tool, so no door op "
+    "names it."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -407,7 +412,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A", off_door=LATER),
         Route("GET", "/projects/my/summary", "", "X", reason=_MY_TASKS_STEP),
         Route("DELETE", "/projects/my/tasks/{task_id}", "", "X", reason=_PURGE),
-        Route("GET", "/projects/my/tasks/{task_id}/lanes", "", "X", reason=_MY_TASKS_STEP),
+        Route("GET", "/projects/my/tasks/{task_id}/lanes", "vocabulary", "A",
+              off_door=LATER),
         Route("GET", "/projects/my/calendar", "calendar", "A", off_door=LATER),
         Route("GET", "/projects/my/contexts", "my_contexts", "A", off_door=LATER),
         Route("GET", "/projects/my/today", "my_work", "A", off_door=LATER),
@@ -462,6 +468,7 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         # ── assignees.py ──
         Route("GET", "/projects/people/names", "people_for", "A", off_door=LATER),
+        Route("GET", "/projects/people/reach", "people_for", "A", off_door=LATER),
         Route("GET", "/projects/assignees", "people_for", "A", off_door=LATER),
         # ── analytics.py · reports.py ──
         Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A", off_door=LATER),
@@ -521,6 +528,10 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B", off_door=TYPED),
         Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B",
               off_door=LATER),
+        # ── sequences.py (SW-27a, task 861) ──
+        Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
+              reason="SW-27a: no tool reaches the reserve route yet. SW-27b (task 3893) adds the "
+              "MCP edge tool reserve_number, behind the owner's seam answer."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),
@@ -541,15 +552,20 @@ PROJECTS_DOOR = App(
               "C", off_door=LATER),
         Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
               "record_outside_decision", "B", off_door=TYPED),
+        Route("PUT", "/projects/agent-runs/{run_id}/plan", "set_run_plan", "B",
+              off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B",
               off_door=TYPED),
         Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X",
               reason=_ARCHIVE_ANSWER),
+        Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
+        Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
         Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", reason=_AGENT_DELETE),
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
               off_door=LATER),
-        Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=LATER),
+        # SW-113: the typed tool `get_agent_map` reads the map shape.
+        Route("GET", "/projects/agents/overview", "agents_list", "A", off_door=TYPED),
         Route("GET", "/projects/agents/{agent_key}/runs", "agent_recent_runs", "A",
               off_door=LATER),
         Route("GET", "/projects/needs-attention", "needs_attention", "A", off_door=LATER),

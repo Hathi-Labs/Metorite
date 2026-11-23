@@ -186,6 +186,10 @@ const EVIDENCE: readonly string[] = [
   // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
   // STB-6a: the workflows, one workflow, or (STU-E4b) the human steps of one run.
   "studio_workflow_read",
+  // PAR-8a: the runs of a workflow, the check of a draft, and the parts of a step.
+  "studio_workflow_runs",
+  "studio_workflow_check",
+  "studio_workflow_catalog",
 ];
 
 /** Writes. Projects names are manifest class B or C. */

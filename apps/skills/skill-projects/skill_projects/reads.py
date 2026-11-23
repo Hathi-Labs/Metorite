@@ -352,6 +352,17 @@ def _short_query(term: str) -> str:
     )
 
 
+def _with_zero_pointer(zero: str) -> str:
+    """*zero* with the pointer of WS-FIND FIND-6, through the one helper
+    ``acb_skills.company_search_tools.with_zero_pointer``. Without
+    ``acb_skills``, *zero* itself, as the other optional imports here."""
+    try:
+        from acb_skills.company_search_tools import with_zero_pointer
+    except ImportError:  # pragma: no cover - acb_skills ships with the platform
+        return zero
+    return with_zero_pointer(zero)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by the words in their title AND description, or by task
@@ -369,7 +380,10 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     payload = await get("/projects/search", {"q": term, "limit": cap, "most_words": "true"})
     rows = (payload or {}).get("rows") or []
     if not rows:
-        return f"No task matches {data(term)}. Try a shorter fragment."
+        # WS-FIND FIND-6 (§5.3): a zero ends with the fixed pointer to
+        # search_company, only in a pack call of an org of FIND_ORGS. A failure
+        # raises before this line, so it never gets the pointer.
+        return _with_zero_pointer(f"No task matches {data(term)}. Try a shorter fragment.")
     if payload.get("partial"):
         # HRD-4: no task holds every word, so the rows hold some of them.
         out = [legend(), (
@@ -503,7 +517,16 @@ async def _attachments_block(task_id: str) -> list[str]:
     files = (attachments or {}).get("rows") or []
     if not files:
         return []
-    return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
+    # HRD-2: the id delete_attachment takes. A name alone left the model no id.
+    return [
+        f"Attachments ({len(files)}): "
+        + ", ".join(
+            data(f.get("name"))
+            + (f" (attachment id {f.get('attachment_id') or f.get('id')})"
+               if (f.get("attachment_id") or f.get("id")) else "")
+            for f in files
+        )
+    ]
 
 
 async def _refs_block(task_id: str) -> list[str]:
@@ -548,6 +571,12 @@ async def _timeline_block(task_id: str) -> list[str]:
         body = ev.get("body") or ""
         meta = ev.get("meta") or {}
         line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
+        if ev.get("id"):
+            # HRD-2: the id that edit_comment, delete_comment, comment(reply_to)
+            # and revert_activity take. A comment row is a comment id, any
+            # other row is an activity id.
+            label = "comment id" if ev.get("type") == "comment" else "activity id"
+            line += f" ({label} {ev['id']})"
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):
@@ -1026,18 +1055,55 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     return "\n".join(out)
 
 
+async def _task_lanes(task_id: str, refused: GatewayRefusal) -> list[dict[str, Any]]:
+    """The lanes of one task of mine (``GET /projects/my/tasks/{id}/lanes``).
+
+    The route checks that the task is the caller's, and it names nothing of
+    the project. A refusal of the route is the project refusal that sent the
+    caller here, so the member reads one answer: not found, or not visible.
+    """
+    tid = uuid_of(task_id, "task_id")
+    try:
+        return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+    except GatewayRefusal:
+        raise refused from None
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def vocabulary(project_id: str) -> str:
+async def vocabulary(project_id: str, task_id: str = "") -> str:
     """The words a project uses: its statuses (with category), task types,
     tags (with counts) and custom fields. Read this before you put a tag on
     a task, because a tag name the project lacks becomes a new tag. A write
     finds a status, a type or a field by name itself, and refuses an unknown
     name with the real ones. Relay these names to the member instead of
     inventing one. project_id is any node in the tree; the root project's
-    vocabulary answers."""
+    vocabulary answers. task_id (optional) is a task of this project. Pass it
+    when the member reached the project through that task alone and the read
+    answers "not found". Then the answer lists the statuses of the task only."""
     pid = uuid_of(project_id, "project_id")
     out = [legend()]
-    status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    try:
+        status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    except GatewayRefusal as exc:
+        # Task 3865: a member who holds a task by assignment alone cannot see
+        # its project, so every project read 404s. The lanes of the task are
+        # the one read that this member's task allows. No tags, types, fields
+        # or counts come with it, because those belong to the project.
+        if exc.status != 404 or not task_id.strip():
+            raise
+        lanes = await _task_lanes(task_id, exc)
+        out.append(
+            "You can open this task but not its project. So only the statuses "
+            "of this task show here. The types, tags and fields of the project "
+            "are not shown."
+        )
+        out.append(f"Statuses ({len(lanes)}):")
+        for s in lanes:
+            default = " · default" if s.get("is_default") else ""
+            out.append(
+                f"- {data(s.get('name'))} [{s.get('category')}]{default} · id {s.get('id')}"
+            )
+        return "\n".join(out)
     if status_set.get("owner_name"):
         owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
         # `may_edit` is the server's answer (`core.can_manage_settings`, the
@@ -1657,6 +1723,28 @@ def _plan_rows(labels: dict[str, Any], ids: list[Any], slack: dict[str, Any]) ->
     return out
 
 
+def _plan_finish_lines(finish: Any) -> list[str]:
+    """The finish of a plan in words (task 2473). With no estimate on any slice it
+    says the finish is unknown, and names the count. With some, it keeps the date
+    and says how many slices it guessed."""
+    if not finish:
+        return []
+    if finish.get("unknown"):
+        return [
+            f"{finish.get('words') or 'The finish is unknown.'} Give each slice an"
+            " estimate, then ask again."
+        ]
+    lines: list[str] = []
+    if finish.get("guessed"):
+        lines.append(f"Note: {finish.get('words') or 'Some slices have no estimate.'}")
+    lines.append(
+        f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
+        f" {finish.get('mins')} minutes of work and review wait). One date from the"
+        " length of the path. It is not a forecast with a range."
+    )
+    return lines
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def get_plan(root_task_id: str) -> str:
     """The order of work under one goal, epic or project task, computed by the
@@ -1696,13 +1784,7 @@ async def get_plan(root_task_id: str) -> str:
     if path:
         out.append(f"Critical path ({len(path)} slices, in order):")
         out.extend(_plan_rows(labels, path, slack))
-    finish = plan.get("finish")
-    if finish:
-        out.append(
-            f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
-            f" {finish.get('mins')} minutes of work and review wait). One date from the"
-            " length of the path. It is not a forecast with a range."
-        )
+    out.extend(_plan_finish_lines(plan.get("finish")))
     waves = plan.get("waves") or []
     if waves:
         out.append(
@@ -2171,7 +2253,7 @@ ATTENTION_ACTIONS = {
         "Resume (asks the same agent client to continue, and the run keeps the task)"
         " or Close the run (frees the task for anyone)"
     ),
-    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
+    "close_run": "Close the run (frees the task for anyone, and the task moves to its lane)",
     "open_blocker": "open the blocker and give it an owner or move it on",
 }
 

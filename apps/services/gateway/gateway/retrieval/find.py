@@ -22,9 +22,12 @@ the answer of KR-ZERO, byte for byte.
   :func:`word_absent` is the proof that no record holds all the words.
   :func:`proves_absence` is the ONE rule of a word that may prove absence,
   for it and for ``held`` of :func:`near_report`. It reads
-  :func:`typed_alone`, :func:`shown_texts` and the result of
-  :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the default),
-  it proves nothing, so no line says that a record does not exist.
+  :func:`declares_all`, :func:`typed_alone`, :func:`shown_texts` and the
+  result of :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the
+  default), it proves nothing, so no line says that a record does not exist.
+* The past chats (HRD-21, §3.1 rung 6): :func:`chat_search_named` is the one
+  reader of ``CHAT_SEARCH_ORGS``, :data:`CHAT_KEY` names the source and its
+  rung, and :func:`stamp_first` stamps its hits ``chat``, with every word.
 """
 
 from __future__ import annotations
@@ -172,8 +175,9 @@ EDGE_MARKS = ".,;:!?()[]{}"
 #: ``none_has_all`` is never true. The facts stay.
 #:
 #: Set it True only after each source declares ``Source.proves_absence`` (a
-#: later slice), and the claim reads that declaration too. Tests set it True
-#: to keep the guard of :func:`proves_absence` fenced.
+#: later slice). The claim reads each declaration too (FIND-4b,
+#: :func:`declares_all`). Tests set it True to keep the guard of
+#: :func:`proves_absence` fenced.
 ABSENCE_CLAIMS = False
 
 #: A typed token that may prove absence: ASCII letters and digits only.
@@ -223,12 +227,28 @@ def named_itself(word: str, names: dict[str, dict[str, list[Any]]]) -> bool:
     return False
 
 
+def declares_all(declared: dict[str, bool] | None) -> bool:
+    """True when one app or more answered, and each app that answered
+    declares ``Source.proves_absence`` (FIND-4b, ``find_engine.md`` §3.6).
+    *declared* maps the key of each app that answered to its declaration.
+
+    ``None`` or an empty map proves nothing. A value that is not ``True``
+    proves nothing, so one app that does not declare stops the claim. Pure.
+    """
+    return bool(declared) and all(value is True for value in declared.values())
+
+
 def proves_absence(word: str, *, query: str, shown: list[str],
-                   looked: dict[str, bool] | None) -> bool:
+                   looked: dict[str, bool] | None,
+                   declared: dict[str, bool] | None) -> bool:
     """True when a search of *word* alone that found nothing may prove that
     no record holds it (FIND-4 review, P1 and round 3). The ONE rule, for
     ``held`` false in :func:`near_report` (HRD-18b) and for
-    :func:`word_absent` (FIND-4). Pure. Each part must hold:
+    :func:`word_absent` (FIND-4). Pure.
+
+    Each app that answered must declare ``Source.proves_absence``
+    (:func:`declares_all` of *declared*, FIND-4b). Only then can its zero
+    show that no record of the app holds the word. Then each part must hold:
 
     1. the member typed the word as it folds (:func:`typed_alone`);
     2. no hit of any rung and no related record shows it (*shown*, as
@@ -244,6 +264,7 @@ def proves_absence(word: str, *, query: str, shown: list[str],
     """
     return (
         ABSENCE_CLAIMS
+        and declares_all(declared)
         and typed_alone(query, word)
         and not any(coverage([word], text) for text in shown)
         and looked is not None and looked.get(word) is True
@@ -274,7 +295,8 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
                 broadened: list[dict[str, Any]] | None, *, query: str,
                 first_zero: bool, skipped: list[str],
                 limited: bool = False, related: Iterable[Any] | None = None,
-                looked: dict[str, bool] | None = None) -> list[dict[str, Any]]:
+                looked: dict[str, bool] | None = None,
+                declared: dict[str, bool] | None = None) -> list[dict[str, Any]]:
     """Each entry of the route's ``near``, with ``held`` (HRD-18b).
 
     ``held`` is true when the word has a hit of its own: the word alone found
@@ -287,9 +309,10 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
     P3-3). The word must also pass :func:`proves_absence` (FIND-4 review):
     the member typed it as it folds, no hit of any rung and no *related*
     record shows it, and the near lookup gave no name of the word itself
-    (*looked*). While :data:`ABSENCE_CLAIMS` is off, ``held`` is never false.
-    In each other case it is ``None``: not known. Only a false word may open
-    the answer with "No record holds" (§3.6). Pure.
+    (*looked*). Each app that answered must declare ``Source.proves_absence``
+    (*declared*, FIND-4b). While :data:`ABSENCE_CLAIMS` is off, ``held`` is
+    never false. In each other case it is ``None``: not known. Only a false
+    word may open the answer with "No record holds" (§3.6). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
            if h.matched_by in OWN_RUNGS]
@@ -304,14 +327,16 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
             held = True
         elif (alone is not None and not alone[1] and not skipped and not limited
               and len(asked) == 1
-              and proves_absence(asked[0], query=query, shown=shown, looked=looked)):
+              and proves_absence(asked[0], query=query, shown=shown, looked=looked,
+                                 declared=declared)):
             held = False
         out.append({**entry, "held": held})
     return out
 
 
 def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: list[str],
-                limited: bool, shown: list[str], looked: dict[str, bool] | None) -> bool:
+                limited: bool, shown: list[str], looked: dict[str, bool] | None,
+                declared: dict[str, bool] | None) -> bool:
     """True when the words alone prove that no record holds all the words
     (FIND-4, ``find_engine.md`` §3.6): one content word, searched alone in
     each app that answered, found nothing. The rule is the rule of ``held``
@@ -325,8 +350,9 @@ def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: 
     The word needs ``name_match.NEAR_MIN_LETTERS`` letters, as each word of
     ``held`` does: an app may answer nothing for a short word, with no error.
     The word must pass :func:`proves_absence`, the rule that ``held`` uses:
-    typed as it folds, shown by no hit (*shown*), and named by no near name
-    of the word itself (*looked*).
+    each app that answered declares it (*declared*), typed as it folds,
+    shown by no hit (*shown*), and named by no near name of the word itself
+    (*looked*).
 
     The route also needs a miss: no hit shows every word
     (``company._none_has_all``).
@@ -337,7 +363,8 @@ def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: 
         isinstance(entry, dict) and _count_of(entry.get("hits")) == 0
         and not entry.get("skipped") and isinstance(entry.get("word"), str)
         and name_match.near_eligible(entry["word"])
-        and proves_absence(entry["word"], query=query, shown=shown, looked=looked)
+        and proves_absence(entry["word"], query=query, shown=shown, looked=looked,
+                           declared=declared)
         for entry in broadened or []
     )
 
@@ -649,8 +676,110 @@ _WORSE: dict[str, int] = {o: i for i, o in enumerate(
     ("closed", "skipped", "empty", "ok", "refused", "timed_out", "failed"))}
 #: The rungs of the trace whose sources run, in the order of §3.1.
 TRACE_RUNGS: tuple[str, ...] = ("exact", "word", "near", "related")
-#: The source key of rung 6 in the trace. No source has the key yet (HRD-21).
+#: The key of the past chats (HRD-21, rung 6): the source key, the rung of
+#: :data:`RUNGS` and the rung of the trace. The source runs in pass 1 only.
 CHAT_KEY = "chat"
+
+
+#: The most content words that the past chats prove in one search (HRD-21).
+#: Each word is one arm of the chat SQL, so a pasted paragraph cannot become a
+#: long WHERE. It is the cap of the Projects word rule
+#: (``routes/projects/filters.MAX_QUERY_WORDS``).
+CHAT_MAX_WORDS = 8
+
+#: The characters where a word ends, for the whole-word pattern of a past chat
+#: (review P2-1). Each is a character where :func:`name_match.words` splits a
+#: text too: each ASCII character that is no letter and no digit, and a few
+#: typographic marks. Any other character stays inside a word, such as "é",
+#: which ``name_match`` folds to "e". So the SQL can only find FEWER words
+#: than :func:`coverage` counts, never more. The cost: "muller" does not find
+#: «Müller» in a past chat. Fence: ``test_chat_source.py``.
+WORD_EDGES: str = "".join(chr(c) for c in range(1, 128) if not chr(c).isalnum()) + (
+    "\u00a0\u00ab\u00bb\u2013\u2014\u2018\u2019\u201c\u201d\u2026")
+
+#: A form of a word: letters and digits in ASCII, so no form needs an escape.
+_FORM = re.compile(r"[0-9a-z]+")
+
+
+def chat_words(query: str) -> list[str] | None:
+    """The words that a past chat must hold, or ``None`` (HRD-21). Pure.
+
+    They are the content words of *query* (:func:`content_words`), the words
+    that ``of`` counts. ``None`` when the query has none, or more than
+    :data:`CHAT_MAX_WORDS`. The ONE rule of the route and the reader: the
+    route asks the ``chat`` source only with a list, and the reader reads
+    nothing without one. A WHERE with no arm would match every chat."""
+    words = content_words(query)
+    if not words or len(words) > CHAT_MAX_WORDS:
+        return None
+    return words
+
+
+def stem_forms(word: str) -> tuple[str, ...]:
+    """Each token that :func:`coverage` counts as *word*: each word of letters
+    and digits whose :func:`_stem` is the stem of *word*. Longest first. Pure.
+
+    :func:`_stem` cuts at most one ending of ``ing``, ``ed``, ``es`` and ``s``,
+    then at most one final "e". So a token with the stem ``s`` is ``s`` or
+    ``s + "e"``, with one of those endings or none. Each such form is tried
+    with :func:`_stem` itself, so the list follows the rule and copies none of
+    it. Each form starts with the stem."""
+    stem = _stem(word)
+    out: list[str] = []
+    for base in (stem, stem + "e"):
+        for ending in ("", "ing", "ed", "es", "s"):
+            form = base + ending
+            if _stem(form) == stem and _FORM.fullmatch(form) and form not in out:
+                out.append(form)
+    return tuple(sorted(out, key=lambda f: (-len(f), f)))
+
+
+def word_stem(word: str) -> str:
+    """The stem of *word* (:func:`_stem`). Each form of :func:`stem_forms`
+    starts with it, so the chat search puts a cheap ``LIKE`` of it before the
+    pattern. Pure."""
+    return _stem(word)
+
+
+def _edge_class() -> str:
+    """:data:`WORD_EDGES` as one bracket of escapes that Postgres and Python
+    both read: ``\\xhh`` for ASCII and ``\\uhhhh`` for the rest."""
+    return "[" + "".join(
+        f"\\x{ord(ch):02x}" if ord(ch) < 128 else f"\\u{ord(ch):04x}" for ch in WORD_EDGES
+    ) + "]"
+
+
+def whole_word_pattern(word: str) -> str:
+    """The pattern that a lower-case text matches when it holds *word* as
+    :func:`coverage` counts it: one form of :func:`stem_forms`, with a word
+    edge or an end of the text on each side (review P2-1). Postgres (``~``)
+    and Python (``re``) read it alike. Pure.
+
+    A text of letters and digits in ASCII matches it exactly when
+    :func:`coverage` counts the word. A text with other letters can only
+    match less. The caller must make the end of a CUT text no edge."""
+    forms = stem_forms(word)
+    if not forms or not all(_FORM.fullmatch(f) for f in forms):
+        raise ValueError("a word of the chat search is letters and digits only")
+    edge = _edge_class()
+    return f"(^|{edge})({'|'.join(forms)})({edge}|$)"
+
+
+def stamp_first(key: str, hit: Any, words: list[str]) -> Any:
+    """*hit*, a hit of pass 1 of source *key*, with ``matched_by``, ``covers``
+    and ``of`` (§3.5). Pure.
+
+    A past chat (rung 6, HRD-21) says ``chat``, and it holds every word:
+    ``covers`` is ``of``. Its search proved each content word of the query as
+    a whole word, by the stem rule of :func:`coverage`, in its title or in one
+    row (``gateway.chat_search``, :func:`whole_word_pattern`). Its snippet can show none of
+    them, and its hint "Your chat" holds a word that the chat may not. So its
+    printed text does not decide its count. Every other source says
+    ``exact``, counted on its printed text, as :func:`stamped` counts it.
+    """
+    if key == CHAT_KEY:
+        return dataclasses.replace(hit, matched_by=CHAT_KEY, covers=len(words), of=len(words))
+    return stamped(hit, words, "exact")
 #: The codes of a "Where else" line (§3.6), in the order of its list: an app
 #: that was skipped, the past chats, and an app that is not open to the member.
 WHERE_ELSE: tuple[str, ...] = ("skipped", "past_chats", "not_open")
@@ -663,16 +792,17 @@ TRACE_SPELLINGS = 3
 
 
 def chat_search_named(organization_id: str | None) -> bool:
-    """True when ``CHAT_SEARCH_ORGS`` holds the org, or holds ``*``.
+    """True when ``CHAT_SEARCH_ORGS`` holds the org, or holds ``*``. Default
+    OFF (HRD-21, ``find_engine.md`` §6 and §8).
 
-    The setting may not exist yet (HRD-21 adds it), so an absent setting reads
-    as empty. Only the "Where else" line and the trace read it: with the org
-    named, they say nothing about past chats. HRD-21 owns the flag and its
-    source, and its reader should replace this one.
+    The one reader of the setting. The ``chat`` source reads it as its gate,
+    before any read, and the trace reads it for ``flags_off``. The org comes
+    from the session, never from request input (R5). A reload applies a change
+    (``docs/flag_reload.md``).
     """
     if not organization_id:
         return False
-    raw = str(getattr(get_settings(), "chat_search_orgs", "") or "")
+    raw = str(get_settings().chat_search_orgs or "")
     listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
     return "*" in listed or str(organization_id).strip().lower() in listed
 
@@ -705,7 +835,9 @@ def where_else(skipped: list[str], why: dict[str, str], *, chat_named: bool,
     list, at most :data:`WHERE_ELSE_MAX`. Pure.
 
     1. Each app of *skipped*, with its reason from :data:`SKIP_REASONS`.
-    2. The past chats, when ``CHAT_SEARCH_ORGS`` does not name the org.
+    2. The past chats, when the search did not ask the ``chat`` source
+       (*chat_named* false): ``CHAT_SEARCH_ORGS`` does not name the org, or
+       the request named no current chat (HRD-21). So the line stays true.
     3. Each app of *not_open*: an app that is not open to the member.
 
     Each entry holds a code, an app key and a reason. It holds no record, no
@@ -731,11 +863,18 @@ def trace_rows(notes: dict[str, dict[str, dict[str, Any]]], keys: list[str],
     with ``closed``. A source that a rung did not ask has ``skipped``. A row
     holds a rung, a source key, two counts, a bool and an outcome, and nothing
     else.
+
+    Rung 6 is ONE row, with the key ``chat`` (HRD-21). The ``chat`` source runs
+    in pass 1 only, so its row reads its note of the first pass. With no such
+    source, or with the source closed or not asked, the row is ``closed``: the
+    row of before HRD-21, byte for byte.
     """
     rows: list[dict[str, Any]] = []
     for rung in TRACE_RUNGS:
         mine = notes.get(rung, {})
         for key in keys:
+            if key == CHAT_KEY:
+                continue  # rung 6 has its own row, below
             if key in closed:
                 if rung == TRACE_RUNGS[0]:
                     rows.append({"rung": rung, "source": key, "ran": False, "hits": 0,
@@ -745,11 +884,16 @@ def trace_rows(notes: dict[str, dict[str, dict[str, Any]]], keys: list[str],
             rows.append({"rung": rung, "source": key, "ran": bool(note["ran"]),
                          "hits": int(note["hits"]), "ms": int(note["ms"]),
                          "outcome": note["outcome"]})
-    # Rung 6: no source reads past chats yet (HRD-21), so it never ran. Once
-    # a source has the key, its own rows say what it did.
-    if CHAT_KEY not in keys:
+    note = None
+    if CHAT_KEY in keys and CHAT_KEY not in closed:
+        note = notes.get(TRACE_RUNGS[0], {}).get(CHAT_KEY)
+    if note is None:
         rows.append({"rung": CHAT_KEY, "source": CHAT_KEY, "ran": False, "hits": 0,
                      "ms": 0, "outcome": "closed"})
+    else:
+        rows.append({"rung": CHAT_KEY, "source": CHAT_KEY, "ran": bool(note["ran"]),
+                     "hits": int(note["hits"]), "ms": int(note["ms"]),
+                     "outcome": note["outcome"]})
     return rows
 
 

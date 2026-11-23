@@ -906,15 +906,15 @@ class TestNoNewMemberlessCallSite:
     def test_no_OpenAI_client_is_built_outside_the_attribution_seam(self):
         """🔴 graphiti built a bare ``AsyncOpenAI`` against gateway ``/v1``,
         so every extraction reached the Router with no member. Only
-        ``attributed_openai`` may build one. ``main.py``'s embeddings client
-        calls the vendor directly and never meets the Router.
+        ``attributed_openai`` may build one. ``main.py`` left this set in
+        task 3553 (2449 S2): its ``/v1/embeddings`` route calls the Router
+        and builds no client.
 
         Mutation-checked 2026-09-28: restore the bare ``AsyncOpenAI`` in
         ``graphiti_client.py`` and this fails.
         """
         allowed = {
             "packages/acb_llm/acb_llm/attribution.py",
-            "apps/services/gateway/gateway/main.py",
         }
         offenders = [
             f"{path}:{line}"
