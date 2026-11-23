@@ -1144,9 +1144,25 @@ search_company_dated = _read_tool(_search_company_dated)
 # ── resolve_name (WS-FIND FIND-5, ``find_engine.md`` §5.2) ─────────────────
 # It reads `GET /search/names` as the run's member. The answer has the frame
 # of `search_company`: the header, then each record in guillemets. Two values
-# come from data: a stored name, inside the guillemets, and a sender address
-# that passed the address check. An id and a link pass a shape check. Every
-# other word comes from a closed list here.
+# come from data: a stored name, inside the guillemets, and an address that
+# passed the address check (the id of a sender, a member or a saved name, and
+# the colleague address of FIND-6b). An id and a link pass a shape check.
+# Every other word comes from a closed list here.
+#
+# FIND-6b (task 3665, ``find_engine.md`` §5.2): the route also gives a member
+# of the org and the member's own saved names. A person, a member and a saved
+# name print the colleague address after the name, as ``resolve_person``
+# prints it. The address must be plain (`_plain_address`), or it does not
+# print. A saved name prints "(colleague)" and "[your saved name]".
+# ``resolve_person`` stays in the core list. The next PR takes it out
+# (D-FIND-3).
+#
+# The docstring of `resolve_name` is the tool description. Task 3725 caps it
+# at 1082 characters (`test_find_module_source.py`), because the Studio chat
+# sits at its token budget. So it names the saved names and the kinds in short
+# words. The kind `alias` is a name that the member saved for a colleague.
+# The answer prints the colleague address in angle brackets, so the
+# description does not say it. Put new detail here or in `find_engine.md`.
 
 #: The route of :func:`resolve_name`.
 NAMES_ROUTE = "/search/names"
@@ -1166,17 +1182,25 @@ NAMES_BOUNDS = "Give one name of 2 to 60 characters and at most 3 words."
 NAMES_LETTERS = ("The name lookup reads a word of 2 letters or more in the letters a to z "
                  "or the digits 0 to 9. Ask the member to spell the name in those "
                  "letters, or use search_company.")
-NAMES_KINDS = "The kinds are person, contact, lead, company and sender."
+NAMES_KINDS = "The kinds are alias, person, member, contact, lead, company and sender."
 #: A cap of the route left a record out. The record may be a near one.
 NAMES_CUT = "The answer has more records than it shows. Ask the member for the full name."
 
 #: The words of each app, kind, skip reason and verdict of the route. Closed
-#: lists: a value that is not here prints nothing.
-NAME_APPS: dict[str, str] = {"crm": "CRM", "people": "People", "email": "Email"}
+#: lists: a value that is not here prints nothing. ``profile`` is the
+#: member's own saved names (FIND-6b, ``sources.ALIAS_KEY``).
+NAME_APPS: dict[str, str] = {"crm": "CRM", "people": "People", "email": "Email",
+                             "profile": "Your saved names"}
 NAME_KINDS: dict[str, str] = {
-    "person": "person", "contact": "contact", "lead": "lead", "company": "company",
-    "sender": "mail sender", "module_record": "record",
+    "person": "person", "member": "member", "contact": "contact", "lead": "lead",
+    "company": "company", "sender": "mail sender", "alias": "colleague",
+    "module_record": "record",
 }
+#: The kinds whose id is an address, so the id must pass :data:`_ADDRESS`.
+NAME_ADDRESS_IDS: tuple[str, ...] = ("sender", "member", "alias")
+#: The kinds whose row may print the colleague address (FIND-6b). The route
+#: sends it only where ``resolve_person`` prints it.
+NAME_EMAIL_KINDS: tuple[str, ...] = ("person", "member", "alias")
 NAME_SKIPS: dict[str, str] = {
     "timed_out": "ran out of time", "failed": "failed", "refused": "not open to you",
 }
@@ -1246,22 +1270,40 @@ def _skips(entries: Any) -> list[str]:
     return out
 
 
+def _plain_address(value: Any) -> str:
+    """*value* when it is a plain address with no hidden character, else
+    ``""``: the rule of a sender id (fix round, P2-b). An address prints
+    outside the quotes, so it is never folded. It prints whole, or not."""
+    from acb_skills.hidden_text import strip_hidden
+
+    text = value if isinstance(value, str) else ""
+    if (not _ADDRESS.fullmatch(text) or strip_hidden(text) != text
+            or any(unicodedata.category(ch).startswith("C") for ch in text)):
+        return ""
+    return text
+
+
 def _name_lines(row: Any) -> list[str]:
     """The two lines of one record, or none for a row off the closed lists.
 
     A sender's id is an address that the sender wrote, and ``full_id`` prints
     it outside the quotes. So an address with a hidden character prints
-    nothing (fix round, P2-b)."""
-    from acb_skills.hidden_text import strip_hidden
+    nothing (fix round, P2-b). The id of a member and of a saved name is an
+    address too (FIND-6b).
 
+    A person, a member and a saved name print the colleague address after
+    the name, as ``resolve_person`` prints it: ``- «Raj Rao» <raj@acme.test>``.
+    The route sends ``email`` only where ``resolve_person`` prints it. An
+    address that is not plain prints no address, by the same rule. A saved
+    name prints "(colleague)" and "[your saved name]"."""
     if not isinstance(row, dict):
         return []
     app, kind, match = (str(row.get(key) or "") for key in ("app", "kind", "match"))
     ident = str(row.get("id") or "")
-    if (app not in NAME_APPS or kind not in NAME_KINDS or match not in ("exact", "near")
-            or not (_ADDRESS if kind == "sender" else _RECORD_ID).fullmatch(ident)
-            or strip_hidden(ident) != ident
-            or any(unicodedata.category(ch).startswith("C") for ch in ident)):
+    if (app not in NAME_APPS or kind not in NAME_KINDS or match not in ("exact", "near", "alias")
+            or (kind == "alias") != (match == "alias") or (kind == "alias") != (app == "profile")
+            or not (_plain_address(ident) if kind in NAME_ADDRESS_IDS
+                    else _RECORD_ID.fullmatch(ident))):
         return []
     status = str(row.get("status") or "")
     noun = NAME_KINDS[kind] + (f", {status}" if kind == "person" and status in NAME_STATUSES
@@ -1269,18 +1311,23 @@ def _name_lines(row: Any) -> list[str]:
     if kind == "module_record" and _name_text(row.get("module"), 40):
         # FIND-11: the label of the module, as a name, so the member sees where it is.
         noun += f", {_name_text(row.get('module'), 40)}"
+    label = noun if kind == "alias" else f"{NAME_APPS[app]} {noun}"
     name = _name_text(row.get("name")) or "(no name)"
+    email = _plain_address(row.get("email")) if kind in NAME_EMAIL_KINDS else ""
+    address = f" <{email}>" if email else ""
     href = str(row.get("href") or "")
     link = f" {href}" if href.startswith("/") and not href.startswith("//") \
         and not any(ch.isspace() or ch in "«»<>\"'" for ch in href) else ""
     spelt = str(row.get("as") or "")
     if match == "exact":
         how = "[exact]"
+    elif match == "alias":
+        how = "[your saved name]"
     elif _SPELLING.fullmatch(spelt):
         how = f"[near spelling: {spelt}]"
     else:
         how = "[near spelling]"
-    return [f"- «{name}» ({NAME_APPS[app]} {noun}){link} {how}",
+    return [f"- «{name}»{address} ({label}){link} {how}",
             f"  full_id: {kind}:{ident}"]
 
 
@@ -1290,10 +1337,11 @@ def format_names(body: Any) -> str:
     The header of :data:`HEADER`, the apps that were not searched or read in
     part, each record, the sentence of the verdict, and the instruction of
     the verdict from :data:`NAME_NEXT`. Two values come from data: a stored
-    name, inside guillemets, and a sender address in ``full_id``, which must
-    pass :data:`_ADDRESS` and hold no hidden character. A record id must pass
-    :data:`_RECORD_ID`, and a link must be an in-app path. Every other word
-    comes from a closed list here.
+    name, inside guillemets, and an address, which must pass
+    :func:`_plain_address`. That is the id of a sender, a member or a saved
+    name in ``full_id``, and the colleague address in angle brackets
+    (FIND-6b). A record id must pass :data:`_RECORD_ID`, and a link must be
+    an in-app path. Every other word comes from a closed list here.
     """
     data = body if isinstance(body, dict) else {}
     verdict = data.get("verdict") if isinstance(data.get("verdict"), str) else ""
@@ -1375,13 +1423,12 @@ async def _names_get(headers: dict[str, str], params: dict[str, Any]) -> Any:
 
 @_read_tool
 async def resolve_name(name: str, kinds: str | None = None) -> str:
-    """Find each record that holds one name: a person, a CRM contact, lead or company, or a mail sender.
+    """Find each record that holds one name: a person, a member, a CRM contact, lead or company, or a mail sender.
 
     Call it when the member names someone and you need the record or the
-    address. It asks the People directory, the CRM and the mail that the
-    member can read, at once, in each app that the member can open. Each
-    record comes with its app, its link, its full_id and how it matched:
-    exact, or a near spelling.
+    address. It asks People, the CRM, the mail and the member's saved names,
+    in each app open to the member. Each record has its app, link, full_id
+    and match: exact, a near spelling or a saved name.
 
     The answer ends with one instruction for its verdict. Follow it.
     "one": one sure record, so use it. "partial": one record, but an app did
@@ -1394,8 +1441,9 @@ async def resolve_name(name: str, kinds: str | None = None) -> str:
     Args:
         name: One name, 2 to 60 characters and at most 3 words, as the member
             said it.
-        kinds: Optional. A comma list of the kinds to find: person, contact,
-            lead, company and sender. Leave it out to find every kind.
+        kinds: Optional. A comma list of: alias (a saved name), person,
+            member, contact, lead, company and sender. Leave it out to find
+            every kind.
     """
     asked = " ".join(str(name or "").split())
     if not 2 <= len(asked) <= NAMES_MAX:

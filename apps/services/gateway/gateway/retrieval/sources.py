@@ -53,6 +53,13 @@ newest mail, through its own read ``search.named_mail``. People and Email
 match one phrase (``names_word``), so the route asks them with one word.
 ``GET /search/names`` tests the name itself.
 
+**Members, saved names and addresses** (WS-FIND FIND-6b, ``find_engine.md``
+§5.2). People also gives each active member (``app_user``) through the read
+of ``resolve_person``, with its gate ``feature:people``. :func:`saved_names`
+gives the member's own saved names, tier 1 of ``resolve_person``, under the
+key :data:`ALIAS_KEY`, which is no source of :data:`REGISTRY`. A person, a
+member and a saved name carry their address (:attr:`Named.email`).
+
 **Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
 that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
@@ -218,6 +225,11 @@ class Named:
     route never puts a form in an answer. *state* is the record's state, such
     as a person's status. The route puts it in the row only from a closed
     list.
+
+    *email* is the colleague address of a person, a member or a saved name
+    (FIND-6b), in lower case, after :func:`sender_address`. Empty for every
+    other kind. The route prints it only where ``resolve_person`` prints it,
+    and one address is one colleague (``names.rows_of``).
     """
 
     kind: str
@@ -226,6 +238,7 @@ class Named:
     href: str
     forms: tuple[str, ...] = ()
     state: str = ""
+    email: str = ""
     #: The label of the module of a mirrored record (FIND-11), or empty.
     module: str = ""
 
@@ -1082,13 +1095,27 @@ async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named],
 
 
 async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
-    """The people of *name*, through the directory's own read. The row names
-    the person as the directory does, and :attr:`Named.state` is the status.
-    A person with a preferred name has two :attr:`Named.forms`: the full
-    name, and the full name with its first word replaced by the preferred
-    name ("Gitanjali Rao" and "Gita Rao"). The directory matches *name* as one
-    phrase in the full name (never the preferred name), so ``resolve_name``
-    asks it with one word (:attr:`Source.names_word`)."""
+    """The people of *name*, through the directory's own read, then the
+    members of *name* (FIND-6b). The row names the person as the directory
+    does, and :attr:`Named.state` is the status. A person with a preferred
+    name has two :attr:`Named.forms`: the full name, and the full name with
+    its first word replaced by the preferred name ("Gitanjali Rao" and "Gita
+    Rao"). The directory matches *name* as one phrase in the full name (never
+    the preferred name), so ``resolve_name`` asks it with one word
+    (:attr:`Source.names_word`). :attr:`Named.email` is the work address.
+
+    The members come from ``resolve_person``'s own read of ``app_user``
+    (:func:`_members_named`), with the same gate, ``feature:people``. The
+    two reads run one after the other, so the read keeps one session at a
+    time. At most *k* records together.
+
+    ⚠️ Each member record reaches the name test and the ``kinds`` filter of
+    the route, also beside a People row of its address (migration 206). Only
+    the member record holds the part of its address before the ``@``, as
+    ``resolve_person`` matches it. So a colleague takes two places of the
+    page, and about 11 colleagues fill it: People reads ``full``, and a
+    ``one`` becomes ``partial``. That fails safe, and ``find_engine.md`` §5.2
+    lists it as a limit (fix round 3)."""
     from gateway.routes.people.directory import list_directory
 
     answer = await list_directory(
@@ -1103,8 +1130,72 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
         out.append(Named("person", str(p["id"]), _title(preferred or full),
                          f"/people/{quote(str(p['id']))}",
                          forms=person_forms(full, preferred),
-                         state=str(p.get("status") or "")))
-    return out, len(rows) > k
+                         state=str(p.get("status") or ""),
+                         email=sender_address(p.get("email"))))
+    members, more = await _members_named(user, name, k)
+    out += members
+    return out[:k], len(rows) > k or more or len(out) > k
+
+
+#: The status of a person whose row prints the address: ``resolve_person``
+#: reads the active people only (``PEOPLE_SQL``). ``names.ADDRESS_STATUS``.
+ADDRESS_STATUS = "active"
+
+
+async def _members_named(user: UserContext, word: str, k: int) -> tuple[list[Named], bool]:
+    """The active members of the org whose display name or address part
+    holds *word* (FIND-6b), through ``resolve_person``'s own read
+    (``assistant_profile_people.members_named``). The id of a member row is
+    its address, as for a sender, and it has no link. A member has two forms:
+    the display name, and the part of its address before the ``@``. An
+    address that :func:`sender_address` refuses gives no row."""
+    people = await _module("gateway.routes.admin.assistant_profile_people")
+    found, more = await people.members_named(user, word, k)
+    out: list[Named] = []
+    for member in found:
+        address = sender_address(member.get("email"))
+        if not address:
+            continue
+        shown = " ".join(str(member.get("name") or "").split())
+        local = address.partition("@")[0]
+        out.append(Named("member", address, shown or address, "",
+                         forms=(shown, local) if shown else (local,), email=address))
+    return out, bool(more)
+
+
+#: The key of the member's saved names in ``GET /search/names`` (FIND-6b).
+#: It is not a source of :data:`REGISTRY`: no other consumer reads the saved
+#: names, so ``/search/company`` and the command bar do not change.
+ALIAS_KEY = "profile"
+
+
+def aliases_reach(user: UserContext) -> bool:
+    """True when the assistant profile is on for the member's org: the switch
+    of ``resolve_person`` (``acb_common.assistant_profile.enabled_for``). No
+    feature: tier 1 of ``resolve_person`` needs none. The org comes from the
+    session (R5). Fails closed."""
+    try:
+        from acb_common.assistant_profile import enabled_for
+
+        return enabled_for(user.organization_id)
+    except Exception:
+        return False
+
+
+async def saved_names(user: UserContext, name: str) -> list[Named]:
+    """The member's own saved names that equal *name* (FIND-6b): tier 1 of
+    ``resolve_person``, through its own read
+    (``assistant_profile_people.saved_names``). Each is a :class:`Named` of
+    kind ``alias``: its id and :attr:`Named.email` are the address, its name
+    is the alias as the member saved it, and it has no link. An address that
+    :func:`sender_address` refuses gives no row."""
+    people = await _module("gateway.routes.admin.assistant_profile_people")
+    out: list[Named] = []
+    for hit in await people.saved_names(user, name):
+        address = sender_address(hit.get("email"))
+        if address:
+            out.append(Named("alias", address, str(hit.get("name") or ""), "", email=address))
+    return out
 
 
 def person_forms(full: str, preferred: str) -> tuple[str, ...]:
@@ -1271,7 +1362,7 @@ REGISTRY: dict[str, Source] = {
                names=("sender",), named=_email_named, names_word=True),
         Source("people", "people", "People", _people, near=_people_near,
                related=_people_related, takes=("person",), open=_people_opened,
-               kinds=("person",), names=("person",), named=_people_named,
+               kinds=("person",), names=("person", "member"), named=_people_named,
                names_word=True),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
