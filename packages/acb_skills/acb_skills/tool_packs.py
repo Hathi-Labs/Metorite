@@ -693,11 +693,16 @@ _CALENDAR_DAY_WORDS = (
     "fill in the details of the task", "fill in the missing fields of this task",
     "fill in the missing fields of the task",
     # P-1c (task 3923): Sync now, the task switch and Disconnect of a connected
-    # calendar. Each phrase names the calendar or the tasks. A bare "outlook"
+    # calendar. Each phrase names the calendar or the tasks, with an act word. A bare "google calendar" or "outlook calendar"
+    # is also no word: a Projects task can name a calendar bug. A bare "outlook"
     # is the mail provider, and a bare "sync" or "disconnect" belongs to the
     # CRM and the Integrations page (task 3109). Fence: test_my_tasks_p1c_tools.py.
-    "google calendar", "outlook calendar", "my tasks in google calendar",
-    "my tasks in outlook", "tasks to google calendar", "tasks to outlook",
+    "sync google calendar", "sync my google calendar", "sync outlook calendar",
+    "sync my outlook calendar", "disconnect google calendar",
+    "disconnect my google calendar", "disconnect outlook calendar",
+    "disconnect my outlook calendar", "my tasks in google calendar",
+    "my tasks in outlook", "tasks in google calendar", "tasks to google calendar",
+    "tasks to outlook",
 )
 
 _PROJECTS_REPORTS_RULES = """PROJECTS REPORT TOOLS. You hold the tools to report on projects. Use them yourself.

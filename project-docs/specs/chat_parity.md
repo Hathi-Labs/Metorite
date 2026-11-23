@@ -458,13 +458,37 @@ he approves the merge.
 12. **P-1c: Disconnect in a held chat.** Default: a held chat holds off all
     three acts, also while `HELD_CARD_WRITES_ORGS` is empty.
 13. **P-1c: the cap of 110 tools.** The `calendar-day` pack grows from 20 to
-    22 tools. A turn that asks for the day planner and for tasks, such as
-    "block two hours on my calendar for the task", then loads `calendar-day`
-    only. The core `projects` pack steps aside, because a base of 56 leaves
-    no room for a Projects work pack of 11 tools. The loader still reaches
-    the Projects tools, one load later. One tool in place of two makes the
-    same result. `test_pack_requests.py` holds the row of `set_my_overlay`,
-    and the row is red. Choose one: accept the step-aside and move the row to
-    `KNOWN_GAPS`, change a cap (`MAX_REQUEST_TOOLS` or `REACH_MIN_TOOLS`), or
-    put the two acts in a new pack slug. Default: none. The merge waits for
-    this answer.
+    22 tools. A base of 56, `calendar-day` 22 and `projects` 23 make 101. The
+    11-tool Projects work pack then makes 112, above the cap of 110. The
+    regression is wider than the one red row in `test_pack_requests.py`
+    (`set_my_overlay`). It has three classes.
+    - Class 1: a fresh turn that asks for the day and for tasks loads
+      `calendar-day` only. Probes: "block two hours on my calendar for the
+      task", "show my overdue tasks and plan my day", "create a task and block
+      time on my calendar", "close my day and mark the task done", and "rebuild
+      my day and create a task to call Ravi". The Projects tools come one load later.
+    - Class 2: in a chat where `projects` is already sticky, "plan my day" and
+      "rebuild my day" load `projects` only. The day planner drops out of the
+      turn that names it. It comes one load later, through the loader.
+    - Class 3: the words were too wide. A bare "google calendar" or "outlook
+      calendar" pulled `calendar-day` into Projects and mail turns. P-1c fixed
+      this: the words now bind to an act, and negative rows in `CONTROLS` guard it.
+
+    The owner chooses one option. Recommended first.
+    - (c) A new small pack, for example `calendar-connections`. It holds
+      `my_tasks_list_calendar_connections` (P-1a) and the two acts, 3 tools.
+      `calendar-day` drops to 19 tools, and 56 + 19 + 23 + 11 = 109 leaves a
+      headroom of 1. Cost: the owner adds the `TOOL_PACKS` line or a `FOLLOWS`
+      entry on `calendar-day`, and P-1a changes.
+    - (a) Accept the step-aside and move one row to `KNOWN_GAPS`. Not
+      recommended. One row hides three classes, and class 2 removes the day
+      planner from the turn that names it.
+    - (b) Change `MAX_REQUEST_TOOLS` or `REACH_MIN_TOOLS`. Not recommended.
+      The 110 is a measured quality limit (OA-5: 110 tools at 51 of 54 turns).
+    - (d) One tool for all five acts. The pack returns to exactly 110 with no
+      headroom. The list read takes the worst-case annotation, so a held chat
+      loses "list my calendars". Folding only the two acts gives 21 tools,
+      and that still fails at 111.
+
+    Default: none. The merge of P-1c is blocked until `test_pack_requests.py`
+    is green and the decision is recorded on task 3923.

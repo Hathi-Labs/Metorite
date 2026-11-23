@@ -309,12 +309,34 @@ async def test_a_switch_already_set_shows_no_card(monkeypatch) -> None:
 
 @pytest.mark.parametrize(("status", "words"), [
     ("busy", "runs now"), ("needs_reconnect", "connect it again"),
-    ("error", "did not work"), ("odd", "did not work")])
+    ("error", "did not finish"), ("odd", "did not finish")])
 async def test_a_sync_that_did_not_run_says_so(monkeypatch, status, words) -> None:
     """Mutation: answer "Synced" for each status -> red."""
     _install(monkeypatch, Gateway(write={"status": status, "added": 0}))
     text = await core.my_tasks_calendar_connection("google", "sync")
     assert words in text and "Synced" not in text
+
+
+async def test_a_failed_sync_makes_no_false_promise(monkeypatch) -> None:
+    """No text says that a retry runs by itself. Mutation: say "in a minute" -> red."""
+    _install(monkeypatch, Gateway(write={"status": "error"}))
+    text = await core.my_tasks_calendar_connection("google", "sync")
+    assert "minute" not in text and "again" in text
+
+
+async def test_a_sync_of_a_row_that_needs_reconnect_shows_no_card(monkeypatch) -> None:
+    """The engine answers at once, so the card would ask for an act that cannot
+    run. Mutation: show the card or send the POST -> red."""
+    gw, card = _install(monkeypatch, Gateway([_row(status="needs_reconnect")]))
+    text = await core.my_tasks_calendar_connection("google", "sync")
+    assert card.cards == [] and gw.writes == []
+    assert text == core._SYNC_LINES["needs_reconnect"] and "you" in text.lower()
+
+
+async def test_a_sync_of_a_connected_row_still_shows_the_card(monkeypatch) -> None:
+    gw, card = _install(monkeypatch, Gateway([_row(status="connected")], write={"status": "ok"}))
+    await core.my_tasks_calendar_connection("google", "sync")
+    assert len(card.cards) == 1 and len(gw.writes) == 1
 
 
 async def test_a_write_404_is_one_line(monkeypatch) -> None:
@@ -438,6 +460,7 @@ def test_the_parity_rows_name_the_tools() -> None:
 @pytest.mark.parametrize("words", [
     "sync my calendar", "disconnect my calendar", "disconnect my google calendar",
     "disconnect my outlook calendar", "sync google calendar",
+    "sync my google calendar", "sync my outlook calendar",
     "show my tasks in google calendar", "show my tasks in outlook",
     "stop sending my tasks to outlook", "send my tasks to google calendar",
 ])
@@ -449,6 +472,8 @@ def test_the_words_load_the_pack(words: str) -> None:
 
 @pytest.mark.parametrize("words", [
     "connect my outlook mail", "summarise my outlook inbox",
+    "create a task to fix the google calendar bug",
+    "assign the outlook calendar bug to Ravi", "move the google calendar task to done",
     "disconnect the slack integration", "disconnect the google drive integration",
     "sync the crm", "reconnect my email account", "sync my google drive",
     "send an email from outlook", "disconnect", "sync", "outlook",

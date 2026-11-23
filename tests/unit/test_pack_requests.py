@@ -418,6 +418,12 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sync the crm", ("crm-records",)),
     ("reconnect my email account", ("email-setup",)),
     ("sync my google drive", ()),
+    # P-1c review: a bare "google calendar" or "outlook calendar" is no word.
+    # A task about a calendar bug, or a mail about an invite, keeps its pack.
+    ("create a task to fix the google calendar bug", ("projects",)),
+    ("assign the outlook calendar bug to Ravi", ("projects",)),
+    ("move the google calendar task to done", ("projects",)),
+    ("add this to google calendar invite in the email", ("email",)),
 )
 
 

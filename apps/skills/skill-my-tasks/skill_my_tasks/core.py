@@ -2155,11 +2155,11 @@ _WRITE_GONE = ("That calendar is no longer connected, or calendar sync is off. "
 #: What the sync route answers for each state, in the member's words.
 _SYNC_LINES = {
     "busy": "A sync of this calendar runs now, so no new sync started. Try again in a minute.",
-    "needs_reconnect": ("The calendar needs the member to connect it again, in "
+    "needs_reconnect": ("This calendar needs you to connect it again, in "
                         "Calendar settings. The sync did not read new events."),
 }
-_SYNC_FAILED = ("The sync did not work, and no new events came in. The next "
-                "sync tries again in a minute.")
+_SYNC_FAILED = ("The sync did not finish. Try it again. If it keeps failing, "
+                "connect the calendar again in Calendar settings.")
 
 
 def _no_connection(name: str) -> str:
@@ -2264,6 +2264,9 @@ async def my_tasks_calendar_connection(provider: str, action: str) -> str:
         return line
     name, address = _CAL_PROVIDERS[provider], str(c.get("account_email") or "")
     if action == "sync":
+        if c.get("status") == "needs_reconnect":
+            # The engine answers needs_reconnect at once, so no card and no write.
+            return _SYNC_LINES["needs_reconnect"]
         title = f"Sync {name} Calendar now?"
         detail = (f"Metorite reads your events from {_data(address)}. "
                   "No data leaves Metorite.")
