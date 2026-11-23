@@ -267,7 +267,7 @@ task of each wave.
   nothing. The notice mail comes from the Next hop `api/admin/members/invite`,
   and only when `MEMBER_INVITE_EMAIL_ENABLED` is on. A chat tool calls the
   gateway, so it would send no mail, and a chat invite would differ from a UI
-  invite. PAR-2 must make the two do the same (D-PAR-3), and its card must say
+  invite. PAR-2b must make the two do the same (D-PAR-3), and its card must say
   that a mail goes to an outside person (D131.7).
 - **Reason.** It is the act that the member of §6.1 wanted to do.
 - **The owner does this.** He approves the preview of the invite card, and
@@ -380,7 +380,7 @@ he approves the merge.
 
 **Open for the owner.**
 
-1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2 merges and before
+1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2a merges and before
    the demo of rung 1. Say which pack holds the tools of PAR-5 and PAR-6: a new
    slug needs its own line before the demo of rung 3.
 2. **The previews.** Approve the preview of each new card: the invite, the
