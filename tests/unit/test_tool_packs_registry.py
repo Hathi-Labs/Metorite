@@ -1397,9 +1397,12 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
 
 # -- 10. The org-admin pack (PAR-2a, chat_parity.md section 6.3, task 3102) ---
 
-#: The four tools of the pack, in the order of the family.
+#: The tools of the pack, in the order of the family. PAR-6a (task 3109) adds
+#: the seven Integrations tools after the four member tools.
 ORG_ADMIN_TOOLS = ("list_members", "set_member_roles", "set_member_status",
-                   "answer_access_request")
+                   "answer_access_request", "read_integrations", "read_agent_access",
+                   "probe_integration", "discover_api_setup", "revoke_agent_connection",
+                   "disconnect_integration", "set_mcp_server")
 
 
 def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
@@ -1468,7 +1471,7 @@ def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("org-admin", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == 4
+    assert len(tools) == len(ORG_ADMIN_TOOLS) == 11
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

@@ -193,7 +193,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
             (3115, 3903)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
-            (3102, 3925, 3107, 3108, 3109)),
+            (3102, 3925, 3107, 3108, 3109, 3932)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
 }
 
@@ -233,6 +233,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/org_facts_tools.py",
     # PAR-2a: the org-admin pack sends the admin routes of the Members tab.
     "packages/acb_skills/acb_skills/org_admin_tools.py",
+    # PAR-6a: the org-admin pack sends the routes of the Integrations app.
+    "packages/acb_skills/acb_skills/integrations_admin_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -470,6 +472,33 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/admin/members/{}/roles": "set_member_roles",
     # The approve and the deny of a sign-in request: the last part is the verb.
     "POST /api/admin/members/requests/{}/{}": "answer_access_request",
+    # ── Integrations (PAR-6a, task 3109, chat_parity.md section 6.3 rung 3) ──
+    # The org-admin pack calls each Integrations route as the member, and the
+    # guard of the route is the only check. A write shows ONE card first. The
+    # BFF of the agent-access rows names its gateway path in a relay, so those
+    # rows take the tuple form.
+    "GET /api/agent-access/connections": (
+        "read_agent_access", "GET /agent-access/connections"),
+    "GET /api/agent-access/requests": ("read_agent_access", "GET /agent-access/requests"),
+    "GET /api/integrations/agent-connections": (
+        "read_agent_access", "GET /integrations/agent-connections"),
+    "GET /api/integrations/connections": "read_integrations",
+    "GET /api/integrations/github/account": "read_integrations",
+    "GET /api/integrations/plugins": "read_integrations",
+    "GET /api/integrations/skills": "read_integrations",
+    "GET /api/integrations/status": "read_integrations",
+    # The two probes and the proposal leave the org (open_world=True).
+    "GET /api/integrations/test": "probe_integration",
+    "POST /api/integrations/mcp/{}/test": "probe_integration",
+    "POST /api/integrations/discover": "discover_api_setup",
+    "DELETE /api/agent-access/connections/{}": (
+        "revoke_agent_connection", "DELETE /agent-access/connections/{}"),
+    "DELETE /api/integrations/agent-connections/{}": (
+        "revoke_agent_connection", "DELETE /integrations/agent-connections/{}"),
+    "POST /api/integrations/connections/{}/disconnect": "disconnect_integration",
+    "DELETE /api/integrations/github": "disconnect_integration",
+    "DELETE /api/integrations/plugins/{}": "disconnect_integration",
+    "PATCH /api/integrations/mcp/{}": "set_mcp_server",
     # PAR-8a (task 3903, chat_parity.md section 6.4 rung 5): the other 18 acts of the
     # Workflows app, as the member, in the dark pack studio-workflows. Each write that a
     # card guards sends after approved only.
@@ -863,6 +892,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "secret",
         "Saves a GitHub token. A secret never goes through the chat.",
     ),
+    # PAR-6a (task 3109): the Add form of an MCP server sends its headers, its env vars
+    # and its command in the body. The owner decided that secrets stay in the UI (D-PAR-7).
+    # An add by URL only, with no secret, is the open question of PAR-6b (task 3932).
+    "POST /api/integrations/mcp": (
+        "secret",
+        "Adds an MCP server with its headers, env vars or command. A secret never goes "
+        "through the chat. An add by URL only is the open question of PAR-6b (task 3932).",
+    ),
 }
 
 #: An action -> the wave that gives the chat a tool for it.
@@ -1184,33 +1221,19 @@ DEBT: dict[str, str] = {
     "POST /api/billing/seats/{}": "P-8",
     "PUT /api/admin/members/{}/overrides": "P-8",
     # ── Integrations ──
-    "DELETE /api/agent-access/connections/{}": "P-8",
-    "DELETE /api/integrations/agent-connections/{}": "P-8",
-    "DELETE /api/integrations/github": "P-8",
-    "DELETE /api/integrations/plugins/{}": "P-8",
-    "GET /api/agent-access/connections": "P-8",
-    # EA-17c-2: Change access in the AI agents view. The chat tool is not built.
+    # PAR-6a (task 3109) paid 17 rows. The four left wait for an owner decision
+    # (PAR-6b, task 3932).
+    # EA-17c-2: Change access in the AI agents view. The chat tool is not built:
+    # a change of a grant waits for the owner.
     "PATCH /api/agent-access/connections/{}": "P-8",
-    # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
-    # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
-    # chat surface of the decision: the member presses Approve or Decline on
-    # the card. No chat tool decides, because Mira calls as the member and
-    # would approve her own change. So the decision stays debt of P-8.
-    "GET /api/agent-access/requests": "P-8",
+    # MCP-P1b-1: Approve or Decline on AppRequestCard. In a chat, the card of
+    # STU-B2c-2c (task 1866) is the chat surface of the decision: the member
+    # presses Approve or Decline on the card. No chat tool decides, because
+    # Mira calls as the member and would approve her own change. So the
+    # decision stays debt of P-8. Fence: test_integrations_admin_tools.py.
     "POST /api/agent-access/requests/{}/decision": "P-8",
-    "GET /api/integrations/agent-connections": "P-8",
-    "GET /api/integrations/connections": "P-8",
-    "GET /api/integrations/github/account": "P-8",
-    "GET /api/integrations/plugins": "P-8",
-    "GET /api/integrations/skills": "P-8",
-    "GET /api/integrations/status": "P-8",
-    "GET /api/integrations/test": "P-8",
-    "PATCH /api/integrations/mcp/{}": "P-8",
-    "POST /api/integrations/connections/{}/disconnect": "P-8",
+    # A save of a custom API definition, and the install of a plugin from a URL.
     "POST /api/integrations/custom": "P-8",
-    "POST /api/integrations/discover": "P-8",
-    "POST /api/integrations/mcp": "P-8",
-    "POST /api/integrations/mcp/{}/test": "P-8",
     "POST /api/integrations/plugins": "P-8",
 }
 
@@ -1246,7 +1269,7 @@ DEBT_CEILING: dict[str, int] = {
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 30,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30).
-    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
+    "integrations": 4,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. PAR-6a (task 3109) paid 17 rows with the org-admin pack and made the MCP add a secret exemption (22 to 4). The grant change, the decision, the plugin install and the custom API wait for the owner (task 3932).
     "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
 }
 

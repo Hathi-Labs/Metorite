@@ -691,8 +691,9 @@ def test_eight_ceilings_went_up_since_p0() -> None:
     goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
     # PAR-8b (task 3903) took the shell below its baseline (16 to 7).
-    # P-2c (task 3919) took email below its baseline (14 to 10).
-    assert up == ["calendar", "chat", "integrations", "knowledge", "settings", "studio"]
+    # P-2c (task 3919) took email below its baseline (14 to 10). PAR-6a (task
+    # 3109) took the integrations below their baseline (22 to 4).
+    assert up == ["calendar", "chat", "knowledge", "settings", "studio"]
 
 
 def test_a_raise_with_no_task_in_its_comment_is_found() -> None:

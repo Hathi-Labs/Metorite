@@ -1055,24 +1055,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # guard of the route is the only check. The owner never runs as an agent, as
     # studio-builder does. It is NOT in FOLLOWS: only the owner's pack list turns
     # it on (tool_packs.packs_on). Fence: test_org_admin_tools.py.
+    # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
+    # the same pack (integrations_admin_tools.py). Fence:
+    # test_integrations_admin_tools.py.
     "org-admin": {
-        "label": "Organization members",
+        "label": "Organization members and Integrations",
         "summary": (
-            "List the members of the organization and the sign-in requests, change the "
-            "roles or the status of a member, or answer a sign-in request."
+            "List the members and the sign-in requests, change the roles or the status "
+            "of a member, answer a sign-in request, or read, test and disconnect the "
+            "Integrations, the agent connections and the MCP servers."
         ),
         "description": (
-            "A tool pack: the tools of the Members tab of Organisation, for the main "
-            "assistant to load when a turn asks about the members of the organization. "
-            "Each tool calls the admin routes as the member, so a member without the "
-            "admin right gets a refusal. Each change shows one card first. A run loads a "
-            "pack only where tool packs are on, so until then this switch has no effect."
+            "A tool pack: the tools of the Members tab of Organisation and of the "
+            "Integrations app, for the main assistant to load when a turn asks about the "
+            "members or the Integrations of the organization. Each tool calls the routes "
+            "as the member, so a member without the right gets a refusal. Each change "
+            "shows one card first. A run loads a pack only where tool packs are on, so "
+            "until then this switch has no effect."
         ),
         "tools": (
             "list_members",
             "set_member_roles",
             "set_member_status",
             "answer_access_request",
+            "read_integrations",
+            "read_agent_access",
+            "probe_integration",
+            "discover_api_setup",
+            "revoke_agent_connection",
+            "disconnect_integration",
+            "set_mcp_server",
         ),
         "owner": "org-admin",
         "core": False,

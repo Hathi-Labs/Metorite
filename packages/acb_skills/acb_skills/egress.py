@@ -1600,6 +1600,13 @@ HELD_CLASS_C_TOOLS: Mapping[str, frozenset[str]] = {
 #: ``list_members`` says ``read_only=True`` and stays. The owner never runs as
 #: an agent, so only its pack family reaches the rule. Fence:
 #: ``tests/unit/test_org_admin_tools.py``.
+#:
+#: PAR-6a (task 3109) adds the Integrations tools to the same pack. A held chat
+#: holds off ``revoke_agent_connection``, ``disconnect_integration`` and
+#: ``set_mcp_server`` by this rule. ``probe_integration`` and
+#: ``discover_api_setup`` say ``open_world=True``, so :func:`is_egress_tool`
+#: holds them off, as it holds off ``web_search``. The two reads stay. Fence:
+#: ``tests/unit/test_integrations_admin_tools.py``.
 HELD_WRITE_OWNERS: frozenset[str] = frozenset(
     {"projects-assistant", "crm-assistant", "org-admin"})
 #: The tools of an owner's own agent that stay though no pack family names them:

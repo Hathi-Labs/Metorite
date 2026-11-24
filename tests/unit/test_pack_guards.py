@@ -1247,7 +1247,9 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
     # PAR-2a: the read of the members. The three writes each need a card.
-    "org-admin": frozenset({"list_members"}),
+    # PAR-6a: the two Integrations reads join. The two probes and the proposal
+    # leave the org, so a held build drops them, and the three writes need a card.
+    "org-admin": frozenset({"list_members", "read_integrations", "read_agent_access"}),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a
