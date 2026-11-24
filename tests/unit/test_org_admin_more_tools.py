@@ -919,13 +919,36 @@ async def test_a_marked_run_with_no_person_shows_no_purge_card(gw, monkeypatch) 
     assert out["ok"] is False and gw.writes() == [], out
 
 
+#: The group of the loss words for each key of ``members._PURGE_DELETES``.
+#: It lives here and not in the tool, because only the store of a table may
+#: name the table in code (``test_skill_runs.py``).
+_PURGE_LOSSES: dict[str, str] = {
+    "role_grants": "identity", "permission_overrides": "identity",
+    "group_memberships": "identity", "sign_in_requests": "identity",
+    "member_record": "identity",
+    "email_accounts": "mail", "whatsapp_accounts": "mail", "task_accounts": "mail",
+    "scheduled_sends": "mail", "mailbox_member_prefs": "mail",
+    "app_grants": "grants", "app_tool_grants": "grants", "mailbox_grants": "grants",
+    "private_app_installs": "grants",
+    "room_participations": "chats", "chat_member_rows": "chats", "chat_card_rows": "chats",
+    "chat_join_rows": "chats", "failure_event_rows": "chats",
+    "private_chat_sessions": "chats", "chat_topics": "chats", "chat_pending_asks": "chats",
+    "crm_member_rules": "crm", "crm_private_changes": "crm", "crm_private_views": "crm",
+    "studio_skill_runs": "studio", "studio_skills": "studio", "studio_private_views": "studio",
+    "knowledge_favorites": "own", "reminders": "own", "brief_runs": "own",
+    "goal_records": "own", "member_settings": "own", "push_devices": "own",
+    "calendar_entries": "own", "calendar_attendances": "own", "connection_asks": "own",
+}
+
+
 def test_the_purge_loss_words_cover_each_key_of_the_route() -> None:
-    """The copy of ``_PURGE_DELETES`` and ``_PURGE_KEEPS`` equals the route.
+    """Each key of ``_PURGE_DELETES`` has a group of loss words, and the copy
+    of ``_PURGE_KEEPS`` equals the route.
     Mutation: a new table on the delete side with no words -> red."""
     from gateway.routes.admin import members
 
-    assert set(om._PURGE_LOSSES) == {r.key for r in members._PURGE_DELETES}
-    assert set(om._PURGE_LOSSES.values()) == set(om._PURGE_LOSS_WORDS)
+    assert set(_PURGE_LOSSES) == {r.key for r in members._PURGE_DELETES}
+    assert set(_PURGE_LOSSES.values()) == set(om._PURGE_LOSS_WORDS)
     assert {r.key for r in members._PURGE_KEEPS} == set(om._PURGE_KEEPS)
 
 

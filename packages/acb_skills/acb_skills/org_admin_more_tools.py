@@ -1211,9 +1211,10 @@ async def rename_org(display_name: str) -> dict[str, Any]:
 # good. So a purge needs the member's OWN typed address of this turn, and it
 # refuses each run that no person typed in.
 
-#: What a purge deletes, in words, by the key of ``members._PURGE_DELETES``.
-#: ``acb_skills`` cannot import the gateway, so this is a copy, and
-#: ``test_org_admin_more_tools.py`` fails when a key of the route has no group.
+#: What a purge deletes, in words, by a group that this tool owns. The map
+#: from each key of ``members._PURGE_DELETES`` to its group is in
+#: ``test_org_admin_more_tools.py``, and that test fails when a key of the
+#: route has no group. Only the store of a table names it in code.
 _PURGE_LOSS_WORDS: dict[str, str] = {
     "identity": "the member record, the roles, the overrides, the group places and the "
                 "sign-in requests",
@@ -1227,23 +1228,6 @@ _PURGE_LOSS_WORDS: dict[str, str] = {
     "studio": "the private Studio skills, skill runs and views",
     "own": "the settings, reminders, briefs, goals, push devices, Knowledge favourites, "
            "calendar entries and connection asks of the member",
-}
-_PURGE_LOSSES: dict[str, str] = {
-    "role_grants": "identity", "permission_overrides": "identity",
-    "group_memberships": "identity", "sign_in_requests": "identity",
-    "member_record": "identity",
-    "email_accounts": "mail", "whatsapp_accounts": "mail", "task_accounts": "mail",
-    "scheduled_sends": "mail", "mailbox_member_prefs": "mail",
-    "app_grants": "grants", "app_tool_grants": "grants", "mailbox_grants": "grants",
-    "private_app_installs": "grants",
-    "room_participations": "chats", "chat_member_rows": "chats", "chat_card_rows": "chats",
-    "chat_join_rows": "chats", "failure_event_rows": "chats",
-    "private_chat_sessions": "chats", "chat_topics": "chats", "chat_pending_asks": "chats",
-    "crm_member_rules": "crm", "crm_private_changes": "crm", "crm_private_views": "crm",
-    "studio_skill_runs": "studio", "studio_skills": "studio", "studio_private_views": "studio",
-    "knowledge_favorites": "own", "reminders": "own", "brief_runs": "own",
-    "goal_records": "own", "member_settings": "own", "push_devices": "own",
-    "calendar_entries": "own", "calendar_attendances": "own", "connection_asks": "own",
 }
 #: The keys of ``members._PURGE_KEEPS``: what a purge keeps. The same fence.
 _PURGE_KEEPS: frozenset[str] = frozenset({
@@ -1269,7 +1253,7 @@ _PURGE_SCRUB_WORDS = ("Cleared: the summaries of the member's chats that stay, s
 #: a purge that works.
 PURGE_TIMEOUT_S = 120.0
 _PURGE_KEPT_WORDS = ("Kept: the audit trail, the agent runs, the shared rooms, and the apps, "
-                     "workflows, meetings, Knowledge proposals and shared Studio items that "
+                     "workflows, meetings, suggested Knowledge page changes and shared Studio items that "
                      "the member made.")
 
 _SELF_REMOVE = ("You cannot remove yourself. Ask another owner or admin to do it. Nothing "
