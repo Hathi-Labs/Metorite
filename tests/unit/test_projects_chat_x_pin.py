@@ -89,8 +89,8 @@ STAYS_X: dict[str, str] = {
     # `report_subagent` over the POST, and the chat still never reaches it.
     "GET /projects/agent-runs/{run_id}/children": "mcp-door",
     "POST /projects/agent-runs/{run_id}/children": "mcp-door",
-    # SW-27a (task 861): an agent reserves a number. SW-27b gives it the MCP
-    # tool. The chat has no need to reserve a number.
+    # SW-27a (task 861): an agent reserves a number through the MCP tool
+    # reserve_number (SW-27b, task 3893). The chat has no need to.
     "POST /projects/nodes/{project_id}/sequences/{name}/reserve": "mcp-door",
     # WS-64 OP-6e, D-OP-13 and EA3-40: only the run's member answers, on the card
     "POST /projects/agent-runs/{run_id}/archive-approval": "card-answer",

@@ -141,6 +141,11 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         " member's yes and with the member's switch on. The chat deletes"
         " through delete_task and its card."
     ),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): (
+        "SW-27b (task 3893, agent_coordination.md SW-27). The MCP door only:"
+        " reserve_number gives an outside agent the next number of a project"
+        " sequence. The chat has no need to reserve a number."
+    ),
     # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
     ("POST", "/projects/agent-runs/{run_id}/children"): (
         "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
@@ -261,6 +266,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
         # replaces the plan of the agent's own run.
         ("PUT", "/projects/agent-runs/{run_id}/plan"),
+        # WS-MCP SW-27b: `reserve_number` (agent_coordination.md SW-27). Each
+        # call takes the next number of a project sequence.
+        ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -437,6 +445,10 @@ WRITE_HINTS = {**READ_HINTS, "readOnlyHint": False}
 #: The write tools whose ``idempotentHint`` is false, each with its reason. A
 #: new entry needs a spec amendment (§9.2).
 NON_IDEMPOTENT_WRITES: dict[str, str] = {
+    "reserve_number": (
+        "SW-27b. Each call takes a new number of the sequence, and no number"
+        " comes back (agent_coordination.md SW-27)."
+    ),
     "create_task": (
         "EA-6d. The hint is one value for every call, and a call with no"
         " idempotency_key makes a new task each time (spec §9.2)."
@@ -861,3 +873,15 @@ def test_rule_4_each_item_of_update_tasks_is_an_update_task_input():
     assert bulk.routes == one.routes and bulk.alt_writes == one.alt_writes
     assert bulk.params == {} and bulk.prior_writes == ()
     assert bulk.required_scope == one.required_scope
+
+
+def test_the_sequence_name_rule_is_one_rule():
+    """SW-27b. The edge checks the reserve path with
+    ``agent_oauth.SEQUENCE_NAME_PATTERN``. The route checks it with
+    ``NAME_RE``, and the CHECK of migration 477 holds it too. If the edge
+    rule were wider, a bad name would reach the route and answer 422; if it
+    were narrower, the edge would refuse a name that the route takes."""
+    from acb_auth.agent_oauth import SEQUENCE_NAME_PATTERN
+    from gateway.routes.projects.sequences import NAME_RE
+
+    assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN

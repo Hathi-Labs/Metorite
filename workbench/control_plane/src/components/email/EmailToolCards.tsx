@@ -45,7 +45,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import AppIcon from "@/components/Icon";
 import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
-import { withoutIds } from "@/lib/readout";
+import { withoutFrame, withoutIds } from "@/lib/readout";
 import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -2267,7 +2267,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       id={`tool:${e.id}`}
       title={meta.label}
       icon={iconName}
-      summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      summary={withoutIds(withoutFrame(detail).split(/\r?\n/)[0] ?? "")}
       receipt={!failed && !readsOnly(e)}
       header="own"
     >
@@ -2365,7 +2365,7 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
 /** A `read_thread` result as a member reads it: each line as sent, with no
  *  id. Exported for its test. */
 export function threadText(raw: string | null | undefined): string {
-  return (raw || "")
+  return withoutFrame(raw || "")
     .split(/\r?\n/)
     .map((line) => withoutIds(line))
     .join("\n")

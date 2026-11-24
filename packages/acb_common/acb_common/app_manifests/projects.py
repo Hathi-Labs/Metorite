@@ -535,8 +535,8 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         # ── sequences.py (SW-27a, task 861) ──
         Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
-              reason="SW-27a: no tool reaches the reserve route yet. SW-27b (task 3893) adds the "
-              "MCP edge tool reserve_number, behind the owner's seam answer."),
+              reason="SW-27b (task 3893): the typed MCP tool reserve_number reaches this "
+              "route, as delete_task reaches the agent-delete route. The door adds nothing."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),

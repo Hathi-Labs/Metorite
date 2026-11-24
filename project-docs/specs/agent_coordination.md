@@ -6,7 +6,7 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
-**SW-27a (the project sequences: migration 477 and the reserve route) is built, 2026-11-22. SW-27b, SW-27c and SW-27d are open.**
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is built, 2026-11-23. SW-27c and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
@@ -17,6 +17,8 @@
 **SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
 
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
+
+**SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 498.**
 
 **SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475.**
 
@@ -1391,7 +1393,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Owner answers (task 861, 2026-11-22, prompt e6f9f76c).** The contributor fleet may add the migration. A released number stays burned: no code lowers `last_value`, so no number comes back. A reservation is `used` on the agent's call, or when a pull request that the task references merges.
 - **Slices.**
   - **SW-27a** (this row's first slice): migration `477_pm_project_sequences.sql` (473 went to PR 2757) (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/nodes/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
-  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). A seam: ask first.
+  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). The owner said yes on 2026-11-23. The pair is in `MCP_WRITE_ROUTES`, so `projects:write`, the nonce and the write cap apply. The route reads the reach of the agent through `resolve_visibility`, so a pinned connection reserves only in its pins. Each call takes a new number, so the tool is not idempotent. Fences: `test_mcp_edge_reserve_r8.py` (R8: two calls at once get two numbers, the pins, a read-only token, a second org) and `test_mcp_edge_coverage.py`.
   - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task.
   - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
   - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
@@ -2141,7 +2143,9 @@ They keep their own gates.
 - **Built (task 3628), 2026-11-21.** Migration 472 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked.
 - **The map line (built, 2026-11-21).** The map read gives `lines`, each with `from` and `to`, two session nodes. A line shows only when the viewer can see both runs through `seen`, and both nodes are on the map. A line joins session nodes, so an ended dispatcher run keeps its line while its session has a node. The read takes one step and never walks the chain. Fence: `tests/unit/test_agent_map_r8.py` (`TestTheLines`).
 - **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
-- **Owner question: the cost of the delete.** No index holds `dispatched_by_run_id`, because the label fence refuses an index that names it. So each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. A task delete or an organization delete removes runs. Is that cost acceptable, or should a later migration add a partial index and change the fence?
+- **The cost of the delete (SW-107b, task 3860).** Without an index, each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. An organization delete makes one scan for each run.
+- **Decision (owner, 2026-11-23).** A plain partial index in a migration, with a `lock_timeout`, and one narrow exemption in the label fence. Not `CREATE INDEX CONCURRENTLY`.
+- **Built (task 3860), 2026-11-23.** Migration 498 adds `pm_agent_runs_dispatched_by` on `dispatched_by_run_id`, with `WHERE dispatched_by_run_id IS NOT NULL`. The label fence takes this one index, word for word, and refuses each other index that names a label column. Fence: `tests/unit/test_agent_run_dispatch_index_r8.py` (the plan uses the index, and a run delete scans no table) and `tests/unit/test_agent_label_fence.py` (the exemption).
 
 #### SW-108 · The orchestrator holds a run and names it
 
@@ -2462,6 +2466,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-105 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | SW-106 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/agentCardLook.test.ts` in `workbench/control_plane`, then `visual-review` |
 | SW-107 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_r8.py tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
+| SW-107b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_index_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
 | SW-108 | None. The text is advisory (R7) |
 | SW-109 | `npx vitest run src/app/projects/lib/agentMap.test.ts` in `workbench/control_plane`, then `visual-review` |
 | SW-110 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py`, and the vitest of SW-109 |
