@@ -1,15 +1,16 @@
-"""Organization Members - the owner of the ``org-admin`` tool pack (PAR-2a).
+"""Organization Members - the owner of the ``org-admin`` tool pack (PAR-2a, PAR-6a).
 
 Spec: ``project-docs/specs/chat_parity.md`` section 6.3, rung 1 (Metorite
-task 3102).
+task 3102) and rung 3 (PAR-6a, task 3109).
 
 This agent is **not a second assistant** (D99, D125). The member talks to
 Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
 :func:`_agent_tools` from this module, and the main assistant holds those
-tools in a turn about the members of the organization. The tools are in
-``acb_skills.org_admin_tools`` and this module keeps no copy. They call the
-admin routes over HTTP as the member, and take no org or member argument.
-The routes decide each right.
+tools in a turn about the members or the Integrations of the organization.
+The tools are in ``acb_skills.org_admin_tools`` and
+``acb_skills.integrations_admin_tools``, and this module keeps no copy. They
+call the admin and Integrations routes over HTTP as the member, and take no
+org or member argument. The routes decide each right.
 
 It never runs as an agent, as ``studio-builder`` does. The name "org-admin"
 is in no agent list: not the registry, the picker, a specialist tool or the
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_settings
+from acb_skills.integrations_admin_tools import INTEGRATIONS_ADMIN_TOOLS
 from acb_skills.org_admin_tools import ORG_ADMIN_TOOLS
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
@@ -35,7 +37,7 @@ INSTRUCTIONS = (
     else "You hold the member tools of the organization. You are not a second assistant."
 )
 
-_TOOLS = [*ORG_ADMIN_TOOLS]
+_TOOLS = [*ORG_ADMIN_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
@@ -87,7 +89,9 @@ def build_agents() -> list[Any]:
             description=(
                 "Owns the org-admin tool pack: list the members of the organization and "
                 "the sign-in requests, set the roles of a member, suspend or reactivate a "
-                "member, and approve or deny a sign-in request. Each change asks the "
+                "member, and approve or deny a sign-in request. It also reads, tests and "
+                "disconnects the Integrations of the organization, revokes an agent "
+                "connection and sets the switches of an MCP server. Each change asks the "
                 "member first."
             ),
             tools=_agent_tools(),

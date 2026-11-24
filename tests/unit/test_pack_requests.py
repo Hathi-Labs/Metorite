@@ -327,6 +327,17 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                           "reactivate the member ravi@acme.test"),
     "answer_access_request": ("approve the sign-in request from kim@acme.test",
                               "deny the access request from kim@acme.test"),
+    # -- org-admin: the Integrations app (PAR-6a, task 3109) --
+    "read_integrations": ("which integrations are connected?", "list our plugins",
+                          "is github connected?"),
+    "read_agent_access": ("which agent connections do I have?",
+                          "list the app requests that wait for me"),
+    "probe_integration": ("test the apollo integration", "test the MCP server tools-a"),
+    "discover_api_setup": ("how do I set up the Notion integration?",),
+    "revoke_agent_connection": ("revoke the agent connection of Claude Desktop",),
+    "disconnect_integration": ("disconnect the zoho integration", "remove the plugin weather",
+                               "disconnect github"),
+    "set_mcp_server": ("turn on always confirm for the MCP server tools-a",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
@@ -479,3 +490,14 @@ def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses
     assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
     assert "agent" in tp.PACKS["projects-authority"].when
     assert "answer to an agent" not in plan.when
+
+
+@pytest.mark.parametrize("words", [
+    "open a pull request on github", "push the branch to github",
+    "clone the repo from github and fix the build",
+])
+def test_a_coding_turn_that_names_github_does_not_load_org_admin(words: str) -> None:
+    """PAR-6a fix round: a bare "github" once loaded the admin tools. Mutation:
+    add "github" back to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)
