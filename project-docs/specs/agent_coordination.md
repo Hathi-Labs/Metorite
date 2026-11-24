@@ -18,6 +18,8 @@
 
 **SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
 
+**SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 498.**
+
 **SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475.**
 
 **SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
@@ -2141,7 +2143,9 @@ They keep their own gates.
 - **Built (task 3628), 2026-11-21.** Migration 472 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked.
 - **The map line (built, 2026-11-21).** The map read gives `lines`, each with `from` and `to`, two session nodes. A line shows only when the viewer can see both runs through `seen`, and both nodes are on the map. A line joins session nodes, so an ended dispatcher run keeps its line while its session has a node. The read takes one step and never walks the chain. Fence: `tests/unit/test_agent_map_r8.py` (`TestTheLines`).
 - **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
-- **Owner question: the cost of the delete.** No index holds `dispatched_by_run_id`, because the label fence refuses an index that names it. So each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. A task delete or an organization delete removes runs. Is that cost acceptable, or should a later migration add a partial index and change the fence?
+- **The cost of the delete (SW-107b, task 3860).** Without an index, each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. An organization delete makes one scan for each run.
+- **Decision (owner, 2026-11-23).** A plain partial index in a migration, with a `lock_timeout`, and one narrow exemption in the label fence. Not `CREATE INDEX CONCURRENTLY`.
+- **Built (task 3860), 2026-11-23.** Migration 498 adds `pm_agent_runs_dispatched_by` on `dispatched_by_run_id`, with `WHERE dispatched_by_run_id IS NOT NULL`. The label fence takes this one index, word for word, and refuses each other index that names a label column. Fence: `tests/unit/test_agent_run_dispatch_index_r8.py` (the plan uses the index, and a run delete scans no table) and `tests/unit/test_agent_label_fence.py` (the exemption).
 
 #### SW-108 · The orchestrator holds a run and names it
 
@@ -2462,6 +2466,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-105 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | SW-106 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/agentCardLook.test.ts` in `workbench/control_plane`, then `visual-review` |
 | SW-107 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_r8.py tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
+| SW-107b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_index_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
 | SW-108 | None. The text is advisory (R7) |
 | SW-109 | `npx vitest run src/app/projects/lib/agentMap.test.ts` in `workbench/control_plane`, then `visual-review` |
 | SW-110 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py`, and the vitest of SW-109 |
