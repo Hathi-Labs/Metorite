@@ -2825,13 +2825,19 @@ _INSERT_CHILD_SQL = (
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
+#: SW-39. The one column list of a child run, over the alias ``c``. The map
+#: read of SW-110 (``agent_summary._MAP_CHILDREN_SQL``) reads the same list.
+CHILD_COLUMNS = (
+    "c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
+    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
+    " c.last_activity_at"
+)
+
 #: SW-39. The columns of the children of one run, in the org of the bound
 #: session (``filters.BOUND_ORG_SQL``) beside FORCE RLS. A child names its
 #: own subject, ``kind = 'child'``.
 _CHILD_SELECT = (
-    "SELECT c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
-    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
-    " c.last_activity_at"
+    f"SELECT {CHILD_COLUMNS}"
     " FROM pm_agent_runs c"
     f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON c.organization_id = bound_org.id"
     " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
