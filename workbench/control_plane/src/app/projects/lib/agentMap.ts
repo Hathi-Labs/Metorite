@@ -452,8 +452,12 @@ export const CHILD_GAP = DEPTH_STEP - NODE_W.session;
 export const CHILD_OFFSET = NODE_W.task + CHILD_GAP;
 /** The x step from one sub-agent column to the next. */
 export const CHILD_STEP = NODE_W.child + CHILD_GAP;
-/** The most sub-agent rows in one column: more fill the next column. */
-export const CHILD_ROWS_MAX = 5;
+/**
+ * The most sub-agent rows in one column: more fill the next column. Eight keeps
+ * up to eight sub-agents in one column, as wide as the case of three, so the
+ * fit scale stays readable. The map pane is wide and has room in its height.
+ */
+export const CHILD_ROWS_MAX = 8;
 const GAP = 12;
 const BLOCK_GAP = 24;
 

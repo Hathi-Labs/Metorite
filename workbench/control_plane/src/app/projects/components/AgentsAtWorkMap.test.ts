@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AgentMapView, SubAgentToggle } from "./AgentMapView";
+import { AgentMapView, SubAgentToggle, subAgentToggleSelector } from "./AgentMapView";
 import { AgentsAtWorkView } from "./AgentsAtWork";
 import { type AgentMapRead, parseAgentMap } from "../lib/agentMap";
 import type { AgentsAtWorkRead } from "../lib/agentsAtWork";
@@ -148,6 +148,16 @@ describe("the sub-agents of a session (SW-110)", () => {
     const opened = toggle(true, 1);
     expect(opened).toContain('aria-expanded="true"');
     expect(opened).toContain("Hide 1 sub-agent");
+  });
+
+  it("the control carries the opaque session id, so the view can focus it again after a remount", () => {
+    const out = renderToStaticMarkup(
+      createElement(SubAgentToggle, { count: 2, expanded: false, onToggle: () => {}, sessionId: "s-1" }),
+    );
+    expect(out).toContain('data-subagent-toggle="s-1"');
+    expect(subAgentToggleSelector("s-1")).toBe('[data-subagent-toggle="s-1"]');
+    // A quote in an id never breaks the selector.
+    expect(subAgentToggleSelector('a"b')).toBe('[data-subagent-toggle="a\\"b"]');
   });
 
   it("the outline of a phone lists each sub-agent under its task, with no model text for none", () => {

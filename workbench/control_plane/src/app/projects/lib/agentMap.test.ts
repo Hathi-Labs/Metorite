@@ -788,7 +788,7 @@ describe("layoutAgentMap: children", () => {
     expect(only.model).toBeNull();
   });
 
-  it("12 children fill 3 columns of 5, 5 and 2, and the block is as tall as 5 rows", () => {
+  it("12 children fill 2 columns of 8 and 4, and the block is as tall as 8 rows", () => {
     const many = withChildren(
       [session(), session({ id: "s2", name: "Zed" })],
       [run(), run({ run_id: "r9", session_id: "s2", task_id: "t9" })],
@@ -797,8 +797,9 @@ describe("layoutAgentMap: children", () => {
     const { nodes } = layoutAgentMap(many, NOW, open("s1"));
     const kids = nodes.filter((n) => n.kind === "child");
     const xs = [...new Set(kids.map((n) => n.x))].sort((a, b) => a - b);
-    expect(xs).toHaveLength(3);
-    expect(xs.map((x) => kids.filter((n) => n.x === x).length)).toEqual([5, 5, 2]);
+    expect(CHILD_ROWS_MAX).toBe(8);
+    expect(xs).toHaveLength(2);
+    expect(xs.map((x) => kids.filter((n) => n.x === x).length)).toEqual([8, 4]);
     const task = nodes.find((n) => n.id === "t:r1")!;
     // The first child column opens one session-to-task gap right of the task column.
     expect(xs[0] - (task.x + task.w)).toBe(COLUMN_X.task - (COLUMN_X.session + NODE_W.session));
@@ -806,16 +807,57 @@ describe("layoutAgentMap: children", () => {
     expect(xs[1] - xs[0]).toBe(CHILD_STEP);
     // Filled column by column, oldest first: c00 is the oldest.
     expect(nodes.find((n) => n.id === "c:c00")!.x).toBe(xs[0]);
-    expect(nodes.find((n) => n.id === "c:c05")!.x).toBe(xs[1]);
-    expect(nodes.find((n) => n.id === "c:c05")!.y).toBe(task.y);
-    expect(nodes.find((n) => n.id === "c:c11")!.x).toBe(xs[2]);
+    expect(nodes.find((n) => n.id === "c:c07")!.x).toBe(xs[0]);
+    expect(nodes.find((n) => n.id === "c:c08")!.x).toBe(xs[1]);
+    expect(nodes.find((n) => n.id === "c:c08")!.y).toBe(task.y);
+    expect(nodes.find((n) => n.id === "c:c11")!.x).toBe(xs[1]);
     const rowsH = CHILD_ROWS_MAX * (NODE_H.child + 12) - 12;
     const s1 = nodes.find((n) => n.id === "s:s1")!;
     const next = nodes.find((n) => n.id === "s:s2")!;
-    expect(next.y).toBeGreaterThanOrEqual(s1.y + rowsH);
+    // The next block keeps the normal gap (24) below the grid.
+    expect(next.y).toBe(s1.y + rowsH + 24);
     expect(Math.max(...kids.map((n) => n.y + n.h)) - s1.y).toBe(rowsH);
     expectNoOverlap(many, open("s1"));
     expectNoOverlap(many, { groupByMachine: true, expanded: new Set(["s1"]) });
+  });
+
+  it.each([
+    [3, [3]],
+    [8, [8]],
+    [9, [8, 1]],
+    [17, [8, 8, 1]],
+  ])("%i children fill columns %j", (n, cols) => {
+    const many = withChildren(
+      [session()],
+      [run()],
+      Array.from({ length: n }, (_, i) => child({ child_id: `c${String(i).padStart(2, "0")}`, age: 1000 - i })),
+    );
+    const { nodes } = layoutAgentMap(many, NOW, open("s1"));
+    const kids = nodes.filter((k) => k.kind === "child");
+    const xs = [...new Set(kids.map((k) => k.x))].sort((a, b) => a - b);
+    expect(xs.map((x) => kids.filter((k) => k.x === x).length)).toEqual(cols);
+    expectNoOverlap(many, open("s1"));
+    expectNoOverlap(many, { groupByMachine: true, expanded: new Set(["s1"]) });
+  });
+
+  it("the children of one task sit together, then by age, with two tasks in one session", () => {
+    const two = withChildren(
+      [session()],
+      [run(), run({ run_id: "r2", task_id: "t2" })],
+      [
+        child({ child_id: "a", run_id: "r2", age: 900 }),
+        child({ child_id: "b", run_id: "r1", age: 100 }),
+        child({ child_id: "c", run_id: "r2", age: 500 }),
+        child({ child_id: "d", run_id: "r1", age: 800 }),
+      ],
+    );
+    const { nodes, edges } = layoutAgentMap(two, NOW, open("s1"));
+    const kids = nodes.filter((k) => k.kind === "child").sort((p, q) => p.y - q.y);
+    const t1 = nodes.find((k) => k.id === "t:r1")!;
+    // Task nodes lay out in run order: r1 first. Its children come first, oldest first.
+    expect(kids.map((k) => k.id)).toEqual(["c:d", "c:b", "c:a", "c:c"]);
+    expect(kids[0].y).toBe(t1.y);
+    expect(edges).toContainEqual({ id: "t:r2>c:a", from: "t:r2", to: "c:a", kind: "tree" });
   });
 
   it("the children of a session with several tasks share one grid, with an edge from each own task", () => {

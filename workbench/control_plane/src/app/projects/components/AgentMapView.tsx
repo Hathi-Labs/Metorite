@@ -109,14 +109,22 @@ interface NodeData extends Record<string, unknown> {
  * button with `aria-expanded`. xyflow turns pointer events off on a node that
  * is not interactive, so the button turns them on again.
  */
+/** SW-110. The selector of the toggle of one session. The key change remounts the canvas, so the view finds it again by this. */
+export function subAgentToggleSelector(sessionId: string): string {
+  return `[data-subagent-toggle="${sessionId.replace(/["\\]/g, "\\$&")}"]`;
+}
+
 export function SubAgentToggle({
   count,
   expanded,
   onToggle,
+  sessionId,
 }: {
   count: number;
   expanded: boolean;
   onToggle: () => void;
+  /** The opaque id of the session. It becomes `data-subagent-toggle`, so the view can focus the button again. */
+  sessionId?: string;
 }) {
   return (
     <Button
@@ -126,6 +134,7 @@ export function SubAgentToggle({
       icon={expanded ? "ChevronDown" : "ChevronRight"}
       aria-expanded={expanded}
       data-map-children-toggle=""
+      data-subagent-toggle={sessionId}
       onClick={onToggle}
       className="pointer-events-auto mt-1 self-start"
     >
@@ -295,6 +304,7 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
           <SubAgentToggle
             count={node.childCount ?? 0}
             expanded={node.expanded === true}
+            sessionId={node.ref}
             onToggle={() => onToggle(node.ref)}
           />
         </div>
@@ -714,7 +724,11 @@ export function AgentMapView({
   const [byMachine, setByMachine] = useState(false);
   // SW-110. The sessions whose sub-agents show. Local to the view: no store and no URL.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const root = useRef<HTMLDivElement | null>(null);
+  // The session whose toggle the member pressed. Only a press sets it, so a first load or a re-poll never moves focus.
+  const pendingFocus = useRef<string | null>(null);
   const toggle = useCallback((sessionId: string) => {
+    pendingFocus.current = sessionId;
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(sessionId)) next.delete(sessionId);
@@ -739,9 +753,29 @@ export function AgentMapView({
   useEffect(() => {
     if (pickedId && !picked) setPickedId(null);
   }, [pickedId, picked]);
+  // The new key remounts the canvas and destroys the focused button. Focus the same toggle again once the new canvas draws it.
+  useEffect(() => {
+    const id = pendingFocus.current;
+    if (id === null) return;
+    let frame = 0;
+    let tries = 0;
+    const seek = () => {
+      const button = root.current?.querySelector<HTMLElement>(subAgentToggleSelector(id));
+      if (button) {
+        button.focus();
+        pendingFocus.current = null;
+      } else if (tries++ < 30) {
+        frame = requestAnimationFrame(seek);
+      } else {
+        pendingFocus.current = null;
+      }
+    };
+    frame = requestAnimationFrame(seek);
+    return () => cancelAnimationFrame(frame);
+  }, [expanded]);
 
   return (
-    <div data-agent-map="" className="flex min-h-0 flex-1 flex-col">
+    <div ref={root} data-agent-map="" className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-3 py-2 text-xs text-muted-foreground">
         <label className="flex items-center gap-2">
           <Switch checked={showQuiet} onChange={onShowQuiet} label={SHOW_QUIET_LABEL} />
