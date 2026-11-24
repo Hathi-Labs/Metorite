@@ -6192,6 +6192,112 @@ ADD_TASK_REFERENCE = Tool(
 )
 
 
+# ── reserve_number (SW-27b, agent_coordination.md SW-27) ────────────────────
+
+#: The SW-27a route. One atomic statement gives the next number of a named
+#: sequence of a project. No number comes back: a released one stays burned.
+RESERVE_ROUTE = "/projects/nodes/{project_id}/sequences/{name}/reserve"
+
+#: The keys of the result of ``reserve_number``: the route's answer.
+RESERVE_KEYS: tuple[str, ...] = (
+    "project_id", "sequence", "value", "reservation_id", "task_id", "run_id",
+    "reserved_at",
+)
+
+#: The name rule of the migration's CHECK and of the route (``NAME_RE``),
+#: anchored for JSON Schema. ``agent_oauth`` holds the one copy, and the
+#: edge client checks the path with it too. A bad name stops before any call.
+SEQUENCE_NAME_PATTERN = f"^{agent_oauth.SEQUENCE_NAME_PATTERN}$"
+
+#: The fixed texts of the route's refusals. The edge never sends the
+#: gateway's own detail (§9.2).
+TEXT_RESERVE_NOT_FOUND = "Project or task not found. Check both ids."
+TEXT_RESERVE_NOT_IN_PROJECT = (
+    "That task is not in this project or in one of its subprojects.")
+TEXT_RESERVE_RUN = "That run is not a run of this task."
+TEXT_RESERVE_GONE = "The task or the run was deleted during the call. Try again."
+TEXT_RESERVE_REFUSED = (
+    "Metorite refused the reservation. The project may be archived, or the"
+    " name does not fit: 1 to 40 lowercase letters, digits, _ or -.")
+
+_RESERVE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project that owns the sequence."
+                                      " An id from list_projects."},
+        "sequence": {"type": "string", "pattern": SEQUENCE_NAME_PATTERN,
+                     "description": "The sequence name, such as migration or"
+                                    " decision. A new name starts at 1."},
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task that the number is for. It must be"
+                                   " in the project or in a subproject."},
+        "run_id": {"type": "string", "pattern": _UUID_PATTERN,
+                   "description": "Optional. An agent run on that task, from"
+                                  " claim_task or start_agent_run. Send your own."},
+    },
+    "required": ["project_id", "sequence", "task_id"],
+    "additionalProperties": False,
+}
+
+_RESERVE_OUTPUT: dict[str, Any] = _object({
+    "project_id": {"type": "string"},
+    "sequence": {"type": "string"},
+    "value": {"type": "integer"},
+    "reservation_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "run_id": {"type": ["string", "null"]},
+    "reserved_at": {"type": "string"},
+})
+
+
+async def _reserve_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one reservation to the SW-27a route. Each call gives a new number,
+    so a retry after a lost answer burns one number and never repeats one."""
+    payload: dict[str, Any] = {"task_id": str(args["task_id"])}
+    if "run_id" in args:
+        payload["run_id"] = str(args["run_id"])
+    _status, row = await _write(
+        ctx, "POST", RESERVE_ROUTE, TEXT_RESERVE_NOT_FOUND,
+        path_params={"project_id": str(args["project_id"]),
+                     "name": str(args["sequence"])},
+        json_body=payload,
+        details={
+            (404, "The task or the run is gone. Try again."): TEXT_RESERVE_GONE,
+            (422, "The task is not in this project."): TEXT_RESERVE_NOT_IN_PROJECT,
+            (422, "The run is not a run of this task."): TEXT_RESERVE_RUN,
+        },
+        texts={422: TEXT_RESERVE_REFUSED})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    return {key: row.get(key) for key in RESERVE_KEYS}
+
+
+RESERVE_NUMBER = Tool(
+    name="reserve_number",
+    title="Reserve a number",
+    description=(
+        "Reserve the next number of a named sequence of a project, such as the"
+        " next migration number, for one task. One atomic call gives each"
+        " caller a different number, so two agents never take the same one."
+        " Each call takes a new number, and no number comes back, so call it"
+        " once for each number you need. Returns the value and the"
+        " reservation id."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_RESERVE_INPUT,
+    output_schema=_RESERVE_OUTPUT,
+    route=RESERVE_ROUTE,
+    params={"project_id": "project_id", "sequence": "name", "task_id": "task_id",
+            "run_id": "run_id"},
+    not_found=TEXT_RESERVE_NOT_FOUND,
+    run=_reserve_number,
+    routes=(),
+    method="POST",
+    annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
 # ── create_task and update_task (EA-6d, §9.2) ───────────────────────────────
 
 CREATE_ROUTE = "/projects/tasks"
@@ -12064,6 +12170,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
+    # SW-27b: the next number of a project sequence (SW-27a route).
+    RESERVE_NUMBER,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
     # CIV-14b: one image onto a task. It shows only for an organization of
     # `mcp_image_upload_orgs`, and the gateway reads the flag too.
@@ -12437,6 +12545,9 @@ __all__ = [
     "REQUEST_ASK_ROUTE",
     "REQUEST_READ_ROUTE",
     "REQUEST_TASK_ARCHIVE",
+    "RESERVE_KEYS",
+    "RESERVE_NUMBER",
+    "RESERVE_ROUTE",
     "RUN_ACTIVITY_KEYS",
     "RUN_CHILDREN_ROUTE",
     "RUN_KEYS",
@@ -12445,6 +12556,7 @@ __all__ = [
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
     "SECRET_WORDS",
+    "SEQUENCE_NAME_PATTERN",
     "SESSION_TEXTS",
     "SET_ASSIGNEES",
     "SET_ASSIGNEES_KEYS",
