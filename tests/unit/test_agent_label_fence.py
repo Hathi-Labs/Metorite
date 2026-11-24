@@ -173,6 +173,31 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _child_namers(source: str) -> list[str]:
+    """Every top-level statement of *source* whose CODE names the child
+    columns in a string constant, sorted. SQL lives in strings. A comment is
+    not in the AST, so it never counts. An attribute read of a result row,
+    such as ``c.parent_run_id`` in ``_agent_map``, is no query and never
+    counts. A statement with no name reads as ``<line N>``."""
+    found = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            name = f"<line {node.lineno}>"
+        text = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                text.append(sub.value)
+        if _CHILD.search("\n".join(text)):
+            found.append(name)
+    return sorted(found)
+
+
 def _named_sources(path: Path, names: tuple[str, ...]) -> dict[str, str]:
     """The source of each top-level function or assignment of *names* in
     *path*. A name that the file no longer defines fails, so the fence
@@ -495,7 +520,9 @@ class TestTheChildGrantsNothing:
 
     def test_only_agent_runs_names_the_child_columns(self) -> None:
         """One writer and one reader of a child: ``agent_runs.py``. The edge
-        tool is SW-114's."""
+        tool is SW-114's. SW-110 adds the second reader: the map read of
+        ``agent_summary.py``, which names them in ``_MAP_CHILDREN_SQL`` only
+        (:meth:`test_the_map_reads_the_child_columns_in_one_statement`)."""
         found = []
         for top in ("apps", "packages"):
             for path in sorted((_REPO / top).rglob("*.py")):
@@ -503,7 +530,39 @@ class TestTheChildGrantsNothing:
                     continue
                 if _CHILD.search(_read(path)):
                     found.append(path.relative_to(_REPO).as_posix())
-        assert found == ["apps/services/gateway/gateway/routes/projects/agent_runs.py"], found
+        assert found == ["apps/services/gateway/gateway/routes/projects/agent_runs.py",
+                         "apps/services/gateway/gateway/routes/projects/agent_summary.py"], found
+
+    def test_the_map_reads_the_child_columns_in_one_statement(self) -> None:
+        """SW-110 (§3.12.4 rules 1 and 2). In ``agent_summary.py``, only
+        ``_MAP_CHILDREN_SQL`` names the two child columns. The reach rule, the
+        ``seen`` text and the other map reads never do. The name, the machine
+        and the model of a child are display data: no ``WHERE`` or ``JOIN``
+        arm of the child read names them. Mutation: add ``AND
+        c.agent_model IS NOT NULL`` to the read."""
+        path = _GATEWAY / "agent_summary.py"
+        readers = _child_namers(_read(path))
+        assert readers == ["_MAP_CHILDREN_SQL"], readers
+        for admin in (True, False):
+            assert not _CHILD.search(agent_summary._reach_sql(admin)), admin
+        # The label guard reads the tail of the child read after its first
+        # ``FROM live``. That cut is sound only when the shared head has none.
+        assert "FROM live" not in agent_summary._MAP_CTE
+        guarded = agent_summary._MAP_CHILDREN_SQL.split("FROM live", 1)[1]
+        assert not _LABEL.search(guarded), guarded
+
+    def test_the_whole_file_check_rejects_a_second_reader(self) -> None:
+        """Mutation, on a copy of the text and never on the file: a second
+        constant that names ``kind = 'child'`` must fail the check, and a
+        comment that names it must not."""
+        source = _read(_GATEWAY / "agent_summary.py")
+        assert _child_namers(source) == ["_MAP_CHILDREN_SQL"]
+        mutated = source + "\n_LATER_SQL = \"SELECT 1 WHERE kind = 'child'\"\n"
+        assert _child_namers(mutated) == ["_LATER_SQL", "_MAP_CHILDREN_SQL"]
+        in_code = source + "\ndef later(db):\n    return db.execute('SELECT parent_run_id FROM t')\n"
+        assert _child_namers(in_code) == ["_MAP_CHILDREN_SQL", "later"]
+        commented = source + "\n# kind = 'child' and parent_run_id: a comment only\n"
+        assert _child_namers(commented) == ["_MAP_CHILDREN_SQL"]
 
     def test_the_session_key_never_meets_the_child_columns(self) -> None:
         files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]
@@ -672,6 +731,8 @@ class TestTheClean:
 
 
 _TAKES_LABEL = ("claim_task", "start_agent_run")
+#: SW-114. The one tool that takes a model and no host: a sub-agent's model.
+_TAKES_MODEL_ONLY = ("report_subagent",)
 
 
 class TestTheEdgeArgument:
@@ -733,8 +794,26 @@ class TestTheEdgeArgument:
         others = sorted(name for name, tool in tools.TOOLS.items()
                         if {"host", "model", "host_kind"} & set(
                             (tool.input_schema or {}).get("properties", {}))
-                        and name not in _TAKES_LABEL)
+                        and name not in _TAKES_LABEL and name not in _TAKES_MODEL_ONLY)
         assert not others, others
+
+    def test_report_subagent_takes_the_type_and_the_model_in_the_same_shape(self) -> None:
+        """SW-114. ``report_subagent`` is the one other tool that takes a
+        model. It takes no host and no kind. Its ``agent_type`` is the label
+        rule and its ``model`` is the model rule, with their own descriptions
+        only, and the gateway gets them as ``agent_label`` and ``model``."""
+        [name] = _TAKES_MODEL_ONLY
+        tool = tools.TOOLS[name]
+        props = tool.input_schema["properties"]
+        assert not {"host", "host_kind", "agent_label"} & set(props), props
+        for key, rule in (("agent_type", tools._LABEL_INPUT), ("model", tools._MODEL_INPUT)):
+            got = props[key]
+            assert {k: v for k, v in got.items() if k != "description"} == {
+                k: v for k, v in rule.items() if k != "description"}, key
+            assert "display data only" in got["description"], key
+            assert not re.search(r"projects:|scope|admin|permission", got["description"])
+        assert "model" not in tool.input_schema["required"]
+        assert tool.params["agent_type"] == "agent_label" and tool.params["model"] == "model"
 
     def test_the_place_schema_caps_it_and_refuses_each_control_character(self) -> None:
         for key, rule in (("host", tools._HOST_INPUT), ("model", tools._MODEL_INPUT)):

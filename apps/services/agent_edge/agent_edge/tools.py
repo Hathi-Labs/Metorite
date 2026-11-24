@@ -9456,10 +9456,13 @@ AGENT_MAP_ROUTE = "/projects/agents/overview"
 #: which the edge may not import. ``test_agent_map_r8.py`` pins them equal.
 AGENT_MAP_RUNS_MAX = 300
 AGENT_MAP_SESSIONS_MAX = 300
+#: SW-110. The most child runs that one answer lists. A copy of
+#: ``agent_summary.MAP_CHILDREN_MAX``, pinned equal by ``test_agent_map_r8.py``.
+AGENT_MAP_CHILDREN_MAX = 200
 
 #: The top keys of a map answer, in the order of ``agent_summary.MAP_KEYS``.
 AGENT_MAP_KEYS: tuple[str, ...] = (
-    "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+    "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer")
 AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
     "quiet_last_at", "host", "host_kind", "host_source", "model",
@@ -9473,6 +9476,12 @@ AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
 #: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
 #: SW-107. Any other key of a line never leaves the edge.
 AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
+#: SW-110. The keys of one child run (a sub-agent) of a listed run. A copy of
+#: ``MAP_CHILD_KEYS`` of the gateway. Any other key of a child never leaves.
+AGENT_MAP_CHILD_KEYS: tuple[str, ...] = (
+    "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+)
 
 #: The id of a session node: the first 24 hex characters of a sha256
 #: (``agent_summary._NODE_SQL``). It holds no session key.
@@ -9518,12 +9527,20 @@ _MAP_RUN_SCHEMA = _object({
     "last_at": _NULLABLE_STRING,
 })
 _MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
+# SW-110: a sub-agent. Its name and its model are text that an agent wrote.
+_MAP_CHILD_SCHEMA = _object({
+    "child_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING,
+    "name": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
+    "age": _NULLABLE_INTEGER, "last_at": _NULLABLE_STRING,
+})
 _AGENT_MAP_OUTPUT: dict[str, Any] = _object({
     "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
     "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
     "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
     # SW-107 fills the lines of who dispatched whom: two node ids each.
     "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
+    # SW-110: the sub-agents (child runs) of the listed runs.
+    "children": {"type": "array", "items": _MAP_CHILD_SCHEMA},
     "count": {"type": "integer"},
     "truncated": {"type": "boolean"},
     "viewer": _NULLABLE_STRING,
@@ -9600,6 +9617,23 @@ def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
 
 
+def map_child(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One child run of a listed run (SW-110), with the pinned keys only. The
+    name of the sub-agent and its model are untrusted text (§3.12.4 rule 3).
+    ``run_id`` is the parent run. A machine, a session key or an address of
+    the child does not leave."""
+    return {
+        "child_id": _id(row.get("child_id")),
+        "run_id": _id(row.get("run_id")),
+        "session_id": _map_node(row.get("session_id")),
+        "name": untrusted(row.get("name")),
+        "state": _key(row.get("state")),
+        "model": untrusted(row.get("model")),
+        "age": _int_or_none(row.get("age")),
+        "last_at": _map_time(row.get("last_at")),
+    }
+
+
 def agent_map(body: Any) -> dict[str, Any]:
     """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
     each value in its shape or as untrusted text. At most
@@ -9614,10 +9648,10 @@ def agent_map(body: Any) -> dict[str, Any]:
         return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
 
     people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
-    lines = rows("lines")
+    lines, children = rows("lines"), rows("children")
     viewer = body.get("viewer")
     cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
-           or len(lines) > AGENT_MAP_RUNS_MAX)
+           or len(lines) > AGENT_MAP_RUNS_MAX or len(children) > AGENT_MAP_CHILDREN_MAX)
     return {
         "people": [{"person": untrusted(p.get("person")),
                     "sessions": _map_count(p.get("sessions"))} for p in people],
@@ -9625,6 +9659,8 @@ def agent_map(body: Any) -> dict[str, Any]:
         "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
         # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
         "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        # SW-110: the sub-agents of the listed runs, each under its run_id.
+        "children": [map_child(c) for c in children[:AGENT_MAP_CHILDREN_MAX]],
         "count": _map_count(body.get("count")),
         "truncated": body.get("truncated") is True or cut,
         # The viewer level of ``agents_view.md`` §4. The gateway sets it from
@@ -9655,7 +9691,9 @@ GET_AGENT_MAP = Tool(
         " that project and its sub-projects. A run with no event for 2 hours is"
         " quiet: its session counts it, and show_quiet true lists it. The map"
         " lists at most 300 runs, and truncated is true when it cut some. count"
-        " counts every open run that you can see. The map changes nothing."
+        " counts every open run that you can see. children lists the open"
+        " sub-agents of the listed runs, each under the run_id of its run, with"
+        " its own model; count does not count them. The map changes nothing."
         + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -10889,6 +10927,156 @@ RELEASE_TASK = Tool(
 )
 
 
+# ── report_subagent (WS-MCP SW-114, §3.12.7 rule 11) ────────────────────────
+
+#: SW-114. The children of one run (SW-39). A start writes a child, and a
+#: stop ends it. The body names the event.
+RUN_CHILDREN_ROUTE = "/projects/agent-runs/{run_id}/children"
+#: The two events of a sub-agent. ``agent_runs.ChildIn.event`` holds the same.
+SUBAGENT_EVENTS: tuple[str, ...] = ("start", "stop")
+#: The most characters of ``agent_id`` and its shape. Copies of
+#: ``agent_runs.CHILD_AGENT_ID_MAX`` and ``CHILD_AGENT_ID_PATTERN``, because
+#: the edge may not import the gateway. A pin test holds each copy equal.
+SUBAGENT_ID_MAX = 64
+SUBAGENT_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
+#: The body keys of the POST, and no other (agent edge rule 18).
+SUBAGENT_BODY_KEYS: tuple[str, ...] = ("agent_id", "event", "agent_label", "model")
+#: Copies of the gateway's fixed details, read to choose a text and never
+#: sent on. A pin test holds each copy equal.
+CHILD_OTHER_CONNECTION_DETAIL = "That run belongs to another connection of yours."
+CHILD_CAP_DETAIL = (
+    "This run already has 20 open sub-agents. Stop one before you start another.")
+CHILD_KEY_USED_DETAIL = "That agent_id is the key of another run of yours."
+#: The one text of every gateway 404 of the route: an unknown or hidden
+#: run, and an organization off ``AGENT_MAP_ORGS``. The edge cannot read that
+#: flag (one reader, SW-113), so the text names both and tells them apart for
+#: nobody.
+TEXT_SUBAGENT_RUN_NOT_FOUND = (
+    "No open run of this session holds a task with that run_id, or sub-agent"
+    " reports are off for this organization. Send the run_id of your own open"
+    " run.")
+TEXT_SUBAGENT_OTHER_CONNECTION = (
+    "That run belongs to another connection of this member. Report a sub-agent"
+    " only under a run of this connection.")
+TEXT_SUBAGENT_CAP = (
+    "This run already has 20 open sub-agents. Report the stop of one before you"
+    " report another start.")
+TEXT_SUBAGENT_KEY_USED = (
+    "That agent_id is the key of another run of this member. Send the agent_id"
+    " of the sub-agent.")
+_SUBAGENT_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, CHILD_OTHER_CONNECTION_DETAIL): TEXT_SUBAGENT_OTHER_CONNECTION,
+    (429, CHILD_CAP_DETAIL): TEXT_SUBAGENT_CAP,
+    (409, CHILD_KEY_USED_DETAIL): TEXT_SUBAGENT_KEY_USED,
+}
+
+_SUBAGENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT,
+                   "description": "Your open run that the sub-agent works under. The"
+                                  " run_id from claim_task or start_agent_run."},
+        "agent_id": {"type": "string", "minLength": 1, "maxLength": SUBAGENT_ID_MAX,
+                     "pattern": SUBAGENT_ID_PATTERN,
+                     "description": (
+                         "The agent_id of the sub-agent, from the input of the"
+                         " SubagentStart or SubagentStop hook. It is the key: a"
+                         " second start with the same agent_id writes nothing.")},
+        "agent_type": {**_LABEL_INPUT, "description": (
+            "The agent_type of the sub-agent, such as verifier. People see it"
+            " under your run. It is display data only.")},
+        "event": {"type": "string", "enum": list(SUBAGENT_EVENTS), "description": (
+            "start when the sub-agent starts, stop when it ends. A stop of an"
+            " unknown or ended sub-agent changes nothing.")},
+        "model": {**_MODEL_INPUT, "description": (
+            "The model of the sub-agent, when its definition names one. It is"
+            " display data only.")},
+    },
+    "required": ["run_id", "agent_id", "agent_type", "event"],
+    "additionalProperties": False,
+}
+
+#: One child run (SW-39), as the edge shows it. The id and the times are
+#: plain. The agent type and the model are text that an agent wrote, so (U).
+SUBAGENT_CHILD_KEYS: tuple[str, ...] = (
+    "id", "status", "agent_type", "model", "started_at", "ended_at")
+_SUBAGENT_CHILD_SCHEMA = _object({
+    "id": {"type": "string"}, "status": _NULLABLE_STRING,
+    "agent_type": _UNTRUSTED_OR_NULL, "model": _UNTRUSTED_OR_NULL,
+    "started_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
+})
+_SUBAGENT_OUTPUT: dict[str, Any] = _object({
+    "child": {"anyOf": [_SUBAGENT_CHILD_SCHEMA, {"type": "null"}]},
+    "created": {"type": "boolean"},
+    "ended": {"type": "boolean"},
+})
+
+
+def subagent_child(raw: Any) -> dict[str, Any] | None:
+    """The pinned keys of one child run, or ``None``. The id leaves only in
+    the shape of an id, the status only as a status of :data:`RUN_STATUSES`.
+    The agent type and the model leave as ``untrusted_text``."""
+    if not isinstance(raw, dict) or _id(raw.get("id")) is None:
+        return None
+    label, model = raw.get("agent_label"), raw.get("agent_model")
+    status = raw.get("status")
+    return {
+        "id": str(raw["id"]),
+        "status": status if status in RUN_STATUSES else None,
+        "agent_type": untrusted(label) if isinstance(label, str) else None,
+        "model": untrusted(model) if isinstance(model, str) else None,
+        "started_at": _str_or_none(raw.get("started_at")),
+        "ended_at": _str_or_none(raw.get("ended_at")),
+    }
+
+
+async def _report_subagent(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one event of a sub-agent (SW-114). The body holds the keys of
+    :data:`SUBAGENT_BODY_KEYS` only, and ``agent_type`` goes as
+    ``agent_label``. The gateway takes the member, the connection and the
+    organization from the signed context. Each refusal maps to a fixed text."""
+    _refuse_nul(args, ("agent_type", "model"))
+    payload: dict[str, Any] = {"agent_id": str(args["agent_id"]),
+                               "event": str(args["event"]),
+                               "agent_label": str(args["agent_type"])}
+    if args.get("model") is not None:
+        payload["model"] = str(args["model"])
+    _, body = await _write(
+        ctx, "POST", RUN_CHILDREN_ROUTE, TEXT_SUBAGENT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body=payload,
+        details=_SUBAGENT_DETAILS)
+    found = body if isinstance(body, dict) else {}
+    return {"child": subagent_child(found.get("run")),
+            "created": found.get("created") is True,
+            "ended": found.get("ended") is True}
+
+
+REPORT_SUBAGENT = Tool(
+    name="report_subagent",
+    title="Report a sub-agent",
+    description=(
+        "Report that a sub-agent of this session starts or stops, under your"
+        " own open run. People then see the sub-agent under your run. A hook"
+        " of your client calls it, and you do not need to call it yourself."
+        " The run must be of this connection, and it must hold its task."
+        " A run holds at most 20 open sub-agents. A sub-agent holds no task"
+        " and no claim. It works only where the agent map is on for the"
+        " organization, and elsewhere it answers not found." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_SUBAGENT_INPUT,
+    output_schema=_SUBAGENT_OUTPUT,
+    route=RUN_CHILDREN_ROUTE,
+    params={"run_id": "run_id", "agent_id": "agent_id", "agent_type": "agent_label",
+            "event": "event", "model": "model"},
+    not_found=TEXT_SUBAGENT_RUN_NOT_FOUND,
+    run=_report_subagent,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
 #
 # Four fixed tools serve each app of ``acb_common.app_manifests``. The
@@ -11992,7 +12180,10 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     REPORT_CHECK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
-    RELEASE_TASK, SET_RUN_PLAN, DELETE_TASK,
+    RELEASE_TASK, SET_RUN_PLAN,
+    # WS-MCP SW-114: a hook reports a sub-agent. On the runs flag, as RELEASE_TASK.
+    REPORT_SUBAGENT,
+    DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
     READ_PLAYBOOK,
 )}
@@ -12141,6 +12332,8 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
+    "AGENT_MAP_CHILDREN_MAX",
+    "AGENT_MAP_CHILD_KEYS",
     "AGENT_MAP_KEYS",
     "AGENT_MAP_LINE_KEYS",
     "AGENT_MAP_ROUTE",
@@ -12348,6 +12541,7 @@ __all__ = [
     "REMOVE_TASK_LINK",
     "REPORT_CHECK",
     "REPORT_CHECK_KEYS",
+    "REPORT_SUBAGENT",
     "REQUEST_ASK_ROUTE",
     "REQUEST_READ_ROUTE",
     "REQUEST_TASK_ARCHIVE",
@@ -12355,6 +12549,7 @@ __all__ = [
     "RESERVE_NUMBER",
     "RESERVE_ROUTE",
     "RUN_ACTIVITY_KEYS",
+    "RUN_CHILDREN_ROUTE",
     "RUN_KEYS",
     "RUN_STATES",
     "RUN_STATUSES",
@@ -12369,6 +12564,9 @@ __all__ = [
     "SET_TASK_STATUS",
     "START_AGENT_RUN",
     "STATUS_KEYS",
+    "SUBAGENT_BODY_KEYS",
+    "SUBAGENT_CHILD_KEYS",
+    "SUBAGENT_EVENTS",
     "SUBTASK_KEYS",
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
@@ -12583,6 +12781,7 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_child",
     "map_line",
     "map_run",
     "map_session",

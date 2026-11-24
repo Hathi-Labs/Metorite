@@ -85,7 +85,8 @@ STAYS_X: dict[str, str] = {
     # EA3-51, pinned by test_mcp_edge_coverage.py
     "POST /projects/tasks/{task_id}/agent-delete": "mcp-door",
     # SW-39 (task 3799): a child run is a sub-agent of an open run. Only a
-    # signed agent starts one, through its hook. SW-114 adds the edge tool.
+    # signed agent starts one, through its hook. SW-114 adds the edge tool
+    # `report_subagent` over the POST, and the chat still never reaches it.
     "GET /projects/agent-runs/{run_id}/children": "mcp-door",
     "POST /projects/agent-runs/{run_id}/children": "mcp-door",
     # SW-27a (task 861): an agent reserves a number through the MCP tool

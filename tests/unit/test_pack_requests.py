@@ -303,9 +303,30 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                 "roll back the workflow to version 2"),
     "studio_workflow_live": ("pause the workflow that chases invoices",
                              "turn on the workflow again"),
+    # -- studio-workflows: the other Workflows acts (PAR-8a, task 3903) --
+    "studio_workflow_runs": ("show the last run of the workflow that chases invoices",
+                             "why did the workflow run fail?"),
+    "studio_workflow_check": ("check the workflow before I publish it",),
+    "studio_workflow_catalog": ("which code modules can a workflow step use?",
+                                "list the workflow modules"),
+    "studio_workflow_run": ("run the workflow that chases invoices",
+                            "test run the workflow with this lead"),
+    "studio_workflow_save": ("create a workflow called Weekly digest",
+                             "delete the workflow that chases invoices"),
+    "studio_workflow_build": ("change the workflow so it also sends a summary",),
+    "studio_workflow_module": ("write a code module that splits a full name",),
     # -- studio-share: the share of a skill with the org (WS-STU J2d) --
     "studio_skill_share": ("share my skill with the team",
                            "approve the skill share that waits for me"),
+    # -- org-admin: the members of the org (PAR-2a, task 3102) --
+    "list_members": ("list the members of our organization", "who are our org members?",
+                     "which sign-in requests wait?"),
+    "set_member_roles": ("give ravi@acme.test the admin role",
+                         "change the member roles of ravi@acme.test"),
+    "set_member_status": ("suspend the member ravi@acme.test",
+                          "reactivate the member ravi@acme.test"),
+    "answer_access_request": ("approve the sign-in request from kim@acme.test",
+                              "deny the access request from kim@acme.test"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
@@ -343,6 +364,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- calendar-day events (CE-15, task 3463) --
     "my_tasks_list_events": ("what is on my calendar this week?",
                              "which meetings are on my calendar tomorrow?"),
+    # -- calendar-day P-1a (task 3112) --
+    "my_tasks_list_calendar_connections": ("what calendars are connected",
+                                           "which calendars do I have connected",
+                                           "list my calendar connections"),
+    "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
+    "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

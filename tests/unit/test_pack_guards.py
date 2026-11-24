@@ -1246,6 +1246,8 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "projects-cycles": frozenset({"cycle_detail", "list_cycles"}),  # WS-39 SP-5a
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
+    # PAR-2a: the read of the members. The three writes each need a card.
+    "org-admin": frozenset({"list_members"}),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a
@@ -1422,7 +1424,8 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
     _owners(monkeypatch, **{EA: _module(), CRM: _crm_module(),
                             PROJECTS: load_agent_module(PROJECTS_DIR),
-                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")})
+                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+                            "org-admin": load_agent_module("apps/agents/agent-org-admin")})
     with _run():
         why, job = await _child(slug, held=True)
     want = CHILD_TOOLS[slug]
@@ -1434,7 +1437,9 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
 def _pack_owners() -> dict[str, Any]:
     return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
-            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+            "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+            # PAR-2a: the owner of the org-admin pack.
+            "org-admin": load_agent_module("apps/agents/agent-org-admin")}
 
 
 def test_each_pack_tool_that_draws_is_a_display_tool() -> None:
