@@ -38,6 +38,19 @@ f. A body that names an org gets the 400 of the gateway, and the Console sees
    no call (R11).
 g. A box with no Console answers 503, and the tools say that seats need the
    Customer Console. The Console sees no call.
+h. The real catalog: the only active plan is ``core``
+   (``008_flat_plan_d49.sql``), and each member holds a Core seat. The
+   Console refuses an assign or a release of ``core`` with 400. The tool
+   refuses ``core`` with plain words before any card, and never picks it.
+   A grid of Core alone gets "no plan the chat can change" and no card.
+i. A key of this box without the ``seat_admin`` capability gets "seats are not
+   set up on this box", never "you are not an admin". The read does not fall
+   back to the counts, as if the member were the problem.
+
+**The two catalogs.** The default stub holds the real catalog (``core``
+only). The fixture ``future`` adds an active ``team`` plan. No live org holds
+one today. It is a FUTURE plan that is not Core, for the assign and release
+paths alone.
 
 No Postgres: nothing here opens a session. Run::
 
@@ -82,7 +95,7 @@ _REAL_CLIENT = httpx.AsyncClient
 class _StubConsole:
     """The deployment-key ``seat_admin`` door, as the Console decides it."""
 
-    def __init__(self) -> None:
+    def __init__(self, future_plan: bool = False) -> None:
         self.boxes = {BOX_KEY: ("org-a", "org-b")}
         self.members: dict[tuple[str, str], tuple[str, str]] = {
             ("org-a", ADA): ("owner", "active"), ("org-a", MEL): ("member", "active"),
@@ -90,9 +103,19 @@ class _StubConsole:
             ("org-b", ZED): ("admin", "active"), ("org-b", BO): ("member", "active"),
             ("org-b", DUO): ("admin", "active"),
         }
-        self.bought = {("org-a", "team"): 3, ("org-b", "team"): 2}
-        self.held: dict[tuple[str, str], set[str]] = {
-            ("org-a", "team"): {ADA}, ("org-b", "team"): {ZED}}
+        # The real catalog: membership IS the Core seat (D19.3). Each org
+        # bought one Core seat for each member, and each member holds one.
+        self.bought: dict[tuple[str, str], int] = {}
+        self.held: dict[tuple[str, str], set[str]] = {}
+        for org, who in self.members:
+            self.bought[(org, "core")] = self.bought.get((org, "core"), 0) + 1
+            self.held.setdefault((org, "core"), set()).add(who)
+        if future_plan:
+            # A FUTURE active plan that is not Core. No live org holds it.
+            self.bought |= {("org-a", "team"): 3, ("org-b", "team"): 2}
+            self.held |= {("org-a", "team"): {ADA}, ("org-b", "team"): {ZED}}
+        #: False: the key of this box lacks the ``seat_admin`` capability.
+        self.seat_admin = True
         self.calls: list[dict[str, Any]] = []
         #: A refusal that the Console gives to the next write of a path, after
         #: it derives the org (a cap or a member gone, while the card was open).
@@ -151,6 +174,16 @@ class _StubConsole:
         key = (request.headers.get("authorization") or "").removeprefix("Bearer ")
         if key not in self.boxes:
             return httpx.Response(401, json={"detail": "invalid deployment key"})
+        if path != "/registry/billing/seats" and not self.seat_admin:
+            # ``customer_console/auth.py``: the capability of the key, before the org.
+            return httpx.Response(403, json={
+                "detail": "deployment key lacks the 'seat_admin' capability"})
+        if path in ("/registry/seats", "/registry/seats/release") and (
+                body.get("plan_slug") == "core"):
+            # ``customer_console/main.py`` ``assign_seat_admin``, ``release_seat_admin``.
+            verb = "assigned" if path == "/registry/seats" else "released"
+            return httpx.Response(400, json={
+                "detail": f"the Core seat is membership itself and is not {verb} here"})
         org, refused = self._org(key, body, admin=path != "/registry/billing/seats")
         if refused is not None or org is None:
             return refused or httpx.Response(500)
@@ -241,8 +274,8 @@ def _settings(monkeypatch, wired: bool) -> None:
     get_settings.cache_clear()
 
 
-def _build(monkeypatch, wired: bool) -> _World:
-    console = _StubConsole()
+def _build(monkeypatch, wired: bool, future_plan: bool = False) -> _World:
+    console = _StubConsole(future_plan)
     w = _World(console)
     _settings(monkeypatch, wired)
     monkeypatch.setattr(
@@ -273,6 +306,17 @@ def world(monkeypatch):
 
 
 @pytest.fixture
+def future(monkeypatch):
+    """The stub with a FUTURE active ``team`` plan beside Core. No live org
+    holds one today. Only the assign and release paths use it."""
+    w = _build(monkeypatch, wired=True, future_plan=True)
+    yield w
+    from acb_common.settings import get_settings
+
+    get_settings.cache_clear()
+
+
+@pytest.fixture
 def unwired(monkeypatch):
     w = _build(monkeypatch, wired=False)
     yield w
@@ -292,7 +336,7 @@ async def test_an_admin_reads_the_seats_of_her_own_org_only(world) -> None:
     """Mutation: the stub derives the org from a body field, or the client
     sends ``org_slug`` -> the call is refused or the roster mixes -> red."""
     out = await om.read_seats()
-    assert out["ok"] is True and out["caps"] == ["team: 1 of 3 seats in use"], out
+    assert out["ok"] is True and out["caps"] == ["core: 4 of 4 seats in use"], out
     assert ADA in out["rows"] and MEL in out["rows"] and KIM in out["rows"]
     assert ZED not in out["rows"] and BO not in out["rows"]
     (call,) = world.console.calls
@@ -305,7 +349,7 @@ async def test_an_admin_reads_the_seats_of_her_own_org_only(world) -> None:
 async def test_an_admin_of_org_b_reads_org_b_only(world) -> None:
     world.member = ZED
     out = await om.read_seats()
-    assert out["ok"] is True and out["caps"] == ["team: 1 of 2 seats in use"]
+    assert out["ok"] is True and out["caps"] == ["core: 3 of 3 seats in use"]
     assert ZED in out["rows"] and BO in out["rows"] and ADA not in out["rows"]
     assert world.console.calls[0]["body"] == {"actor_email": ZED}
 
@@ -313,50 +357,50 @@ async def test_an_admin_of_org_b_reads_org_b_only(world) -> None:
 # ── b. The assign: one card, no org and no actor in the body ─────────────────
 
 
-async def test_an_admin_gives_a_seat_after_one_card_and_names_no_org(world) -> None:
+async def test_an_admin_gives_a_seat_after_one_card_and_names_no_org(future) -> None:
     """Mutation: the tool puts ``actor_email`` or ``org_slug`` in the body ->
     the gateway answers 400 -> red. Mutation: send before the card -> red."""
-    before_b = {k: v for k, v in world.console.state().items() if k[0] == "org-b"}
+    before_b = {k: v for k, v in future.console.state().items() if k[0] == "org-b"}
     out = await om.set_seat(MEL, "assign")
     assert out["ok"] is True and out["plan"] == "team", out
-    (shown,) = world.card.shown
+    (shown,) = future.card.shown
     assert shown["title"] == f"Give {MEL} a seat of team?"
     assert "After this: uses 2 of 3 seats of the plan team. Now: 1 of 3." in shown["context"]
-    (write,) = [s for s in world.sent if s[0] == "POST"]
+    (write,) = [s for s in future.sent if s[0] == "POST"]
     assert write == ("POST", om.SEAT_ASSIGN_PATH, ADA,
                      {"member_email": MEL, "plan_slug": "team", "source": "alacarte"})
-    (assign,) = [c for c in world.console.calls if c["path"] == "/registry/seats"]
+    (assign,) = [c for c in future.console.calls if c["path"] == "/registry/seats"]
     assert assign["body"] == {"member_email": MEL, "plan_slug": "team", "actor_email": ADA,
                               "source": "alacarte"}
     assert assign["auth"] == f"Bearer {BOX_KEY}"
-    assert world.console.held[("org-a", "team")] == {ADA, MEL}
-    assert {k: v for k, v in world.console.state().items() if k[0] == "org-b"} == before_b
+    assert future.console.held[("org-a", "team")] == {ADA, MEL}
+    assert {k: v for k, v in future.console.state().items() if k[0] == "org-b"} == before_b
 
 
-async def test_an_admin_frees_a_seat_after_one_card(world) -> None:
-    world.console.held[("org-a", "team")].add(KIM)
+async def test_an_admin_frees_a_seat_after_one_card(future) -> None:
+    future.console.held[("org-a", "team")].add(KIM)
     out = await om.set_seat(KIM, "release")
     assert out["ok"] is True and "is free" in out["note"], out
-    assert len(world.card.shown) == 1
-    assert "uses 1 of 3 seats of the plan team" in world.card.shown[0]["context"]
-    (release,) = [c for c in world.console.calls if c["path"] == "/registry/seats/release"]
+    assert len(future.card.shown) == 1
+    assert "uses 1 of 3 seats of the plan team" in future.card.shown[0]["context"]
+    (release,) = [c for c in future.console.calls if c["path"] == "/registry/seats/release"]
     assert release["body"] == {"member_email": KIM, "plan_slug": "team", "actor_email": ADA}
-    assert world.console.held[("org-a", "team")] == {ADA}
+    assert future.console.held[("org-a", "team")] == {ADA}
 
 
-async def test_every_console_call_names_the_runs_member_and_no_org(world) -> None:
+async def test_every_console_call_names_the_runs_member_and_no_org(future) -> None:
     """The actor is the member of the run, never an argument. Mutation: the
     route takes the actor from the body -> red."""
     await om.read_seats()
     await om.set_seat(MEL, "assign")
-    world.member = ZED
+    future.member = ZED
     await om.set_seat(BO, "assign")
-    assert world.console.calls
-    for call in world.console.calls:
+    assert future.console.calls
+    for call in future.console.calls:
         assert "org_slug" not in call["body"] and "org" not in call["body"]
-    actors = [c["body"]["actor_email"] for c in world.console.calls]
+    actors = [c["body"]["actor_email"] for c in future.console.calls]
     assert actors == [ADA, ADA, ADA, ADA, ZED, ZED, ZED]
-    for method, _path, who, body in world.sent:
+    for method, _path, who, body in future.sent:
         assert who in (ADA, ZED)
         assert not {"org", "org_slug", "actor_email", "email"} & set(body or {}), method
 
@@ -375,15 +419,16 @@ async def test_an_admin_of_org_b_cannot_give_a_seat_of_org_a(world) -> None:
     assert [c["path"] for c in world.console.calls] == ["/registry/seats/overview"]
 
 
-async def test_the_route_gives_org_b_the_consoles_refusal_for_a_seat_of_org_a(world) -> None:
+async def test_the_route_gives_org_b_the_consoles_refusal_for_a_seat_of_org_a(
+        future) -> None:
     """The check of the route and the Console alone, with no tool before it."""
-    before = world.console.state()
+    before = future.console.state()
     for path in (om.SEAT_ASSIGN_PATH, om.SEAT_RELEASE_PATH):
-        resp = await world.route(ZED, path, {"member_email": ADA, "plan_slug": "team"})
+        resp = await future.route(ZED, path, {"member_email": ADA, "plan_slug": "team"})
         assert resp.status_code == 404, resp.text
         assert resp.json()["detail"] == "no such member in this organization"
-    assert world.console.state() == before
-    assert {c["body"]["actor_email"] for c in world.console.calls} == {ZED}
+    assert future.console.state() == before
+    assert {c["body"]["actor_email"] for c in future.console.calls} == {ZED}
 
 
 # ── d. A member who is no admin of the subscription ──────────────────────────
@@ -406,7 +451,7 @@ async def test_a_member_who_is_no_seat_admin_reads_the_counts_and_no_roster(worl
     (``GET /billing/seats``), for org A only, and name nobody."""
     world.member = MEL
     out = await om.read_seats()
-    assert out["ok"] is True and out["caps"] == ["team: 1 of 3 seats in use"], out
+    assert out["ok"] is True and out["caps"] == ["core: 4 of 4 seats in use"], out
     assert "rows" not in out and ADA not in json.dumps(out)
     assert [s[1] for s in world.sent] == [om.SEATS_OVERVIEW_PATH, om.SEAT_COUNTS_PATH]
     assert [c["path"] for c in world.console.calls] == ["/registry/seats/overview",
@@ -431,13 +476,13 @@ async def test_a_member_of_two_orgs_gets_plain_words(world) -> None:
 # ── e. A Console refusal after the card ──────────────────────────────────────
 
 
-async def test_the_cap_before_the_card_names_the_billing_page(world) -> None:
-    world.console.held[("org-a", "team")] |= {KIM, "x@org-a.example.test"}
-    before = world.console.state()
+async def test_the_cap_before_the_card_names_the_billing_page(future) -> None:
+    future.console.held[("org-a", "team")] |= {KIM, "x@org-a.example.test"}
+    before = future.console.state()
     out = await om.set_seat(MEL, "assign")
     assert out["ok"] is False and out["status"] == 409 and "Billing page" in out["error"]
     assert "3 of 3 seats are in use" in out["error"]
-    assert world.card.shown == [] and world.console.state() == before
+    assert future.card.shown == [] and future.console.state() == before
 
 
 @pytest.mark.parametrize(("status", "detail", "words"), [
@@ -450,14 +495,14 @@ async def test_the_cap_before_the_card_names_the_billing_page(world) -> None:
      "The Customer Console refused: organization is suspended; seats are locked."),
 ], ids=["cap", "member-gone", "locked"])
 async def test_a_console_refusal_after_the_card_is_words_and_changes_nothing(
-        world, status, detail, words) -> None:
-    world.console.refuse["/registry/seats"] = (status, detail)
-    before = world.console.state()
+        future, status, detail, words) -> None:
+    future.console.refuse["/registry/seats"] = (status, detail)
+    before = future.console.state()
     out = await om.set_seat(MEL, "assign")
     assert out["ok"] is False and out["status"] == status and words in out["error"], out
-    assert out["decision"] == "approved" and len(world.card.shown) == 1
-    assert world.console.state() == before
-    assert not [s for s in world.sent if "order" in s[1]]
+    assert out["decision"] == "approved" and len(future.card.shown) == 1
+    assert future.console.state() == before
+    assert not [s for s in future.sent if "order" in s[1]]
 
 
 # ── f. R11 at the gateway ────────────────────────────────────────────────────
@@ -483,3 +528,82 @@ async def test_with_no_console_the_tools_say_so_and_call_nothing(unwired) -> Non
     out = await om.set_seat(MEL, "assign")
     assert out["ok"] is False and out["status"] == 503 and "nothing changed" in out["error"]
     assert unwired.console.calls == [] and unwired.card.shown == []
+
+
+# ── h. The real catalog: Core is membership itself ───────────────────────────
+
+
+@pytest.mark.parametrize(("who", "act"), [(MEL, "assign"), (KIM, "release")])
+async def test_core_is_refused_before_any_card_and_any_console_call(world, who, act) -> None:
+    """Mutation: drop the Core check of the tool -> a card shows for an act
+    that the Console refuses with 400 -> red."""
+    before = world.console.state()
+    out = await om.set_seat(who, act, "core")
+    assert out["ok"] is False and out["status"] == 400, out
+    assert out["error"] == ("The Core seat is membership itself: invite the member to give "
+                            "one, remove the member to free one. Nothing changed.")
+    assert world.card.shown == [] and world.console.calls == []
+    assert world.console.state() == before
+
+
+async def test_a_core_only_grid_has_no_plan_the_chat_can_change(world) -> None:
+    """The live catalog. Mutation: pick ``core`` as the one plan -> a card -> red."""
+    out = await om.set_seat(MEL, "assign")
+    assert out["ok"] is False and "no plan the chat can change" in out["error"], out
+    assert "Buy" not in out["error"] and "Nothing changed" in out["error"]
+    assert world.card.shown == []
+    assert [c["path"] for c in world.console.calls] == ["/registry/seats/overview"]
+
+
+async def test_a_release_of_a_member_with_only_core_is_refused_before_the_card(world) -> None:
+    """Mutation: take the one seat the member holds (Core) -> a card -> red."""
+    out = await om.set_seat(KIM, "release")
+    assert out["ok"] is False and out["error"].startswith("The Core seat is membership itself")
+    assert world.card.shown == []
+    assert [c["path"] for c in world.console.calls] == ["/registry/seats/overview"]
+
+
+async def test_a_future_plan_beside_core_is_the_one_the_chat_picks(future) -> None:
+    """The happy path still works on a plan that is not Core. Each member
+    holds Core too, and the chat never names it. Mutation: count Core among
+    the plans -> "Name the plan" -> red."""
+    out = await om.set_seat(MEL, "assign")
+    assert out["ok"] is True and out["plan"] == "team", out
+    out = await om.set_seat(MEL, "release")
+    assert out["ok"] is True and out["plan"] == "team" and "is free" in out["note"], out
+    assert len(future.card.shown) == 2
+    assert [c["body"]["plan_slug"] for c in future.console.calls
+            if c["path"] != "/registry/seats/overview"] == ["team", "team"]
+    assert future.console.held[("org-a", "core")] >= {MEL}
+
+
+@pytest.mark.parametrize(("path", "verb"), [(om.SEAT_ASSIGN_PATH, "assigned"),
+                                             (om.SEAT_RELEASE_PATH, "released")])
+async def test_the_stub_console_refuses_core_as_the_real_one_does(world, path, verb) -> None:
+    """The model of the Console: ``core`` gets its 400 through the real route."""
+    resp = await world.route(ADA, path, {"member_email": MEL, "plan_slug": "core"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == f"the Core seat is membership itself and is not {verb} here"
+
+
+# ── i. A key of this box without the seat_admin capability ───────────────────
+
+
+async def test_a_key_without_seat_admin_reads_as_not_set_up_and_never_falls_back(world) -> None:
+    """Mutation: read the 403 as "not an admin", or fall back to the counts
+    read -> the member is blamed -> red."""
+    world.console.seat_admin = False
+    out = await om.read_seats()
+    assert out["ok"] is False and out["status"] == 503, out
+    assert out["error"].startswith("Seats are not set up on this box")
+    assert "owner or admin" not in out["error"]
+    assert [s[1] for s in world.sent] == [om.SEATS_OVERVIEW_PATH]
+
+
+async def test_a_key_without_seat_admin_gives_no_card(future) -> None:
+    future.console.seat_admin = False
+    out = await om.set_seat(MEL, "assign")
+    assert out["ok"] is False and out["status"] == 503
+    assert out["error"].startswith("Seats are not set up on this box")
+    assert "nothing changed" in out["error"] and "owner or admin" not in out["error"]
+    assert future.card.shown == []

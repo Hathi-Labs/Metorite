@@ -722,10 +722,15 @@ def test_with_the_switch_off_a_held_chat_keeps_each_tool(monkeypatch, owner) -> 
 #    the Billing page. Nothing buys.
 # e. A box with no Console (503) gets plain words.
 # f. A seat list that changed while the card was open sends nothing.
+# g. ``core`` is membership itself: refused before any card, never picked.
+# h. A key without the ``seat_admin`` capability reads as "not set up".
 
 
 class _SeatGateway:
-    """The seat routes of one org, as the gateway relays the Console."""
+    """The seat routes of one org, as the gateway relays the Console.
+
+    ``team`` is a FUTURE active plan that is not Core. No live org holds one
+    today: the live catalog is ``core`` alone, as the stub Console models it."""
 
     def __init__(self) -> None:
         self.me: dict[str, Any] = {"capabilities": ["admin:members:read", om.SEATS_RIGHT]}
@@ -1009,3 +1014,74 @@ def test_a_held_chat_holds_off_the_seat_write_and_keeps_the_read(monkeypatch, ow
     for item in (om.read_seats, "read_seats"):
         assert egress.is_held_off_write(item, owner=owner) is False
         assert egress.is_held_chat_off(item, owner=owner) is False
+
+
+def test_the_core_plan_slug_matches_the_console() -> None:
+    """The copy in the tool equals the constant of the Console."""
+    from customer_console.seats import CORE_PLAN_SLUG
+
+    assert om.CORE_PLAN_SLUG == CORE_PLAN_SLUG
+
+
+@pytest.mark.parametrize("act", ["assign", "release"])
+async def test_core_named_is_refused_with_no_call(sgw, card, act) -> None:
+    """Mutation: drop the Core check -> a read and a card -> red."""
+    out = await om.set_seat(MEMBER, act, " Core ")
+    assert out["ok"] is False and out["status"] == 400
+    assert out["error"].startswith("The Core seat is membership itself")
+    assert card.shown == [] and sgw.calls == []
+
+
+async def test_core_in_the_grid_is_never_a_choice(sgw, card) -> None:
+    """Core beside one plan: the chat takes the plan and never asks to name
+    Core. Mutation: count Core among the plans -> "Name the plan" -> red."""
+    sgw.plans.insert(0, {"plan_slug": "core", "purchased": 3, "assigned": 3, "available": 0,
+                         "oversubscribed": False})
+    for m in sgw.members:
+        m["seats"] = ["core", *m["seats"]]
+    out = await om.set_seat(MEMBER, "assign")
+    assert out["ok"] is True and out["plan"] == "team", out
+    out = await om.set_seat("kim@example.test", "release")
+    assert out["ok"] is True and out["plan"] == "team", out
+    assert [w[2]["plan_slug"] for w in sgw.writes()] == ["team", "team"]
+
+
+async def test_a_grid_of_core_alone_has_no_plan_and_no_buy_advice(sgw, card) -> None:
+    sgw.plans[:] = [{"plan_slug": "core", "purchased": 3, "assigned": 3, "available": 0,
+                     "oversubscribed": False}]
+    out = await om.set_seat(MEMBER, "assign")
+    assert out["ok"] is False and "no plan the chat can change" in out["error"]
+    assert "Buy" not in out["error"] and card.shown == [] and sgw.writes() == []
+
+
+_KEY_REFUSED = (403, {"detail": "deployment key lacks the 'seat_admin' capability"})
+
+
+async def test_a_key_without_seat_admin_is_not_set_up_on_the_read(sgw, card) -> None:
+    """Mutation: read it as "not an admin", or fall back to the counts -> red."""
+    sgw.status[("GET", om.SEATS_OVERVIEW_PATH)] = _KEY_REFUSED
+    out = await om.read_seats()
+    assert out["ok"] is False and out["status"] == 503
+    assert out["error"].startswith("Seats are not set up on this box")
+    assert [c[1] for c in sgw.calls] == [om.SEATS_OVERVIEW_PATH]
+
+
+async def test_a_key_without_seat_admin_after_the_card_is_not_set_up(sgw, card) -> None:
+    sgw.status[("POST", om.SEAT_ASSIGN_PATH)] = _KEY_REFUSED
+    out = await om.set_seat(MEMBER, "assign")
+    assert out["ok"] is False and out["status"] == 503 and out["decision"] == "approved"
+    assert out["error"].startswith("Seats are not set up on this box")
+    assert "owner or admin" not in out["error"]
+
+
+def test_the_capability_prefix_is_the_one_the_console_says() -> None:
+    """The tool reads the prefix of ``acb_auth.console_resolve``. The Console
+    words its refusal with it (``customer_console/auth.py``)."""
+    import inspect
+
+    from acb_auth.console_resolve import CAPABILITY_REFUSAL_PREFIX
+    from customer_console import auth as console_auth
+
+    said = 'f"deployment key lacks the {capability!r} capability"'
+    assert said in inspect.getsource(console_auth)
+    assert _KEY_REFUSED[1]["detail"].startswith(CAPABILITY_REFUSAL_PREFIX)

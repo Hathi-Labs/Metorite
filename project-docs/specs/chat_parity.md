@@ -69,7 +69,19 @@ words that name the Billing page, and the chat never buys a seat.
 
 The body of a seat write names no org and no actor (R11). `set_seat` reads the seats again after
 Approve, and it sends nothing when they changed. A box with no Console answers
-503, and the tools say that seats need the Customer Console.
+503, and the tools say that seats need the Customer Console. A key of the box
+without the `seat_admin` capability gets "seats are not set up on this box".
+The tools never read that 403 as a fault of the member.
+
+**Today only the Core seat exists, and the chat refuses it.** The live
+catalog holds one active plan, `core`. The Core seat is membership itself
+(D19.3), and the Console refuses an assign or a release of it with 400. So
+`set_seat` refuses `core` with plain words before any card, and it never picks
+`core`. A grid of Core alone gets "no plan the chat can change". So `set_seat`
+acts only on a future active plan that is not Core.
+
+Finding for the board: the Seats tab of the page (`SeatsTab.tsx`) has the same flaw. It takes the first
+plan of the grid, or `core`, and the Console then refuses the act.
 
 PAR-4d paid the five seat rows, so the admin ceiling went from 17 to 12. A held
 chat holds off `set_seat` and keeps `read_seats`. The isolation proof is a stub
