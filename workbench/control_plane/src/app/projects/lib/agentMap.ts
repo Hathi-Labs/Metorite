@@ -116,7 +116,7 @@ export const OUTLINE_LABEL = "Outline of people, sessions and tasks";
 export const MAP_ERROR_COPY = "The map did not load. Check your connection, then open it again.";
 export const MAP_EMPTY_COPY = "No agent session is open now.";
 export const PROJECT_MAP_EMPTY_COPY = "No agent works on this project yet.";
-export const MAP_TRUNCATED_COPY = "The map shows the first sessions and runs only.";
+export const MAP_TRUNCATED_COPY = "The map shows the first sessions, runs and sub-agents only.";
 export const SHOW_QUIET_LABEL = "Show quiet runs";
 export const GROUP_BY_MACHINE_LABEL = "Group by machine";
 export const DISPATCHED_BY_LABEL = "Dispatched by";
@@ -124,6 +124,22 @@ export const DISPATCHED_LABEL = "Dispatched";
 export const OPEN_TASK_LABEL = "Open task";
 /** SW-110. The name of a sub-agent that reported no name. */
 export const UNNAMED_CHILD = "Sub-agent";
+
+/** SW-110. The name of a sub-agent in a spoken label. An unnamed one is not doubled: "Sub-agent", not "Sub-agent Sub-agent". */
+export function childSpokenName(name: string): string {
+  return name === UNNAMED_CHILD ? UNNAMED_CHILD : `${UNNAMED_CHILD} ${name}`;
+}
+
+/**
+ * SW-110. The key of the canvas. A new key refits the view, so the group
+ * switch and the open or close of a session refit, and a re-read with the same
+ * sessions open keeps the pan. It reads the layout, so an id of a session that
+ * is gone, or has no sub-agent, changes nothing.
+ */
+export function canvasKey(byMachine: boolean, nodes: readonly Pick<MapNode, "id" | "expanded">[]): string {
+  const open = nodes.filter((n) => n.expanded === true).map((n) => n.id).sort(compareText);
+  return `${byMachine ? "by-machine" : "by-person"}|${open.join(",")}`;
+}
 
 /** SW-110. The words of the control that opens the sub-agents of a session. */
 export function childToggleLabel(count: number, expanded: boolean): string {
@@ -430,7 +446,14 @@ export const NODE_H = { person: 48, machine: 48, session: 96, task: 52, quiet: 3
 /** SW-110. A session with sub-agents is this much taller: the row of its control. */
 export const CHILD_TOGGLE_H = 32;
 /** SW-110. The sub-agents sit one column to the right of the tasks of their session. */
-export const CHILD_STEP = DEPTH_STEP;
+/** The gap between the task column and the first sub-agent column equals the session-to-task gap. */
+export const CHILD_GAP = DEPTH_STEP - NODE_W.session;
+/** The x of the first sub-agent column, from the x of the task column. */
+export const CHILD_OFFSET = NODE_W.task + CHILD_GAP;
+/** The x step from one sub-agent column to the next. */
+export const CHILD_STEP = NODE_W.child + CHILD_GAP;
+/** The most sub-agent rows in one column: more fill the next column. */
+export const CHILD_ROWS_MAX = 5;
 const GAP = 12;
 const BLOCK_GAP = 24;
 
@@ -460,16 +483,20 @@ function runsOf(map: AgentMap, sessionId: string): MapRun[] {
     .sort((a, b) => Number(a.quiet) - Number(b.quiet) || compareText(a.run_id, b.run_id));
 }
 
-/** SW-110. The sub-agents of one run, by name and then by id, so the order never depends on the input. */
+/**
+ * SW-110. The sub-agents of one run, oldest first (`age` is seconds since the
+ * start, so a larger age is older), then by id. A sub-agent with no age sorts
+ * last. The order never depends on the input.
+ */
 export function childrenOf(map: Pick<AgentMap, "children">, runId: string): MapChild[] {
   return map.children
     .filter((c) => c.run_id === runId)
-    .sort((a, b) => compareText(a.name.toLowerCase(), b.name.toLowerCase()) || compareText(a.child_id, b.child_id));
-}
-
-/** SW-110. How many sub-agents the listed runs of a session hold. */
-export function childCountOf(map: Pick<AgentMap, "children">, sessionId: string): number {
-  return map.children.filter((c) => c.session_id === sessionId).length;
+    .sort(
+      (a, b) =>
+        Number(a.age === null) - Number(b.age === null) ||
+        (b.age ?? 0) - (a.age ?? 0) ||
+        compareText(a.child_id, b.child_id),
+    );
 }
 
 /** How many quiet runs a session holds that the answer does not list. */
@@ -714,6 +741,31 @@ export function layoutAgentMap(
     const expanded = childCount > 0 && options.expanded?.has(session.id) === true;
     const sessionH = childCount > 0 ? NODE_H.session + CHILD_TOGGLE_H : NODE_H.session;
     let ty = y;
+    // SW-110. The sub-agents fill a grid right of the task column: CHILD_ROWS_MAX rows, column by column.
+    const kids = expanded ? runs.flatMap((run) => childrenOf(map, run.run_id)) : [];
+    const rowsH = Math.min(kids.length, CHILD_ROWS_MAX) * (NODE_H.child + GAP) - GAP;
+    kids.forEach((child, i) => {
+      const cid = `c:${child.child_id}`;
+      const run = runs.find((r) => r.run_id === child.run_id)!;
+      nodes.push({
+        id: cid,
+        kind: "child",
+        x: taskX(session.id) + CHILD_OFFSET + Math.floor(i / CHILD_ROWS_MAX) * CHILD_STEP,
+        y: y + (i % CHILD_ROWS_MAX) * (NODE_H.child + GAP),
+        w: NODE_W.child,
+        h: NODE_H.child,
+        label: child.name,
+        detail: childAgeWord(child.age, nowMs),
+        state: null,
+        runState: child.state,
+        ref: child.child_id,
+        taskId: run.task_id,
+        sessionId: session.id,
+        runId: run.run_id,
+        model: child.model,
+      });
+      edges.push({ id: `t:${run.run_id}>${cid}`, from: `t:${run.run_id}`, to: cid, kind: "tree" });
+    });
     for (const run of runs) {
       const tid = `t:${run.run_id}`;
       nodes.push({
@@ -733,31 +785,7 @@ export function layoutAgentMap(
         sessionId: session.id,
       });
       edges.push({ id: `${sid}>${tid}`, from: sid, to: tid, kind: "tree" });
-      const kids = expanded ? childrenOf(map, run.run_id) : [];
-      kids.forEach((child, i) => {
-        const cid = `c:${child.child_id}`;
-        nodes.push({
-          id: cid,
-          kind: "child",
-          x: taskX(session.id) + CHILD_STEP,
-          y: ty + i * (NODE_H.child + GAP),
-          w: NODE_W.child,
-          h: NODE_H.child,
-          label: child.name,
-          detail: childAgeWord(child.age, nowMs),
-          state: null,
-          runState: child.state,
-          ref: child.child_id,
-          taskId: run.task_id,
-          sessionId: session.id,
-          runId: run.run_id,
-          model: child.model,
-        });
-        edges.push({ id: `${tid}>${cid}`, from: tid, to: cid, kind: "tree" });
-      });
-      // Each task keeps the height of its sub-agents, so a sub-agent sits beside its task.
-      const kidsH = kids.length * (NODE_H.child + GAP) - GAP;
-      ty += Math.max(NODE_H.task, kidsH) + GAP;
+      ty += NODE_H.task + GAP;
     }
     if (hidden > 0) {
       const qid = `q:${session.id}`;
@@ -798,7 +826,7 @@ export function layoutAgentMap(
       edges.push({ id: `${personId}>${sid}`, from: personId, to: sid, kind: "tree" });
     }
     if (machineId) edges.push({ id: `${machineId}>${sid}`, from: machineId, to: sid, kind: "tree" });
-    y += Math.max(sessionH, ty - y - GAP) + BLOCK_GAP;
+    y += Math.max(sessionH, ty - y - GAP, rowsH) + BLOCK_GAP;
   };
 
   const personNode = (person: string, count: number, at: number): MapNode => ({

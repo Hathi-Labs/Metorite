@@ -173,6 +173,31 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _child_namers(source: str) -> list[str]:
+    """Every top-level statement of *source* whose CODE names the child
+    columns in a string constant, sorted. SQL lives in strings. A comment is
+    not in the AST, so it never counts. An attribute read of a result row,
+    such as ``c.parent_run_id`` in ``_agent_map``, is no query and never
+    counts. A statement with no name reads as ``<line N>``."""
+    found = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            name = f"<line {node.lineno}>"
+        text = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                text.append(sub.value)
+        if _CHILD.search("\n".join(text)):
+            found.append(name)
+    return sorted(found)
+
+
 def _named_sources(path: Path, names: tuple[str, ...]) -> dict[str, str]:
     """The source of each top-level function or assignment of *names* in
     *path*. A name that the file no longer defines fails, so the fence
@@ -516,15 +541,28 @@ class TestTheChildGrantsNothing:
         arm of the child read names them. Mutation: add ``AND
         c.agent_model IS NOT NULL`` to the read."""
         path = _GATEWAY / "agent_summary.py"
-        named = _named_sources(path, (
-            "_SEEN_RUNS_SQL", "_MAP_CTE", "_MAP_SESSIONS_SQL", "_MAP_RUNS_SQL",
-            "_MAP_LINES_SQL", "_reach_sql", "_map_sql", "_MAP_CHILDREN_SQL"))
-        readers = sorted(name for name, body in named.items() if _CHILD.search(body))
+        readers = _child_namers(_read(path))
         assert readers == ["_MAP_CHILDREN_SQL"], readers
         for admin in (True, False):
             assert not _CHILD.search(agent_summary._reach_sql(admin)), admin
+        # The label guard reads the tail of the child read after its first
+        # ``FROM live``. That cut is sound only when the shared head has none.
+        assert "FROM live" not in agent_summary._MAP_CTE
         guarded = agent_summary._MAP_CHILDREN_SQL.split("FROM live", 1)[1]
         assert not _LABEL.search(guarded), guarded
+
+    def test_the_whole_file_check_rejects_a_second_reader(self) -> None:
+        """Mutation, on a copy of the text and never on the file: a second
+        constant that names ``kind = 'child'`` must fail the check, and a
+        comment that names it must not."""
+        source = _read(_GATEWAY / "agent_summary.py")
+        assert _child_namers(source) == ["_MAP_CHILDREN_SQL"]
+        mutated = source + "\n_LATER_SQL = \"SELECT 1 WHERE kind = 'child'\"\n"
+        assert _child_namers(mutated) == ["_LATER_SQL", "_MAP_CHILDREN_SQL"]
+        in_code = source + "\ndef later(db):\n    return db.execute('SELECT parent_run_id FROM t')\n"
+        assert _child_namers(in_code) == ["_MAP_CHILDREN_SQL", "later"]
+        commented = source + "\n# kind = 'child' and parent_run_id: a comment only\n"
+        assert _child_namers(commented) == ["_MAP_CHILDREN_SQL"]
 
     def test_the_session_key_never_meets_the_child_columns(self) -> None:
         files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]

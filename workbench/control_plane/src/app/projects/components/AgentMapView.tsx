@@ -65,6 +65,8 @@ import {
   childStartedWhen,
   childStateWord,
   childToggleLabel,
+  childSpokenName,
+  canvasKey,
   dispatchGraph,
   groupByMachine,
   layoutAgentMap,
@@ -190,7 +192,7 @@ function PlaceLines({ place }: { place: Place }) {
 function nodeLabel(node: MapNode): string {
   const place = node.place;
   if (node.kind === "child") {
-    const parts = [`Sub-agent ${node.label}`, childStateWord({ state: node.runState ?? "" })];
+    const parts = [childSpokenName(node.label), childStateWord({ state: node.runState ?? "" })];
     if (node.model) parts.push(`Model ${node.model}`);
     if (node.detail) parts.push(node.detail);
     return `${parts.join(". ")}.`;
@@ -206,11 +208,11 @@ function nodeLabel(node: MapNode): string {
 function ChildLine({ model, age }: { model: string | null | undefined; age: string }) {
   if (!model && !age) return null;
   return (
-    <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+    <span className="flex min-w-0 max-w-full items-center gap-1.5 text-xs text-muted-foreground">
       {model ? (
         <>
           <Icon name={MODEL_ICON} size={12} className="shrink-0" aria-hidden />
-          <span data-map-child-model="" className="min-w-0 truncate">
+          <span data-map-child-model="" className="min-w-0 truncate" title={model}>
             {model}
           </span>
         </>
@@ -251,7 +253,9 @@ function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
       ) : node.kind === "child" ? (
         <>
           <span className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={node.label}>
+              {node.label}
+            </span>
             <StateChip node={node} />
           </span>
           <ChildLine model={node.model} age={node.detail} />
@@ -422,8 +426,8 @@ function Canvas({
     >
       <ReactFlowProvider>
         <ReactFlow
-          // A new key refits the view when the switch changes the layout width.
-          key={byMachine ? "by-machine" : "by-person"}
+          // A new key refits the view: the group switch and the open or close of a session change it.
+          key={canvasKey(byMachine, layout.nodes)}
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
@@ -506,14 +510,16 @@ function Outline({
                           </ControlLink>
                           <span className={`${CHIP} ${task.chip}`}>{task.word}</span>
                           {task.children.length > 0 ? (
-                            <ul className="ml-3 w-full space-y-1 border-l border-border pl-3">
+                            <ul className="w-full min-w-0 space-y-1 border-l border-border pl-3 pr-3">
                               {task.children.map((child) => (
                                 <li
                                   key={child.id}
                                   data-outline-child=""
                                   className="flex flex-wrap items-center gap-2 text-xs"
                                 >
-                                  <span className="font-medium text-foreground">{child.name}</span>
+                                  <span className="min-w-0 max-w-full truncate font-medium text-foreground" title={child.name}>
+                                    {child.name}
+                                  </span>
                                   <span className={`${CHIP} ${child.chip}`}>{child.word}</span>
                                   <ChildLine model={child.model} age={child.age} />
                                 </li>

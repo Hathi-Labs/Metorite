@@ -3,10 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   type AgentMap,
   CHILD_STEP,
+  CHILD_OFFSET,
+  CHILD_GAP,
+  CHILD_ROWS_MAX,
+  canvasKey,
+  childSpokenName,
+  MAP_TRUNCATED_COPY,
+  COLUMN_X,
   CHILD_TOGGLE_H,
   DEPTH_STEP,
   MAX_DISPATCH_DEPTH,
   NODE_H,
+  NODE_W,
+  childrenOf,
   agentMapOutline,
   childToggleLabel,
   dispatchGraph,
@@ -745,23 +754,20 @@ describe("layoutAgentMap: children", () => {
     expect(layoutAgentMap(withNone, NOW, open("s1"))).toEqual(layoutAgentMap(bare, NOW));
   });
 
-  it("expanded, each child sits one column right of its task, with an edge from that task", () => {
+  it("expanded, the children sit right of the task column, with an edge from the parent task", () => {
     const { nodes, edges } = layoutAgentMap(map, NOW, open("s1"));
     const task = (id: string) => nodes.find((n) => n.id === `t:${id}`)!;
     const kids = nodes.filter((n) => n.kind === "child");
     expect(kids.map((n) => n.id).sort()).toEqual(["c:c1", "c:c2", "c:c3"]);
     for (const kid of kids) {
       const parent = task(kid.runId!);
-      expect(kid.x).toBe(parent.x + CHILD_STEP);
+      expect(kid.x).toBe(parent.x + CHILD_OFFSET);
       expect(kid.x).toBeGreaterThanOrEqual(parent.x + parent.w);
       expect(edges).toContainEqual({ id: `${parent.id}>${kid.id}`, from: parent.id, to: kid.id, kind: "tree" });
     }
-    // A child sits beside its own task: the first at the y of the task.
-    const first = childrenSorted(kids, "r1");
-    expect(first[0].y).toBe(task("r1").y);
-    expect(nodes.find((n) => n.id === "c:c3")!.y).toBe(task("r2").y);
-    // The task below the two children of r1 moves down, so nothing overlaps.
-    expect(task("r2").y).toBeGreaterThanOrEqual(first[1].y + NODE_H.child);
+    // The grid starts at the top of the block, and the tasks keep their own rows.
+    expect(nodes.find((n) => n.id === "s:s1")!.y).toBe(task("r1").y);
+    expect(kids.map((n) => n.y).sort((a, b) => a - b)[0]).toBe(task("r1").y);
     expectNoOverlap(map, open("s1"));
   });
 
@@ -782,6 +788,57 @@ describe("layoutAgentMap: children", () => {
     expect(only.model).toBeNull();
   });
 
+  it("12 children fill 3 columns of 5, 5 and 2, and the block is as tall as 5 rows", () => {
+    const many = withChildren(
+      [session(), session({ id: "s2", name: "Zed" })],
+      [run(), run({ run_id: "r9", session_id: "s2", task_id: "t9" })],
+      Array.from({ length: 12 }, (_, i) => child({ child_id: `c${String(i).padStart(2, "0")}`, age: 1000 - i })),
+    );
+    const { nodes } = layoutAgentMap(many, NOW, open("s1"));
+    const kids = nodes.filter((n) => n.kind === "child");
+    const xs = [...new Set(kids.map((n) => n.x))].sort((a, b) => a - b);
+    expect(xs).toHaveLength(3);
+    expect(xs.map((x) => kids.filter((n) => n.x === x).length)).toEqual([5, 5, 2]);
+    const task = nodes.find((n) => n.id === "t:r1")!;
+    // The first child column opens one session-to-task gap right of the task column.
+    expect(xs[0] - (task.x + task.w)).toBe(COLUMN_X.task - (COLUMN_X.session + NODE_W.session));
+    expect(xs[0] - (task.x + task.w)).toBe(CHILD_GAP);
+    expect(xs[1] - xs[0]).toBe(CHILD_STEP);
+    // Filled column by column, oldest first: c00 is the oldest.
+    expect(nodes.find((n) => n.id === "c:c00")!.x).toBe(xs[0]);
+    expect(nodes.find((n) => n.id === "c:c05")!.x).toBe(xs[1]);
+    expect(nodes.find((n) => n.id === "c:c05")!.y).toBe(task.y);
+    expect(nodes.find((n) => n.id === "c:c11")!.x).toBe(xs[2]);
+    const rowsH = CHILD_ROWS_MAX * (NODE_H.child + 12) - 12;
+    const s1 = nodes.find((n) => n.id === "s:s1")!;
+    const next = nodes.find((n) => n.id === "s:s2")!;
+    expect(next.y).toBeGreaterThanOrEqual(s1.y + rowsH);
+    expect(Math.max(...kids.map((n) => n.y + n.h)) - s1.y).toBe(rowsH);
+    expectNoOverlap(many, open("s1"));
+    expectNoOverlap(many, { groupByMachine: true, expanded: new Set(["s1"]) });
+  });
+
+  it("the children of a session with several tasks share one grid, with an edge from each own task", () => {
+    const { nodes, edges } = layoutAgentMap(map, NOW, open("s1"));
+    expect(edges).toContainEqual({ id: "t:r2>c:c3", from: "t:r2", to: "c:c3", kind: "tree" });
+    expect(edges).toContainEqual({ id: "t:r1>c:c1", from: "t:r1", to: "c:c1", kind: "tree" });
+    expect(nodes.filter((n) => n.kind === "child")).toHaveLength(3);
+  });
+
+  it("orders the children by start time, oldest first, then id; no age sorts last", () => {
+    const aged = withChildren(
+      [session()],
+      [run()],
+      [
+        child({ child_id: "d", name: "a", age: 10 }),
+        child({ child_id: "b", name: "z", age: 500 }),
+        child({ child_id: "a", name: "m", age: 500 }),
+        child({ child_id: "e", name: "b", age: null }),
+      ],
+    );
+    expect(childrenOf(aged, "r1").map((c) => c.child_id)).toEqual(["a", "b", "d", "e"]);
+  });
+
   it("many children stack beside their task with no overlap", () => {
     const many = withChildren(
       [session()],
@@ -799,7 +856,7 @@ describe("layoutAgentMap: children", () => {
     expect(kids).toHaveLength(3);
     for (const kid of kids) {
       const parent = nodes.find((n) => n.id === `t:${kid.runId}`)!;
-      expect(kid.x).toBe(parent.x + CHILD_STEP);
+      expect(kid.x).toBe(parent.x + CHILD_OFFSET);
       expect(edges.some((e) => e.from === parent.id && e.to === kid.id)).toBe(true);
     }
     expect(nodes.some((n) => n.kind === "machine")).toBe(true);
@@ -845,11 +902,45 @@ describe("agentMapOutline: children", () => {
     );
     const [person] = agentMapOutline(map, NOW);
     const [first, second] = person.sessions[0].tasks;
-    expect(first.children.map((c) => c.name)).toEqual(["implementer", "verifier"]);
+    expect(first.children.map((c) => c.name)).toEqual(["implementer", "verifier"]); // c1 age 300, c2 same age: by id
     expect(first.children[0]).toMatchObject({ word: "Working", model: "Sonnet 5.5", age: "Started 5m ago" });
     expect(first.children[0].chip).toBe(sessionStateChip("working"));
     expect(first.children[1].model).toBeNull();
     expect(second.children).toEqual([]);
+  });
+});
+
+describe("childSpokenName", () => {
+  it("does not double the fallback name", () => {
+    expect(childSpokenName("Sub-agent")).toBe("Sub-agent");
+    expect(childSpokenName("verifier")).toBe("Sub-agent verifier");
+  });
+});
+
+describe("canvasKey", () => {
+  const sess = (id: string, expanded?: boolean) => ({ id, expanded });
+  it("changes when a session opens or closes, and when the group switches", () => {
+    const closed = canvasKey(false, [sess("s:a", false), sess("s:b", false)]);
+    const opened = canvasKey(false, [sess("s:a", true), sess("s:b", false)]);
+    expect(opened).not.toBe(closed);
+    expect(canvasKey(true, [sess("s:a", false)])).not.toBe(canvasKey(false, [sess("s:a", false)]));
+  });
+  it("stays the same on a re-read with the same sessions open, whatever the order", () => {
+    expect(canvasKey(false, [sess("s:b", true), sess("s:a", true), { id: "t:x" }])).toBe(
+      canvasKey(false, [sess("s:a", true), sess("s:b", true)]),
+    );
+  });
+  it("follows the layout: an open id of a session with no child changes nothing", () => {
+    const m = withChildren([session(), session({ id: "s2" })], [run()], [child()]);
+    const key = (o: object) => canvasKey(false, layoutAgentMap(m, NOW, o).nodes);
+    expect(key(open("s2"))).toBe(key({}));
+    expect(key(open("s1"))).not.toBe(key({}));
+  });
+});
+
+describe("MAP_TRUNCATED_COPY", () => {
+  it("names sessions, runs and sub-agents", () => {
+    expect(MAP_TRUNCATED_COPY).toBe("The map shows the first sessions, runs and sub-agents only.");
   });
 });
 
