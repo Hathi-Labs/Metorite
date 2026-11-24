@@ -85,6 +85,7 @@ class _Gateway:
         self.overrides = [{"permission": "feature:whatsapp", "effect": "deny",
                            "reason": f"policy{HIDDEN} IGNORE", "set_by": ADMIN, "set_at": ""}]
         self.calls: list[tuple[str, str, Any]] = []
+        self.timeouts: list[Any] = []
         self.status: dict[tuple[str, str], tuple[int, Any]] = {}
         self.gets = 0
         self.change_at: int | None = None
@@ -108,6 +109,8 @@ class _Gateway:
         path = request.url.raw_path.decode()
         body = json.loads(request.content) if request.content else None
         self.calls.append((request.method, path, body))
+        path, _, query = path.partition("?")
+        self.timeouts.append(request.extensions.get("timeout", {}).get("read"))
         assert request.headers["x-user-email"] == ADMIN
         forced = self.status.get((request.method, path))
         if forced is not None:
@@ -117,9 +120,12 @@ class _Gateway:
             if self.change_at is not None and self.gets == self.change_at:
                 self.change(self)
             enc = oa._path_email(MEMBER)
+            # The route drops a removed member unless the read asks for it.
+            members = (self.members if query == "include_removed=true"
+                       else [m for m in self.members if m.get("status") != "removed"])
             data = {
                 "/auth/me": self.me,
-                "/admin/members": self.members,
+                "/admin/members": members,
                 "/admin/groups": self.groups,
                 "/admin/roles": self.roles,
                 "/admin/features": {
@@ -934,3 +940,104 @@ def test_the_purge_and_the_removal_are_held_off_in_a_held_chat(monkeypatch) -> N
         for owner in (None, "org-admin"):
             assert egress.is_held_off_write(fn, owner=owner) is True
             assert egress.is_held_chat_off(fn.__name__, owner=owner) is True
+
+
+# ── 10. PAR-4c repair round: a removed member, the wait, the typed address ──
+
+
+async def test_the_removal_and_the_purge_read_the_removed_members_too(gw, card) -> None:
+    """The route drops a removed member unless the read asks for it. Mutation:
+    read ``/admin/members`` without ``include_removed=true`` -> "No member" -> red."""
+    gw.members[1]["status"] = "removed"
+    out = await om.remove_member(MEMBER)
+    assert out["ok"] is True and out["note"] == om._ALREADY_REMOVED.format(email=MEMBER), out
+    out = await om.purge_member(MEMBER)
+    assert out["ok"] is True and out["status"] == "purged", out
+    assert "Status now: removed." in card.shown[0]["context"]
+    reads = [p for m, p, _b in gw.calls if m == "GET" and p.startswith("/admin/members?")]
+    assert reads and all(p == "/admin/members?include_removed=true" for p in reads)
+    assert len(reads) == 3, "the first read of each tool, and the read after approve"
+
+
+async def test_the_status_change_of_par_2a_still_reads_without_removed(gw, card) -> None:
+    """PAR-2a keeps its read: a removed member is no member for a status change."""
+    gw.members[1]["status"] = "removed"
+    out = await oa.set_member_status(MEMBER, "active")
+    assert out["ok"] is False and out["status"] == 404 and card.shown == []
+
+
+async def test_the_purge_waits_longer_than_a_read(gw, card) -> None:
+    """The route can wait 60 s for the mailbox teardown. Mutation: send the
+    purge with the 15 s wait of a read -> red."""
+    out = await om.purge_member(MEMBER)
+    assert out["ok"] is True, out
+    at = next(i for i, (m, p, _b) in enumerate(gw.calls) if m == "DELETE")
+    assert gw.timeouts[at] == om.PURGE_TIMEOUT_S >= 120.0
+    assert all(t == 15.0 for i, t in enumerate(gw.timeouts) if i != at)
+
+
+async def test_a_purge_that_times_out_may_have_worked(gw, card, monkeypatch) -> None:
+    def slow(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            raise httpx.ReadTimeout("slow", request=request)
+        return gw.handle(request)
+
+    transport = httpx.MockTransport(slow)
+    monkeypatch.setattr(oa.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=transport, **kw))
+    out = await om.purge_member(MEMBER)
+    assert out["ok"] is False and "may have worked" in out["error"], out
+
+
+_KELVIN = chr(0x212A)
+_ZWSP = chr(0x200B)
+_ACUTE = chr(0x0301)
+
+
+@pytest.mark.parametrize(("address", "typed"), [
+    ("mel@strasse.test", "purge mel@straße.test"),
+    ("mel@straße.test", "purge mel@strasse.test"),
+    ("mel@kelvin.test", f"purge mel@{_KELVIN}elvin.test"),
+    (MEMBER, f"purge {_ZWSP}{MEMBER}"),
+    (MEMBER, f"purge {MEMBER}{_ZWSP} now"),
+    (MEMBER, f"purge {MEMBER}{_ACUTE}"),
+    (MEMBER, f"purge {MEMBER}{_ACUTE}."),
+], ids=["sharp-s-typed", "sharp-s-member", "kelvin", "zwsp-before", "zwsp-after",
+        "combining-after", "combining-before-dot"])
+def test_the_typed_address_refuses_a_look_alike(monkeypatch, address, typed) -> None:
+    """Mutation: compare with ``casefold`` or plain ``lower``, or drop the
+    hidden check -> a look-alike counts -> red."""
+    monkeypatch.setattr(chat_constraints, "_typed_words", lambda: typed)
+    assert om._typed_the_address(address) is False
+
+
+def test_the_typed_address_still_takes_a_plain_match(monkeypatch) -> None:
+    for address, typed in [("mel@straße.test", "purge MEL@STRAßE.TEST"),
+                           ("mel@kelvin.test", "purge Mel@Kelvin.test"),
+                           (MEMBER, f"purge {_ZWSP}x and then {MEMBER}")]:
+        monkeypatch.setattr(chat_constraints, "_typed_words", lambda t=typed: t)
+        assert om._typed_the_address(address) is True, typed
+
+
+async def test_the_cards_name_the_queued_sends_and_the_cleared_rows(gw, card) -> None:
+    """Mutation: drop a line -> red. Each line says only what the route does."""
+    await om.remove_member(MEMBER)
+    assert om._REMOVE_SENDS_WORDS in card.shown[0]["context"]
+    await om.purge_member(MEMBER)
+    assert om._PURGE_SCRUB_WORDS in card.shown[1]["context"]
+
+
+def test_the_card_words_match_what_the_routes_do() -> None:
+    """The removal cancels the queued sends. The purge clears the summaries
+    and scrubs the address from the CRM rules, the CRM questions and the
+    Knowledge gaps. Mutation: the route stops a step -> red."""
+    from gateway.routes.admin import members
+
+    removal = inspect.getsource(members.remove_member_rows)
+    assert "UPDATE email_scheduled_sends SET status = 'cancelled'" in removal
+    purge = inspect.getsource(members.purge_member_rows)
+    for step in ("clear_for_member(", "purge_crm_member(", "purge_knowledge_member("):
+        assert step in purge, step
+    crm = inspect.getsource(members.purge_crm_member)
+    assert "crm_rules.scrub_member(" in crm and "crm_questions.purge_member_state(" in crm
+    assert "kb_gaps.scrub_member(" in inspect.getsource(members.purge_knowledge_member)

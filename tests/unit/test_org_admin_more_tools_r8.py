@@ -41,6 +41,9 @@ j. Zed of org B gets 404 on Mel, with no card, for a removal and a purge. The
 k. Mel, with no admin right, gets plain words and no card. The direct routes
    give 403.
 l. The last owner and a self-purge get plain words, and nothing changes.
+m. Ada removes Mel after one card, and then purges Mel with the typed address
+   after one card. The tool reads the removed member (``include_removed``),
+   and Mel's rows are gone. A second removal says "removed already".
 
 No hop leaves Postgres: the audit writer and the Console mirror of a rename
 are stubbed. Run (a PRIVATE ladder database, one R8 suite at a time, because
@@ -547,3 +550,24 @@ def test_l_the_last_owner_and_a_self_purge_are_plain_words(exits) -> None:
     assert out["ok"] is False and out["status"] == 409 and "no owner" in out["error"], out
     assert len(w.card.shown) == 2
     assert _status(w, w.owen) == "active" and _role_rows(w, w.owen) == 1
+
+
+def test_m_the_admin_removes_then_purges_a_member(exits) -> None:
+    """The ordinary off-boarding: remove, then purge. Mutation: read the roster
+    without ``include_removed=true`` -> "No member" after the removal -> red."""
+    w = exits
+    out = w.act(w.ada, om.remove_member, w.mel)
+    assert out["ok"] is True and out["status"] == "removed", out
+    assert _status(w, w.mel) == "removed" and _role_rows(w, w.mel) == 0
+    assert om._REMOVE_SENDS_WORDS in w.card.shown[-1]["context"]
+    out = w.act(w.ada, om.remove_member, w.mel)
+    assert out["ok"] is True and out["note"] == om._ALREADY_REMOVED.format(email=w.mel), out
+    assert len(w.card.shown) == 1
+    out = _typed(w, f"purge {w.mel}", w.ada, om.purge_member, w.mel)
+    assert out["ok"] is True and out["status"] == "purged", out
+    assert out["deleted"]["member_record"] == 1
+    context = w.card.shown[-1]["context"]
+    assert "Status now: removed. Roles now: none." in context
+    assert om._PURGE_SCRUB_WORDS in context and len(w.card.shown) == 2
+    assert _status(w, w.mel) is None and _role_rows(w, w.mel) == 0
+    assert _status(w, w.ada) == "active" and _status(w, w.zed) == "active"

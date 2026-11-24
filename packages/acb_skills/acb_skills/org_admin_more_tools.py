@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -76,7 +77,7 @@ from acb_common.card_body import one_line
 from acb_common.paging import paged
 
 from acb_skills import org_admin_tools as oa
-from acb_skills.hidden_text import hidden_problem, strip_hidden
+from acb_skills.hidden_text import find_hidden, hidden_problem, strip_hidden
 from acb_skills.tool_annotations import annotate
 
 __all__ = [
@@ -1254,6 +1255,19 @@ _PURGE_KEEPS: frozenset[str] = frozenset({
 #: The losses that ``purge_member_rows`` adds outside ``_PURGE_DELETES``.
 _PURGE_MORE_LOSSES = ("the Drive sources of the member, with their keys, and the calendar "
                       "connections")
+#: What a purge changes in rows that stay (``purge_member_rows``): the
+#: summaries of the member's chats that stay (``clear_for_member``), the
+#: address on the org CRM rules (``crm_rules.scrub_member``) and in the CRM
+#: questions (``crm_questions.purge_member_state``), and the address in the
+#: Knowledge gaps (``kb_gaps.scrub_member``).
+_PURGE_SCRUB_WORDS = ("Cleared: the summaries of the member's chats that stay, such as "
+                      "shared rooms. The member's address goes from the org CRM rules, "
+                      "the CRM questions and the Knowledge gaps. The rules and the gaps stay.")
+#: The longest wait for the purge route, in seconds. The route waits up to
+#: 60 s for the mailbox teardown (``email/teardown.TEARDOWN_WAIT_S``), and
+#: then revokes the Drive grants. A shorter wait says "may have worked" for
+#: a purge that works.
+PURGE_TIMEOUT_S = 120.0
 _PURGE_KEPT_WORDS = ("Kept: the audit trail, the agent runs, the shared rooms, and the apps, "
                      "workflows, meetings, Knowledge proposals and shared Studio items that "
                      "the member made.")
@@ -1263,6 +1277,9 @@ _SELF_REMOVE = ("You cannot remove yourself. Ask another owner or admin to do it
 _SELF_PURGE = ("You cannot permanently delete yourself. Ask another owner or admin to do it. "
                "Nothing changed.")
 _ALREADY_REMOVED = "{email} is removed already. Nothing changed."
+#: ``remove_member_rows`` cancels each queued scheduled send of the member.
+_REMOVE_SENDS_WORDS = ("Queued sends: each mail send that waits in the member's name is "
+                       "cancelled.")
 _PURGE_UNTYPED = ("A purge deletes {email} for good, so the chat needs that exact address in "
                   "your own words of this message. Type the address, and ask again. No card "
                   "shows and nothing changed.")
@@ -1276,17 +1293,36 @@ _LOCAL_CHAR = re.compile(r"[\w.!#$%&'*+/=?^`{|}~@-]")
 _DOMAIN_CHAR = re.compile(r"[\w@-]")
 
 
+def _lower_char(ch: str) -> str:
+    """*ch* in lower case, by ``str.lower`` and never ``casefold``, so ``ß``
+    stays ``ß``. A character that is not its own NFKC form stays as it is: the
+    Kelvin sign (U+212A) is not the letter ``k``. A lower case of more than
+    one character stays as it is too, so each index of the text holds."""
+    if unicodedata.normalize("NFKC", ch) != ch:
+        return ch
+    low = ch.lower()
+    return low if len(low) == 1 else ch
+
+
+def _odd_char(ch: str) -> bool:
+    """True for a character that a person cannot see beside an address: a
+    hidden character by the one rule of ``hidden_text``, or a combining mark."""
+    return bool(find_hidden(ch)) or unicodedata.category(ch).startswith("M")
+
+
 def _typed_the_address(address: str) -> bool:
     """True when the member's OWN typed words of this turn hold *address*, whole.
 
     The words come from ``chat_constraints._typed_words`` only, never from a
-    tool argument. Both sides are case-folded. The match is whole: a letter of
-    a longer address before it (``diana@``) or a part of a longer domain after
-    it (``.evil``) does not count. A dot that ends a sentence does count."""
+    tool argument. Both sides are in lower case by :func:`_lower_char`. The
+    match is whole: a letter of a longer address before it (``diana@``) or a
+    part of a longer domain after it (``.evil``) does not count. A dot that
+    ends a sentence does count. A match with a hidden character or a
+    combining mark in it, or directly before or after it, does not count."""
     from acb_skills.chat_constraints import _typed_words
 
-    said = str(_typed_words() or "").casefold()
-    want = address.casefold()
+    said = "".join(_lower_char(ch) for ch in str(_typed_words() or ""))
+    want = "".join(_lower_char(ch) for ch in address)
     if not want:
         return False
     at = said.find(want)
@@ -1298,7 +1334,8 @@ def _typed_the_address(address: str) -> bool:
         joined_after = bool(after) and (
             bool(_DOMAIN_CHAR.match(after[0]))
             or (after[0] == "." and len(after) > 1 and bool(_DOMAIN_CHAR.match(after[1]))))
-        if not joined_before and not joined_after:
+        odd = any(_odd_char(ch) for ch in said[max(at - 1, 0):end + 1])
+        if not joined_before and not joined_after and not odd:
             return True
         at = said.find(want, at + 1)
     return False
@@ -1331,7 +1368,7 @@ async def _seal_preview(target: str) -> tuple[dict[str, Any] | None, dict[str, A
 
 async def _member_still(target: str, row: dict[str, Any], decision: str) -> dict[str, Any] | None:
     """After ``approved``: None when the member is as the card showed it."""
-    again, problem = await oa._member(target)
+    again, problem = await oa._member(target, include_removed=True)
     if problem is not None and problem.get("status") == 404:
         return oa._refusal(oa._CHANGED.format(what="member"), decision=decision)
     if problem is not None or again is None:
@@ -1357,7 +1394,7 @@ async def remove_member(email: str) -> dict[str, Any]:
         _caller, problem = await _me(MANAGE_RIGHT)
         if problem is not None:
             return problem
-        row, problem = await oa._member(target)
+        row, problem = await oa._member(target, include_removed=True)
         if problem is not None or row is None:
             return problem or oa._refusal(oa._SHAPE)
         now = oa._STATUS_WORDS.get(str(row.get("status")), "other")
@@ -1376,7 +1413,8 @@ async def remove_member(email: str) -> dict[str, Any]:
              ("status", f"Status now: {now}. After: removed."),
              ("roles", f"Roles now: {oa._roles_text(row.get('roles'))}. After: none."),
              ("tasks", f"Personal tasks: {n['tasks']} in {n['projects']} projects. "
-                       f"{n['handed_over']} handed over, {n['sealed']} sealed, not deleted.")])
+                       f"{n['handed_over']} handed over, {n['sealed']} sealed, not deleted."),
+             ("sends", _REMOVE_SENDS_WORDS)])
         if decision != "approved":
             return oa._not_done(decision)
         changed = await _member_still(target, row, decision)
@@ -1397,6 +1435,7 @@ async def remove_member(email: str) -> dict[str, Any]:
 def _purge_loss_lines() -> list[tuple[str, str]]:
     lines = [(f"l{i}", f"Lost: {words}.") for i, words in enumerate(_PURGE_LOSS_WORDS.values())]
     lines.append(("l-more", f"Lost: {_PURGE_MORE_LOSSES}."))
+    lines.append(("scrub", _PURGE_SCRUB_WORDS))
     lines.append(("kept", _PURGE_KEPT_WORDS))
     return lines
 
@@ -1424,7 +1463,7 @@ async def purge_member(email: str) -> dict[str, Any]:
         _caller, problem = await _me(MANAGE_RIGHT)
         if problem is not None:
             return problem
-        row, problem = await oa._member(target)
+        row, problem = await oa._member(target, include_removed=True)
         if problem is not None or row is None:
             return problem or oa._refusal(oa._SHAPE)
         now = oa._STATUS_WORDS.get(str(row.get("status")), "other")
@@ -1441,7 +1480,7 @@ async def purge_member(email: str) -> dict[str, Any]:
         if changed is not None:
             return changed
         sent = await oa._send("DELETE", f"/admin/members/{oa._path_email(target)}/purge",
-                              act="purge")
+                              act="purge", timeout=PURGE_TIMEOUT_S)
     except oa._Refused as exc:
         return oa._refusal(str(exc))
     if not sent.ok:
