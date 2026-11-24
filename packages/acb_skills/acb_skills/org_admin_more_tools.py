@@ -1,0 +1,1136 @@
+"""More chat tools of the ``org-admin`` pack (PAR-4a, Metorite task 3107).
+
+Spec: ``project-docs/specs/chat_parity.md`` section 6.3, rung 3. These tools
+let an admin do from the chat what the Groups, Roles and Access parts of
+Organisation do. They join the four tools of PAR-2a (``org_admin_tools``) in
+the same dark pack, and they use its helpers: the call as the member, the
+plain words of a refusal, the fence of a name and the one card.
+
+The reads, with no card:
+
+* :func:`list_org_groups` reads the groups with their members (``GET /admin/groups``).
+* :func:`list_roles_and_rights` reads the roles (``GET /admin/roles``) and the
+  words of each right (``GET /admin/features``).
+* :func:`read_member_access` reads the resolved access of one member
+  (``GET /admin/members/{email}/access``).
+* :func:`preview_member_removal` reads what a removal would hand over and seal
+  (``GET /admin/members/{email}/seal-preview``). It removes nobody.
+
+The writes, each after ONE card:
+
+* :func:`create_org_group`, :func:`edit_org_group`, :func:`delete_org_group`,
+  :func:`add_org_group_member` and :func:`remove_org_group_member` send the
+  group routes (``admin:members:manage``).
+* :func:`create_org_role` and :func:`delete_org_role` send the role routes
+  (``admin:roles:manage``).
+* :func:`set_member_overrides` replaces the allow and deny overrides of one
+  member (``admin:access:manage``).
+* :func:`rename_org` changes the display name of the organization
+  (``admin:settings:manage``).
+
+**The gateway decides.** Each tool calls the gateway as the member of the run.
+No tool takes an org or a caller argument (R5). ``email`` is the address of
+the TARGET member. Each write reads ``GET /auth/me`` first, so a member without
+the right of the route gets plain words and no card.
+
+**Stricter than the page** (PAR-4a lane decision, for the owner to see). A role
+create and an overrides write refuse, with plain words and no card, each right
+that the caller does not hold. The check reads the rights of the caller from
+``GET /auth/me``. An overrides write that removes a deny counts that right too.
+So the chat never raises a role or a member above the caller. The page has no
+such check. The check runs again after ``approved``.
+
+**The race rule.** A write reads its row before the card and again after
+``approved``. It sends nothing when the row changed. Only ``approved`` sends,
+and it sends ONE request.
+
+**Text of other people is data.** A group name, a description, a role name, a
+reason and a member name are text of people. A list puts them in ONE
+``UntrustedFrame`` block, and a card fences each such value in « ». Text that
+the member gives a write must hold no hidden character, by the one rule of
+``hidden_text``.
+
+Fences: ``tests/unit/test_org_admin_more_tools.py``, and the R8 suite
+``tests/unit/test_org_admin_more_tools_r8.py``.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Literal
+from urllib.parse import quote
+
+from acb_common.paging import paged
+
+from acb_skills import org_admin_tools as oa
+from acb_skills.hidden_text import hidden_problem, strip_hidden
+from acb_skills.tool_annotations import annotate
+
+__all__ = [
+    "ORG_ADMIN_MORE_TOOLS",
+    "add_org_group_member",
+    "create_org_group",
+    "create_org_role",
+    "delete_org_group",
+    "delete_org_role",
+    "edit_org_group",
+    "list_org_groups",
+    "list_roles_and_rights",
+    "preview_member_removal",
+    "read_member_access",
+    "remove_org_group_member",
+    "rename_org",
+    "set_member_overrides",
+]
+
+#: The gateway routes. ``test_chat_parity.py`` reads them from this source.
+GROUPS_PATH = "/admin/groups"
+ROLES_PATH = "/admin/roles"
+FEATURES_PATH = "/admin/features"
+ORG_PATH = "/admin/organization"
+
+#: The right of each group write (``groups.py``).
+MANAGE_RIGHT = oa.MANAGE_RIGHT
+#: The right of the role writes (``roles.py``).
+ROLES_RIGHT = "admin:roles:manage"
+#: The right of the overrides write (``members.py``), and of a Center grant.
+ACCESS_RIGHT = "admin:access:manage"
+#: The right of the rename of the organization (``organization.py``).
+SETTINGS_RIGHT = "admin:settings:manage"
+
+#: The roles of a member in a group (``groups.py`` ``MEMBER_ROLES``).
+GROUP_ROLES = ("member", "lead")
+#: The effects of an override.
+EFFECTS = ("allow", "deny")
+
+#: The most groups of one page.
+MAX_GROUPS = 30
+#: The most characters of a group or a role name that a member gives.
+MAX_NAME_CHARS = 120
+#: The most characters of a description that a member gives.
+MAX_DESC_CHARS = 1000
+#: The most characters of the name of the organization (``organization.py``).
+MAX_ORG_NAME_CHARS = 80
+#: The most characters of the reason of an override.
+MAX_REASON_CHARS = 200
+#: The most rights in one role, and the most overrides in one write.
+MAX_RIGHTS = 50
+#: The most characters of a description in a result or on a card.
+MAX_SHOWN_DESC = 300
+
+_BAD_GROUP = ("slug is the short name of a group, as the group list shows it: 1 to 48 "
+              "letters, digits, '_' or '-'. Nothing changed.")
+_BAD_ROLE = ("slug is the short name of a role, as the role list shows it: 1 to 48 "
+             "letters, digits, '_' or '-'. Nothing changed.")
+_BAD_GROUP_ROLE = "role is member or lead. Nothing changed."
+_BAD_TEXT = "{field} is text of at most {limit} characters. Nothing changed."
+_NO_CHANGE_ASKED = "Send a new display_name, a new description, or both. Nothing changed."
+_BAD_RIGHTS = ("permissions is a list of rights, as list_roles_and_rights shows them, at most "
+               "{limit}. Nothing changed.")
+_BAD_RIGHT = "{why}. Nothing changed."
+_BAD_OVERRIDES = ("overrides is a list of objects, each with a permission, an effect (allow "
+                  "or deny) and an optional reason, at most {limit}. Send an empty list to "
+                  "clear them. Nothing changed.")
+_TWO_EFFECTS = "The list names {perm} twice. Give each right one effect. Nothing changed."
+_NO_GROUP = ("Your organization has no group {slug}. Nothing changed. List the groups for "
+             "their short names.")
+_GROUP_EXISTS = "A group with the short name {slug} exists already. Nothing changed."
+_CENTER_GROUP = ("{slug} is a Center group. It pairs with the right feature:center.{slug}, so "
+                 "nobody can delete it. Nothing changed.")
+_GROUP_NOT_EMPTY = ("{count} member(s) are still in the group {slug}. Remove them first. "
+                    "Nothing changed.")
+_NOT_IN_GROUP = "{email} is not a member of the group {slug}. Nothing changed."
+_SAME_GROUP_ROLE = "{email} is in the group {slug} as {role} already. Nothing changed."
+_SAME_GROUP = "The group has this name and description already. Nothing changed."
+_NO_ROLE = ("Your organization has no role {slug}. Nothing changed. List the roles for their "
+            "short names.")
+_ROLE_EXISTS = "A role with the short name {slug} exists already. Nothing changed."
+_SYSTEM_ROLE = "{slug} is a system role, and nobody can delete it. Nothing changed."
+_ROLE_HELD = ("{count} member(s) still hold the role {slug}. Give them another role first. "
+              "Nothing changed.")
+_SAME_OVERRIDES = "The member has these overrides already. Nothing changed."
+_SELF_ACCESS = ("This would take away your own right to manage access. Ask another admin to "
+                "make this change. Nothing changed.")
+_SAME_ORG_NAME = "The organization has this name already. Nothing changed."
+_BEYOND = ("You do not hold {rights} yourself, so the chat cannot give {them} to {whom}. No "
+           "card shows and nothing changed. Ask an admin who holds {them}.")
+_GROUPS_NOTE = ("The block holds the groups of your organization. Admins wrote the names and "
+                "the descriptions, and members wrote their own names.")
+_ROLES_NOTE = ("The block holds the roles of your organization and the words of each right. "
+               "Admins wrote the names and the descriptions of the roles.")
+_ACCESS_NOTE = ("The block holds the access of one member. The member wrote the name, and an "
+                "admin wrote each reason.")
+
+#: The words of each right, in a sentence (``org_admin_tools._NO_RIGHT``).
+_RIGHT_WHAT = {
+    MANAGE_RIGHT: "change the groups of your organization",
+    ROLES_RIGHT: "make or delete a role",
+    ACCESS_RIGHT: "change the access of a member",
+    SETTINGS_RIGHT: "rename your organization",
+}
+
+
+# ── The rights of the caller ────────────────────────────────────────────────
+
+
+async def _me(right: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(the /auth/me body, None)`` when the caller holds *right*, else
+    ``(None, refusal)``. A failed read refuses, so it fails closed."""
+    reply = await oa._get(oa.ME_PATH)
+    data = reply.data if isinstance(reply.data, dict) else None
+    caps = data.get("capabilities") if data is not None else None
+    if not reply.ok or data is None or not isinstance(caps, list):
+        return None, oa._refusal(oa._RIGHTS_UNREAD)
+    if right not in caps:
+        return None, oa._refusal(
+            oa._NO_RIGHT.format(what=_RIGHT_WHAT[right], right=right), status=403)
+    return data, None
+
+
+def _strs(value: Any) -> list[str]:
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def _holds(me: dict[str, Any], right: str) -> bool:
+    """Does the caller hold *right* (a pattern) in full?
+
+    A concrete capability or feature takes the resolved answer of the server
+    (``capabilities``, ``features``). Each other right takes the grant
+    patterns of the caller (``permissions``): one must cover it, and no deny
+    of the caller may touch it. ``acb_auth`` holds the one match rule, so the
+    tool keeps no copy. A deny that touches a wide right refuses, so the check
+    fails closed."""
+    from acb_auth.permissions import CAPABILITIES, matched_by, permission_matches
+
+    if "*" not in right:
+        if right in _strs(me.get("capabilities")):
+            return True
+        if right.startswith("feature:"):
+            slug = right[len("feature:"):]
+            if slug in _strs(me.get("features")):
+                return True
+            denied = me.get("features_denied")
+            if isinstance(denied, list) and any(
+                    isinstance(d, dict) and d.get("slug") == slug for d in denied):
+                return False
+        if right in CAPABILITIES:
+            return False
+    if matched_by(_strs(me.get("permissions")), right) is None:
+        return False
+    return not any(permission_matches(d, right) or permission_matches(right, d)
+                   for d in _strs(me.get("denied")))
+
+
+def _beyond(me: dict[str, Any], rights: list[str], whom: str) -> dict[str, Any] | None:
+    """The stricter-than-page refusal for each right that the caller lacks."""
+    missing = [r for r in rights if not _holds(me, r)]
+    if not missing:
+        return None
+    one = len(missing) == 1
+    return oa._refusal(_BEYOND.format(rights=", ".join(missing), them="it" if one else "them",
+                                      whom=whom), status=403, beyond=missing)
+
+
+def _wide(right: str) -> bool:
+    """A right that a card flags: every right, an admin right or every feature."""
+    return right in ("*", "feature:*") or right.startswith("admin:")
+
+
+# ── The arguments ───────────────────────────────────────────────────────────
+
+
+def _slug(raw: Any, space: str) -> str | None:
+    """*raw* as a slug, as the route makes one, or None. *space* is the
+    character that the route puts for a space."""
+    if not isinstance(raw, str):
+        return None
+    slug = raw.strip().lower().replace(" ", space)
+    return slug if oa._slug_shape(slug) else None
+
+
+def _seg(slug: str) -> str:
+    """A slug as one path segment."""
+    return quote(slug, safe="")
+
+
+def _text(raw: Any, field: str, limit: int) -> tuple[str | None, dict[str, Any] | None]:
+    """``(text, None)``, ``(None, None)`` for no value, or ``(None, refusal)``.
+    A text with a hidden character is refused by the one rule."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str) or len(raw.strip()) > limit:
+        return None, oa._refusal(_BAD_TEXT.format(field=field, limit=limit))
+    problem = hidden_problem(raw, field)
+    if problem is not None:
+        return None, oa._refusal(f"{problem} Nothing changed.")
+    return raw.strip(), None
+
+
+def _list_arg(raw: Any) -> list[Any] | None:
+    """A list, or a list as JSON text, or None."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, list) else None
+
+
+def _right(raw: Any) -> tuple[str | None, dict[str, Any] | None]:
+    """One right, as ``acb_auth.validate_permission`` makes it, or a refusal."""
+    from acb_auth.permissions import InvalidPermission, validate_permission
+
+    if not isinstance(raw, str):
+        return None, oa._refusal(_BAD_RIGHT.format(why="Each right is text"))
+    try:
+        return validate_permission(raw), None
+    except InvalidPermission as exc:
+        return None, oa._refusal(_BAD_RIGHT.format(why=str(exc)))
+
+
+def _rights_arg(raw: Any) -> tuple[list[str] | None, dict[str, Any] | None]:
+    items = [] if raw is None else _list_arg(raw)
+    if items is None or len(items) > MAX_RIGHTS:
+        return None, oa._refusal(_BAD_RIGHTS.format(limit=MAX_RIGHTS))
+    out: list[str] = []
+    for item in items:
+        right, problem = _right(item)
+        if problem is not None or right is None:
+            return None, problem
+        if right not in out:
+            out.append(right)
+    return out, None
+
+
+def _overrides_arg(raw: Any) -> tuple[list[dict[str, str]] | None, dict[str, Any] | None]:
+    """The overrides as ``[{permission, effect, reason}]``, or a refusal."""
+    items = _list_arg(raw)
+    bad = oa._refusal(_BAD_OVERRIDES.format(limit=MAX_RIGHTS))
+    if items is None or len(items) > MAX_RIGHTS:
+        return None, bad
+    out: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None, bad
+        effect = str(item.get("effect") or "").strip().lower()
+        if effect not in EFFECTS:
+            return None, bad
+        right, problem = _right(item.get("permission"))
+        if problem is not None or right is None:
+            return None, problem
+        if any(o["permission"] == right for o in out):
+            return None, oa._refusal(_TWO_EFFECTS.format(perm=right))
+        reason, problem = _text(item.get("reason") or "", "reason", MAX_REASON_CHARS)
+        if problem is not None:
+            return None, problem
+        out.append({"permission": right, "effect": effect, "reason": reason or ""})
+    return out, None
+
+
+# ── The text of other people ────────────────────────────────────────────────
+
+
+def _desc(value: Any) -> str:
+    return oa._cut(strip_hidden(value) if isinstance(value, str) else "", MAX_SHOWN_DESC)
+
+
+def _fence_desc(value: Any) -> str:
+    return "«" + _desc(value).replace("«", "").replace("»", "") + "»"
+
+
+# ── The reads ───────────────────────────────────────────────────────────────
+
+
+def _dicts(data: Any, key: str) -> list[dict[str, Any]] | None:
+    if not isinstance(data, list):
+        return None
+    return [r for r in data if isinstance(r, dict) and isinstance(r.get(key), str)]
+
+
+async def _groups() -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    reply = await oa._get(GROUPS_PATH)
+    if not reply.ok:
+        return None, oa._fail(reply)
+    rows = _dicts(reply.data, "slug")
+    return (rows, None) if rows is not None else (None, oa._refusal(oa._SHAPE))
+
+
+async def _group(slug: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    rows, problem = await _groups()
+    if problem is not None or rows is None:
+        return None, problem or oa._refusal(oa._SHAPE)
+    row = next((g for g in rows if g["slug"] == slug), None)
+    if row is None:
+        return None, oa._refusal(_NO_GROUP.format(slug=slug), status=404)
+    return row, None
+
+
+def _group_members(row: dict[str, Any]) -> list[dict[str, Any]]:
+    return _dicts(row.get("members"), "email") or []
+
+
+def _in_group(row: dict[str, Any], email: str) -> dict[str, Any] | None:
+    return next((m for m in _group_members(row)
+                 if m["email"].strip().lower() == email), None)
+
+
+def _group_snap(row: dict[str, Any]) -> tuple[Any, ...]:
+    """What a group card must still match when the member answers."""
+    members = sorted((m["email"].strip().lower(), str(m.get("role")))
+                     for m in _group_members(row))
+    return (row.get("display_name"), row.get("description"), tuple(members))
+
+
+async def _roles() -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    reply = await oa._get(ROLES_PATH)
+    if not reply.ok:
+        return None, oa._fail(reply)
+    rows = _dicts(reply.data, "slug")
+    return (rows, None) if rows is not None else (None, oa._refusal(oa._SHAPE))
+
+
+def _role_snap(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (row.get("display_name"), row.get("description"), row.get("is_system") is True,
+            tuple(_strs(row.get("permissions"))), row.get("member_count"))
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _group_row(g: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slug": g["slug"],
+        "name": oa._name(g.get("display_name")),
+        "description": _desc(g.get("description")),
+        "is_center": g.get("is_center") is True,
+        "member_count": _count(g.get("member_count")),
+        "members": [{"email": m["email"], "name": oa._name(m.get("display_name")),
+                     "role": "lead" if m.get("role") == "lead" else "member"}
+                    for m in _group_members(g)],
+    }
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def list_org_groups(offset: int = 0, limit: int = MAX_GROUPS) -> dict[str, Any]:
+    """List the groups of your organization with their members."""
+    try:
+        rows, problem = await _groups()
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if problem is not None or rows is None:
+        return problem or oa._refusal(oa._SHAPE)
+    from acb_skills.untrusted import UntrustedFrame
+
+    page = paged(rows, offset, limit, default=MAX_GROUPS, maximum=MAX_GROUPS, noun="groups")
+    frame = UntrustedFrame.new()
+    block = json.dumps([_group_row(g) for g in page.items], ensure_ascii=False,
+                       separators=(",", ":"))
+    return {"ok": True, "rows": frame.wrap("ORGANIZATION GROUPS", block),
+            "groups_total": page.total, "groups_shown": len(page.items), "page": page.line,
+            "note": frame.note(_GROUPS_NOTE)}
+
+
+def _role_row(r: dict[str, Any]) -> dict[str, Any]:
+    return {"slug": r["slug"], "name": oa._name(r.get("display_name")),
+            "description": _desc(r.get("description")), "system": r.get("is_system") is True,
+            "members": _count(r.get("member_count")),
+            "rights": _strs(r.get("permissions"))}
+
+
+def _feature_row(f: Any) -> dict[str, str] | None:
+    if not isinstance(f, dict) or not isinstance(f.get("permission"), str):
+        return None
+    return {"right": f["permission"], "label": oa._name(f.get("label"))}
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def list_roles_and_rights() -> dict[str, Any]:
+    """List the roles of your organization with their rights, and the words of each right that a role or an override can name."""
+    try:
+        roles, problem = await _roles()
+        if problem is not None or roles is None:
+            return problem or oa._refusal(oa._SHAPE)
+        vocab = await oa._get(FEATURES_PATH)
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not vocab.ok:
+        return oa._fail(vocab)
+    data = vocab.data if isinstance(vocab.data, dict) else {}
+    features = [row for row in map(_feature_row, data.get("features") or []) if row]
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    block = json.dumps({"roles": [_role_row(r) for r in roles], "features": features,
+                        "capabilities": _strs(data.get("capabilities"))},
+                       ensure_ascii=False, separators=(",", ":"))
+    return {"ok": True, "rows": frame.wrap("ROLES AND RIGHTS", block),
+            "roles_total": len(roles), "features_total": len(features),
+            "note": frame.note(_ROLES_NOTE)}
+
+
+def _decided(rows: Any, key: str) -> tuple[list[str], list[str]]:
+    """``(allowed, refused)`` names of the resolved rows of an access read."""
+    yes: list[str] = []
+    no: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and isinstance(row.get(key), str):
+            (yes if row.get("allowed") is True else no).append(row[key])
+    return yes, no
+
+
+def _override_rows(data: Any) -> list[dict[str, str]]:
+    rows = data.get("overrides") if isinstance(data, dict) else None
+    out: list[dict[str, str]] = []
+    for o in rows if isinstance(rows, list) else []:
+        if isinstance(o, dict) and isinstance(o.get("permission"), str):
+            out.append({"permission": o["permission"], "effect": str(o.get("effect")),
+                        "reason": o.get("reason") if isinstance(o.get("reason"), str) else ""})
+    return out
+
+
+async def _access(email: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    reply = await oa._get(f"/admin/members/{oa._path_email(email)}/access")
+    if reply.status == 404:
+        return None, oa._refusal(oa._NOT_IN_ORG.format(email=email), status=404)
+    if not reply.ok:
+        return None, oa._fail(reply)
+    if not isinstance(reply.data, dict):
+        return None, oa._refusal(oa._SHAPE)
+    return reply.data, None
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def read_member_access(email: str) -> dict[str, Any]:
+    """Read what one member of your organization can reach, and why: the roles, each right and each override."""
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    try:
+        data, problem = await _access(target)
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if problem is not None or data is None:
+        return problem or oa._refusal(oa._SHAPE)
+    features, no_features = _decided(data.get("features"), "slug")
+    caps, no_caps = _decided(data.get("capabilities"), "permission")
+    agents, _ = _decided(data.get("agents"), "name")
+    tools, _ = _decided(data.get("integrations"), "name")
+    from acb_skills.untrusted import UntrustedFrame
+
+    frame = UntrustedFrame.new()
+    block = json.dumps({
+        "email": target, "name": oa._name(data.get("display_name")),
+        "status": oa._STATUS_WORDS.get(str(data.get("status")), "other"),
+        "roles": _strs(data.get("roles")), "features": features,
+        "features_refused": no_features, "rights": caps, "rights_refused": no_caps,
+        "agents": agents, "integrations": tools,
+        "overrides": [{"right": o["permission"], "effect": o["effect"],
+                       "reason": oa._name(o["reason"])} for o in _override_rows(data)],
+    }, ensure_ascii=False, separators=(",", ":"))
+    return {"ok": True, "rows": frame.wrap("MEMBER ACCESS", block),
+            "note": frame.note(_ACCESS_NOTE)}
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def preview_member_removal(email: str) -> dict[str, Any]:
+    """Read what a removal of one member would hand over and seal, in numbers; it removes nobody."""
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    try:
+        reply = await oa._get(f"/admin/members/{oa._path_email(target)}/seal-preview")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if reply.status == 404:
+        return oa._refusal(oa._NOT_IN_ORG.format(email=target), status=404)
+    if not reply.ok:
+        return oa._fail(reply)
+    data = reply.data if isinstance(reply.data, dict) else {}
+    counts = {k: _count(data.get(k)) for k in ("projects", "tasks", "handed_over", "sealed")}
+    return {"ok": True, "email": target,
+            "status": oa._STATUS_WORDS.get(str(data.get("status")), "other"), **counts,
+            "deleted": data.get("deleted") is True, "reversible": data.get("reversible") is True,
+            "note": (f"{counts['tasks']} tasks: {counts['handed_over']} handed over, "
+                     f"{counts['sealed']} sealed, not deleted. This is a read, and nothing "
+                     "changed. The chat does not remove a member. Do that on the Members tab.")}
+
+
+# ── The group writes ────────────────────────────────────────────────────────
+
+
+def _group_line(slug: str, row: dict[str, Any] | None = None, name: str | None = None) -> str:
+    shown = name if name is not None else (row or {}).get("display_name")
+    return f"Group: {slug} {oa._fence(shown)}"
+
+
+async def _group_still(slug: str, row: dict[str, Any], decision: str) -> dict[str, Any] | None:
+    """None when the group is as the card showed it, else a refusal."""
+    again, problem = await _group(slug)
+    if problem is not None and problem.get("status") == 404:
+        return oa._refusal(oa._CHANGED.format(what="group"), decision=decision)
+    if problem is not None or again is None:
+        return problem or oa._refusal(oa._SHAPE)
+    if _group_snap(again) != _group_snap(row):
+        return oa._refusal(oa._CHANGED.format(what="group"), decision=decision)
+    return None
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def create_org_group(slug: str, display_name: str = "",
+                           description: str = "") -> dict[str, Any]:
+    """Make a new group in your organization, after one card."""
+    key = _slug(slug, "-")
+    if key is None:
+        return oa._refusal(_BAD_GROUP)
+    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS)
+    if problem is not None:
+        return problem
+    desc, problem = _text(description or "", "description", MAX_DESC_CHARS)
+    if problem is not None:
+        return problem
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        rows, problem = await _groups()
+        if problem is not None or rows is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if any(g["slug"] == key for g in rows):
+            return oa._refusal(_GROUP_EXISTS.format(slug=key), status=409)
+        decision, _ = await oa._decide(
+            f"Make the group {key}?", key,
+            "Approve to make this group, with no members. Reject to make nothing.",
+            [("group", _group_line(key, name=name or key)),
+             ("description", f"Description: {_fence_desc(desc)}")])
+        if decision != "approved":
+            return oa._not_done(decision)
+        rows, problem = await _groups()
+        if problem is not None or rows is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if any(g["slug"] == key for g in rows):
+            return oa._refusal(oa._CHANGED.format(what="group list"), decision=decision)
+        sent = await oa._send("POST", GROUPS_PATH,
+                              {"slug": key, "display_name": name or key, "description": desc or ""},
+                              act="group create")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "slug": key, "note": "The group exists now."}
+
+
+def _edit_args(
+    slug: Any, display_name: Any, description: Any,
+) -> tuple[str, str | None, str | None] | dict[str, Any]:
+    """``(slug, name, description)`` of :func:`edit_org_group`, or a refusal."""
+    key = _slug(slug, "-")
+    if key is None:
+        return oa._refusal(_BAD_GROUP)
+    name, problem = _text(display_name, "display_name", MAX_NAME_CHARS)
+    if problem is not None:
+        return problem
+    desc, problem = _text(description, "description", MAX_DESC_CHARS)
+    if problem is not None:
+        return problem
+    if not name and desc is None:
+        return oa._refusal(_NO_CHANGE_ASKED)
+    return key, name, desc
+
+
+def _edit_lines(key: str, row: dict[str, Any], name: str | None,
+                desc: str | None) -> list[tuple[str, str]]:
+    lines = [("group", _group_line(key, row))]
+    if name:
+        lines.append(("name", f"Name after: {oa._fence(name)}"))
+    if desc is not None:
+        lines += [("was", f"Description now: {_fence_desc(row.get('description'))}"),
+                  ("description", f"Description after: {_fence_desc(desc)}")]
+    return lines
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def edit_org_group(slug: str, display_name: str | None = None,
+                         description: str | None = None) -> dict[str, Any]:
+    """Change the name or the description of one group of your organization, after one card."""
+    args = _edit_args(slug, display_name, description)
+    if isinstance(args, dict):
+        return args
+    key, name, desc = args
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        row, problem = await _group(key)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if ((not name or name == row.get("display_name"))
+                and (desc is None or desc == (row.get("description") or ""))):
+            return {"ok": True, "slug": key, "note": _SAME_GROUP}
+        decision, _ = await oa._decide(
+            f"Change the group {key}?", key,
+            "Approve to change the name or the description. The short name stays. Reject to "
+            "leave the group as it is.", _edit_lines(key, row, name, desc))
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _group_still(key, row, decision)
+        if changed is not None:
+            return changed
+        body: dict[str, Any] = {}
+        if name:
+            body["display_name"] = name
+        if desc is not None:
+            body["description"] = desc
+        sent = await oa._send("PATCH", f"/admin/groups/{_seg(key)}", body, act="group change")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "slug": key, "note": "The group changed."}
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def delete_org_group(slug: str) -> dict[str, Any]:
+    """Delete one empty group of your organization, after one card."""
+    key = _slug(slug, "-")
+    if key is None:
+        return oa._refusal(_BAD_GROUP)
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        row, problem = await _group(key)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if row.get("is_center") is True:
+            return oa._refusal(_CENTER_GROUP.format(slug=key), status=403)
+        count = len(_group_members(row))
+        if count:
+            return oa._refusal(_GROUP_NOT_EMPTY.format(count=count, slug=key), status=409)
+        decision, _ = await oa._decide(
+            f"Delete the group {key}?", key,
+            f"Approve to delete this group. A room or a grant that names group:{key} then "
+            "reaches nobody. Reject to keep the group.",
+            [("group", _group_line(key, row)), ("members", f"Members: {count}"),
+             ("description", f"Description: {_fence_desc(row.get('description'))}")])
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _group_still(key, row, decision)
+        if changed is not None:
+            return changed
+        sent = await oa._send("DELETE", f"/admin/groups/{_seg(key)}", act="group delete")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "slug": key, "note": "The group is deleted."}
+
+
+def _center_grant_problem(caller: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """The refusal of a Center grant that the caller cannot give, or None."""
+    caps = _strs(caller.get("capabilities"))
+    if ACCESS_RIGHT not in caps:
+        return oa._refusal(oa._NO_RIGHT.format(what=_RIGHT_WHAT[ACCESS_RIGHT],
+                                               right=ACCESS_RIGHT), status=403)
+    return _beyond(caller, [f"feature:center.{key}"], "a member")
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def add_org_group_member(
+    slug: str, email: str, role: Literal["member", "lead"] = "member",
+    grant_center_access: bool = False,
+) -> dict[str, Any]:
+    """Add one member to a group of your organization, or change the member's role in it, after one card."""
+    key = _slug(slug, "-")
+    if key is None:
+        return oa._refusal(_BAD_GROUP)
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    want = str(role or "member").strip().lower()
+    if want not in GROUP_ROLES:
+        return oa._refusal(_BAD_GROUP_ROLE)
+    try:
+        caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None or caller is None:
+            return problem or oa._refusal(oa._SHAPE)
+        row, problem = await _group(key)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        grant = grant_center_access is True and row.get("is_center") is True
+        if grant:
+            problem = _center_grant_problem(caller, key)
+            if problem is not None:
+                return problem
+        person, problem = await oa._member(target)
+        if problem is not None or person is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = _in_group(row, target)
+        if now is not None and now.get("role") == want and not grant:
+            return {"ok": True, "slug": key, "email": target,
+                    "note": _SAME_GROUP_ROLE.format(email=target, slug=key, role=want)}
+        lines = [("group", _group_line(key, row)),
+                 ("member", f"Member: {target} {oa._fence(person.get('display_name'))}"),
+                 ("role", f"Role in the group: {now.get('role') if now else 'not in it'}. "
+                          f"After: {want}.")]
+        if grant:
+            lines.append(("grant", f"Also gives the member the right feature:center.{key}."))
+        decision, _ = await oa._decide(
+            f"Add {target} to the group {key}?", f"{key}: {want}",
+            "Approve to put this member in the group. The member then shares what is shared "
+            "with the group. Reject to leave the group as it is.", lines)
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _group_still(key, row, decision)
+        if changed is not None:
+            return changed
+        sent = await oa._send("POST", f"/admin/groups/{_seg(key)}/members",
+                              {"email": target, "role": want, "grant_center_access": grant},
+                              act="group member add")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    data = sent.data if isinstance(sent.data, dict) else {}
+    return {"ok": True, "decision": decision, "slug": key, "email": target, "role": want,
+            "center_access_granted": data.get("center_access_granted") is True,
+            "note": "The member is in the group now."}
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def remove_org_group_member(slug: str, email: str) -> dict[str, Any]:
+    """Take one member out of a group of your organization, after one card."""
+    key = _slug(slug, "-")
+    if key is None:
+        return oa._refusal(_BAD_GROUP)
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        row, problem = await _group(key)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = _in_group(row, target)
+        if now is None:
+            return oa._refusal(_NOT_IN_GROUP.format(email=target, slug=key), status=404)
+        decision, _ = await oa._decide(
+            f"Take {target} out of the group {key}?", key,
+            "Approve to take this member out of the group. The member stops seeing what is "
+            "shared with the group. A Center right that the member holds stays. Reject to "
+            "leave the group as it is.",
+            [("group", _group_line(key, row)),
+             ("member", f"Member: {target} {oa._fence(now.get('display_name'))}"),
+             ("role", f"Role in the group: {now.get('role')}")])
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _group_still(key, row, decision)
+        if changed is not None:
+            return changed
+        sent = await oa._send("DELETE", f"/admin/groups/{_seg(key)}/members/{oa._path_email(target)}",
+                              act="group member removal")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "slug": key, "email": target,
+            "note": "The member is out of the group now."}
+
+
+# ── The role writes ─────────────────────────────────────────────────────────
+
+
+def _right_lines(rights: list[str], label: str) -> list[tuple[str, str]]:
+    lines = [(f"r{i}", f"{label}: {r}") for i, r in enumerate(rights)]
+    wide = [r for r in rights if _wide(r)]
+    if wide:
+        lines.append(("wide", "Warning: this gives an admin right or every feature: "
+                              + ", ".join(wide) + "."))
+    return lines
+
+
+async def _role_still(key: str, rights: list[str], decision: str) -> dict[str, Any] | None:
+    """After ``approved``: None when the caller still holds each right and no
+    role took the short name, else a refusal."""
+    caller, problem = await _me(ROLES_RIGHT)
+    if problem is not None or caller is None:
+        return problem or oa._refusal(oa._SHAPE)
+    problem = _beyond(caller, rights, "a role")
+    if problem is not None:
+        return problem
+    roles, problem = await _roles()
+    if problem is not None or roles is None:
+        return problem or oa._refusal(oa._SHAPE)
+    if any(r["slug"] == key for r in roles):
+        return oa._refusal(oa._CHANGED.format(what="role list"), decision=decision)
+    return None
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def create_org_role(slug: str, display_name: str = "", description: str = "",
+                          permissions: list[str] | None = None) -> dict[str, Any]:
+    """Make a new role in your organization with a set of rights, after one card; you can give only rights that you hold."""
+    key = _slug(slug, "_")
+    if key is None:
+        return oa._refusal(_BAD_ROLE)
+    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS)
+    if problem is not None:
+        return problem
+    desc, problem = _text(description or "", "description", MAX_DESC_CHARS)
+    if problem is not None:
+        return problem
+    rights, problem = _rights_arg(permissions)
+    if problem is not None or rights is None:
+        return problem or oa._refusal(_BAD_RIGHTS.format(limit=MAX_RIGHTS))
+    try:
+        caller, problem = await _me(ROLES_RIGHT)
+        if problem is not None or caller is None:
+            return problem or oa._refusal(oa._SHAPE)
+        problem = _beyond(caller, rights, "a role")
+        if problem is not None:
+            return problem
+        roles, problem = await _roles()
+        if problem is not None or roles is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if any(r["slug"] == key for r in roles):
+            return oa._refusal(_ROLE_EXISTS.format(slug=key), status=409)
+        lines = [("role", f"Role: {key} {oa._fence(name or key)}"),
+                 ("description", f"Description: {_fence_desc(desc)}"),
+                 ("count", f"Rights: {len(rights)}"), *_right_lines(rights, "Right")]
+        decision, _ = await oa._decide(
+            f"Make the role {key}?", f"{len(rights)} rights",
+            "Approve to make this role. Nobody holds it until an admin gives it to a member. "
+            "Reject to make nothing.", lines)
+        if decision != "approved":
+            return oa._not_done(decision)
+        problem = await _role_still(key, rights, decision)
+        if problem is not None:
+            return problem
+        sent = await oa._send("POST", ROLES_PATH,
+                              {"slug": key, "display_name": name or key,
+                               "description": desc or "", "permissions": rights},
+                              act="role create")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    data = sent.data if isinstance(sent.data, dict) else {}
+    return {"ok": True, "decision": decision, "slug": key,
+            "rights": _strs(data.get("permissions")), "note": "The role exists now."}
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def delete_org_role(slug: str) -> dict[str, Any]:
+    """Delete one custom role of your organization that no member holds, after one card."""
+    key = _slug(slug, "_")
+    if key is None:
+        return oa._refusal(_BAD_ROLE)
+    try:
+        _caller, problem = await _me(ROLES_RIGHT)
+        if problem is not None:
+            return problem
+        roles, problem = await _roles()
+        if problem is not None or roles is None:
+            return problem or oa._refusal(oa._SHAPE)
+        row = next((r for r in roles if r["slug"] == key), None)
+        if row is None:
+            return oa._refusal(_NO_ROLE.format(slug=key), status=404)
+        if row.get("is_system") is True:
+            return oa._refusal(_SYSTEM_ROLE.format(slug=key), status=403)
+        holders = _count(row.get("member_count"))
+        if holders:
+            return oa._refusal(_ROLE_HELD.format(count=holders, slug=key), status=409)
+        rights = _strs(row.get("permissions"))
+        decision, _ = await oa._decide(
+            f"Delete the role {key}?", key,
+            "Approve to delete this role. No member holds it. Reject to keep the role.",
+            [("role", f"Role: {key} {oa._fence(row.get('display_name'))}"),
+             ("members", f"Members who hold it: {holders}"),
+             ("rights", f"Rights: {', '.join(rights) or 'none'}")])
+        if decision != "approved":
+            return oa._not_done(decision)
+        again, problem = await _roles()
+        if problem is not None or again is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = next((r for r in again if r["slug"] == key), None)
+        if now is None or _role_snap(now) != _role_snap(row):
+            return oa._refusal(oa._CHANGED.format(what="role"), decision=decision)
+        sent = await oa._send("DELETE", f"/admin/roles/{_seg(key)}", act="role delete")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "slug": key, "note": "The role is deleted."}
+
+
+# ── The overrides write ─────────────────────────────────────────────────────
+
+
+def _pairs(rows: list[dict[str, str]]) -> set[tuple[str, str]]:
+    return {(o["permission"], o["effect"]) for o in rows}
+
+
+def _override_snap(rows: list[dict[str, str]]) -> tuple[Any, ...]:
+    return tuple(sorted((o["permission"], o["effect"], o["reason"]) for o in rows))
+
+
+def _raises(new: list[dict[str, str]], now: list[dict[str, str]]) -> list[str]:
+    """Each right that the write gives: each allow, and each deny that it lifts."""
+    denied_after = {o["permission"] for o in new if o["effect"] == "deny"}
+    lifted = [o["permission"] for o in now
+              if o["effect"] == "deny" and o["permission"] not in denied_after]
+    out: list[str] = []
+    for right in [*(o["permission"] for o in new if o["effect"] == "allow"), *lifted]:
+        if right not in out:
+            out.append(right)
+    return out
+
+
+def _override_lines(new: list[dict[str, str]],
+                    now: list[dict[str, str]]) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    for i, o in enumerate(new):
+        why = f" {oa._fence(o['reason'])}" if o["reason"] else ""
+        lines.append((f"o{i}", f"{o['effect'].title()}: {o['permission']}{why}"))
+    after = _pairs(new)
+    gone = [o for o in now if (o["permission"], o["effect"]) not in after]
+    for i, o in enumerate(gone):
+        lines.append((f"g{i}", f"Removed: {o['effect']} {o['permission']}"))
+    wide = [o["permission"] for o in new if o["effect"] == "allow" and _wide(o["permission"])]
+    if wide:
+        lines.append(("wide", "Warning: this gives an admin right or every feature: "
+                              + ", ".join(wide) + "."))
+    return lines
+
+
+def _denies_own_access(target: str, new: list[dict[str, str]]) -> bool:
+    """Does the caller deny their own right to manage access? The route
+    refuses it too (409). ``acb_auth`` holds the match rule."""
+    if target != oa._current_user_email().strip().lower():
+        return False
+    from acb_auth.permissions import matched_by
+
+    return any(o["effect"] == "deny" and matched_by([o["permission"]], ACCESS_RIGHT)
+               for o in new)
+
+
+async def _overrides_still(target: str, new: list[dict[str, str]], now: list[dict[str, str]],
+                           decision: str) -> dict[str, Any] | None:
+    """After ``approved``: None when the overrides are as the card showed them
+    and the caller still holds each right that the write gives."""
+    caller, problem = await _me(ACCESS_RIGHT)
+    if problem is not None or caller is None:
+        return problem or oa._refusal(oa._SHAPE)
+    again, problem = await _access(target)
+    if problem is not None or again is None:
+        return problem or oa._refusal(oa._SHAPE)
+    if _override_snap(_override_rows(again)) != _override_snap(now):
+        return oa._refusal(oa._CHANGED.format(what="member"), decision=decision)
+    return _beyond(caller, _raises(new, now), "a member")
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def set_member_overrides(email: str, overrides: list[dict[str, str]]) -> dict[str, Any]:
+    """Replace the allow and deny overrides of one member of your organization, after one card; you can allow only rights that you hold."""
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    new, problem = _overrides_arg(overrides)
+    if problem is not None or new is None:
+        return problem or oa._refusal(_BAD_OVERRIDES.format(limit=MAX_RIGHTS))
+    if _denies_own_access(target, new):
+        return oa._refusal(_SELF_ACCESS, status=409)
+    try:
+        caller, problem = await _me(ACCESS_RIGHT)
+        if problem is not None or caller is None:
+            return problem or oa._refusal(oa._SHAPE)
+        data, problem = await _access(target)
+        if problem is not None or data is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = _override_rows(data)
+        if _override_snap(now) == _override_snap(new):
+            return {"ok": True, "email": target, "note": _SAME_OVERRIDES}
+        problem = _beyond(caller, _raises(new, now), "a member")
+        if problem is not None:
+            return problem
+        lines = [("member", f"Member: {target} {oa._fence(data.get('display_name'))}"),
+                 ("roles", f"Roles: {oa._roles_text(data.get('roles'))}"),
+                 ("count", f"Overrides after: {len(new)}. Now: {len(now)}."),
+                 *_override_lines(new, now)]
+        decision, _ = await oa._decide(
+            f"Change the access of {target}?", f"{len(new)} overrides",
+            "Approve to replace all overrides of this member with this list. An allow gives "
+            "a right, and a deny takes it away. Reject to leave them as they are.", lines)
+        if decision != "approved":
+            return oa._not_done(decision)
+        problem = await _overrides_still(target, new, now, decision)
+        if problem is not None:
+            return problem
+        sent = await oa._send("PUT", f"/admin/members/{oa._path_email(target)}/overrides",
+                              {"overrides": new}, act="access change")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "email": target,
+            "overrides": [{"right": o["permission"], "effect": o["effect"]}
+                          for o in _override_rows(sent.data)],
+            "note": "The access changed. The member gets it at the next request."}
+
+
+# ── The organization ────────────────────────────────────────────────────────
+
+
+def _org_name(caller: dict[str, Any]) -> str:
+    org = caller.get("organization")
+    name = org.get("display_name") if isinstance(org, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def rename_org(display_name: str) -> dict[str, Any]:
+    """Change the display name of your organization, after one card."""
+    raw = " ".join(display_name.split()) if isinstance(display_name, str) else None
+    name, problem = _text(raw, "display_name", MAX_ORG_NAME_CHARS)
+    if problem is not None:
+        return problem
+    if not name:
+        return oa._refusal(_BAD_TEXT.format(field="display_name", limit=MAX_ORG_NAME_CHARS))
+    try:
+        caller, problem = await _me(SETTINGS_RIGHT)
+        if problem is not None or caller is None:
+            return problem or oa._refusal(oa._SHAPE)
+        was = _org_name(caller)
+        if was == name:
+            return {"ok": True, "display_name": name, "note": _SAME_ORG_NAME}
+        decision, _ = await oa._decide(
+            "Rename your organization?", name,
+            "Approve to change the name that each member sees. The short name and the sign-in "
+            "domain stay. Reject to keep the name.",
+            [("now", f"Name now: {oa._fence(was)}"), ("after", f"Name after: {oa._fence(name)}")])
+        if decision != "approved":
+            return oa._not_done(decision)
+        again, problem = await _me(SETTINGS_RIGHT)
+        if problem is not None or again is None:
+            return problem or oa._refusal(oa._SHAPE)
+        if _org_name(again) != was:
+            return oa._refusal(oa._CHANGED.format(what="organization name"), decision=decision)
+        sent = await oa._send("PATCH", ORG_PATH, {"display_name": name}, act="rename")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    data = sent.data if isinstance(sent.data, dict) else {}
+    return {"ok": True, "decision": decision, "display_name": oa._name(data.get("display_name")),
+            "note": "The organization has the new name."}
+
+
+#: Each tool of PAR-4a, in the order of the skill family after the four of PAR-2a.
+ORG_ADMIN_MORE_TOOLS = (
+    list_org_groups, create_org_group, edit_org_group, delete_org_group,
+    add_org_group_member, remove_org_group_member, list_roles_and_rights, create_org_role,
+    delete_org_role, read_member_access, set_member_overrides, preview_member_removal,
+    rename_org,
+)

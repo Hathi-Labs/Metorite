@@ -1397,9 +1397,14 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
 
 # -- 10. The org-admin pack (PAR-2a, chat_parity.md section 6.3, task 3102) ---
 
-#: The four tools of the pack, in the order of the family.
+#: The tools of the pack, in the order of the family: the four of PAR-2a, then
+#: the 13 of PAR-4a (task 3107, ``org_admin_more_tools``).
 ORG_ADMIN_TOOLS = ("list_members", "set_member_roles", "set_member_status",
-                   "answer_access_request")
+                   "answer_access_request", "list_org_groups", "create_org_group",
+                   "edit_org_group", "delete_org_group", "add_org_group_member",
+                   "remove_org_group_member", "list_roles_and_rights", "create_org_role",
+                   "delete_org_role", "read_member_access", "set_member_overrides",
+                   "preview_member_removal", "rename_org")
 
 
 def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
@@ -1468,7 +1473,7 @@ def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("org-admin", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == 4
+    assert len(tools) == len(ORG_ADMIN_TOOLS) == 17
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

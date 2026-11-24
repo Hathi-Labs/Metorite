@@ -193,7 +193,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
             (3115, 3903)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
-            (3102, 3925, 3107, 3108, 3109)),
+            (3102, 3925, 3107, 3935, 3936, 3108, 3109)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
 }
 
@@ -233,6 +233,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/org_facts_tools.py",
     # PAR-2a: the org-admin pack sends the admin routes of the Members tab.
     "packages/acb_skills/acb_skills/org_admin_tools.py",
+    # PAR-4a: the groups, roles, overrides and name of the org, in the same pack.
+    "packages/acb_skills/acb_skills/org_admin_more_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -470,6 +472,24 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/admin/members/{}/roles": "set_member_roles",
     # The approve and the deny of a sign-in request: the last part is the verb.
     "POST /api/admin/members/requests/{}/{}": "answer_access_request",
+    # ── Admin, groups, roles, access and the org name (PAR-4a, task 3107) ──
+    # The same pack and the same rule: each write reads GET /auth/me first and
+    # shows ONE card. A role create and an overrides write give only rights
+    # that the caller holds (stricter than the page).
+    "GET /api/admin/groups": "list_org_groups",
+    "POST /api/admin/groups": "create_org_group",
+    "PATCH /api/admin/groups/{}": "edit_org_group",
+    "DELETE /api/admin/groups/{}": "delete_org_group",
+    "POST /api/admin/groups/{}/members": "add_org_group_member",
+    "DELETE /api/admin/groups/{}/members/{}": "remove_org_group_member",
+    "GET /api/admin/features": "list_roles_and_rights",
+    "POST /api/admin/roles": "create_org_role",
+    "DELETE /api/admin/roles/{}": "delete_org_role",
+    "GET /api/admin/members/{}/access": "read_member_access",
+    "PUT /api/admin/members/{}/overrides": "set_member_overrides",
+    # A read only: the chat removes no member (PAR-4c, task 3935).
+    "GET /api/admin/members/{}/seal-preview": "preview_member_removal",
+    "PATCH /api/admin/organization": "rename_org",
     # PAR-8a (task 3903, chat_parity.md section 6.4 rung 5): the other 18 acts of the
     # Workflows app, as the member, in the dark pack studio-workflows. Each write that a
     # card guards sends after approved only.
@@ -1153,15 +1173,8 @@ DEBT: dict[str, str] = {
     "PUT /api/settings/number-system": "P-8",
     "PUT /api/settings/number-system/me": "P-8",
     # ── Admin, members and billing ──
-    "DELETE /api/admin/groups/{}": "P-8",
-    "DELETE /api/admin/groups/{}/members/{}": "P-8",
     "DELETE /api/admin/members/{}": "P-8",
     "DELETE /api/admin/members/{}/purge": "P-8",
-    "DELETE /api/admin/roles/{}": "P-8",
-    "GET /api/admin/features": "P-8",
-    "GET /api/admin/groups": "P-8",
-    "GET /api/admin/members/{}/access": "P-8",
-    "GET /api/admin/members/{}/seal-preview": "P-8",
     "GET /api/billing/catalog": "P-8",
     "GET /api/billing/members": "P-8",
     "GET /api/billing/orders/{}": "P-8",
@@ -1171,18 +1184,12 @@ DEBT: dict[str, str] = {
     "GET /api/billing/usage/apps": "P-8",
     "GET /api/billing/usage/members": "P-8",
     "GET /api/org/seats": "P-8",
-    "PATCH /api/admin/groups/{}": "P-8",
-    "PATCH /api/admin/organization": "P-8",
-    "POST /api/admin/groups": "P-8",
-    "POST /api/admin/groups/{}/members": "P-8",
     "POST /api/admin/members/invite": "P-8",
-    "POST /api/admin/roles": "P-8",
     "POST /api/billing/orders": "P-8",
     "POST /api/billing/orders/{}/redeem": "P-8",
     "POST /api/billing/seats/assign": "P-8",
     "POST /api/billing/seats/release": "P-8",
     "POST /api/billing/seats/{}": "P-8",
-    "PUT /api/admin/members/{}/overrides": "P-8",
     # ── Integrations ──
     "DELETE /api/agent-access/connections/{}": "P-8",
     "DELETE /api/integrations/agent-connections/{}": "P-8",
@@ -1245,7 +1252,7 @@ DEBT_CEILING: dict[str, int] = {
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
-    "admin": 30,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30).
+    "admin": 17,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) pays the remove and the purge, and PAR-4d (task 3936) the seats.
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
     "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
 }
