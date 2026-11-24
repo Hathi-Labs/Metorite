@@ -507,10 +507,10 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   // One line, and an ellipsis where it stops: `truncate`,
                   // never a silent cut. The tooltip holds the rest.
                   <span
-                    title={capOutput(memberLineOf(String(st.result))).text}
+                    title={capOutput(memberLineOf(withoutFrame(String(st.result)))).text}
                     className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
                   >
-                    {capOutput(memberLineOf(String(st.result)), 400).text}
+                    {capOutput(memberLineOf(withoutFrame(String(st.result))), 400).text}
                   </span>
                 )}
               </li>

@@ -36,10 +36,12 @@ const LABELS = [
 const html = (result: string) => renderToStaticMarkup(createElement(Readout, { result }));
 
 describe("the expanded step rows (task 3920)", () => {
-  it("draw a result through withoutFrame: RunDetail and ArgsDetail", () => {
+  it("draw a result through withoutFrame: RunDetail, ArgsDetail and a sub-step", () => {
     const src = readFileSync(join(__dirname, "../components/ThinkingContainer.tsx"), "utf8");
     expect(src).toContain("capOutput(withoutFrame(String(event.result)))");
     expect(src).toContain("memberLineOf(withoutFrame(String(event.result)))");
+    // A sub-step's result too, in its title and in its line.
+    expect(src.match(/memberLineOf\(withoutFrame\(String\(st\.result\)\)\)/g)).toHaveLength(2);
   });
 });
 

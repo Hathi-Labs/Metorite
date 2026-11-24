@@ -78,4 +78,11 @@ regexes = [
     # `.test_durations` lists every test id. The entry matches this exact value
     # and no other: never widen it.
     '''ghp_0123456789abcdefghijklmnopqrstuvwxyz''',
+    # Task 3920: the data-frame token of the fixture in
+    # workbench/control_plane/src/lib/readoutFrame.test.ts. It is 16 hex
+    # characters that a test sentinel holds in a marker line, never a key. The
+    # rule `generic-api-key` read it. A PR scan reads the commit that holds it,
+    # and history is not rewritten (no force-push). The entry matches this exact
+    # value and no other: never widen it.
+    '''0f1e2d3c4b5a6978''',
 ]
