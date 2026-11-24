@@ -31,6 +31,28 @@ rows, so the admin ceiling went from 36 to 30. Fences:
 `tests/unit/test_org_admin_tools.py` and `tests/unit/test_org_admin_tools_r8.py`
 (R8).
 
+**PAR-4a (task 3107) is BUILT, 2026-11-24, and it ships dark.** Thirteen tools
+join the pack `org-admin` (`acb_skills/org_admin_more_tools.py`). Four are
+reads: `list_org_groups`, `list_roles_and_rights`, `read_member_access` and
+`preview_member_removal`. Nine are writes, and each shows one card:
+`create_org_group`, `edit_org_group`, `delete_org_group`,
+`add_org_group_member`, `remove_org_group_member`, `create_org_role`,
+`delete_org_role`, `set_member_overrides` and `rename_org`.
+
+Each tool calls the admin routes as the member, and each write reads
+`GET /auth/me` first. A write reads its row again after Approve, and it sends
+nothing when the row changed. PAR-4a paid 13 debt rows, so the admin ceiling
+went from 30 to 17. A held chat holds off the nine writes and keeps the four
+reads. Fences: `tests/unit/test_org_admin_more_tools.py` and
+`tests/unit/test_org_admin_more_tools_r8.py` (R8).
+
+**PAR-4a is stricter than the page, for the owner to see.** A role create and
+an overrides write refuse each right that the caller does not hold. The
+member gets plain words and no card. An overrides write that removes a deny
+counts that right too. So the chat never gives a role or a member more than
+the caller holds. The Organisation page has no such check, and the R8 test
+shows the difference.
+
 **PAR-6a (task 3109) is BUILT, 2026-11-24, and it ships dark.** Seven tools
 join the pack `org-admin` (`acb_skills/integrations_admin_tools.py`). The reads
 are `read_integrations` and `read_agent_access`. `probe_integration` tests a
@@ -432,7 +454,9 @@ task of each wave.
 
 | Order | Slice | Task | Tier | State |
 |---|---|---|---|---|
-| 1 | PAR-4: groups, roles, seats, remove a member, the org profile, member access (wave P-8b) | 3107 | HIGH | To do |
+| 1 | PAR-4a: groups, roles, overrides, member access, the removal preview, the org name (wave P-8b) | 3107 | HIGH | Built, dark |
+| 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | To do (the purge waits for the owner) |
+| 1c | PAR-4d: the seats | 3936 | HIGH | To do |
 | 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | To do |
 | 3 | PAR-6a: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | Built, dark |
 | 4 | The demo of rung 3 | 3110 | none | To do |
@@ -444,6 +468,14 @@ task of each wave.
   wired on production: without it, `/seats/assign` and `/seats/release` refuse
   with 503. The deployment key and the `seat_admin` grant are owner gates
   (`customer_console.md` §8, gates 7 and 8).
+- **The split of PAR-4 (task 3107).** PAR-4a pays the 13 rows of groups,
+  roles, overrides, access, the removal preview and the org name. PAR-4c
+  (task 3935) takes the remove and the purge of a member. The purge needs an
+  owner decision on the check of the typed address. PAR-4d (task 3936) takes
+  the five seat rows.
+- **Acceptance of the isolation.** The groups prove it by R8, with two orgs on
+  a private database. The seats prove it by a test with a stub Console,
+  because the Console owns the seat org.
 - **Reason.** Wave P-8 holds 88 debt rows, the most of all waves. The Settings
   debt went up the most, from 21 to 30 rows. PAR-4 builds on the pack of rung 1.
 - **Order.** PAR-5 is STANDARD, so it can run while PAR-4 waits for the owner.
@@ -564,7 +596,9 @@ he approves the merge.
    Set `HOME_TOOLS_ORGS` before the demo of rung 5 (task 3905). It holds the
    Home tools of PAR-8b.
 2. **The previews.** Approve the preview of each new card: the invite, the
-   Knowledge writes, and the Admin, Settings and Integrations writes.
+   Knowledge writes, and the Admin, Settings and Integrations writes. Approve
+   too the stricter rule of PAR-4a: the chat gives no right that the caller
+   does not hold.
 3. **The flag flips.** Approve each one on its task: `KNOWLEDGE_PROPOSALS` for
    the Knowledge cards, and `MEMBER_INVITE_EMAIL_ENABLED` for the invite mail.
    No agent of this plan flips a flag.

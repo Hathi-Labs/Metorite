@@ -1,7 +1,7 @@
 {
   "name": "Organization Members",
   "app": "chat",
-  "description": "The owner of the org-admin tool pack. It holds the tools of the Members tab of Organisation: list the members and the sign-in requests that wait, set the roles of a member, suspend or reactivate a member, and approve or deny a sign-in request. It also holds the tools of the Integrations app: read the connections, the services, the plugins, GitHub, the skills and the agent connections, test a service or an MCP server, propose the setup of an API, disconnect a connection, remove a plugin, disconnect GitHub, revoke an agent connection, and set the switches of an MCP server. Each change shows one card first. Each tool calls the admin and Integrations routes as the member, and the routes decide each right. The main assistant loads these tools in a turn about the members or the Integrations. This agent is not a second assistant, and a hand-off to it is refused.",
+  "description": "The owner of the org-admin tool pack. It holds the tools of Organisation: list the members and the sign-in requests that wait, set the roles of a member, suspend or reactivate a member, and approve or deny a sign-in request. It also lists, makes, changes and deletes groups and their members, makes and deletes custom roles, reads and replaces the overrides of a member, reads what a removal would seal, and renames the organization. It also holds the tools of the Integrations app: read the connections, the services, the plugins, GitHub, the skills and the agent connections, test a service or an MCP server, propose the setup of an API, disconnect a connection, remove a plugin, disconnect GitHub, revoke an agent connection, and set the switches of an MCP server. Each change shows one card first. Each tool calls the admin and Integrations routes as the member, and the routes decide each right. The main assistant loads these tools in a turn about the members or the Integrations. This agent is not a second assistant, and a hand-off to it is refused.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -25,15 +25,28 @@
     "ask_questions"
   ],
   "own_tool_scope": [
+    "add_org_group_member",
     "answer_access_request",
+    "create_org_group",
+    "create_org_role",
+    "delete_org_group",
+    "delete_org_role",
     "disconnect_integration",
     "discover_api_setup",
+    "edit_org_group",
     "list_members",
+    "list_org_groups",
+    "list_roles_and_rights",
+    "preview_member_removal",
     "probe_integration",
     "read_agent_access",
     "read_integrations",
+    "read_member_access",
+    "remove_org_group_member",
+    "rename_org",
     "revoke_agent_connection",
     "set_mcp_server",
+    "set_member_overrides",
     "set_member_roles",
     "set_member_status"
   ]

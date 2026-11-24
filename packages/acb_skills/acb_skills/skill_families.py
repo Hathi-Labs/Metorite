@@ -1055,29 +1055,45 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # guard of the route is the only check. The owner never runs as an agent, as
     # studio-builder does. It is NOT in FOLLOWS: only the owner's pack list turns
     # it on (tool_packs.packs_on). Fence: test_org_admin_tools.py.
+    # PAR-4a (rung 3, task 3107) adds the groups, the custom roles, the
+    # overrides of a member, the removal preview and the name of the org
+    # (org_admin_more_tools.py). Fence: test_org_admin_more_tools.py.
     # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
     # the same pack (integrations_admin_tools.py). Fence:
     # test_integrations_admin_tools.py.
     "org-admin": {
         "label": "Organization members and Integrations",
         "summary": (
-            "List the members and the sign-in requests, change the roles or the status "
-            "of a member, answer a sign-in request, or read, test and disconnect the "
-            "Integrations, the agent connections and the MCP servers."
+            "Manage the members, the sign-in requests, the groups, the roles, the access "
+            "of a member and the name of the organization, or read, test and disconnect "
+            "the Integrations, the agent connections and the MCP servers."
         ),
         "description": (
-            "A tool pack: the tools of the Members tab of Organisation and of the "
-            "Integrations app, for the main assistant to load when a turn asks about the "
-            "members or the Integrations of the organization. Each tool calls the routes "
-            "as the member, so a member without the right gets a refusal. Each change "
-            "shows one card first. A run loads a pack only where tool packs are on, so "
-            "until then this switch has no effect."
+            "A tool pack: the tools of Organisation and of the Integrations app, for the "
+            "main assistant to load when a turn asks about the members or the "
+            "Integrations of the organization. Each tool calls the routes as the member, "
+            "so a member without the right gets a refusal. Each change shows one card "
+            "first. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
         ),
         "tools": (
             "list_members",
             "set_member_roles",
             "set_member_status",
             "answer_access_request",
+            "list_org_groups",
+            "create_org_group",
+            "edit_org_group",
+            "delete_org_group",
+            "add_org_group_member",
+            "remove_org_group_member",
+            "list_roles_and_rights",
+            "create_org_role",
+            "delete_org_role",
+            "read_member_access",
+            "set_member_overrides",
+            "preview_member_removal",
+            "rename_org",
             "read_integrations",
             "read_agent_access",
             "probe_integration",

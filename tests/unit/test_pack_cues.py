@@ -76,10 +76,12 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
-    # PAR-2a (task 3102): the members of the org. PAR-6a (task 3109): the Integrations.
+    # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
+    # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
+    # Integrations.
     "org-admin": (
-        "Load for org members and sign-in requests, or the integrations, connections, "
-        "MCP servers, plugins, GitHub and agent connections."),
+        "Load for org members, sign-in requests, groups, roles, overrides or name, or "
+        "integrations, MCP servers, plugins and GitHub."),
 }
 
 
