@@ -60,6 +60,7 @@ import json
 from typing import Any, Literal
 from urllib.parse import quote
 
+from acb_common.card_body import one_line
 from acb_common.paging import paged
 
 from acb_skills import org_admin_tools as oa
@@ -98,6 +99,10 @@ ACCESS_RIGHT = "admin:access:manage"
 #: The right of the rename of the organization (``organization.py``).
 SETTINGS_RIGHT = "admin:settings:manage"
 
+#: The group slugs that the route refuses (``groups.py`` ``RESERVED_GROUP_SLUGS``).
+#: ``all`` means every team. ``acb_skills`` cannot import the gateway, so this is
+#: a copy, and ``test_org_admin_more_tools.py`` fails when the two differ.
+RESERVED_GROUP_SLUGS: frozenset[str] = frozenset({"all"})
 #: The roles of a member in a group (``groups.py`` ``MEMBER_ROLES``).
 GROUP_ROLES = ("member", "lead")
 #: The effects of an override.
@@ -124,6 +129,14 @@ _BAD_ROLE = ("slug is the short name of a role, as the role list shows it: 1 to 
              "letters, digits, '_' or '-'. Nothing changed.")
 _BAD_GROUP_ROLE = "role is member or lead. Nothing changed."
 _BAD_TEXT = "{field} is text of at most {limit} characters. Nothing changed."
+_FENCE_MARK = ("{field} holds « or ». A card marks the text of people with them, so leave "
+               "them out. Nothing changed.")
+_RESERVED_GROUP = ("The short name {slug} is reserved, because it means every team. Give the "
+                   "group another short name. Nothing changed.")
+#: What the lead role gives (``routes/projects/report_scope.py``: a lead reports
+#: on each team it leads, and on each member of those teams).
+_LEAD_WORDS = ("As a lead, the member can open a Projects report on each group that the "
+               "member leads, and on each member of those groups.")
 _NO_CHANGE_ASKED = "Send a new display_name, a new description, or both. Nothing changed."
 _BAD_RIGHTS = ("permissions is a list of rights, as list_roles_and_rights shows them, at most "
                "{limit}. Nothing changed.")
@@ -253,9 +266,12 @@ def _seg(slug: str) -> str:
     return quote(slug, safe="")
 
 
-def _text(raw: Any, field: str, limit: int) -> tuple[str | None, dict[str, Any] | None]:
+def _text(raw: Any, field: str, limit: int,
+          flat: bool = False) -> tuple[str | None, dict[str, Any] | None]:
     """``(text, None)``, ``(None, None)`` for no value, or ``(None, refusal)``.
-    A text with a hidden character is refused by the one rule."""
+    A text with a hidden character is refused by the one rule. A text with « or
+    » is refused, because the card cannot show it as it is sent. *flat* makes
+    each run of white space one space, so a name is sent as the card shows it."""
     if raw is None:
         return None, None
     if not isinstance(raw, str) or len(raw.strip()) > limit:
@@ -263,7 +279,9 @@ def _text(raw: Any, field: str, limit: int) -> tuple[str | None, dict[str, Any] 
     problem = hidden_problem(raw, field)
     if problem is not None:
         return None, oa._refusal(f"{problem} Nothing changed.")
-    return raw.strip(), None
+    if "«" in raw or "»" in raw:
+        return None, oa._refusal(_FENCE_MARK.format(field=field))
+    return (one_line(raw) if flat else raw.strip()), None
 
 
 def _list_arg(raw: Any) -> list[Any] | None:
@@ -320,7 +338,8 @@ def _overrides_arg(raw: Any) -> tuple[list[dict[str, str]] | None, dict[str, Any
             return None, problem
         if any(o["permission"] == right for o in out):
             return None, oa._refusal(_TWO_EFFECTS.format(perm=right))
-        reason, problem = _text(item.get("reason") or "", "reason", MAX_REASON_CHARS)
+        reason, problem = _text(item.get("reason") or "", "reason", MAX_REASON_CHARS,
+                                flat=True)
         if problem is not None:
             return None, problem
         out.append({"permission": right, "effect": effect, "reason": reason or ""})
@@ -334,8 +353,15 @@ def _desc(value: Any) -> str:
     return oa._cut(strip_hidden(value) if isinstance(value, str) else "", MAX_SHOWN_DESC)
 
 
+def _whole(value: Any) -> str:
+    """A value on a card, whole, between « and ». It is never cut here (D169).
+    ``card_body`` cuts only a long text, and its last line then says so."""
+    text = one_line(strip_hidden(value)) if isinstance(value, str) else ""
+    return "«" + text.replace("«", "").replace("»", "") + "»"
+
+
 def _fence_desc(value: Any) -> str:
-    return "«" + _desc(value).replace("«", "").replace("»", "") + "»"
+    return _whole(value)
 
 
 # ── The reads ───────────────────────────────────────────────────────────────
@@ -561,7 +587,7 @@ async def preview_member_removal(email: str) -> dict[str, Any]:
 
 def _group_line(slug: str, row: dict[str, Any] | None = None, name: str | None = None) -> str:
     shown = name if name is not None else (row or {}).get("display_name")
-    return f"Group: {slug} {oa._fence(shown)}"
+    return f"Group: {slug} {_whole(shown)}"
 
 
 async def _group_still(slug: str, row: dict[str, Any], decision: str) -> dict[str, Any] | None:
@@ -583,7 +609,9 @@ async def create_org_group(slug: str, display_name: str = "",
     key = _slug(slug, "-")
     if key is None:
         return oa._refusal(_BAD_GROUP)
-    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS)
+    if key in RESERVED_GROUP_SLUGS:
+        return oa._refusal(_RESERVED_GROUP.format(slug=key), status=400)
+    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS, flat=True)
     if problem is not None:
         return problem
     desc, problem = _text(description or "", "description", MAX_DESC_CHARS)
@@ -627,7 +655,7 @@ def _edit_args(
     key = _slug(slug, "-")
     if key is None:
         return oa._refusal(_BAD_GROUP)
-    name, problem = _text(display_name, "display_name", MAX_NAME_CHARS)
+    name, problem = _text(display_name, "display_name", MAX_NAME_CHARS, flat=True)
     if problem is not None:
         return problem
     desc, problem = _text(description, "description", MAX_DESC_CHARS)
@@ -642,9 +670,10 @@ def _edit_lines(key: str, row: dict[str, Any], name: str | None,
                 desc: str | None) -> list[tuple[str, str]]:
     lines = [("group", _group_line(key, row))]
     if name:
-        lines.append(("name", f"Name after: {oa._fence(name)}"))
+        lines.append(("name", f"Name after: {_whole(name)}"))
     if desc is not None:
-        lines += [("was", f"Description now: {_fence_desc(row.get('description'))}"),
+        # Both lines are long text, so card_body may cut either and marks the cut.
+        lines += [("description", f"Description now: {_fence_desc(row.get('description'))}"),
                   ("description", f"Description after: {_fence_desc(desc)}")]
     return lines
 
@@ -735,6 +764,29 @@ def _center_grant_problem(caller: dict[str, Any], key: str) -> dict[str, Any] | 
     return _beyond(caller, [f"feature:center.{key}"], "a member")
 
 
+async def _center_still(key: str, decision: str) -> dict[str, Any] | None:
+    """After ``approved``: None when the caller can still give the Center
+    grant, else a refusal. It reads ``GET /auth/me`` again."""
+    again, problem = await _me(MANAGE_RIGHT)
+    if problem is not None or again is None:
+        return problem or oa._refusal(oa._SHAPE)
+    problem = _center_grant_problem(again, key)
+    return None if problem is None else {**problem, "decision": decision}
+
+
+def _member_lines(key: str, row: dict[str, Any], target: str, person: dict[str, Any],
+                  now: dict[str, Any] | None, want: str, grant: bool) -> list[tuple[str, str]]:
+    lines = [("group", _group_line(key, row)),
+             ("member", f"Member: {target} {oa._fence(person.get('display_name'))}"),
+             ("role", f"Role in the group: {now.get('role') if now else 'not in it'}. "
+                      f"After: {want}.")]
+    if want == "lead":
+        lines.append(("lead", _LEAD_WORDS))
+    if grant:
+        lines.append(("grant", f"Also gives the member the right feature:center.{key}."))
+    return lines
+
+
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def add_org_group_member(
     slug: str, email: str, role: Literal["member", "lead"] = "member",
@@ -769,12 +821,7 @@ async def add_org_group_member(
         if now is not None and now.get("role") == want and not grant:
             return {"ok": True, "slug": key, "email": target,
                     "note": _SAME_GROUP_ROLE.format(email=target, slug=key, role=want)}
-        lines = [("group", _group_line(key, row)),
-                 ("member", f"Member: {target} {oa._fence(person.get('display_name'))}"),
-                 ("role", f"Role in the group: {now.get('role') if now else 'not in it'}. "
-                          f"After: {want}.")]
-        if grant:
-            lines.append(("grant", f"Also gives the member the right feature:center.{key}."))
+        lines = _member_lines(key, row, target, person, now, want, grant)
         decision, _ = await oa._decide(
             f"Add {target} to the group {key}?", f"{key}: {want}",
             "Approve to put this member in the group. The member then shares what is shared "
@@ -784,6 +831,9 @@ async def add_org_group_member(
         changed = await _group_still(key, row, decision)
         if changed is not None:
             return changed
+        problem = await _center_still(key, decision) if grant else None
+        if problem is not None:
+            return problem
         sent = await oa._send("POST", f"/admin/groups/{_seg(key)}/members",
                               {"email": target, "role": want, "grant_center_access": grant},
                               act="group member add")
@@ -875,7 +925,7 @@ async def create_org_role(slug: str, display_name: str = "", description: str = 
     key = _slug(slug, "_")
     if key is None:
         return oa._refusal(_BAD_ROLE)
-    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS)
+    name, problem = _text(display_name or "", "display_name", MAX_NAME_CHARS, flat=True)
     if problem is not None:
         return problem
     desc, problem = _text(description or "", "description", MAX_DESC_CHARS)
@@ -896,7 +946,7 @@ async def create_org_role(slug: str, display_name: str = "", description: str = 
             return problem or oa._refusal(oa._SHAPE)
         if any(r["slug"] == key for r in roles):
             return oa._refusal(_ROLE_EXISTS.format(slug=key), status=409)
-        lines = [("role", f"Role: {key} {oa._fence(name or key)}"),
+        lines = [("role", f"Role: {key} {_whole(name or key)}"),
                  ("description", f"Description: {_fence_desc(desc)}"),
                  ("count", f"Rights: {len(rights)}"), *_right_lines(rights, "Right")]
         decision, _ = await oa._decide(
@@ -946,7 +996,7 @@ async def delete_org_role(slug: str) -> dict[str, Any]:
         decision, _ = await oa._decide(
             f"Delete the role {key}?", key,
             "Approve to delete this role. No member holds it. Reject to keep the role.",
-            [("role", f"Role: {key} {oa._fence(row.get('display_name'))}"),
+            [("role", f"Role: {key} {_whole(row.get('display_name'))}"),
              ("members", f"Members who hold it: {holders}"),
              ("rights", f"Rights: {', '.join(rights) or 'none'}")])
         if decision != "approved":
@@ -977,12 +1027,18 @@ def _override_snap(rows: list[dict[str, str]]) -> tuple[Any, ...]:
 
 
 def _raises(new: list[dict[str, str]], now: list[dict[str, str]]) -> list[str]:
-    """Each right that the write gives: each allow, and each deny that it lifts."""
+    """Each right that the write gives: each NEW allow, and each deny that it
+    lifts. An allow that the member holds already as an allow gives nothing. An
+    override of the member with an effect that is not ``allow`` never covers an
+    allow, so a doubt counts as a grant (fail closed)."""
+    held = {o["permission"] for o in now if o["effect"] == "allow"}
     denied_after = {o["permission"] for o in new if o["effect"] == "deny"}
     lifted = [o["permission"] for o in now
               if o["effect"] == "deny" and o["permission"] not in denied_after]
+    added = [o["permission"] for o in new
+             if o["effect"] == "allow" and o["permission"] not in held]
     out: list[str] = []
-    for right in [*(o["permission"] for o in new if o["effect"] == "allow"), *lifted]:
+    for right in [*added, *lifted]:
         if right not in out:
             out.append(right)
     return out
@@ -992,7 +1048,7 @@ def _override_lines(new: list[dict[str, str]],
                     now: list[dict[str, str]]) -> list[tuple[str, str]]:
     lines: list[tuple[str, str]] = []
     for i, o in enumerate(new):
-        why = f" {oa._fence(o['reason'])}" if o["reason"] else ""
+        why = f" {_whole(o['reason'])}" if o["reason"] else ""
         lines.append((f"o{i}", f"{o['effect'].title()}: {o['permission']}{why}"))
     after = _pairs(new)
     gone = [o for o in now if (o["permission"], o["effect"]) not in after]
@@ -1109,7 +1165,7 @@ async def rename_org(display_name: str) -> dict[str, Any]:
             "Rename your organization?", name,
             "Approve to change the name that each member sees. The short name and the sign-in "
             "domain stay. Reject to keep the name.",
-            [("now", f"Name now: {oa._fence(was)}"), ("after", f"Name after: {oa._fence(name)}")])
+            [("now", f"Name now: {_whole(was)}"), ("after", f"Name after: {_whole(name)}")])
         if decision != "approved":
             return oa._not_done(decision)
         again, problem = await _me(SETTINGS_RIGHT)

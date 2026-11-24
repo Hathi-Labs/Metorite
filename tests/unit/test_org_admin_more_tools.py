@@ -535,6 +535,106 @@ async def test_a_role_slug_takes_the_route_form(gw, card) -> None:
     assert out["ok"] is True and gw.writes()[0][2]["slug"] == "read_only"
 
 
+# ── 8. The repair round of PAR-4a: the whole value, new allows, lead, re-check ──
+
+
+@pytest.mark.parametrize(("name", "args", "kw", "value"), [
+    ("create_org_group", ("qa",), {"description": "d" * 999 + "Z"}, "d" * 999 + "Z"),
+    ("create_org_group", ("qa",), {"display_name": "N" * 119 + "Z"}, "N" * 119 + "Z"),
+    ("edit_org_group", ("design",), {"display_name": "word " * 23 + "LAST"},
+     "word " * 23 + "LAST"),
+    ("create_org_role", ("viewer",), {"display_name": "R" * 119 + "Z",
+                                       "permissions": ["feature:crm"]}, "R" * 119 + "Z"),
+    ("rename_org", ("Acme " * 15 + "Labs",), {}, "Acme " * 15 + "Labs"),
+    ("set_member_overrides", (MEMBER, [{"permission": "feature:whatsapp", "effect": "deny",
+                                        "reason": "why " * 49 + "END"}]), {},
+     "why " * 49 + "END"),
+], ids=["group-desc", "group-name", "edit-name", "role-name", "org-name", "reason"])
+async def test_the_card_shows_the_whole_value_that_is_sent(gw, card, name, args, kw,
+                                                           value) -> None:
+    """D169: the card shows the exact change. Mutation: cut a value with
+    ``oa._fence`` or ``_desc`` before ``card_body`` -> its tail is gone -> red."""
+    out = await _tool(name)(*args, **kw)
+    assert out["ok"] is True, out
+    context = card.shown[0]["context"]
+    assert f"«{value}»" in context, context
+    assert "truncated" not in context
+    assert value in json.dumps(gw.writes()[0][2])
+
+
+async def test_a_fence_mark_in_the_input_is_refused(gw, card) -> None:
+    """A card strips « and » from a value, so a value with them is not what
+    the card shows. Mutation: drop the check in ``_text`` -> red."""
+    out = await om.create_org_group("qa", display_name="QA «boss»")
+    assert out["ok"] is False and "«" in out["error"] and gw.calls == []
+
+
+async def test_names_are_sent_as_the_card_shows_them(gw, card) -> None:
+    out = await om.create_org_group("qa", display_name="Q   A")
+    assert out["ok"] is True and "«Q A»" in card.shown[0]["context"]
+    assert gw.writes()[0][2]["display_name"] == "Q A"
+
+
+async def test_an_allow_that_the_member_holds_already_is_no_raise(gw, card) -> None:
+    """Mel holds an allow of feature:center.finance, and Ada lacks it. Ada
+    adds only a deny. Mutation: count each allow of the list -> refused -> red."""
+    gw.overrides.append({"permission": "feature:center.finance", "effect": "allow",
+                         "reason": "", "set_by": ADMIN, "set_at": ""})
+    out = await om.set_member_overrides(MEMBER, [
+        {"permission": "feature:whatsapp", "effect": "deny"},
+        {"permission": "feature:center.finance", "effect": "allow"},
+        {"permission": "feature:crm", "effect": "deny"}])
+    assert out["ok"] is True, out
+    assert len(card.shown) == 1 and len(gw.writes()) == 1
+
+
+async def test_a_deny_turned_to_an_allow_is_still_a_raise(gw, card) -> None:
+    """Mel has a deny of WhatsApp, and Ada lacks WhatsApp. Fail closed."""
+    out = await om.set_member_overrides(MEMBER, [
+        {"permission": "feature:whatsapp", "effect": "allow"}])
+    assert out["ok"] is False and out["beyond"] == ["feature:whatsapp"], out
+    assert card.shown == [] and gw.writes() == []
+
+
+async def test_the_lead_card_names_what_a_lead_can_do(gw, card) -> None:
+    """Mutation: drop the lead line -> red."""
+    await om.add_org_group_member("design", MEMBER, role="lead")
+    context = card.shown[0]["context"]
+    assert "Projects report on each group that the member leads" in context
+    assert "each member of those groups" in context
+    await om.add_org_group_member("design", MEMBER, role="member")
+    assert "Projects report" not in card.shown[1]["context"]
+
+
+async def test_a_center_grant_is_checked_again_after_approve(gw, card, monkeypatch) -> None:
+    """The caller loses feature:center.sales while the card is open.
+    Mutation: drop the check after ``approved`` -> the grant goes -> red."""
+    async def answer(title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
+        card.shown.append({"context": context})
+        gw.me["features"] = ["crm", "email"]
+        gw.me["permissions"] = ["admin:*", "feature:crm", "feature:email"]
+        return True
+    monkeypatch.setattr(ask_tools, "request_confirmation", answer)
+    out = await om.add_org_group_member("sales", MEMBER, grant_center_access=True)
+    assert out["ok"] is False and out["beyond"] == ["feature:center.sales"], out
+    assert out["decision"] == "approved"
+    assert len(card.shown) == 1 and gw.writes() == []
+
+
+async def test_a_reserved_group_slug_is_refused_before_the_card(gw, card) -> None:
+    """Mutation: drop the reserved check -> a card shows -> red."""
+    out = await om.create_org_group("All")
+    assert out["ok"] is False and "reserved" in out["error"] and "Nothing changed" in out["error"]
+    assert card.shown == [] and gw.calls == []
+
+
+def test_the_reserved_group_slugs_match_the_route() -> None:
+    """The copy in the tool equals the set of the route."""
+    from gateway.routes.admin.groups import RESERVED_GROUP_SLUGS
+
+    assert om.RESERVED_GROUP_SLUGS == RESERVED_GROUP_SLUGS
+
+
 async def test_no_member_means_no_call(gw, card, monkeypatch) -> None:
     monkeypatch.setattr(oa, "_current_user_email", lambda: "")
     out = await om.list_org_groups()
