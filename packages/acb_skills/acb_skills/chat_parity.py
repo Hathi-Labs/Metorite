@@ -191,9 +191,9 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
             (3115, 3903)),
-    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115,)),
+    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
-            (3102, 3107, 3108, 3109)),
+            (3102, 3925, 3107, 3108, 3109)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
 }
 
@@ -227,8 +227,12 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # PAR-8b: the Home tools send the shell routes, the brief and the test push.
+    "packages/acb_skills/acb_skills/home_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
     "packages/acb_skills/acb_skills/org_facts_tools.py",
+    # PAR-2a: the org-admin pack sends the admin routes of the Members tab.
+    "packages/acb_skills/acb_skills/org_admin_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -371,6 +375,18 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
     "PUT /api/chat/sessions/{}/pin": "pin_chat",
+    # ── Shell, Home and approvals ──
+    # PAR-8b (task 3903, chat_parity.md section 6.4 rung 5): the Home tools of the
+    # orchestrator, dark behind HOME_TOOLS_ORGS. Each sends the route as the member of the run.
+    "GET /api/shell/feed": "home_read",
+    "GET /api/shell/needs": "home_read",
+    "GET /api/shell/search": "home_read",
+    "GET /api/shell/feed/prefs": "home_read",
+    "GET /api/brief/today": "home_read",
+    "POST /api/shell/feed/state": "home_card",
+    "PUT /api/shell/feed/prefs": "home_prefs",
+    "PUT /api/shell/layout": "home_layout",
+    "POST /api/push/test": "home_test_push",
     # ── Settings and the assistant profile ──
     "DELETE /api/auth/me/assistant-profile/aliases/{}": (
         "profile_alias",
@@ -441,6 +457,17 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/workflows/{}/versions/{}/rollback": "studio_workflow_publish",
     "POST /api/workflows/{}/disable": "studio_workflow_live",
     "POST /api/workflows/{}/enable": "studio_workflow_live",
+    # ── Admin, members (PAR-2a, task 3102, chat_parity.md section 6.3) ──
+    # The org-admin pack calls each admin route as the member, and the guard of
+    # the route is the only check. A write shows ONE card first.
+    "GET /api/admin/members": "list_members",
+    "GET /api/admin/members/requests": "list_members",
+    # set_member_roles reads the roles of the org before its card.
+    "GET /api/admin/roles": "set_member_roles",
+    "PATCH /api/admin/members/{}": "set_member_status",
+    "PUT /api/admin/members/{}/roles": "set_member_roles",
+    # The approve and the deny of a sign-in request: the last part is the verb.
+    "POST /api/admin/members/requests/{}/{}": "answer_access_request",
     # PAR-8a (task 3903, chat_parity.md section 6.4 rung 5): the other 18 acts of the
     # Workflows app, as the member, in the dark pack studio-workflows. Each write that a
     # card guards sends after approved only.
@@ -1054,23 +1081,24 @@ DEBT: dict[str, str] = {
     "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
-    "DELETE /api/push/subscriptions": "P-7",
+    # PAR-8b (task 3903) paid 9 of the 16 shell rows. The two rows of the
+    # approval queue stay: the safety fence test_no_person_present.py refuses a tool that
+    # names /actions/pending, a read too, and the decision waits for the owner
+    # (chat_parity.md section 7, item 6). pending_actions has no requester column, so a
+    # tool cannot tell an action that the chat itself asked for.
     "GET /api/actions/pending": "P-7",
-    "GET /api/brief/today": "P-7",
-    "GET /api/push/public-key": "P-7",
-    "GET /api/shell/feed": "P-7",
-    "GET /api/shell/feed/prefs": "P-7",
-    "GET /api/shell/needs": "P-7",
-    "GET /api/shell/search": "P-7",
     "POST /api/actions/pending/{}/{}": "P-7",
+    # PAR-8b: five rows that no kind of EXEMPT_KINDS fits, so they stay debt until the owner
+    # rules (chat_parity.md section 2: a new kind needs the owner).
+    # The model step of the command bar: the member's own turn does that job in the chat. It
+    # needs an owner ruling on the kind.
+    "POST /api/shell/intent": "P-7",
+    # A device act: only the browser holds the push address of its device and its secret. It
+    # needs a `device` kind, an owner decision of section 2.
+    "GET /api/push/public-key": "P-7",
     "POST /api/push/subscriptions": "P-7",
     "POST /api/push/subscriptions/status": "P-7",
-    "POST /api/push/test": "P-7",
-    "POST /api/shell/feed/state": "P-7",
-    "POST /api/shell/intent": "P-7",
-    "PUT /api/shell/feed/prefs": "P-7",
-    # PKG-17c-1 (task 2969): the save of the org default of the shell layout. P-7 gives the chat a tool for it.
-    "PUT /api/shell/layout": "P-7",
+    "DELETE /api/push/subscriptions": "P-7",
     # ── Settings and the assistant profile ──
     # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
     # saves a new version. The chat tool is SW-31c (task 1531).
@@ -1114,11 +1142,8 @@ DEBT: dict[str, str] = {
     "DELETE /api/admin/roles/{}": "P-8",
     "GET /api/admin/features": "P-8",
     "GET /api/admin/groups": "P-8",
-    "GET /api/admin/members": "P-8",
-    "GET /api/admin/members/requests": "P-8",
     "GET /api/admin/members/{}/access": "P-8",
     "GET /api/admin/members/{}/seal-preview": "P-8",
-    "GET /api/admin/roles": "P-8",
     "GET /api/billing/catalog": "P-8",
     "GET /api/billing/members": "P-8",
     "GET /api/billing/orders/{}": "P-8",
@@ -1129,12 +1154,10 @@ DEBT: dict[str, str] = {
     "GET /api/billing/usage/members": "P-8",
     "GET /api/org/seats": "P-8",
     "PATCH /api/admin/groups/{}": "P-8",
-    "PATCH /api/admin/members/{}": "P-8",
     "PATCH /api/admin/organization": "P-8",
     "POST /api/admin/groups": "P-8",
     "POST /api/admin/groups/{}/members": "P-8",
     "POST /api/admin/members/invite": "P-8",
-    "POST /api/admin/members/requests/{}/{}": "P-8",
     "POST /api/admin/roles": "P-8",
     "POST /api/billing/orders": "P-8",
     "POST /api/billing/orders/{}/redeem": "P-8",
@@ -1142,7 +1165,6 @@ DEBT: dict[str, str] = {
     "POST /api/billing/seats/release": "P-8",
     "POST /api/billing/seats/{}": "P-8",
     "PUT /api/admin/members/{}/overrides": "P-8",
-    "PUT /api/admin/members/{}/roles": "P-8",
     # ── Integrations ──
     "DELETE /api/agent-access/connections/{}": "P-8",
     "DELETE /api/integrations/agent-connections/{}": "P-8",
@@ -1203,9 +1225,9 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
-    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
+    "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
-    "admin": 36,
+    "admin": 30,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30).
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
     "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
 }

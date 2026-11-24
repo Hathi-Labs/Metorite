@@ -318,6 +318,15 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio-share: the share of a skill with the org (WS-STU J2d) --
     "studio_skill_share": ("share my skill with the team",
                            "approve the skill share that waits for me"),
+    # -- org-admin: the members of the org (PAR-2a, task 3102) --
+    "list_members": ("list the members of our organization", "who are our org members?",
+                     "which sign-in requests wait?"),
+    "set_member_roles": ("give ravi@acme.test the admin role",
+                         "change the member roles of ravi@acme.test"),
+    "set_member_status": ("suspend the member ravi@acme.test",
+                          "reactivate the member ravi@acme.test"),
+    "answer_access_request": ("approve the sign-in request from kim@acme.test",
+                              "deny the access request from kim@acme.test"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

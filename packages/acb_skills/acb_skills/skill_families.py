@@ -1050,6 +1050,35 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-2a (chat_parity.md section 6.3, rung 1, task 3102): the members of the
+    # org from the chat. Each tool calls an admin route as the member, and the
+    # guard of the route is the only check. The owner never runs as an agent, as
+    # studio-builder does. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_org_admin_tools.py.
+    "org-admin": {
+        "label": "Organization members",
+        "summary": (
+            "List the members of the organization and the sign-in requests, change the "
+            "roles or the status of a member, or answer a sign-in request."
+        ),
+        "description": (
+            "A tool pack: the tools of the Members tab of Organisation, for the main "
+            "assistant to load when a turn asks about the members of the organization. "
+            "Each tool calls the admin routes as the member, so a member without the "
+            "admin right gets a refusal. Each change shows one card first. A run loads a "
+            "pack only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "list_members",
+            "set_member_roles",
+            "set_member_status",
+            "answer_access_request",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

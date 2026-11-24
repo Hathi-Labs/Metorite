@@ -20,7 +20,11 @@
 
 **SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 498.**
 
-**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475. No agent token reaches the route until SW-114.**
+**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475.**
+
+**SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
+
+**SW-110 (task 3631): the half for child runs is built and dark behind `AGENT_MAP_ORGS`, 2026-11-23, with no migration. The machine heartbeat card is not built, because it waits on SW-77 (task 1923).**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
@@ -34,9 +38,9 @@ This spec gates every SW slice (D135.4). The decisions are **D140** in `work_pla
 
 **Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`. SW-113 (the edge tool `get_agent_map`) is built and dark behind the same flag, 2026-11-21 (task 3796).**
 
-**Built and dark:** SW-102, SW-103 (the Map view), SW-104 (the machine and the model on each run), SW-106 (the map shows them), SW-107 (who dispatched a run), SW-112 (the Agents view of a project) and SW-113 (the map in the MCP). SW-105 and SW-108 to SW-111 and SW-114 are open.
+**Built and dark:** SW-102, SW-103 (the Map view), SW-104 (the machine and the model on each run) and SW-106 (the map shows them). SW-107 (who dispatched a run), SW-112 (the Agents view of a project) and SW-113 (the map in the MCP) are built and dark too. SW-114 (the writer of sub-agents) is built and dark behind `AGENT_MAP_ORGS`. Its hooks wait for SW-82. SW-105, SW-108 and SW-109 are built, as their rows say. SW-110 has its child-run half built and dark, its machine card waits on SW-77, and SW-111 is open.
 
-**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. The kind of machine is built (SW-104 and SW-106). The map in the MCP is built (SW-113). The writer and the way into a session are open.
+**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. The kind of machine is built (SW-104 and SW-106). The map in the MCP (SW-113) and the tool of the writer (SW-114) are built. The hooks of the writer and the way into a session are open.
 
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
@@ -2168,6 +2172,9 @@ They keep their own gates.
 - **Done when.** `visual-review` passes at four widths. A child run shows only under a parent that the viewer can see.
 - **Fence.** `tests/unit/test_agent_map_r8.py` (extended), `lib/agentMap.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-39 (task 3799), SW-114, SW-77 (task 1923).
+- **Built and dark, 2026-11-23: the half for child runs.** The map read gives `children`, the open child runs of the runs that it lists. Each child has its name, its state, its own model or null, and its age. A child shows only under a listed run of `live`, so the `seen` text decides the parent. The answer gives no machine, connection, session key or address of a child. `count` counts the parent runs only. The cap is 200 children, with `truncated`.
+- **The edge and the view.** The edge tool `get_agent_map` gives the same list, and it gives each name and model as `untrusted_text`. On the map, a session with children has a "Show N sub-agents" button. Open, the children of a session fill a grid right of its task column. Each column holds 8 rows at most. The children of one task sit together, oldest first. A line joins each child to its task. The canvas fits the view again when a session opens or closes. The phone outline lists the children under their task. The slice adds no migration and no flag. `AGENT_MAP_ORGS` keeps it dark.
+- **Not built.** The machine heartbeat card and the "offline" state of a machine wait on SW-77 (task 1923). The visual review at four widths and the owner preview are open. Nobody saw the children of a real lane on the map, because the hooks of SW-114 are not built.
 
 #### SW-111 · Metorite's own agents on the map (Later)
 
@@ -2219,6 +2226,16 @@ They keep their own gates.
 - **Done when.** R8: a start writes one child, a replayed start writes none, and a stop ends the child. A run of another connection gives 403. The 21st open child gives 429. On a real Claude Code with the plugin, a lane shows its implementer and its verifier under it on the map.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (from SW-39), `tests/unit/test_mcp_edge_coverage.py`, and a `node` test for each hook.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE, dark. At dispatch, check the hook path of §3.12.7 ("The way a hook calls Metorite"). **Depends on.** SW-39, SW-82, SW-83.
+- **The gate as built.** The route is dark behind `AGENT_MAP_ORGS`, the flag of the map. The edge cannot read that flag, so the edge lists the tool for every org on the runs and writes flags. Where the flag is off, the gateway answers the 404 of an unknown run before any read, lock or write. The edge gives one not-found text for every 404.
+- **Built (task 3797), 2026-11-22: the tool and the gateway rules.** The edge tool `report_subagent` sends one POST to `/projects/agent-runs/{run_id}/children`. The body holds `agent_id`, `event`, `agent_label` and `model`. The pair is now in `MCP_WRITE_ROUTES`. It stays class X in the chat manifest, so the chat never sends it. The tool shows while the runs flag and the writes flag are on. The route works only for an org on `AGENT_MAP_ORGS`.
+- **The key.** The child keeps `child:<parent id>:<agent_id>` in `idempotency_key`. The unique index of migration 267 is on the organization, the member and the key, and it takes a row with no task. So the slice adds no migration. A replayed start writes nothing and answers the first child with 200.
+- **The stop.** A stop gives the open child the status `completed` and `ended_at`. A stop of an unknown or ended child answers 200 and changes nothing. The UPDATE names the parent, the key and the member, so a stop never ends another run.
+- **The cap and the refusals.** The start of a 21st open child answers 429 with a fixed text. An own run of another connection answers 403. A run of another member keeps the one 404, so the 403 tells a member only about the member's own run.
+- **Not built.** The `SubagentStart` and `SubagentStop` hooks, the plugin of SW-82, the run id cache of SW-83, and the hook entries in `.claude/settings.json`. The plugin and the cache do not exist yet. The settings edit needs the `guard-write` grant. Nobody checked the hook path of §3.12.7 on a real Claude Code, so the map of a real lane is not proven.
+- **Review notes for the hooks.**
+  - Each sub-agent costs two writes of the write cap of the connection, 120 in 10 minutes. The parent's own writes share that cap, so a lane with many sub-agents can hit it. Only the open children have a cap of 20. The total children of a run have no cap.
+  - A `start_agent_run` whose key is `child:<parent>:<agent_id>` gets 409 when it tries again. That key space is the member's own.
+  - A start with the `agent_id` of a stopped child answers the ended child, 200 with `created` false. If Claude Code uses an `agent_id` again when it resumes a sub-agent, the map shows that sub-agent as ended. Check this when the hooks are built.
 
 ---
 

@@ -1145,12 +1145,21 @@ async def update_account(
 
 
 async def search_emails(
-    query: str, folder: str = "inbox", account_id: str | None = None
+    query: str, folder: str = "inbox", account_id: str | None = None,
+    to: str | None = None, attachment: str | None = None,
 ) -> str:
-    """Search emails (subject/body/sender). Returns matches with their ids."""
+    """Search emails (subject/body/sender). Returns matches with their ids.
+
+    to: a word of a To or Cc recipient (address or name), for "what I sent to
+      Mahesh" (use folder="sent").
+    attachment: a word of an attachment file name, for "the NDA I sent"."""
     params: dict[str, Any] = {"query": query, "folder": folder}
     if account_id:
         params["account_id"] = account_id
+    if to:
+        params["to_addr"] = to
+    if attachment:
+        params["attachment_name"] = attachment
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
@@ -1889,6 +1898,8 @@ async def query_inbox(
     sort: str = "newest",
     limit: int = 25,
     offset: int = 0,
+    to_email: str | None = None,
+    attachment_name: str | None = None,
 ) -> str:
     """Search and filter the inbox to answer a question over MANY emails.
     For example "unread mail from Acme" or "sales emails of the last month".
@@ -1898,6 +1909,9 @@ async def query_inbox(
       sender_category: one of Newsletter, Marketing, Receipt, Calendar,
         Notification, Cold Email, Personal, Support
       from_email: part of the sender's address
+      to_email: a word of a To or Cc recipient, address or name (with
+        folder="sent", the mail the member sent to that person)
+      attachment_name: a word of an attachment file name ("nda")
       unread_only / starred_only / has_attachments / importance (high|normal|low)
       sort: newest | oldest | importance
       limit / offset: a page of results (limit at most 100)
@@ -1926,6 +1940,10 @@ async def query_inbox(
         # HRD-18b: a sender that finds no mail tries its near spelling. Only
         # this tool asks for it, and the route also needs FIND_ORGS on.
         params["near_sender"] = "true"
+    if to_email:
+        params["to_addr"] = to_email
+    if attachment_name:
+        params["attachment_name"] = attachment_name
     if unread_only:
         params["is_read"] = "false"
     if starred_only:

@@ -10,6 +10,9 @@
  * between the person and the sessions. SW-109: a dashed arrow runs from a
  * session to each session that it dispatched, and the dispatcher sits to the
  * left of its lanes. The phone outline says "Dispatched by" under a lane.
+ * SW-110: a session with sub-agents has a "Show N sub-agents" button. Open,
+ * each sub-agent draws to the right of its task, with its state, its own
+ * model and its age. The phone outline lists them under their task.
  *
  * ⚠️ **Read only.** Nothing drags, connects or edits. A click on a node opens
  * a side sheet with its facts. The sheet opens a task, and nothing else acts.
@@ -35,6 +38,7 @@ import { useTheme } from "next-themes";
 
 import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Switch } from "@/components/ui/Switch";
@@ -51,10 +55,18 @@ import {
   MAP_ERROR_COPY,
   MAP_TRUNCATED_COPY,
   type MapNode,
+  NODE_H,
   OPEN_TASK_LABEL,
   OUTLINE_LABEL,
   SHOW_QUIET_LABEL,
   agentMapOutline,
+  childStateChip,
+  childStateIcon,
+  childStartedWhen,
+  childStateWord,
+  childToggleLabel,
+  childSpokenName,
+  canvasKey,
   dispatchGraph,
   groupByMachine,
   layoutAgentMap,
@@ -88,6 +100,47 @@ function taskHref(taskId: string): string {
 interface NodeData extends Record<string, unknown> {
   node: MapNode;
   onPick: (id: string) => void;
+  /** SW-110. Open or close the sub-agents of a session. */
+  onToggle: (sessionId: string) => void;
+}
+
+/**
+ * SW-110. The control that opens the sub-agents of a session. It is a real
+ * button with `aria-expanded`. xyflow turns pointer events off on a node that
+ * is not interactive, so the button turns them on again.
+ */
+/** SW-110. The selector of the toggle of one session. The key change remounts the canvas, so the view finds it again by this. */
+export function subAgentToggleSelector(sessionId: string): string {
+  return `[data-subagent-toggle="${sessionId.replace(/["\\]/g, "\\$&")}"]`;
+}
+
+export function SubAgentToggle({
+  count,
+  expanded,
+  onToggle,
+  sessionId,
+}: {
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+  /** The opaque id of the session. It becomes `data-subagent-toggle`, so the view can focus the button again. */
+  sessionId?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      icon={expanded ? "ChevronDown" : "ChevronRight"}
+      aria-expanded={expanded}
+      data-map-children-toggle=""
+      data-subagent-toggle={sessionId}
+      onClick={onToggle}
+      className="pointer-events-auto mt-1 self-start"
+    >
+      {childToggleLabel(count, expanded)}
+    </Button>
+  );
 }
 
 function StateChip({ node }: { node: MapNode }) {
@@ -96,6 +149,15 @@ function StateChip({ node }: { node: MapNode }) {
       <span className={`${CHIP} ${sessionStateChip(node.state, node.quietWait)}`}>
         <Icon name={sessionStateIcon(node.state, node.quietWait)} size={12} />
         {sessionStateWord(node.state, node.quietWait)}
+      </span>
+    );
+  }
+  if (node.kind === "child") {
+    const child = { state: node.runState ?? "" };
+    return (
+      <span className={`${CHIP} ${childStateChip(child)}`}>
+        <Icon name={childStateIcon(child)} size={12} />
+        {childStateWord(child)}
       </span>
     );
   }
@@ -138,6 +200,12 @@ function PlaceLines({ place }: { place: Place }) {
 
 function nodeLabel(node: MapNode): string {
   const place = node.place;
+  if (node.kind === "child") {
+    const parts = [childSpokenName(node.label), childStateWord({ state: node.runState ?? "" })];
+    if (node.model) parts.push(`Model ${node.model}`);
+    if (node.detail) parts.push(node.detail);
+    return `${parts.join(". ")}.`;
+  }
   if (node.kind === "session" && place) return `${node.label}. ${node.detail}. ${placeSentence(place)}`.trim();
   if (node.kind === "machine" && place) {
     return `Machine ${node.label}. ${hostKindWord(place.kind)}. ${node.detail}.`;
@@ -145,59 +213,104 @@ function nodeLabel(node: MapNode): string {
   return `${node.label}. ${node.detail}`.trim();
 }
 
+/** SW-110. The second line of a sub-agent: its own model when it has one, then its age. */
+function ChildLine({ model, age }: { model: string | null | undefined; age: string }) {
+  if (!model && !age) return null;
+  return (
+    <span className="flex min-w-0 max-w-full items-center gap-1.5 text-xs text-muted-foreground">
+      {model ? (
+        <>
+          <Icon name={MODEL_ICON} size={12} className="shrink-0" aria-hidden />
+          <span data-map-child-model="" className="min-w-0 truncate" title={model}>
+            {model}
+          </span>
+        </>
+      ) : null}
+      {model && age ? <span aria-hidden>{"\u00b7"}</span> : null}
+      {age ? <span className="shrink-0">{age}</span> : null}
+    </span>
+  );
+}
+
 function MapNodeCard({ data }: NodeProps<Node<NodeData>>) {
-  const { node, onPick } = data;
+  const { node, onPick, onToggle } = data;
+  const toggle = node.kind === "session" && (node.childCount ?? 0) > 0;
+  const card = (
+    <button
+      type="button"
+      data-map-node={node.kind}
+      aria-label={nodeLabel(node)}
+      onClick={() => onPick(node.id)}
+      style={{ width: node.w, height: toggle ? NODE_H.session : node.h }}
+      className={`pointer-events-auto flex flex-col justify-center gap-0.5 overflow-hidden rounded-md border border-border bg-card px-3 py-1 text-left text-foreground hover:bg-secondary ${
+        node.kind === "quiet" ? "text-xs text-muted-foreground" : ""
+      }`}
+    >
+      {node.kind === "session" ? (
+        <>
+          <span className="truncate text-sm font-medium">{node.label}</span>
+          <span className="flex items-center gap-2">
+            <StateChip node={node} />
+            {node.detail ? (
+              <span className="min-w-0 truncate text-xs text-muted-foreground" title={node.detail}>
+                {node.detail}
+              </span>
+            ) : null}
+          </span>
+          {node.place ? <PlaceLines place={node.place} /> : null}
+        </>
+      ) : node.kind === "child" ? (
+        <>
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium" title={node.label}>
+              {node.label}
+            </span>
+            <StateChip node={node} />
+          </span>
+          <ChildLine model={node.model} age={node.detail} />
+        </>
+      ) : node.kind === "machine" && node.place ? (
+        <>
+          <span className="flex min-w-0 items-center gap-2">
+            <Icon name={hostKindIcon(node.place.kind)} size={14} className="shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
+          </span>
+          <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span className="truncate">{node.detail}</span>
+            {node.place.source ? (
+              <span data-map-source={node.place.source} className="shrink-0">
+                {hostSourceWord(node.place.source)}
+              </span>
+            ) : null}
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
+            <StateChip node={node} />
+          </span>
+          {node.detail ? <span className="truncate text-xs text-muted-foreground">{node.detail}</span> : null}
+        </>
+      )}
+    </button>
+  );
   return (
     <>
       <Handle type="target" position={Position.Left} isConnectable={false} className="!opacity-0" />
-      <button
-        type="button"
-        data-map-node={node.kind}
-        aria-label={nodeLabel(node)}
-        onClick={() => onPick(node.id)}
-        style={{ width: node.w, height: node.h }}
-        className={`pointer-events-auto flex flex-col justify-center gap-0.5 overflow-hidden rounded-md border border-border bg-card px-3 py-1 text-left text-foreground hover:bg-secondary ${
-          node.kind === "quiet" ? "text-xs text-muted-foreground" : ""
-        }`}
-      >
-        {node.kind === "session" ? (
-          <>
-            <span className="truncate text-sm font-medium">{node.label}</span>
-            <span className="flex items-center gap-2">
-              <StateChip node={node} />
-              {node.detail ? (
-                <span className="min-w-0 truncate text-xs text-muted-foreground" title={node.detail}>
-                  {node.detail}
-                </span>
-              ) : null}
-            </span>
-            {node.place ? <PlaceLines place={node.place} /> : null}
-          </>
-        ) : node.kind === "machine" && node.place ? (
-          <>
-            <span className="flex min-w-0 items-center gap-2">
-              <Icon name={hostKindIcon(node.place.kind)} size={14} className="shrink-0" aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
-            </span>
-            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              <span className="truncate">{node.detail}</span>
-              {node.place.source ? (
-                <span data-map-source={node.place.source} className="shrink-0">
-                  {hostSourceWord(node.place.source)}
-                </span>
-              ) : null}
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{node.label}</span>
-              <StateChip node={node} />
-            </span>
-            {node.detail ? <span className="truncate text-xs text-muted-foreground">{node.detail}</span> : null}
-          </>
-        )}
-      </button>
+      {toggle ? (
+        <div style={{ width: node.w, height: node.h }} className="flex flex-col">
+          {card}
+          <SubAgentToggle
+            count={node.childCount ?? 0}
+            expanded={node.expanded === true}
+            sessionId={node.ref}
+            onToggle={() => onToggle(node.ref)}
+          />
+        </div>
+      ) : (
+        card
+      )}
       <Handle type="source" position={Position.Right} isConnectable={false} className="!opacity-0" />
     </>
   );
@@ -257,18 +370,25 @@ function RefitOnWidth({ width, moved }: { width: number; moved: React.RefObject<
 function Canvas({
   map,
   onPick,
+  onToggle,
   nowMs,
   byMachine,
+  expanded,
 }: {
   map: AgentMap;
   onPick: (id: string) => void;
+  onToggle: (sessionId: string) => void;
   nowMs: number;
   byMachine: boolean;
+  expanded: ReadonlySet<string>;
 }) {
   const { resolvedTheme } = useTheme();
   const box = useRef<HTMLDivElement | null>(null);
   const moved = useRef(false);
-  const layout = useMemo(() => layoutAgentMap(map, nowMs, { groupByMachine: byMachine }), [map, nowMs, byMachine]);
+  const layout = useMemo(
+    () => layoutAgentMap(map, nowMs, { groupByMachine: byMachine, expanded }),
+    [map, nowMs, byMachine, expanded],
+  );
   const width = useMemo(() => layout.nodes.reduce((m, n) => Math.max(m, n.x + n.w), 0), [layout]);
   const nodes: Node<NodeData>[] = useMemo(
     () =>
@@ -278,13 +398,13 @@ function Canvas({
         position: { x: node.x, y: node.y },
         width: node.w,
         height: node.h,
-        data: { node, onPick },
+        data: { node, onPick, onToggle },
         draggable: false,
         connectable: false,
         selectable: false,
         focusable: false,
       })),
-    [layout, onPick],
+    [layout, onPick, onToggle],
   );
   const edges: Edge[] = useMemo(
     () =>
@@ -316,8 +436,8 @@ function Canvas({
     >
       <ReactFlowProvider>
         <ReactFlow
-          // A new key refits the view when the switch changes the layout width.
-          key={byMachine ? "by-machine" : "by-person"}
+          // A new key refits the view: the group switch and the open or close of a session change it.
+          key={canvasKey(byMachine, layout.nodes)}
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
@@ -399,6 +519,23 @@ function Outline({
                             {task.title}
                           </ControlLink>
                           <span className={`${CHIP} ${task.chip}`}>{task.word}</span>
+                          {task.children.length > 0 ? (
+                            <ul className="w-full min-w-0 space-y-1 border-l border-border pl-3 pr-3">
+                              {task.children.map((child) => (
+                                <li
+                                  key={child.id}
+                                  data-outline-child=""
+                                  className="flex flex-wrap items-center gap-2 text-xs"
+                                >
+                                  <span className="min-w-0 max-w-full truncate font-medium text-foreground" title={child.name}>
+                                    {child.name}
+                                  </span>
+                                  <span className={`${CHIP} ${child.chip}`}>{child.word}</span>
+                                  <ChildLine model={child.model} age={child.age} />
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
                         </li>
                       ))}
                       {session.quiet ? (
@@ -521,6 +658,22 @@ function NodeFacts({
       </dl>
     );
   }
+  if (node.kind === "child") {
+    const child = map.children.find((c) => c.child_id === node.ref);
+    const run = map.runs.find((r) => r.run_id === node.runId);
+    if (!child || !run) return null;
+    return (
+      <div className="space-y-3" data-map-facts="child">
+        <dl className="space-y-2">
+          <Fact term="State">{childStateWord(child)}</Fact>
+          {child.model ? <Fact term="Model">{child.model}</Fact> : null}
+          {child.age !== null ? <Fact term="Started">{childStartedWhen(child.age, nowMs)}</Fact> : null}
+          <Fact term="Task">{run.title}</Fact>
+        </dl>
+        <OpenTask taskId={run.task_id} onOpenTask={onOpenTask} />
+      </div>
+    );
+  }
   if (node.kind === "task") {
     const run = map.runs.find((r) => r.run_id === node.ref);
     if (!run) return null;
@@ -569,10 +722,24 @@ export function AgentMapView({
   const [pickedId, setPickedId] = useState<string | null>(null);
   // The switch is local: it is a view of the map, not a setting that persists.
   const [byMachine, setByMachine] = useState(false);
+  // SW-110. The sessions whose sub-agents show. Local to the view: no store and no URL.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const root = useRef<HTMLDivElement | null>(null);
+  // The session whose toggle the member pressed. Only a press sets it, so a first load or a re-poll never moves focus.
+  const pendingFocus = useRef<string | null>(null);
+  const toggle = useCallback((sessionId: string) => {
+    pendingFocus.current = sessionId;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }, []);
   const map = read.kind === "ready" ? read.map : null;
   const layout = useMemo(
-    () => (map ? layoutAgentMap(map, nowMs, { groupByMachine: byMachine }) : null),
-    [map, nowMs, byMachine],
+    () => (map ? layoutAgentMap(map, nowMs, { groupByMachine: byMachine, expanded }) : null),
+    [map, nowMs, byMachine, expanded],
   );
   const picked = layout?.nodes.find((n) => n.id === pickedId) ?? null;
   const open = useCallback(
@@ -586,9 +753,29 @@ export function AgentMapView({
   useEffect(() => {
     if (pickedId && !picked) setPickedId(null);
   }, [pickedId, picked]);
+  // The new key remounts the canvas and destroys the focused button. Focus the same toggle again once the new canvas draws it.
+  useEffect(() => {
+    const id = pendingFocus.current;
+    if (id === null) return;
+    let frame = 0;
+    let tries = 0;
+    const seek = () => {
+      const button = root.current?.querySelector<HTMLElement>(subAgentToggleSelector(id));
+      if (button) {
+        button.focus();
+        pendingFocus.current = null;
+      } else if (tries++ < 30) {
+        frame = requestAnimationFrame(seek);
+      } else {
+        pendingFocus.current = null;
+      }
+    };
+    frame = requestAnimationFrame(seek);
+    return () => cancelAnimationFrame(frame);
+  }, [expanded]);
 
   return (
-    <div data-agent-map="" className="flex min-h-0 flex-1 flex-col">
+    <div ref={root} data-agent-map="" className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-3 py-2 text-xs text-muted-foreground">
         <label className="flex items-center gap-2">
           <Switch checked={showQuiet} onChange={onShowQuiet} label={SHOW_QUIET_LABEL} />
@@ -614,7 +801,14 @@ export function AgentMapView({
         ) : phone ? (
           <Outline map={map} nowMs={nowMs} onOpenTask={open} />
         ) : (
-          <Canvas map={map} onPick={setPickedId} nowMs={nowMs} byMachine={byMachine} />
+          <Canvas
+            map={map}
+            onPick={setPickedId}
+            onToggle={toggle}
+            nowMs={nowMs}
+            byMachine={byMachine}
+            expanded={expanded}
+          />
         )
       ) : (
         <p role="alert" data-agent-map-error="" className="p-3 text-sm text-foreground">

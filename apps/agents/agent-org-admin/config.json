@@ -1,0 +1,32 @@
+{
+  "name": "Organization Members",
+  "app": "chat",
+  "description": "The owner of the org-admin tool pack. It holds the tools of the Members tab of Organisation: list the members and the sign-in requests that wait, set the roles of a member, suspend or reactivate a member, and approve or deny a sign-in request. Each change shows one card first. Each tool calls the admin routes as the member, and the routes decide each right. The main assistant loads these tools in a turn about the members. This agent is not a second assistant, and a hand-off to it is refused.",
+  "version": "0.1.0",
+  "author": "Metorite",
+  "tags": [
+    "admin",
+    "members",
+    "roles"
+  ],
+  "integrations": [],
+  "optional_integrations": [],
+  "runtime": "maf",
+  "sharing": {
+    "instancing": "shared",
+    "visibility": "organization",
+    "shareable": false,
+    "outputs_visibility": "instance"
+  },
+  "icon": "Users",
+  "category": "admin",
+  "tool_scope": [
+    "ask_questions"
+  ],
+  "own_tool_scope": [
+    "answer_access_request",
+    "list_members",
+    "set_member_roles",
+    "set_member_status"
+  ]
+}
