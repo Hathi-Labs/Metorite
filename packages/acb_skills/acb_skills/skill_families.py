@@ -1058,18 +1058,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # PAR-4a (rung 3, task 3107) adds the groups, the custom roles, the
     # overrides of a member, the removal preview and the name of the org
     # (org_admin_more_tools.py). Fence: test_org_admin_more_tools.py.
+    # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
+    # the same pack (integrations_admin_tools.py). Fence:
+    # test_integrations_admin_tools.py.
     "org-admin": {
-        "label": "Organization members",
+        "label": "Organization members and Integrations",
         "summary": (
             "Manage the members, the sign-in requests, the groups, the roles, the access "
-            "of a member and the name of the organization."
+            "of a member and the name of the organization, or read, test and disconnect "
+            "the Integrations, the agent connections and the MCP servers."
         ),
         "description": (
-            "A tool pack: the tools of Organisation, for the main "
-            "assistant to load when a turn asks about the members of the organization. "
-            "Each tool calls the admin routes as the member, so a member without the "
-            "admin right gets a refusal. Each change shows one card first. A run loads a "
-            "pack only where tool packs are on, so until then this switch has no effect."
+            "A tool pack: the tools of Organisation and of the Integrations app, for the "
+            "main assistant to load when a turn asks about the members or the "
+            "Integrations of the organization. Each tool calls the routes as the member, "
+            "so a member without the right gets a refusal. Each change shows one card "
+            "first. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
         ),
         "tools": (
             "list_members",
@@ -1089,6 +1094,13 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "set_member_overrides",
             "preview_member_removal",
             "rename_org",
+            "read_integrations",
+            "read_agent_access",
+            "probe_integration",
+            "discover_api_setup",
+            "revoke_agent_connection",
+            "disconnect_integration",
+            "set_mcp_server",
         ),
         "owner": "org-admin",
         "core": False,

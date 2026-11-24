@@ -53,6 +53,30 @@ counts that right too. So the chat never gives a role or a member more than
 the caller holds. The Organisation page has no such check, and the R8 test
 shows the difference.
 
+**PAR-6a (task 3109) is BUILT, 2026-11-24, and it ships dark.** Seven tools
+join the pack `org-admin` (`acb_skills/integrations_admin_tools.py`). The reads
+are `read_integrations` and `read_agent_access`. `probe_integration` tests a
+service or an MCP server, and `discover_api_setup` proposes the setup of an
+API. The writes are `revoke_agent_connection`, `disconnect_integration` and
+`set_mcp_server`.
+
+Each tool calls the Integrations routes as the member. Each write of the org
+reads `GET /auth/me` first, so a member without `integrations:manage` gets
+plain words and no card. Each write then shows one card. A member connection
+gets plain words and no card.
+
+`set_mcp_server` never lowers safety. It refuses
+always confirm off and the read-only key on, with no card and no request, and
+names the Integrations page. After MCP-NC1, always confirm is the only card
+that a server tool shows in a member chat.
+
+The two probes and the proposal leave the org, so a held chat holds them off.
+A held chat holds off the three writes too. No tool sends the decision of an
+app request. PAR-6a paid 17 debt rows, and the MCP add became a `secret`
+exemption, so the integrations ceiling went from 22 to 4. Fences:
+`tests/unit/test_integrations_admin_tools.py` and
+`tests/unit/test_integrations_admin_tools_r8.py` (R8).
+
 **PAR-8a (task 3903, rung 5) is BUILT, 2026-11-22, dark.** It pays the 18 debt
 rows of Workflows, so the Workflows ceiling is 0. Seven tools join the pack
 `studio-workflows`. They read the runs of a workflow, check a draft and read
@@ -434,9 +458,10 @@ task of each wave.
 | 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | To do (the purge waits for the owner) |
 | 1c | PAR-4d: the seats | 3936 | HIGH | To do |
 | 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | To do |
-| 3 | PAR-6: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | To do |
+| 3 | PAR-6a: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | Built, dark |
 | 4 | The demo of rung 3 | 3110 | none | To do |
 | 5 | PAR-4b: the billing reads and the two order writes | 3902 | HIGH | Waits for the owner (§7) |
+| 6 | PAR-6b: the grant change, the decision, the plugin install, the custom API, an MCP add by URL only, the MCP switches that lower safety | 3932 | HIGH | Waits for the owner |
 
 - **Demo (task 3110).** An admin does the Admin, Settings and Integrations jobs
   from the chat alone. The seat part of the demo needs the Customer Console
@@ -456,6 +481,19 @@ task of each wave.
 - **Order.** PAR-5 is STANDARD, so it can run while PAR-4 waits for the owner.
 - **Row 5.** The admin debt holds 14 rows of billing and seats. PAR-4 names the
   seats only. An order is money, so the owner decides first.
+- **Row 3 and row 6.** PAR-6a built the tools of row 3 in the pack `org-admin`.
+  Four debt rows stay for PAR-6b (task 3932), and each waits for an owner
+  decision. A change of a grant widens what an outside agent reaches. The
+  decision of an app request stays on its card, because the chat acts as the
+  member and would approve its own change. A plugin install and a custom API
+  bring outside definitions in. The MCP add is a `secret` exemption now,
+  because its body carries headers and env vars. An add by URL only, with no
+  secret, is the open question of PAR-6b.
+- **Row 6, the MCP switches.** The owner decides if the chat may turn always
+  confirm off, or the read-only key on, behind a card. Each takes away the card
+  of each tool of that server in a member chat (MCP-NC1). The server's own
+  text reaches the chat. Until the owner decides, `set_mcp_server` refuses
+  both, and a person does them on the Integrations page.
 - **The owner does this.** He approves the previews, and the merge of each
   HIGH slice.
 
@@ -551,8 +589,8 @@ he approves the merge.
 **Open for the owner.**
 
 1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2a merges and before
-   the demo of rung 1. Say which pack holds the tools of PAR-5 and PAR-6: a new
-   slug needs its own line before the demo of rung 3.
+   the demo of rung 1. Say which pack holds the tools of PAR-5. A new slug
+   needs its own line before the demo of rung 3. PAR-6a uses `org-admin`.
    Add `studio-workflows` before the demo of rung 5 (task 3905). It holds the
    run of a workflow and the other tools of PAR-8a.
    Set `HOME_TOOLS_ORGS` before the demo of rung 5 (task 3905). It holds the
