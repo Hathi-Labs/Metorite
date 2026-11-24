@@ -185,7 +185,7 @@ def app_of(path: str) -> str | None:
 #: The epic sets the order of the waves after it.
 WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112, 3922, 3923)),
-    "P-2": ("Email", ("email",), (3111,)),
+    "P-2": ("Email", ("email",), (3111, 3919)),
     "P-3": ("CRM", ("crm",), (3678,)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
@@ -344,6 +344,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/email/rules/history/{}/approve": "resolve_execution",
     "POST /api/email/rules/history/{}/reject": "resolve_execution",
     "POST /api/email/rules/history/{}/undo": "resolve_execution",
+    # P-2c (task 3919): forget_pattern(action="review") approves or rejects one pattern.
+    "POST /api/email/rules/patterns/review": "forget_pattern",
     "POST /api/email/rules/install-presets": "install_default_rules",
     "POST /api/email/rules/process-past": "run_rules",
     "POST /api/email/rules/reset": "install_default_rules",
@@ -583,6 +585,22 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "GET /api/email/messages/{}/inline": (
         "download",
         "An inline picture of a mail for the reading pane. The chat reads the text of the mail.",
+    ),
+    # P-2c (task 3919): three buttons on the chat's own draft and reply cards.
+    "POST /api/email/drafts/save": (
+        "chat",
+        "The Save to Drafts button of the chat's own draft card, which draft_reply raised. The "
+        "member answers that card. The gateway route says that it powers the chat's draft card.",
+    ),
+    "POST /api/email/reply-card/bcc": (
+        "chat",
+        "The Bcc row of the chat's own reply card, which compose_reply raised. The member types "
+        "an answer on that card. The gateway route says that no tool calls it.",
+    ),
+    "POST /api/email/reply-card/discard": (
+        "chat",
+        "The Discard button of the chat's own reply card, which compose_reply raised. The member "
+        "answers that card. The gateway route says that the model never calls it.",
     ),
     "GET /api/email/reply-card/draft-state": (
         "stream",
@@ -921,11 +939,11 @@ DEBT: dict[str, str] = {
     "GET /api/email/search": "P-2",
     "POST /api/email/accounts/{}/backfill": "P-2",
     "POST /api/email/accounts/{}/storage/remove-older": "P-2",
-    "POST /api/email/drafts/save": "P-2",
-    "POST /api/email/reply-card/bcc": "P-2",
-    "POST /api/email/reply-card/discard": "P-2",
+    # P-2c (task 3919) left it here. create_rules_from_prompt does the same act
+    # through generate/preview and rules/batch, behind its card. /rules/generate
+    # runs the model again and saves what it makes, so the card would not show
+    # the saved rules. The owner accepts the debt, or the gateway changes.
     "POST /api/email/rules/generate": "P-2",
-    "POST /api/email/rules/patterns/review": "P-2",
     # Paid by SG-6 (task 2182): the chat sets a signature image from an image
     # the member attaches.
     "POST /api/email/signature/images": "P-2",
@@ -1237,7 +1255,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
     "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
-    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111.
+    "email": 10,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
