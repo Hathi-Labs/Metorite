@@ -1289,7 +1289,7 @@ def _plan_row(p: Any) -> dict[str, Any] | None:
     """One plan of the seat grid, with the counts of the Console as they are."""
     if not isinstance(p, dict) or not isinstance(p.get("plan_slug"), str):
         return None
-    return {"plan": p["plan_slug"][:64], "purchased": _count(p.get("purchased")),
+    return {"plan": str(p["plan_slug"])[:64], "purchased": _count(p.get("purchased")),
             "assigned": _count(p.get("assigned")), "available": _count(p.get("available")),
             "oversubscribed": p.get("oversubscribed") is True}
 
