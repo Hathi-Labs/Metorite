@@ -1281,8 +1281,9 @@ _ALREADY_REMOVED = "{email} is removed already. Nothing changed."
 _REMOVE_SENDS_WORDS = ("Queued sends: each mail send that waits in the member's name is "
                        "cancelled.")
 _PURGE_UNTYPED = ("A purge deletes {email} for good, so the chat needs that exact address in "
-                  "your own words of this message. Type the address, and ask again. No card "
-                  "shows and nothing changed.")
+                  "your own words of this message. Type the address, and ask again. If the "
+                  "address holds an accent mark the chat cannot check, purge it on the Members "
+                  "page. No card shows and nothing changed.")
 _PURGE_NO_PERSON = ("A purge deletes a member for good, so only a member who types the "
                     "request in the chat can start it. This run has no such member. No card "
                     "shows and nothing changed.")
@@ -1408,7 +1409,8 @@ async def remove_member(email: str) -> dict[str, Any]:
         decision, _ = await oa._decide(
             f"Remove {target}?", f"{now} to removed",
             "Approve to remove this member. The member cannot sign in, and loses each role. "
-            "The member record stays, and nothing is deleted. Reject to keep the member.",
+            "The member record stays. Their assistant profile and their chat summaries are "
+            "cleared, and a reactivation does not bring them back. Reject to keep the member.",
             [("member", f"Member: {target} {oa._fence(row.get('display_name'))}"),
              ("status", f"Status now: {now}. After: removed."),
              ("roles", f"Roles now: {oa._roles_text(row.get('roles'))}. After: none."),
