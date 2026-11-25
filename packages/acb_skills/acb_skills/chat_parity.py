@@ -1090,7 +1090,6 @@ DEBT: dict[str, str] = {
     "POST /api/people/{}/absences": "P-5",
     "POST /api/people/{}/avatar": "P-5",
     "POST /api/people/{}/resume": "P-5",
-    "POST /api/tasks/people": "P-5",
     "POST /api/tasks/people/{}/resume": "P-5",
     "PUT /api/people/schedule": "P-5",
     "PUT /api/people/{}/credentials": "P-5",
@@ -1288,7 +1287,7 @@ DEBT_CEILING: dict[str, int] = {
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
-    "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
+    "people": 12,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays.
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
