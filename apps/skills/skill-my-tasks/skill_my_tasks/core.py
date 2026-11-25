@@ -966,6 +966,453 @@ async def my_tasks_enrich(item_id: str) -> str:
             + "\n".join(lines) + f"\n{_PROPOSAL_ONLY}")
 
 
+# ── A task from a mail (P-1b, task 3922) ─────────────────────────────────────
+#
+# The "Add to Tasks" popup of the Email app (`capture_email.py`), in the chat
+# (`chat_parity.md` §6.4). Two tools pay six parity rows:
+#
+# * `my_tasks_draft_from_mail` READS. It asks for the default draft of a mail
+#   (`/preview`), the AI draft (`/enhance`), or the AI check of a reply that
+#   the member sent (`/from-reply/detect`). It makes no task.
+# * `my_tasks_capture_from_mail` WRITES one task, after ONE card. It sends the
+#   draft (`/create` or `/from-reply/create`), or it lets the AI draft and file
+#   the task in one step (`/capture/from-email`, the one-click door).
+#
+# Mail text is text that a stranger wrote. So each answer puts the sender, the
+# subject, the draft and the similar tasks in one `UntrustedFrame` block, and
+# each answer marks the chat (`egress.mark_untrusted_answer`). The card starts
+# with the mailbox line of RX-1 (`skill_projects.writes.mailbox_line`). A held
+# chat holds the write off twice: the pack builder leaves it out
+# (`egress.HELD_OFF_PACK_WRITES`), and the tool refuses when the chat turns
+# held in the run (`egress.chat_is_held`). The write joins the kind
+# `task.create` (`tool_packs._KIND_TOOLS`). No tool takes an org or a member:
+# the run binding gives the member (R5), and the gateway checks that the
+# mailbox is the member's own. Fence: tests/unit/test_my_tasks_p1b_tools.py.
+
+_CAPTURE_EMAIL = "/tasks/capture/from-email"
+_CAPTURE_EMAIL_PREVIEW = "/tasks/capture/from-email/preview"
+_CAPTURE_EMAIL_ENHANCE = "/tasks/capture/from-email/enhance"
+_CAPTURE_EMAIL_CREATE = "/tasks/capture/from-email/create"
+_CAPTURE_REPLY_DETECT = "/tasks/capture/from-reply/detect"
+_CAPTURE_REPLY_CREATE = "/tasks/capture/from-reply/create"
+
+#: `capture_email._CAPTURE_DISPOSITIONS`. The fence holds the two sets equal.
+MAIL_DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "CALENDAR", "SOMEDAY")
+#: The dispositions that keep energy, the estimate and the steps
+#: (`capture_email._route_and_persist`, `actionable`).
+_ACTIONABLE = ("NEXT", "CALENDAR")
+_ENERGIES = ("high", "medium", "low")
+#: The caps of the route: a title of 200 characters (`_clean_title`), and the
+#: reply body that the detect gate reads (3500).
+MAIL_TITLE_MAX = 200
+MAIL_NOTES_MAX = 2000
+MAIL_REPLY_MAX = 3500
+MAIL_STEPS_MAX = 12
+#: The caps of the stranger text in one answer.
+_MAIL_LINE_MAX = 200
+_MAIL_SIMILAR_MAX = 5
+#: The label of the one frame block of each answer.
+MAIL_FRAME_LABEL = "MAIL TASK"
+_MAIL_NOTE = (
+    "The sender, the subject and each draft field come from a mail that a "
+    "stranger can write. The AI draft read that mail too."
+)
+#: The line after each draft: nothing changed, and how a change happens.
+_MAIL_DRAFT_ONLY = (
+    "This is a draft. Nothing changed. Show it to the member. After the member "
+    "agrees, call my_tasks_capture_from_mail with the fields that the member "
+    "wants. It shows the member one card first."
+)
+#: The answer of the write in a held chat.
+MAIL_HELD = (
+    "No task was made. This chat read mail from outside senders, so it makes no "
+    "task from a mail. Tell the member to use Add to Tasks on the mail in the "
+    "Email app."
+)
+#: Where a task from a mail lands, for the mailbox line of the card.
+_MAIL_PLACE = "your own task list"
+
+
+def _uuid_refusal(value: str, name: str) -> str | None:
+    """Plain words for an id that is not a UUID, or None. The route reads the id
+    in SQL, so a bad id must not reach it."""
+    import uuid
+
+    try:
+        uuid.UUID(str(value or "").strip())
+    except ValueError:
+        return f"{name} is the id from the mail tools, a UUID. Nothing changed."
+    return None
+
+
+def _mail_text(value: Any, limit: int = _MAIL_LINE_MAX) -> str:
+    """Stranger text as one line of at most *limit* characters."""
+    return _stranger_text(value, limit)
+
+
+def _draft_lines(draft: dict[str, Any]) -> list[str]:
+    """The lines of one draft (`CaptureDraftModel`), each one line."""
+    lines = [f"Title: {_mail_text(draft.get('title'))}"]
+    if draft.get("notes"):
+        lines.append(f"Notes: {_mail_text(draft.get('notes'), 500)}")
+    lines.append(f"Disposition: {_mail_text(draft.get('disposition') or 'INBOX', 20)}")
+    for key, label in (("next_action", "Next action"), ("assignee_name", "Assignee"),
+                       ("due_at", "Due"), ("defer_until", "Defer until"),
+                       ("context", "Context"), ("energy", "Energy")):
+        if draft.get(key):
+            lines.append(f"{label}: {_mail_text(draft.get(key), 120)}")
+    if draft.get("time_estimate_mins"):
+        lines.append(f"Estimate: {_mail_text(draft.get('time_estimate_mins'), 12)} min")
+    steps = [s for s in (draft.get("subtasks") or []) if str(s).strip()]
+    if steps:
+        lines.append("Steps: " + " | ".join(
+            _mail_text(s, 120) for s in steps[:MAIL_STEPS_MAX]))
+    return lines
+
+
+def _task_ref(task: Any, head: str) -> list[str]:
+    """One line for a task of the member: the head, the title and the id."""
+    if not isinstance(task, dict) or not task.get("id"):
+        return []
+    return [f"{head}: {_mail_text(task.get('title'))} "
+            f"({_mail_text(task.get('disposition') or 'INBOX', 20)}, "
+            f"id {_mail_text(task.get('id'), 40)})"]
+
+
+def _similar_lines(similar: Any) -> list[str]:
+    rows = [s for s in (similar or []) if isinstance(s, dict)][:_MAIL_SIMILAR_MAX]
+    return [line for s in rows
+            for line in _task_ref(s, f"Similar task ({_mail_text(s.get('reason'), 20)})")]
+
+
+async def _mail_answer(head: str, body: list[str], tail: str) -> str:
+    """The answer of a mail tool: *head*, one frame block of *body*, *tail*. It
+    marks the chat first, as each read of stranger text does."""
+    from acb_skills.egress import mark_untrusted_answer
+    from acb_skills.untrusted import UntrustedFrame
+
+    await mark_untrusted_answer()
+    frame = UntrustedFrame.new()
+    out = [head, frame.note(_MAIL_NOTE), frame.wrap(MAIL_FRAME_LABEL, "\n".join(body))]
+    if tail:
+        out.append(tail)
+    return "\n".join(out)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_draft_from_mail(
+    account_id: str, email_id: str = "", ai: bool = False, thread_id: str = "",
+    reply_body: str = "", reply_subject: str = "", reply_to_message_id: str = "",
+    include_thread: bool = False,
+) -> str:
+    """Draft a task from a mail of the member, or from a reply that the member
+    sent. Read only: it makes no task. Show the draft to the member. Make the
+    task with my_tasks_capture_from_mail only after the member agrees.
+
+    For a mail, pass account_id and email_id. ai=False gives the quick default
+    draft from the subject, and says if the mail is already a task. ai=True lets
+    the AI read the mail and its thread, and draft the title, the disposition,
+    a due date and a teammate.
+
+    For a reply that the member sent, pass account_id, thread_id and
+    reply_body (the member's own words of the reply). The AI says if the reply
+    promises a task, and drafts it.
+
+    Args:
+        account_id: The id of the member's mailbox (from the mail tools).
+        email_id: The id of the mail (from the mail tools).
+        ai: True for the AI draft of the mail.
+        thread_id: The thread of the reply that the member sent.
+        reply_body: The words of that reply, as the member wrote them.
+        reply_subject: The subject of that reply.
+        reply_to_message_id: The provider id of the mail that the reply answers.
+        include_thread: True to let the AI read the whole thread of the reply.
+    """
+    refusal = _uuid_refusal(account_id, "account_id")
+    if refusal:
+        return refusal
+    if bool(email_id.strip()) == bool(thread_id.strip()):
+        return ("Pass email_id for a mail, or thread_id with reply_body for a "
+                "reply that the member sent. Pass one of the two. Nothing changed.")
+    if email_id.strip():
+        refusal = _uuid_refusal(email_id, "email_id")
+        if refusal:
+            return refusal
+        body = {"account_id": account_id.strip(), "email_id": email_id.strip()}
+        if ai:
+            p = await _request("POST", _CAPTURE_EMAIL_ENHANCE, json=body) or {}
+            lines = _draft_lines(p.get("draft") or {})
+            if not p.get("used_llm"):
+                lines.append("The AI was not available. This is the quick default draft.")
+            return await _mail_answer("The AI draft of a task from this mail:", lines,
+                                      _MAIL_DRAFT_ONLY)
+        p = await _request("POST", _CAPTURE_EMAIL_PREVIEW, json=body) or {}
+        lines = [f"From: {_mail_text(p.get('from_name'), 120)}",
+                 f"Subject: {_mail_text(p.get('subject'))}",
+                 *_task_ref(p.get("already_captured"), "Already a task"),
+                 *_draft_lines(p.get("draft") or {}),
+                 *_similar_lines(p.get("similar"))]
+        tail = _MAIL_DRAFT_ONLY
+        if p.get("already_captured"):
+            tail = ("This mail is already a task. A second capture gives back that "
+                    "task and makes no new one. " + _MAIL_DRAFT_ONLY)
+        return await _mail_answer("The default draft of a task from this mail:", lines,
+                                  tail)
+    if not reply_body.strip():
+        return ("Pass reply_body, the words of the reply that the member sent. "
+                "Nothing changed.")
+    if len(reply_body) > MAIL_REPLY_MAX:
+        return (f"reply_body is longer than {MAIL_REPLY_MAX} characters. Pass the "
+                "part of the reply that holds the promise. Nothing changed.")
+    p = await _request("POST", _CAPTURE_REPLY_DETECT, json={
+        "account_id": account_id.strip(), "thread_id": thread_id.strip(),
+        "body": reply_body, "subject": reply_subject.strip()[:300],
+        "reply_to_message_id": reply_to_message_id.strip() or None,
+        "include_thread": bool(include_thread),
+    }) or {}
+    if p.get("already_captured"):
+        return await _mail_answer(
+            "This thread already has a task from a reply of the member:",
+            _task_ref(p.get("already_captured"), "Already a task"),
+            "Nothing changed. A second capture gives back that task.")
+    if not p.get("is_commitment"):
+        return "The reply promises no task, or the AI was not available. Nothing changed."
+    lines = [*_draft_lines(p.get("draft") or {}), *_similar_lines(p.get("similar"))]
+    return await _mail_answer("The reply promises a task. The AI draft:", lines,
+                              _MAIL_DRAFT_ONLY)
+
+
+def _when_refusal(value: str, name: str) -> str | None:
+    """Plain words for a date that the route cannot read, or None."""
+    if not value:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return f"{name} is a date, YYYY-MM-DD, or an ISO 8601 time. Nothing changed."
+    return None
+
+
+def _mail_draft(
+    title: str, notes: str, disposition: str, next_action: str, assignee_name: str,
+    due_at: str, defer_until: str, context: str, energy: str, time_estimate_mins: int,
+    steps: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(draft, None)``: the body of `CaptureDraftModel`, exactly as the card
+    shows it. Or ``(None, refusal)``. A field that the route would drop with no
+    word is refused here, so the card never shows a field that is not written."""
+    title = " ".join(title.split())
+    if not title:
+        return None, "Pass the title of the task. Nothing changed."
+    if len(title) > MAIL_TITLE_MAX:
+        return None, f"The title is longer than {MAIL_TITLE_MAX} characters. Nothing changed."
+    if len(notes) > MAIL_NOTES_MAX:
+        return None, f"The notes are longer than {MAIL_NOTES_MAX} characters. Nothing changed."
+    disp = disposition.strip().upper() or "INBOX"
+    if disp not in MAIL_DISPOSITIONS:
+        return None, (f"disposition is one of {', '.join(MAIL_DISPOSITIONS)}, "
+                      f"not {_data(disposition)}. Nothing changed.")
+    ctx = context.strip()
+    if ctx and (not ctx.startswith("@") or len(ctx) > 60 or len(ctx.split()) > 1):
+        return None, "context is one word that starts with @, as @computer. Nothing changed."
+    level = energy.strip().lower()
+    if level and level not in _ENERGIES:
+        return None, "energy is high, medium or low. Nothing changed."
+    if time_estimate_mins < 0 or time_estimate_mins > 100000:
+        return None, "time_estimate_mins is 0 (none) or a count of minutes. Nothing changed."
+    rows = [" ".join(s.split()) for s in steps.splitlines()]
+    rows = [s for s in rows if s]
+    if len(rows) > MAIL_STEPS_MAX or any(len(s) > MAIL_TITLE_MAX for s in rows):
+        return None, (f"Pass at most {MAIL_STEPS_MAX} steps of at most "
+                      f"{MAIL_TITLE_MAX} characters each. Nothing changed.")
+    if disp not in _ACTIONABLE and (level or time_estimate_mins or rows):
+        return None, ("Energy, the estimate and the steps stay only on a NEXT or a "
+                      "CALENDAR task. Leave them out, or pick one of the two. "
+                      "Nothing changed.")
+    for value, name in ((due_at.strip(), "due_at"), (defer_until.strip(), "defer_until")):
+        refusal = _when_refusal(value, name)
+        if refusal:
+            return None, refusal
+    action = " ".join(next_action.split())
+    who = " ".join(assignee_name.split())
+    if len(action) > 300 or len(who) > 120:
+        return None, ("next_action holds at most 300 characters, and assignee_name "
+                      "at most 120. Nothing changed.")
+    return {
+        "title": title, "notes": notes.strip(), "disposition": disp,
+        "next_action": action, "assignee_name": who,
+        "due_at": due_at.strip(), "defer_until": defer_until.strip(), "context": ctx,
+        "energy": level, "time_estimate_mins": time_estimate_mins or None,
+        "subtasks": rows,
+    }, None
+
+
+def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
+    """The rows of the card: each field of *draft* that the write sends."""
+    rows = [("title", f"title: {_data(draft['title'])}"),
+            ("disposition", f"disposition: {draft['disposition']}")]
+    for key in ("next_action", "due_at", "defer_until", "context", "energy"):
+        if draft.get(key):
+            rows.append((key, f"{key.replace('_', ' ')}: {_data(draft[key])}"))
+    if draft.get("time_estimate_mins"):
+        rows.append(("estimate", f"estimate: {draft['time_estimate_mins']} min"))
+    if draft.get("subtasks"):
+        rows.append(("steps", "steps: " + " | ".join(_data(s) for s in draft["subtasks"])))
+    if draft.get("assignee_name"):
+        rows.append(("assignee", (
+            f"assignee: {_data(draft['assignee_name'])}. Only a person of your people "
+            "list counts. A WAITING task then waits on that person.")))
+    if draft.get("notes"):
+        rows.append(("notes", f"notes: {_data(draft['notes'])}"))
+    return rows
+
+
+async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> str | None:
+    """Show ONE card and wait. None when the member approved. Else the words
+    of the tool: the chat is held, the card did not fit, or the card did
+    nothing (HRD-7).
+
+    The first line is the mailbox line of RX-1. The card binds the run's own
+    member (PZ-32), never an input."""
+    from acb_common.card_body import CardWontFit, card_body
+    from acb_skills import ask_tools
+    from acb_skills.egress import chat_is_held
+
+    if await chat_is_held():
+        return MAIL_HELD
+    try:
+        from skill_projects.writes import mailbox_line
+    except ImportError:
+        return ("This card needs the Projects skill, and it is not installed. "
+                "Nothing changed.")
+    try:
+        context = str(card_body(mailbox_line(_MAIL_PLACE), rows))
+    except CardWontFit as exc:
+        return str(exc)
+    answer = await ask_tools.request_confirmation(
+        title, detail, context, non_interactive_default="deny", close_on_steer=True,
+        responder=_current_user_email() or None, fenced=True)
+    if answer is True:
+        return None
+    return ask_tools.card_not_done_text("No task was made.")
+
+
+async def _made(p: dict[str, Any]) -> str:
+    """The answer after a write: the task that the route gave back."""
+    from acb_skills.ask_tools import act_ran
+
+    item = p.get("item") if isinstance(p.get("item"), dict) else {}
+    lines = [f"Title: {_mail_text(item.get('title'))}",
+             f"Disposition: {_mail_text(p.get('disposition') or 'INBOX', 20)}"]
+    if p.get("assignee_name"):
+        lines.append(f"Assignee: {_mail_text(p.get('assignee_name'), 120)}")
+    if p.get("due_at"):
+        lines.append(f"Due: {_mail_text(p.get('due_at'), 40)}")
+    if item.get("id"):
+        lines.append(f"Task id: {_mail_text(item.get('id'), 40)}")
+    if not p.get("created"):
+        return await _mail_answer(
+            "This mail is already a task. No new task was made:", lines, "")
+    act_ran()
+    return await _mail_answer("Made one task from the mail:", lines, "")
+
+
+@_annotate_risk(idempotent=False, open_world=False)
+async def my_tasks_capture_from_mail(
+    account_id: str, email_id: str = "", thread_id: str = "", title: str = "",
+    notes: str = "", disposition: str = "", next_action: str = "",
+    assignee_name: str = "", due_at: str = "", defer_until: str = "", context: str = "",
+    energy: str = "", time_estimate_mins: int = 0, steps: str = "",
+    reply_subject: str = "", reply_to_message_id: str = "",
+) -> str:
+    """Make ONE task from a mail of the member, or from a reply that the member
+    sent. It shows the member one card first, and makes nothing without the
+    click. A mail or a thread that is already a task gives back that task.
+
+    For a mail, pass account_id and email_id. With a title, the task takes the
+    fields that you pass (draft them first with my_tasks_draft_from_mail). With
+    no title, the AI reads the mail and picks every field itself, a teammate
+    too. Use that only when the member asks for it.
+
+    For a reply that the member sent, pass account_id, thread_id and a title.
+
+    Args:
+        account_id: The id of the member's mailbox (from the mail tools).
+        email_id: The id of the mail (from the mail tools).
+        thread_id: The thread of the reply that the member sent.
+        title: The title of the task. Empty: the AI drafts every field (a mail only).
+        notes: The notes of the task.
+        disposition: INBOX, NEXT, WAITING, CALENDAR or SOMEDAY (default INBOX).
+        next_action: The first step.
+        assignee_name: A teammate, by the name in the people list. With WAITING,
+            the task waits on that person.
+        due_at: The due date, YYYY-MM-DD.
+        defer_until: The date to show the task again, YYYY-MM-DD.
+        context: A context that starts with @, as @computer.
+        energy: high, medium or low (NEXT or CALENDAR only).
+        time_estimate_mins: The estimate in minutes, 0 for none (NEXT or CALENDAR only).
+        steps: The steps of the task, one a line (NEXT or CALENDAR only).
+        reply_subject: The subject of the reply (a reply only).
+        reply_to_message_id: The provider id of the mail that the reply answers.
+    """
+    refusal = _uuid_refusal(account_id, "account_id")
+    if refusal:
+        return refusal
+    if bool(email_id.strip()) == bool(thread_id.strip()):
+        return ("Pass email_id for a mail, or thread_id for a reply that the member "
+                "sent. Pass one of the two. Nothing changed.")
+    if email_id.strip():
+        refusal = _uuid_refusal(email_id, "email_id")
+        if refusal:
+            return refusal
+    ids = {"account_id": account_id.strip()}
+    if email_id.strip() and not title.strip():
+        given = [name for name, value in (
+            ("notes", notes), ("disposition", disposition), ("next_action", next_action),
+            ("assignee_name", assignee_name), ("due_at", due_at),
+            ("defer_until", defer_until), ("context", context), ("energy", energy),
+            ("steps", steps)) if value.strip()]
+        if given or time_estimate_mins:
+            return ("Pass a title with the other fields. With no title, the AI picks "
+                    "every field itself. Nothing changed.")
+        stop = await _mail_card(
+            "Make a task from this mail with AI?",
+            "The AI reads the mail and picks every field.",
+            [("how", "fields: the AI picks the title, the disposition, the dates "
+                     "and the steps from the mail."),
+             ("assignee", "assignee: the AI may name a person of your people list. "
+                          "A WAITING task then waits on that person.")])
+        if stop:
+            return stop
+        p = await _request("POST", _CAPTURE_EMAIL,
+                           json={**ids, "email_id": email_id.strip()}) or {}
+        return await _made(p)
+    if not title.strip():
+        return "Pass the title of the task. Nothing changed."
+    draft, refusal = _mail_draft(
+        title, notes, disposition, next_action, assignee_name, due_at, defer_until,
+        context, energy, time_estimate_mins, steps)
+    if refusal or draft is None:
+        return refusal or "Nothing changed."
+    if email_id.strip():
+        stop = await _mail_card("Make a task from this mail?", _data(draft["title"]),
+                                _card_rows(draft))
+        if stop:
+            return stop
+        p = await _request("POST", _CAPTURE_EMAIL_CREATE, json={
+            **ids, "email_id": email_id.strip(), "draft": draft}) or {}
+        return await _made(p)
+    stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
+                            _card_rows(draft))
+    if stop:
+        return stop
+    p = await _request("POST", _CAPTURE_REPLY_CREATE, json={
+        **ids, "thread_id": thread_id.strip(), "subject": reply_subject.strip()[:300],
+        "reply_to_message_id": reply_to_message_id.strip() or None,
+        "draft": draft}) or {}
+    return await _made(p)
+
+
 @_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_organize(
     item_id: str,

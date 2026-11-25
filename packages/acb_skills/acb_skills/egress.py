@@ -1743,6 +1743,11 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 #: ``my_tasks_list_events``, ``my_tasks_list_schedule`` and
 #: ``my_tasks_suggest_title``, ``read_only=True``). The two P-1a proposals write
 #: nothing, so mail that the chat read cannot steer a write through them.
+#: P-1b (task 3922) adds two tools, so the pack holds twenty-two. The draft
+#: (``my_tasks_draft_from_mail``, ``read_only=True``) is the ninth read. The
+#: write ``my_tasks_capture_from_mail`` makes a task from a mail after one card.
+#: The mail itself can steer its fields, so a held chat holds it off here, and
+#: the tool refuses too when the chat turns held in the run.
 #: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
@@ -1762,6 +1767,8 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # their propose calls store a pending plan on the server, which a later
         # apply replays. Mail that a held chat read could steer that apply.
         "my_tasks_close_my_day", "my_tasks_start_my_day",
+        # P-1b (task 3922): the task from a mail. The draft read stays.
+        "my_tasks_capture_from_mail",
     }),
 }
 

@@ -209,9 +209,11 @@ def _agent_tool(fn: Any) -> Any:
 # ``tests/unit/test_calendar_day_pack.py``.
 _CALENDAR_DAY_NAMES: tuple[str, ...] = (
     "my_tasks_add_day_rule",
+    "my_tasks_capture_from_mail",
     "my_tasks_close_my_day",
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
+    "my_tasks_draft_from_mail",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_get_calendar_settings",

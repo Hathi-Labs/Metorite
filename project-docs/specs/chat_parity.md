@@ -19,6 +19,12 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
+task from a mail, or from a reply that the member sent, and makes it after one
+card. Two tools of the `calendar-day` pack pay the six capture rows of mail:
+`my_tasks_draft_from_mail` and `my_tasks_capture_from_mail`. The tasks ceiling
+went from 7 to 1. §6.4 holds the P-1 slices.
+
 **P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
 `people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
 `people_me`, `people_work` and `reach_preview`. Each tool calls the People
@@ -594,7 +600,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
-| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
+| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 5 (14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 72 | People and CRM each hold one of the most-used actions. |
@@ -611,7 +617,7 @@ P-1 does not take all 14. The table names the owner of each row.
 | Slice | Task | Tier | Rows | State |
 |---|---|---|---|---|
 | P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
-| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
+| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge | 6: the capture rows of mail | BUILT, 2026-11-25 |
 | P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
 | The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
 | Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
@@ -621,6 +627,35 @@ P-1 does not take all 14. The table names the owner of each row.
   entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
   it answers in one line. Each proposal changes nothing. The member applies
   a field with the task edit tool. A held chat keeps all three.
+- **P-1b.** Two tools of `skill_my_tasks` join the `calendar-day` pack. The
+  pack needs no new `TOOL_PACKS` line and no new `FOLLOWS` entry. The email
+  pack stays with P-2, so P-1b does not touch it.
+  - `my_tasks_draft_from_mail` reads. It sends `/preview`, `/enhance` or
+    `/from-reply/detect`, and makes no task. A held chat keeps it.
+  - `my_tasks_capture_from_mail` makes one task after one card. It sends
+    `/create`, `/from-reply/create`, or the one-click `/capture/from-email`
+    when the member lets the AI pick each field.
+  - The mail text is hostile. Each answer puts the sender, the subject, the
+    draft and the similar tasks in one `UntrustedFrame` block, and marks the
+    chat. The card starts with the mailbox line of RX-1 and binds the run's
+    own member. The tool refuses a field that the route drops with no word.
+  - A held chat holds the write off. `egress.HELD_OFF_PACK_WRITES` leaves it
+    out of the pack, and the tool refuses when the chat turns held in the run.
+  - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
+    hand-off that made a task refuses it.
+  - `capture_intake(source="email")` of `skill_projects` is a different act.
+    It puts a task in the intake queue of a project (`/projects/intake`). It
+    reads no mail, and it has no draft, no idempotency per mail and no thread
+    tag. So it pays none of the six rows.
+  - "Make a task from this email" now loads `email` and `calendar-day`. On
+    main, at the base of production, the cap left only the email pack.
+- **Verify P-1b.** Run these commands in the worktree.
+
+```bash
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py -q -p no:cacheprovider
+uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
+```
+
 - **The day acts of My Day are not P-1.** CC-10 (task 1978) owns the capture,
   the focus start and stop, and the plan and the close of the day. P-1 builds
   no day flow, and no second read of the day state.

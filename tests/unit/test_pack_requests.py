@@ -124,7 +124,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "projects_tree": ("show me all my projects",),
     "render_board": ("show the board for Website Relaunch",),
     "render_tasks": ("show the tasks as a table",),
-    "set_my_overlay": ("block two hours on my calendar for the task",),
+    # P-1b (task 3922): "on my calendar" loads calendar-day, and with its 22
+    # tools the core pack steps aside so the loader reaches the owner. That
+    # phrase now sits on my_tasks_schedule, the tool that blocks the time.
+    "set_my_overlay": ("block two hours for the task",),
     "task_detail": ("show me the details of the task",),
     "update_task": ("change the due date of the task",),
     "vocabulary": ("which statuses can I give a task?",),
@@ -385,7 +388,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_tasks_plan_day": ("rebuild my day",),
     "my_tasks_replan_day": ("I fell behind, fit what's left",),
     "my_tasks_rollover": ("roll over my tasks from yesterday",),
-    "my_tasks_schedule": ("block an hour for the report",),
+    "my_tasks_schedule": ("block an hour for the report",
+                          "block two hours on my calendar for the task"),
     "my_tasks_set_one_thing": ("make the report my one thing for today",),
     "my_tasks_unschedule": ("block an hour, then take that block off",),
     # -- calendar-day settings (CAL-2, task 1676) --
@@ -411,6 +415,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                            "list my calendar connections"),
     "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # P-1b (task 3922): a task from a mail, or from a reply that the member sent.
+    "my_tasks_draft_from_mail": ("make a task from this email", "draft a task from my reply"),
+    "my_tasks_capture_from_mail": ("turn this email into a task",
+                                   "add this email to my tasks"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

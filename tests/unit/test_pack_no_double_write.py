@@ -577,7 +577,12 @@ def test_the_write_kinds_cover_each_projects_write() -> None:
     assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
     writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
               if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
-    assert set(tp.WRITE_KINDS) == writes
+    # P-1b (task 3922): the one calendar-day write that makes a task. A hand-off
+    # that made a task must refuse it, so it joins `task.create`.
+    mail = "my_tasks_capture_from_mail"
+    assert mail in sf.SKILL_FAMILIES["calendar-day"]["tools"] and not annotated_read_only(mail)
+    assert set(tp.WRITE_KINDS) == writes | {mail}
+    assert tp.write_kind(mail) == "task.create"
     assert tp.write_kind("create_tasks") == tp.write_kind("create_task") == tp.write_kind(
         "create_personal_task") == "task.create"
     assert tp.write_kind("set_reminder") != tp.write_kind("create_task")

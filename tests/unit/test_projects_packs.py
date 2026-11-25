@@ -473,11 +473,17 @@ def test_no_email_word_matches_a_projects_turn() -> None:
 
 
 def test_make_a_task_from_this_email_loads_both_packs() -> None:
-    """Mutation: a Projects word is "email"-blind, or an email word is
-    "task"-blind -> one pack is missing -> red."""
-    choice = tp.choose(
-        _turn(words="Make a task from this email"), allowed=EVERY, base_tools=40)
-    assert choice.slugs == ("email", "projects")
+    """Mutation: the pack that makes a task is "email"-blind, or an email word
+    is "task"-blind -> one pack is missing -> red.
+
+    P-1b (task 3922): the phrase names a task from a mail, and the tool for it
+    (``my_tasks_capture_from_mail``) is in ``calendar-day``. So that pack comes
+    in, and ``projects`` no longer fits the cap. At the base of production (57)
+    main loaded the email pack alone, so the chat could make no task at all."""
+    for base in (40, 57):
+        choice = tp.choose(
+            _turn(words="Make a task from this email"), allowed=EVERY, base_tools=base)
+        assert choice.slugs == ("email", "calendar-day"), base
 
 
 # ── 6. The persona, the refusal, the rules ──────────────────────────────────
