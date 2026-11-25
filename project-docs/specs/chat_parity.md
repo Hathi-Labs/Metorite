@@ -31,6 +31,11 @@ people rows and one memory row. The people ceiling went from 19 to 13, and the
 memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
 `tests/unit/test_people_tools.py` and `tests/unit/test_people_tools_r8.py` (R8).
 
+**P-5b-1, a fact for the owner.** The owner may turn the pack on, and
+`packs_batch_on` may name an org. Then `reach_preview` can bring the subject of
+an outside mail into a WhatsApp turn. The tool marks that chat as one that read
+outside text, so each egress tool and each held write then shows a card first.
+
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
 `list_members`, `set_member_roles`, `set_member_status` and
@@ -418,9 +423,10 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Four ceilings changed after 2026-11-22. PAR-2a and PAR-4a took admin to 17.
-PAR-6a took integrations to 4. P-5b-1 took people to 13 and memory to 4. The
-"Today" column above does not show these changes.
+Four ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+took admin to 10. PAR-6a took integrations to 4. P-5b-1 took people to 13 and
+memory to 4. The total of `DEBT_CEILING` is 342. The "Today" column above does
+not show these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -652,12 +658,12 @@ data. The gate column names what the owner does before the slice is live.
 
 | Slice | Rows | Gate | State |
 |---|---|---|---|
-| P-5b-1: four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
-| P-5b-2: self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
-| P-5b-3: admin writes of a person, on one card each | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
-| P-5b-4: the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
-| P-5b-5: send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
-| P-5b-6: delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | To do |
+| P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
+| P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
+| P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
+| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
+| P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
+| P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | To do |
 | Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |
 
 - **Acceptance of P-5b-1.** Each tool sends its route with `X-User-Email` of

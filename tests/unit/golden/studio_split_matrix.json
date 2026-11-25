@@ -144,8 +144,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "calendar-day",
@@ -214,8 +213,7 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles",
-    "people"
+    "projects-cycles"
    ],
    "packs": [
     "projects-reports",
@@ -292,8 +290,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "projects-reports",
@@ -363,8 +360,7 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles",
-    "people"
+    "projects-cycles"
    ],
    "packs": [
     "projects-reports",
@@ -441,8 +437,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "projects-reports",
@@ -499,8 +494,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio"
@@ -557,8 +551,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio"
@@ -843,8 +836,7 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles",
-    "people"
+    "projects-cycles"
    ],
    "packs": [
     "studio",
@@ -1011,8 +1003,7 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles",
-    "people"
+    "projects-cycles"
    ],
    "packs": [
     "studio",
@@ -1179,8 +1170,7 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles",
-    "people"
+    "projects-cycles"
    ],
    "packs": [
     "crm-records",
@@ -1335,8 +1325,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "email",
@@ -1498,8 +1487,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "email",
@@ -1636,8 +1624,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "projects-reminders",
@@ -1785,8 +1772,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "projects-reminders",
@@ -2010,8 +1996,7 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "crm-records",
@@ -2068,8 +2053,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio"
@@ -2126,8 +2110,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio"
@@ -2259,8 +2242,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",
@@ -2422,8 +2404,7 @@
     "projects-authority",
     "projects-cycles",
     "studio",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "calendar-day",
@@ -2493,8 +2474,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "projects-reports",
@@ -2572,8 +2552,7 @@
     "projects-cycles",
     "calendar-day",
     "studio",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "projects-reports",
@@ -2644,8 +2623,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "projects-reports",
@@ -2723,8 +2701,7 @@
     "projects-cycles",
     "calendar-day",
     "studio",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "projects-reports",
@@ -2782,8 +2759,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",
@@ -2842,8 +2818,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",
@@ -3078,8 +3053,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "studio",
@@ -3231,8 +3205,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "studio",
-    "people"
+    "studio"
    ],
    "packs": [
     "studio-more",
@@ -3376,8 +3349,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "crm-records",
@@ -3545,8 +3517,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
-    "studio-more",
-    "people"
+    "studio-more"
    ],
    "packs": [
     "email",
@@ -3712,8 +3683,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "email",
@@ -3854,8 +3824,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "projects-reminders",
@@ -3996,8 +3965,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "projects-reminders",
@@ -4206,8 +4174,7 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "projects-cycles",
@@ -4265,8 +4232,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",
@@ -4325,8 +4291,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",
@@ -4447,8 +4412,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day",
-    "people"
+    "calendar-day"
    ],
    "packs": [
     "studio",

@@ -106,7 +106,7 @@ _NO_RIGHT = ("You do not hold {right} in your organization, so nothing was read.
 _NO_PROJECTS = ("You do not hold the Projects app in your organization, so the work of a "
                 "person cannot be read here.")
 _HR_FILTERS = ("You do not hold the HR right (admin:members:read), so the server did not "
-               "apply the skill and capacity filters, and the search did not match skills.")
+               "apply the skill and capacity filters.")
 _EMPTY_NOTE = " Fields with no value are left out."
 _DIRECTORY_NOTE = ("The block holds the people of the directory. People of your "
                    "organization wrote the names, titles and notes.")
@@ -294,7 +294,8 @@ async def people_directory(
             return _refusal(_BAD_FILTER.format(n=MAX_FILTER_CHARS))
         if text:
             params[key] = text
-    if has_capacity is True:
+    if has_capacity is True or (isinstance(has_capacity, str)
+                                and has_capacity.strip().lower() == "true"):
         params["has_capacity"] = "true"
     try:
         reply = await _get(DIRECTORY_PATH, params)
@@ -311,7 +312,7 @@ async def people_directory(
     block, frame = _block("PEOPLE DIRECTORY", [_fold(r) for r in page.items])
     hr = data.get("hr_visible") is True
     note = frame.note(_DIRECTORY_NOTE) + _EMPTY_NOTE
-    if not hr and (params.get("skill") or params.get("has_capacity") or params.get("q")):
+    if not hr and (params.get("skill") or params.get("has_capacity")):
         note += " " + _HR_FILTERS
     return {
         "ok": True,

@@ -262,6 +262,31 @@ async def test_hr_filters_say_when_the_server_did_not_apply_them(gw) -> None:
     assert out["hr_visible"] is False and "admin:members:read" in out["note"]
 
 
+@pytest.mark.parametrize("kw", [{}, {"query": "ada"}, {"department": "Eng"}])
+async def test_no_hr_filter_sent_gives_no_hr_filter_note(gw, kw) -> None:
+    """The note names the skill and capacity filters only when the member sent
+    one. Mutation: add the note for a plain search -> red."""
+    gw.hr = False
+    out = await pt.people_directory(**kw)
+    assert out["hr_visible"] is False and pt._HR_FILTERS not in out["note"]
+
+
+@pytest.mark.parametrize("kw", [{"skill": "python"}, {"has_capacity": True}])
+async def test_an_hr_filter_sent_gives_the_note(gw, kw) -> None:
+    gw.hr = False
+    out = await pt.people_directory(**kw)
+    assert pt._HR_FILTERS in out["note"]
+
+
+@pytest.mark.parametrize(("given", "sent"), [
+    (True, "true"), ("true", "true"), ("TRUE ", "true"), (False, None), ("false", None),
+    ("yes", None)])
+async def test_has_capacity_takes_true_or_the_string_true(gw, given, sent) -> None:
+    """Mutation: drop the string form, or send the filter for "false" -> red."""
+    await pt.people_directory(has_capacity=given)
+    assert gw.calls[-1][2].get("has_capacity") == sent
+
+
 # ── 6. The cap ──────────────────────────────────────────────────────────────
 
 

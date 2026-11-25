@@ -1299,8 +1299,9 @@ recorded as being.
 
 **`people_directory` is BUILT dark (P-5b-1, task 3114, 2026-11-25).** It is in the pack
 `people` (`acb_skills/people_tools.py`), with `people_me`, `people_work` and
-`reach_preview`. Each tool sends the People route as the member, so the route applies the
-tiers of §4.2. OD1 B decides the later self writes: one card for each write, and never
+`reach_preview`. The first three tools send the People routes as the member, so the routes
+apply the tiers of §4.2. `reach_preview` sends the Reach routes (`GET /reach/status` and
+`GET /reach/preview`), not a People route. OD1 B decides the later self writes: one card for each write, and never
 `email`. `chat_parity.md` §6.4 holds the P-5b slices.
 
 ---
