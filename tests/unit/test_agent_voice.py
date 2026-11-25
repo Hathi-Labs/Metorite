@@ -51,6 +51,8 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
     # PAR-2a: the owner of the org-admin pack, built and never run.
     ("agent-org-admin", "org-admin", "native"),
     ("agent-projects", "projects-assistant", "native"),
+    # PAR-5 (task 3108): the pack-only owner of the settings pack.
+    ("agent-settings-keeper", "settings-keeper", "native"),
     ("agent-studio-builder", "studio-builder", "native"),
     ("agent-task-manager", "task-manager", "copilot"),
     ("agent-whatsapp-assistant", "whatsapp-assistant", "native"),

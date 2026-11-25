@@ -874,6 +874,40 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-5 (task 3108, chat_parity.md §6.3 rung 3): the member's settings from the
+    # chat. The owner is the pack-only owner `settings-keeper`. The pack has no
+    # surface and is NOT in FOLLOWS: only the owner's pack list turns it on.
+    "settings": {
+        "label": "Settings",
+        "summary": (
+            "Read and change your look, time zone, starred apps and number system, "
+            "read your assistant profile, and change the default look and the logo."
+        ),
+        "description": (
+            "A tool pack: the tools that read the member's settings and assistant "
+            "profile, for the main assistant to load when a turn asks about a "
+            "setting. A change to the member's own setting acts at once and says "
+            "how to undo it. A change to an organization default or to the logo "
+            "shows one card first, and only an admin can make it. A run loads a "
+            "pack only where tool packs are on, so until then this switch has no "
+            "effect."
+        ),
+        "tools": (
+            "settings_read",
+            "profile_read",
+            "settings_set_appearance",
+            "settings_set_time_zone",
+            "settings_star_app",
+            "settings_set_number_system",
+            "settings_set_org_appearance",
+            "settings_set_logo_style",
+            "settings_remove_logo",
+        ),
+        "owner": "settings-keeper",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. The history of the tools, now in two packs: eight

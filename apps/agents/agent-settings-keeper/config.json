@@ -1,0 +1,37 @@
+{
+  "name": "Settings Keeper",
+  "app": "chat",
+  "description": "The owner of the settings tool pack. One read tool reads the member's look, the default look of the organization, the number system, the logo, the time zone, the starred apps and the agent switch. One read tool reads the member's assistant profile. Write tools change the member's own look, time zone, starred apps and number system at once, with an undo. The default look, the number system of the organization and the logo change after one card. The main assistant loads these tools when the member asks about a setting. This agent is not a second assistant, and a hand-off to it is refused.",
+  "version": "0.1.0",
+  "author": "Metorite",
+  "tags": [
+    "settings",
+    "appearance",
+    "profile"
+  ],
+  "integrations": [],
+  "optional_integrations": [],
+  "runtime": "maf",
+  "sharing": {
+    "instancing": "shared",
+    "visibility": "organization",
+    "shareable": false,
+    "outputs_visibility": "instance"
+  },
+  "icon": "Settings",
+  "category": "settings",
+  "tool_scope": [
+    "ask_questions"
+  ],
+  "own_tool_scope": [
+    "profile_read",
+    "settings_read",
+    "settings_remove_logo",
+    "settings_set_appearance",
+    "settings_set_logo_style",
+    "settings_set_number_system",
+    "settings_set_org_appearance",
+    "settings_set_time_zone",
+    "settings_star_app"
+  ]
+}

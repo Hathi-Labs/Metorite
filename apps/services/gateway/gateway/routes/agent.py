@@ -1014,6 +1014,15 @@ _PACK_OWNER_AGENTS: list[dict] = [
         "integrations": [],
         "optional_integrations": [],
     },
+    # PAR-5 (task 3108): the owner of the `settings` pack, as studio-builder is.
+    {
+        "name": "settings-keeper",
+        "description": "Owns the settings tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-settings-keeper",
+        "integrations": [],
+        "optional_integrations": [],
+    },
     # PAR-2a (chat_parity.md section 6.3, task 3102): the member tools of the
     # Members tab. The admin routes decide each right.
     {

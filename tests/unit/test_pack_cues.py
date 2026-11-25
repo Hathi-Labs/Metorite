@@ -76,6 +76,10 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-5 (task 3108): the member's settings, of the pack-only owner settings-keeper.
+    "settings": (
+        "Load to read or change your look, time zone, starred apps, number system, profile "
+        "or logo."),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
     # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
     # Integrations. PAR-4d (task 3936): the seats.

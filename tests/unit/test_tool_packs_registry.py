@@ -106,8 +106,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "org-admin", "people",
+        "projects-cycles", "settings", "studio", "studio-more", "studio-workflows",
+        "studio-repair", "studio-share", "org-admin", "people",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -501,6 +501,7 @@ def test_build_catalog_prices_a_pack_from_its_owner_tools() -> None:
     modules = {EA: _email_module(), CRM: load_agent_module(CRM_DIR),
                PROJECTS: load_agent_module(PROJECTS_DIR),
                "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+               "settings-keeper": load_agent_module("apps/agents/agent-settings-keeper"),
                ORG_ADMIN: load_agent_module(ORG_ADMIN_DIR)}
     owner = {tool_name(fn): fn for slug in sf.pack_slugs()
              for fn in tp.owner_tools(slug, modules[sf.SKILL_FAMILIES[slug]["owner"]])}
@@ -738,9 +739,12 @@ def test_the_studio_owner_is_in_no_registry_list() -> None:
     assert STUDIO not in {a["name"] for a in routes._AGENT_REGISTRY}
     assert STUDIO not in routes._KNOWN_AGENTS
     assert STUDIO not in {a["name"] for a in routes._INTERNAL_AGENTS}
-    # PAR-2a: the second owner that never runs.
-    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO, ORG_ADMIN]
+    # PAR-5 (task 3108): the owner of the settings pack is the second entry.
+    # PAR-2a: the third owner that never runs.
+    assert [a["name"] for a in routes._PACK_OWNER_AGENTS] == [STUDIO, "settings-keeper",
+                                                              ORG_ADMIN]
     assert routes._PACK_OWNER_AGENTS[0]["local_path"] == STUDIO_DIR
+    assert routes._PACK_OWNER_AGENTS[1]["local_path"] == "apps/agents/agent-settings-keeper"
     assert {a["name"] for a in routes._PACK_OWNER_AGENTS} == tp.PACK_ONLY_OWNERS
     # And not in the deploy registry that the gateway reads at start.
     catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))

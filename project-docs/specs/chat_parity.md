@@ -19,6 +19,28 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-5 (task 3108, wave P-8c) is BUILT, 2026-11-22, dark.** The new pack
+`settings` pays 20 Settings rows, and the settings ceiling goes from 30 to 10.
+Its owner is `settings-keeper`, a pack-only owner such as `studio-builder`. The
+pack is in no `FOLLOWS` entry, so it is on only where `TOOL_PACKS` names it.
+The tools are in `acb_skills/settings_tools.py`, and `profile_read` is in
+`acb_skills/profile_tools.py`.
+
+A change to the member's own look, time zone, starred apps or number system
+acts at once. Its answer names the old value for the undo (D-CF-5). A change
+to the default look, the number system of the organization or the logo shows
+one card. Ten Settings rows stay in the debt:
+
+- The guidance read and save stay with SW-31c (task 1531).
+- Forget everything, the interview reset and the summary deletes stay because
+  `personalization.md` makes each one a Settings act. The gateway refuses a
+  chat write of them with 422. The owner decides first.
+- The write of the agent switch stays because EA-6h says that only the member
+  sets it, in Metorite. The owner decides first.
+- `GET /auth/me` and `GET /settings/llm` were not in the slice.
+
+Fence: `tests/unit/test_settings_tools.py`.
+
 **P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
 `people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
 `people_me`, `people_work` and `reach_preview`. Each tool calls the People
@@ -543,7 +565,7 @@ task of each wave.
 | 1 | PAR-4a: groups, roles, overrides, member access, the removal preview, the org name (wave P-8b) | 3107 | HIGH | Built, dark |
 | 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | Built, dark |
 | 1c | PAR-4d: the seats | 3936 | HIGH | Built, dark |
-| 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | To do |
+| 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | Built, dark (the `settings` pack) |
 | 3 | PAR-6a: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | Built, dark |
 | 4 | The demo of rung 3 | 3110 | none | To do |
 | 5 | PAR-4b: the billing reads and the two order writes | 3902 | HIGH | Waits for the owner (§7) |
@@ -736,7 +758,7 @@ he approves the merge.
 **Open for the owner.**
 
 1. **The `TOOL_PACKS` lines.** Add `org-admin` after PAR-2a merges and before
-   the demo of rung 1. Say which pack holds the tools of PAR-5. A new slug
+   the demo of rung 1. PAR-5 built the new slug `settings`. A new slug
    needs its own line before the demo of rung 3. PAR-6a uses `org-admin`.
    Add `studio-workflows` before the demo of rung 5 (task 3905). It holds the
    run of a workflow and the other tools of PAR-8a.

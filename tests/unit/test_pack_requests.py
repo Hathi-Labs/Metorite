@@ -411,6 +411,18 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                            "list my calendar connections"),
     "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # -- settings (PAR-5, task 3108) --
+    "settings_read": ("am I on dark mode?", "what is my time zone?",
+                      "which number system do we use?"),
+    "profile_read": ("what do you know about me?", "show my assistant profile"),
+    "settings_set_appearance": ("switch me to light mode", "make the density compact"),
+    "settings_set_time_zone": ("change my time zone to Europe/London",),
+    "settings_star_app": ("star the app CRM in my sidebar",),
+    "settings_set_number_system": ("show numbers in million and billion",
+                                   "use lakh and crore for the number system"),
+    "settings_set_org_appearance": ("set the default look of the company to light mode",),
+    "settings_set_logo_style": ("show the logo in dark mode on a plate",),
+    "settings_remove_logo": ("remove the logo of our company",),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

@@ -1445,6 +1445,7 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 def _pack_owners() -> dict[str, Any]:
     return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
             "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+            "settings-keeper": load_agent_module("apps/agents/agent-settings-keeper"),
             # PAR-2a: the owner of the org-admin pack.
             "org-admin": load_agent_module("apps/agents/agent-org-admin")}
 
