@@ -23,7 +23,7 @@ vi.mock("@/lib/useCachedResource", () => ({
 
 import BriefCard from "./BriefCard";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
-import { fetchBrief, localDateOf, readBrief, staleLabel } from "./briefCard";
+import { fetchBrief, localDateOf, readBrief, staleLabel } from "./briefCardModel";
 
 const NOW = new Date(2026, 9, 22, 9, 0, 0);
 

@@ -247,15 +247,16 @@ def _moves(w: Any, task: str) -> list[Any]:
 
 async def _close(
     w: Any, number: int, *, merged: bool = True, delivery: str | None = None,
-    updated_at: str | None = None,
+    updated_at: str | None = None, merged_at: str | None = None,
 ) -> httpx.Response:
     return await _event(w, "closed", number, merged=merged, delivery=delivery,
-                        updated_at=updated_at)
+                        updated_at=updated_at, merged_at=merged_at)
 
 
 async def _event(
     w: Any, action: str, number: int, *, merged: bool = True, delivery: str | None = None,
     updated_at: str | None = None, closed_state: bool | None = None,
+    merged_at: str | None = None,
 ) -> httpx.Response:
     from fastapi import FastAPI
     from gateway.routes.github import webhook
@@ -268,7 +269,8 @@ async def _event(
         "pull_request": {
             "number": number, "title": f"PR {number}",
             "state": "closed" if closed else "open", "merged": closed and merged,
-            "merged_at": now if closed and merged else None, "merged_by": {"login": "octo"},
+            "merged_at": (merged_at or now) if closed and merged else None,
+            "merged_by": {"login": "octo"},
             "draft": False, "updated_at": updated_at or now, "body": "",
             "html_url": f"https://github.com/{REPO}/pull/{number}",
             "author_association": "MEMBER",

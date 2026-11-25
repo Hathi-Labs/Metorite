@@ -148,6 +148,19 @@ export interface ProjectMenuHandlers {
    * omits it.
    */
   onConvert?: (project: ProjectRow) => void;
+  /**
+   * WS-39 TPL-1b. Open the "Save as template" dialog for this project. It
+   * opens a dialog and saves nothing. The page passes it only while
+   * `PROJECTS_TEMPLATES_ORGS` holds the org, so the entry is absent otherwise.
+   * Offered on a project and a subproject, because a space and a folder hold
+   * no tasks.
+   */
+  onSaveAsTemplate?: (project: ProjectRow) => void;
+  /**
+   * WS-39 TPL-1b. Open the picker for a new project from a template, under
+   * this row. Its presence adds the "New from template…" create option.
+   */
+  onNewFromTemplate?: (parent: ProjectRow) => void;
 }
 
 /**
@@ -288,6 +301,25 @@ export function projectMenuItems(
     else groups.push([convert]);
   }
 
+  // TPL-1b — beside Rename and Move. It copies this project's shape, so it
+  // sits with the entries that act on what the node IS, and only with the flag.
+  if (
+    handlers.onSaveAsTemplate &&
+    (level === "project" || level === "subproject") &&
+    !archived &&
+    !isPersonalRoot(project)
+  ) {
+    const onSave = handlers.onSaveAsTemplate;
+    const save: ProjectMenuItem = {
+      kind: "item",
+      label: "Save as template",
+      icon: "LayoutTemplate",
+      onSelect: () => onSave(project),
+    };
+    if (groups.length > 0) groups[groups.length - 1].push(save);
+    else groups.push([save]);
+  }
+
   // Create, from the same grammar the row's `+` button reads. A flat labelled
   // group rather than a flyout: `ContextMenu` has no submenus on purpose, and
   // "New folder" already names its own level, so a heading plus two items says
@@ -299,7 +331,7 @@ export function projectMenuItems(
       create.push({
         kind: "item",
         label: option.label,
-        icon: option.kind === "folder" ? "Folder" : "Plus",
+        icon: option.kind === "folder" ? "Folder" : option.template ? "LayoutTemplate" : "Plus",
         onSelect: () => ui.onCreate?.(option),
       });
     }

@@ -236,9 +236,13 @@ class TestTwoSourceFieldsOneTarget:
         assert landed == {"priority": "P1-critical"}
         assert dropped == {"prio": "P4-someday"}
 
-    def test_a_HAND_SUPPLIED_map_cannot_collide_either(self):
-        """The caller posts `field_map`, so the rule cannot live only where
-        the server builds it."""
+    def test_apply_never_loses_a_value_from_a_colliding_hand_map(self):
+        """The apply layer alone keeps the first key and REPORTS the other.
+
+        Which key is first follows each task's JSONB order, so `_plan` refuses
+        such a map before it gets here (see `TestAHandMapCannotShareATarget`).
+        This pins only the never-lose-a-value floor.
+        """
         landed, dropped = apply_field_map(
             {"a": "first", "b": "second"},
             {"a": "target", "b": "target"},
@@ -254,6 +258,50 @@ class TestTwoSourceFieldsOneTarget:
         mapping, _ = resolve_field_map(self.SOURCE, self.DEST)
         landed, dropped = apply_field_map(values, mapping, frozenset({"priority"}))
         assert len(landed) + len(dropped) == len(values)
+
+
+class TestAHandMapCannotShareATarget:
+    """H-129 — two source keys to one target is refused (422), not resolved by
+    JSONB key order."""
+
+    SRC = [field("a", "A"), field("b", "B"), field("c", "C")]  # noqa: RUF012
+    DST = [field("target", "Target"), field("other", "Other")]  # noqa: RUF012
+
+    def test_a_colliding_pair_is_refused_naming_both_keys_and_the_target(self):
+        for hand in (
+            {"a": "target", "b": "target"},
+            {"b": "target", "a": "target"},
+        ):
+            with pytest.raises(HTTPException) as err:
+                move.choose_field_map({}, self.SRC, self.DST, hand)
+            assert err.value.status_code == 422
+            assert "'a'" in err.value.detail
+            assert "'b'" in err.value.detail
+            assert "'target'" in err.value.detail
+
+    def test_a_hand_entry_onto_a_target_the_server_map_holds_is_refused(self):
+        with pytest.raises(HTTPException) as err:
+            move.choose_field_map(
+                {"a": "target"}, self.SRC, self.DST, {"b": "target"},
+            )
+        assert err.value.status_code == 422
+
+    def test_a_hand_entry_may_replace_the_server_choice_for_its_own_key(self):
+        chosen = move.choose_field_map(
+            {"a": "target"}, self.SRC, self.DST, {"a": "other"},
+        )
+        assert chosen == {"a": "other"}
+
+    def test_a_non_colliding_hand_map_still_works(self):
+        chosen = move.choose_field_map(
+            {"c": "other"}, self.SRC, self.DST, {"a": "target"},
+        )
+        assert chosen == {"c": "other", "a": "target"}
+
+    def test_no_hand_map_returns_the_server_map(self):
+        assert move.choose_field_map({"a": "target"}, self.SRC, self.DST, None) == {
+            "a": "target"
+        }
 
 
 class TestABlankLaneIsNotAUuid:
