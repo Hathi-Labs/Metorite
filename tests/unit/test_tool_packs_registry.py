@@ -884,7 +884,7 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
     # people pack of the same owner comes last. PAR-9: the dark Custom Apps pack
-    # comes after the share pack.
+    # comes before the share pack.
     assert list(tp.PACKS)[-8:-2] == list(STUDIO_PACKS)
     assert list(tp.PACKS)[-2:] == ["org-admin", "people"]
     assert "studio-share" not in tp.FOLLOWS

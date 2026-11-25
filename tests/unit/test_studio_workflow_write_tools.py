@@ -849,7 +849,7 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     # TOF-3a F12c: the repair pack sits between this pack and the share pack.
     # PAR-2a: the org-admin pack of another owner comes after them. P-5b-1 (task
     # 3114): the people pack of that owner comes last of all.
-    # PAR-9: the Custom Apps pack of the same owner comes after the share pack.
+    # PAR-9: the Custom Apps pack of the same owner comes before the share pack.
     assert sf.pack_slugs()[-8:-2] == ("studio", "studio-more", PACK, "studio-repair",
                                       "studio-apps", "studio-share"), (
         "after studio, so the cap drops it first")
