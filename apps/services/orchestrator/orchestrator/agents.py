@@ -300,6 +300,19 @@ _PROPOSALS_SWAP: tuple[str, str] = (
     "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
 )
 
+# PAR-3 (task 3105, chat_parity.md wave P-5). With KNOWLEDGE_CHAT_WRITES on
+# too, the tool list of the persona gains the line of the four Knowledge
+# writes, by one more exact swap. Off, the persona does not change, byte for
+# byte. Fence: tests/unit/test_kb_chat_writes.py.
+_KB_WRITES_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- create_page, edit_page, create_space, edit_space: when the member asks you to\n"
+    "  write a page, change a draft page, or make or change a space in Knowledge. Each\n"
+    "  one shows the full text on a card first. A new page is a draft. edit_page changes\n"
+    "  only a draft. For a published page, use propose_edit. You never publish\n",
+)
+
 
 # WS-63 PZ-6a (personalization.md §5.5). With ASSISTANT_PROFILE_ENABLED on,
 # the memory tools of the persona gain the line of the four profile writes,
@@ -409,7 +422,7 @@ _SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
     *, profile: bool = False, constraints: bool = False, spawn: bool = False,
-    card_writes: bool = False, find: bool = False,
+    card_writes: bool = False, find: bool = False, kb_writes: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
@@ -421,7 +434,8 @@ def _orchestrator_instructions(
     is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
     *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
-    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
+    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`. *kb_writes* (PAR-3)
+    adds :data:`_KB_WRITES_SWAP`, only with *company_search* on too.
     """
     if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
@@ -430,6 +444,7 @@ def _orchestrator_instructions(
         (_COMPANY_SEARCH_SWAPS if company_search else ())
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
+        + ((_KB_WRITES_SWAP,) if company_search and kb_writes else ())
         + ((_FIND_SWAP,) if company_search and recency and find else ())
         + ((_PROFILE_SWAP,) if profile else ())
         + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
@@ -464,6 +479,15 @@ def _knowledge_propose_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return knowledge_propose_enabled()
+
+
+def _knowledge_chat_writes_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_CHAT_WRITES``, in ``acb_skills`` (PAR-3)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_chat_writes_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_chat_writes_enabled()
 
 
 def _chat_constraints_enabled() -> bool:
@@ -1230,6 +1254,9 @@ def build_orchestrator_agent(
     # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
     # Off until KB-5b ships the Review view, where a person accepts.
     proposals = company_search and _knowledge_propose_enabled()
+    # PAR-3 (task 3105): read once too, so the persona line and the four
+    # Knowledge writes agree.
+    kb_writes = company_search and _knowledge_chat_writes_enabled()
     # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
     # PZ-25: per organization, so read it on the bound run, never at import.
     profile_on = _assistant_profile_enabled(organization_id)
@@ -1250,7 +1277,8 @@ def build_orchestrator_agent(
                                               constraints=constraints_on,
                                               spawn=_spawn_subagents_enabled(organization_id),
                                               card_writes=card_writes_on,
-                                              find=find_on)
+                                              find=find_on,
+                                              kb_writes=kb_writes)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -1305,6 +1333,12 @@ def build_orchestrator_agent(
                                read_page, list_spaces]
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
+        # PAR-3 (task 3105): the four Knowledge writes, only with
+        # KNOWLEDGE_CHAT_WRITES on. Each shows the full text on one card.
+        if kb_writes:
+            from acb_skills.knowledge_tools import WRITE_TOOLS as _KB_WRITE_TOOLS
+
+            retrieval_tools += list(_KB_WRITE_TOOLS)
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
