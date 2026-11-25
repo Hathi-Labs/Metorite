@@ -38,6 +38,31 @@ The removal and the purge of a member (PAR-4c, task 3935), each after ONE card
   typed words of this turn hold the exact address. A run with no typed words,
   a delegated run and a spawned child have none. Its card says that the act is
   one-way and lists what is lost and what is kept.
+The seats (PAR-4d, Metorite task 3936):
+
+* :func:`read_seats` reads each plan with its seats in use and its cap, and
+  who holds a seat (``GET /seats/overview``). When the Customer Console does
+  not know the member as an admin of the subscription (403), it reads the
+  counts alone (``GET /billing/seats``). No card.
+* :func:`set_seat` gives one member a seat of a plan, or frees the seat
+  (``POST /seats/assign`` or ``POST /seats/release``, ``billing:purchase``).
+  ONE card names the member, the plan and the cap. The owner decided on
+  2026-11-24 that a seat assign or release is not money (D-PAR-4), so one card
+  is enough. A plan at its cap gets plain words that name the Billing page.
+  The chat never buys seats.
+* The Core seat is membership itself (D19.3), and the Console refuses an
+  assign or a release of it with 400. So :func:`set_seat` refuses ``core``
+  with plain words before any read or card, and never picks it. Today the
+  catalog holds no other active plan, so ``set_seat`` acts only on a future
+  plan that is not Core.
+* A 403 that opens with the Console's capability prefix is about the key of
+  this box. Both tools read it as "seats are not set up on this box".
+
+**The seats belong to the Customer Console.** The gateway routes relay its
+answer. The body names the target and the plan only, never an org or an actor
+(R11): the gateway takes the actor from the session, and the Console derives
+the org from the deployment key and that member. A box with no Console
+answers 503, and the tools then say that seats need the Customer Console.
 
 **The gateway decides.** Each tool calls the gateway as the member of the run.
 No tool takes an org or a caller argument (R5). ``email`` is the address of
@@ -62,7 +87,9 @@ the member gives a write must hold no hidden character, by the one rule of
 ``hidden_text``.
 
 Fences: ``tests/unit/test_org_admin_more_tools.py``, and the R8 suite
-``tests/unit/test_org_admin_more_tools_r8.py``.
+``tests/unit/test_org_admin_more_tools_r8.py``. The seats prove their
+isolation with a stub Console behind the real seat routes
+(``tests/unit/test_org_admin_seats_console_stub.py``).
 """
 
 from __future__ import annotations
@@ -82,6 +109,7 @@ from acb_skills.tool_annotations import annotate
 
 __all__ = [
     "ORG_ADMIN_MORE_TOOLS",
+    "ORG_ADMIN_SEAT_TOOLS",
     "add_org_group_member",
     "create_org_group",
     "create_org_role",
@@ -93,10 +121,12 @@ __all__ = [
     "preview_member_removal",
     "purge_member",
     "read_member_access",
+    "read_seats",
     "remove_member",
     "remove_org_group_member",
     "rename_org",
     "set_member_overrides",
+    "set_seat",
 ]
 
 #: The gateway routes. ``test_chat_parity.py`` reads them from this source.
@@ -104,6 +134,14 @@ GROUPS_PATH = "/admin/groups"
 ROLES_PATH = "/admin/roles"
 FEATURES_PATH = "/admin/features"
 ORG_PATH = "/admin/organization"
+#: The seat routes (``routes/seats.py``): the read of the seats and who holds
+#: them, and the two writes. Each relays the answer of the Customer Console.
+SEATS_OVERVIEW_PATH = "/seats/overview"
+SEAT_ASSIGN_PATH = "/seats/assign"
+SEAT_RELEASE_PATH = "/seats/release"
+#: The seat counts alone (``routes/billing.py``), for a member whom the Console
+#: does not know as an admin of the subscription.
+SEAT_COUNTS_PATH = "/billing/seats"
 
 #: The right of each group write (``groups.py``).
 MANAGE_RIGHT = oa.MANAGE_RIGHT
@@ -113,6 +151,9 @@ ROLES_RIGHT = "admin:roles:manage"
 ACCESS_RIGHT = "admin:access:manage"
 #: The right of the rename of the organization (``organization.py``).
 SETTINGS_RIGHT = "admin:settings:manage"
+#: The right of a seat assign or release. The Seats tab of Organisation offers
+#: Assign and Release only to a member with it (``SeatsTab.tsx`` ``canManage``).
+SEATS_RIGHT = "billing:purchase"
 
 #: The group slugs that the route refuses (``groups.py`` ``RESERVED_GROUP_SLUGS``).
 #: ``all`` means every team. ``acb_skills`` cannot import the gateway, so this is
@@ -122,6 +163,17 @@ RESERVED_GROUP_SLUGS: frozenset[str] = frozenset({"all"})
 GROUP_ROLES = ("member", "lead")
 #: The effects of an override.
 EFFECTS = ("allow", "deny")
+#: The acts of :func:`set_seat`.
+SEAT_ACTIONS = ("assign", "release")
+#: The billing category of an assigned seat: the page's ``ASSIGN_SOURCE``
+#: (``settings/billing/lib/manage.ts``). Never ``core``.
+SEAT_SOURCE = "alacarte"
+#: The plan that membership itself holds (D19.3), as the Customer Console names
+#: it (``customer_console/seats.py`` ``CORE_PLAN_SLUG``). The Console refuses an
+#: assign or a release of it with 400, so the chat never offers one.
+#: ``acb_skills`` cannot import the Console, so this is a copy, and
+#: ``test_org_admin_more_tools.py`` fails when the two differ.
+CORE_PLAN_SLUG = "core"
 
 #: The most groups of one page.
 MAX_GROUPS = 30
@@ -137,6 +189,8 @@ MAX_REASON_CHARS = 200
 MAX_RIGHTS = 50
 #: The most characters of a description in a result or on a card.
 MAX_SHOWN_DESC = 300
+#: The most seat holders of one page.
+MAX_SEAT_ROWS = 50
 
 _BAD_GROUP = ("slug is the short name of a group, as the group list shows it: 1 to 48 "
               "letters, digits, '_' or '-'. Nothing changed.")
@@ -195,6 +249,7 @@ _RIGHT_WHAT = {
     ROLES_RIGHT: "make or delete a role",
     ACCESS_RIGHT: "change the access of a member",
     SETTINGS_RIGHT: "rename your organization",
+    SEATS_RIGHT: "give or free a seat",
 }
 
 
@@ -1203,6 +1258,344 @@ async def rename_org(display_name: str) -> dict[str, Any]:
             "note": "The organization has the new name."}
 
 
+# ── The seats (PAR-4d, task 3936) ───────────────────────────────────────────
+
+_NO_CONSOLE = ("Seats need the Customer Console, which is not connected here, so {what}. "
+               "Members and roles work as before.")
+_NOT_SET_UP = ("Seats are not set up on this box: its key to the Customer Console may not "
+               "manage seats, so {what}. An operator must widen the key. You did nothing "
+               "wrong, and members and roles work as before.")
+_CORE_SEAT = ("The Core seat is membership itself: invite the member to give one, remove the "
+              "member to free one. Nothing changed.")
+_ONLY_CORE = ("Your organization holds only the Core seat, and the Core seat is membership "
+              "itself, so there is no plan the chat can change. Invite a member to give a "
+              "Core seat, or remove a member to free one. Nothing changed.")
+_NOT_SEAT_ADMIN = ("The Customer Console does not know you as an active owner or admin of "
+                   "your organization, so {what}. For now, the founder of the organization "
+                   "manages the seats.")
+_TWO_ORGS = ("Your address is a member of more than one organization here, and the Customer "
+             "Console does not guess which one, so {what}.")
+_BAD_ACTION = ("action is assign (give the member a seat) or release (free the seat). "
+               "Nothing changed.")
+_BAD_PLAN = ("plan_slug is the short name of a plan, as read_seats shows it. Send none when "
+             "the organization has one plan. Nothing changed.")
+_NO_SEAT_MEMBER = ("The seat list of your organization has no member {email}. Nothing changed. "
+                   "Read the seats for the addresses.")
+_NO_PLANS = ("Your organization holds no seats to give. Buy seats on the Billing page of "
+             "Settings. The chat does not buy seats. Nothing changed.")
+_NO_SUCH_PLAN = ("Your organization holds no seats of the plan {plan}. Nothing changed. The "
+                 "plans are: {known}.")
+_NAME_THE_PLAN = "Name the plan of the seat: {known}. Nothing changed."
+_AT_CAP = ("The plan {plan} is at its cap: {assigned} of {purchased} seats are in use. Buy "
+           "{more} more {seats} on the Billing page of Settings, then ask again. The chat does "
+           "not buy seats. Nothing changed.")
+_HOLDS_SEAT = "{email} holds a seat of the plan {plan} already. Nothing changed."
+_HOLDS_NONE = "{email} holds no seat{of}. Nothing changed."
+_SEAT_GONE = ("The Customer Console has no member {email} in your organization, so nothing "
+              "changed.")
+_SEATS_NOTE = ("The block holds the members of your organization and the seats that each "
+               "holds. The Customer Console sent the addresses.")
+_COUNTS_ONLY = ("These are the seat counts only. The Customer Console does not know you as an "
+                "active owner or admin of your organization, so it shows nobody who holds a "
+                "seat.")
+
+
+def _seat_words(reply: oa._Reply, what: str, **extra: Any) -> dict[str, Any] | None:
+    """The plain words of a seat refusal that the tool knows, or None.
+
+    A 403 that opens with the Console's capability prefix is about the key of
+    this box, never the member: it reads as "not set up" (503), as the gateway
+    billing proxy reads it. The Console words its 403 of a member who is no
+    active owner or admin with "admin". A 403 of a locked organization says
+    "locked", and the caller relays it as it is."""
+    said = oa._detail(reply).lower()
+    if reply.status == 503:
+        return oa._refusal(_NO_CONSOLE.format(what=what), status=503, **extra)
+    if _key_refused(reply):
+        return oa._refusal(_NOT_SET_UP.format(what=what), status=503, **extra)
+    if reply.status == 403 and (not said or "admin" in said or said.startswith("forbidden")):
+        return oa._refusal(_NOT_SEAT_ADMIN.format(what=what), status=403, **extra)
+    if reply.status == 409 and "more than one" in said:
+        return oa._refusal(_TWO_ORGS.format(what=what), status=409, **extra)
+    return None
+
+
+def _console_said(reply: oa._Reply, **extra: Any) -> dict[str, Any]:
+    """Each other refusal of a seat route: the words of the Console, as one sentence."""
+    said = oa._detail(reply).rstrip(". ")
+    if not said or reply.status == 401:
+        return oa._fail(reply, **extra)
+    return oa._refusal(f"The Customer Console refused: {said}. Nothing changed.",
+                       status=reply.status, **extra)
+
+
+def _plan_row(p: Any) -> dict[str, Any] | None:
+    """One plan of the seat grid, with the counts of the Console as they are."""
+    if not isinstance(p, dict) or not isinstance(p.get("plan_slug"), str):
+        return None
+    return {"plan": str(p["plan_slug"])[:64], "purchased": _count(p.get("purchased")),
+            "assigned": _count(p.get("assigned")), "available": _count(p.get("available")),
+            "oversubscribed": p.get("oversubscribed") is True}
+
+
+def _plans(data: Any) -> list[dict[str, Any]]:
+    rows = data.get("plans") if isinstance(data, dict) else None
+    return [row for row in map(_plan_row, rows if isinstance(rows, list) else []) if row]
+
+
+def _holder_row(m: dict[str, Any]) -> dict[str, Any]:
+    seats = [str(x)[:64] for x in _strs(m.get("seats"))]
+    return {"email": str(m["email"])[:oa.MAX_EMAIL_CHARS], "role": str(m.get("role"))[:32],
+            "status": str(m.get("status"))[:32], "seats": seats, "seated": bool(seats)}
+
+
+#: The start of the Customer Console's refusal of a box key that lacks a
+#: capability. It mirrors the prefix of the one Console client: this module
+#: may not import that client (``tests/unit/test_console_dependency_boundary.py``),
+#: so a drift test ties the two (``test_the_capability_prefix_is_the_one_the_console_says``).
+KEY_REFUSAL_PREFIX = "deployment key lacks the "
+
+
+def _key_refused(reply: oa._Reply) -> bool:
+    """True when a 403 is the Console's refusal of the key of this box."""
+    return reply.status == 403 and oa._detail(reply).lower().startswith(
+        KEY_REFUSAL_PREFIX.lower())
+
+
+def _cap_line(row: dict[str, Any]) -> str:
+    """The cap of one plan, in the words of the card and of the read."""
+    return f"{row['plan']}: {row['assigned']} of {row['purchased']} seats in use"
+
+
+async def _seat_view(what: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``({plans, members}, None)`` of ``GET /seats/overview``, or ``(None, refusal)``."""
+    reply = await oa._get(SEATS_OVERVIEW_PATH)
+    if not reply.ok:
+        return None, _seat_words(reply, what) or _console_said(reply)
+    data = reply.data if isinstance(reply.data, dict) else None
+    members = _dicts(data.get("members") if data is not None else None, "email")
+    if data is None or members is None or not isinstance(data.get("plans"), list):
+        return None, oa._refusal(oa._SHAPE)
+    return {"plans": _plans(data), "members": members}, None
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def read_seats(offset: int = 0, limit: int = MAX_SEAT_ROWS) -> dict[str, Any]:
+    """Read the seats of your organization: each plan with its seats in use and its cap, and who holds a seat."""
+    try:
+        reply = await oa._get(SEATS_OVERVIEW_PATH)
+        counts = None
+        if reply.status == 403 and not _key_refused(reply):
+            # The Console answered: no admin of the subscription. The counts
+            # alone are the read of the Billing page (``GET /billing/seats``).
+            counts = await oa._get(SEAT_COUNTS_PATH)
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    what = "the chat cannot read the seats"
+    if counts is not None:
+        if not counts.ok:
+            return _seat_words(counts, what) or _console_said(counts)
+        plans = _plans(counts.data)
+        return {"ok": True, "plans": plans, "caps": [_cap_line(p) for p in plans],
+                "holders_shown": 0, "note": _COUNTS_ONLY}
+    if not reply.ok:
+        return _seat_words(reply, what) or _console_said(reply)
+    data = reply.data if isinstance(reply.data, dict) else {}
+    members = _dicts(data.get("members"), "email")
+    if members is None or not isinstance(data.get("plans"), list):
+        return oa._refusal(oa._SHAPE)
+    plans = _plans(data)
+    from acb_skills.untrusted import UntrustedFrame
+
+    page = paged(members, offset, limit, default=MAX_SEAT_ROWS, maximum=MAX_SEAT_ROWS,
+                 noun="members")
+    frame = UntrustedFrame.new()
+    block = json.dumps([_holder_row(m) for m in page.items], ensure_ascii=False,
+                       separators=(",", ":"))
+    return {"ok": True, "plans": plans, "caps": [_cap_line(p) for p in plans],
+            "rows": frame.wrap("SEAT HOLDERS", block), "members_total": page.total,
+            "holders_shown": len(page.items), "page": page.line, "note": frame.note(_SEATS_NOTE)}
+
+
+def _seat_args(email: Any, action: Any,
+               plan_slug: Any) -> tuple[str, str, str | None] | dict[str, Any]:
+    """``(address, act, plan or None)`` of :func:`set_seat`, or a refusal."""
+    problem = hidden_problem(email, "email")
+    if problem is not None:
+        return oa._refusal(f"{problem} Nothing changed.")
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    act = str(action or "").strip().lower()
+    if act not in SEAT_ACTIONS:
+        return oa._refusal(_BAD_ACTION)
+    if plan_slug is None or (isinstance(plan_slug, str) and not plan_slug.strip()):
+        return target, act, None
+    plan = plan_slug.strip().lower() if isinstance(plan_slug, str) else ""
+    if plan == CORE_PLAN_SLUG:
+        # The Console refuses it with 400 (D19.3). Refuse it before any read or card.
+        return oa._refusal(_CORE_SEAT, status=400)
+    return (target, act, plan) if oa._slug_shape(plan) else oa._refusal(_BAD_PLAN)
+
+
+def _seat_plan(view: dict[str, Any], target: str, act: str,
+               plan: str | None) -> tuple[str, dict[str, Any] | None] | dict[str, Any]:
+    """``(plan, the plan row or None)`` that the card names, or a refusal or a no-op.
+
+    An assign takes the one plan of the organization, or the plan named. A
+    release takes the one seat of the member, or the plan named. The Core
+    seat is membership itself, so it is never a choice: the Console refuses
+    it with 400."""
+    person = next((m for m in view["members"] if m["email"].strip().lower() == target), None)
+    if person is None:
+        return oa._refusal(_NO_SEAT_MEMBER.format(email=target), status=404)
+    all_held = _strs(person.get("seats"))
+    held = [p for p in all_held if p != CORE_PLAN_SLUG]
+    core_in_grid = any(p["plan"] == CORE_PLAN_SLUG for p in view["plans"])
+    rows = {p["plan"]: p for p in view["plans"] if p["plan"] != CORE_PLAN_SLUG}
+    known = ", ".join(sorted(rows)) or "none"
+    if act == "release":
+        mine = sorted(held) if plan is None else [plan] if plan in held else []
+        if not mine and plan is None and CORE_PLAN_SLUG in all_held:
+            return oa._refusal(_CORE_SEAT, status=400)
+        if not mine:
+            of = f" of the plan {plan}" if plan else ""
+            return {"ok": True, "email": target, "note": _HOLDS_NONE.format(email=target, of=of)}
+        if len(mine) > 1:
+            return oa._refusal(_NAME_THE_PLAN.format(known=", ".join(mine)))
+        return mine[0], rows.get(mine[0])
+    if plan is None:
+        if not rows and core_in_grid:
+            return oa._refusal(_ONLY_CORE, status=409)
+        if not rows:
+            return oa._refusal(_NO_PLANS, status=409)
+        if len(rows) > 1:
+            return oa._refusal(_NAME_THE_PLAN.format(known=known))
+        plan = next(iter(rows))
+    if plan not in rows:
+        return oa._refusal(_NO_SUCH_PLAN.format(plan=plan, known=known), status=404)
+    if plan in held:
+        return {"ok": True, "email": target,
+                "note": _HOLDS_SEAT.format(email=target, plan=plan)}
+    row = rows[plan]
+    if row["available"] <= 0:
+        return oa._refusal(_AT_CAP.format(plan=plan, assigned=row["assigned"],
+                                          purchased=row["purchased"], more=1, seats="seat"),
+                           status=409, buy_on_page=True)
+    return plan, row
+
+
+def _seat_snap(view: dict[str, Any], target: str, plan: str) -> tuple[Any, ...]:
+    """What a seat card must still match when the member answers."""
+    row = next((p for p in view["plans"] if p["plan"] == plan), None)
+    person = next((m for m in view["members"] if m["email"].strip().lower() == target), None)
+    seats = tuple(sorted(_strs(person.get("seats")))) if person is not None else None
+    return (tuple(sorted(row.items())) if row else None, seats)
+
+
+def _seat_card(target: str, act: str, plan: str,
+               row: dict[str, Any] | None) -> tuple[str, str, str, list[tuple[str, str]]]:
+    """``(title, detail, note, rows)`` of the ONE card of a seat."""
+    lines = [("member", f"Member: {target}"), ("plan", f"Plan: {plan}")]
+    if row is None:
+        cap = "The seat count of this plan is not known."
+        detail = plan
+    else:
+        after = row["assigned"] + (1 if act == "assign" else -1)
+        after = max(after, 0)
+        cap = (f"After this: uses {after} of {row['purchased']} seats of the plan {plan}. "
+               f"Now: {row['assigned']} of {row['purchased']}.")
+        detail = f"{plan}: {after} of {row['purchased']} seats"
+    lines.append(("cap", cap))
+    if row is not None and row["oversubscribed"]:
+        lines.append(("over", "This plan has more seats in use than it holds."))
+    if act == "assign":
+        return (f"Give {target} a seat of {plan}?", detail,
+                "Approve to give this member a seat. It uses a seat that your organization "
+                "holds, and it buys nothing. Reject to leave the seats as they are.", lines)
+    return (f"Free the seat of {target} on {plan}?", detail,
+            "Approve to free this seat. The member stays in the organization, and another "
+            "member can take the seat. Reject to keep the seat.", lines)
+
+
+def _buy_more(reply: oa._Reply) -> dict[str, Any] | None:
+    """The ``buy_more`` of a 409 at the cap (the Console's own numbers), or None."""
+    detail = reply.data.get("detail") if isinstance(reply.data, dict) else None
+    more = detail.get("buy_more") if isinstance(detail, dict) else None
+    return more if isinstance(more, dict) else None
+
+
+def _seat_sent(sent: oa._Reply, decision: str, target: str, act: str,
+               plan: str) -> dict[str, Any]:
+    """The result of a sent seat write: plain words of a refusal, or what changed."""
+    what = "nothing changed"
+    if sent.ok:
+        data = sent.data if isinstance(sent.data, dict) else {}
+        if act == "release" and data.get("released") is False:
+            note = _HOLDS_NONE.format(email=target, of=f" of the plan {plan}")
+        elif act == "release":
+            note = (f"The seat of {target} on {plan} is free. The member stays in the "
+                    "organization.")
+        else:
+            note = f"{target} holds a seat of the plan {plan} now."
+        return {"ok": True, "decision": decision, "email": target, "action": act,
+                "plan": plan, "note": note}
+    more = _buy_more(sent)
+    # The advice to buy a seat holds for a plan the chat can change, never for Core.
+    if (sent.status == 409 and more is not None
+            and str(more.get("plan_slug") or plan) != CORE_PLAN_SLUG):
+        n = _count(more.get("additional_seats_required")) or 1
+        return oa._refusal(_AT_CAP.format(
+            plan=str(more.get("plan_slug") or plan)[:64], assigned=_count(more.get("assigned")),
+            purchased=_count(more.get("purchased")), more=n, seats="seat" if n == 1 else "seats"),
+            status=409, buy_on_page=True, decision=decision)
+    if sent.status == 404:
+        return oa._refusal(_SEAT_GONE.format(email=target), status=404, decision=decision)
+    return (_seat_words(sent, what, decision=decision)
+            or _console_said(sent, decision=decision))
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def set_seat(email: str, action: Literal["assign", "release"],
+                   plan_slug: str | None = None) -> dict[str, Any]:
+    """Give one member of your organization a seat of a plan, or free the member's seat, after one card; the chat never buys seats."""
+    args = _seat_args(email, action, plan_slug)
+    if isinstance(args, dict):
+        return args
+    target, act, plan = args
+    what = "nothing changed"
+    try:
+        _caller, problem = await _me(SEATS_RIGHT)
+        if problem is not None:
+            return problem
+        view, problem = await _seat_view(what)
+        if problem is not None or view is None:
+            return problem or oa._refusal(oa._SHAPE)
+        chosen = _seat_plan(view, target, act, plan)
+        if isinstance(chosen, dict):
+            return chosen
+        plan, row = chosen
+        title, detail, note, lines = _seat_card(target, act, plan, row)
+        decision, _ = await oa._decide(title, detail, note, lines)
+        if decision != "approved":
+            return oa._not_done(decision)
+        again, problem = await _seat_view(what)
+        if problem is not None or again is None:
+            return {**(problem or oa._refusal(oa._SHAPE)), "decision": decision}
+        if _seat_snap(again, target, plan) != _seat_snap(view, target, plan):
+            return oa._refusal(oa._CHANGED.format(what="seat list"), decision=decision)
+        # R11: the body names the target and the plan, never an org or an actor.
+        if act == "assign":
+            sent = await oa._send("POST", SEAT_ASSIGN_PATH,
+                                  {"member_email": target, "plan_slug": plan,
+                                   "source": SEAT_SOURCE}, act="seat assign")
+        else:
+            sent = await oa._send("POST", SEAT_RELEASE_PATH,
+                                  {"member_email": target, "plan_slug": plan},
+                                  act="seat release")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    return _seat_sent(sent, decision, target, act, plan)
 # ── Remove and purge a member (PAR-4c, task 3935) ───────────────────────────
 #
 # The owner approved this design on 2026-11-24 (answer ca808c74 on task 3107).
@@ -1488,3 +1881,6 @@ ORG_ADMIN_MORE_TOOLS = (
     delete_org_role, read_member_access, set_member_overrides, preview_member_removal,
     rename_org, remove_member, purge_member,
 )
+
+#: The two seat tools of PAR-4d (task 3936), after the tools of PAR-4a.
+ORG_ADMIN_SEAT_TOOLS = (read_seats, set_seat)

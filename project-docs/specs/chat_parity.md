@@ -74,6 +74,44 @@ the tool gives its words. A held chat holds off both writes. PAR-4c paid two
 debt rows, so the admin ceiling went from 17 to 15. Fences:
 `tests/unit/test_org_admin_more_tools.py` and
 `tests/unit/test_org_admin_more_tools_r8.py` (R8).
+**PAR-4d (task 3936) is BUILT, 2026-11-24, and it ships dark.** Two tools join
+the pack `org-admin` (`acb_skills/org_admin_more_tools.py`). `read_seats`
+reads each plan, its seats in use, its cap and who holds a seat
+(`GET /seats/overview`). When the Customer Console does not know the member as
+an admin of the subscription, it reads the counts only (`GET /billing/seats`).
+`set_seat` gives one member a seat of a plan, or frees the seat
+(`POST /seats/assign` or `/seats/release`).
+
+`set_seat` reads `GET /auth/me` first, so a member without `billing:purchase`
+gets plain words and no card. It shows ONE card that names the member, the
+plan and the cap. The owner decided on 2026-11-24 that a seat assign or release
+is not money (D-PAR-4), so one card is enough. A plan at its cap gets plain
+words that name the Billing page, and the chat never buys a seat.
+
+The body of a seat write names no org and no actor (R11). `set_seat` reads the seats again after
+Approve, and it sends nothing when they changed. A box with no Console answers
+503, and the tools say that seats need the Customer Console. A key of the box
+without the `seat_admin` capability gets "seats are not set up on this box".
+The tools never read that 403 as a fault of the member.
+
+**Today only the Core seat exists, and the chat refuses it.** The live
+catalog holds one active plan, `core`. The Core seat is membership itself
+(D19.3), and the Console refuses an assign or a release of it with 400. So
+`set_seat` refuses `core` with plain words before any card, and it never picks
+`core`. A grid of Core alone gets "no plan the chat can change". So `set_seat`
+acts only on a future active plan that is not Core.
+
+Finding for the board: the Seats tab of the page (`SeatsTab.tsx`) has the same flaw. It takes the first
+plan of the grid, or `core`, and the Console then refuses the act.
+
+PAR-4d paid the five seat rows, so the admin ceiling went from 15 to 10. A held
+chat holds off `set_seat` and keeps `read_seats`. The isolation proof is a stub
+Console behind the real seat routes, as the owner decided. The stub derives the
+org from the deployment key and the session member, as the Console does.
+Fences: `tests/unit/test_org_admin_more_tools.py` and
+`tests/unit/test_org_admin_seats_console_stub.py`. The live seats still need
+the deployment key and the `seat_admin` grant (owner gates,
+`customer_console.md` §8, gates 7 and 8).
 
 **PAR-6a (task 3109) is BUILT, 2026-11-24, and it ships dark.** Seven tools
 join the pack `org-admin` (`acb_skills/integrations_admin_tools.py`). The reads
@@ -422,10 +460,11 @@ task of each wave.
   `POST /api/admin/members/requests/{}/{}`. The admin ceiling goes from 36 to
   30. A BFF path that differs from the gateway path takes the tuple form of
   `COVERED`.
-- **PAR-2b pays two rows:** `POST /api/admin/members/invite` and
-  `GET /api/org/seats`. The gateway invite route is `POST /admin/members`. The
-  seats read is `GET /seats/overview`, and it answers 503 when no Customer
-  Console is wired, as in `dev_up` and the tests. The card then says that the
+- **PAR-2b pays one row:** `POST /api/admin/members/invite`. PAR-4d (task
+  3936) paid `GET /api/org/seats` with `read_seats`. The gateway invite route
+  is `POST /admin/members`. The invite card reads the seat count from
+  `GET /seats/overview` too. That route answers 503 when no Customer Console
+  is wired, as in `dev_up` and the tests. The card then says that the
   seat count is not known.
 - **The owner of the pack.** A pack needs an owner agent in
   `_PACK_OWNER_AGENTS` (`gateway/routes/agent.py`). PAR-2a adds `org-admin`.
@@ -478,7 +517,7 @@ task of each wave.
 |---|---|---|---|---|
 | 1 | PAR-4a: groups, roles, overrides, member access, the removal preview, the org name (wave P-8b) | 3107 | HIGH | Built, dark |
 | 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | Built, dark |
-| 1c | PAR-4d: the seats | 3936 | HIGH | To do |
+| 1c | PAR-4d: the seats | 3936 | HIGH | Built, dark |
 | 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | To do |
 | 3 | PAR-6a: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | Built, dark |
 | 4 | The demo of rung 3 | 3110 | none | To do |
@@ -501,8 +540,9 @@ task of each wave.
 - **Reason.** Wave P-8 holds 88 debt rows, the most of all waves. The Settings
   debt went up the most, from 21 to 30 rows. PAR-4 builds on the pack of rung 1.
 - **Order.** PAR-5 is STANDARD, so it can run while PAR-4 waits for the owner.
-- **Row 5.** The admin debt holds 14 rows of billing and seats. PAR-4 names the
-  seats only. An order is money, so the owner decides first.
+- **Row 5.** The admin debt held 14 rows of billing and seats. PAR-4d paid the
+  five seat rows, so nine billing rows stay. An order is money, so the owner
+  decides first.
 - **Row 3 and row 6.** PAR-6a built the tools of row 3 in the pack `org-admin`.
   Four debt rows stay for PAR-6b (task 3932), and each waits for an owner
   decision. A change of a grant widens what an outside agent reaches. The
@@ -624,7 +664,7 @@ he approves the merge.
 3. **The flag flips.** Approve each one on its task: `KNOWLEDGE_PROPOSALS` for
    the Knowledge cards, and `MEMBER_INVITE_EMAIL_ENABLED` for the invite mail.
    No agent of this plan flips a flag.
-4. **The merge of each HIGH slice:** tasks 3102, 3107, 3109 and 3902.
+4. **The merge of each HIGH slice:** tasks 3102, 3107, 3109, 3936 and 3902.
 5. **Billing in the chat.** Decide if the chat gets a tool for an order and
    for the use of an order code. They move money.
 6. **The decision on a pending action.** A run with no person present cannot
