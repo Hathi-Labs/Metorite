@@ -534,3 +534,24 @@ def test_two_pair_requests_at_once_start_one_pairing():
     errors = [r[1] for r in (a, b)]
     assert errors.count(None) == 1 and any(e and "runs already" in e for e in errors)
     assert len(link.starts) == 1
+
+
+def test_a_cancel_while_a_pairing_starts_says_try_again_and_does_not_lie():
+    """Round 3 note: an unlink during the revoke of an old pairing did not
+    reach the new pairing, yet it answered not_linked."""
+    link = FakeLink(pending=10_000)
+    link.revoke_delay = 0.05
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-0", "Old Co"))
+    ctl = _controller(link, store)
+
+    async def go():
+        pairing = asyncio.create_task(ctl.pair("example.com"))
+        await asyncio.sleep(0.01)  # pair waits in the revoke of the old pairing
+        _, note = await ctl.unlink()
+        await pairing
+        _, later = await ctl.unlink()  # the task exists now, so this one cancels it
+        return note, later, ctl.state()
+
+    note, later, state = asyncio.run(go())
+    assert note and "Click Cancel again" in note
+    assert later is None and state["mode"] == NOT_LINKED

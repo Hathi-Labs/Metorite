@@ -193,6 +193,10 @@ class LinkController:
     async def unlink(self) -> Result:
         """Revoke at Metorite, then delete here and stop the poll. The error
         text says when Metorite did not take the revoke."""
+        if self._starting:
+            # A pairing is between its checks and its task: a cancel now
+            # would not reach it. Say so; the next click reaches the task.
+            return self.state(), "A pairing is starting. Click Cancel again in a moment."
         if self._pair_task is not None and not self._pair_task.done():
             self._pair_task.cancel()
             # Wait for the cancel, so the state below is final (no code box).
