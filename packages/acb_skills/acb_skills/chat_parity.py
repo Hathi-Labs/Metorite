@@ -374,6 +374,19 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/whatsapp/chats": "list_whatsapp_chats",
     "GET /api/whatsapp/chats/{}/context": "whatsapp_chat_context",
     "GET /api/whatsapp/chats/{}/messages": "read_whatsapp_chat",
+    # PAR-4a (task 3960): the read tools of the WhatsApp settings, rules, calls and link.
+    "GET /api/me/whatsapp-link": "whatsapp_link_status",
+    "GET /api/whatsapp/calls": "list_whatsapp_calls",
+    "GET /api/whatsapp/calls/diagnostics": "whatsapp_call_diagnostics",
+    "GET /api/whatsapp/calls/{}/events": "whatsapp_call_events",
+    "GET /api/whatsapp/categories": "list_whatsapp_categories",
+    "GET /api/whatsapp/connection/info": "whatsapp_connection_info",
+    "GET /api/whatsapp/labels": "list_whatsapp_labels",
+    "GET /api/whatsapp/pulse": "whatsapp_pulse",
+    "GET /api/whatsapp/rules/preview": "whatsapp_rules_preview",
+    "GET /api/whatsapp/saved-replies": "list_whatsapp_saved_replies",
+    "GET /api/whatsapp/streams": "whatsapp_streams",
+    "GET /api/whatsapp/templates": "list_whatsapp_templates",
     "POST /api/whatsapp/chats/{}/draft": "draft_whatsapp_reply",
     "POST /api/whatsapp/commitments/{}/nudge": "draft_waiting_on_nudge",
     "POST /api/whatsapp/messages/{}/transcribe": "transcribe_whatsapp_voice_note",
@@ -1058,18 +1071,6 @@ DEBT: dict[str, str] = {
     # ── WhatsApp ──
     "DELETE /api/whatsapp/accounts/{}": "P-4",
     "DELETE /api/whatsapp/saved-replies/{}": "P-4",
-    "GET /api/me/whatsapp-link": "P-4",
-    "GET /api/whatsapp/calls": "P-4",
-    "GET /api/whatsapp/calls/diagnostics": "P-4",
-    "GET /api/whatsapp/calls/{}/events": "P-4",
-    "GET /api/whatsapp/categories": "P-4",
-    "GET /api/whatsapp/connection/info": "P-4",
-    "GET /api/whatsapp/labels": "P-4",
-    "GET /api/whatsapp/pulse": "P-4",
-    "GET /api/whatsapp/rules/preview": "P-4",
-    "GET /api/whatsapp/saved-replies": "P-4",
-    "GET /api/whatsapp/streams": "P-4",
-    "GET /api/whatsapp/templates": "P-4",
     "PATCH /api/whatsapp/categories/{}": "P-4",
     "POST /api/me/whatsapp-link/code": "P-4",
     "POST /api/whatsapp/accounts/{}/categories/bootstrap": "P-4",
@@ -1287,7 +1288,7 @@ DEBT_CEILING: dict[str, int] = {
     "email": 10,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
-    "whatsapp": 25,
+    "whatsapp": 13,  # PAR-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). Paid by task 3960.
     "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).

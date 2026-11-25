@@ -406,7 +406,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | email | 13 | 10 | P-2 | 3111, 3919 (P-2c built) |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
-| whatsapp | 25 | 25 | P-4 | 3113 |
+| whatsapp | 25 | 13 | P-4 | 3113 (P-4a built) |
 | people | 19 | 19 | P-5 | 3114 |
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
@@ -419,6 +419,15 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
 | studio | 0 | 3 | P-9 | 3115 |
+
+**P-4a (task 3960) is BUILT, 2026-11-25, with no flag.** Twelve read tools of the
+WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
+`whatsapp_streams`, `whatsapp_pulse`, `list_whatsapp_labels`,
+`list_whatsapp_categories`, `list_whatsapp_templates`,
+`list_whatsapp_saved_replies`, `whatsapp_rules_preview`, `list_whatsapp_calls`,
+`whatsapp_call_events`, `whatsapp_call_diagnostics`, `whatsapp_connection_info`
+and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
+debt.
 
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
