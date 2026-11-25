@@ -99,6 +99,18 @@ not, and Metorite can read the books only while TallyPrime is open.
    not sleep while the connector runs.
 4. Click **Save these switches**.
 
+**If the page says that the sign-in task is off.** The connector makes the
+task only when users cannot change TallyPrime. Otherwise the task would run
+a changed program for each person who signs in. TallyPrime at
+`C:\TallyPrime` often fails this check. An administrator does one of these:
+
+- Lock the folder. Open a command prompt as an administrator, and run the
+  `icacls` command that the message shows. It gives full control to SYSTEM
+  and the administrators, and only read to users.
+- Or install TallyPrime under `C:\Program Files`.
+
+Then click **Save these switches** again.
+
 `[CAPTURE 6: the Keep it running section, with the path and the two switches]`
 
 ## 7. Check
@@ -118,6 +130,7 @@ not, and Metorite can read the books only while TallyPrime is open.
 | "TallyPrime is closed on OFFICE-PC" | The connector runs, but nobody has TallyPrime open | Open TallyPrime with your companies. Turn on **Start TallyPrime at sign-in** (step 6) |
 | "The program on OFFICE-PC has not called for 12 minutes" | The computer is off or asleep, or it has no internet | Turn the computer on and wake it. Turn on **Keep the computer awake** (step 6) |
 | "Waiting for OFFICE-PC" | The admin approved, and nobody confirmed the company name | Open the setup page on that computer, then confirm (step 5) |
+| The setup page: "The sign-in task is off" | Users can change the TallyPrime program or its folder | Lock the folder, or install TallyPrime under `C:\Program Files` (step 6) |
 | "Pair this machine again" | The pairing ended, or an admin disconnected it | Pair again (step 4) |
 | The answer is about the wrong company | Somebody ticked the wrong company | Open the setup page, tick the right companies, then save (step 3) |
 
