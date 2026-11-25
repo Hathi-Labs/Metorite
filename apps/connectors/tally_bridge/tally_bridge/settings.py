@@ -57,6 +57,10 @@ class Settings:
     start_tally_at_signin: bool = False
     tally_exe: str = ""
     keep_awake: bool = False
+    # TLY-2, link mode (integrations_console.md §3.8). The address of
+    # Metorite, such as https://metorite.example. Empty turns link mode off.
+    # It has no default, so the program holds no domain of ours (test 17).
+    link_url: str = ""
 
     def validate(self) -> Settings:
         """Refuse a setting that breaks a rule of the brief. Returns self."""
@@ -85,6 +89,15 @@ class Settings:
             raise SettingsError("COPY_MAX_AGE_DAYS must be between 1 and 90.")
         if not 1 <= self.calls_per_minute <= 600:
             raise SettingsError("CALLS_PER_MINUTE must be between 1 and 600.")
+        if self.link_url:
+            link = urlsplit(self.link_url)
+            dev = link.scheme == "http" and link.hostname and _is_loopback(link.hostname)
+            if not (link.scheme == "https" or dev) or not link.hostname:
+                raise SettingsError("LINK_URL must be https:// (http:// only on a loopback test).")
+            if link.path not in ("", "/") or link.query or link.fragment or "@" in link.netloc:
+                raise SettingsError(
+                    "LINK_URL is a scheme and a host only, such as https://x.example."
+                )
         if self.public_host and ("/" in self.public_host or ":" in self.public_host):
             raise SettingsError("PUBLIC_HOST is a host name only, with no scheme, path or port.")
         return self
@@ -117,6 +130,7 @@ _NAMES: dict[str, tuple[str, type]] = {
     "START_TALLY_AT_SIGNIN": ("start_tally_at_signin", bool),
     "TALLY_EXE": ("tally_exe", str),
     "KEEP_AWAKE": ("keep_awake", bool),
+    "LINK_URL": ("link_url", str),
     "LOG_DIR": ("log_dir", str),
 }
 
