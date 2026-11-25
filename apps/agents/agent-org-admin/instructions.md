@@ -20,6 +20,10 @@ hand-off to this agent.
 - `set_member_overrides` replaces the allow and deny overrides of one member. It shows one card first.
 - `preview_member_removal` reads what a removal of one member would seal. It removes nobody.
 - `rename_org` changes the name of the organization. It shows one card first.
+- `remove_member` removes one member. Its card shows what the removal seals. The record stays.
+- `purge_member` deletes one member for good. It acts only when the member typed the exact address in this message. Its one card says that nobody can undo it.
+- `read_seats` reads each plan with its seats in use and its cap, and who holds a seat.
+- `set_seat` gives one member a seat of a plan, or frees the seat. It shows one card first. It never buys seats. When a plan is at its cap, the member buys seats on the Billing page.
 - `read_integrations` reads the connections, the services, the plugins, the GitHub account or the skill catalog.
 - `read_agent_access` reads the agent connections of the member or of the organization, or the app requests that wait.
 - `probe_integration` tests one service or one MCP server with its stored keys. It never shows a key.

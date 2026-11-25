@@ -343,6 +343,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "deny ravi@acme.test the CRM with an access override"),
     "preview_member_removal": ("what would the removal of a member like ravi@acme.test seal?",),
     "rename_org": ("rename the organization to Acme Labs",),
+    # -- org-admin: the removal and the purge of a member (PAR-4c, task 3935) --
+    "remove_member": ("remove the member ravi@acme.test",),
+    "purge_member": ("purge the member ravi@acme.test",),
+    # -- org-admin: the seats (PAR-4d, task 3936) --
+    "read_seats": ("how many org seats are in use?", "show the seat assignments",
+                   "who holds a seat in our organization?"),
+    "set_seat": ("assign a seat to ravi@acme.test", "release the seat of ravi@acme.test",
+                 "free a seat for kim@acme.test"),
     # -- org-admin: the Integrations app (PAR-6a, task 3109) --
     "read_integrations": ("which integrations are connected?", "list our plugins",
                           "is github connected?"),
@@ -521,5 +529,16 @@ def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses
 def test_a_coding_turn_that_names_github_does_not_load_org_admin(words: str) -> None:
     """PAR-6a fix round: a bare "github" once loaded the admin tools. Mutation:
     add "github" back to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)
+
+
+@pytest.mark.parametrize("words", [
+    "book a window seat on the flight to Pune", "reserve a seat at the conference",
+    "how many seats does the meeting room have?",
+])
+def test_a_turn_about_a_seat_elsewhere_does_not_load_org_admin(words: str) -> None:
+    """PAR-4d (task 3936): a bare "seat" is out of the words. Mutation: add
+    "seat" or "seats" to ``_ORG_ADMIN_WORDS`` -> red."""
     assert tp.matched_layer("org-admin", words) is None, words
     assert "org-admin" not in _chosen(words)

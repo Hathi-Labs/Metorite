@@ -1058,6 +1058,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # PAR-4a (rung 3, task 3107) adds the groups, the custom roles, the
     # overrides of a member, the removal preview and the name of the org
     # (org_admin_more_tools.py). Fence: test_org_admin_more_tools.py.
+    # PAR-4c (rung 3, task 3935) adds the removal and the purge of a member in
+    # the same module.
+    # PAR-4d (rung 3, task 3936) adds the read of the seats and the assign or
+    # release of one seat (org_admin_more_tools.py). Fences:
+    # test_org_admin_more_tools.py, test_org_admin_seats_console_stub.py.
     # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
     # the same pack (integrations_admin_tools.py). Fence:
     # test_integrations_admin_tools.py.
@@ -1065,8 +1070,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Organization members and Integrations",
         "summary": (
             "Manage the members, the sign-in requests, the groups, the roles, the access "
-            "of a member and the name of the organization, or read, test and disconnect "
-            "the Integrations, the agent connections and the MCP servers."
+            "of a member, the seats and the name of the organization, remove or purge a "
+            "member, or read, test and disconnect the Integrations, the agent connections "
+            "and the MCP servers."
         ),
         "description": (
             "A tool pack: the tools of Organisation and of the Integrations app, for the "
@@ -1094,6 +1100,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "set_member_overrides",
             "preview_member_removal",
             "rename_org",
+            "remove_member",
+            "purge_member",
+            "read_seats",
+            "set_seat",
             "read_integrations",
             "read_agent_access",
             "probe_integration",

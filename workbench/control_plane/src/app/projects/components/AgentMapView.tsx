@@ -105,15 +105,22 @@ interface NodeData extends Record<string, unknown> {
 }
 
 /**
+ * SW-110. The selector of the toggle of one session. The key change remounts
+ * the canvas, so the view finds the button again by this. It joins plain
+ * strings: the reader of the Projects UI fence (`test_projects_ui_actions.py`)
+ * cannot read a regex literal inside a template. A backslash and a quote each
+ * get a backslash in front.
+ */
+export function subAgentToggleSelector(sessionId: string): string {
+  const safe = sessionId.split("\\").join("\\\\").split('"').join('\\"');
+  return '[data-subagent-toggle="' + safe + '"]';
+}
+
+/**
  * SW-110. The control that opens the sub-agents of a session. It is a real
  * button with `aria-expanded`. xyflow turns pointer events off on a node that
  * is not interactive, so the button turns them on again.
  */
-/** SW-110. The selector of the toggle of one session. The key change remounts the canvas, so the view finds it again by this. */
-export function subAgentToggleSelector(sessionId: string): string {
-  return `[data-subagent-toggle="${sessionId.replace(/["\\]/g, "\\$&")}"]`;
-}
-
 export function SubAgentToggle({
   count,
   expanded,

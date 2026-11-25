@@ -1399,14 +1399,16 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
 # -- 10. The org-admin pack (PAR-2a, chat_parity.md section 6.3, task 3102) ---
 
 #: The tools of the pack, in the order of the family: the four of PAR-2a, then
-#: the 13 of PAR-4a (task 3107, ``org_admin_more_tools``), then the seven
-#: Integrations tools of PAR-6a (task 3109).
+#: the 13 of PAR-4a (task 3107, ``org_admin_more_tools``), then the two of
+#: PAR-4c (task 3935, the same module), then the two seat tools of PAR-4d
+#: (task 3936), then the seven Integrations tools of PAR-6a (task 3109).
 ORG_ADMIN_TOOLS = ("list_members", "set_member_roles", "set_member_status",
                    "answer_access_request", "list_org_groups", "create_org_group",
                    "edit_org_group", "delete_org_group", "add_org_group_member",
                    "remove_org_group_member", "list_roles_and_rights", "create_org_role",
                    "delete_org_role", "read_member_access", "set_member_overrides",
-                   "preview_member_removal", "rename_org", "read_integrations",
+                   "preview_member_removal", "rename_org", "remove_member",
+                   "purge_member", "read_seats", "set_seat", "read_integrations",
                    "read_agent_access", "probe_integration", "discover_api_setup",
                    "revoke_agent_connection", "disconnect_integration", "set_mcp_server")
 
@@ -1539,7 +1541,7 @@ def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("org-admin", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(ORG_ADMIN_TOOLS) == 24
+    assert len(tools) == len(ORG_ADMIN_TOOLS) == 28
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
