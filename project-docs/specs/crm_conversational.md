@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). Task 1570 is built (2026-11-21, in review, no migration, no flag). A member purge deletes the member's private CRM saved views, and a shared view stays (D175.5).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). Task 1570 is built (2026-11-21, in review, no migration, no flag). A member purge deletes the member's private CRM saved views, and a shared view stays (D175.5). Task 3954 (P-3) is built (2026-11-25, in review, no migration, no flag): the chat reads, previews, uses, dismisses and undoes a field map suggestion, and reads and starts the AI analysis. That pays the suggestion rows of CRM-M2i, the re-run of CRM-M2k and the analysis read of CRM-M2l.**
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
@@ -318,10 +318,10 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2f | Fields, sections, layout, field rules and the module catalogue |
 | CRM-M2g | Saved views, record names, labels, access and the settings |
 | CRM-M2h | Business rules and the open questions of the AI |
-| CRM-M2i | Mapping plans, field suggestions and the conversion mapping |
+| CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion` |
 | CRM-M2j | Rename a pipeline, add a stage and remove a stage |
-| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again |
-| CRM-M2l | The reads of the setup screens, the digests and the exports |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis` |
+| CRM-M2l | The reads of the setup screens, the digests and the exports. The analysis read is built (task 3954): `crm_analysis_status` |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 

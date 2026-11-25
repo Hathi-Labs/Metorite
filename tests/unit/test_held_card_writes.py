@@ -80,9 +80,11 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The seven CRM writes. Each says ``open_world=True`` and keeps saying it.
+#: The nine CRM writes. Each says ``open_world=True`` and keeps saying it.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
+    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+    "crm_decide_suggestion", "crm_rerun_analysis",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
 })
 

@@ -598,13 +598,15 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    # 25: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
-    # and crm_create_pipeline of CRM-M3a.
-    assert len(scope) == 25, "non-vacuity: the owner declares 25 tools"
+    # 30: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # crm_create_pipeline of CRM-M3a, and the five tools of the suggestions and
+    # the AI analysis (P-3, task 3954). The owner chooses the pack of a tool,
+    # so those five are in no pack yet.
+    assert len(scope) == 30, "non-vacuity: the owner declares 30 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
-    assert len(scope - set(family["tools"])) == 12
+    assert len(scope - set(family["tools"])) == 17
     assert "crm_change_history" in family["tools"]
     assert "crm_change_history" not in _orchestrator_scope()
 

@@ -19,6 +19,13 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
+2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
+tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
+`crm_analysis_status` read. `crm_decide_suggestion` and `crm_rerun_analysis`
+write, each on one card. They pay seven CRM rows, so the CRM ceiling goes from
+72 to 65. Fence: `tests/unit/test_crm_suggestion_tools.py`.
+
 **PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
 `KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
 `acb_skills/knowledge_tools.py`: `create_page`, `edit_page`, `create_space`
@@ -424,7 +431,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 72 | P-3 | 3678 |
+| crm | 74 | 65 | P-3 | 3678 (task 3954 paid 7) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -619,7 +626,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 72 | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 65 (72 before task 3954) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the

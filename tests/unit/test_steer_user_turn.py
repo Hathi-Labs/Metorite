@@ -445,7 +445,8 @@ def test_every_crm_card_answers_a_steer_apart_from_its_decline():
     cards = [fn for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)
              and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_confirmation"
                      for n in ast.walk(fn))]
-    assert len(cards) == 7, [fn.name for fn in cards]
+    # 9: 7 before, and crm_decide_suggestion and crm_rerun_analysis (task 3954).
+    assert len(cards) == 9, [fn.name for fn in cards]
     for fn in cards:
         declines = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                     and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)

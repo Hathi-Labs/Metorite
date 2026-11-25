@@ -223,8 +223,9 @@ CRM = App(
         Route("GET", "/crm/aggregate", "crm_aggregate", "A", off_door=_DOOR_READ),
         Route("GET", "/crm/aggregate/stage-dwell", "crm_stage_dwell", "A", off_door=_DOOR_READ),
         # ── analysis ──
-        Route("POST", "/crm/analysis/rerun", "", "B", planned="CRM-M2k", off_door=_AI_RUN),
-        Route("GET", "/crm/analysis/status", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
+        # P-3 (task 3954): the chat reads the analysis and starts it on one card.
+        Route("POST", "/crm/analysis/rerun", "crm_rerun_analysis", "B", off_door=_AI_RUN),
+        Route("GET", "/crm/analysis/status", "crm_analysis_status", "A", off_door=_DOOR_READ),
         # ── connection ──
         Route("GET", "/crm/connection", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("POST", "/crm/connection/zoho/start", "", "X", reason=_OAUTH),
@@ -258,7 +259,9 @@ CRM = App(
               planned="CRM-M2i", off_door=_DECISION),
         Route("POST", "/crm/mapping/plans/{version}/restore", "", "B",
               planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/preview", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
+        # P-3 (task 3954): the chat previews the records of one suggestion.
+        Route("POST", "/crm/mapping/preview", "crm_preview_suggestion", "A",
+              off_door=_DOOR_READ),
         # ── notes ──
         Route("GET", "/crm/notes/search", "crm_search_notes", "A", off_door=_DOOR_READ),
         # ── pipelines ──
@@ -311,13 +314,16 @@ CRM = App(
         # ── import ──
         Route("POST", "/crm/import/zoho/stages", "", "B", planned="CRM-M2k", off_door=_CONNECTION),
         # ── mapping ──
-        Route("GET", "/crm/mapping/suggestions", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
-        Route("POST", "/crm/mapping/suggestions/{slot}/approve", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/suggestions/{slot}/undo", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/suggestions/{slot}/dismiss", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
+        # P-3 (task 3954): the chat reads the suggestions, and uses, undoes and
+        # dismisses one on one card.
+        Route("GET", "/crm/mapping/suggestions", "crm_mapping_suggestions", "A",
+              also=("crm_preview_suggestion", "crm_decide_suggestion"), off_door=_DOOR_READ),
+        Route("POST", "/crm/mapping/suggestions/{slot}/approve", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
+        Route("POST", "/crm/mapping/suggestions/{slot}/undo", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
+        Route("POST", "/crm/mapping/suggestions/{slot}/dismiss", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
         # ── sync ──
         Route("GET", "/crm/sync/status", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("GET", "/crm/sync/short-reads", "crm_list_modules", "A", off_door=_DOOR_READ),

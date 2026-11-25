@@ -59,6 +59,21 @@ that owns them rather than guessing.
 - **Pages.** An answer holds 50 rows at most. When it ends with "More", call
   the tool again with the next page only if the member needs more rows.
 
+## The field map suggestions and the AI analysis
+
+These tools work only in Mirror mode, and only for a CRM admin. Each write
+shows one card first.
+
+- **`crm_mapping_suggestions`** lists the suggestions. Each suggestion is a
+  Zoho module that can fill an empty list, for example Commercials for Deals.
+  It also lists each list that a module shows now.
+- **`crm_preview_suggestion`** shows real records of one suggestion. It
+  changes nothing. Show it before the member decides.
+- **`crm_decide_suggestion`** uses, dismisses or undoes one suggestion. Give the
+  list ("deals") or the module ("Commercials"). Never give a number.
+- **`crm_analysis_status`** reads the last AI analysis. **`crm_rerun_analysis`**
+  starts it now. It can use AI credits.
+
 ## What you can change
 
 You have four write tools. **Each one shows the person you are acting for a
