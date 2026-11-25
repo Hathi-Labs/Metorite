@@ -206,9 +206,10 @@ is not signed yet, because signing waits for the owner's certificate (brief
 §10 question 8). The installer does these steps in this order:
 
 1. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. Only
-   SYSTEM and the administrators can write there, and Users can read. A fresh
-   install removes whatever was at that path, a link too, and makes a new
-   folder. An upgrade refuses a folder that is a link. If this step fails,
+   SYSTEM and the administrators have any right there. A user cannot read
+   the folder, because DPAPI at machine scope lets any reader unprotect the
+   link credential (TLY-2). A fresh install removes whatever was at that
+   path, a link too, and makes a new folder. An upgrade refuses a folder that is a link. If this step fails,
    the setup stops. The service runs as LocalSystem and trusts its settings.
 2. An upgrade then stops the running service.
 3. It installs the service, which starts with Windows.
@@ -224,6 +225,39 @@ is not signed yet, because signing waits for the owner's certificate (brief
 The uninstall stops and removes the service, then runs `uninstall-windows`.
 It also deletes `%ProgramData%\TallyBridge`. A stop gives open requests 10 s,
 well inside the 30 s that Windows waits.
+
+## Link mode (TLY-2a, rung 2)
+
+In link mode the program calls out to Metorite over HTTPS. The office opens
+no port and runs no tunnel (`integrations_console.md` §3.8, D232). The
+Metorite side (LNK-1 to LNK-3) is not built yet, so the tests run against a
+fake link, `tests/unit/test_tally_bridge_link.py`.
+
+Link mode is off until `LINK_URL` holds the address of Metorite. The setting
+has no default.
+
+1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
+   the company types it in Metorite and approves it. The program then shows
+   the name of the company that approved it.
+2. `confirm-link --company "<that name>"` accepts the company. The program
+   serves nothing before this step (rule j).
+3. `serve` runs the long poll beside the setup page. Each poll says whether
+   TallyPrime is up. Each request runs against the read tools of this
+   process, and only on `/mcp`.
+4. `unlink` revokes the credential at Metorite and deletes it here. Use it
+   to refuse a company that you do not know, or to disconnect. The uninstall
+   runs it too.
+
+On Windows (`--windows`), DPAPI keeps the link credential in
+`%ProgramData%\TallyBridge\link.bin`. DPAPI at machine scope lets any local
+process unprotect it, so the rights of that folder protect it. The installer
+gives only SYSTEM and the administrators any right there. A user can neither
+read the folder nor write to it. `test_tally_bridge_installer.py` is its
+fence. On a dev box, `--dev-link-file` keeps the credential in a plain file
+(DEV ONLY).
+
+A disconnect by the admin deletes the credential at the next poll. A cut
+link comes back by itself, after a wait that grows to 60 s.
 
 ## Fixtures
 

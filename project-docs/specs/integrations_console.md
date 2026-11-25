@@ -722,11 +722,13 @@ The owner asked on 2026-11-14 (task 3164) that AI Studio builds on connections. 
 3. **The connector list (IN-11).** One curated file lists each provider that a member can connect. Each row gives its sign-in kind, its owning app, what it unlocks, whether a built-in app shows its data, and where to find a key. The console, Studio, the result card and the chat read that file. It is not a marketplace (§1.3). **BUILT (2026-11-14, task 3174). Studio I8a (task 3168) is the first caller. It reads the label and the scope of a provider.** The file is `packages/acb_common/acb_common/connector_list.json`, with 16 rows. `acb_common.connector_list` reads it in Python. `src/lib/connectors.ts` reads it in TypeScript through `connectors.generated.ts`, which `scripts/gen_connectors.py` writes. Left: the Studio name check (I8, I1b), the console swap and the result card (IN-9).
 4. **A connection outlives its person (IN-12).** An org connection over OAuth acts as the admin who connected it (D98). The member removal names each such connection of the leaver, and an admin connects it again as another person.
 
-### 3.8 Local connectors: a program on the customer's machine (WS-LNK, task 3653, PROPOSED)
+### 3.8 Local connectors: a program on the customer's machine (WS-LNK, task 3653, APPROVED)
 
-> **Status: 📝 PROPOSED, 2026-11-17.** The owner has not approved this design. An agent builds no LNK slice before the owner approves it on task 3653. The epic is task 3654.
+> **Status: ✅ APPROVED, 2026-11-25 (D232).** The owner approved this section on task 3653 (answer `ccf82fd8`): "Approve §3.8, start TLY-2 first". It is the contract now. The epic is task 3654.
 
-> **Verified against code** on 2026-11-17 at `origin/main` `1128df4ed`. This section takes no D-number. The decision gets the next free number when the owner approves it.
+> TLY-2, the program's side, goes first, against a fake link. Each LNK slice of the Metorite side still asks the owner for its own "Approve the merge". The open points of §3.8.12 stay open.
+
+> **Verified against code** on 2026-11-17 at `origin/main` `1128df4ed`. The owner's approval is D232 (`work_plan.md` §3).
 
 #### 3.8.1 The ask and the rule
 
@@ -970,7 +972,7 @@ Rung 1 already uses the product program. Only its transport differs from rung 2 
 
 #### 3.8.10 Changes to the draft contract of the build brief
 
-The local build brief of task 3655 (version 2) holds a draft contract in its §6.8. This section is PROPOSED. When the owner approves it, it becomes the contract, and it wins where the two differ.
+The local build brief of task 3655 (version 2) holds a draft contract in its §6.8. The owner approved this section (D232), so it is the contract, and it wins where the two differ.
 
 | The brief says | This section says | Why |
 |---|---|---|
@@ -1048,6 +1050,36 @@ that we can sync periodically.
 6. **Protection.** The program encrypts the copy with DPAPI at machine scope. It deletes the copy of a company that leaves the allow-list. It deletes the whole copy at Disconnect and at uninstall.
 7. **Health.** Each poll also carries the time of the last good copy. The console then shows "TallyPrime is closed on OFFICE-PC. Reads use the copy of 14:05."
 8. **Where it stays.** The copy stays on the customer's machine, so nothing answers while that machine is off. A copy inside Metorite would answer with the machine off, but the books then leave the customer's machine. LNK-Q8 asks the owner.
+
+#### 3.8.14 The program's wire format (TLY-2a, for the LNK-2 audit to confirm)
+
+TLY-2a builds the program's side first, against a fake link (`tests/unit/test_tally_bridge_link.py`). So the program fixes the bodies of the five routes. LNK-1 and LNK-2 build the Metorite side to these bodies, or they change both sides in one pull request. Each body is JSON. The program follows no redirect.
+
+| Route | Auth | The program sends | Metorite answers |
+|---|---|---|---|
+| `POST /connectors/pair/start` | none | `domain`, `machine`, `version`, `kind` (`tally`) | 200: `device_code` (32 characters or more), `user_code` (8 characters of Crockford base 32, a dash allowed), `expires_in`, `interval` |
+| `POST /connectors/pair/poll` | none | `device_code` | 200: `credential` (`mlc_` and 43 characters), `connector_id`, `company_name`. 400: `error` is `authorization_pending`, `slow_down`, `expired_token` or `access_denied` |
+| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version` | 200: `requests`, a list of at most 32 items. Each item has `id`, `method`, `headers`, `body` (text) and `deadline_s`, the seconds left at hand-out (at most 30). 401 with `{"error": "revoked"}` when the credential is revoked |
+| `POST /connectors/link/reply` | `Bearer <credential>` | `id`, `status`, `headers`, `body` | 200. 404 for an id of another connection or a late reply. The program drops a 404 |
+| `POST /connectors/link/revoke` | `Bearer <credential>` | nothing | 200, also for an unknown credential |
+
+**401 means revoked, and nothing else.** Only a 401 with the body `{"error": "revoked"}` makes the program delete its credential. The door answers a pause of the org (rule i), a closed gate or an error of the lookup with 403 or 503. A 401 with another body gets the same answer. The program then keeps its credential and tries again later.
+
+**What the program does with a request.**
+
+- It runs the request in its own process, on `/mcp` only, with at most 8 requests at once. It polls again at once, so a slow request does not hold up a connect.
+- Only `POST` passes. The MCP layer runs stateless with JSON answers, so it needs no `GET` stream and no `DELETE`.
+- Only the MCP headers pass, in each direction: `content-type`, `accept`, `mcp-session-id`, `mcp-protocol-version` and `last-event-id`.
+- A body over 1,000,000 bytes, a redirect or a failure of the MCP layer gets an error reply with the same id.
+- A request with no time left gets no reply.
+
+**The rest of the behaviour.**
+
+- A poll fails when the network fails or Metorite answers 5xx. The program then waits 1 s, 2 s, 4 s and so on up to 60 s, with 20 % jitter. The first good poll resets the wait.
+- A revoke deletes the credential on the machine and ends the loop. It deletes only a stored credential that is still the same, so a new pairing stays.
+- The program reads its stored state before each poll. An `unlink` or a new pairing ends a running loop at once.
+- An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
+- The time of the last good copy (§3.8.13 point 7) is not in the poll yet. TLY-2b adds it.
 
 ---
 
@@ -1150,7 +1182,11 @@ Each test fails first, and then passes. The file is
 
 ### 7.4 Local connector slices (WS-LNK)
 
-Each slice is PROPOSED until the owner approves §3.8 on task 3653. A fence file is new, except where the row says "existing".
+The owner approved §3.8 on task 3653 (D232). A fence file is new, except where the row says "existing". TLY-2 ships in three parts:
+
+- TLY-2a (task 3663): the link client, against a fake link (§3.8.14).
+- TLY-2b (task 3968): the pair step of the setup page, and the copy time on each poll.
+- TLY-2c (task 3969): the setup guide.
 
 ```
 LNK-0 ─► LNK-1 ─► LNK-2 ─┬─► LNK-3 ─┬─► TLY-2 ─► rung 2 demo (task 3657)
@@ -1197,7 +1233,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missing
 
 Each slice adds its own test file to this list.
 
-**Verify WS-LNK (§3.8, PROPOSED).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
+**Verify WS-LNK (§3.8, APPROVED, D232).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
