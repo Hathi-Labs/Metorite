@@ -38,6 +38,30 @@
     </div>
   </section>
 
+  <section id="link" hidden>
+    <h2>Link to Metorite (no tunnel)</h2>
+    <p class="muted">The bridge calls Metorite. Your office opens no port and changes no router.</p>
+    <p id="link-line" role="status"></p>
+    <div id="link-pair" hidden>
+      <label for="link-domain">Your company domain</label>
+      <input id="link-domain" type="text" autocomplete="off" placeholder="example.com">
+      <button type="button" id="link-start">Pair this computer</button>
+    </div>
+    <div id="link-code-box" hidden>
+      <p>Give this code to an admin of your company. They type it in Metorite, in Integrations:</p>
+      <p><code id="link-code"></code></p>
+      <p class="muted">The code ends in 10 minutes. This page waits for the approval.</p>
+    </div>
+    <div id="link-confirm-box" hidden>
+      <p>Approved by: <strong id="link-company"></strong></p>
+      <p>Check that this is your company. To accept it, type its name exactly as shown:</p>
+      <input id="link-confirm-name" type="text" autocomplete="off">
+      <button type="button" id="link-confirm">Confirm</button>
+      <button type="button" id="link-refuse">This is not my company</button>
+    </div>
+    <button type="button" id="link-unlink" hidden>Unlink this computer</button>
+  </section>
+
   <section id="step4">
     <h2>4. Done</h2>
     <p id="done-line"></p>

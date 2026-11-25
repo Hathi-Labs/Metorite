@@ -43,6 +43,58 @@
     $("save-companies").disabled = false;
   }
 
+  var linkTimer = null;
+
+  function showLink(link) {
+    var on = link && link.mode !== "off";
+    $("link").hidden = !on;
+    if (!on) { return; }
+    var mode = link.mode;
+    $("link-pair").hidden = !(mode === "not_linked" || mode === "disconnected");
+    $("link-code-box").hidden = mode !== "waiting_approval";
+    $("link-confirm-box").hidden = mode !== "waiting_confirm";
+    $("link-unlink").hidden = !(mode === "linked" || mode === "waiting_confirm");
+    $("link-code").textContent = link.code || "";
+    $("link-company").textContent = link.company || "";
+    var lines = {
+      not_linked: "This computer is not linked.",
+      waiting_approval: "Waiting for your admin to approve the code.",
+      waiting_confirm: "Your admin approved. Confirm the company below.",
+      linked: "Linked to " + (link.company || "") + ".",
+      disconnected: "Disconnected by your admin. Pair this computer again to reconnect."
+    };
+    $("link-line").textContent = (link.error ? link.error + " " : "") + (lines[mode] || "");
+    if (mode === "waiting_approval" && linkTimer === null) {
+      linkTimer = window.setInterval(load, 3000);
+    } else if (mode !== "waiting_approval" && linkTimer !== null) {
+      window.clearInterval(linkTimer);
+      linkTimer = null;
+    }
+  }
+
+  function linkCall(path, body) {
+    return call("POST", path, body).then(function (res) {
+      var message = (!res.ok || res.data.note) ? (res.data.error || res.data.note || "Refused.") : "";
+      return load().then(function () {
+        // load() paints the state; the answer of this call stays on top.
+        if (message) { $("link-line").textContent = message; }
+      });
+    });
+  }
+
+  $("link-start").addEventListener("click", function () {
+    linkCall("/setup/api/link/pair", { domain: $("link-domain").value.trim() });
+  });
+  $("link-confirm").addEventListener("click", function () {
+    linkCall("/setup/api/link/confirm", { company: $("link-confirm-name").value });
+  });
+  $("link-refuse").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
+  });
+  $("link-unlink").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
+  });
+
   function load() {
     $("tally-line").textContent = "Looking for TallyPrime...";
     return call("GET", "/setup/api/state").then(function (res) {
@@ -60,6 +112,7 @@
         $("tally-help").hidden = false;
       }
       showCompanies(s.tally.up ? open : null, s.allowed);
+      showLink(s.link);
       $("address").textContent = s.address || "not set (set PUBLIC_HOST to the tunnel host name)";
       $("token-line").textContent = s.token_set ? "An access token exists. Make a new one only to replace it." : "No access token yet.";
       $("done-line").textContent =
