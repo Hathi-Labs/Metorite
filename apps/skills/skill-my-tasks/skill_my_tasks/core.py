@@ -1489,7 +1489,9 @@ async def my_tasks_capture_from_mail(
         p = await _post(_CAPTURE_EMAIL_CREATE,
                         {**ids, "email_id": email_id.strip(), "draft": draft})
         return await _made(p, draft)
-    subject = _same_text(reply_subject)[:MAIL_REPLY_SUBJECT_MAX]
+    # One line, cut with "…" (`_stranger_text`), and no guillemet, so the card
+    # and the write carry the same subject.
+    subject = _mail_text(_same_text(reply_subject), MAIL_REPLY_SUBJECT_MAX)
     stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
                             [*_card_rows(draft), _reply_row(thread_id.strip(), subject),
                              ("label", MAIL_LABEL_LINE)])
