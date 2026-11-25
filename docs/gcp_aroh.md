@@ -73,6 +73,8 @@ workload identity federation. The policy allows a public IP on a VM.
 | Subnet `aroh-sandbox` | `asia-south1`, `10.40.32.0/20`, Private Google Access on (task 3912) |
 | Firewall `aroh-vpc-allow-iap-ssh` | TCP 22 from `35.235.240.0/20` (Google IAP) to the tag `dev` |
 | Firewall `aroh-vpc-allow-iap-ssh-sandbox` | TCP 22 from `35.235.240.0/20` (Google IAP) to the tag `sandbox` only (task 3912) |
+| Cloud Router `aroh-router` | `asia-south1`, on `aroh-vpc`. It carries the NAT below (task 3912, 2026-11-25) |
+| Cloud NAT `aroh-nat` | On `aroh-router`. Subnet list: `aroh-sandbox` only. Automatic external IPs. Logs: errors only. Outbound only, so it opens no inbound path (task 3912, Vijay's answer `e87c3a0c`) |
 | Firewall `aroh-vpc-allow-tailscale-udp` | UDP 41641 from anywhere to the tag `dev`, so Tailscale links direct and not through a relay (task 3899) |
 | Firewall `aroh-vpc-tmp-ssh-office` | **Deleted** (2026-11-22). The `ufw` rule for the office IP on the box is gone too. |
 
@@ -170,7 +172,8 @@ on Hostinger, so member data that a run reads also goes to Google.
 - `ufw` denies all incoming traffic, except TCP 22 from `35.235.240.0/20`.
 - Docker Engine 29.10.0, and gVisor `runsc` release-20261116.0. `runsc install` registered it in `/etc/docker/daemon.json`. The platform is systrap, which needs no KVM.
 - `dockerd` listens only on `/var/run/docker.sock`. It has no TCP port.
-- The box has no route out to the internet. The setup used a temporary external IP for the installs, then deleted it.
+- The setup used a temporary external IP for the installs, then deleted it.
+- **Since 2026-11-25 12:33 UTC, the box reaches the internet outbound through Cloud NAT `aroh-nat`** (§3). The NAT covers only the subnet `aroh-sandbox`, so `aroh-dev` gets no NAT route. The box still has no external IP and no inbound path from the internet. Evidence: from `aroh-sandbox-1`, `curl` to `download.docker.com` returned 200, and `apt-get update` worked.
 
 **Re-check it:**
 
@@ -201,9 +204,12 @@ sign-in on this box. It holds no credentials.
 - BH-3 (WS43-G1),
 - every flag flip (SBX-G13).
 
-**Patches.** The box has no route out to the internet. The owner chooses one
-of these: Cloud NAT on the `aroh-sandbox` subnet only, or a temporary
-external IP for each patch window.
+**Patches.** The box gets its patches through Cloud NAT `aroh-nat` on the
+`aroh-sandbox` subnet only. Vijay chose this on task 3912 (answer
+`e87c3a0c`), and Ishaan's session made the router and the NAT on 2026-11-25.
+To check it: `gcloud compute routers nats describe aroh-nat --router=aroh-router
+--region=asia-south1 --project=metorite-513907`. The subnet list must hold
+`aroh-sandbox` and nothing else.
 
 ## 5. How to reach the box
 
