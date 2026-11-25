@@ -505,12 +505,12 @@ that lives on a box is "not verified", because this slice reads no box.
 | BH-3, the broker unit (WS43-G1) | Not built. The install on the box is an owner gate, not verified | `git ls-files` lists no `acb-sandbox-broker` unit, and `tests/unit/test_sandbox_broker_socket.py` is absent. `box_hardening.md` §5 BH-3 specifies both |
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
-| WS43-G5 | Owner gate. Not verified | `maf_coding_engine.md` line 1677 |
+| WS43-G5 | Owner gate. Task 3912 installed `runsc` on `aroh-sandbox-1` (2026-11-23). Production use is not verified | `maf_coding_engine.md` line 1677. `docs/gcp_aroh.md` §4a |
 | WS-43g, the egress proxy | Not built | `maf_coding_engine.md` line 2162 says `grant_egress()` is not built. `git grep grant_egress` finds no code |
 | `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
 | `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
 | `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
-| SBX-G9, buy the box | **Owner only, and it costs money.** Not done | §13. No agent buys, rents or picks a plan |
+| SBX-G9, buy the box | **Done (D231, 2026-11-23).** The owner approved `aroh-sandbox-1` on GCP on task 3912 | §4.6. `docs/gcp_aroh.md` §4a |
 | SBX-G10, the private network | Owner only. Not done | §13 |
 | SBX-G11, `sandbox_backend=docker-remote` | Owner only. Not done | §13 |
 | SBX-G13, the `compute:` flip | Owner only. Not done | §13. Gate id `ws43-sandbox-flip` |
@@ -851,8 +851,15 @@ waits on WS43-G1.
 tenant data only after a data processing agreement and a region check
 (D130.7).
 
-**What it costs.** The owner picks the plan and buys the box (SBX-G9). This
+**What it costs.** The owner picked the plan and the place (SBX-G9, D231). This
 spec quotes no price.
+
+**Where the box is (task 3912, 2026-11-23).** The owner approved a GCP box
+in place of the Hostinger KVM 2 of task 3786. `aroh-sandbox-1` is built in
+`aroh-vpc`, with no external IP and no service account. This amends D187
+decision 5 and D130.7 for the sandbox box only.
+
+`docs/gcp_aroh.md` §4a holds its settings. SBX-G9 is done. SBX-G10, SBX-G11 and WS43-G1 are still open.
 
 ---
 
@@ -1874,7 +1881,7 @@ dev-phase window does not open the WS-43 gates, and the same holds here.
 | SBX-G6 | Set a credit price for sandbox time |
 | SBX-G7 | Turn on org sharing of tools |
 | SBX-G8 | Set the `web:` profile policy on production, or the production package-host list (WS43-G4) |
-| SBX-G9 | (D187) Buy or rent the dedicated sandbox box of §4.6, and pick its plan |
+| SBX-G9 | (D187) Buy or rent the dedicated sandbox box of §4.6, and pick its plan. **Done** (D231, task 3912): `aroh-sandbox-1` on GCP |
 | SBX-G10 | (D187) Set up the private network between the gateway box and the sandbox box, and each DNS record or firewall rule of either box |
 | SBX-G11 | (D187) Set `sandbox_backend=docker-remote` on production, or put the key that reaches the sandbox box on a box |
 | SBX-G12 | (D187) Read the code of a tool of a tenant for platform adoption (§6.8). It needs the consent record of the source organization. With no record, refuse it always |

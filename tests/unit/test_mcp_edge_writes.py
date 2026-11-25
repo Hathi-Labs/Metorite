@@ -126,7 +126,10 @@ def _uuid(n: int) -> str:
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
                     "update_tasks", "add_comment", "update_comment", "delete_comment",
                     "claim_task", "set_assignees", "add_task_link",
-                    "remove_task_link", "create_project",
+                    "remove_task_link",
+                    # SW-27b: the next number of a project sequence.
+                    "reserve_number",
+                    "create_project",
                     "update_project", "preview_move_tasks", "move_tasks",
                     # WS-39 LP-1a: one update of a project.
                     "post_project_update",

@@ -857,6 +857,44 @@ describe("reportEmail · the text bars", () => {
     expect(text).not.toMatch(/Week of [^\n]* of /);
   });
 
+  it("throughput: the running week, the last bar, says so far (H-184)", () => {
+    const { text } = reportEmail({
+      ...rendered,
+      sections: {
+        throughput: {
+          median_hours: 27,
+          measured: 15,
+          series: [
+            { week_start: "2026-09-14", completed: 8 },
+            { week_start: "2026-09-21", completed: 0 },
+          ],
+        },
+      },
+    });
+    expect(text).toContain(`Week of 21 Sep 2026: ${cells(0)} 0 so far`);
+    expect(text).not.toContain("8 so far");
+  });
+
+  it("throughput: honours maxRows, keeps the newest weeks and says what it cut (H-184)", () => {
+    const series = Array.from({ length: 26 }, (_, i) => ({
+      week_start: new Date(Date.UTC(2026, 0, 5 + 7 * i)).toISOString().slice(0, 10),
+      completed: i + 1,
+    }));
+    const layout = reportLayout(
+      { ...rendered, sections: { throughput: { median_hours: 27, measured: 15, series } } },
+      4,
+    );
+    const part = layout.parts.find((p) => p.head.lead.startsWith("Throughput")) ?? layout.parts[0];
+    expect(part.items).toHaveLength(4);
+    expect(part.items[3]).toMatch(/ 26 so far$/);
+    expect(part.notes).toContain("…and 22 more earlier weeks");
+    const whole = reportLayout(
+      { ...rendered, sections: { throughput: { median_hours: 27, measured: 15, series } } },
+      Infinity,
+    );
+    expect(whole.parts[0].items).toHaveLength(26);
+  });
+
   it("capacity: committed of working h, with the HR half and hours_basis only", () => {
     const { text } = reportEmail({
       ...rendered,

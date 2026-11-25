@@ -40,6 +40,7 @@ import {
 import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
 import { type AgentMap, parseAgentMap } from "./agentMap";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import type { TemplateApplyResult, TemplateRow } from "./templates";
 import { taskVersions } from "./taskUndo";
 
 /**
@@ -57,6 +58,8 @@ export interface ArchiveResult {
   projects: number;
   /** Open tasks in the subtree. Reported, never acted on (D-PM-26). */
   open_tasks: number;
+  /** The root row's new `updated_at`, when an archive stamped the root (WT-6a). */
+  updated_at?: string | null;
 }
 
 /**
@@ -3276,6 +3279,42 @@ export const refsApi = {
 
   remove: (taskId: string, refId: string) =>
     call<{ deleted: string }>(`tasks/${taskId}/refs/${refId}`, { method: "DELETE" }),
+};
+
+/**
+ * WS-39 TPL-1b: project templates (`routes/projects/templates.py`).
+ * `list` gives `null` while `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+ * Every route then answers 404, and the page draws neither the menu item nor
+ * the picker.
+ */
+export const templatesApi = {
+  list: async (): Promise<TemplateRow[] | null> => {
+    try {
+      const res = await call<{ rows: TemplateRow[] }>("templates");
+      return (res.rows ?? []).filter((t) => t.kind === "project");
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  save: (body: { project_id: string; name: string; description?: string | null }) =>
+    call<TemplateRow>("templates", { method: "POST", body: JSON.stringify(body) }),
+
+  apply: (
+    templateId: string,
+    body: {
+      idempotency_key: string;
+      parent_project_id: string;
+      name?: string | null;
+      description?: string | null;
+      start_date: string;
+    },
+  ) =>
+    call<TemplateApplyResult>(`templates/${encodeURIComponent(templateId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 /**

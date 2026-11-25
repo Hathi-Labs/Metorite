@@ -1386,8 +1386,9 @@ def _chat_focus_block(agent_name: str) -> str:
         member = _email_ctx_member()
         if not org or not member or not chat_focus.focus_on(org):
             return ""
+        ctx = artifact_context()
         return chat_focus.orchestrator_block(
-            chat_focus.bound_focus(artifact_context(), member))
+            chat_focus.bound_focus(ctx, member), chat_focus.bound_list(ctx, member))
     except Exception:
         return ""
 
@@ -2613,9 +2614,10 @@ class _EarlyReads:
 
 
 def _start_focus_read(slot: tuple[str, str, str] | None) -> asyncio.Future[Any] | None:
-    """The read of the stored item in focus of *slot* (HRD-11a), or None.
+    """The read of the stored item in focus of *slot* (HRD-11a), with the
+    last list of the chat (HRD-11b), or None.
 
-    ``chat_focus.read_focus`` never raises, and it reads nothing when its org
+    ``chat_focus.read_record`` never raises, and it reads nothing when its org
     is not the bound tenant of the run."""
     if slot is None:
         return None
@@ -2623,7 +2625,7 @@ def _start_focus_read(slot: tuple[str, str, str] | None) -> asyncio.Future[Any] 
         from acb_skills import chat_focus
     except ImportError:  # no item, never the turn
         return None
-    return asyncio.ensure_future(chat_focus.read_focus(*slot))
+    return asyncio.ensure_future(chat_focus.read_record(*slot))
 
 
 def _crm_questions_on(org: Any) -> bool:

@@ -70,7 +70,11 @@ workload identity federation. The policy allows a public IP on a VM.
 |---|---|
 | VPC | `aroh-vpc`, custom subnets, regional routing |
 | Subnet `aroh-dev` | `asia-south1`, `10.40.0.0/20`, Private Google Access on |
+| Subnet `aroh-sandbox` | `asia-south1`, `10.40.32.0/20`, Private Google Access on (task 3912) |
 | Firewall `aroh-vpc-allow-iap-ssh` | TCP 22 from `35.235.240.0/20` (Google IAP) to the tag `dev` |
+| Firewall `aroh-vpc-allow-iap-ssh-sandbox` | TCP 22 from `35.235.240.0/20` (Google IAP) to the tag `sandbox` only (task 3912) |
+| Cloud Router `aroh-router` | `asia-south1`, on `aroh-vpc`. It carries the NAT below (task 3912, 2026-11-25) |
+| Cloud NAT `aroh-nat` | On `aroh-router`. Subnet list: `aroh-sandbox` only. Automatic external IPs. Logs: errors only. Outbound only, so it opens no inbound path (task 3912, Vijay's answer `e87c3a0c`) |
 | Firewall `aroh-vpc-allow-tailscale-udp` | UDP 41641 from anywhere to the tag `dev`, so Tailscale links direct and not through a relay (task 3899) |
 | Firewall `aroh-vpc-tmp-ssh-office` | **Deleted** (2026-11-22). The `ufw` rule for the office IP on the box is gone too. |
 
@@ -81,7 +85,7 @@ another, now or after a VPN joins a local network.
 |---|---|
 | `10.40.0.0/20` | `aroh-dev`, built |
 | `10.40.16.0/20` | `aroh-prod`, the app box, later |
-| `10.40.32.0/20` | `aroh-sandbox`, the sandbox box, later. No public IP. |
+| `10.40.32.0/20` | `aroh-sandbox`, the sandbox box, built (§4a). No public IP. |
 | `10.41.0.0/16` | Cloud SQL private IP, later |
 
 Do not use these ranges. Local machines use them.
@@ -142,6 +146,70 @@ that. The disk adds about USD 36. A stopped VM pays for its disk only.
 
 **What the box must never hold:** customer data, production keys, or the
 release timer. The home server keeps the release timer (`docs/home_box.md`).
+
+## 4a. The sandbox box `aroh-sandbox-1` (task 3912)
+
+**Why it is here.** The owner approved a GCP sandbox box on task 3912
+(2026-11-23). This replaces the Hostinger KVM 2 of task 3786. It amends
+D187 decision 5 and D130.7 for the sandbox box only. Production still runs
+on Hostinger, so member data that a run reads also goes to Google.
+`specs/agent_sandbox.md` §4.6 holds the design.
+
+| Setting | Value |
+|---|---|
+| Zone | `asia-south1-a` |
+| Machine | `n2d-standard-2`: 2 vCPU, 8 GB |
+| OS | Ubuntu 24.04 LTS (image family `ubuntu-2404-lts-amd64`) |
+| Disk | 50 GB `pd-balanced`. No snapshot policy, because the box keeps no tenant data at rest and can be rebuilt |
+| Network | `aroh-sandbox`, internal `10.40.32.2`, **no external IP** |
+| Service account | **None**, and no scopes. Code that escapes gVisor finds no metadata token |
+| Protection | Shielded VM, deletion protection |
+| Labels and tag | `env=sandbox`, `app=aroh`, tag `sandbox`. It has no `dev` tag, so the Tailscale rule does not reach it |
+| SSH keys | Instance metadata only, with `block-project-ssh-keys=TRUE` |
+
+**On the box (2026-11-23):**
+
+- `ufw` denies all incoming traffic, except TCP 22 from `35.235.240.0/20`.
+- Docker Engine 29.10.0, and gVisor `runsc` release-20261116.0. `runsc install` registered it in `/etc/docker/daemon.json`. The platform is systrap, which needs no KVM.
+- `dockerd` listens only on `/var/run/docker.sock`. It has no TCP port.
+- The setup used a temporary external IP for the installs, then deleted it.
+- **Since 2026-11-25 12:33 UTC, the box reaches the internet outbound through Cloud NAT `aroh-nat`** (§3). The NAT covers only the subnet `aroh-sandbox`, so `aroh-dev` gets no NAT route. The box still has no external IP and no inbound path from the internet. Evidence: from `aroh-sandbox-1`, `curl` to `download.docker.com` returned 200, and `apt-get update` worked.
+
+**Re-check it:**
+
+```bash
+gcloud compute instances describe aroh-sandbox-1 --project=metorite-513907 --zone=asia-south1-a \
+  --format='yaml(status,machineType.basename(),labels,serviceAccounts,networkInterfaces[0].accessConfigs)'
+ssh aroh-sandbox-1-iap "sudo docker info --format '{{json .Runtimes}}' | grep -c runsc; sudo runsc --version | head -1; sudo ss -ltnp"
+```
+
+The first command must show no `serviceAccounts` and no `accessConfigs`.
+The second command needs no network. It must count 1 `runsc` runtime, and
+`ss` must show no Docker TCP port such as 2375 or 2376.
+
+**Cost, estimate.** The list price is about USD 47 a month. The machine
+`n2d-standard-2` is about USD 41, half of the `n2d-standard-4` price in §4.
+The disk adds about USD 6. Nobody read this figure from the console. Check it there.
+
+**How to reach it.** Through IAP only, as in §5. The `~/.ssh/config` host is
+`aroh-sandbox-1-iap`, with the same lines as `aroh-dev-1-iap` and the
+instance name changed. Do not run `setup.sh`, `dev_toolchain.sh` or any
+sign-in on this box. It holds no credentials.
+
+**What still waits for the owner.** Each item is a gate of its own:
+
+- the sandbox image (WS43-G2),
+- the private link to the production gateway (SBX-G10),
+- `sandbox_backend=docker-remote` (SBX-G11),
+- BH-3 (WS43-G1),
+- every flag flip (SBX-G13).
+
+**Patches.** The box gets its patches through Cloud NAT `aroh-nat` on the
+`aroh-sandbox` subnet only. Vijay chose this on task 3912 (answer
+`e87c3a0c`), and Ishaan's session made the router and the NAT on 2026-11-25.
+To check it: `gcloud compute routers nats describe aroh-nat --router=aroh-router
+--region=asia-south1 --project=metorite-513907`. The subnet list must hold
+`aroh-sandbox` and nothing else.
 
 ## 5. How to reach the box
 
@@ -247,7 +315,8 @@ Each one has a HANDOFF entry with the recommendation.
 - **The production region.** The tenant database is in Supabase Tokyo
   (`ap-northeast-1`), and the app box is in Mumbai. Choose the app box's
   region together with the database.
-- **The sandbox box** (D187, `specs/agent_sandbox.md` §4.6). Build it in
-  `aroh-vpc`, at `10.40.32.0/20`, only when production moves here. D187 keeps
-  member data with the provider that already processes it.
+- **The sandbox box.** It is built (§4a). The owner approved it on task 3912
+  on 2026-11-23, and that approval replaces "only when production moves here".
+  The patch route is Cloud NAT `aroh-nat` on `aroh-sandbox` only, chosen on
+  2026-11-25 (§4a).
 - **The Router and Vertex** (H-449).

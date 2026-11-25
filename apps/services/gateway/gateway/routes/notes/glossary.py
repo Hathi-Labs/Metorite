@@ -57,12 +57,14 @@ async def add_term(
     if len(term) > 120:
         raise HTTPException(status_code=400, detail="term too long")
     async with _tenant_session() as db:
-        # Idempotent per (user, case-folded term): return the existing row.
+        # Idempotent per (org, user, case-folded term): return the existing row.
+        # The target is the per-org index of task 3844 (migration *_notes_keys_per_org).
         row = (
             await db.execute(
                 text(
                     "INSERT INTO notes_glossary (user_id, term) VALUES (:u, :t) "
-                    "ON CONFLICT (user_id, lower(term)) DO UPDATE SET term=EXCLUDED.term "
+                    "ON CONFLICT (organization_id, user_id, lower(term)) "
+                    "DO UPDATE SET term=EXCLUDED.term "
                     "RETURNING id, term"
                 ),
                 {"u": user.email or "anonymous", "t": term},

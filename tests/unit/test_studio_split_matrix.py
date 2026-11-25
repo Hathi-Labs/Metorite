@@ -27,6 +27,10 @@ CE-15 (task 3463) added one tool, ``my_tasks_list_events``, to the pack
 name and one tool, so its count is one more than the audit's count. No
 other field of a row changed.
 
+PAR-8a (task 3903) added seven tools to the dark pack ``studio-workflows``.
+Each row of BOTH columns that holds that pack gained the seven names and
+seven tools (82 to 89). No other field of a row changed.
+
 P-1a (task 3112) added three more tools to ``calendar-day``:
 ``my_tasks_list_calendar_connections``, ``my_tasks_suggest_title`` and
 ``my_tasks_enrich``. Each row of BOTH columns that holds that pack gained the
@@ -37,21 +41,9 @@ field changed, in BOTH columns: in
 107 tools, so ``projects-cycles`` (6 tools) no longer fits the cap of 110, and
 the loader does not offer it.
 
-P-1c (task 3923) added two more tools to ``calendar-day``:
-``my_tasks_calendar_connection`` and ``my_tasks_disconnect_calendar``. Each
-row of BOTH columns that holds that pack gained the two names and two tools.
-These eight rows changed, and no other field of them:
-``calendar_projects_and_calendar_day_sticky_with_email`` (107 becomes 109),
-``studio_with_crm_records_and_calendar_day`` (split 99 becomes 101, main 112
-becomes 114), ``studio_with_a_sticky_pair_and_two_word_packs`` (split 99
-becomes 101, main 112 becomes 114) and
-``studio_with_a_sticky_pair_the_follower_used_later`` (split 102 becomes 104,
-main 112 becomes 114), each with ``held=off`` and ``held=on``. The cap of 110
-changes no offer of these rows. A ``main`` count above 110 is the audit's
-count plus the growth of the pack, as above. Outside this matrix the cap does
-change an offer: with the core ``projects`` pack and ``calendar-day`` both
-asked for, a base of 56 now leaves no room for a Projects work pack of 11
-tools, so the core ``projects`` pack steps aside (``test_pack_requests.py``).
+P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
+surface and another owner. :func:`_allowed` leaves it out, as it leaves out
+``org-admin``, so no row of the golden file changed.
 
 The sticky state of a chat from before the split has its own tests at the end.
 
@@ -220,8 +212,12 @@ def _allowed(workflows: bool) -> frozenset[str]:
     both lists: the matrix holds the split of TS-1b. The dark ``studio-repair``
     (TOF-3a F12c, two tools, no surface) is out for the same reason. Only an
     owner ``TOOL_PACKS`` line turns it on, and the run drops it from the allow
-    list while the org is off its switches (``_tool_injection._apply_tool_packs``)."""
-    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair"}
+    list while the org is off its switches (``_tool_injection._apply_tool_packs``).
+    The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
+    for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
+    surface, owner ``org-admin``) is out for the same reason."""
+    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
+                                          "people"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
@@ -317,7 +313,7 @@ def _both(case: str, *fields: str) -> dict[str, frozenset[str]]:
 #: the fields of :func:`_view` that differ between ``main`` and ``split``. Every
 #: other case and field is the same. The values are in the golden file.
 NAMED_CHANGES: dict[str, frozenset[str]] = {
-    # 114 becomes 101: the turn loses studio-more, the last pack that came by
+    # 112 becomes 99: the turn loses studio-more, the last pack that came by
     # the surface alone (``choose``, task 1573).
     **_both("studio_with_crm_records_and_calendar_day", "tools", "names"),
     # 99 becomes 109: the core now fits. With the switch off, the three packs
@@ -339,11 +335,11 @@ NAMED_CHANGES: dict[str, frozenset[str]] = {
     # crm-records, which left, is on offer in its place.
     "studio_with_two_sticky_packs|held=on": frozenset({"tools", "names", "evicted", "offered"}),
     # Review P2-a: both Studio packs are sticky and tie. The follow pack leaves
-    # (``_follower_first``), so the core stays: 114 becomes 101. On main the chat
+    # (``_follower_first``), so the core stays: 112 becomes 99. On main the chat
     # had no studio-more, so nothing left.
     **_both("studio_with_a_sticky_pair_and_two_word_packs", "tools", "names", "evicted"),
     # Review round 2: the same pair, but studio-more was used later. No tie, so
-    # the core leaves as the least recently used: 114 becomes 104. The rule of
+    # the core leaves as the least recently used: 112 becomes 102. The rule of
     # the twin applies to a tie only.
     **_both("studio_with_a_sticky_pair_the_follower_used_later", "tools", "names", "evicted"),
     # The three cases on another surface (OTHER_SURFACE_CASES) are not here:
@@ -410,11 +406,11 @@ def test_the_core_stays_and_comes_first() -> None:
     [
         ("studio_alone", 80, 80),
         ("studio_with_email", 110, 110),
-        ("studio_with_crm_records_and_calendar_day", 114, 101),
+        ("studio_with_crm_records_and_calendar_day", 112, 99),
         ("studio_with_email_and_crm_records", 99, 109),
         ("studio_with_projects_reminders", 99, 99),
         ("studio_with_two_sticky_packs", 98, 86),
-        ("studio_with_a_sticky_pair_and_two_word_packs", 114, 101),
+        ("studio_with_a_sticky_pair_and_two_word_packs", 112, 99),
     ],
 )
 def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> None:
@@ -431,13 +427,13 @@ def test_a_sticky_pair_keeps_the_core_and_moves_studio_more_out() -> None:
     """Review P2-a. Both Studio packs are sticky, with the same use and the
     same answer to "named now". Only the first load differs, and the core was
     loaded first. The cap must move studio-more out, not the core. Before the
-    fix the core left: 104 tools with studio-more, crm-records and calendar-day.
+    fix the core left: 102 tools with studio-more, crm-records and calendar-day.
     Mutation: drop ``_follower_first`` from the cap of ``choose`` -> red."""
     for held in HELD:
         row = _golden()["split"][f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row == matrix()[f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row["packs"] == ["studio", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio-more"] and row["tools"] == 101, held
+        assert row["evicted"] == ["studio-more"] and row["tools"] == 99, held
 
 
 def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
@@ -450,7 +446,7 @@ def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
         row = matrix()[key]
         assert row == _golden()["split"][key]
         assert row["packs"] == ["studio-more", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio"] and row["tools"] == 104, held
+        assert row["evicted"] == ["studio"] and row["tools"] == 102, held
 
 
 def test_the_other_follow_packs_keep_the_order_of_main() -> None:
