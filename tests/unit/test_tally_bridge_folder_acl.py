@@ -216,3 +216,27 @@ def test_the_real_reader_on_windows(tmp_path):
     mine.write_bytes(b"MZ")
     with pytest.raises(acl.UnsafeTallyFolder):
         acl.check(str(mine))
+
+
+
+@pytest.mark.parametrize("error", [ImportError("no pywin32"), RuntimeError("pywintypes.error")])
+def test_any_error_of_the_reader_is_refused(error):
+    """Verifier: pywin32 raises pywintypes.error, which is not an OSError."""
+
+    def broken(path: str) -> acl.Security:
+        raise error
+
+    part, reason = acl.unsafe_component(PROGRAM_FILES, broken)
+    assert part == PROGRAM_FILES and "cannot be read" in reason
+
+
+@pytest.mark.parametrize("ace_type", [5, 9, 11])
+def test_an_allowed_callback_or_object_entry_counts_as_a_grant(ace_type):
+    exe = acl.Security(acl.ADMINISTRATORS, acl.entries([(ace_type, 0, acl.FILE_WRITE_DATA, BOB)]))
+    part, _ = acl.unsafe_component(PROGRAM_FILES, _reader({PROGRAM_FILES: exe}))
+    assert part == PROGRAM_FILES
+
+
+def test_a_deny_entry_alone_grants_nothing():
+    exe = acl.Security(acl.ADMINISTRATORS, acl.entries([(1, 0, FULL, BOB)]))
+    assert acl.unsafe_component(PROGRAM_FILES, _reader({PROGRAM_FILES: exe})) is None

@@ -25,9 +25,11 @@ The rule, for each part of the path:
 - **The owner** of any part must be SYSTEM, the Administrators group or
   TrustedInstaller, because an owner can always rewrite the DACL.
 
-Only allow entries count, and an inherit-only entry does not apply to the
-object itself. A deny entry is not trusted to undo an allow entry, so the
-check can refuse a folder that is safe in fact. It fails closed.
+Every entry but a deny entry counts as a grant, the callback and object
+forms too, and an inherit-only entry does not apply to the object itself. A
+deny entry is not trusted to undo an allow entry, so the check can refuse a
+folder that is safe in fact. Any error of the read refuses too. It fails
+closed.
 """
 
 from __future__ import annotations
@@ -44,6 +46,9 @@ TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478
 TRUSTED = frozenset({SYSTEM, ADMINISTRATORS, TRUSTED_INSTALLER})
 
 ACCESS_ALLOWED = 0
+#: The deny types: ACCESS_DENIED, its object, callback and callback-object
+#: forms. Every other entry type in a DACL counts as a grant (it fails closed).
+DENY_TYPES = frozenset({1, 6, 10, 12})
 INHERIT_ONLY = 0x08
 
 FILE_WRITE_DATA = 0x0002  # a file: write; a folder: add a file
@@ -119,7 +124,7 @@ def _reason(security: Security, needed: int, near: bool) -> str | None:
     if security.owner not in TRUSTED:
         return f"its owner is {security.owner}, not an administrator"
     for entry in security.entries:
-        if entry.ace_type != ACCESS_ALLOWED or entry.flags & INHERIT_ONLY:
+        if entry.ace_type in DENY_TYPES or entry.flags & INHERIT_ONLY:
             continue
         if entry.sid in TRUSTED:
             continue
@@ -137,7 +142,9 @@ def unsafe_component(tally_exe: str, read: Callable[[str], Security]) -> tuple[s
         near = index <= 1  # the program, and its folder
         try:
             security = read(part)
-        except OSError as exc:  # the check fails closed
+        # The check fails closed on any error: pywin32 raises pywintypes.error
+        # (not an OSError), and a missing pywin32 raises ImportError.
+        except Exception as exc:
             return part, f"its rights cannot be read ({exc.__class__.__name__})"
         reason = _reason(security, NEAR if near else FAR, near)
         if reason is not None:
