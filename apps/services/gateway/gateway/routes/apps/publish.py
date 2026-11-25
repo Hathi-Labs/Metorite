@@ -109,6 +109,63 @@ def _write_scopes(manifest: dict[str, Any]) -> list[str]:
     return out
 
 
+#: An approved version of the app with this scope set (§4.8). Re-review is
+#: keyed to the scope SET, so one approval covers every version that asks for
+#: the same scopes. The one copy of this query (task 3975).
+_APPROVED_SCOPE_SET_SQL = (
+    "SELECT 1 FROM app_versions WHERE app_id = :app_id "
+    "AND scope_set_hash = :hash AND review_status = 'approved' "
+    "LIMIT 1"
+)
+
+
+async def _scope_set_approved(db: Any, app_id: str, scope_hash: str) -> bool:
+    """True when an admin approved a version of the app with *scope_hash*."""
+    found = (await db.execute(
+        text(_APPROVED_SCOPE_SET_SQL), {"app_id": app_id, "hash": scope_hash},
+    )).fetchone()
+    return found is not None
+
+
+async def require_org_review(
+    db: Any, app_id: str, version: int | None, visibility: str | None,
+) -> None:
+    """Refuse (409) when *version* would serve the whole org unreviewed.
+
+    Task 3975. The review gate of :func:`publish_app` runs at publish time
+    only. A rollback, or a visibility change, can put a version in front of
+    the org with no publish. So each such path calls this check first. An
+    org app whose live version asks for a write tool needs an ``approved``
+    version with the same scope set. A private app, a ``people`` app, a
+    version with no write scope, or no live version passes. The check writes
+    nothing, so a refused call changes nothing."""
+    if visibility != "org" or version is None:
+        return
+    vrow = (await db.execute(
+        text(
+            "SELECT manifest FROM app_versions "
+            "WHERE app_id = :app_id AND version = :version"
+        ),
+        {"app_id": app_id, "version": version},
+    )).fetchone()
+    if vrow is None:
+        return
+    manifest = parse_db_manifest(vrow.manifest)
+    if not _write_scopes(manifest):
+        return
+    scope_hash = scope_set_hash(manifest_scopes(manifest))
+    if await _scope_set_approved(db, app_id, scope_hash):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Version {version} cannot serve the whole organization: it uses "
+            "write tools that no admin approved. Publish the app to the "
+            "organization to ask for the admin review."
+        ),
+    )
+
+
 def _read_entry_bundle(row: Any) -> tuple[bytes, dict[str, Any]]:
     """The workspace's current entry file bytes + the effective manifest."""
     workspace = app_workspace(row)
@@ -173,17 +230,8 @@ async def publish_app(
         write_scopes = _write_scopes(manifest)
         effective_visibility = body.visibility or row.visibility
         needs_review = bool(write_scopes) and effective_visibility == "org"
-        if needs_review:
-            approved_before = (await db.execute(
-                text(
-                    "SELECT 1 FROM app_versions WHERE app_id = :app_id "
-                    "AND scope_set_hash = :hash AND review_status = 'approved' "
-                    "LIMIT 1"
-                ),
-                {"app_id": str(row.id), "hash": scope_hash},
-            )).fetchone()
-            if approved_before is not None:
-                needs_review = False
+        if needs_review and await _scope_set_approved(db, str(row.id), scope_hash):
+            needs_review = False
 
         await db.execute(
             text(
@@ -262,7 +310,9 @@ async def rollback_app(
 
     Task 3967: only an ``approved`` version, or an ``auto`` one (no review
     needed), can go live by this route. Any other review state (§4.8), such
-    as ``pending`` or ``rejected``, is 409, because it would skip the review."""
+    as ``pending`` or ``rejected``, is 409, because it would skip the review.
+    Task 3975: on an org app, :func:`require_org_review` also refuses an
+    ``auto`` version with write tools that no admin approved."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         target = (await db.execute(
@@ -283,6 +333,9 @@ async def rollback_app(
                     "one that needed no review, can go live."
                 ),
             )
+        # Task 3975: an auto version (published while the app was private)
+        # can ask for write tools. The org may not see it unreviewed.
+        await require_org_review(db, str(row.id), body.version, row.visibility)
         await db.execute(
             text(
                 "UPDATE apps SET live_version = :version, updated_at = now() "
