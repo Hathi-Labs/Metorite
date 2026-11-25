@@ -22,12 +22,6 @@ UninstallDisplayName=Tally Bridge
 Compression=lzma2
 SolidCompression=yes
 
-[Dirs]
-; The settings, the DPAPI hashes and the copy key. The service runs as
-; LocalSystem and trusts these files, so [Code] ProtectDataDir makes the
-; folder admins and SYSTEM only: Users may read, never create or change.
-Name: "{commonappdata}\TallyBridge"
-
 [Files]
 Source: "..\dist\TallyBridge\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
@@ -53,51 +47,71 @@ Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; F
 const
   ServiceKey = 'SYSTEM\CurrentControlSet\Services\TallyBridge';
 
-var
-  WasInstalled: Boolean;
-
-// An upgrade stops the running service first, so its files are free.
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  Code: Integer;
-begin
-  WasInstalled := RegKeyExists(HKLM, ServiceKey);
-  if WasInstalled then
-    Exec(ExpandConstant('{sys}\sc.exe'), 'stop TallyBridge', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Result := '';
-end;
-
-procedure Icacls(Params: String);
-var
-  Code: Integer;
-begin
-  if not Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
-    RaiseException('Could not set the rights of the data folder: icacls ' + Params);
-end;
-
 // Review finding 1. %ProgramData% lets every user create a folder or a file,
-// and the LocalSystem service reads them. So: the administrators own every
-// item, every explicit right goes, and the folder takes only these rights.
-// A fresh install also deletes what a user put there before it.
-procedure ProtectDataDir;
+// and the LocalSystem service trusts what it reads there. PrepareToInstall
+// runs before [Files] and before every [Run] step, and an error text that it
+// returns cancels the setup. So the folder is safe before anything reads it.
+
+function Icacls(Params: String): Boolean;
+var
+  Code: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+function HasChildren(Dir: String): Boolean;
+var
+  Find: TFindRec;
+begin
+  Result := False;
+  if FindFirst(Dir + '\*', Find) then
+  begin
+    try
+      repeat
+        if (Find.Name <> '.') and (Find.Name <> '..') then
+          Result := True;
+      until Result or not FindNext(Find);
+    finally
+      FindClose(Find);
+    end;
+  end;
+end;
+
+// The administrators own every item, explicit rights go, inheritance stops,
+// and only SYSTEM and the administrators may write. Users may read. A fresh
+// install deletes what a user put there before it.
+function ProtectDataDir(Fresh: Boolean): String;
 var
   Dir: String;
 begin
+  Result := '';
   Dir := ExpandConstant('{commonappdata}\TallyBridge');
-  Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C');
-  Icacls('"' + Dir + '" /reset /T /C');
-  Icacls('"' + Dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX');
+  if not ForceDirectories(Dir) then
+    Result := 'Could not make the data folder ' + Dir
+  else if not Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') then
+    Result := 'Could not take the ownership of ' + Dir
+  else if not Icacls('"' + Dir + '" /reset /T /C') then
+    Result := 'Could not reset the rights of ' + Dir
+  else if not Icacls('"' + Dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX') then
+    Result := 'Could not set the rights of ' + Dir
+  else if Fresh then
+    DelTree(Dir + '\*', False, True, True)
   // An item made between /reset and /inheritance:r gets the same treatment.
-  Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C');
-  Icacls('"' + Dir + '\*" /reset /T /C');
-  if not WasInstalled then
-    DelTree(Dir + '\*', False, True, True);
+  else if HasChildren(Dir) and not (Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') and Icacls('"' + Dir + '\*" /reset /T /C')) then
+    Result := 'Could not reset the rights of the files in ' + Dir;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+// An upgrade stops the service first (net stop waits until it has stopped),
+// so its files are free. Then the data folder is made safe.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+  WasInstalled: Boolean;
 begin
-  if CurStep = ssPostInstall then
-    ProtectDataDir;
+  WasInstalled := RegKeyExists(HKLM, ServiceKey);
+  if WasInstalled then
+    Exec(ExpandConstant('{sys}\net.exe'), 'stop TallyBridge', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := ProtectDataDir(not WasInstalled);
 end;
 
 // The address that the elevated setup-link step wrote. Inno deletes {tmp},

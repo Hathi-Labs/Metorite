@@ -206,9 +206,9 @@ is not signed yet, because signing waits for the owner's certificate (brief
 §10 question 8). The installer does these steps in this order:
 
 1. An upgrade stops the running service first.
-2. It takes back `%ProgramData%\TallyBridge`. The administrators own each
-   item in it, and the folder gives full control to SYSTEM and the
-   administrators only. Users can read, and cannot create or change a file.
+2. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. The
+   administrators own each item in it, and the folder gives full control to
+   SYSTEM and the administrators only. If this step fails, the setup stops. Users can read, and cannot create or change a file.
    A fresh install also deletes any file that was already there. The
    service runs as LocalSystem and trusts its settings.
 3. It installs the service, which starts with Windows.
