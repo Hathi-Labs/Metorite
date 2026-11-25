@@ -2348,6 +2348,24 @@ def _flat(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+#: The keys of a plan item that :func:`_item_words` shows, by kind. A change
+#: in another key (the ``unmapped`` count of a target, the ``unsorted`` list of
+#: a stage, the ``profile_version`` of a role) changes no behaviour that the
+#: member decides, so :func:`_plan_diff` does not count it. A semantic item
+#: (a ``measure``, a ``join``, a ``query``) shows every key.
+_SHOWN_KEYS: dict[str, tuple[str, ...]] = {
+    "role": ("kind", "slot", "module"),
+    "target": ("kind", "slot", "module", "target", "fields", "transform"),
+    "stage": ("kind", "slot", "module", "field_api_name", "values"),
+}
+
+
+def _item_shape(item: dict[str, Any]) -> str:
+    """The part of a plan item that the member sees, as one line to compare."""
+    keys = _SHOWN_KEYS.get(str(item.get("kind") or ""))
+    return _flat({k: item.get(k) for k in keys} if keys else item)
+
+
 def _item_words(item: dict[str, Any]) -> str:
     """One plan item that is not a field rule, in words. Each value is fenced.
 
@@ -2359,9 +2377,11 @@ def _item_words(item: dict[str, Any]) -> str:
     if kind == "role":
         return f"the module {module} plays the slot {slot}"
     if kind == "target":
+        transform = item.get("transform")
         return (
             f"the module {module} of the slot {slot} fills the target "
             f"{data(item.get('target'))} from {data(_flat(item.get('fields')))}"
+            + (f" with the transform {data(_flat(transform))}" if transform else "")
         )
     if kind == "stage":
         return (
@@ -2373,7 +2393,9 @@ def _item_words(item: dict[str, Any]) -> str:
 
 
 #: The card key of a line of a change: a field rule, or another plan item.
-_FIELD_LINE = "field"
+#: Never "field": the client reads `field <Name>` as a custom field
+#: (``cardFields.ts`` ``cardKey``), so "field 1" drew the label "1".
+_FIELD_LINE = "rule"
 _ITEM_LINE = "plan item"
 
 
@@ -2401,12 +2423,12 @@ def _plan_diff(old: Any, new: Any) -> list[tuple[str, str]]:
             lines.append((_ITEM_LINE, f"comes in: {_item_words(now)}"))
         elif now is None and was is not None:
             lines.append((_ITEM_LINE, f"goes out: {_item_words(was)}"))
-        elif was is not None and now is not None and _flat(was) != _flat(now):
+        elif was is not None and now is not None and _item_shape(was) != _item_shape(now):
             lines.append((_ITEM_LINE, (
                 f"the slot {data(slot)} moves from the module {data(was.get('module'))} "
                 f"to {data(now.get('module'))}")))
-    gone = {_flat(i): i for i in olds if i.get("kind") != "role"}
-    came = {_flat(i): i for i in news if i.get("kind") != "role"}
+    gone = {_item_shape(i): i for i in olds if i.get("kind") != "role"}
+    came = {_item_shape(i): i for i in news if i.get("kind") != "role"}
     for key in sorted(set(came) - set(gone)):
         lines.append((_ITEM_LINE, f"comes in: {_item_words(came[key])}"))
     for key in sorted(set(gone) - set(came)):
@@ -2415,7 +2437,7 @@ def _plan_diff(old: Any, new: Any) -> list[tuple[str, str]]:
 
 
 def _diff_card(lines: list[tuple[str, str]]) -> dict[str, str]:
-    """The card lines of a change. A field rule is "field N", and each other
+    """The card lines of a change. A field rule is "rule N", and each other
     item of the plan is "plan item N"."""
     count: dict[str, int] = {}
     card: dict[str, str] = {}
@@ -2454,8 +2476,8 @@ def _too_big(lines: int, held: int, act: str, page_act: str) -> str:
     """The refusal before a card that cannot show the whole change."""
     return (
         f"This change has {lines} lines, and one card holds {held} of them, so "
-        f"nothing was {act}. {page_act} it on the Field map page, where the "
-        "member sees each line."
+        f"nothing was {act}. {page_act} it in the Field mapping section of the "
+        "CRM settings, where the member sees each line."
     )
 
 
@@ -2610,7 +2632,8 @@ async def crm_approve_mapping_plan(version: int) -> str:
     them). The card shows each change: each field rule, and each other item
     of the plan, such as the module that plays a slot or a stage map. A chat
     that read mail from outside senders does not have this tool. Then the
-    member approves the draft on the Field map page."""
+    member approves the draft in the Field mapping section of the CRM
+    settings."""
     draft = await _read_plan(version)
     number = draft.get("version") or version
     if draft.get("state") != "draft":

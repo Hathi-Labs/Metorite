@@ -1435,8 +1435,8 @@ CARD_WRITE_KEY = "card_write"
 #: exception, and it is not on this list either: :data:`HELD_CLASS_C_TOOLS`
 #: holds it behind its own flag. ``crm_approve_mapping_plan`` (class C, task
 #: 3953) approves the field map of the whole org, and no owner decision keeps
-#: it. So a held chat drops it, and the member approves the draft on the
-#: Field map page. ``nudge_task`` tells another
+#: it. So a held chat drops it, and the member approves the draft in the
+#: Field mapping section of the CRM settings. ``nudge_task`` tells another
 #: person. ``add_report_recipient``, ``remove_report_recipient`` and
 #: ``set_report_schedule`` change who gets mail later, so they are paths out.
 #: ``attach_to_task`` moves a file of the chat onto a shared task. A store write

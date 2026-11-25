@@ -325,7 +325,7 @@ async def test_an_approve_shows_the_change_then_posts(monkeypatch) -> None:
     assert len(cards) == 1
     context = cards[0]["context"]
     assert "draft → approved" in context
-    assert "field 1: Deal «Segment» goes to the column «description»" in context
+    assert "rule 1: Deal «Segment» goes to the column «description»" in context
     assert "plan item 1: comes in: a «measure» item: «" in context
     # The rule that stays is no change, so the card does not show it.
     assert "Industry_Code" not in context
@@ -485,7 +485,7 @@ async def test_a_card_shows_the_module_the_slot_and_the_stage(
             "«Deals_Custom»") in context
     assert "plan item 2: comes in: the module «Deals_Custom» of the slot «deals» maps " \
         "the stages of «Stage_X»" in context
-    assert "field 1" not in context
+    assert "rule 1" not in context
     assert next(c["path"] for c in writes(calls)).endswith(f"/{act}")
 
 
@@ -539,7 +539,7 @@ async def test_a_change_of_sixty_lines_is_refused_before_the_card(
     calls = _plans_gateway(monkeypatch, plans, approved=2)
     out = await call()
     assert writes(calls) == [] and cards == []
-    assert f"nothing was {act}" in out and f"{page_act} it on the Field map page" in out
+    assert f"nothing was {act}" in out and f"{page_act} it in the Field mapping section of the CRM settings" in out
     held = int(out.split("one card holds ")[1].split(" ")[0])
     assert "This change has 60 lines" in out and 0 < held < 60
     lines = _M._plan_diff([], _wide(60))
@@ -563,3 +563,74 @@ async def test_an_approve_of_a_draft_on_an_old_version_shows_no_card(monkeypatch
     assert writes(calls) == [] and cards == []
     assert "made from version 1, but version 2 is approved now" in out
     assert "Read the plan again" in out
+
+
+# ── Round 2 of task 3953: the card key and the hidden keys ──────────────────
+
+
+async def test_a_rule_line_of_a_card_has_the_key_rule_n(monkeypatch) -> None:
+    """The client reads `field <Name>` as a custom field, so "field 1" drew the
+    label "1". Mutation: key the rule lines "field N" -> red."""
+    from tests.unit._card_words import card_key, card_keys
+
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    await _M.crm_draft_mapping_plan([
+        {"op": "put", "entity": "deals", "field_api_name": "Segment",
+         "target_column": "description"},
+        {"op": "remove", "entity": "deals", "field_api_name": "Tier"}])
+    lines = cards[0]["context"].split("\n")
+    assert lines[1].startswith("rule 1: ") and lines[2].startswith("rule 2: ")
+    assert card_key("rule 1") == "rule N" and "rule N" in card_keys()
+    assert not any(line.startswith("field ") for line in lines)
+
+
+def _target(**extra: Any) -> dict[str, Any]:
+    return {"kind": "target", "slot": "deals", "module": "Deals_Custom",
+            "target": "amount", "fields": ["Amount_X"], **extra}
+
+
+def test_a_target_that_differs_only_in_a_hidden_key_gives_no_line() -> None:
+    """(a) ``unmapped`` is a count the sync keeps. Mutation: compare the whole item -> red."""
+    old = [_role("Deals_Custom"), _target(unmapped=3)]
+    new = [_role("Deals_Custom"), _target(unmapped=9)]
+    assert _M._plan_diff(old, new) == []
+
+
+def test_a_role_that_differs_only_in_its_profile_version_gives_no_line() -> None:
+    """(b) Mutation: compare the whole role -> a move to the same module -> red."""
+    old = [{**_role("Potentials"), "profile_version": 3}]
+    new = [{**_role("Potentials"), "profile_version": 4}]
+    assert _M._plan_diff(old, new) == []
+
+
+def test_a_target_with_a_new_transform_gives_a_line_that_names_it() -> None:
+    """(c) A transform changes what the sync writes, so the member sees it."""
+    old = [_role("Deals_Custom"), _target(transform="none")]
+    new = [_role("Deals_Custom"), _target(transform="cents_to_units")]
+    lines = _M._plan_diff(old, new)
+    assert [kind for kind, _line in lines] == ["plan item", "plan item"]
+    words = " ".join(line for _kind, line in lines)
+    assert "with the transform «cents_to_units»" in words
+    assert "with the transform «none»" in words
+
+
+def test_a_real_module_move_still_gives_one_line() -> None:
+    """(d) Mutation: drop the module from the shown keys -> no line -> red."""
+    old = [{**_role("Potentials"), "profile_version": 3}]
+    new = [{**_role("Deals_Custom"), "profile_version": 4}]
+    assert _M._plan_diff(old, new) == [(
+        "plan item", "the slot «deals» moves from the module «Potentials» to «Deals_Custom»")]
+
+
+async def test_a_draft_that_changes_only_a_hidden_key_is_refused(monkeypatch) -> None:
+    plans = {
+        "2": {"version": 2, "state": "approved", "rules": [_role("A"), _target(unmapped=1)]},
+        "3": {"version": 3, "state": "draft", "based_on": 2,
+              "rules": [_role("A"), _target(unmapped=7)]},
+    }
+    cards = approve(monkeypatch)
+    calls = _plans_gateway(monkeypatch, plans, approved=2)
+    out = await _M.crm_approve_mapping_plan(3)
+    assert writes(calls) == [] and cards == []
+    assert "changes nothing" in out

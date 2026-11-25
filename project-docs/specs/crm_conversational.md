@@ -4,7 +4,7 @@
 
 **Task 3953 (2026-11-25, in review, no migration, no flag).** It built the field rules of CRM-M2f and the mapping plans of CRM-M2i. The chat reads the Field map and the plan, one page at a time. It makes, approves, rejects, drafts and restores on one card.
 
-A chat that read outside mail does not keep the approve of a plan. The member then approves the plan on the Field map page. The preview of a plan waits.
+A chat that read outside mail does not keep the approve of a plan. The member then approves the plan in the Field mapping section of the CRM settings. The preview of a plan waits.
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
