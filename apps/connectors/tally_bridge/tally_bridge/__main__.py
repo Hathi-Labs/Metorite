@@ -270,16 +270,24 @@ def _serve(args: argparse.Namespace) -> int:
             access_log=False,
         )
     )
+    _awake_while(
+        settings.keep_awake, lambda: asyncio.run(_serve_with_copy(server, reader, copy, live))
+    )
+    return 0
+
+
+def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:
+    """Run *run*, and keep the machine awake meanwhile when the setting is on.
+    The request ends when *run* returns or raises (TLY-5)."""
     from tally_bridge.windows.system import KeepAwake
 
-    awake = KeepAwake()
-    if settings.keep_awake:
+    awake = awake or KeepAwake()
+    if keep_awake:
         awake.start()
     try:
-        asyncio.run(_serve_with_copy(server, reader, copy, live))
+        run()
     finally:
         awake.stop()
-    return 0
 
 
 async def _serve_with_copy(server: Any, reader: Any, copy: CopyStore | None, live: Any) -> None:

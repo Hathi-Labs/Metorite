@@ -277,3 +277,49 @@ def test_uninstall_windows_undoes_everything(windows_box, tmp_path):
     assert not (windows_box / stores.SECRETS_FILE).exists()
     assert not (windows_box / stores.COPY_KEY_FILE).exists()
     assert list(copy_dir.iterdir()) == []
+
+
+# --- Verifier findings: the flags, the entropy, the stop on a raise --------------
+
+
+def test_the_dpapi_flags_are_machine_scope_and_silent():
+    """Machine scope lets the service account and the person at the desk read
+    the same blob. UI_FORBIDDEN keeps a service from waiting on a prompt."""
+    assert dpapi.CRYPTPROTECT_LOCAL_MACHINE == 0x4
+    assert dpapi.CRYPTPROTECT_UI_FORBIDDEN == 0x1
+    assert dpapi.FLAGS == 0x5
+
+
+def test_the_entropy_ties_each_blob_to_this_program():
+    assert dpapi.ENTROPY == b"tally-bridge/dpapi/v1"
+
+
+def test_keep_awake_stops_when_the_server_raises():
+    api = FakePower()
+    awake = system.KeepAwake(api)
+
+    def boom():
+        raise RuntimeError("the server stopped")
+
+    with pytest.raises(RuntimeError):
+        cli._awake_while(True, boom, awake)
+    assert api.calls == [system.ES_CONTINUOUS | system.ES_SYSTEM_REQUIRED, system.ES_CONTINUOUS]
+
+
+def test_keep_awake_off_asks_nothing():
+    api = FakePower()
+    cli._awake_while(False, lambda: None, system.KeepAwake(api))
+    assert api.calls == []
+
+
+def test_delete_all_removes_only_its_own_temporary_files(tmp_path):
+    from tally_bridge.localcopy import CopyStore, MemoryKeyProvider
+
+    folder = tmp_path / "copy"
+    folder.mkdir()
+    own = folder / ("a" * 32 + ".tmp")
+    theirs = folder / "report.tmp"
+    for f in (own, theirs, folder / ("b" * 32 + ".copy")):
+        f.write_bytes(b"x")
+    assert CopyStore(folder, MemoryKeyProvider()).delete_all() == 1
+    assert not own.exists() and theirs.exists()

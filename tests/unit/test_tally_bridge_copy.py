@@ -391,6 +391,6 @@ def test_a_decryptable_file_of_the_wrong_shape_reads_as_no_copy(store, tmp_path)
 
 def test_delete_all_also_removes_a_left_over_temp_file(store, tmp_path):
     store.save(Snapshot(company=CO, copied_at=datetime.now(UTC)))
-    (tmp_path / "copy" / "x.tmp").write_bytes(b"x")
+    (tmp_path / "copy" / ("c" * 32 + ".tmp")).write_bytes(b"x")
     store.delete_all()
     assert list((tmp_path / "copy").iterdir()) == []
