@@ -1307,6 +1307,8 @@ _SSH_DROP = (
     b"10.20.30.40 docker system dial-stdio] has exited with exit status 255: "
     b"sandbox@10.20.30.40: Connection reset.\n"
     b"Identity file /home/acb/.ssh/sandbox_key not accessible.\n"
+    b"ssh: connect to host 10.20.30.40 port 2222: Connection refused\n"
+    b"dial tcp 10.0.0.5:2376: connect: connection refused\n"
     b"open /etc/metorite/sandbox-tls/key.pem: permission denied\n"
     b"Authorization: Bearer abcdef0123456789 sk-ant-api03-abcdefghijklmnopqrstuvwx\n"
 )
@@ -1331,10 +1333,12 @@ async def test_the_stderr_of_a_compute_run_holds_no_address_path_or_key(
     err = got.stderr.decode("utf-8")
     for leak in (
         "sandbox@", "-l sandbox", "2222", "/home/acb", "/etc/metorite/sandbox-tls",
-        "sk-ant-api03", "abcdef0123456789",
+        "sk-ant-api03", "abcdef0123456789", "10.20.30.40", "10.0.0.5", "2376",
     ):
         assert leak not in err, f"{leak!r} reached the stderr of a compute run: {err}"
     assert "-l (user) -p (port)" in err
+    assert "connect to host (sandbox box) port (port)" in err  # review P3
+    assert "dial tcp (sandbox box)" in err
     assert "(host path)/.ssh/sandbox_key" in err and "(secret)" in err
     assert "ValueError: bad row" in err, "the member's own error stays readable"
     assert got.stdout == b"result 42\n", "the stdout of the member's code stays as it is"
@@ -1457,6 +1461,24 @@ async def test_a_container_made_after_a_run_timeout_is_reaped(
     await broker.reap_once()
     assert ["rm", "-f", "cid-late"] in docker.calls
     assert docker.box == {} and not broker._remote_orphans and not broker._late_starts
+    await broker.stop()
+
+
+async def test_a_cancel_during_docker_run_leaves_its_start_label(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P2. A cancel kills the CLI as a timeout does, so the daemon can
+    make the container late on this path too."""
+    docker.block_run = asyncio.Event()
+    with bound_run(ORG, thread="t-cancel"):
+        task = asyncio.create_task(broker.acquire())
+        await until(lambda: docker.runs(), "docker run must be in flight")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    labels = dict(v.split("=", 1) for v in flag_values(docker.runs()[-1], "--label"))
+    entry = f"start:{labels[sb.LABEL_START]}"
+    assert entry in broker._remote_orphans and entry in broker._late_starts
     await broker.stop()
 
 
@@ -1722,7 +1744,7 @@ async def test_docker_a_failed_sweep_removal_is_reaped_on_a_real_daemon(
     cli = _OwnOrgCLI()
     broker = sb.SandboxBroker(docker=cli)
     cli.fail_rm = 1
-    assert await broker.sweep() == 1
+    assert await broker.sweep() == 0, "a failed removal removed nothing"
     assert _exists(host, cid), "the failed removal left the container"
     assert any(cid.startswith(o) for o in broker._remote_orphans)
     await broker.reap_once()

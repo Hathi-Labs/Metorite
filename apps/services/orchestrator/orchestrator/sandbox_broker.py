@@ -520,7 +520,13 @@ def _host_paths(settings: Any) -> list[str]:
     return sorted((p for p in paths if p.strip("/\\")), key=len, reverse=True)
 
 
-def _scrub(text: str) -> str:
+#: SBX-15c review P3: the forms in which the docker CLI and ssh name a port or
+#: a dialled address. Only the text for the model passes through them.
+_PORT_WORDS = re.compile(r"(?i)\b(port\s+)\d{1,5}\b")
+_DIAL = re.compile(r"(?i)\b(dial\s+(?:tcp|unix)\S*\s+)\S+")
+
+
+def _scrub(text: str, *, model: bool = False) -> str:
     """*text* with the daemon address cut to its scheme and host, and with no
     path or credential of this box.
 
@@ -528,7 +534,8 @@ def _scrub(text: str) -> str:
     broker logs Docker's stderr. The user and the port go. SBX-15c: the
     stderr of a compute run reaches the model too, so each host path of
     :func:`_host_paths` and each credential shape of the one list
-    (``acb_common.secret_shapes``) go as well.
+    (``acb_common.secret_shapes``) go as well. With *model* (the stderr that
+    the model reads), the host of the sandbox box and each port go too.
     """
     if not text:
         return text
@@ -540,6 +547,15 @@ def _scrub(text: str) -> str:
         out = re.sub(re.escape(path) + r"(?![\w-]|\.[\w-])", "(host path)", out)
     for rx in (REDACTION_BEARER, *REDACTION_SHAPES):
         out = rx.sub("(secret)", out)
+    if model:
+        # The model also gets no host of the sandbox box and no port.
+        raw = str(getattr(settings, "sandbox_docker_host", "") or "").strip()
+        with contextlib.suppress(ValueError):
+            host = urlsplit(raw).hostname if raw else None
+            if host:
+                out = re.sub(rf"(?<![\w.-]){re.escape(host)}(?![\w-]|\.[\w-])", "(sandbox box)", out)
+        out = _PORT_WORDS.sub(r"\1(port)", out)
+        out = _DIAL.sub(r"\1(sandbox box)", out)
     return out
 
 
@@ -1592,7 +1608,7 @@ class DockerCLI:
         # ssh link puts the daemon address in it, so it is scrubbed here.
         return CollectResult(
             rc=rc, stdout=bytes(out),
-            stderr=_scrub(err.decode("utf-8", errors="replace")).encode("utf-8"),
+            stderr=_scrub(err.decode("utf-8", errors="replace"), model=True).encode("utf-8"),
             timed_out=timed_out,
             truncated=total[0] > cap or total[1] > cap,
         )
@@ -3368,10 +3384,16 @@ class SandboxBroker:
             raise SandboxBusy(ONE_ORG_BUSY)
 
     async def _run_container(self, handle: SandboxHandle, argv: list[str]) -> None:
-        result = await self._docker.run(argv, timeout=_RUN_TIMEOUT_SECONDS)
-        if result.rc != 0 and "already in use" in result.stderr:
-            await self._clear_stale_name(handle)
+        try:
             result = await self._docker.run(argv, timeout=_RUN_TIMEOUT_SECONDS)
+            if result.rc != 0 and "already in use" in result.stderr:
+                await self._clear_stale_name(handle)
+                result = await self._docker.run(argv, timeout=_RUN_TIMEOUT_SECONDS)
+        except BaseException:
+            # SBX-15c review P2: a cancel kills the CLI as a timeout does, so
+            # the daemon can make the container late on this path too.
+            self._note_late_start(handle.start_id)
+            raise
         if result.timed_out:
             # SBX-15c: the daemon can make the container after the CLI died,
             # and after the start-label lookup of the cleanup. The reaper
@@ -3992,6 +4014,7 @@ class SandboxBroker:
                         error=gone.stderr[-300:],
                     )
                     self._note_orphans(ids)
+                    ids = []  # nothing was removed
         except (SandboxUnavailable, OSError) as exc:
             self._note_orphans(ids)
             self._note_docker(False)
