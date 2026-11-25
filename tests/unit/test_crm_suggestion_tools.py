@@ -32,7 +32,15 @@ from typing import Any
 
 import pytest
 
-from tests.unit._crm_agent_fakes import approve, deny, fake_gateway, load_agent_module, writes
+from tests.unit._crm_agent_fakes import (
+    FakeClient,
+    FakeResponse,
+    approve,
+    deny,
+    fake_gateway,
+    load_agent_module,
+    writes,
+)
 
 _M = load_agent_module("crm_assistant_suggestion_tools")
 
@@ -179,6 +187,14 @@ async def test_an_undo_posts_the_slot_of_the_list_in_use(monkeypatch) -> None:
     assert "Leads shows its own list again" in out
 
 
+async def test_an_undo_with_no_list_in_use_says_so_plainly(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch, {"suggestions": [_COMMERCIALS], "overlays": []})
+    out = await _M.crm_decide_suggestion("undo", list_name="leads")
+    assert writes(calls) == [] and cards == []
+    assert out == "No list shows a Zoho module now. Nothing was changed."
+
+
 async def test_an_undo_of_a_list_no_module_shows_is_refused(monkeypatch) -> None:
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
@@ -236,12 +252,14 @@ async def test_a_declined_decision_writes_nothing(monkeypatch) -> None:
 # ── crm_rerun_analysis ──────────────────────────────────────────────────────
 
 
-async def test_a_rerun_that_meets_a_running_one_says_so(monkeypatch) -> None:
+async def test_a_rerun_reads_the_status_then_asks_then_posts(monkeypatch) -> None:
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_rerun_analysis()
-    assert [(c["method"], c["path"]) for c in calls] == [("POST", "/crm/analysis/rerun")]
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", "/crm/analysis/status"), ("POST", "/crm/analysis/rerun")]
     assert "AI credits" in cards[0]["context"]
+    # The route answers `started: false`: a run began between the read and the POST.
     assert "runs already" in out and "no second one" in out
 
 
@@ -249,4 +267,37 @@ async def test_a_declined_rerun_sends_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_rerun_analysis()
-    assert calls == [] and out.startswith("Declined:")
+    assert writes(calls) == [] and out.startswith("Declined:")
+
+
+class _StatusClient(FakeClient):
+    """The status read answers ``STATUS`` with ``BODY``. A test sets both."""
+
+    STATUS = 200
+    BODY: Any = None
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if method.upper() == "GET" and url.endswith("/crm/analysis/status"):
+            return FakeResponse(self.BODY, status_code=self.STATUS)
+        return resp
+
+
+@pytest.mark.parametrize(("status", "body", "words"), [
+    (403, {"detail": "Forbidden"}, "Only a CRM admin"),
+    (404, {"detail": "Not Found"}, "not on for this CRM"),
+    (200, {"run": None, "allowed": False}, "not on for this organization"),
+    (200, {"run": {"id": "a1", "state": "running", "started_at": "10:00",
+                   "steps": {}, "outcome": None}, "allowed": True}, "runs already"),
+])
+async def test_a_rerun_that_cannot_start_shows_no_card(
+    status: int, body: Any, words: str, monkeypatch,
+) -> None:
+    """Each refusal comes before the card, and sends no POST."""
+    client = type("_Client", (_StatusClient,), {"STATUS": status, "BODY": body})
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, _responder(), user=_USER, client_class=client)
+    out = await _M.crm_rerun_analysis()
+    assert cards == [] and writes(calls) == []
+    assert [c["path"] for c in calls] == ["/crm/analysis/status"]
+    assert words in out

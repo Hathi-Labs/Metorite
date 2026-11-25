@@ -99,7 +99,7 @@ D133 says an admin approves each change that the AI proposes. D164 keeps that ru
 
 Four rules hold at every level.
 
-1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after.
+1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after. Four routes do not log a row yet: the approve, dismiss and undo of a field map suggestion, and the re-run of the AI analysis. Task P-3j adds those rows.
 2. **An AI proposal never applies by itself.** It is a card in "Needs your input" (§20.17 of `crm_platform.md`, D134).
 3. **A named sales lead** is a member who holds the `lead` role in an `org_group` of the sales team (`infra/postgres/138_groups_and_session_participants.sql:55`).
 4. **D131 stays.** D131 governs automations that Mira runs. The ladder governs changes to the CRM's own set-up. A bulk change and a delete ask in both.
@@ -318,10 +318,10 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2f | Fields, sections, layout, field rules and the module catalogue |
 | CRM-M2g | Saved views, record names, labels, access and the settings |
 | CRM-M2h | Business rules and the open questions of the AI |
-| CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion` |
+| CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion`. The approve, dismiss and undo log no Change history row yet. Task P-3j adds the rows |
 | CRM-M2j | Rename a pipeline, add a stage and remove a stage |
-| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis` |
-| CRM-M2l | The reads of the setup screens, the digests and the exports. The analysis read is built (task 3954): `crm_analysis_status` |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis`. The re-run logs no Change history row yet. Task P-3j adds the row |
+| CRM-M2l | The reads of the setup screens, the digests and the exports. The analysis read is built (task 3954): `crm_analysis_status`. It is a read, so it logs no Change history row |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 
@@ -365,7 +365,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 - **Change history.** One `pipeline` row at the `company` level, with the name and the ordered stages in "after". Each new stage logs its own `deal_stage` row. The Undo deletes the pipeline, and refuses with the count while a deal names it. It also deletes each stage that the create made, through `admin.delete_status_in`, and logs one row for each stage. A stage that another pipeline holds stays. A new stage that holds a record refuses the Undo, and the refusal names the stage and the count.
 - **The stages of a plan.** A list that names a hidden stage, or a stage that Zoho no longer lists, gets a plain refusal (409 `stage_hidden` or `stage_gone`). A copy keeps such a stage of its source, and the plan marks it hidden. Only a visible stage counts as the open, won or lost stage. A new stage with no type is `won` or `lost` when its whole name is "Won", "Closed Won", "Lost" or "Closed Lost". The dialog row takes that type as the member types the name. A member who sets it back to Open sends `open`. A row with the name of a CRM stage shows the type of that stage. It sends no type, because that stage keeps its own. The dialog and the chat card show the type of each stage.
 - **The plan that the member saw.** The chat card sends the planned stage ids with the create. When the plan of the create differs, the create refuses with 409 `plan_changed`, and nothing is made.
-- **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper.
+- **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper. The four routes of the suggestions and the analysis that the chat calls (task 3954) log no row yet, so no row says `chat` for them. Task P-3j adds the rows.
 - **The chat tool.** `crm_create_pipeline(name, stages, copy_from)` takes names, reads the preview, and asks on one card before the create. The `crm-records` pack holds it. A run of an org off the flag drops it (`_tool_injection.PIPELINE_WRITES`).
 - **Settings.** "New pipeline" on the Native Deal stages card, for an admin, while `GET /crm/mode` says `pipeline_create`.
 

@@ -157,6 +157,8 @@ def _mapping(call: dict) -> Any:
         return _SUGGESTIONS
     if path.startswith("/crm/mapping/suggestions/") and method == "POST":
         return {"slot": "deal", "module": "Deals_X", "version": 3}
+    if path == "/crm/analysis/status" and method == "GET":
+        return {"run": None, "allowed": True}
     if path == "/crm/analysis/rerun" and method == "POST":
         return {"id": "a1", "state": "running", "started_at": "2026-11-25T10:00:00Z",
                 "steps": {}, "outcome": None, "started": True}
@@ -262,7 +264,7 @@ _CARD_MUST_NAME: dict[str, str] = {
 }
 
 # P-3 (task 3954): the two card writes of the suggestions of the field map and
-# the AI analysis. The re-run reads nothing before its card.
+# the AI analysis. Each reads before its card.
 _SUGGESTIONS = {
     "suggestions": [{"slot": "deal", "version": 2, "module": "Deals_X",
                      "label": "Commercials", "records": 40, "targets": [], "stage": None}],
@@ -271,7 +273,6 @@ _SUGGESTIONS = {
 _WRITE_TOOLS += ["crm_decide_suggestion", "crm_rerun_analysis"]
 _CALLS["crm_decide_suggestion"] = lambda: _M.crm_decide_suggestion("approve", "deals")
 _CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
-_NO_PRE_READ.append("crm_rerun_analysis")
 _CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
 _CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
 

@@ -1670,8 +1670,17 @@ def _suggestion_name(row: dict[str, Any]) -> str:
     return f"{label} for {_SLOT_LIST.get(str(row.get('slot')), str(row.get('slot')))}"
 
 
+#: The words of the rows that :func:`_one_suggestion` picks from: the kind,
+#: the answer when no row waits, and the start of the list of the rows.
+_PICK_WORDS: dict[str, tuple[str, str, str]] = {
+    "suggestion": ("suggestion", "No suggestion waits now.", "The suggestions are"),
+    "in_use": ("list that shows a Zoho module", "No list shows a Zoho module now.",
+               "The lists that show a Zoho module are"),
+}
+
+
 def _one_suggestion(
-    rows: Any, list_name: str, module: str, noun: str,
+    rows: Any, list_name: str, module: str, kind: str,
 ) -> tuple[dict[str, Any] | None, str]:
     """The one row of *rows* for the list *list_name* and the module *module*,
     or the words of a refusal. A module matches its Zoho label or its API
@@ -1688,11 +1697,12 @@ def _one_suggestion(
             " ".join(str(r.get("label") or "").lower().split()),
             str(r.get("module") or "").lower(),
         )]
+    noun, empty, listed = _PICK_WORDS[kind]
     if not every:
-        return None, f"No {noun} waits now."
+        return None, empty
     if not found:
         return None, (
-            f"No {noun} matches that. The {noun}s are: "
+            f"No {noun} matches that. {listed}: "
             + "; ".join(_suggestion_name(r) for r in every) + "."
         )
     if len(found) > 1:
@@ -1863,8 +1873,8 @@ async def crm_decide_suggestion(action: str, list_name: str = "", module: str = 
     body = await _get("/crm/mapping/suggestions")
     body = body if isinstance(body, dict) else {}
     rows = body.get("overlays") if act == "undo" else body.get("suggestions")
-    noun = "list that a module shows" if act == "undo" else "suggestion"
-    row, refusal = _one_suggestion(rows, list_name, module, noun)
+    row, refusal = _one_suggestion(
+        rows, list_name, module, "in_use" if act == "undo" else "suggestion")
     if row is None:
         return f"{refusal} Nothing was changed."
     version = row.get("version")
@@ -1938,6 +1948,29 @@ async def crm_rerun_analysis() -> str:
 
     If an analysis runs already, nothing new starts. crm_analysis_status
     follows it."""
+    # Read first: a member who cannot start a run, an org with the analysis
+    # off, and a run that runs already each get words, and no card. The status
+    # route does not check Mirror mode, so a 409 of the re-run stays text
+    # after the card.
+    try:
+        status = await _get("/crm/analysis/status")
+    except GatewayRefusal as refused:
+        if refused.status == 403:
+            return ("Only a CRM admin can start the AI analysis. Ask an admin of "
+                    "the organization. Nothing was started.")
+        if refused.status == 404:
+            return "The AI analysis is not on for this CRM. Nothing was started."
+        raise
+    status = status if isinstance(status, dict) else {}
+    if status.get("allowed") is False:
+        return ("The AI analysis is not on for this organization, so it cannot "
+                "run. Nothing was started.")
+    running = status.get("run")
+    if isinstance(running, dict) and running.get("state") == "running":
+        return (
+            f"An AI analysis runs already (it started at {running.get('started_at')}), "
+            "so no second one starts. crm_analysis_status follows it."
+        )
     from acb_skills.ask_tools import request_confirmation
     answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card.
