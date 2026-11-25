@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from tally_bridge import __version__
@@ -72,9 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         "--dev-copy-key-file", help="serve, delete-copy: DEV ONLY, the key of the local copy"
     )
     parser.add_argument(
-        "--open",
+        "--wait",
         action="store_true",
-        help="setup-link: wait for the bridge, then open the page (the installer)",
+        help="setup-link: wait until the bridge answers (the installer)",
+    )
+    parser.add_argument(
+        "--url-file",
+        help="setup-link: write the address to this file and print nothing (the installer)",
     )
     parser.add_argument(
         "--windows",
@@ -234,19 +240,29 @@ def _setup_link(args: argparse.Namespace) -> int:
         return 2
     port = settings_store.load().bind_port
     url = f"http://127.0.0.1:{port}/setup?k={key}"
-    if getattr(args, "open", False):
-        # The installer: wait for the service to answer, then open the page.
-        if not _wait_up(f"http://127.0.0.1:{port}/health"):
-            print("The bridge did not start. Open this address later:", file=sys.stderr)
+    if getattr(args, "wait", False) and not _wait_up(f"http://127.0.0.1:{port}/health"):
+        print("The bridge did not start. Open the setup page later.", file=sys.stderr)
+        if not getattr(args, "url_file", None):
             print(url, file=sys.stderr)
-            return 1
-        import webbrowser
-
-        webbrowser.open(url)
+        return 1
+    if getattr(args, "url_file", None):
+        # The installer: the elevated step writes the address here, and a
+        # second step opens it as the person who signed in (Inno
+        # runasoriginaluser), so the key never opens in an administrator's
+        # browser.
+        _write_private(Path(args.url_file), url)
         return 0
     print("Open this address on this computer (shown once):")
     print(url)
     return 0
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 def _wait_up(health_url: str, timeout_s: float = 60.0, get: Any = None) -> bool:
@@ -313,23 +329,33 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
     app = build_address_app(live, secrets, reader, store, copy)
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=settings.bind_host,
-            port=settings.bind_port,
-            proxy_headers=False,
-            server_header=False,
-            # The setup page takes its key in the address. No access log, so
-            # the key never reaches a log file.
-            access_log=False,
-        )
-    )
+    server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,
         lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop)),
     )
     return 0
+
+
+#: TLY-5. Seconds that a stop waits for open requests (a slow Tally call)
+#: before uvicorn cancels them, so a service stop ends well inside the 30 s
+#: that Windows waits.
+GRACEFUL_SHUTDOWN_S = 10
+
+
+def _server_options(settings: Settings) -> dict[str, Any]:
+    """The options of ``uvicorn.Config``, one place for ``serve`` and the
+    service."""
+    return {
+        "host": settings.bind_host,
+        "port": settings.bind_port,
+        "proxy_headers": False,
+        "server_header": False,
+        # The setup page takes its key in the address. No access log, so the
+        # key never reaches a log file.
+        "access_log": False,
+        "timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_S,
+    }
 
 
 def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:

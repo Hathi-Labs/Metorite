@@ -78,11 +78,16 @@ def test_the_recovery_rule_word_for_word():
 
 
 class FakeServer:
+    """Serves until ``should_exit``, or gives up after 3 s, so a stop that
+    never arrives fails the test and does not hang it."""
+
     def __init__(self) -> None:
         self.should_exit = False
 
     async def serve(self) -> None:
-        while not self.should_exit:
+        for _ in range(60):
+            if self.should_exit:
+                return
             await asyncio.sleep(0.05)
 
 
@@ -93,6 +98,49 @@ def test_the_stop_event_makes_the_server_exit():
     start = time.monotonic()
     asyncio.run(cli._serve_with_copy(server, None, None, None, stop))
     assert server.should_exit and time.monotonic() - start < 3
+
+
+def test_serve_until_starts_with_no_secret_and_the_product_stores(monkeypatch):
+    """The installer starts the service before any key exists. ``serve``
+    alone refuses that, so the service must ask for no secret."""
+    seen = {}
+
+    def fake_serve(args, stop=None, need_secret=True):
+        seen.update(windows=args.windows, stop=stop, need_secret=need_secret)
+        return 0
+
+    monkeypatch.setattr(cli, "_serve", fake_serve)
+    stop = threading.Event()
+    cli.serve_until(stop)
+    assert seen == {"windows": True, "stop": stop, "need_secret": False}
+
+
+def test_serve_until_raises_when_the_bridge_cannot_start(monkeypatch):
+    monkeypatch.setattr(cli, "_serve", lambda args, stop=None, need_secret=True: 2)
+    with pytest.raises(RuntimeError):
+        cli.serve_until(threading.Event())
+
+
+def test_a_stop_waits_for_open_requests_ten_seconds_at_most():
+    from tally_bridge.settings import Settings
+
+    options = cli._server_options(Settings())
+    assert options["timeout_graceful_shutdown"] == cli.GRACEFUL_SHUTDOWN_S == 10
+    assert options["access_log"] is False and options["host"] == "127.0.0.1"
+
+
+def test_setup_link_writes_the_address_to_a_private_file(tmp_path, capsys):
+    url_file = tmp_path / "setup-url.txt"
+    args = cli.argparse.Namespace(
+        windows=False, settings_file=str(tmp_path / "s.json"),
+        dev_secret_file=str(tmp_path / "sec.json"), dev_copy_key_file=None,
+        wait=False, url_file=str(url_file))
+    assert cli._setup_link(args) == 0
+    text = url_file.read_text(encoding="utf-8")
+    assert text.startswith("http://127.0.0.1:8765/setup?k=")
+    assert "setup?k=" not in capsys.readouterr().out
+    if sys.platform != "win32":
+        assert url_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_setup_link_waits_for_the_bridge(monkeypatch):
@@ -111,26 +159,45 @@ def test_the_installer_runs_the_same_recovery_rule_as_the_code():
         assert f'Parameters: "{" ".join(argv[1:])}"' in run, argv
 
 
+def _step(line: str) -> str:
+    m = re.search(r'Parameters: "((?:[^"]|"")*)"', line)
+    return m.group(1) if m else re.search(r'Filename: "([^"]*)"', line).group(1)
+
+
 def test_the_install_steps_run_in_an_order_that_works():
-    steps = [re.search(r'Parameters: "([^"]*)"', ln).group(1) for ln in _section("Run")]
+    steps = [_step(ln) for ln in _section("Run")]
     order = ["--startup auto install", "failure TallyBridge", "failureflag TallyBridge 1",
-             "apply-windows --windows", "start", "setup-link --windows --open"]
+             "apply-windows --windows", "start", "setup-link --windows --wait --url-file",
+             "{code:SetupUrl}"]
     found = [next(i for i, s in enumerate(steps) if s.startswith(o)) for o in order]
     assert found == sorted(found), steps
-    # The page opens last, and the installer does not wait for it.
-    assert "nowait" in _section("Run")[-1] and "postinstall" in _section("Run")[-1]
+
+
+def test_the_page_opens_as_the_person_who_signed_in():
+    """Review finding 7: the elevated step only writes the address. The page
+    opens through the shell as the original user, never as the admin."""
+    last = _section("Run")[-1]
+    assert last.startswith('Filename: "{code:SetupUrl}"')
+    for flag in ("shellexec", "runasoriginaluser", "postinstall", "nowait"):
+        assert flag in last
+    assert "function SetupUrl" in ISS and r"{tmp}\setup-url.txt" in ISS
+    assert not any("--open" in ln for ln in _section("Run"))
 
 
 def test_the_uninstall_undoes_every_change():
     steps = [re.search(r'Parameters: "([^"]*)"', ln).group(1) for ln in _section("UninstallRun")]
     assert steps == ["stop", "remove", "uninstall-windows --windows"]
     assert all("RunOnceId" in ln for ln in _section("UninstallRun"))
+    assert _section("UninstallDelete") == [
+        r'Type: filesandordirs; Name: "{commonappdata}\TallyBridge"']
 
 
 def test_the_installer_needs_an_administrator_and_a_64_bit_windows_10():
     setup = "\n".join(_section("Setup"))
     assert "PrivilegesRequired=admin" in setup
-    assert "MinVersion=10.0" in setup and "x64compatible" in setup
+    assert "MinVersion=10.0" in setup
+    assert "ArchitecturesAllowed=x64compatible" in _section("Setup")
+    assert "ArchitecturesInstallIn64BitMode=x64compatible" in _section("Setup")
     dirs = "\n".join(_section("Dirs"))
     assert r'"{commonappdata}\TallyBridge"' in dirs and "admins-full system-full" in dirs
     assert "users-" not in dirs
@@ -141,6 +208,11 @@ def test_the_build_makes_both_programs_and_bundles_the_setup_page():
     assert 'name="tally_bridge"' in spec and 'name="tally_bridge_service"' in spec
     assert "win32timezone" in spec
     assert (ROOT / "tally_bridge" / "setup" / "static" / "setup.html").exists()
+    # Review finding 3: the frozen build puts the page where the setup routes
+    # read it: resources.files("tally_bridge.setup") / "static".
+    assert '"tally_bridge/setup/static")' in spec
+    routes = (ROOT / "tally_bridge" / "setup" / "routes.py").read_text(encoding="utf-8")
+    assert 'resources.files("tally_bridge.setup").joinpath("static"' in routes
     build = (INSTALLER / "build.ps1").read_text(encoding="utf-8")
     assert r"installer\tally_bridge.spec" in build and r"installer\tally_bridge.iss" in build
     assert "pywin32" in build and "pyinstaller" in build

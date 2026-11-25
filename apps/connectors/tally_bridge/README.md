@@ -208,10 +208,15 @@ installer does these steps in this order:
 2. It sets the restart rule.
 3. It runs `apply-windows`.
 4. It starts the service.
-5. It opens the setup page (`setup-link --open`). That step waits until the
-   service answers.
+5. It makes the setup key (`setup-link --wait --url-file`). That step waits
+   until the service answers, and writes the address to a file in the
+   installer's temporary folder.
+6. It opens that address as the person who signed in, never in the
+   browser of an administrator.
 
 The uninstall stops and removes the service, then runs `uninstall-windows`.
+It also deletes `%ProgramData%\TallyBridge`. A stop gives open requests 10 s,
+well inside the 30 s that Windows waits.
 
 ## Fixtures
 

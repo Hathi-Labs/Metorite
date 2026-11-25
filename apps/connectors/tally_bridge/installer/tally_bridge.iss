@@ -23,8 +23,10 @@ Compression=lzma2
 SolidCompression=yes
 
 [Dirs]
-; The settings, the DPAPI hashes and the copy key. Only the service and the
-; administrators write here.
+; The settings, the DPAPI hashes and the copy key. The service and the
+; administrators have full control. The folder also keeps the read and create
+; rights that %ProgramData% gives to users, so a user cannot change a file that
+; the installer wrote. The hashes are DPAPI blobs at machine scope (brief §6.3).
 Name: "{commonappdata}\TallyBridge"; Permissions: admins-full system-full
 
 [Files]
@@ -36,9 +38,27 @@ Filename: "{sys}\sc.exe"; Parameters: "failure TallyBridge reset= 86400 actions=
 Filename: "{sys}\sc.exe"; Parameters: "failureflag TallyBridge 1"; Flags: runhidden waituntilterminated
 Filename: "{app}\tally_bridge.exe"; Parameters: "apply-windows --windows"; Flags: runhidden waituntilterminated
 Filename: "{app}\tally_bridge_service.exe"; Parameters: "start"; Flags: runhidden waituntilterminated
-Filename: "{app}\tally_bridge.exe"; Parameters: "setup-link --windows --open"; Flags: runhidden nowait postinstall; Description: "Open the setup page"
+Filename: "{app}\tally_bridge.exe"; Parameters: "setup-link --windows --wait --url-file ""{tmp}\setup-url.txt"""; Flags: runhidden waituntilterminated
+; The page opens as the person who signed in, never in the administrator's browser.
+Filename: "{code:SetupUrl}"; Flags: shellexec runasoriginaluser postinstall nowait skipifsilent; Description: "Open the setup page"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{commonappdata}\TallyBridge"
 
 [UninstallRun]
 Filename: "{app}\tally_bridge_service.exe"; Parameters: "stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopService"
 Filename: "{app}\tally_bridge_service.exe"; Parameters: "remove"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
 Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; Flags: runhidden waituntilterminated; RunOnceId: "UndoChanges"
+
+[Code]
+// The address that the elevated setup-link step wrote. Inno deletes {tmp},
+// and the address with it, when the setup ends.
+function SetupUrl(Param: String): String;
+var
+  Url: AnsiString;
+begin
+  if LoadStringFromFile(ExpandConstant('{tmp}\setup-url.txt'), Url) then
+    Result := Trim(String(Url))
+  else
+    Result := '';
+end;
