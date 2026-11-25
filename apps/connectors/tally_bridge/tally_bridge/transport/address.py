@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
@@ -46,6 +47,8 @@ def build_address_app(
     reader: TallyReader,
     store: SettingsStore | None = None,
     copy: CopyStore | None = None,
+    link: object | None = None,
+    on_machine_saved: Callable[[Settings], str | None] | None = None,
 ) -> ASGIApp:
     """The app of address mode: ``/mcp``, ``/health`` and the setup page.
 
@@ -82,6 +85,10 @@ def build_address_app(
             reader,
             # TLY-4: a company that leaves the allow-list loses its copy at once.
             on_saved=(lambda new: copy.keep_only(new.allowed_companies)) if copy else None,
+            # TLY-2b: the link controller, for the pair step of the page.
+            link=link,
+            # TLY-2d: the entry point applies the machine switches.
+            on_machine_saved=on_machine_saved,
         )
     )
     guard = BearerGuard(app, secrets)

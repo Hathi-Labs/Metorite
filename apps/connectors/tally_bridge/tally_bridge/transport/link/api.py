@@ -73,10 +73,12 @@ class LinkApi:
                 return str(error)
         raise p.LinkError(f"The pairing poll answered HTTP {answer.status_code}.")
 
-    async def poll(self, credential: str, tally_up: bool, version: str) -> list[p.LinkRequest]:
+    async def poll(
+        self, credential: str, tally_up: bool, version: str, copy_at: str | None = None
+    ) -> list[p.LinkRequest]:
         answer = await self._post(
             p.LINK_POLL,
-            {"tally": "up" if tally_up else "down", "version": version},
+            {"tally": "up" if tally_up else "down", "version": version, "copy_at": copy_at},
             credential=credential,
             timeout=POLL_TIMEOUT_S,
         )

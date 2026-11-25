@@ -43,11 +43,114 @@
     $("save-companies").disabled = false;
   }
 
+  var linkTimer = null;
+
+  function showLink(link) {
+    var on = link && link.mode !== "off";
+    $("link").hidden = !on;
+    if (!on) { return; }
+    var mode = link.mode;
+    $("link-pair").hidden = !(mode === "not_linked" || mode === "disconnected");
+    $("link-code-box").hidden = mode !== "waiting_approval";
+    $("link-confirm-box").hidden = mode !== "waiting_confirm";
+    $("link-unlink").hidden = !(mode === "linked" || mode === "waiting_confirm");
+    $("link-code").textContent = link.code || "";
+    $("link-company").textContent = link.company || "";
+    var lines = {
+      not_linked: "This computer is not linked.",
+      waiting_approval: "Waiting for your admin to approve the code.",
+      waiting_confirm: "Your admin approved. Confirm the company below.",
+      linked: "Linked to " + (link.company || "") + ".",
+      disconnected: "Disconnected by your admin. Pair this computer again to reconnect."
+    };
+    $("link-line").textContent = (link.error ? link.error + " " : "") + (lines[mode] || "");
+    if (mode === "waiting_approval" && linkTimer === null) {
+      linkTimer = window.setInterval(loadLink, 3000);
+    } else if (mode !== "waiting_approval") {
+      stopLinkTimer();
+    }
+  }
+
+  function stopLinkTimer() {
+    if (linkTimer !== null) {
+      window.clearInterval(linkTimer);
+      linkTimer = null;
+    }
+  }
+
+  // While it waits for the approval, the page reads the link block only. It
+  // does not rebuild the company ticks, and it does not ask TallyPrime.
+  function loadLink() {
+    return call("GET", "/setup/api/link/state").then(function (res) {
+      if (!res.ok) { stopLinkTimer(); return; }
+      showLink(res.data.link);
+    }, stopLinkTimer);
+  }
+
+  function linkCall(path, body) {
+    return call("POST", path, body).then(function (res) {
+      var message = (!res.ok || res.data.note) ? (res.data.error || res.data.note || "Refused.") : "";
+      return load().then(function () {
+        // load() paints the state; the answer of this call stays on top.
+        if (message) { $("link-line").textContent = message; }
+      });
+    });
+  }
+
+  $("link-start").addEventListener("click", function () {
+    var button = $("link-start");
+    button.disabled = true;
+    linkCall("/setup/api/link/pair", { domain: $("link-domain").value.trim() })
+      .then(function () { button.disabled = false; }, function () { button.disabled = false; });
+  });
+  $("link-cancel").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
+  });
+  $("link-confirm").addEventListener("click", function () {
+    linkCall("/setup/api/link/confirm", { company: $("link-confirm-name").value });
+  });
+  $("link-refuse").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
+  });
+  $("link-unlink").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
+  });
+
+  // TLY-2d: the machine switches show only with link mode (the state holds "machine" then).
+  function showMachine(m) {
+    $("machine").hidden = !m;
+    if (!m) { return; }
+    $("machine-start").checked = !!m.start_tally_at_signin;
+    $("machine-exe").textContent = m.tally_exe || "not set";
+    $("machine-awake").checked = !!m.keep_awake;
+  }
+
+  $("machine-save").addEventListener("click", function () {
+    var button = $("machine-save");
+    button.disabled = true;
+    call("POST", "/setup/api/machine", {
+      start_tally_at_signin: $("machine-start").checked,
+      keep_awake: $("machine-awake").checked
+    }).then(function (res) {
+      button.disabled = false;
+      if (!res.ok) {
+        $("machine-line").textContent = res.data.error || "The switches were not saved.";
+        return;
+      }
+      showMachine(res.data.machine);
+      $("machine-line").textContent = res.data.note || "Saved.";
+    }, function () {
+      button.disabled = false;
+      $("machine-line").textContent = "The bridge did not answer.";
+    });
+  });
+
   function load() {
     $("tally-line").textContent = "Looking for TallyPrime...";
     return call("GET", "/setup/api/state").then(function (res) {
       if (!res.ok) {
         $("tally-line").textContent = "This page has no access. Open it again from the bridge.";
+        stopLinkTimer();
         return;
       }
       var s = res.data;
@@ -60,6 +163,8 @@
         $("tally-help").hidden = false;
       }
       showCompanies(s.tally.up ? open : null, s.allowed);
+      showLink(s.link);
+      showMachine(s.machine);
       $("address").textContent = s.address || "not set (set PUBLIC_HOST to the tunnel host name)";
       $("token-line").textContent = s.token_set ? "An access token exists. Make a new one only to replace it." : "No access token yet.";
       $("done-line").textContent =

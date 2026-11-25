@@ -87,6 +87,7 @@ async def run_link(
     stop: asyncio.Event | None = None,
     sleep: Sleep = asyncio.sleep,
     min_gap_s: float = MIN_POLL_GAP_S,
+    copy_at: Callable[[], str | None] | None = None,
 ) -> str:
     """Poll until ``stop`` is set (``"stopped"``), the customer unlinks or
     pairs again (``"unlinked"``), or Metorite revokes the credential
@@ -123,7 +124,8 @@ async def run_link(
                     )
                     continue
                 up = await _tally_state(tally_up)
-                requests = await _until_stop(api.poll(credential, up, version), stop)
+                copied = _copy_time(copy_at)
+                requests = await _until_stop(api.poll(credential, up, version, copied), stop)
                 if requests is None:
                     break
                 wait = BACKOFF_FIRST_S
@@ -183,6 +185,18 @@ async def _until_stop(call: Awaitable[Any], stop: asyncio.Event) -> Any:
             if not task.done():
                 task.cancel()
     return work.result() if work in done else None
+
+
+def _copy_time(copy_at: Callable[[], str | None] | None) -> str | None:
+    """The time of the last good local copy (§3.8.13 point 7), or None. An
+    error of the copy never stops a poll."""
+    if copy_at is None:
+        return None
+    try:
+        return copy_at()
+    except Exception:
+        log.warning("could not read the time of the local copy")
+        return None
 
 
 async def _tally_state(tally_up: Callable[[], Awaitable[bool]]) -> bool:

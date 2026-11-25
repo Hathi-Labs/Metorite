@@ -1059,7 +1059,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 |---|---|---|---|
 | `POST /connectors/pair/start` | none | `domain`, `machine`, `version`, `kind` (`tally`) | 200: `device_code` (32 characters or more), `user_code` (8 characters of Crockford base 32, a dash allowed), `expires_in`, `interval` |
 | `POST /connectors/pair/poll` | none | `device_code` | 200: `credential` (`mlc_` and 43 characters), `connector_id`, `company_name`. 400: `error` is `authorization_pending`, `slow_down`, `expired_token` or `access_denied` |
-| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version` | 200: `requests`, a list of at most 32 items. Each item has `id`, `method`, `headers`, `body` (text) and `deadline_s`, the seconds left at hand-out (at most 30). 401 with `{"error": "revoked"}` when the credential is revoked |
+| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version`, `copy_at` (the time of the oldest last good copy of the allowed companies, ISO 8601, or `null`) | 200: `requests`, a list of at most 32 items. Each item has `id`, `method`, `headers`, `body` (text) and `deadline_s`, the seconds left at hand-out (at most 30). 401 with `{"error": "revoked"}` when the credential is revoked |
 | `POST /connectors/link/reply` | `Bearer <credential>` | `id`, `status`, `headers`, `body` | 200. 404 for an id of another connection or a late reply. The program drops a 404 |
 | `POST /connectors/link/revoke` | `Bearer <credential>` | nothing | 200, also for an unknown credential |
 
@@ -1079,7 +1079,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 - A revoke deletes the credential on the machine and ends the loop. It deletes only a stored credential that is still the same, so a new pairing stays.
 - The program reads its stored state before each poll. An `unlink` or a new pairing ends a running loop at once.
 - An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
-- The time of the last good copy (§3.8.13 point 7) is not in the poll yet. TLY-2b adds it.
+- Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
 
 ---
 
