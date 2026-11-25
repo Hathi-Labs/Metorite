@@ -200,9 +200,8 @@ def test_the_installer_needs_an_administrator_and_a_64_bit_windows_10():
     assert "MinVersion=10.0" in setup
     assert "ArchitecturesAllowed=x64compatible" in _section("Setup")
     assert "ArchitecturesInstallIn64BitMode=x64compatible" in _section("Setup")
-    dirs = "\n".join(_section("Dirs"))
-    assert r'"{commonappdata}\TallyBridge"' in dirs
-    assert "users-" not in dirs and "Permissions" not in dirs
+    # The data folder is made by [Code] ProtectDataDir, not by [Dirs].
+    assert "[Dirs]" not in ISS
 
 
 def test_the_build_makes_both_programs_and_bundles_the_setup_page():
@@ -236,17 +235,19 @@ def test_pywin32_installs_on_windows_only():
 # --- Review fixes: the data folder, the upgrade, the locked build ----------------
 
 
-def _icacls_calls() -> list[str]:
-    body = ISS.split("procedure ProtectDataDir;", 1)[1].split("\nend;", 1)[0]
-    return re.findall(r"Icacls\('\"' \+ Dir \+ '([^']*)'\);", body)
+def _pascal(head: str) -> str:
+    """The body of one [Code] routine, from its header to its ``end;``."""
+    return ISS.split(head, 1)[1].split("\nend;", 1)[0]
 
 
 def test_the_data_folder_is_for_admins_and_system_only():
     """Review finding 1: %ProgramData% lets users create files, and the
     LocalSystem service trusts them. The installer takes the folder back:
     admins own every item, explicit rights go, inheritance stops, and Users
-    may read only."""
-    assert _icacls_calls() == [
+    may read only. Each failure is an error text, which cancels the setup."""
+    body = _pascal("function ProtectDataDir(Fresh: Boolean): String;")
+    calls = re.findall(r"Icacls\('\"' \+ Dir \+ '([^']*)'\)", body)
+    assert calls == [
         '" /setowner *S-1-5-32-544 /T /C',
         '" /reset /T /C',
         '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F'
@@ -254,20 +255,32 @@ def test_the_data_folder_is_for_admins_and_system_only():
         '" /setowner *S-1-5-32-544 /T /C',
         '\\*" /reset /T /C',
     ]
-    assert "RaiseException" in ISS.split("procedure Icacls", 1)[1].split("\nend;", 1)[0]
+    assert body.count("Result := 'Could not") == 5
+    assert "ForceDirectories(Dir)" in body
+    # A child reset runs only when the folder has children.
+    assert "else if HasChildren(Dir) and not (" in body
+
+
+def test_the_folder_is_safe_before_any_file_or_run_step():
+    """Re-review: [Run] steps run before ssPostInstall, so a protection there
+    came after apply-windows and the service had read the folder, and its
+    wipe deleted the key of setup-link. PrepareToInstall runs before [Files]
+    and [Run], and its error text cancels the setup."""
+    prep = _pascal("function PrepareToInstall(var NeedsRestart: Boolean): String;")
+    assert prep.rstrip().endswith("Result := ProtectDataDir(not WasInstalled);")
+    assert "CurStepChanged" not in ISS and "ssPostInstall" not in ISS
+    assert "RaiseException" not in ISS
 
 
 def test_a_fresh_install_deletes_what_a_user_put_in_the_folder():
-    body = ISS.split("procedure ProtectDataDir;", 1)[1].split("\nend;", 1)[0]
-    assert "if not WasInstalled then\n    DelTree(Dir + '\\*', False, True, True);" in body
-    step = ISS.split("procedure CurStepChanged", 1)[1].split("\nend;", 1)[0]
-    assert "CurStep = ssPostInstall" in step and "ProtectDataDir" in step
+    body = _pascal("function ProtectDataDir(Fresh: Boolean): String;")
+    assert "else if Fresh then\n    DelTree(Dir + '\\*', False, True, True)" in body
 
 
-def test_an_upgrade_stops_the_service_and_keeps_the_settings():
-    prep = ISS.split("function PrepareToInstall", 1)[1].split("\nend;", 1)[0]
+def test_an_upgrade_stops_the_service_and_waits_and_keeps_the_settings():
+    prep = _pascal("function PrepareToInstall(var NeedsRestart: Boolean): String;")
     assert "WasInstalled := RegKeyExists(HKLM, ServiceKey);" in prep
-    assert "'stop TallyBridge'" in prep
+    assert "{sys}\\net.exe'), 'stop TallyBridge'" in prep
     assert r"'SYSTEM\CurrentControlSet\Services\TallyBridge'" in ISS
 
 
