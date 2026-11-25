@@ -82,6 +82,10 @@ WHEN = {
     "org-admin": (
         "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
         "integrations, MCP servers, plugins, GitHub."),
+    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    "people": (
+        "Load for the people directory, your own row, the open work of a colleague, or the "
+        "Reach preview."),
 }
 
 

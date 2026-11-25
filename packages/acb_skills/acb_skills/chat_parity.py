@@ -188,7 +188,9 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-2": ("Email", ("email",), (3111, 3919)),
     "P-3": ("CRM", ("crm",), (3678,)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
-    "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
+    # P-5b (task 3114) splits into P-5b-1 (3114) and P-5b-2 to P-5b-6 (3943 to 3947).
+    "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
+            (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
             (3115, 3903)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
@@ -237,6 +239,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/org_admin_more_tools.py",
     # PAR-6a: the org-admin pack sends the routes of the Integrations app.
     "packages/acb_skills/acb_skills/integrations_admin_tools.py",
+    # P-5b-1: the people pack sends the People routes and the two Reach reads.
+    "packages/acb_skills/acb_skills/people_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -375,6 +379,14 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/whatsapp/messages/{}/transcribe": "transcribe_whatsapp_voice_note",
     # ── People ──
     "GET /api/tasks/people": "my_tasks_people",
+    # P-5b-1 (task 3114): four reads of the people pack. Each tool sends the route as
+    # the member, and the route projects each field by the right of the member.
+    "GET /api/people": "people_directory",
+    "GET /api/people/me": "people_me",
+    "GET /api/people/me/work": "people_work",
+    "GET /api/people/{}/work": "people_work",
+    "GET /api/me/reach/status": "reach_preview",
+    "GET /api/me/reach/preview": "reach_preview",
     # ── Chat ──
     # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
     # id: it acts on the chat of the run, as the member of the run.
@@ -739,6 +751,16 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "stream",
         "The live activity stream of the Agent Registry's office view.",
     ),
+    # ── Memory ──
+    # P-5b-1 (task 3114, owner answer OD5 A of 2026-11-25): an EXEMPT row of an
+    # existing kind counts as paid. The P-2c precedent (task 3919) is the kind chat.
+    "POST /api/chat/memories": (
+        "chat",
+        "The chat files its own conversation in the member's memory when its panel closes "
+        "(lib/chatMemorySave.ts, H-236 follow-up). No member click sends it. It is the "
+        "chat's own transport, and the gateway extracts the memory of each named-agent turn "
+        "at the end of the run.",
+    ),
     # ── Chat ──
     "GET /api/agent/artifacts/file": (
         "download",
@@ -1062,12 +1084,6 @@ DEBT: dict[str, str] = {
     # ── People ──
     "DELETE /api/people/{}/absences/{}": "P-5",
     "DELETE /api/people/{}/avatar": "P-5",
-    "GET /api/me/reach/preview": "P-5",
-    "GET /api/me/reach/status": "P-5",
-    "GET /api/people": "P-5",
-    "GET /api/people/me": "P-5",
-    "GET /api/people/me/work": "P-5",
-    "GET /api/people/{}/work": "P-5",
     "PATCH /api/people/{}": "P-5",
     "PATCH /api/tasks/people/{}": "P-5",
     "POST /api/me/reach/brief": "P-5",
@@ -1083,7 +1099,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/memory/{}/{}": "P-5",
     "GET /api/memory/{}": "P-5",
     "GET /api/memory/{}/status": "P-5",
-    "POST /api/chat/memories": "P-5",
     "POST /api/memory/{}/search": "P-5",
     # ── Workflows ──
     # PAR-8a (task 3903) paid each Workflows row. The Workflows app has no debt.
@@ -1273,9 +1288,9 @@ DEBT_CEILING: dict[str, int] = {
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
-    "people": 19,
+    "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
-    "memory": 5,
+    "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 28,
     "agents": 20,
