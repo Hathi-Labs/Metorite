@@ -131,6 +131,10 @@ begin
     Result := 'The data folder is a link. Delete ' + Dir + ' and run the setup again.'
   else if not Icacls('"' + Dir + '"' + GrantOnly) then
     Result := 'Could not set the rights of ' + Dir
+  // An earlier build gave Users read on the folder. /grant:r leaves the
+  // ACE of a SID that it does not name, so remove it by name.
+  else if not Icacls('"' + Dir + '" /remove:g *S-1-5-32-545') then
+    Result := 'Could not remove the rights of Users on ' + Dir
   else if HasChildren(Dir) and not (Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') and Icacls('"' + Dir + '\*" /reset /T /C')) then
     Result := 'Could not reset the rights of the files in ' + Dir;
 end;

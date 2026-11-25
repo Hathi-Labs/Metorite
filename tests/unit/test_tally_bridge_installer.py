@@ -248,7 +248,13 @@ def test_the_data_folder_is_for_admins_and_system_only():
     credential in link.bin."""
     assert ("GrantOnly = ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F"
             " *S-1-5-32-544:(OI)(CI)F';") in ISS
-    assert "S-1-5-32-545" not in ISS.split("[Code]", 1)[1]  # no right for Users
+    # No right for Users anywhere. An upgrade removes the read right that an
+    # earlier build gave, by name, before it resets the files.
+    code = ISS.split("[Code]", 1)[1]
+    assert code.count("S-1-5-32-545") == 1
+    upgrade = _pascal("function ProtectDataDir(Fresh: Boolean): String;").split("\n  end\n", 1)[1]
+    assert upgrade.index("/remove:g *S-1-5-32-545") < upgrade.index("/reset /T /C")
+    assert upgrade.index("GrantOnly") < upgrade.index("/remove:g *S-1-5-32-545")
 
 
 def test_a_fresh_install_never_follows_what_a_user_left_at_the_path():

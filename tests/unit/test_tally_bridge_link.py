@@ -798,3 +798,64 @@ def test_unlink_says_so_when_metorite_refuses_the_revoke():
     store = _confirmed()
     assert linkcli.do_unlink(Settings(link_url="https://link.test"), store, api) == 1
     assert store.state is None
+
+
+# --- The service stop and the Windows commands (review of the merge with TLY-5) ----
+
+
+def test_a_service_stop_ends_the_link_at_once_and_a_link_error_is_no_crash():
+    """The stop of the Windows service stops the link poll first. An error of
+    the link loop is logged, so Windows does not see a crash and restart."""
+    import threading
+
+    from tally_bridge import __main__ as cli
+
+    order: list[str] = []
+
+    class Server:
+        _exit = False
+
+        @property
+        def should_exit(self):
+            return self._exit
+
+        @should_exit.setter
+        def should_exit(self, value):
+            order.append("server exit")
+            self._exit = value
+
+        async def serve(self):
+            while not self._exit:
+                await asyncio.sleep(0.01)
+
+    class Watched(asyncio.Event):
+        def set(self):
+            order.append("link stop")
+            super().set()
+
+    async def link(link_stop: asyncio.Event) -> str:
+        await link_stop.wait()
+        raise RuntimeError("the link loop failed")
+
+    server = Server()
+    stop = threading.Event()
+    threading.Timer(0.1, stop.set).start()
+    real_event = asyncio.Event
+    asyncio.Event = Watched  # the link_stop of _serve_with_copy
+    try:
+        asyncio.run(asyncio.wait_for(
+            cli._serve_with_copy(server, None, None, None, stop, link), 5))
+    finally:
+        asyncio.Event = real_event
+    assert order[:2] == ["link stop", "server exit"]
+
+
+def test_a_link_command_without_the_rights_says_run_as_an_administrator(monkeypatch, capsys):
+    from tally_bridge import __main__ as cli
+
+    def denied(args):
+        raise PermissionError("access is denied")
+
+    monkeypatch.setattr(linkcli, "link_store", denied)
+    assert cli.main(["unlink", "--windows"]) == 2
+    assert "administrator" in capsys.readouterr().err

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
 import sys
@@ -220,17 +219,21 @@ def _had_startup(run: Any) -> bool:
 def _link_command(args: argparse.Namespace) -> int:
     from tally_bridge import linkcli
 
-    store = linkcli.link_store(args)
-    if args.command == "confirm-link":
-        return linkcli.do_confirm(args, store)
     try:
+        store = linkcli.link_store(args)
+        if args.command == "confirm-link":
+            return linkcli.do_confirm(args, store)
         settings = _stores(args)[0].load()
+        if args.command == "pair":
+            return linkcli.do_pair(args, settings, store)
+        return linkcli.do_unlink(settings, store)
     except SettingsError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if args.command == "pair":
-        return linkcli.do_pair(args, settings, store)
-    return linkcli.do_unlink(settings, store)
+    except PermissionError:
+        # The data folder gives a user no right at all (TLY-2).
+        print("Run this command as an administrator.", file=sys.stderr)
+        return 2
 
 
 def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
@@ -445,8 +448,10 @@ async def _serve_with_copy(
     from tally_bridge.localcopy.schedule import run_forever
 
     loop_task = asyncio.create_task(run_forever(reader, copy, live)) if copy else None
-    stop_task = asyncio.create_task(_stop_when(stop, server)) if stop is not None else None
     link_stop = asyncio.Event()
+    stop_task = (
+        asyncio.create_task(_stop_when(stop, server, link_stop.set)) if stop is not None else None
+    )
     link_task = asyncio.create_task(link(link_stop)) if link else None
     try:
         await server.serve()
@@ -456,15 +461,22 @@ async def _serve_with_copy(
             if task is not None:
                 task.cancel()
         if link_task is not None:
-            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            try:
                 await asyncio.wait_for(link_task, 5)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                logging.getLogger("tally_bridge.link").exception("the link loop failed")
 
 
-async def _stop_when(stop: Any, server: Any) -> None:
+async def _stop_when(stop: Any, server: Any, on_stop: Any = None) -> None:
     """Ask *server* to exit once *stop* is set. ``uvicorn.Server`` reads
-    ``should_exit`` in its loop."""
+    ``should_exit`` in its loop. *on_stop* runs first: the link stops polling
+    at once, not after the graceful window of the server (TLY-2)."""
     while not stop.is_set():
         await asyncio.sleep(0.2)
+    if on_stop is not None:
+        on_stop()
     server.should_exit = True
 
 
