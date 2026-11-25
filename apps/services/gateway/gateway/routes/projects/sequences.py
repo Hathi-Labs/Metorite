@@ -98,7 +98,9 @@ SELECT lower(member_email) AS member, client_via, connection_id, session_key
 
 #: SW-27c1. One reservation with its sequence, and the run that it names, for
 #: the own-run rule (``checks.own_run``). ``FOR UPDATE OF r`` holds the row,
-#: so two marks of one number queue, and the second sees the first.
+#: so two marks of one number queue, and the second sees the first. The join
+#: names its subject (AD-16). A reserve takes only a run of the task
+#: (``_RUN_OF_TASK_SQL``), so the filter drops no row.
 _RESERVATION_SQL = """
 SELECT r.id, r.state, r.value, r.task_id, r.run_id, r.reserved_at, r.used_at,
        r.released_at, s.name AS sequence, s.project_id,
@@ -106,7 +108,7 @@ SELECT r.id, r.state, r.value, r.task_id, r.run_id, r.reserved_at, r.used_at,
        ar.session_key
   FROM pm_sequence_reservations r
   JOIN pm_project_sequences s ON s.id = r.sequence_id
-  LEFT JOIN pm_agent_runs ar ON ar.id = r.run_id
+  LEFT JOIN pm_agent_runs ar ON ar.id = r.run_id AND ar.task_id IS NOT NULL
  WHERE r.id = CAST(:rid AS uuid)
    FOR UPDATE OF r
 """
