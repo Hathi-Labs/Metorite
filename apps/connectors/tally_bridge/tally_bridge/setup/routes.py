@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
+import inspect
 from collections.abc import Callable
 from importlib import resources
 from typing import Any
@@ -57,6 +58,8 @@ from tally_bridge.setup.guard import KEY_HEADER, SECURITY_HEADERS, SetupGuard, r
 
 MAX_COMPANIES = 50
 MAX_NAME = 200
+#: TLY-2d: the page never sets the path of TallyPrime (see ``machine``).
+ADMIN_PATH = "Ask an administrator to set the path of TallyPrime (TALLY_EXE in the settings file)."
 
 
 def _asset(name: str) -> str:
@@ -76,11 +79,15 @@ def build_setup_routes(
     reader: TallyReader,
     on_saved: Callable[[Settings], object] | None = None,
     link: Any = None,
+    on_machine_saved: Callable[[Settings], str | None] | None = None,
 ) -> list[Route]:
     """``on_saved`` runs after a new allow-list is saved. Address mode passes
     the delete of the local copy of each company that left the list (TLY-4).
-    ``link`` is the link controller of TLY-2b, or None."""
-    api = _SetupApi(live, store, secrets, reader, on_saved, link)
+    ``link`` is the link controller of TLY-2b, or None. ``on_machine_saved``
+    (TLY-2d) applies the two machine switches and returns an error text, or
+    None. Only the entry point makes it, because ``setup`` must not import the
+    Windows side."""
+    api = _SetupApi(live, store, secrets, reader, on_saved, link, on_machine_saved)
     return [
         Route("/setup", api.page, methods=["GET"]),
         Route("/setup/app.js", api.asset("setup.js", "text/javascript; charset=utf-8")),
@@ -92,6 +99,7 @@ def build_setup_routes(
         Route("/setup/api/link/pair", api.link_pair, methods=["POST"]),
         Route("/setup/api/link/confirm", api.link_confirm, methods=["POST"]),
         Route("/setup/api/link/unlink", api.link_unlink, methods=["POST"]),
+        Route("/setup/api/machine", api.machine, methods=["POST"]),
     ]
 
 
@@ -114,7 +122,9 @@ class _SetupApi:
         reader: TallyReader,
         on_saved: Callable[[Settings], object] | None = None,
         link: Any = None,
+        on_machine_saved: Callable[[Settings], str | None] | None = None,
     ) -> None:
+        self._on_machine_saved = on_machine_saved
         self._on_saved = on_saved
         self._link = link
         self._live = live
@@ -169,6 +179,16 @@ class _SetupApi:
         s = self._live.current
         opened = await self._open_companies()
         last = calllog.last_call_at()
+        link = self._link.state() if self._link is not None else {"mode": "off"}
+        machine = (
+            {
+                "start_tally_at_signin": s.start_tally_at_signin,
+                "tally_exe": s.tally_exe,
+                "keep_awake": s.keep_awake,
+            }
+            if link.get("mode") != "off"
+            else None
+        )
         return _json(
             {
                 "bridge_version": __version__,
@@ -177,7 +197,8 @@ class _SetupApi:
                 "address": f"https://{s.public_host}/mcp" if s.public_host else None,
                 "token_set": self._secrets.read_token_sha256() is not None,
                 "last_call": last.isoformat(timespec="seconds") if last else None,
-                "link": self._link.state() if self._link is not None else {"mode": "off"},
+                "link": link,
+                **({"machine": machine} if machine is not None else {}),
             }
         )
 
@@ -266,3 +287,48 @@ class _SetupApi:
         # The local delete happened in any case; ``note`` says whether
         # Metorite took the revoke.
         return _json({"link": state, "note": error})
+
+    # --- The machine switches (TLY-2d) -----------------------------------------------
+
+    async def machine(self, request: Request) -> Response:
+        """Save the two switches of the setup guide, step 6: start TallyPrime at
+        sign-in, and keep the computer awake. Dark with link mode.
+
+        The path of TallyPrime is NOT set here. The sign-in task runs it for
+        each person who signs in, and the person at this page may not be an
+        administrator. So only an administrator sets TALLY_EXE, in the settings
+        file (which users cannot write). The page shows it, read-only."""
+        body, no = await self._link_body(request)
+        if no is not None:
+            return no
+        start = body.get("start_tally_at_signin") if body else None
+        awake = body.get("keep_awake") if body else None
+        if not isinstance(start, bool) or not isinstance(awake, bool):
+            return _json({"error": "Send the two switches."}, 400)
+        saved = self._live.current
+        if "tally_exe" in body and body["tally_exe"] != saved.tally_exe:
+            return _json({"error": ADMIN_PATH}, 403)
+        if start and not saved.tally_exe:
+            return _json({"error": ADMIN_PATH}, 409)
+        new = dataclasses.replace(saved, start_tally_at_signin=start, keep_awake=awake)
+        try:
+            new.validate()
+            self._store.save(new)
+        except SettingsError as exc:
+            return _json({"error": str(exc)}, 400)
+        self._live.replace(new)
+        note = None
+        if self._on_machine_saved is not None:
+            note = self._on_machine_saved(new)
+            if inspect.isawaitable(note):
+                note = await note
+        return _json(
+            {
+                "machine": {
+                    "start_tally_at_signin": new.start_tally_at_signin,
+                    "tally_exe": new.tally_exe,
+                    "keep_awake": new.keep_awake,
+                },
+                "note": note,
+            }
+        )
