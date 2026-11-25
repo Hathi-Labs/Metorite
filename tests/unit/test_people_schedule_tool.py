@@ -170,3 +170,16 @@ def test_the_tool_is_a_write_that_takes_no_identity() -> None:
     hints = get_annotations("set_work_schedule")
     assert hints["read_only"] is False and hints["open_world"] is False
     assert list(inspect.signature(pt.set_work_schedule).parameters) == ["changes"]
+
+
+@pytest.mark.parametrize("owner", [None, "org-admin"])
+def test_a_held_chat_holds_off_the_schedule_write(monkeypatch, owner) -> None:
+    """A chat that read outside mail must not steer a company-wide write.
+    Mutation: drop ``org-admin`` from ``HELD_WRITE_OWNERS`` -> red."""
+    from acb_common import get_settings
+    from acb_skills import egress
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+    for item in (pt.set_work_schedule, "set_work_schedule"):
+        assert egress.is_held_off_write(item, owner=owner) is True
+    assert egress.is_held_off_write(pt.people_directory, owner=owner) is False
