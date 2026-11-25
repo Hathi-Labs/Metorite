@@ -317,5 +317,6 @@ Each one has a HANDOFF entry with the recommendation.
   region together with the database.
 - **The sandbox box.** It is built (§4a). The owner approved it on task 3912
   on 2026-11-23, and that approval replaces "only when production moves here".
-  The patch route is still open (§4a).
+  The patch route is Cloud NAT `aroh-nat` on `aroh-sandbox` only, chosen on
+  2026-11-25 (§4a).
 - **The Router and Vertex** (H-449).
