@@ -155,6 +155,39 @@ How it copies:
   `as_of`.
 - `profit_and_loss` takes 366 days or less.
 
+## On Windows (TLY-5)
+
+On a customer's machine, pass `--windows` to each command. The program then
+keeps its files under `%ProgramData%\TallyBridge`:
+
+| File | What it holds |
+|---|---|
+| `settings.json` | The settings. It holds no secret |
+| `secrets.bin` | The read token hash and the setup secret hash, protected by DPAPI at machine scope |
+| `copy.key` | The key of the local copy, protected by DPAPI at machine scope |
+
+A file that DPAPI cannot read (a new machine, a damaged file) reads as empty.
+The bridge then asks for a new setup link, and the local copy starts again.
+
+Two settings keep Tally reachable (`integrations_console.md` §3.8.13). Each
+one is off until the customer turns it on:
+
+| Setting | What it does |
+|---|---|
+| `START_TALLY_AT_SIGNIN` with `TALLY_EXE` | A Task Scheduler task starts TallyPrime when any person signs in, as that person. The task names the Users group, so it does not depend on the administrator who installed it. TallyPrime loads the companies of its own start-up setting |
+| `KEEP_AWAKE` | While the bridge runs, it asks Windows not to sleep. It changes no power plan |
+
+Two commands change the machine. Run each one as an administrator:
+
+- `python -m tally_bridge apply-windows --windows` makes the sign-in task
+  match the setting. It also makes one firewall rule that blocks TCP 9000
+  (Tally) and 8765 (the bridge) from the network. Windows does not filter
+  loopback, so the bridge still reaches Tally.
+- `python -m tally_bridge uninstall-windows --windows` removes the task, the
+  firewall rule, the stored hashes, the copy key and the local copy.
+
+The service and the installer follow in TLY-5 PR B.
+
 ## Fixtures
 
 - `fixtures/synthetic/`: answers that we wrote by hand. Each file name starts

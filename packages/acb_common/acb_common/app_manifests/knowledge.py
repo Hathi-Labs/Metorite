@@ -17,7 +17,9 @@ the edge and ``acb_auth`` cannot import ``acb_skills``. That module stays as
 a re-export, so its readers do not change.
 
 **The chat.** KB-4a builds two read tools. KB-5a gives
-``POST /knowledge/proposals`` to the two propose tools, and nothing else.
+``POST /knowledge/proposals`` to the two propose tools. PAR-3 (task 3105)
+gives the page create and edit, and the space create and edit, to four
+tools. Each one shows the full text on one card before it saves.
 
 **The door (MCP-P1a).** The reads that call no model, and ``propose``. The
 search makes an embedding call, so it is off the door (AD-11). Each other
@@ -123,11 +125,15 @@ KNOWLEDGE = App(
     finish_in="Knowledge, Review",
     routes=(
         # ── Spaces ──
+        # PAR-3: `create_page` and `edit_space` read the list to find a space
+        # by its name, before the card.
         Route("GET", "/knowledge/spaces", "list_spaces", "A",
-              op="list_spaces", title="List the spaces that the member can open.",
+              also=("create_page", "edit_space"), op="list_spaces", title="List the spaces that the member can open.",
               plain=_PLAIN),
-        Route("POST", "/knowledge/spaces", "", "C", planned="KB-5", off_door=_WAITS_FOR_P1B),
-        Route("PATCH", "/knowledge/spaces/{space_id}", "", "C", planned="KB-5",
+        # PAR-3 (task 3105): the chat makes a space and changes its name or
+        # purpose, behind one card. It never sends a grant (D-PM-40).
+        Route("POST", "/knowledge/spaces", "create_space", "C", off_door=_WAITS_FOR_P1B),
+        Route("PATCH", "/knowledge/spaces/{space_id}", "edit_space", "C",
               off_door=_WAITS_FOR_P1B),
         Route("PUT", "/knowledge/spaces/{space_id}/grants", "", "X", reason=_GRANT_REASON),
         # ── Pages ──
@@ -136,11 +142,15 @@ KNOWLEDGE = App(
               title="List the pages that the member can see, with no body. "
                     "Filter by space, parent, state or a word of the title (q).",
               plain=_PLAIN),
+        # PAR-3: `edit_page` reads the page for its card, before the PATCH.
         Route("GET", "/knowledge/pages/{page_id}", "read_page", "A",
-              op="get_page", title="Read one page, with its body, versions and links.",
+              also=("edit_page",), op="get_page", title="Read one page, with its body, versions and links.",
               plain=_PLAIN),
-        Route("POST", "/knowledge/pages", "", "B", planned="KB-5", off_door=_WAITS_FOR_P1B),
-        Route("PATCH", "/knowledge/pages/{page_id}", "", "B", planned="KB-5",
+        # PAR-3 (task 3105): the chat makes a draft, or changes the title and
+        # the body, behind one card that shows the full text. The POST always
+        # makes a draft. The publish row below keeps no tool (F2).
+        Route("POST", "/knowledge/pages", "create_page", "B", off_door=_WAITS_FOR_P1B),
+        Route("PATCH", "/knowledge/pages/{page_id}", "edit_page", "B",
               off_door=_WAITS_FOR_P1B),
         Route("POST", "/knowledge/pages/{page_id}/publish", "", "B", planned="KB-5",
               off_door=_PERSON_PUBLISHES),
