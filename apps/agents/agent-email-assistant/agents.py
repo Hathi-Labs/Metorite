@@ -1040,11 +1040,62 @@ async def _mailbox_name(account_id: str) -> str | None:
     return None
 
 
+#: The answer of ``list_accounts(organization=true)`` to a 401 or a 403. The
+#: gateway route decides, by the session of the member of the run: the route
+#: needs ``admin:members:read``, and the email router adds ``feature:email``,
+#: so a 403 can mean either one. No argument of the tool names a member or an
+#: organization (P-2a, task 3111).
+_ORG_COUNTS_REFUSED = (
+    "Not read. The mailbox counts of the organization need the admin right "
+    "to read members, and the Email feature, for this member. One of them is "
+    "missing. Your own mailboxes: call list_accounts with no argument."
+)
+
+
+async def _org_mailbox_counts() -> str:
+    """``list_accounts(organization=true)``: the mailbox counts of the
+    organization of the member, as the Email tab of Organisation shows them.
+
+    ``GET /email/admin/connections`` takes no argument. The organization and
+    the admin right come from the session of the member of the run, never
+    from the model (R5, D-PAR-2). The answer is seven integers, so it holds
+    no text of a sender."""
+    try:
+        data = await _get("/email/admin/connections")
+    except GatewayError as exc:
+        if exc.status in (401, 403):
+            return _ORG_COUNTS_REFUSED
+        raise
+    if not isinstance(data, dict):
+        data = {}
+
+    def n(key: str) -> int:
+        try:
+            return int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return "\n".join([
+        f"Mailboxes in your organization: {n('members')} member(s) connected "
+        f"{n('mailboxes')} mailbox(es).",
+        f"By provider: Microsoft {n('microsoft')}, Gmail {n('gmail')}, "
+        f"IMAP {n('imap')}.",
+        f"Sync errors: {n('sync_errors')}. Waiting for the first sync: "
+        f"{n('first_sync_pending')}.",
+    ])
+
+
 @_annotate_risk(open_world=False)
-async def list_accounts() -> str:
+async def list_accounts(organization: bool = False) -> str:
     """List the user's connected email accounts as "label · address", with
     the id and the unread count — also answers "how many unread do I have?"
-    via the per-account + total."""
+    via the per-account + total.
+
+    ``organization=true`` gives the counts of the whole organization in
+    place of the list: how many members connected a mailbox, by provider,
+    and how many mailboxes have a sync error. Only an admin may read them."""
+    if organization:
+        return await _org_mailbox_counts()
     accounts = await _accounts()
     if not accounts:
         return "No email accounts are connected."
@@ -1145,12 +1196,21 @@ async def update_account(
 
 
 async def search_emails(
-    query: str, folder: str = "inbox", account_id: str | None = None
+    query: str, folder: str = "inbox", account_id: str | None = None,
+    to: str | None = None, attachment: str | None = None,
 ) -> str:
-    """Search emails (subject/body/sender). Returns matches with their ids."""
+    """Search emails (subject/body/sender). Returns matches with their ids.
+
+    to: a word of a To or Cc recipient (address or name), for "what I sent to
+      Mahesh" (use folder="sent").
+    attachment: a word of an attachment file name, for "the NDA I sent"."""
     params: dict[str, Any] = {"query": query, "folder": folder}
     if account_id:
         params["account_id"] = account_id
+    if to:
+        params["to_addr"] = to
+    if attachment:
+        params["attachment_name"] = attachment
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
@@ -1809,10 +1869,52 @@ async def find_priority(account_id: str | None = None, kind: str = "needs_reply"
     return await find_needs_reply(account_id, offset=offset)
 
 
+async def _older_mail(account_id: str, before: str) -> str:
+    """``get_account_overview(older_than=...)``: how much mail Metorite keeps
+    for the mailbox from before a date, as the dialog "Remove older mail"
+    shows it first (``GET .../storage/older``, EM-T6c item 8).
+
+    It is a read. The route writes nothing and counts no draft. The answer
+    says that a removal acts on Metorite's copy only, so the member never
+    reads it as a delete at the provider (D-EM-14)."""
+    when = str(before or "").strip()
+    day = re.match(r"\d{4}-\d{2}-\d{2}", when)
+    try:
+        date.fromisoformat(day.group(0) if day else "")
+    except ValueError:
+        return "Give older_than as a date in the past, for example 2025-01-01."
+    box, question = await _read_mailbox(account_id, "get_account_overview")
+    if question:
+        return question
+    try:
+        data = await _get(f"/email/accounts/{box}/storage/older", {"before": when})
+    except GatewayError as exc:
+        if exc.status == 400 and exc.detail:
+            return f"Nothing read. {exc.detail}"
+        raise
+    data = data if isinstance(data, dict) else {}
+    size = _size_text(data.get("bytes")) if data.get("bytes") else ""
+    return "\n".join([
+        await _mailbox_line(box),
+        f"Mail received before {when}: {data.get('messages', 0)} email(s), "
+        f"{size or '0 KB'} in Metorite. Drafts do not count.",
+        "A removal takes this mail out of Metorite only. The mailbox at the "
+        "provider keeps it. The member removes it in the mailbox settings of "
+        "the Email app.",
+    ])
+
+
 @_annotate_risk(open_world=False)
-async def get_account_overview(account_id: str, days: int = 30) -> str:
+async def get_account_overview(account_id: str, days: int = 30,
+                               older_than: str | None = None) -> str:
     """High-level snapshot: totals, read-rate, top senders, sender categories.
-    ``days`` sets the window, 1 to 365 (default 30)."""
+    ``days`` sets the window, 1 to 365 (default 30).
+
+    ``older_than`` (a date, for example 2025-01-01) gives in place of the
+    snapshot how many emails Metorite keeps from before that date, and their
+    size. It changes nothing."""
+    if older_than:
+        return await _older_mail(account_id, older_than)
     try:
         window = max(1, min(int(days or 30), 365))
     except (TypeError, ValueError):
@@ -1874,6 +1976,143 @@ def _near_sender_line(near: Any, *, found: bool) -> str:
             "matches these filters.")
 
 
+#: Where the text of a search row comes from, for the data note of
+#: ``acb_skills.untrusted`` (P-2a, task 3111), as ``_EMAIL_DATA_WHAT`` says it
+#: for one email.
+_SEARCH_DATA_WHAT = (
+    "The rows below come from mail: the names, the subjects and the matched "
+    "text are text that the senders wrote."
+)
+#: The label counts of a folder come from labels that the rules and the
+#: member set, and a rule can write a label from the text of a mail.
+_COUNTS_DATA_WHAT = (
+    "The label names below come from the labels on the mail. A rule can take "
+    "a label name from the text of a mail."
+)
+
+
+#: The answer of a search of every folder that found nothing.
+_SEARCH_NO_MATCH = "No email in any folder but Junk and Trash matched."
+#: The last line of a broadened answer. The route broadens on page 1 only.
+_SEARCH_BROADENED_ONE_PAGE = (
+    "This broadened answer has only this one page. For other mail, search "
+    "again with more exact words."
+)
+#: A page after page 1 that found nothing, with a total of 0. A broadened
+#: page 1 can hold matches that a strict page 2 does not count.
+_SEARCH_PAST_PAGE_ONE = (
+    "Nothing on this page. Page 1 (offset 0) of this search held the matches: "
+    "a search that broadened to ANY word has only one page. For other mail, "
+    "search again with more exact words."
+)
+#: The filters that ``query_inbox(counts=true)`` cannot apply: the counts
+#: route takes only the mailbox and the folder.
+_COUNTS_FILTERS = ("query", "days", "sender_category", "from_email",
+                   "unread_only", "starred_only", "has_attachments", "importance",
+                   "to_email", "attachment_name")
+
+
+def _mark_free(value: Any, limit: int) -> str:
+    """The highlight of a search row on one line, with no ``<mark>`` tag."""
+    return _one_line(re.sub(r"</?mark>", "", str(value or "")), limit)
+
+
+async def _search_everywhere(
+    account_id: str | None, query: str | None, params: dict[str, Any],
+    start: int, size: int,
+) -> str:
+    """``query_inbox(everywhere=true)``: the search bar of the Email app
+    (``GET /email/search``). It searches every folder but Junk and Trash,
+    sent mail too (``folder=all``, as the search bar and ``narrow_source``
+    send it). With words it ranks the mail by how well it matches them, and
+    with no words it gives the newest first. Each row shows the text that
+    matched.
+
+    The route broadens to ANY word on page 1 only, when no mail holds every
+    word. A broadened answer therefore has one page, and its answer names no
+    offset (the Email app also stops at page 1 of it). A later page of such a
+    query is a strict search, so a page past page 1 that finds nothing with a
+    total of 0 says that page 1 held the matches. It never says "nothing
+    matched".
+
+    *params* holds the filters of ``query_inbox`` in the names of
+    ``/email/messages``. This maps them to the names of ``/email/search``.
+    The rows sit in one block of a new frame, because a sender wrote the
+    names, the subjects and the matched text (EM-G11d)."""
+    sp: dict[str, Any] = {
+        "folder": "all", "light": "true",
+        "page_size": str(size), "page": str(start // size + 1),
+    }
+    if query:
+        sp["q"] = query
+    if account_id:
+        sp["account_id"] = account_id
+    renames = {"from_email": "from_addr"}
+    for key in ("received_after", "sender_category", "from_email", "is_read",
+                "is_starred", "has_attachments", "importance"):
+        if key in params:
+            sp[renames.get(key, key)] = params[key]
+    data = await _get("/email/search", sp)
+    data = data if isinstance(data, dict) else {}
+    emails = [e for e in data.get("emails") or [] if isinstance(e, dict)]
+    total = data.get("total") or 0
+    if not emails:
+        if start and not total:
+            return _SEARCH_PAST_PAGE_ONE
+        return page_line(total, start, 0) or _SEARCH_NO_MATCH
+    labels = {} if account_id else await _account_labels()
+    multi = len(labels) > 1
+    rows: list[str] = []
+    for e in emails:
+        frm = e.get("from_address", {}) or {}
+        acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
+        matched = _mark_free(e.get("highlight"), 160) or _one_line(e.get("snippet"), 80)
+        rows.append(
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
+            f"{(e.get('received_at') or '')[:10]} | {_one_line(e.get('folder'), 30)} | "
+            f"{_one_line(frm.get('name') or frm.get('email'), 80)}: "
+            f"{_one_line(e.get('subject') or '(no subject)', 160)} — {matched}")
+    frame = UntrustedFrame.new()
+    order = "best match first" if query else "newest first"
+    lines = [f"Found {total} emails in every folder but Junk and Trash, {order}; "
+             f"showing {len(rows)}:"]
+    broadened = bool(data.get("broadened"))
+    if broadened:
+        lines.append("No email held every word, so these hold ANY of the words.")
+    lines += [frame.note(_SEARCH_DATA_WHAT), frame.wrap("SEARCH", "\n".join(rows))]
+    if broadened:
+        lines.append(_SEARCH_BROADENED_ONE_PAGE)
+    elif line := page_line(total, start, len(rows)):
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _folder_counts(account_id: str | None, folder: str) -> str:
+    """``query_inbox(counts=true)``: how much mail of a folder carries each
+    label, and how much is unread or carries no label. These are the counts
+    of the quick filters of the Email app (``GET /email/messages/facets``).
+    It reads counts only, never a message."""
+    params: dict[str, Any] = {"folder": folder or "inbox"}
+    if account_id:
+        params["account_id"] = account_id
+    data = await _get("/email/messages/facets", params)
+    data = data if isinstance(data, dict) else {}
+    where = "this mailbox" if account_id else "All inboxes"
+    lines = [
+        f"Folder {_one_line(folder or 'inbox', 30)} in {where}: {data.get('total', 0)} "
+        f"email(s), {data.get('unread', 0)} unread, "
+        f"{data.get('uncategorized', 0)} with no label.",
+    ]
+    counts = data.get("labels") if isinstance(data.get("labels"), dict) else {}
+    if counts:
+        frame = UntrustedFrame.new()
+        lines += [frame.note(_COUNTS_DATA_WHAT), frame.wrap("LABELS", "\n".join(
+            f"• {_one_line(name, 60)}: {n}" for name, n in counts.items()))]
+    else:
+        lines.append("No email in this folder carries a label.")
+    return "\n".join(lines)
+
+
 @_annotate_risk(open_world=False)
 async def query_inbox(
     account_id: str | None = None,
@@ -1889,6 +2128,10 @@ async def query_inbox(
     sort: str = "newest",
     limit: int = 25,
     offset: int = 0,
+    to_email: str | None = None,
+    attachment_name: str | None = None,
+    everywhere: bool = False,
+    counts: bool = False,
 ) -> str:
     """Search and filter the inbox to answer a question over MANY emails.
     For example "unread mail from Acme" or "sales emails of the last month".
@@ -1898,13 +2141,43 @@ async def query_inbox(
       sender_category: one of Newsletter, Marketing, Receipt, Calendar,
         Notification, Cold Email, Personal, Support
       from_email: part of the sender's address
+      to_email: a word of a To or Cc recipient, address or name (with
+        folder="sent", the mail the member sent to that person)
+      attachment_name: a word of an attachment file name ("nda")
       unread_only / starred_only / has_attachments / importance (high|normal|low)
       sort: newest | oldest | importance
       limit / offset: a page of results (limit at most 100)
     account_id: one mailbox. With none, it reads All inboxes, and each line
       names its mailbox as [label · address].
+    everywhere: true searches every folder but Junk and Trash (sent mail
+      too) as the search bar of the Email app does: best match first, with
+      the text that matched. Use it for "search all my mail" or when a search
+      of one folder finds nothing. folder and sort do not apply. An answer
+      that broadened to ANY word has one page only.
+    counts: true gives only the counts of the folder: emails, unread, no
+      label, and the count for each label. It reads no message. It takes
+      only account_id and folder: with any other filter it reads nothing,
+      so use the normal list (counts=false) for a filtered count.
     Returns the emails with ids. Call read_email for the full text of one.
     """
+    if counts:
+        given = {"query": query, "days": days, "sender_category": sender_category,
+                 "from_email": from_email, "unread_only": unread_only,
+                 "starred_only": starred_only, "has_attachments": has_attachments,
+                 "importance": importance, "to_email": to_email,
+                 "attachment_name": attachment_name}
+        # has_attachments=False is a filter ("no attachment"), as the list path reads it:
+        # only None means "not given". For every other key False or 0 means off.
+        bad = [
+            k
+            for k in _COUNTS_FILTERS
+            if (given[k] is not None if k == "has_attachments" else given[k] not in (None, False, "", 0))
+        ]
+        if bad:
+            return (f"Nothing read. counts=true cannot apply {', '.join(bad)}: it counts a "
+                    "whole folder only. Call query_inbox again with counts=false and "
+                    "the same filters, and read the total of that list.")
+        return await _folder_counts(account_id, folder)
     start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
         "folder": folder, "sort": sort,
@@ -1926,6 +2199,10 @@ async def query_inbox(
         # HRD-18b: a sender that finds no mail tries its near spelling. Only
         # this tool asks for it, and the route also needs FIND_ORGS on.
         params["near_sender"] = "true"
+    if to_email:
+        params["to_addr"] = to_email
+    if attachment_name:
+        params["attachment_name"] = attachment_name
     if unread_only:
         params["is_read"] = "false"
     if starred_only:
@@ -1934,6 +2211,8 @@ async def query_inbox(
         params["has_attachments"] = "true" if has_attachments else "false"
     if importance:
         params["importance"] = importance
+    if everywhere:
+        return await _search_everywhere(account_id, query, params, start, size)
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
@@ -6274,9 +6553,71 @@ async def suggest_unsubscribes(account_id: str | None = None, offset: int = 0) -
 
 # ── Labels / folders / send ──────────────────────────────────────────────────
 
+async def _read_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
+    """The mailbox of a READ of one mailbox, as ``(account_id, question)``.
+
+    The id or the name of the model is held against the member's OWN list
+    (``_named_mailbox``, §7.1.1 rule 4). An unknown name or a name that
+    matches two mailboxes gives the question "Which mailbox?", and the tool
+    reads nothing. The gateway route checks the owner again (D-EM-20)."""
+    if not account_id or not str(account_id).strip():
+        return "", (f"Which mailbox? Ask the user, then call {tool} with the "
+                    "account_id of that mailbox, as list_accounts shows it.")
+    named, hits = await _named_mailbox(str(account_id))
+    if named:
+        return named, ""
+    word = _one_line(account_id, 60)
+    then = f"Ask the user, then call {tool} again with the account_id of that mailbox."
+    if hits:
+        return "", _mailbox_choices(
+            f"Which mailbox? \"{word}\" matches more than one.", hits, then)
+    return "", _mailbox_choices(
+        f"Which mailbox? No mailbox is called \"{word}\".", await _accounts(), then)
+
+
+#: Where the folder names of ``list_labels(folders=true)`` come from.
+_FOLDERS_DATA_WHAT = (
+    "The folder names below come from the mailbox at the provider. The member "
+    "or a person who shares the mailbox can name a folder."
+)
+
+
+async def _list_folders(account_id: str) -> str:
+    """``list_labels(folders=true)``: the folders of the mailbox at the
+    provider, with the count of mail and of unread mail in each, as the
+    folder list of the Email app shows them (``GET .../folders``).
+
+    The member, a person who shares the mailbox or a provider names a
+    folder, so the rows sit in one block of a new frame, as the label
+    counts of ``_folder_counts`` do, and each name stays on one line."""
+    box, question = await _read_mailbox(account_id, "list_labels")
+    if question:
+        return question
+    rows = await _get(f"/email/accounts/{box}/folders")
+    folders = [f for f in (rows or []) if isinstance(f, dict)]
+    head = await _mailbox_line(box)
+    if not folders:
+        return f"{head}\nThe provider lists no folder for this mailbox."
+    rows: list[str] = []
+    for f in folders:
+        kind = "your folder" if f.get("type") == "user" else "system folder"
+        rows.append(
+            f"• {_one_line(f.get('name') or f.get('provider_folder_id'), 120)} "
+            f"({kind}): {f.get('message_count', 0)} emails, "
+            f"{f.get('unread_count', 0)} unread")
+    frame = UntrustedFrame.new()
+    return "\n".join([head, f"Folders ({len(folders)}):",
+                      frame.note(_FOLDERS_DATA_WHAT), frame.wrap("FOLDERS", "\n".join(rows))])
+
+
 @_annotate_risk(open_world=False)
-async def list_labels(account_id: str) -> str:
-    """List the user-applicable label/folder names on the account."""
+async def list_labels(account_id: str, folders: bool = False) -> str:
+    """List the user-applicable label/folder names on the account.
+
+    ``folders=true`` lists the folders of the mailbox at the provider in
+    place of the labels, with the count of emails and unread emails in each."""
+    if folders:
+        return await _list_folders(account_id)
     labels = await _get(f"/email/accounts/{account_id}/labels")
     if not labels:
         return "No user labels on this account yet."
@@ -10599,8 +10940,9 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
       • ``rule``  — sender/subject pins learned for RULES from your Fix
         corrections ("mail from X should / shouldn't match rule Z").
 
-    Forget any pattern with forget_pattern(pattern_id, kind). offset reads
-    the next page."""
+    Forget any pattern with forget_pattern(pattern_id, kind). Approve or
+    reject a rule pattern with forget_pattern(pattern_id, action="review",
+    approve=…). offset reads the next page."""
     k = (kind or "draft").strip().lower()
     if k in ("rule", "rules", "classification"):
         data = await _get("/email/rules/patterns", {"account_id": account_id})
@@ -10639,9 +10981,10 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
 
 async def _pattern_row(
     pattern_id: str, is_rule: bool,
-) -> tuple[dict[str, Any], str] | None:
-    """The learned pattern with *pattern_id*, and "label · address" of its
-    mailbox, or None when no mailbox of the member has it."""
+) -> tuple[dict[str, Any], str, str] | None:
+    """The learned pattern with *pattern_id*, "label · address" of its
+    mailbox and the id of that mailbox, or None when no mailbox of the
+    member has it."""
     path = "/email/rules/patterns" if is_rule else "/email/learned-patterns"
     try:
         accounts = await _accounts()
@@ -10654,7 +10997,7 @@ async def _pattern_row(
             continue
         for row in (data or {}).get("patterns") or []:
             if isinstance(row, dict) and str(row.get("id")) == str(pattern_id):
-                return row, _mailbox_text(a)
+                return row, _mailbox_text(a), str(a["id"])
     return None
 
 
@@ -10679,10 +11022,22 @@ async def _rule_by_id(rule_id: str) -> dict[str, Any] | None:
 
 
 @_annotate_risk(open_world=False)
-async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
-    """Forget a learned pattern by id. ``kind`` selects which store it's from:
-    ``draft`` (writing preferences) or ``rule`` (rule-classification pins) —
-    matching the id you got from list_patterns(kind=…)."""
+async def forget_pattern(
+    pattern_id: str, kind: str = "draft", action: str = "forget", approve: bool = True,
+) -> str:
+    """Forget a learned pattern by id, or review a learned rule pattern.
+    ``kind`` selects which store it's from: ``draft`` (writing preferences)
+    or ``rule`` (rule-classification pins) — matching the id you got from
+    list_patterns(kind=…).
+
+    ``action``: ``forget`` (default) deletes the pattern. ``review`` approves
+    (``approve=true``) or rejects (``approve=false``) a learned RULE pattern,
+    as the Approve and Reject buttons of the Rules tab do. The Email Cleaner
+    uses an approved pattern. A rejected pattern stays on the list, and the
+    assistant does not learn it again. A review always reads the rule store,
+    whatever ``kind`` says."""
+    if (action or "forget").strip().lower() == "review":
+        return await _review_pattern(pattern_id, bool(approve))
     k = (kind or "draft").strip().lower()
     is_rule = k in ("rule", "rules", "classification")
     # EM-G11c1: a learned pattern shapes each later draft or match. Fix round
@@ -10694,7 +11049,7 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
             f"Nothing changed. No learned {'rule' if is_rule else 'draft'} pattern "
             f"of yours has the id {pattern_id}. Call list_patterns for the id."
         )
-    row, box = found
+    row, box, _account = found
     # Re-review of #1173: a "never match" pin narrows its rule, so to forget
     # it widens the rule. A held run refuses that for a rule that it may not
     # save, and also when it cannot read the rule.
@@ -10723,6 +11078,56 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
         return f"Forgot rule pattern {pattern_id}."
     await _delete(f"/email/learned-patterns/{pattern_id}")
     return f"Forgot learned pattern {pattern_id}."
+
+
+async def _review_pattern(pattern_id: str, approve: bool) -> str:
+    """``forget_pattern(action="review")``: approve or reject ONE learned rule
+    pattern behind one card (P-2c, task 3919). It sends the request of the
+    Approve and Reject buttons of the Rules tab,
+    ``POST /email/rules/patterns/review``, for this pattern only.
+
+    A rejected pattern stops matching. The Email Cleaner uses an approved
+    one. So to approve an "always match" pin, or to reject a "never match"
+    pin, widens its rule. A held run refuses that for a rule that sends mail
+    out, and also when it cannot read the rule, as ``forget_pattern`` does."""
+    found = await _pattern_row(pattern_id, True)
+    if found is None:
+        return (
+            f"Nothing changed. No learned rule pattern of yours has the id "
+            f"{pattern_id}. Call list_patterns(kind=\"rule\") for the id."
+        )
+    row, box, account_id = found
+    exclude = bool(row.get("exclude"))
+    widens = approve != exclude
+    if widens and _egress_held():
+        rule = await _rule_by_id(str(row.get("rule_id") or ""))
+        if rule is None or _held_in_no_egress(rule.get("actions")):
+            return _egress_held_answer(
+                "Reviewing a pin so that a rule that sends mail out matches more mail")
+    verb = "never match" if exclude else "always match"
+    shown = (f"{_card_name(row.get('pattern_type'))} "
+             f"\"{_card_text(row.get('value') or '', 120)}\": {verb} the rule "
+             f"\"{_card_name(row.get('rule_name') or row.get('rule_id') or '?')}\"")
+    if approve:
+        title = "Approve this learned rule pattern?"
+        effect = f"The Email Cleaner can then use the learned rule pattern {shown}."
+    else:
+        title = "Reject this learned rule pattern?"
+        effect = (f"The assistant stops using the learned rule pattern {shown}. "
+                  "The pattern stays on the list as rejected, and the assistant "
+                  "does not learn it again.")
+    refusal = await _card_refusal(
+        title, f"{effect} Mailbox: {box}.", "The pattern was not reviewed.",
+    )
+    if refusal:
+        return refusal
+    res = await _post(
+        "/email/rules/patterns/review",
+        {"account_id": account_id, "pattern_ids": [pattern_id], "approve": approve},
+    )
+    if not int((res or {}).get("updated") or 0):
+        return f"Nothing changed. Rule pattern {pattern_id} was not updated."
+    return f"{'Approved' if approve else 'Rejected'} rule pattern {pattern_id}."
 
 
 @_annotate_risk(open_world=False)
