@@ -6218,9 +6218,8 @@ TEXT_RESERVE_NOT_FOUND = "Project or task not found. Check both ids."
 TEXT_RESERVE_NOT_IN_PROJECT = (
     "That task is not in this project or in one of its subprojects.")
 TEXT_RESERVE_RUN = "That run is not a run of this task."
-#: SW-27c1, the owner's decision 1. The detail of the reserve route when the
-#: run is a run of the task but not the caller's own run.
-RESERVE_RUN_NOT_YOURS_DETAIL = "The run is not your own run on this task."
+#: SW-27c1, the owner's decision 1: the run is a run of the task, and not the
+#: caller's own run (the detail is ``agent_oauth.SEQUENCE_RUN_NOT_YOURS``).
 TEXT_RESERVE_RUN_NOT_YOURS = (
     "That run is not your own run. Send the run_id of your own run on the task,"
     " or no run_id.")
@@ -6275,7 +6274,7 @@ async def _reserve_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             (404, "The task or the run is gone. Try again."): TEXT_RESERVE_GONE,
             (422, "The task is not in this project."): TEXT_RESERVE_NOT_IN_PROJECT,
             (422, "The run is not a run of this task."): TEXT_RESERVE_RUN,
-            (422, RESERVE_RUN_NOT_YOURS_DETAIL): TEXT_RESERVE_RUN_NOT_YOURS,
+            (422, agent_oauth.SEQUENCE_RUN_NOT_YOURS): TEXT_RESERVE_RUN_NOT_YOURS,
         },
         texts={422: TEXT_RESERVE_REFUSED})
     if not isinstance(row, dict):
@@ -6365,8 +6364,11 @@ async def _mark_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         ctx, "POST", MARK_ROUTE, TEXT_MARK_NOT_FOUND,
         path_params={"reservation_id": str(args["reservation_id"])},
         json_body={"state": str(args["state"])},
-        details={(404, agent_oauth.SEQUENCE_MARKS_OFF): TEXT_MARKS_OFF},
-        texts={403: TEXT_MARK_NOT_YOURS, 409: TEXT_MARK_FINAL})
+        # By the detail, never by a bare status: a 403 of another cause (the
+        # writes flag, a lost feature) keeps its own text.
+        details={(404, agent_oauth.SEQUENCE_MARKS_OFF): TEXT_MARKS_OFF,
+                 (403, agent_oauth.SEQUENCE_NOT_YOUR_RUN): TEXT_MARK_NOT_YOURS,
+                 (409, agent_oauth.SEQUENCE_MARK_FINAL): TEXT_MARK_FINAL})
     if not isinstance(row, dict):
         raise ToolError(TEXT_BUSY)
     return {key: row.get(key) for key in MARK_KEYS}

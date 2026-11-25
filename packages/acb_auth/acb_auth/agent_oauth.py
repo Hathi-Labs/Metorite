@@ -566,6 +566,13 @@ def sequence_marks_allowed(organization_id: object) -> bool:
 #: :func:`sequence_marks_allowed` is false. The edge maps it to a fixed text.
 SEQUENCE_MARKS_OFF = "sequence_marks_off"
 
+#: SW-27c1. The fixed ``detail`` of each refusal of the sequence routes that
+#: the edge maps to its own text. ONE copy: the gateway sends it, and the edge
+#: matches it, so a 403 or 409 of another cause keeps its own text.
+SEQUENCE_NOT_YOUR_RUN = "This number is not a number of your run."
+SEQUENCE_RUN_NOT_YOURS = "The run is not your own run on this task."
+SEQUENCE_MARK_FINAL = "The number is already used or released. It cannot change."
+
 
 #: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
 #: false: the ``detail`` of the 404 of the upload, and the ``error`` of the
@@ -1634,6 +1641,9 @@ __all__ = [
     "S256",
     "SENDS_OFF_CODE",
     "SEQUENCE_MARKS_OFF",
+    "SEQUENCE_MARK_FINAL",
+    "SEQUENCE_NOT_YOUR_RUN",
+    "SEQUENCE_RUN_NOT_YOURS",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
     "WRITE_CAP",

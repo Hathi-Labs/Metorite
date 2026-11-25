@@ -897,11 +897,45 @@ def test_the_sequence_name_rule_is_one_rule():
     assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN
 
 
-def test_the_reserve_run_texts_match_the_route():
-    """SW-27c1. The edge maps the route's own-run detail to a fixed text. The
-    two copies of the detail must stay equal, or the agent gets the general
-    refusal and never learns that the run is not its own."""
-    from agent_edge import tools as edge_tools
-    from gateway.routes.projects.sequences import RUN_NOT_YOURS
+def test_the_sequence_route_texts_have_one_copy():
+    """SW-27c1. The gateway sends the shared details of ``agent_oauth``, so
+    the edge's map by detail matches them."""
+    from acb_auth import agent_oauth
+    from gateway.routes.projects import sequences
 
-    assert edge_tools.RESERVE_RUN_NOT_YOURS_DETAIL == RUN_NOT_YOURS
+    assert sequences.RUN_NOT_YOURS is agent_oauth.SEQUENCE_RUN_NOT_YOURS
+    assert sequences.NOT_YOUR_RUN is agent_oauth.SEQUENCE_NOT_YOUR_RUN
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("agent_writes_disabled", "other"),
+    ("This number is not a number of your run.", "not_yours"),
+    ("Feature not enabled", "other"),
+])
+def test_mark_number_maps_a_403_by_its_detail(monkeypatch, detail, expected):
+    """Review P2. The tool's own mapping: a 403 of another cause keeps its
+    own text. Before the fix, every 403 read as "not your run". Mutation:
+    map ``texts={403: ...}`` again, and the "other" cases turn red."""
+    import asyncio
+
+    from acb_auth import agent_oauth
+    from agent_edge import tools as edge_tools
+    from agent_edge.gateway_client import Answer
+
+    if detail == "agent_writes_disabled":
+        detail = agent_oauth.WRITES_DISABLED_CODE
+    answer = Answer(status=403, body={"detail": detail})
+
+    async def fake_write(ctx, method, template, not_found, **kw):
+        keep = {k: v for k, v in kw.items()
+                if k in ("texts", "details", "coded", "prefixes", "coded_statuses")}
+        return edge_tools._written(answer, not_found, **keep)
+
+    monkeypatch.setattr(edge_tools, "_write", fake_write)
+    with pytest.raises(edge_tools.ToolError) as exc:
+        asyncio.run(edge_tools._mark_number(None, {
+            "reservation_id": "00000000-0000-4000-8000-000000000001", "state": "used"}))
+    if expected == "not_yours":
+        assert str(exc.value) == edge_tools.TEXT_MARK_NOT_YOURS
+    else:
+        assert str(exc.value) != edge_tools.TEXT_MARK_NOT_YOURS

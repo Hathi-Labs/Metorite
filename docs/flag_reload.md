@@ -486,14 +486,6 @@ run. Any value other than empty is OWNER-GATE, and only the owner flips it.
 The five tools join each request, so the flip takes the trade of the tool cap
 in `chat_parity.md`, PAR-8b facts for the owner.
 
-`SEQUENCE_MARKS_ORGS` lets an outside agent mark each number that its own run reserved
-`used` or `released` (`mark_number`, `agent_coordination.md` SW-27c1). Off, the
-mark route answers 404 for a signed agent, and the edge hides the tool. Its one
-reader is `acb_auth.agent_oauth.sequence_marks_allowed`. The gateway asks it at
-each call, so a reload applies a change there. The edge reads its flags at
-start, so set the same value for both units and restart the agent edge. Any
-value other than empty is gate `enforcement-flip`.
-
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
 upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
@@ -576,6 +568,14 @@ names `field_filters`, and each other answer stays byte for byte.
 Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
 plan write, each facts read and each module total ask it. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`SEQUENCE_MARKS_ORGS` lets an outside agent mark each number that its own run reserved
+`used` or `released` (`mark_number`, `agent_coordination.md` SW-27c1). Off, the
+mark route answers 404 for a signed agent, and the edge hides the tool. Its one
+reader is `acb_auth.agent_oauth.sequence_marks_allowed`. The gateway asks it at
+each call, so a reload applies a change there. The edge reads its flags at
+start, so set the same value for both units and restart the agent edge. Any
+value other than empty is gate `enforcement-flip`.
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves

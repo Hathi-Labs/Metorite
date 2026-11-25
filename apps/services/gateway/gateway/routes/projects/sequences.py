@@ -26,9 +26,15 @@ outside agent reaches the route through the MCP tool ``reserve_number``
 (SW-27b): the pair is in ``MCP_WRITE_ROUTES``, so ``projects:write``, the nonce
 and the write cap apply, and ``resolve_visibility`` narrows the agent to its
 pins. The organization comes from the bound session, never from the request
-(R5). A caller may name a run, and the run must be a run of that task. The
-route does not check that the run is the caller's own: that is SW-27c's to
-decide, before a mark reads ``run_id`` (task 3894).
+(R5). A named run must be a run of that task and the caller's own run
+(``checks.own_run``, SW-27c1, the owner's decision 1), so a person names no
+run.
+
+**The mark** (SW-27c1). ``POST /projects/reservations/{reservation_id}/mark``
+takes ``state`` ``used`` or ``released``. Only a signed agent marks, and only
+a number of its own run. It is dark behind ``sequence_marks_orgs``. A merge of
+a linked pull request also marks the task's numbers used
+(``github_sync.mark_reservations_used``, SW-27c2).
 
 Not here: the Needs attention kind and the release (SW-27c), the seed of the
 repo's sequences (SW-27d), and the ``/next-ticket`` and ``/handoff`` edits
@@ -117,10 +123,11 @@ UPDATE pm_sequence_reservations
 RETURNING id, state, used_at, released_at
 """
 
-#: The texts of the mark route. The edge maps each one to its own text.
-NOT_YOUR_RUN = "This number is not a number of your run."
+#: The texts of the mark route. The edge maps the shared ones by their detail
+#: (``agent_oauth.SEQUENCE_*``). A person never reaches the edge.
+NOT_YOUR_RUN = agent_oauth.SEQUENCE_NOT_YOUR_RUN
 PERSON_MARK = "Only the agent of the run marks its number here."
-RUN_NOT_YOURS = "The run is not your own run on this task."
+RUN_NOT_YOURS = agent_oauth.SEQUENCE_RUN_NOT_YOURS
 
 
 class ReserveIn(BaseModel):
@@ -258,8 +265,7 @@ async def mark_number(
             )).fetchone()
             state, used_at, released_at = marked.state, marked.used_at, marked.released_at
         elif state != payload.state:
-            raise HTTPException(
-                status_code=409, detail=f"The number is already {state}. It cannot change.")
+            raise HTTPException(status_code=409, detail=agent_oauth.SEQUENCE_MARK_FINAL)
     return {
         "reservation_id": rid,
         "project_id": str(row.project_id),
