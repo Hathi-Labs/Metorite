@@ -19,6 +19,18 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
+`people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
+`people_me`, `people_work` and `reach_preview`. Each tool calls the People
+routes or the Reach routes as the member. The server projects the HR fields by
+the right of the member (D-PC-10). No tool writes, and no tool shows a card.
+
+The owner `org-admin` holds the pack, and no `FOLLOWS` entry names it. So the
+pack stays off until the owner adds `people` to `TOOL_PACKS`. P-5b-1 paid six
+people rows and one memory row. The people ceiling went from 19 to 13, and the
+memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
+`tests/unit/test_people_tools.py` and `tests/unit/test_people_tools_r8.py` (R8).
+
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
 `list_members`, `set_member_roles`, `set_member_status` and
@@ -343,6 +355,13 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | integrations | 19 | 22 | P-8 | 3109 |
 | studio | 0 | 3 | P-9 | 3115 |
 
+**Later than this reading (2026-11-25).** The table does not change after its
+date. For the debt of today, read `DEBT_CEILING`.
+
+Four ceilings changed after 2026-11-22. PAR-2a and PAR-4a took admin to 17.
+PAR-6a took integrations to 4. P-5b-1 took people to 13 and memory to 4. The
+"Today" column above does not show these changes.
+
 ### 6.3 Rungs 0 to 3, slice by slice
 
 Take the slices of the lowest open rung first. Inside a rung, take them in the
@@ -510,7 +529,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 24 and 72 | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 72 | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -558,6 +577,66 @@ uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills test
   Memory holds none. The CRM rows come from the CRM manifest, and not from the
   `DEBT` table, so the build of task 3678 confirms the row of the CRM task.
   People goes first: it pays the same demand with one third of the rows.
+- **The rung of P-5b, corrected (OD6 A, 2026-11-25).** The ladder puts
+  People on rung 7, after rung 6. The board put task 3114 first, and the
+  board sets the order (D118). So P-5b-1 was built before rung 6 closed. The
+  owner accepted this on task 3114. The ladder keeps People on rung 7 for its
+  demo (task 3907). A slice of P-5b does not wait for rung 6.
+
+**The P-5b slices (rung 7, task 3114).** People and Memory held 24 debt rows
+before P-5b-1: 19 of people and 5 of memory. The table names the owner of
+each row. Each slice takes the tier HIGH, because it reads or writes people
+data. The gate column names what the owner does before the slice is live.
+
+| Slice | Rows | Gate | State |
+|---|---|---|---|
+| P-5b-1: four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
+| P-5b-2: self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
+| P-5b-3: admin writes of a person, on one card each | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
+| P-5b-4: the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
+| P-5b-5: send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
+| P-5b-6: delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | To do |
+| Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |
+
+- **Acceptance of P-5b-1.** Each tool sends its route with `X-User-Email` of
+  the run binding. It takes no org, caller or address argument (R5). A shared
+  room gets plain words, and no request goes out. A `person_id` that is not
+  `me` or a UUID gets plain words, and no request goes out. A 404 of Reach
+  gives one line: "Reach is off for you." The text of other people is in one
+  `UntrustedFrame` block, and each value is one line. `paged` and
+  `textwrap.shorten` cap the output. `reach_preview` marks the chat as one
+  that read outside text.
+- **Acceptance of P-5b-1 on a real database (R8).** A member without
+  `admin:members:read` gets no HR field from `people_directory`. A person id
+  of another org gives plain "not found" words. `people_me` returns only the
+  row of the caller.
+- **Verify P-5b-1.** Run these commands in the worktree, with the scratch
+  database up.
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_people_tools.py tests/unit/test_people_tools_r8.py tests/unit/test_chat_parity.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_off.py tests/unit/test_pack_requests.py tests/unit/test_studio_split_matrix.py tests/unit/test_read_tool_paging.py -q -rs -p no:cacheprovider
+uv run ruff check packages/acb_skills/acb_skills/people_tools.py tests/unit/test_people_tools.py tests/unit/test_people_tools_r8.py
+```
+
+- **Verify a later slice.** Each later slice names its own test file in its
+  pull request. `test_chat_parity.py` must pass at the lower ceiling.
+- **Non-goals of P-5b.** These bind each slice of P-5b:
+  - No tool creates a person.
+  - No tool sends the field `email` of a person.
+  - No tool reads the memory of another member.
+  - Each write to a person shows one card first.
+- **Decisions of P-5b (owner answer on task 3114, 2026-11-25).**
+
+| # | The decision | What it changes |
+|---|---|---|
+| OD1 B | A later slice builds the writes of my own row, on one card, and never `email` | P-5b-2. Admin writes need OD1 C later |
+| OD2 A | The four Mem0 rows stay debt until KG-11 | The memory ceiling stays at 4 |
+| OD3 A | A later slice deletes the dead client code that creates a person | P-5b-6 |
+| OD4 A | A new pack `people`, owned by `org-admin`, on only by the owner's `TOOL_PACKS` line | P-5b-1 |
+| OD5 A | An EXEMPT row of an existing kind counts as paid | `POST /api/chat/memories` is a `chat` exemption |
+| OD6 A | Build now. The board order wins | The rung note above |
+| OD7 A | "Send my brief now" shows one card each time | P-5b-5 |
 
 ### 6.5 The standing sweep (PAR-7, task 3116, LOW)
 
@@ -595,6 +674,8 @@ he approves the merge.
    run of a workflow and the other tools of PAR-8a.
    Set `HOME_TOOLS_ORGS` before the demo of rung 5 (task 3905). It holds the
    Home tools of PAR-8b.
+   Add `people` before the demo of rung 7 (task 3907). It holds the four
+   reads of P-5b-1.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller

@@ -1297,6 +1297,12 @@ It exposes reads only. There is no agent-callable write to a person record in v1
 the first write an agent should be trusted with is not one that changes what a colleague is
 recorded as being.
 
+**`people_directory` is BUILT dark (P-5b-1, task 3114, 2026-11-25).** It is in the pack
+`people` (`acb_skills/people_tools.py`), with `people_me`, `people_work` and
+`reach_preview`. Each tool sends the People route as the member, so the route applies the
+tiers of §4.2. OD1 B decides the later self writes: one card for each write, and never
+`email`. `chat_parity.md` §6.4 holds the P-5b slices.
+
 ---
 
 ## 7. Data model

@@ -41,6 +41,11 @@ field changed, in BOTH columns: in
 107 tools, so ``projects-cycles`` (6 tools) no longer fits the cap of 110, and
 the loader does not offer it.
 
+P-5b-1 (task 3114) added the dark pack ``people`` of four tools, the last
+pack of ``PACKS``. The matrix allows each pack, so the loader offers it where
+four tools still fit under the cap. Each such row of BOTH columns gained
+``people`` at the end of ``offered``. No other field of a row changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a

@@ -9,8 +9,9 @@ Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
 tools in a turn about the members or the Integrations of the organization.
 The tools are in ``acb_skills.org_admin_tools`` (PAR-2a),
 ``acb_skills.org_admin_more_tools`` (PAR-4a: groups, roles, overrides and the
-name of the org) and ``acb_skills.integrations_admin_tools`` (PAR-6a), and
-this module keeps no copy. They call the admin and Integrations routes over
+name of the org), ``acb_skills.integrations_admin_tools`` (PAR-6a) and
+``acb_skills.people_tools`` (P-5b-1, the pack ``people``), and this module
+keeps no copy. They call the admin and Integrations routes over
 HTTP as the member, and take no org or member argument. The routes decide
 each right.
 
@@ -32,6 +33,7 @@ from acb_common import get_settings
 from acb_skills.integrations_admin_tools import INTEGRATIONS_ADMIN_TOOLS
 from acb_skills.org_admin_more_tools import ORG_ADMIN_MORE_TOOLS
 from acb_skills.org_admin_tools import ORG_ADMIN_TOOLS
+from acb_skills.people_tools import PEOPLE_TOOLS
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 INSTRUCTIONS = (
@@ -40,7 +42,7 @@ INSTRUCTIONS = (
     else "You hold the member tools of the organization. You are not a second assistant."
 )
 
-_TOOLS = [*ORG_ADMIN_TOOLS, *ORG_ADMIN_MORE_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
+_TOOLS = [*ORG_ADMIN_TOOLS, *ORG_ADMIN_MORE_TOOLS, *PEOPLE_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
