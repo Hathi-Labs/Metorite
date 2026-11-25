@@ -1587,6 +1587,17 @@ PACKS: dict[str, Pack] = {
         words=_STUDIO_REPAIR_WORDS,
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,
     ),
+    # PAR-9 (task 3950): the Custom Apps of the App Workshop, six tools. As
+    # ``studio-share``: no surface, so a plain Studio turn holds no new tool,
+    # and NOT in FOLLOWS, so it stays off until the owner adds a TOOL_PACKS line.
+    # It sits before ``studio-share``, so the share pack stays the last Studio pack.
+    "studio-apps": Pack(
+        slug="studio-apps",
+        when="Load to read, change, publish, share or pin a Custom App of the App Workshop, its files or its stored data.",
+        rules=_STUDIO_APPS_RULES,
+        words=_STUDIO_APPS_WORDS,
+        delegation_refusal=_STUDIO_DELEGATION_REFUSED,
+    ),
     # WS-STU J2d (TOF-4b): the share of a skill with the org, one tool. As
     # ``studio-workflows``: no surface, so a plain Studio turn holds no new tool,
     # and NOT in FOLLOWS, so it stays off until the owner adds a TOOL_PACKS line.
@@ -1596,16 +1607,6 @@ PACKS: dict[str, Pack] = {
         when="Load to share a skill with the organization, end its share, or approve or reject a skill share.",
         rules=_STUDIO_SHARE_RULES,
         words=_STUDIO_SHARE_WORDS,
-        delegation_refusal=_STUDIO_DELEGATION_REFUSED,
-    ),
-    # PAR-9 (task 3950): the Custom Apps of the App Workshop, six tools. As
-    # ``studio-share``: no surface, so a plain Studio turn holds no new tool,
-    # and NOT in FOLLOWS, so it stays off until the owner adds a TOOL_PACKS line.
-    "studio-apps": Pack(
-        slug="studio-apps",
-        when="Load to read, change, publish, share or pin a Custom App of the App Workshop, its files or its stored data.",
-        rules=_STUDIO_APPS_RULES,
-        words=_STUDIO_APPS_WORDS,
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,
     ),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107) adds the

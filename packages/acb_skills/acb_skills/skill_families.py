@@ -1027,29 +1027,6 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
-    # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
-    # small pack of the same owner. It has no surface, so a plain Studio turn
-    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
-    # on (tool_packs.packs_on).
-    "studio-share": {
-        "label": "AI Studio skill share",
-        "summary": (
-            "Share a skill with the organization, read or end its share, or approve or "
-            "reject a skill share that waits for you."
-        ),
-        "description": (
-            "A tool pack: the one tool that shares a skill of a member with the "
-            "organization, for the main assistant to load when a turn asks to share a "
-            "skill. The owner asks, and a holder of studio:publish approves or rejects "
-            "the ask. Each write shows one card first. A run loads a pack only where "
-            "tool packs are on, so until then this switch has no effect."
-        ),
-        "tools": ("studio_skill_share",),
-        "owner": "studio-builder",
-        "core": False,
-        "scope_governed": True,
-        "dynamic": False,
-    },
     # PAR-9 (chat_parity.md section 6.4, rung 8, task 3950): the Custom Apps of
     # the App Workshop. Six tools call the /apps routes as the member
     # (custom_app_tools.py). It has no surface and is NOT in FOLLOWS: only the
@@ -1075,6 +1052,29 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "custom_app_share",
             "custom_app_data",
         ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
+    # small pack of the same owner. It has no surface, so a plain Studio turn
+    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on).
+    "studio-share": {
+        "label": "AI Studio skill share",
+        "summary": (
+            "Share a skill with the organization, read or end its share, or approve or "
+            "reject a skill share that waits for you."
+        ),
+        "description": (
+            "A tool pack: the one tool that shares a skill of a member with the "
+            "organization, for the main assistant to load when a turn asks to share a "
+            "skill. The owner asks, and a holder of studio:publish approves or rejects "
+            "the ask. Each write shows one card first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": ("studio_skill_share",),
         "owner": "studio-builder",
         "core": False,
         "scope_governed": True,
