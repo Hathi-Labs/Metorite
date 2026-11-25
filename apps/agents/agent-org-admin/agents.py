@@ -1,8 +1,9 @@
-"""Organization Members - the owner of the ``org-admin`` tool pack (PAR-2a, PAR-4a, PAR-4d, PAR-6a).
+"""Organization Members - the owner of the ``org-admin`` tool pack (PAR-2a, PAR-4a, PAR-4c,
+PAR-4d, PAR-6a).
 
 Spec: ``project-docs/specs/chat_parity.md`` section 6.3, rung 1 (Metorite
-task 3102) and rung 3 (PAR-4a, task 3107, PAR-4d, task 3936, and PAR-6a,
-task 3109).
+task 3102) and rung 3 (PAR-4a, task 3107, PAR-4c, task 3935, PAR-4d, task
+3936, and PAR-6a, task 3109).
 
 This agent is **not a second assistant** (D99, D125). The member talks to
 Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
@@ -10,7 +11,8 @@ Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
 tools in a turn about the members or the Integrations of the organization.
 The tools are in ``acb_skills.org_admin_tools`` (PAR-2a),
 ``acb_skills.org_admin_more_tools`` (PAR-4a: groups, roles, overrides and the
-name of the org. PAR-4d: the seats) and ``acb_skills.integrations_admin_tools`` (PAR-6a), and
+name of the org. PAR-4c: the removal and the purge of a member. PAR-4d: the
+seats) and ``acb_skills.integrations_admin_tools`` (PAR-6a), and
 this module keeps no copy. They call the admin and Integrations routes over
 HTTP as the member, and take no org or member argument. The routes decide
 each right.
@@ -96,9 +98,10 @@ def build_agents() -> list[Any]:
                 "the sign-in requests, set the roles of a member, suspend or reactivate a "
                 "member, and approve or deny a sign-in request. It also manages the groups, "
                 "the custom roles, the overrides of a member, the name of the "
-                "organization and the seats. It also reads, tests and disconnects the Integrations of the "
-                "organization, revokes an agent connection and sets the switches of an MCP "
-                "server. Each change asks the member first."
+                "organization and the seats, and it removes or purges a member. It also "
+                "reads, tests and disconnects the Integrations of the organization, revokes "
+                "an agent connection and sets the switches of an MCP server. Each change asks "
+                "the member first."
             ),
             tools=_agent_tools(),
         )

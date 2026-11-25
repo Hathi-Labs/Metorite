@@ -343,6 +343,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "deny ravi@acme.test the CRM with an access override"),
     "preview_member_removal": ("what would the removal of a member like ravi@acme.test seal?",),
     "rename_org": ("rename the organization to Acme Labs",),
+    # -- org-admin: the removal and the purge of a member (PAR-4c, task 3935) --
+    "remove_member": ("remove the member ravi@acme.test",),
+    "purge_member": ("purge the member ravi@acme.test",),
     # -- org-admin: the seats (PAR-4d, task 3936) --
     "read_seats": ("how many org seats are in use?", "show the seat assignments",
                    "who holds a seat in our organization?"),

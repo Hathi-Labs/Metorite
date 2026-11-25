@@ -53,6 +53,27 @@ counts that right too. So the chat never gives a role or a member more than
 the caller holds. The Organisation page has no such check, and the R8 test
 shows the difference.
 
+**PAR-4c (task 3935) is BUILT, 2026-11-24, and it ships dark.** Two writes
+join the pack `org-admin` in `acb_skills/org_admin_more_tools.py`:
+`remove_member` and `purge_member`. The owner approved the design on
+2026-11-24 (answer ca808c74 on task 3107). Each tool reads `GET /auth/me`
+first, shows one card, and reads the member again after Approve. It sends
+nothing when the member changed.
+
+The removal card shows the status, the roles and the numbers of the seal
+preview. The purge deletes the member for good. It refuses with no card and no
+request unless the member's own typed words of this turn hold the exact
+address. A tool argument never counts. A run with no member turn, a delegated
+run and a spawned child refuse too.
+
+The purge card says that the act is one-way. It lists what is lost and what is
+kept, and the result gives the counts of the route.
+
+A self-purge refuses before the card. The route refuses the last owner, and
+the tool gives its words. A held chat holds off both writes. PAR-4c paid two
+debt rows, so the admin ceiling went from 17 to 15. Fences:
+`tests/unit/test_org_admin_more_tools.py` and
+`tests/unit/test_org_admin_more_tools_r8.py` (R8).
 **PAR-4d (task 3936) is BUILT, 2026-11-24, and it ships dark.** Two tools join
 the pack `org-admin` (`acb_skills/org_admin_more_tools.py`). `read_seats`
 reads each plan, its seats in use, its cap and who holds a seat
@@ -83,7 +104,7 @@ acts only on a future active plan that is not Core.
 Finding for the board: the Seats tab of the page (`SeatsTab.tsx`) has the same flaw. It takes the first
 plan of the grid, or `core`, and the Console then refuses the act.
 
-PAR-4d paid the five seat rows, so the admin ceiling went from 17 to 12. A held
+PAR-4d paid the five seat rows, so the admin ceiling went from 15 to 10. A held
 chat holds off `set_seat` and keeps `read_seats`. The isolation proof is a stub
 Console behind the real seat routes, as the owner decided. The stub derives the
 org from the deployment key and the session member, as the Console does.
@@ -495,7 +516,7 @@ task of each wave.
 | Order | Slice | Task | Tier | State |
 |---|---|---|---|---|
 | 1 | PAR-4a: groups, roles, overrides, member access, the removal preview, the org name (wave P-8b) | 3107 | HIGH | Built, dark |
-| 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | To do (the purge waits for the owner) |
+| 1b | PAR-4c: remove a member, and purge a member | 3935 | HIGH | Built, dark |
 | 1c | PAR-4d: the seats | 3936 | HIGH | Built, dark |
 | 2 | PAR-5: appearance, number system, branding, the assistant profile and its summaries, zone, shell (wave P-8c) | 3108 | STANDARD | To do |
 | 3 | PAR-6a: list, test, disconnect, MCP servers, agent connections (wave P-8d) | 3109 | HIGH | Built, dark |
@@ -510,9 +531,9 @@ task of each wave.
   (`customer_console.md` §8, gates 7 and 8).
 - **The split of PAR-4 (task 3107).** PAR-4a pays the 13 rows of groups,
   roles, overrides, access, the removal preview and the org name. PAR-4c
-  (task 3935) takes the remove and the purge of a member. The purge needs an
-  owner decision on the check of the typed address. PAR-4d (task 3936) takes
-  the five seat rows.
+  (task 3935) built the remove and the purge of a member. The owner approved
+  the check of the typed address on 2026-11-24. PAR-4d (task 3936) takes the
+  five seat rows.
 - **Acceptance of the isolation.** The groups prove it by R8, with two orgs on
   a private database. The seats prove it by a test with a stub Console,
   because the Console owns the seat org.

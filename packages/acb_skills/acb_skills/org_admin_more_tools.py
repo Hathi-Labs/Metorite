@@ -28,6 +28,16 @@ The writes, each after ONE card:
 * :func:`rename_org` changes the display name of the organization
   (``admin:settings:manage``).
 
+The removal and the purge of a member (PAR-4c, task 3935), each after ONE card
+(``admin:members:manage``):
+
+* :func:`remove_member` sends ``DELETE /admin/members/{email}``. Its card shows
+  the status, the roles and the numbers of the seal preview.
+* :func:`purge_member` sends ``DELETE /admin/members/{email}/purge``, a delete
+  for good. It refuses, with no card and no request, unless the member's OWN
+  typed words of this turn hold the exact address. A run with no typed words,
+  a delegated run and a spawned child have none. Its card says that the act is
+  one-way and lists what is lost and what is kept.
 The seats (PAR-4d, Metorite task 3936):
 
 * :func:`read_seats` reads each plan with its seats in use and its cap, and
@@ -85,6 +95,8 @@ isolation with a stub Console behind the real seat routes
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -92,7 +104,7 @@ from acb_common.card_body import one_line
 from acb_common.paging import paged
 
 from acb_skills import org_admin_tools as oa
-from acb_skills.hidden_text import hidden_problem, strip_hidden
+from acb_skills.hidden_text import find_hidden, hidden_problem, strip_hidden
 from acb_skills.tool_annotations import annotate
 
 __all__ = [
@@ -107,8 +119,10 @@ __all__ = [
     "list_org_groups",
     "list_roles_and_rights",
     "preview_member_removal",
+    "purge_member",
     "read_member_access",
     "read_seats",
+    "remove_member",
     "remove_org_group_member",
     "rename_org",
     "set_member_overrides",
@@ -629,13 +643,18 @@ async def preview_member_removal(email: str) -> dict[str, Any]:
     if not reply.ok:
         return oa._fail(reply)
     data = reply.data if isinstance(reply.data, dict) else {}
-    counts = {k: _count(data.get(k)) for k in ("projects", "tasks", "handed_over", "sealed")}
+    counts = _seal_counts(data)
     return {"ok": True, "email": target,
             "status": oa._STATUS_WORDS.get(str(data.get("status")), "other"), **counts,
             "deleted": data.get("deleted") is True, "reversible": data.get("reversible") is True,
             "note": (f"{counts['tasks']} tasks: {counts['handed_over']} handed over, "
                      f"{counts['sealed']} sealed, not deleted. This is a read, and nothing "
-                     "changed. The chat does not remove a member. Do that on the Members tab.")}
+                     "changed. remove_member removes the member after one card.")}
+
+
+def _seal_counts(data: dict[str, Any]) -> dict[str, int]:
+    """The numbers of a seal preview (``members.py`` ``get_seal_preview``)."""
+    return {k: _count(data.get(k)) for k in ("projects", "tasks", "handed_over", "sealed")}
 
 
 # ── The group writes ────────────────────────────────────────────────────────
@@ -1572,14 +1591,290 @@ async def set_seat(email: str, action: Literal["assign", "release"],
     except oa._Refused as exc:
         return oa._refusal(str(exc))
     return _seat_sent(sent, decision, target, act, plan)
+# ── Remove and purge a member (PAR-4c, task 3935) ───────────────────────────
+#
+# The owner approved this design on 2026-11-24 (answer ca808c74 on task 3107).
+# A removal is the soft off-boarding of the Members tab: the row stays, the
+# roles go, and the personal tasks are sealed. A purge deletes the member for
+# good. So a purge needs the member's OWN typed address of this turn, and it
+# refuses each run that no person typed in.
+
+#: What a purge deletes, in words, by a group that this tool owns. The map
+#: from each key of ``members._PURGE_DELETES`` to its group is in
+#: ``test_org_admin_more_tools.py``, and that test fails when a key of the
+#: route has no group. Only the store of a table names it in code.
+_PURGE_LOSS_WORDS: dict[str, str] = {
+    "identity": "the member record, the roles, the overrides, the group places and the "
+                "sign-in requests",
+    "mail": "each connected mailbox, WhatsApp account and task account, with its stored "
+            "keys, its copy of the mail and messages, and each send that waits",
+    "grants": "each grant to an app, to an app tool and to a mailbox, and each private app "
+              "install",
+    "chats": "the private chats, the places in shared rooms, the chat topics, the cards and "
+             "the questions that wait",
+    "crm": "the private CRM rules, changes and views",
+    "studio": "the private Studio skills, skill runs and views",
+    "own": "the settings, reminders, briefs, goals, push devices, Knowledge favourites, "
+           "calendar entries and connection asks of the member",
+}
+#: The keys of ``members._PURGE_KEEPS``: what a purge keeps. The same fence.
+_PURGE_KEEPS: frozenset[str] = frozenset({
+    "audit_entries", "audit_events", "agent_runs", "shared_rooms", "apps", "workflows",
+    "meetings", "knowledge_proposals", "agent_run_strands", "cycle_capacity",
+    "shared_app_installs", "shared_private_app_installs", "studio_shared_views",
+    "studio_shared_skills",
+})
+#: The losses that ``purge_member_rows`` adds outside ``_PURGE_DELETES``.
+_PURGE_MORE_LOSSES = ("the Drive sources of the member, with their keys, and the calendar "
+                      "connections")
+#: What a purge changes in rows that stay (``purge_member_rows``): the
+#: summaries of the member's chats that stay (``clear_for_member``), the
+#: address on the org CRM rules (``crm_rules.scrub_member``) and in the CRM
+#: questions (``crm_questions.purge_member_state``), and the address in the
+#: Knowledge gaps (``kb_gaps.scrub_member``).
+_PURGE_SCRUB_WORDS = ("Cleared: the summaries of the member's chats that stay, such as "
+                      "shared rooms. The member's address goes from the org CRM rules, "
+                      "the CRM questions and the Knowledge gaps. The rules and the gaps stay.")
+#: The longest wait for the purge route, in seconds. The route waits up to
+#: 60 s for the mailbox teardown (``email/teardown.TEARDOWN_WAIT_S``), and
+#: then revokes the Drive grants. A shorter wait says "may have worked" for
+#: a purge that works.
+PURGE_TIMEOUT_S = 120.0
+_PURGE_KEPT_WORDS = ("Kept: the audit trail, the agent runs, the shared rooms, and the apps, "
+                     "workflows, meetings, suggested Knowledge page changes and shared Studio items that "
+                     "the member made.")
+
+_SELF_REMOVE = ("You cannot remove yourself. Ask another owner or admin to do it. Nothing "
+                "changed.")
+_SELF_PURGE = ("You cannot permanently delete yourself. Ask another owner or admin to do it. "
+               "Nothing changed.")
+_ALREADY_REMOVED = "{email} is removed already. Nothing changed."
+#: ``remove_member_rows`` cancels each queued scheduled send of the member.
+_REMOVE_SENDS_WORDS = ("Queued sends: each mail send that waits in the member's name is "
+                       "cancelled.")
+_PURGE_UNTYPED = ("A purge deletes {email} for good, so the chat needs that exact address in "
+                  "your own words of this message. Type the address, and ask again. If the "
+                  "address holds an accent mark the chat cannot check, purge it on the Members "
+                  "page. No card shows and nothing changed.")
+_PURGE_NO_PERSON = ("A purge deletes a member for good, so only a member who types the "
+                    "request in the chat can start it. This run has no such member. No card "
+                    "shows and nothing changed.")
+
+#: The characters that can stand before an address and make it a longer one.
+_LOCAL_CHAR = re.compile(r"[\w.!#$%&'*+/=?^`{|}~@-]")
+#: The characters that can follow an address and make its domain a longer one.
+_DOMAIN_CHAR = re.compile(r"[\w@-]")
+
+
+def _lower_char(ch: str) -> str:
+    """*ch* in lower case, by ``str.lower`` and never ``casefold``, so ``ß``
+    stays ``ß``. A character that is not its own NFKC form stays as it is: the
+    Kelvin sign (U+212A) is not the letter ``k``. A lower case of more than
+    one character stays as it is too, so each index of the text holds."""
+    if unicodedata.normalize("NFKC", ch) != ch:
+        return ch
+    low = ch.lower()
+    return low if len(low) == 1 else ch
+
+
+def _odd_char(ch: str) -> bool:
+    """True for a character that a person cannot see beside an address: a
+    hidden character by the one rule of ``hidden_text``, or a combining mark."""
+    return bool(find_hidden(ch)) or unicodedata.category(ch).startswith("M")
+
+
+def _typed_the_address(address: str) -> bool:
+    """True when the member's OWN typed words of this turn hold *address*, whole.
+
+    The words come from ``chat_constraints._typed_words`` only, never from a
+    tool argument. Both sides are in lower case by :func:`_lower_char`. The
+    match is whole: a letter of a longer address before it (``diana@``) or a
+    part of a longer domain after it (``.evil``) does not count. A dot that
+    ends a sentence does count. A match with a hidden character or a
+    combining mark in it, or directly before or after it, does not count."""
+    from acb_skills.chat_constraints import _typed_words
+
+    said = "".join(_lower_char(ch) for ch in str(_typed_words() or ""))
+    want = "".join(_lower_char(ch) for ch in address)
+    if not want:
+        return False
+    at = said.find(want)
+    while at != -1:
+        end = at + len(want)
+        before = said[at - 1] if at > 0 else ""
+        after = said[end:end + 2]
+        joined_before = bool(before) and bool(_LOCAL_CHAR.match(before))
+        joined_after = bool(after) and (
+            bool(_DOMAIN_CHAR.match(after[0]))
+            or (after[0] == "." and len(after) > 1 and bool(_DOMAIN_CHAR.match(after[1]))))
+        odd = any(_odd_char(ch) for ch in said[max(at - 1, 0):end + 1])
+        if not joined_before and not joined_after and not odd:
+            return True
+        at = said.find(want, at + 1)
+    return False
+
+
+def _delegated() -> bool:
+    """True in a run that another run started: a delegated agent or a spawned
+    child. The typed words of the parent turn copy into such a run, but the
+    member did not ask that run for anything (``agent_tools`` reads the same)."""
+    try:
+        from acb_skills.agent_tools import _delegation_chain
+        from acb_skills.write_artifact import artifact_context
+
+        return bool(_delegation_chain.get()) or artifact_context().get("sub_run") is True
+    except Exception:
+        return True
+
+
+async def _seal_preview(target: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(the seal preview, None)`` of *target*, or ``(None, refusal)``."""
+    reply = await oa._get(f"/admin/members/{oa._path_email(target)}/seal-preview")
+    if reply.status == 404:
+        return None, oa._refusal(oa._NOT_IN_ORG.format(email=target), status=404)
+    if not reply.ok:
+        return None, oa._fail(reply)
+    if not isinstance(reply.data, dict):
+        return None, oa._refusal(oa._SHAPE)
+    return reply.data, None
+
+
+async def _member_still(target: str, row: dict[str, Any], decision: str) -> dict[str, Any] | None:
+    """After ``approved``: None when the member is as the card showed it."""
+    again, problem = await oa._member(target, include_removed=True)
+    if problem is not None and problem.get("status") == 404:
+        return oa._refusal(oa._CHANGED.format(what="member"), decision=decision)
+    if problem is not None or again is None:
+        return problem or oa._refusal(oa._SHAPE)
+    if oa._member_snap(again) != oa._member_snap(row):
+        return oa._refusal(oa._CHANGED.format(what="member"), decision=decision)
+    return None
+
+
+def _is_caller(target: str) -> bool:
+    return target == oa._current_user_email().strip().lower()
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def remove_member(email: str) -> dict[str, Any]:
+    """Remove one member of your organization, after one card that shows what the removal seals; the record stays."""
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    if _is_caller(target):
+        return oa._refusal(_SELF_REMOVE, status=409)
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        row, problem = await oa._member(target, include_removed=True)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = oa._STATUS_WORDS.get(str(row.get("status")), "other")
+        if now == "removed":
+            return {"ok": True, "email": target, "status": now,
+                    "note": _ALREADY_REMOVED.format(email=target)}
+        seal, problem = await _seal_preview(target)
+        if problem is not None or seal is None:
+            return problem or oa._refusal(oa._SHAPE)
+        n = _seal_counts(seal)
+        decision, _ = await oa._decide(
+            f"Remove {target}?", f"{now} to removed",
+            "Approve to remove this member. The member cannot sign in, and loses each role. "
+            "The member record stays. Their assistant profile and their chat summaries are "
+            "cleared, and a reactivation does not bring them back. Reject to keep the member.",
+            [("member", f"Member: {target} {oa._fence(row.get('display_name'))}"),
+             ("status", f"Status now: {now}. After: removed."),
+             ("roles", f"Roles now: {oa._roles_text(row.get('roles'))}. After: none."),
+             ("tasks", f"Personal tasks: {n['tasks']} in {n['projects']} projects. "
+                       f"{n['handed_over']} handed over, {n['sealed']} sealed, not deleted."),
+             ("sends", _REMOVE_SENDS_WORDS)])
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _member_still(target, row, decision)
+        if changed is not None:
+            return changed
+        sent = await oa._send("DELETE", f"/admin/members/{oa._path_email(target)}",
+                              act="removal")
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    return {"ok": True, "decision": decision, "email": target, "status": "removed",
+            "handed_over": n["handed_over"], "sealed": n["sealed"],
+            "note": (f"The member is removed. {n['sealed']} personal tasks are sealed, not "
+                     "deleted.")}
+
+
+def _purge_loss_lines() -> list[tuple[str, str]]:
+    lines = [(f"l{i}", f"Lost: {words}.") for i, words in enumerate(_PURGE_LOSS_WORDS.values())]
+    lines.append(("l-more", f"Lost: {_PURGE_MORE_LOSSES}."))
+    lines.append(("scrub", _PURGE_SCRUB_WORDS))
+    lines.append(("kept", _PURGE_KEPT_WORDS))
+    return lines
+
+
+def _counts(raw: Any) -> dict[str, int]:
+    """The non-zero counts of a purge answer, by key."""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if _count(v) > 0}
+
+
+@annotate(read_only=False, idempotent=False, open_world=False)
+async def purge_member(email: str) -> dict[str, Any]:
+    """Delete one member of your organization for good, after one card; it cannot be undone, and you must type the exact address in your message."""
+    target = oa._email_arg(email)
+    if target is None:
+        return oa._refusal(oa._BAD_EMAIL)
+    if _is_caller(target):
+        return oa._refusal(_SELF_PURGE, status=409)
+    if _delegated():
+        return oa._refusal(_PURGE_NO_PERSON, status=403)
+    if not _typed_the_address(target):
+        return oa._refusal(_PURGE_UNTYPED.format(email=target), status=403)
+    try:
+        _caller, problem = await _me(MANAGE_RIGHT)
+        if problem is not None:
+            return problem
+        row, problem = await oa._member(target, include_removed=True)
+        if problem is not None or row is None:
+            return problem or oa._refusal(oa._SHAPE)
+        now = oa._STATUS_WORDS.get(str(row.get("status")), "other")
+        decision, _ = await oa._decide(
+            f"Delete {target} for good?", "one-way, cannot be undone",
+            "This is one-way and cannot be undone. Approve to delete this member for good. "
+            "Nobody can bring the member or the lost rows back. Reject to keep the member.",
+            [("member", f"Member: {target} {oa._fence(row.get('display_name'))}"),
+             ("status", f"Status now: {now}. Roles now: {oa._roles_text(row.get('roles'))}."),
+             *_purge_loss_lines()])
+        if decision != "approved":
+            return oa._not_done(decision)
+        changed = await _member_still(target, row, decision)
+        if changed is not None:
+            return changed
+        sent = await oa._send("DELETE", f"/admin/members/{oa._path_email(target)}/purge",
+                              act="purge", timeout=PURGE_TIMEOUT_S)
+    except oa._Refused as exc:
+        return oa._refusal(str(exc))
+    if not sent.ok:
+        return oa._fail(sent, decision=decision)
+    data = sent.data if isinstance(sent.data, dict) else {}
+    deleted, kept = _counts(data.get("deleted")), _counts(data.get("kept"))
+    gone, stay = sum(deleted.values()), sum(kept.values())
+    return {"ok": True, "decision": decision, "email": target, "status": "purged",
+            "deleted": deleted, "kept": kept, "deleted_total": gone, "kept_total": stay,
+            "note": (f"The member is deleted for good. {gone} rows went, and {stay} rows stay. "
+                     "This cannot be undone.")}
 
 
 #: Each tool of PAR-4a, in the order of the skill family after the four of PAR-2a.
+#: PAR-4c (task 3935) adds the removal and the purge at the end.
 ORG_ADMIN_MORE_TOOLS = (
     list_org_groups, create_org_group, edit_org_group, delete_org_group,
     add_org_group_member, remove_org_group_member, list_roles_and_rights, create_org_role,
     delete_org_role, read_member_access, set_member_overrides, preview_member_removal,
-    rename_org,
+    rename_org, remove_member, purge_member,
 )
 
 #: The two seat tools of PAR-4d (task 3936), after the tools of PAR-4a.

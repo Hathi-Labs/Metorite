@@ -1222,8 +1222,8 @@ _STUDIO_DELEGATION_REFUSED = (
 # ── The org-admin pack (PAR-2a, chat_parity.md section 6.3, rung 1) ──────────
 
 #: The rules of the ``org-admin`` pack: the four tools of PAR-2a, the 13 of
-#: PAR-4a (task 3107), the two seat tools of PAR-4d (task 3936) and the seven
-#: Integrations tools of PAR-6a (task 3109).
+#: PAR-4a (task 3107), the two of PAR-4c (task 3935), the two seat tools of
+#: PAR-4d (task 3936) and the seven Integrations tools of PAR-6a (task 3109).
 #: Each tool that it names is a tool of this pack. The owner (``org-admin``) has
 #: no persona text in the orchestrator, and it never runs as an agent. The
 #: routes decide each right, so the rules claim none.
@@ -1242,9 +1242,14 @@ Integrations app. Use them yourself. No admin agent exists to hand a task to.
 - set_member_roles, set_member_status, answer_access_request,
   create_org_group, edit_org_group, delete_org_group, add_org_group_member,
   remove_org_group_member, create_org_role, delete_org_role,
-  set_member_overrides, rename_org, set_seat, revoke_agent_connection,
-  disconnect_integration and set_mcp_server each show ONE card. Do not ask in
-  text before it. After it, say in one line what the tool returned.
+  set_member_overrides, rename_org, remove_member, purge_member, set_seat,
+  revoke_agent_connection, disconnect_integration and set_mcp_server each show
+  ONE card. Do not ask in text before it. After it, say in one line what the
+  tool returned.
+- remove_member removes a member, and the record stays. purge_member deletes a
+  member for good. Use purge_member only when the member asks for a purge or a
+  delete for good. It acts only when the member typed the exact address in
+  this message. When it refuses for that, ask the member to type the address.
 - set_member_overrides replaces ALL overrides of the member. Read them with
   read_member_access first, and send the whole new list.
 - A role or an override gives only rights that the member holds. When the
@@ -1273,6 +1278,8 @@ _ORG_ADMIN_WORDS = (
     "roles and rights", "member access", "permission override",
     "permission overrides", "access override", "access overrides", "rights of a role",
     "remove a member", "removal of a member", "rename the organization",
+    # PAR-4c (task 3935): the removal and the purge of a member.
+    "remove the member", "purge a member", "purge the member",
     "rename the organisation", "rename our organization", "rename our organisation",
     "organization name", "organisation name",
     # PAR-4d (task 3936): the seats. A bare "seat" is out: a train, a flight
