@@ -3,7 +3,6 @@
 > **DRAFT (TLY-2c, task 3969). Do not give this page to a customer yet.**
 > Each `[CAPTURE n]` marks a screenshot that does not exist yet.
 > Step 7 waits for the Metorite side of the link (LNK-1 to LNK-4).
-> Step 6 names two switches that the setup page does not show yet.
 
 This page shows how to connect the books in TallyPrime to Metorite. It takes
 about 15 minutes. You need a person who can sign in to Windows as an
@@ -89,16 +88,18 @@ The connector sends no data before you confirm.
 The connector starts with Windows, before anyone signs in. TallyPrime does
 not, and Metorite can read the books only while TallyPrime is open.
 
-- **Start TallyPrime at sign-in.** TallyPrime then opens with your companies
-  when a person signs in.
-- **Keep the computer awake.** Windows then does not sleep while the connector
-  runs.
+1. An administrator sets the path of TallyPrime once, in the settings file:
+   `TALLY_EXE`, such as `C:\Program Files\TallyPrime\tally.exe`. The
+   setup page shows this path. It cannot change it, because the sign-in
+   task runs that program for each person who signs in.
+2. On the setup page, in **Keep it running**, tick **Start TallyPrime when a
+   person signs in**. TallyPrime then opens with your companies at each
+   sign-in.
+3. Tick **Keep this computer awake while the bridge runs**. Windows then does
+   not sleep while the connector runs.
+4. Click **Save these switches**.
 
-> DRAFT: the setup page does not show these two switches yet. Today an
-> administrator sets `START_TALLY_AT_SIGNIN`, `TALLY_EXE` and `KEEP_AWAKE` in
-> the settings file, then runs `tally_bridge.exe apply-windows --windows`.
-
-`[CAPTURE 6: the two switches on the setup page]`
+`[CAPTURE 6: the Keep it running section, with the path and the two switches]`
 
 ## 7. Check
 
