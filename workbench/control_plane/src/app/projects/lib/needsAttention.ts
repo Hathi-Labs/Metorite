@@ -331,7 +331,7 @@ export function resumeBody(idempotencyKey: string = newIdempotencyKey()): {
 /** What the list says when it holds nothing. */
 export const EMPTY_COPY = {
   message: "Nothing needs attention in this project.",
-  hint: "Stalled agent runs, runs on closed tasks, work blocked by a parked task and app projects with no lead show here.",
+  hint: "Stalled agent runs, runs on closed tasks, and work blocked by a parked task show here.",
 } as const;
 
 /** The line under a list that holds only part of a kind. */
