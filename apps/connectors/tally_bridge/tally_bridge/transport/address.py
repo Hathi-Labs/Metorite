@@ -84,7 +84,11 @@ def build_address_app(
             on_saved=(lambda new: copy.keep_only(new.allowed_companies)) if copy else None,
         )
     )
-    return BearerGuard(app, secrets)
+    guard = BearerGuard(app, secrets)
+    # TLY-2: link mode runs a request of Metorite against this app in the same
+    # process. Only ``/mcp`` (transport.link.dispatch.MCP_PATH).
+    guard.inner = app
+    return guard
 
 
 class _NoSaveStore:
@@ -119,6 +123,7 @@ class BearerGuard:
     def __init__(self, app: ASGIApp, secrets: SecretStore) -> None:
         self._app = app
         self._secrets = secrets
+        self.inner: ASGIApp = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (

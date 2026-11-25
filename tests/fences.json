@@ -272,6 +272,7 @@
       "tests/unit/test_card_precondition.py",
       "tests/unit/test_card_record_r8.py",
       "tests/unit/test_catalog_health_r8.py",
+      "tests/unit/test_chat_cant_sweep_r8.py",
       "tests/unit/test_chat_join_shadow_r8.py",
       "tests/unit/test_chat_pin_r8.py",
       "tests/unit/test_chat_pin_tool_r8.py",

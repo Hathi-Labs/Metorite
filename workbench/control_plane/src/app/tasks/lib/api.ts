@@ -247,15 +247,6 @@ export async function fetchOrgPeople(
   return rows.map(mapOrgPerson).filter((p) => p.name);
 }
 
-export async function createPerson(body: OrgPersonWrite): Promise<OrgPerson> {
-  return mapOrgPerson(
-    await gatewayFetch<Raw>(`/people`, {
-      method: "POST",
-      body: JSON.stringify(orgPersonToWire(body)),
-    })
-  );
-}
-
 export async function updatePerson(
   id: string,
   body: OrgPersonWrite
