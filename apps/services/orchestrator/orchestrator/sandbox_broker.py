@@ -80,6 +80,7 @@ from urllib.parse import urlsplit
 
 from acb_common import get_logger, get_settings
 from acb_common.child_env import docker_env
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 
 _log = get_logger("orchestrator.sandbox_broker")
 
@@ -241,6 +242,9 @@ _MIB = 1024 * 1024
 _HEALTH_TTL_SECONDS = 60.0
 _HOST_GRACE_SECONDS = 15.0
 _RUN_TIMEOUT_SECONDS = 60.0
+#: SBX-15c: how long the reaper looks for the container of a ``docker run``
+#: that timed out. The daemon can make it after the CLI died.
+_LATE_START_WINDOW_SECONDS = 600.0
 _SMALL_TIMEOUT_SECONDS = 30.0
 _STDERR_KEEP = 8192
 _READ_CHUNK = 65536
@@ -498,14 +502,50 @@ def _daemon_names() -> dict[str, str | None]:
     }
 
 
+def _host_paths(settings: Any) -> list[str]:
+    """The paths of this box that a docker CLI error can name, longest first.
+
+    The cert dir of a ``tcp://`` daemon, and the home dir of this process (an
+    ssh key, ``known_hosts``). A path with no segment (``/``) never counts.
+    """
+    found: set[str] = set()
+    cert = str(getattr(settings, "sandbox_docker_cert_path", "") or "").strip()
+    with contextlib.suppress(RuntimeError, KeyError, OSError):
+        home = str(Path.home())
+        if home:
+            found.add(home)
+    if cert:
+        found.add(cert)
+    paths = {p.rstrip("/\\") for p in found}
+    return sorted((p for p in paths if p.strip("/\\")), key=len, reverse=True)
+
+
 def _scrub(text: str) -> str:
-    """*text* with the daemon address cut to its scheme and host.
+    """*text* with the daemon address cut to its scheme and host, and with no
+    path or credential of this box.
 
     An ssh error names ``user@host``, or ``ssh -l <user> -p <port>``, and the
-    broker logs Docker's stderr. The user and the port go.
+    broker logs Docker's stderr. The user and the port go. SBX-15c: the
+    stderr of a compute run reaches the model too, so each host path of
+    :func:`_host_paths` and each credential shape of the one list
+    (``acb_common.secret_shapes``) go as well.
     """
-    raw = str(getattr(get_settings(), "sandbox_docker_host", "") or "").strip()
-    if not raw or not text:
+    if not text:
+        return text
+    settings = get_settings()
+    out = _scrub_address(text, str(getattr(settings, "sandbox_docker_host", "") or "").strip())
+    for path in _host_paths(settings):
+        # Only the whole path: ``/root`` and ``/root.`` go, ``/rootfs`` and
+        # ``/root.bak`` stay.
+        out = re.sub(re.escape(path) + r"(?![\w-]|\.[\w-])", "(host path)", out)
+    for rx in (REDACTION_BEARER, *REDACTION_SHAPES):
+        out = rx.sub("(secret)", out)
+    return out
+
+
+def _scrub_address(text: str, raw: str) -> str:
+    """*text* with the daemon address *raw* cut to its scheme and host."""
+    if not raw:
         return text
     out = text.replace(raw, redact_docker_host(raw))
     try:
@@ -1363,6 +1403,9 @@ class DockerResult:
     rc: int
     stdout: str
     stderr: str
+    #: SBX-15c: the CLI ran past its timeout and the broker killed it. The
+    #: daemon may still finish the request.
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -1497,7 +1540,9 @@ class DockerCLI:
             out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)
         except TimeoutError:
             await self._kill(proc)
-            return DockerResult(-1, "", f"docker {args[0] if args else ''} timed out")
+            return DockerResult(
+                -1, "", f"docker {args[0] if args else ''} timed out", timed_out=True,
+            )
         except BaseException:
             await self._kill(proc)
             raise
@@ -1543,8 +1588,12 @@ class DockerCLI:
         except BaseException:
             await self._kill(proc)
             raise
+        # SBX-15c: the compute run gives this stderr to the model. A dropped
+        # ssh link puts the daemon address in it, so it is scrubbed here.
         return CollectResult(
-            rc=rc, stdout=bytes(out), stderr=bytes(err), timed_out=timed_out,
+            rc=rc, stdout=bytes(out),
+            stderr=_scrub(err.decode("utf-8", errors="replace")).encode("utf-8"),
+            timed_out=timed_out,
             truncated=total[0] > cap or total[1] > cap,
         )
 
@@ -1644,7 +1693,9 @@ class DockerCLI:
             rc = await proc.wait()
         except TimeoutError:
             await self._kill(proc)
-            return DockerResult(-1, "", f"docker {args[0] if args else ''} timed out")
+            return DockerResult(
+                -1, "", f"docker {args[0] if args else ''} timed out", timed_out=True,
+            )
         except BaseException:
             await self._kill(proc)
             raise
@@ -2337,6 +2388,10 @@ class SandboxBroker:
         #: SBX-15: remote containers whose `docker rm -f` failed. The reaper
         #: runs while this holds an entry, and removes each orphan.
         self._remote_orphans: set[str] = set()
+        #: SBX-15c: ``start:<id>`` entries of a ``docker run`` that timed out,
+        #: and the clock time until which the reaper looks for that container.
+        #: An empty lookup keeps such an entry until then.
+        self._late_starts: dict[str, float] = {}
 
     # ── settings and state ──────────────────────────────────────────────────
 
@@ -3317,6 +3372,11 @@ class SandboxBroker:
         if result.rc != 0 and "already in use" in result.stderr:
             await self._clear_stale_name(handle)
             result = await self._docker.run(argv, timeout=_RUN_TIMEOUT_SECONDS)
+        if result.timed_out:
+            # SBX-15c: the daemon can make the container after the CLI died,
+            # and after the start-label lookup of the cleanup. The reaper
+            # looks it up again until the window ends.
+            self._note_late_start(handle.start_id)
         if result.rc != 0:
             _log.warning(
                 "sandbox_broker.start_failed", name=handle.name,
@@ -3414,6 +3474,18 @@ class SandboxBroker:
         with contextlib.suppress(RuntimeError):  # no running loop
             self._ensure_reaper()
 
+    def _note_late_start(self, start_id: str) -> None:
+        """SBX-15c: keep the start label of a ``docker run`` that timed out.
+
+        The reaper looks for its container on each tick, until it removes
+        the container or :data:`_LATE_START_WINDOW_SECONDS` pass.
+        """
+        if not start_id or not self._is_remote():
+            return
+        entry = f"start:{start_id}"
+        self._late_starts[entry] = self._clock() + _LATE_START_WINDOW_SECONDS
+        self._note_orphans([entry])
+
     async def _reap_remote_orphans(self) -> int:
         """Remove ONLY the containers that a failed removal of this broker left.
 
@@ -3436,6 +3508,9 @@ class SandboxBroker:
                     if found.rc != 0:
                         continue
                     ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
+                    late = self._late_starts.get(entry)
+                    if not ids and late is not None and self._clock() < late:
+                        continue  # SBX-15c: the daemon may still make it
                 else:
                     ids = [entry]
                 if ids:
@@ -3449,6 +3524,7 @@ class SandboxBroker:
                         continue
                     removed += len(ids)
                 self._remote_orphans.discard(entry)
+                self._late_starts.pop(entry, None)
             except (SandboxError, OSError) as exc:
                 _log.warning("sandbox_broker.orphan_reap_failed", error=str(exc)[:300])
         if removed:
@@ -3891,7 +3967,13 @@ class SandboxBroker:
             self._reaper = asyncio.get_running_loop().create_task(self._reap_loop())
 
     async def sweep(self) -> int:
-        """Remove every container labelled ``metorite.sandbox=1``. Never raises."""
+        """Remove every container labelled ``metorite.sandbox=1``. Never raises.
+
+        SBX-15c: when the ``rm -f`` fails, each id goes to the orphan record
+        (:meth:`_note_orphans`), so the reaper removes it later. On
+        ``docker-remote`` such a container holds the one-org lock.
+        """
+        ids: list[str] = []
         try:
             found = await self._docker.run(
                 ["ps", "-aq", "--filter", f"label={LABEL_SANDBOX}=1"],
@@ -3903,8 +3985,15 @@ class SandboxBroker:
                 return 0
             ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
             if ids:
-                await self._docker.run(["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS)
+                gone = await self._docker.run(["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS)
+                if gone.rc != 0:
+                    _log.warning(
+                        "sandbox_broker.sweep_remove_failed", count=len(ids),
+                        error=gone.stderr[-300:],
+                    )
+                    self._note_orphans(ids)
         except (SandboxUnavailable, OSError) as exc:
+            self._note_orphans(ids)
             self._note_docker(False)
             _log.info("sandbox_broker.sweep_skipped_no_docker", error=str(exc)[:200])
             return 0
