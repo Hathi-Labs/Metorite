@@ -12,6 +12,11 @@ no review:
 1. ``POST /{slug}/rollback`` on an org app, to that ``auto`` version.
 2. ``PATCH /{slug}`` with ``visibility = "org"``, while that version is live.
 
+**The race (review of 8b3f1bd33).** ``load_app`` reads with no lock. So a
+check could pass on a state that a parallel request was about to change.
+Each route now takes :func:`publish.lock_app_row` first, and reads the
+visibility and the live version from under it (tests i).
+
 **The fix.** One check, :func:`publish.require_org_review`, with the one
 query of an approved scope set that ``publish_app`` also uses. An org app
 whose live version asks for a write tool needs an ``approved`` version with
@@ -29,7 +34,8 @@ slug routes.
 suite ran. Without the call in ``rollback_app``, a went red. Without the call
 in ``patch_app``, d and the second e went red. With ``require_org_review``
 made to ignore the approved scope set, b, the first e and the one-query
-test went red.
+test went red. With the row lock taken out of each route, the i test of
+that route went red.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -45,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,6 +348,89 @@ def test_r8_h_publish_to_org_reuses_an_approved_scope_set(world) -> None:
     assert out["review"] == "auto", out
     assert world.proposals == []
     assert _app(world) == (3, "org")
+
+
+# ── The row lock: a check and a parallel write cannot interleave ──────────
+#
+# Connection A (the superuser) locks the app row and changes it, as a
+# parallel request would. The call under test starts in a thread. It must
+# wait for A, then read A's state and act on it. Without the lock, the call
+# checks the old state from ``load_app``, waits only at its UPDATE, and then
+# writes over A's commit: the org gets an unreviewed write version.
+
+_HOLD_SECONDS = 1.5
+
+
+def _race(world: Any, change: str, params: dict[str, Any], call: Any) -> Any:
+    """Hold the row lock in A, run ``change`` in A, start ``call`` in a
+    thread, prove the thread waits, then commit A. Answer what ``call`` gave."""
+    out: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            out["value"] = _caught(world, call)
+        except BaseException as exc:  # the test asserts on it
+            out["value"] = exc
+
+    with world.p.admin_engine.connect() as a:
+        tx = a.begin()
+        a.execute(text("SELECT 1 FROM apps WHERE id = CAST(:id AS uuid) FOR UPDATE"),
+                  {"id": world.id})
+        a.execute(text(change), {**params, "id": world.id})
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(_HOLD_SECONDS)
+        assert thread.is_alive(), f"the call did not wait for the lock: {out}"
+        tx.commit()
+    thread.join(60)
+    assert not thread.is_alive(), "the call never finished"
+    return out["value"]
+
+
+@_DB_GATE
+def test_r8_i_patch_to_org_waits_for_a_rollback_and_sees_its_version(world) -> None:
+    """A private rollback to an auto write version races PATCH org."""
+    _seed(world, 1, WRITE, "auto")
+
+    out = _race(
+        world, "UPDATE apps SET live_version = 1 WHERE id = CAST(:id AS uuid)", {},
+        lambda: lifecycle.patch_app(
+            world.slug, lifecycle.AppPatch(visibility="org"), user=_user(ANA)),
+    )
+
+    _assert_review_409(out)
+    assert _app(world) == (1, "private")
+
+
+@_DB_GATE
+def test_r8_i_rollback_waits_for_patch_org_and_sees_the_org(world) -> None:
+    """PATCH org (its check passed on a read-only version) races a rollback
+    to an auto write version on a private app."""
+    _seed(world, 1, WRITE, "auto")
+
+    out = _race(
+        world, "UPDATE apps SET visibility = 'org' WHERE id = CAST(:id AS uuid)", {},
+        lambda: publish.rollback_app(
+            world.slug, publish.RollbackRequest(version=1), user=_user(ANA)),
+    )
+
+    _assert_review_409(out)
+    assert _app(world) == (2, "org")
+
+
+@_DB_GATE
+def test_r8_i_publish_waits_for_patch_org_and_asks_for_review(world) -> None:
+    """PATCH org races a publish (no visibility in the body) of a write draft."""
+    _write_workspace_scopes(world, WRITE)
+
+    out = _race(
+        world, "UPDATE apps SET visibility = 'org' WHERE id = CAST(:id AS uuid)", {},
+        lambda: publish.publish_app(
+            world.slug, publish.PublishRequest(), user=_user(ANA)),
+    )
+
+    assert isinstance(out, dict) and out["review"] == "pending", out
+    assert _app(world) == (2, "org")
 
 
 # ── Pure ──────────────────────────────────────────────────────────────────

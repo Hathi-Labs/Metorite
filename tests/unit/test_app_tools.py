@@ -460,12 +460,17 @@ class _PublishFakeDB:
         self.closed = False
         self._next_version = next_version
         self._approved_hash = approved_hash
+        #: The app row that the row lock answers (task 3975). Set by
+        #: :func:`_patch_publish`.
+        self.app_row: Any = None
 
     async def execute(self, sql: Any, params: dict | None = None) -> _PublishResult:
         s = str(sql)
         self.executed.append((s, params))
         if "MAX(version)" in s:
             return _PublishResult(one=self._next_version)
+        if "FOR UPDATE" in s:
+            return _PublishResult(one=self.app_row)
         if "review_status = 'approved'" in s:
             matched = (
                 self._approved_hash is not None
@@ -510,6 +515,7 @@ def _patch_publish(
     async def _noop(*_a: Any, **_k: Any) -> None:
         return None
 
+    fake_db.app_row = row
     monkeypatch.setattr(publish, "get_app_or_404", _fake_get_app_or_404)
     monkeypatch.setattr(publish, "_tenant_session", _tenant_session)
     monkeypatch.setattr(publish, "sync_workspace_best_effort", _noop)
