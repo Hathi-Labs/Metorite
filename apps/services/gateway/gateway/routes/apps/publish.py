@@ -131,8 +131,13 @@ async def _scope_set_approved(db: Any, app_id: str, scope_hash: str) -> bool:
 #: visibility and the live version, and the UPDATE after it writes them. Two
 #: requests that hold this lock in turn cannot interleave the check of one
 #: with the write of the other. RLS of the bound session scopes it.
+#: ``FOR NO KEY UPDATE`` and not ``FOR UPDATE``: every writer of the two
+#: values is an UPDATE of the apps row, so this lock serializes them. It does
+#: not conflict with the ``FOR KEY SHARE`` of a foreign key, so an insert of
+#: an ``app_audit`` or ``app_grants`` row of the app does not wait for it.
 _LOCK_APP_SQL = (
-    "SELECT visibility, live_version FROM apps WHERE id = :id FOR UPDATE"
+    "SELECT visibility, live_version FROM apps WHERE id = :id "
+    "FOR NO KEY UPDATE"
 )
 
 

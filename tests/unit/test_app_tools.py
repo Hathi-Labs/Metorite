@@ -469,7 +469,7 @@ class _PublishFakeDB:
         self.executed.append((s, params))
         if "MAX(version)" in s:
             return _PublishResult(one=self._next_version)
-        if "FOR UPDATE" in s:
+        if "FOR NO KEY UPDATE" in s:
             return _PublishResult(one=self.app_row)
         if "review_status = 'approved'" in s:
             matched = (

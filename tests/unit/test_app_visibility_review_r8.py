@@ -357,13 +357,20 @@ def test_r8_h_publish_to_org_reuses_an_approved_scope_set(world) -> None:
 # wait for A, then read A's state and act on it. Without the lock, the call
 # checks the old state from ``load_app``, waits only at its UPDATE, and then
 # writes over A's commit: the org gets an unreviewed write version.
+#
+# ⚠️ The ``is_alive`` assertion in :func:`_race` does NOT prove the lock. The
+# call also waits with no lock, at its UPDATE. Only the assertions on the
+# result and on the final state prove the serialization. The wait assertion
+# only proves that A committed after the call started.
 
 _HOLD_SECONDS = 1.5
 
 
 def _race(world: Any, change: str, params: dict[str, Any], call: Any) -> Any:
     """Hold the row lock in A, run ``change`` in A, start ``call`` in a
-    thread, prove the thread waits, then commit A. Answer what ``call`` gave."""
+    thread, check that it has not finished, then commit A. Answer what
+    ``call`` gave. The caller's assertions on that answer and on the final
+    state are the proof, not the wait."""
     out: dict[str, Any] = {}
 
     def worker() -> None:
@@ -380,7 +387,7 @@ def _race(world: Any, change: str, params: dict[str, Any], call: Any) -> Any:
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         thread.join(_HOLD_SECONDS)
-        assert thread.is_alive(), f"the call did not wait for the lock: {out}"
+        assert thread.is_alive(), f"the call finished before A committed: {out}"
         tx.commit()
     thread.join(60)
     assert not thread.is_alive(), "the call never finished"
