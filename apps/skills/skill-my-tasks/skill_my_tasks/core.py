@@ -2073,7 +2073,8 @@ async def my_tasks_get_calendar_settings() -> str:
 # The route answers the member's own rows only, and 404 unless
 # ``CALENDAR_SYNC_READ`` names the org. The tool shows ONLY the fields of
 # :data:`_CONNECTION_FIELDS`, so a token or a secret never shows, whatever the
-# body holds. Sync now, the switch and Disconnect are task 3923 (P-1c). The day
+# body holds. Sync now and the switch are task 3923 (P-1c). Disconnect stays
+# out of the chat (C-04). The day
 # acts of My Day (capture, focus, plan and close the day) are CC-10's (task
 # 1978): this module builds no day flow for them. Fence:
 # tests/unit/test_my_tasks_p1a_tools.py.
@@ -2131,17 +2132,18 @@ async def my_tasks_list_calendar_connections() -> str:
     return "\n".join(out)
 
 
-# ── Sync now, the switch and Disconnect (P-1c, task 3923) ────────────────────
+# ── Sync now and the task switch (P-1c, task 3923) ───────────────────────────
 #
-# The three acts of the Connected calendars section (CE-10c and CE-13d). A tool
+# Two acts of the Connected calendars section (CE-10c and CE-13d). The tool
 # takes the provider and no id: it reads the list of P-1a, takes the own row that
 # is not disconnected, shows ONE card, and sends one write after an approve. A
 # deny, a closed card or a run with no person sends nothing. The gateway takes
 # the org and the member from the session, and answers 404 for a row of another
-# member. Each tool is ``open_world=True``, so a held chat drops it
+# member. The tool is ``open_world=True``, so a held chat drops it
 # (``egress.is_egress_tool``), and ``HELD_OFF_PACK_WRITES`` names it too.
-# Disconnect does not clear ``calendar_task_links``: CE-13 owns that gap.
-# Fence: tests/unit/test_my_tasks_p1c_tools.py.
+# Disconnect stays out of the chat: the C-04 eval allows no destructive My
+# Tasks tool, and only the owner may amend it (task 3923). The tool is in the
+# dark pack ``calendar-connections``. Fence: tests/unit/test_my_tasks_p1c_tools.py.
 
 #: The provider word of the route -> the name that the member reads.
 _CAL_PROVIDERS = {"google": "Google", "outlook": "Outlook"}
@@ -2299,46 +2301,6 @@ async def my_tasks_calendar_connection(provider: str, action: str) -> str:
     if action == "sync":
         return _sync_result(name, address, d)
     return _switch_result(name, address, action == "show_tasks", d)
-
-
-@_annotate_risk(destructive=True, open_world=True)
-async def my_tasks_disconnect_calendar(provider: str) -> str:
-    """Disconnect the member's own Google or Outlook calendar, after the
-    member approves one card. The synced events of that calendar leave
-    Metorite. The member's tasks stay, and the Metorite calendar in the
-    provider stays. The chat cannot connect it again: the member reconnects
-    in Calendar settings.
-
-    Args:
-        provider: "google" or "outlook".
-    """
-    provider = str(provider or "").strip().lower()
-    if provider not in _CAL_PROVIDERS:
-        return _BAD_PROVIDER
-    c, line = await _own_connection(provider)
-    if c is None:
-        return line
-    name, address = _CAL_PROVIDERS[provider], str(c.get("account_email") or "")
-    count = int(c.get("entry_count") or 0)
-    refused = await _card(
-        f"Disconnect {name} Calendar?",
-        f"{_data(count)} synced events leave Metorite. Your tasks stay. The Metorite "
-        f"calendar in {name} stays until you delete it.",
-        f"Account: {_data(address)}",
-    )
-    if refused:
-        return refused
-    try:
-        d = await _request("DELETE", f"/tasks/calendar/connections/{c['id']}") or {}
-    except _GatewayError as exc:
-        if exc.status == 404:
-            return _WRITE_GONE
-        raise
-    if not (isinstance(d, dict) and d.get("disconnected") is True):
-        return f"{name} Calendar did not disconnect. Look at Calendar settings."
-    removed = int(d.get("removed_entries") or 0)
-    return (f"Disconnected {name} Calendar {_data(address)}. {removed} synced events "
-            "left Metorite. Your tasks stay. To connect it again, use Calendar settings.")
 
 
 def _cal_patch(

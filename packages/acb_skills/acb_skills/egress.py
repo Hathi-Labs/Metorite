@@ -1730,23 +1730,19 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its twenty-two tools are the
+#: slug. The first pack is the ``calendar-day`` pack, and its twenty tools are the
 #: My Tasks planner tools, the two calendar settings tools, the four day rule
-#: tools, the read of the synced events (CE-15), the three reads of P-1a
-#: (task 3112), and the two connection acts of P-1c (task 3923). The Tasks assistant holds
+#: tools, the read of the synced events (CE-15), and the three reads of P-1a
+#: (task 3112). The Tasks assistant holds
 #: the planner tools too. **The choice.** In a held chat the
-#: pack holds off its fourteen writes. The twelve planner writes have no card: a plan is
+#: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
 #: could steer the apply. The pack keeps its eight reads (``my_tasks_day_digest``,
 #: ``my_tasks_enrich``, ``my_tasks_get_calendar_settings``,
 #: ``my_tasks_list_calendar_connections``, ``my_tasks_list_day_rules``,
 #: ``my_tasks_list_events``, ``my_tasks_list_schedule`` and
 #: ``my_tasks_suggest_title``, ``read_only=True``). The two P-1a proposals write
-#: nothing, so mail that the chat read cannot steer a write through them. The
-#: two P-1c acts (Sync now and the task switch, and Disconnect) show a card,
-#: but they are ``open_world=True``, so :func:`is_egress_tool` drops them in a
-#: held chat also while ``HELD_CARD_WRITES_ORGS`` is empty. This table names
-#: them too, so the pack test sees each write.
+#: nothing, so mail that the chat read cannot steer a write through them.
 #: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
@@ -1766,10 +1762,15 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # their propose calls store a pending plan on the server, which a later
         # apply replays. Mail that a held chat read could steer that apply.
         "my_tasks_close_my_day", "my_tasks_start_my_day",
-        # P-1c (task 3923): Sync now, the task switch and Disconnect. Each shows
-        # a card, and a held chat still drops them (``open_world=True``).
-        "my_tasks_calendar_connection", "my_tasks_disconnect_calendar",
     }),
+    # P-1c (task 3923): the one act of the dark ``calendar-connections`` pack,
+    # Sync now and the task switch. It shows a card, but it is
+    # ``open_world=True``, so :func:`is_egress_tool` drops it in a held chat
+    # also while ``HELD_CARD_WRITES_ORGS`` is empty. This entry drops it while
+    # that switch names the org, and it keeps the tool out of
+    # :func:`_owner_tool_names`, though its owner ``org-admin`` is in
+    # :data:`HELD_WRITE_OWNERS`. Fence: ``tests/unit/test_calendar_day_held.py``.
+    "calendar-connections": frozenset({"my_tasks_calendar_connection"}),
 }
 
 

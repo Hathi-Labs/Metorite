@@ -804,7 +804,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
             "set the One Thing, block or release time, read or change the calendar settings, keep the day rules, "
-            "list, sync or disconnect the connected calendars, and propose a clearer title or the missing fields of a task."
+            "list the connected calendars, and propose a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -812,17 +812,15 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. Two tools sync a connected calendar now, turn its task switch on or off, and disconnect it (P-1c, task 3923): each asks on one card first. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "my_tasks_add_day_rule",
-            "my_tasks_calendar_connection",
             "my_tasks_close_my_day",
             "my_tasks_day_digest",
             "my_tasks_delete_day_rule",
-            "my_tasks_disconnect_calendar",
             "my_tasks_edit_day_rule",
             "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
@@ -1144,6 +1142,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "people_me",
             "people_work",
             "reach_preview",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-1c (chat_parity.md section 6.4, task 3923, owner answer aa02d28f of
+    # 2026-11-23): the one act on a connected calendar. Sync now, and the switch
+    # that shows the member's tasks in it. Each act shows one card first. The
+    # owner is org-admin, which never runs as an agent (option a, the owner's
+    # answer on task 3923 is open). It is NOT in FOLLOWS: only the owner's pack
+    # list turns it on (tool_packs.packs_on). Fence:
+    # test_calendar_connections_pack.py.
+    "calendar-connections": {
+        "label": "Calendar connections",
+        "summary": (
+            "Sync a connected Google or Outlook calendar now, or show or hide your tasks in it."
+        ),
+        "description": (
+            "A tool pack: one act on a connected calendar, for the main assistant to load "
+            "when a turn asks to sync Google Calendar or Outlook now, or to show or hide "
+            "the member's tasks in it. Each act asks on one card first, and the route "
+            "acts as the member. To connect, reconnect or disconnect a calendar, the "
+            "member uses Calendar settings. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_calendar_connection",
         ),
         "owner": "org-admin",
         "core": False,

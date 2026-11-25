@@ -15,7 +15,6 @@ from skill_my_tasks.core import (
     my_tasks_delegate,
     my_tasks_delete_day_rule,
     my_tasks_detail,
-    my_tasks_disconnect_calendar,
     my_tasks_edit_day_rule,
     my_tasks_enrich,
     my_tasks_estimate_stats,
@@ -46,8 +45,8 @@ from skill_my_tasks.core import (
     my_tasks_update_calendar_settings,
 )
 
-#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4,
-#: CE-15, P-1a and P-1c).
+#: Tools that only a pack of the main chat holds: `calendar-day` (CAL-2 to
+#: CAL-4, CE-15 and P-1a) and the dark `calendar-connections` (P-1c).
 #: They are in ``__all__`` so the pack builder, the card routing and the parity
 #: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
 #: so the Tasks assistant keeps the tools that it has on main. Fence:
@@ -67,9 +66,9 @@ PACK_ONLY_TOOLS = (
     "my_tasks_list_calendar_connections",
     "my_tasks_suggest_title",
     "my_tasks_enrich",
-    # P-1c (task 3923): Sync now, the task switch and Disconnect, each on a card.
+    # P-1c (task 3923): Sync now and the task switch, on one card. The pack
+    # ``calendar-connections`` holds it, and the pack is dark.
     "my_tasks_calendar_connection",
-    "my_tasks_disconnect_calendar",
 )
 
 __all__ = [
@@ -87,7 +86,6 @@ __all__ = [
     "my_tasks_delegate",
     "my_tasks_delete_day_rule",
     "my_tasks_detail",
-    "my_tasks_disconnect_calendar",
     "my_tasks_edit_day_rule",
     "my_tasks_enrich",
     "my_tasks_estimate_stats",
