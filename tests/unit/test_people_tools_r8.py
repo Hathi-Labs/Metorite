@@ -265,15 +265,16 @@ def test_c_people_me_returns_only_the_callers_row(world) -> None:
 
 # ── d. The self writes (P-5b-2, task 3943, owner answer OD1 B) ──────────────
 #
-# Each write runs through the REAL id-bearing People routes (``profile.py``,
-# ``skills.py``, ``absences.py``) as the member of the run, on FORCE RLS. The
-# card answers approved. Acceptance:
+# Each write runs through the REAL self routes of ``selfservice.py`` as the
+# member of the run, on FORCE RLS. The card answers approved. Acceptance:
 #
 # d1. Each write changes only the caller's own row.
 # d2. A member cannot change the record of another member through any tool.
-#     The tools take no person id, and the route refuses another id too.
+#     The tools send the self routes (``/people/me``) and take no person id.
 # d3. ``email`` is unchanged after ``update_my_profile``.
 # d4. A removal of another person's absence changes nothing.
+# d5. A member with no ``feature:people`` still saves their own record.
+# d6. An admin with ``admin:members:manage`` changes only their own row.
 
 
 @pytest.fixture
@@ -398,31 +399,74 @@ def test_d2_d4_an_absence_of_another_person_is_refused_and_nothing_changes(
     assert before[w.priya]["absences"] == [ids["priya"]]
 
 
-def test_d2_the_route_refuses_another_id_even_when_the_tool_is_pointed_at_it(
+def test_d2_no_write_names_a_person_so_a_wrong_card_row_still_writes_only_mine(
         world, approve, monkeypatch) -> None:
-    """The tool takes no person id. A defect that points the own id at a
-    colleague still meets the field-class check of the route: each write is
-    refused, and nothing changes. Mutation: drop ``authorize_write`` from a
-    route -> a row of Priya changes -> red."""
+    """Each write sends a self route (``/people/me``), and the server finds the
+    row of the caller when it writes. So even a defect that reads Priya's row
+    for the card lands the write on Mel's own row. Mutation: send an id route
+    with the id of the row that the card read -> Priya's row changes -> red."""
     w = world
-    ids = _seed_children(w)
+    _seed_children(w)
     before = _state(w)
 
-    async def priya() -> tuple[str, dict[str, Any]]:
-        return w.ids[w.priya], {"id": w.ids[w.priya]}
+    async def priya() -> dict[str, Any]:
+        return {"id": w.ids[w.priya], "email": w.priya, "pronouns": None}
 
-    monkeypatch.setattr(pt, "_own", priya)
-    calls = (
-        (pt.update_my_profile, (), {"pronouns": "x/y"}),
-        (pt.set_my_skills, ([],), {}),
-        (pt.set_my_credentials, ([],), {}),
-        (pt.add_my_absence, ("2027-04-01", "2027-04-01"), {}),
-    )
-    for tool, args, kw in calls:
-        out = w.act(w.mel, tool, *args, **kw)
-        assert out["ok"] is False and out.get("status") == 403, (tool.__name__, out)
-        assert out["error"].startswith("Nothing was saved."), out
-    # The removal reads Priya's absences first. Mel may not read them.
-    out = w.act(w.mel, pt.remove_my_absence, ids["priya"])
-    assert out["ok"] is False and out["status"] == 403, out
-    assert _state(w) == before
+    monkeypatch.setattr(pt, "_own_row", priya)
+    out = w.act(w.mel, pt.update_my_profile, pronouns="x/y")
+    assert out["ok"] is True, out
+    after = _state(w)
+    assert after[w.mel]["row"]["pronouns"] == "x/y"
+    assert _others(after, w) == _others(before, w), "Priya and org B are unchanged"
+
+
+def test_d5_a_member_with_no_people_feature_saves_their_own_record(world, approve) -> None:
+    """D-PC-15: your own row is not behind the directory's gate. A member who
+    holds no ``feature:people`` saves the profile and an absence through the
+    tools. Mutation: send the id routes behind ``feature:people`` -> 403 -> red."""
+    w = world
+    w.principal(w.mel, w.p.org_a, ["feature:tasks"])
+    before = _state(w)
+    # Non-vacuity: the gated directory refuses this member.
+    gated = w.act(w.mel, pt.people_directory)
+    assert gated["ok"] is False and gated["status"] == 403, gated
+    out = w.act(w.mel, pt.update_my_profile, pronouns="she/her", phone="+44 1")
+    assert out["ok"] is True, out
+    made = w.act(w.mel, pt.add_my_absence, "2027-05-03", "2027-05-04", "away")
+    assert made["ok"] is True, made
+    after = _state(w)
+    assert after[w.mel]["row"]["pronouns"] == "she/her"
+    assert after[w.mel]["row"]["phone"] == "+44 1"
+    assert after[w.mel]["row"]["email"] == w.mel
+    assert after[w.mel]["absences"] == [made["absence_id"]]
+    assert _others(after, w) == _others(before, w)
+
+
+def test_d6_an_admin_who_may_manage_people_changes_only_their_own_row(
+        world, approve) -> None:
+    """An admin with ``admin:members:manage`` may edit any row on the page.
+    Through the chat tools the admin still changes only their own row.
+    Mutation: let a tool take a person id -> red."""
+    w = world
+    ids = _seed_children(w)
+    w.principal(w.ada, w.p.org_a, ["feature:*", "admin:members:read", "admin:members:manage"])
+    before = _state(w)
+    for tool, args, kw in (
+        (pt.update_my_profile, (), {"pronouns": "he/him", "bio": "Admin."}),
+        (pt.set_my_skills, (["sql"],), {}),
+        (pt.set_my_credentials, ([{"kind": "education", "title": "MBA"}],), {}),
+        (pt.add_my_absence, ("2027-06-01", "2027-06-01"), {}),
+    ):
+        out = w.act(w.ada, tool, *args, **kw)
+        assert out["ok"] is True, (tool.__name__, out)
+    # The admin may read Priya's absences on the page, but the chat removal
+    # reads the admin's own list, so Priya's id is not found.
+    out = w.act(w.ada, pt.remove_my_absence, ids["priya"])
+    assert out == {"ok": False, "error": pt._W_NOT_MINE, "status": 404}, out
+    after = _state(w)
+    assert after[w.ada]["row"]["pronouns"] == "he/him"
+    assert after[w.ada]["skills"] == ["sql/-"]
+    assert after[w.ada]["credentials"] == ["education/MBA"]
+    assert len(after[w.ada]["absences"]) == 1
+    assert {k: v for k, v in after.items() if k != w.ada} == \
+        {k: v for k, v in before.items() if k != w.ada}, "no other row changed"

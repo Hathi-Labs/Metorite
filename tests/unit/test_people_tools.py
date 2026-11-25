@@ -376,6 +376,9 @@ class _Writes:
         self.absences = [{"id": MINE, "starts_on": "2026-12-24", "ends_on": "2026-12-31",
                           "kind": "holiday", "hours_per_day": None, "note": "Winter\nbreak",
                           "created_by": MEMBER}]
+        #: The reads of GET /people/me/skills, and a hook that runs on each.
+        self.reads = 0
+        self.on_read: Any = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
@@ -388,19 +391,22 @@ class _Writes:
         if key == ("GET", "/people/me"):
             return httpx.Response(200, json={"state": "resolved", "email": MEMBER,
                                               "person": self.person})
-        if key == ("GET", f"/people/{OWN}/skills"):
+        if key == ("GET", "/people/me/skills"):
+            self.reads += 1
+            if self.on_read is not None:
+                self.on_read(self)
             return httpx.Response(200, json={"skills": self.skills,
                                               "credentials": self.credentials})
-        if key == ("GET", f"/people/{OWN}/absences"):
+        if key == ("GET", "/people/me/absences"):
             return httpx.Response(200, json={"rows": self.absences})
-        if key == ("PATCH", f"/people/{OWN}"):
+        if key == ("PATCH", "/people/me"):
             return httpx.Response(200, json={**self.person, **body})
-        if key in (("PUT", f"/people/{OWN}/skills"), ("PUT", f"/people/{OWN}/credentials")):
+        if key in (("PUT", "/people/me/skills"), ("PUT", "/people/me/credentials")):
             return httpx.Response(200, json={"skills": body["rows"],
                                               "credentials": body["rows"]})
-        if key == ("POST", f"/people/{OWN}/absences"):
+        if key == ("POST", "/people/me/absences"):
             return httpx.Response(201, json={"id": "abc", **body})
-        if key == ("DELETE", f"/people/{OWN}/absences/{MINE}"):
+        if key == ("DELETE", f"/people/me/absences/{MINE}"):
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(404, json={"detail": "Not Found"})
 
@@ -454,22 +460,25 @@ WRITE_CALLS = {
 }
 #: The request that each write sends.
 WRITE_ROUTES = {
-    "update_my_profile": ("PATCH", f"/people/{OWN}"),
-    "set_my_skills": ("PUT", f"/people/{OWN}/skills"),
-    "set_my_credentials": ("PUT", f"/people/{OWN}/credentials"),
-    "add_my_absence": ("POST", f"/people/{OWN}/absences"),
-    "remove_my_absence": ("DELETE", f"/people/{OWN}/absences/{MINE}"),
+    "update_my_profile": ("PATCH", "/people/me"),
+    "set_my_skills": ("PUT", "/people/me/skills"),
+    "set_my_credentials": ("PUT", "/people/me/credentials"),
+    "add_my_absence": ("POST", "/people/me/absences"),
+    "remove_my_absence": ("DELETE", f"/people/me/absences/{MINE}"),
 }
 
 
 @pytest.mark.parametrize("name", list(WRITE_CALLS))
 async def test_each_write_shows_one_card_then_sends_one_request(wgw, card, name) -> None:
-    """Mutation: send before the card, send twice, or send another path -> red."""
+    """Each write sends a self route of ``selfservice.py``: no path holds a
+    person id. Mutation: send before the card, send twice, or send an id
+    route -> red."""
     out = await WRITE_CALLS[name]()
     assert out["ok"] is True and out["decision"] == "approved", out
     assert [c["writes_before"] for c in card.shown] == [0], "one card, before any write"
     assert [(m, p) for m, p, _b in wgw.writes()] == [WRITE_ROUTES[name]]
-    assert wgw.calls[0][:2] == ("GET", "/people/me"), "the own id comes from /people/me"
+    assert all(p == "/people/me" or p.startswith("/people/me/") for _m, p, _b in wgw.calls)
+    assert OWN not in str(wgw.calls), "no request names the person id"
     shown = card.shown[0]
     assert shown["non_interactive_default"] == "deny" and shown["fenced"] is True
     assert shown["responder"] == MEMBER
@@ -531,6 +540,78 @@ async def test_a_422_list_is_one_plain_line(wgw, card) -> None:
         {"loc": ["body", "starts_on"], "msg": "Field required", "type": "missing"}]})
     out = await WRITE_CALLS["add_my_absence"]()
     assert out["error"] == "Nothing was saved. starts_on: Field required."
+
+
+async def test_the_profile_card_draws_two_lists_apart(wgw, card) -> None:
+    """A comma inside an item must not look like two items. Mutation: join a
+    list with ", " on the card -> both cards draw one line -> red."""
+    await pt.update_my_profile(languages=["English, French"])
+    await pt.update_my_profile(languages=["English", "French"])
+    one, two = (c["context"].split("\n")[1] for c in card.shown)
+    assert one == 'languages: «["English"]» to «["English, French"]»'
+    assert two == 'languages: «["English"]» to «["English","French"]»'
+    assert one != two
+
+
+async def test_a_bare_skill_name_keeps_the_level_and_years_of_that_skill(wgw, card) -> None:
+    """Mutation: send a bare name as a skill with no level -> "expert, 5.0
+    years" is dropped -> red. A key that the member gives still wins."""
+    same = await pt.set_my_skills(["python"])
+    assert same["note"] == pt._W_SAME and card.shown == [], "a bare name keeps all: no card"
+    await pt.set_my_skills([{"skill": "python", "level": "working"}, "go"])
+    rows = wgw.writes()[0][2]["rows"]
+    assert rows[0] == {"skill": "python", "level": "working", "years": 5.0,
+                       "last_used_year": 2026, "evidence": "manual"}
+    assert rows[1] == {"skill": "go", "level": None, "years": None, "last_used_year": None,
+                       "evidence": "manual"}
+    assert "- «python» (working, 5.0 years, last used 2026, evidence manual)" in \
+        card.shown[0]["context"]
+
+
+@pytest.mark.parametrize(("name", "call", "what"), [
+    ("skills", lambda: pt.set_my_skills(["python", "rust"]), "skills"),
+    ("credentials", lambda: pt.set_my_credentials(
+        [{"kind": "certification", "title": "AWS SA"}]), "credentials"),
+])
+async def test_a_list_that_changed_while_the_card_waited_saves_nothing(
+        wgw, card, name, call, what) -> None:
+    """The lost update. Mutation: skip the read after Approve -> the PUT
+    overwrites the change -> red."""
+    def move(g: _Writes) -> None:
+        if g.reads == 2:  # the read after Approve
+            g.skills = [*g.skills, {"id": "s2", "skill": "excel", "level": None,
+                                    "years": None, "last_used_year": None,
+                                    "evidence": "manual"}]
+            g.credentials = []
+
+    wgw.on_read = move
+    out = await call()
+    assert out == {"ok": False, "decision": "approved", "error": (
+        f"Your {what} changed while the card waited. Nothing was saved. Ask again.")}
+    assert len(card.shown) == 1 and wgw.writes() == []
+
+
+def test_the_admin_half_of_each_self_row_is_open_debt_of_task_3944() -> None:
+    """Reviewer P2: COVERED holds the self half only. Mutation: drop a row
+    from ADMIN_HALF_OPEN, or cover a row that is not a self write -> red."""
+    from acb_skills import chat_parity as cp
+
+    assert set(cp.ADMIN_HALF_OPEN) == set(WRITE_COVERED)
+    for key, tool in WRITE_COVERED.items():
+        assert cp.COVERED[key] == tool, key
+        assert cp.ADMIN_HALF_OPEN[key] == 3944, key
+    spec = (REPO / "project-docs/specs/chat_parity.md").read_text(encoding="utf-8")
+    assert "`ADMIN_HALF_OPEN`" in spec and "task 3944" in spec
+
+
+#: The COVERED rows of the five self writes, and the tool of each.
+WRITE_COVERED = {
+    "PATCH /api/people/{}": "update_my_profile",
+    "PUT /api/people/{}/skills": "set_my_skills",
+    "PUT /api/people/{}/credentials": "set_my_credentials",
+    "POST /api/people/{}/absences": "add_my_absence",
+    "DELETE /api/people/{}/absences/{}": "remove_my_absence",
+}
 
 
 async def test_no_directory_row_refuses_before_the_card(wgw, card) -> None:
@@ -595,7 +676,7 @@ async def test_the_card_shows_each_old_and_new_value(wgw, card) -> None:
     assert shown["title"] == "Save these changes to your People record?"
     assert shown["detail"] == "2 fields: pronouns, languages"
     assert "pronouns: «they/them» to «she/her»" in shown["context"]
-    assert "languages: «English» to «English, Hindi»" in shown["context"]
+    assert 'languages: «["English"]» to «["English","Hindi"]»' in shown["context"]
     assert pt._W_PRIVATE not in shown["context"]
 
 
@@ -659,17 +740,17 @@ async def test_the_skills_card_shows_the_full_list_before_and_after(wgw, card) -
     assert out["ok"] is True and out["count"] == 2
     shown = card.shown[0]
     assert shown["title"] == "Replace your skills?"
-    assert shown["detail"] == "1 skills now, 2 after. The new list replaces the whole list."
+    assert shown["detail"] == "1 skill now, 2 after. The new list replaces the whole list."
     lines = shown["context"].split("\n")
     assert lines[1:] == [
         "Skills now (1):",
         "- «python» (expert, 5.0 years, last used 2026, evidence manual)",
         "Skills after (2):",
-        "- «python» (no level, evidence manual)",
+        "- «python» (expert, 5.0 years, last used 2026, evidence manual)",
         "- «rust» (working, 2 years, evidence manual)",
     ]
     assert wgw.writes()[0][2] == {"rows": [
-        {"skill": "python", "level": None, "years": None, "last_used_year": None,
+        {"skill": "python", "level": "expert", "years": 5.0, "last_used_year": 2026,
          "evidence": "manual"},
         {"skill": "rust", "level": "working", "years": 2, "last_used_year": None,
          "evidence": "manual"}]}
@@ -685,6 +766,8 @@ async def test_the_credentials_card_shows_the_full_list_before_and_after(wgw, ca
     out = await pt.set_my_credentials(
         [{"kind": "certification", "title": "AWS SA", "issuer": "Amazon", "year_from": 2024}])
     assert out["ok"] is True
+    assert card.shown[0]["detail"] == ("1 credential now, 1 after. The new list replaces "
+                                       "the whole list.")
     lines = card.shown[0]["context"].split("\n")
     assert lines[1:] == [
         "Credentials now (1):",
@@ -747,8 +830,7 @@ async def test_the_removal_card_shows_the_absence_on_one_line_each(wgw, card) ->
     assert shown["title"] == "Remove this absence?"
     assert "Note: «Winter break»" in shown["context"]
     assert [c[:2] for c in wgw.calls] == [
-        ("GET", "/people/me"), ("GET", f"/people/{OWN}/absences"),
-        ("DELETE", f"/people/{OWN}/absences/{MINE}")]
+        ("GET", "/people/me/absences"), ("DELETE", f"/people/me/absences/{MINE}")]
 
 
 async def test_an_absence_of_another_person_is_refused_with_no_card(wgw, card) -> None:

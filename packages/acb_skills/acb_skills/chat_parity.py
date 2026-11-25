@@ -387,9 +387,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/people/{}/work": "people_work",
     "GET /api/me/reach/status": "reach_preview",
     "GET /api/me/reach/preview": "reach_preview",
-    # P-5b-2 (task 3943, OD1 B): five self writes of the people pack. Each tool reads
-    # the member's own id from GET /people/me and sends the id-bearing route as the
-    # member, after one card. The route checks the field class. No tool sends email.
+    # P-5b-2 (task 3943, OD1 B): five self writes of the people pack. Each tool sends
+    # the self route of selfservice.py (/people/me...) as the member, after one card.
+    # The server finds the caller's row, and no tool sends email. The admin half of
+    # each row (an admin edits another person) is open: ADMIN_HALF_OPEN.
     "PATCH /api/people/{}": "update_my_profile",
     "PUT /api/people/{}/skills": "set_my_skills",
     "PUT /api/people/{}/credentials": "set_my_credentials",
@@ -1267,6 +1268,20 @@ DEBT: dict[str, str] = {
     # A save of a custom API definition, and the install of a plugin from a URL.
     "POST /api/integrations/custom": "P-8",
     "POST /api/integrations/plugins": "P-8",
+}
+
+#: The COVERED rows whose chat tool does only the member's own half. The UI
+#: sends each route for an admin too, on the row of another person, and no
+#: tool does that yet. Each row names the task that builds the admin half:
+#: P-5b-3 (task 3944), which waits for the owner (OD1 C). A row leaves this
+#: list in the change that builds its admin half. Fence:
+#: ``test_people_tools.py`` (each key is in COVERED and named here).
+ADMIN_HALF_OPEN: dict[str, int] = {
+    "PATCH /api/people/{}": 3944,
+    "PUT /api/people/{}/skills": 3944,
+    "PUT /api/people/{}/credentials": 3944,
+    "POST /api/people/{}/absences": 3944,
+    "DELETE /api/people/{}/absences/{}": 3944,
 }
 
 #: The debt of each app at P-0 (2026-11-01, ``0ffbd35d3``), the baseline. A ceiling of

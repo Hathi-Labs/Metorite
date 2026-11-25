@@ -21,22 +21,24 @@ and never filters a field out of it. It leaves out a field with no value
 only, and the answer says so.
 
 **Self writes (P-5b-2, Metorite task 3943, owner answer OD1 B).** Five
-tools change the member's OWN record, and no other:
+tools change the member's OWN record, and no other. Each sends a self route of
+``selfservice.py`` (D-PC-15), which takes no person id and has no feature gate:
 
-* :func:`update_my_profile` sends ``PATCH /people/{id}`` (``profile.py``).
-* :func:`set_my_skills` sends ``PUT /people/{id}/skills`` (``skills.py``).
-* :func:`set_my_credentials` sends ``PUT /people/{id}/credentials``.
-* :func:`add_my_absence` sends ``POST /people/{id}/absences`` (``absences.py``).
-* :func:`remove_my_absence` sends ``DELETE /people/{id}/absences/{aid}``.
+* :func:`update_my_profile` sends ``PATCH /people/me``.
+* :func:`set_my_skills` sends ``PUT /people/me/skills``.
+* :func:`set_my_credentials` sends ``PUT /people/me/credentials``.
+* :func:`add_my_absence` sends ``POST /people/me/absences``.
+* :func:`remove_my_absence` sends ``DELETE /people/me/absences/{aid}``.
 
-The id is the member's own. Each write reads it from ``GET /people/me`` as the
-member, and no tool takes a person id, so no tool can address another person.
-The route still checks the field class (``fields.authorize_write``), so the
-server stays the judge. Each write shows ONE card with the old and the new
-value, and it sends only on ``approved``. A decline, a timeout, a chat with no
-card and a card that does not fit send nothing. No tool sends ``email``,
-``status``, ``manager_id`` or ``employee_id`` (D-PC-2): the body holds only
-the keys of :data:`SELF_PROFILE_FIELDS`.
+The server finds the row of the caller when it writes, so no write can land on
+another row, and a member without ``feature:people`` can still change their
+own record. The route checks the field class (``fields.authorize_write``).
+Each write shows ONE card with the exact change, and it sends only on
+``approved``. A decline, a timeout, a chat with no card and a card that does
+not fit send nothing. The two list writes read the list again after Approve,
+and they send nothing when it changed. No tool sends ``email``, ``status``,
+``manager_id`` or ``employee_id`` (D-PC-2): the body holds only the keys of
+:data:`SELF_PROFILE_FIELDS`.
 
 **Text of other people is data.** A name, a title, a note and the text of a
 Reach brief are the text of other people. Each result puts that text in ONE
@@ -94,6 +96,13 @@ DIRECTORY_PATH = "/people/"
 #: The member's own row, and the member's own work (``selfservice.py``).
 ME_PATH = "/people/me"
 MY_WORK_PATH = "/people/me/work"
+#: The self routes of the five writes (``selfservice.py``, D-PC-15). No path
+#: holds a person id: the server finds the row of the caller when it writes,
+#: so no write can land on another row, and no write needs ``feature:people``.
+MY_ROW_PATH = "/people/me"
+MY_SKILLS_PATH = "/people/me/skills"
+MY_CREDENTIALS_PATH = "/people/me/credentials"
+MY_ABSENCES_PATH = "/people/me/absences"
 #: The two reads of Reach (``gateway/reach/routes.py``).
 REACH_STATUS_PATH = "/reach/status"
 REACH_PREVIEW_PATH = "/reach/preview"
@@ -201,6 +210,7 @@ _W_NO_CARD = ("This chat shows no card, so nothing was saved. Make the change in
 _W_NOT_DONE = "Nothing was saved. The decision was {decision}."
 _W_WONT_FIT = ("This change does not fit on one card, so nothing was saved. Make it in the "
                "People app, or change fewer values at a time.")
+_W_MOVED = ("Your {what} changed while the card waited. Nothing was saved. Ask again.")
 _W_BAD_ABSENCE_ID = "absence_id is the id of one of your absences. Nothing was removed."
 _W_NOT_MINE = ("None of your absences has that id, so nothing was removed. Read your "
                "absences in the People app for the ids.")
@@ -607,10 +617,12 @@ def _write_fail(reply: _Reply, **extra: Any) -> dict[str, Any]:
                     f"{reply.status}.", status=reply.status, **extra)
 
 
-async def _own() -> tuple[str, dict[str, Any]]:
-    """``(the member's own person id, the member's own row)``, read from
-    ``GET /people/me`` as the member. Raise :class:`_Refused` with plain words
-    when the directory has no row for the member."""
+async def _own_row() -> dict[str, Any]:
+    """The member's own row, read from ``GET /people/me`` as the member, for
+    the old values of the card only. No write takes an id from it: each write
+    sends a ``/people/me`` route, and the server finds the row of the caller
+    when it writes (``selfservice._my_row``). Raise :class:`_Refused` with
+    plain words when the directory has no row for the member."""
     reply = await _send("GET", ME_PATH)
     if not reply.ok:
         raise _RouteRefused(_write_fail(reply))
@@ -619,11 +631,7 @@ async def _own() -> tuple[str, dict[str, Any]]:
     if data.get("state") != "resolved" or not isinstance(person, dict):
         words = _route_words(reply) or "The directory has no row for you."
         raise _Refused(_W_NO_ROW.format(detail=words))
-    try:
-        pid = str(uuid.UUID(str(person.get("id") or "")))
-    except ValueError:
-        raise _Refused(_W_SHAPE) from None
-    return pid, person
+    return person
 
 
 # ── The values that a write sends ───────────────────────────────────────────
@@ -710,11 +718,10 @@ def _shown(value: Any) -> str:
     cut, and a new value fits whole or the card does not show."""
     if _empty(value):
         return "(empty)"
-    if isinstance(value, (dict, list)) and not (
-            isinstance(value, list) and all(isinstance(v, str) for v in value)):
+    if isinstance(value, (dict, list)):
+        # JSON, so the card is exact: ["English, French"] and
+        # ["English","French"] draw two different lines.
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-    elif isinstance(value, list):
-        text = ", ".join(value)
     else:
         text = str(value)
     text = one_line(strip_hidden(text)).replace("«", "").replace("»", "")
@@ -784,7 +791,7 @@ async def update_my_profile(
                   for field in SELF_PROFILE_FIELDS if given.get(field) is not None}
         if not wanted:
             return _refusal(_W_NONE)
-        pid, person = await _own()
+        person = await _own_row()
         changes = {f: v for f, v in wanted.items() if not _same(person.get(f), v)}
         if not changes:
             return {"ok": True, "saved": [], "note": _W_SAME}
@@ -794,13 +801,13 @@ async def update_my_profile(
             note += " " + _W_PRIVATE
         decision = await _decide(
             "Save these changes to your People record?",
-            f"{len(changes)} field{'s' if len(changes) != 1 else ''}: {', '.join(changes)}",
+            f"{_count(len(changes), 'field')}: {', '.join(changes)}",
             note + " Approve to save. Reject to keep the record as it is.", rows)
         if decision != "approved":
             return _not_saved(decision)
         body = {f: v for f, v in changes.items() if f in SELF_PROFILE_FIELDS
                 and f not in NEVER_SENT}
-        sent = await _send("PATCH", f"/people/{pid}", body, act="change of your record")
+        sent = await _send("PATCH", MY_ROW_PATH, body, act="change of your record")
     except _Refused as exc:
         return _answer(exc)
     if not sent.ok:
@@ -810,8 +817,8 @@ async def update_my_profile(
 
 
 def _skill_rows(raw: Any) -> list[dict[str, Any]]:
-    """The skills as ``PUT /people/{id}/skills`` takes them. A bare word is a
-    skill with no level. Raise :class:`_Refused` for a row that the card
+    """The skills as the member gave them, each with only the keys given. A
+    bare word is a name alone, and :func:`_merge_skills` fills the rest. Raise :class:`_Refused` for a row that the card
     cannot show as it is sent."""
     if not isinstance(raw, list) or len(raw) > MAX_SKILL_ROWS:
         raise _Refused(_W_BAD.format(field="skills",
@@ -825,6 +832,8 @@ def _skill_rows(raw: Any) -> list[dict[str, Any]]:
                 + ", ".join(_SKILL_KEYS) + "."))
         clean: dict[str, Any] = {}
         for key in _SKILL_KEYS:
+            if key not in row and key != "skill":
+                continue  # Not given: :func:`_merge_skills` keeps the value of the row.
             value = row.get(key)
             if key in ("skill", "level", "evidence"):
                 text = _text_arg(f"skills #{n} {key}", value, MAX_ITEM_CHARS) \
@@ -837,9 +846,30 @@ def _skill_rows(raw: Any) -> list[dict[str, Any]]:
                 raise _Refused(_W_BAD.format(field=f"skills #{n} {key}", why="Send a number."))
         if not clean["skill"]:
             raise _Refused(_W_BAD.format(field=f"skills #{n}", why="The skill has no name."))
-        clean["evidence"] = clean["evidence"] or "manual"
         out.append(clean)
     return out
+
+
+def _merge_skills(given: list[dict[str, Any]], now: list[dict[str, Any]]
+                  ) -> list[dict[str, Any]]:
+    """The full rows that the PUT sends. A key that the member did not give
+    keeps the value of the same skill now (the name folds case), so a bare
+    word never drops a level, the years or the evidence. A new skill takes no
+    level, and the evidence ``manual``."""
+    have = {str(r.get("skill") or "").lower(): r for r in now}
+    out: list[dict[str, Any]] = []
+    for row in given:
+        old = have.get(row["skill"].lower(), {})
+        full = {key: row[key] if key in row else old.get(key) for key in _SKILL_KEYS}
+        full["skill"] = row["skill"]
+        full["evidence"] = full["evidence"] or "manual"
+        out.append(full)
+    return out
+
+
+def _count(n: int, noun: str) -> str:
+    """*n* and the noun in the right form: "1 skill", "2 skills"."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 def _skill_line(row: dict[str, Any]) -> str:
@@ -853,7 +883,8 @@ def _skill_line(row: dict[str, Any]) -> str:
 
 
 def _credential_rows(raw: Any) -> list[dict[str, Any]]:
-    """The credentials as ``PUT /people/{id}/credentials`` takes them."""
+    """The credentials as ``PUT /people/me/credentials`` takes them
+    (``skills.py`` ``CredentialIn``, which has no ``source``)."""
     if not isinstance(raw, list) or len(raw) > MAX_CREDENTIAL_ROWS:
         raise _Refused(_W_BAD.format(
             field="credentials", why=f"Send a list of at most {MAX_CREDENTIAL_ROWS} rows."))
@@ -905,9 +936,9 @@ def _list_card(label: str, now: list[str], after: list[str]) -> list[tuple[str, 
     return rows
 
 
-async def _capability(pid: str) -> dict[str, Any]:
-    """The member's own skills and credentials (``GET /people/{id}/skills``)."""
-    reply = await _get(f"/people/{pid}/skills")
+async def _capability() -> dict[str, Any]:
+    """The member's own skills and credentials (``GET /people/me/skills``)."""
+    reply = await _get(MY_SKILLS_PATH)
     if not reply.ok:
         raise _RouteRefused(_write_fail(reply))
     if not isinstance(reply.data, dict):
@@ -920,28 +951,35 @@ def _now_rows(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
 
+def _keys(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[tuple[Any, ...]]:
+    """The values of *keys* in each row, in order: what a card shows."""
+    return [tuple(r.get(k) for k in keys) for r in rows]
+
+
 @annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def set_my_skills(skills: list[Any]) -> dict[str, Any]:
     """Replace the whole list of skills on your OWN People record after one card. Each item is a word, or {skill, level, years, last_used_year, evidence}. A skill left out is removed."""
     try:
         _member_headers()
-        after = _skill_rows(skills)
-        pid, _person = await _own()
-        now = _now_rows(await _capability(pid), "skills")
-        keys = ("skill", "level", "years", "last_used_year", "evidence")
-        if [tuple(r.get(k) for k in keys) for r in now] == \
-                [tuple(r.get(k) for k in keys) for r in after]:
+        given = _skill_rows(skills)
+        now = _now_rows(await _capability(), "skills")
+        after = _merge_skills(given, now)
+        if _keys(now, _SKILL_KEYS) == _keys(after, _SKILL_KEYS):
             return {"ok": True, "count": len(now), "note": _W_SAME}
         decision = await _decide(
             "Replace your skills?",
-            f"{len(now)} skills now, {len(after)} after. The new list replaces the whole list.",
+            f"{_count(len(now), 'skill')} now, {len(after)} after. The new list replaces "
+            "the whole list.",
             _W_CARD_NOTE + " Approve to save the list after. A skill that is not in it is "
             "removed. Reject to keep the skills as they are.",
             _list_card("Skills", [_skill_line(r) for r in now],
                        [_skill_line(r) for r in after]))
         if decision != "approved":
             return _not_saved(decision)
-        sent = await _send("PUT", f"/people/{pid}/skills", {"rows": after},
+        if _keys(_now_rows(await _capability(), "skills"), _SKILL_KEYS) != \
+                _keys(now, _SKILL_KEYS):
+            return _refusal(_W_MOVED.format(what="skills"), decision=decision)
+        sent = await _send("PUT", MY_SKILLS_PATH, {"rows": after},
                            act="change of your skills")
     except _Refused as exc:
         return _answer(exc)
@@ -958,22 +996,23 @@ async def set_my_credentials(credentials: list[dict[str, Any]]) -> dict[str, Any
     try:
         _member_headers()
         after = _credential_rows(credentials)
-        pid, _person = await _own()
-        now = _now_rows(await _capability(pid), "credentials")
-        if [tuple(r.get(k) for k in _CREDENTIAL_KEYS) for r in now] == \
-                [tuple(r.get(k) for k in _CREDENTIAL_KEYS) for r in after]:
+        now = _now_rows(await _capability(), "credentials")
+        if _keys(now, _CREDENTIAL_KEYS) == _keys(after, _CREDENTIAL_KEYS):
             return {"ok": True, "count": len(now), "note": _W_SAME}
         decision = await _decide(
             "Replace your credentials?",
-            f"{len(now)} credentials now, {len(after)} after. The new list replaces the "
-            "whole list.",
+            f"{_count(len(now), 'credential')} now, {len(after)} after. The new list "
+            "replaces the whole list.",
             _W_CARD_NOTE + " Approve to save the list after. A row that is not in it is "
             "removed. Reject to keep the credentials as they are.",
             _list_card("Credentials", [_credential_line(r) for r in now],
                        [_credential_line(r) for r in after]))
         if decision != "approved":
             return _not_saved(decision)
-        sent = await _send("PUT", f"/people/{pid}/credentials", {"rows": after},
+        if _keys(_now_rows(await _capability(), "credentials"), _CREDENTIAL_KEYS) != \
+                _keys(now, _CREDENTIAL_KEYS):
+            return _refusal(_W_MOVED.format(what="credentials"), decision=decision)
+        sent = await _send("PUT", MY_CREDENTIALS_PATH, {"rows": after},
                            act="change of your credentials")
     except _Refused as exc:
         return _answer(exc)
@@ -1029,14 +1068,13 @@ async def add_my_absence(
         text = _text_arg("note", note if note is not None else "", MAX_NOTE_CHARS) or None
         body = {"starts_on": starts.isoformat(), "ends_on": ends.isoformat(), "kind": kind,
                 "hours_per_day": hours_per_day, "note": text}
-        pid, _person = await _own()
         decision = await _decide(
             "Record this absence?", f"{kind}, {body['starts_on']} to {body['ends_on']}",
             _W_CARD_NOTE + " Approve to record this absence. Reject to record nothing.",
             _absence_lines(body))
         if decision != "approved":
             return _not_saved(decision)
-        sent = await _send("POST", f"/people/{pid}/absences", body, act="absence")
+        sent = await _send("POST", MY_ABSENCES_PATH, body, act="absence")
     except _Refused as exc:
         return _answer(exc)
     if not sent.ok:
@@ -1055,8 +1093,7 @@ async def remove_my_absence(absence_id: str) -> dict[str, Any]:
             aid = str(uuid.UUID(str(absence_id or "").strip()))
         except ValueError:
             return _refusal(_W_BAD_ABSENCE_ID)
-        pid, _person = await _own()
-        reply = await _get(f"/people/{pid}/absences")
+        reply = await _get(MY_ABSENCES_PATH)
         if not reply.ok:
             return _write_fail(reply)
         rows = reply.data.get("rows") if isinstance(reply.data, dict) else None
@@ -1073,7 +1110,7 @@ async def remove_my_absence(absence_id: str) -> dict[str, Any]:
             _absence_lines(row))
         if decision != "approved":
             return _not_saved(decision)
-        sent = await _send("DELETE", f"/people/{pid}/absences/{aid}", act="removal")
+        sent = await _send("DELETE", f"/people/me/absences/{aid}", act="removal")
     except _Refused as exc:
         return _answer(exc)
     if not sent.ok:
