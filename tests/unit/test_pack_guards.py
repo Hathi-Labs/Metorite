@@ -1248,6 +1248,7 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "studio": frozenset(),
     # PAR-2a: the read of the members. The three writes each need a card.
     # PAR-4a (task 3107): four more reads. Its nine writes each need a card.
+    # PAR-4c (task 3935): the removal and the purge are writes, so neither is here.
     # PAR-6a: the two Integrations reads join. The two probes and the proposal
     # leave the org, so a held build drops them, and the three writes need a card.
     "org-admin": frozenset({"list_members", "list_org_groups", "list_roles_and_rights",

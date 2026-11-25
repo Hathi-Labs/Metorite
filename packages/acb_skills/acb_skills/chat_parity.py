@@ -489,8 +489,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "DELETE /api/admin/roles/{}": "delete_org_role",
     "GET /api/admin/members/{}/access": "read_member_access",
     "PUT /api/admin/members/{}/overrides": "set_member_overrides",
-    # A read only: the chat removes no member (PAR-4c, task 3935).
+    # A read only. remove_member shows the same numbers on its card.
     "GET /api/admin/members/{}/seal-preview": "preview_member_removal",
+    # PAR-4c (task 3935): the removal, and the purge for good. The purge acts
+    # only on the member's own typed address of this turn.
+    "DELETE /api/admin/members/{}": "remove_member",
+    "DELETE /api/admin/members/{}/purge": "purge_member",
     "PATCH /api/admin/organization": "rename_org",
     # ── Integrations (PAR-6a, task 3109, chat_parity.md section 6.3 rung 3) ──
     # The org-admin pack calls each Integrations route as the member, and the
@@ -1210,8 +1214,6 @@ DEBT: dict[str, str] = {
     "PUT /api/settings/number-system": "P-8",
     "PUT /api/settings/number-system/me": "P-8",
     # ── Admin, members and billing ──
-    "DELETE /api/admin/members/{}": "P-8",
-    "DELETE /api/admin/members/{}/purge": "P-8",
     "GET /api/billing/catalog": "P-8",
     "GET /api/billing/members": "P-8",
     "GET /api/billing/orders/{}": "P-8",
@@ -1275,7 +1277,7 @@ DEBT_CEILING: dict[str, int] = {
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
-    "admin": 17,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) pays the remove and the purge, and PAR-4d (task 3936) the seats.
+    "admin": 15,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge (17 to 15). PAR-4d (task 3936) pays the seats.
     "integrations": 4,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. PAR-6a (task 3109) paid 17 rows with the org-admin pack and made the MCP add a secret exemption (22 to 4). The grant change, the decision, the plugin install and the custom API wait for the owner (task 3932).
     "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
 }
